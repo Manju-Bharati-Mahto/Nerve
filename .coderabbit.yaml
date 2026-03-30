@@ -1,0 +1,41 @@
+version: "2"
+language: "en-US"
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+  path_filters:
+    - "!**/node_modules/**"
+    - "!**/*.lock"
+    - "!**/dist/**"
+    - "!**/*.lockb"
+  path_instructions:
+    - path: "src/**"
+      instructions: |
+        Review for React best practices, TypeScript correctness, accessibility,
+        security issues, and performance. Flag any direct DOM manipulation,
+        missing error boundaries, or improper use of hooks.
+    - path: "src/lib/db.ts"
+      instructions: |
+        Review localStorage usage for data integrity, serialization safety,
+        and potential data loss scenarios.
+    - path: "src/components/**"
+      instructions: |
+        Check for proper prop typing, missing key props in lists,
+        and unnecessary re-renders.
+    - path: "src/pages/**"
+      instructions: |
+        Review role-based access control logic, ensure RoleGuard is used
+        consistently, and check for unauthorized data access patterns.
+
+chat:
+  auto_reply: true
