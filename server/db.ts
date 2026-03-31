@@ -1,8 +1,17 @@
 import { randomBytes } from "node:crypto";
 import { Pool } from "pg";
 import { config } from "./config.js";
-import { hashPassword } from "./password.js";
-import { BUILT_IN_TEAMS, SEED_ENTRIES, SEED_USERS, type SeedRole } from "./seed.js";
+import { hashPassword, verifyPassword } from "./password.js";
+import {
+  BUILT_IN_TEAMS,
+  DEFAULT_SUPER_ADMIN_EMAIL,
+  LEGACY_SUPER_ADMIN_PASSWORD,
+  SEED_ENTRIES,
+  SEED_USERS,
+  SUPER_ADMIN_SEED_ID,
+  isSeedSuperAdmin,
+  type SeedRole,
+} from "./seed.js";
 
 export type AppRole = SeedRole;
 
@@ -317,12 +326,8 @@ async function seedDefaults() {
   const userCount = await pool.query<{ count: number }>(`SELECT COUNT(*)::int AS count FROM users`);
   if (userCount.rows[0].count === 0) {
     for (const user of SEED_USERS) {
-      const password = user.role === "super_admin" && user.email === "super@parul.ac.in"
-        ? config.superAdminPassword
-        : user.password;
-      const email = user.role === "super_admin" && user.email === "super@parul.ac.in"
-        ? config.superAdminEmail
-        : user.email;
+      const password = isSeedSuperAdmin(user) ? config.superAdminPassword : user.password;
+      const email = isSeedSuperAdmin(user) ? config.superAdminEmail : user.email;
       const passwordHash = await hashPassword(password);
 
       await pool.query(
@@ -341,6 +346,8 @@ async function seedDefaults() {
       );
     }
   }
+
+  await rotateLegacySuperAdminCredentials();
 
   const entryCount = await pool.query<{ count: number }>(`SELECT COUNT(*)::int AS count FROM entries`);
   if (entryCount.rows[0].count === 0) {
@@ -372,6 +379,38 @@ async function seedDefaults() {
       );
     }
   }
+}
+
+async function rotateLegacySuperAdminCredentials() {
+  const result = await pool.query<UserRow>(
+    `SELECT * FROM users WHERE id = $1 LIMIT 1`,
+    [SUPER_ADMIN_SEED_ID],
+  );
+  const superAdmin = result.rows[0];
+  if (!superAdmin || superAdmin.role !== "super_admin") return;
+
+  const shouldUpdateEmail =
+    superAdmin.email === DEFAULT_SUPER_ADMIN_EMAIL &&
+    superAdmin.email !== config.superAdminEmail;
+  const shouldUpdatePassword = await verifyPassword(
+    LEGACY_SUPER_ADMIN_PASSWORD,
+    superAdmin.password_hash,
+  );
+
+  if (!shouldUpdateEmail && !shouldUpdatePassword) return;
+
+  await pool.query(
+    `UPDATE users
+       SET email = $2,
+           password_hash = $3,
+           updated_at = NOW()
+     WHERE id = $1`,
+    [
+      SUPER_ADMIN_SEED_ID,
+      shouldUpdateEmail ? config.superAdminEmail : superAdmin.email,
+      shouldUpdatePassword ? await hashPassword(config.superAdminPassword) : superAdmin.password_hash,
+    ],
+  );
 }
 
 export async function getUserById(id: string) {

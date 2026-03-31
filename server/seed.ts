@@ -41,12 +41,20 @@ export const BUILT_IN_TEAMS: SeedTeam[] = [
   { id: "content", name: "Content", color: "blue", isBuiltIn: true },
 ];
 
+export const SUPER_ADMIN_SEED_ID = "sa-001";
+export const DEFAULT_SUPER_ADMIN_EMAIL = "super@parul.ac.in";
+export const LEGACY_SUPER_ADMIN_PASSWORD = "super123";
+
+export function isSeedSuperAdmin(user: Pick<SeedUser, "id" | "role">) {
+  return user.id === SUPER_ADMIN_SEED_ID && user.role === "super_admin";
+}
+
 export const SEED_USERS: SeedUser[] = [
   {
-    id: "sa-001",
+    id: SUPER_ADMIN_SEED_ID,
     full_name: "Super Admin",
-    email: "super@parul.ac.in",
-    password: "super123",
+    email: DEFAULT_SUPER_ADMIN_EMAIL,
+    password: "__configured_via_env__",
     department: "University-Wide",
     role: "super_admin",
     team: null,
