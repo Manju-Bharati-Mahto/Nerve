@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { DEPARTMENTS, BRANDING_TYPES, CONTENT_TYPES, PRIORITIES } from '@/lib/constants'
-import { db } from '@/lib/db'
 import { useAuth } from '@/hooks/useAuth'
+import { useAppData } from '@/hooks/useAppData'
+import { getErrorMessage } from '@/lib/error-utils'
 import { CheckCircle2, Palette, FileText } from 'lucide-react'
 
 const BLANK = {
@@ -13,6 +14,7 @@ const BLANK = {
 
 export default function AddEntryPage() {
   const { user, team, role } = useAuth()
+  const { addEntry } = useAppData()
   const [form, setForm]     = useState(BLANK)
   const [saving, setSaving] = useState(false)
   const [success, setSuccess] = useState(false)
@@ -30,7 +32,7 @@ export default function AddEntryPage() {
     setForm(f => ({ ...f, [field]: value }))
   }
 
-  function save(e: React.FormEvent) {
+  async function save(e: React.FormEvent) {
     e.preventDefault()
     if (!form.dept || !form.type || !form.title || !form.body) {
       setError('Please fill in Department, Type, Title and Details.')
@@ -40,7 +42,7 @@ export default function AddEntryPage() {
     setError('')
 
     try {
-      db.entries.insert({
+      await addEntry({
         ...form,
         tags: form.tags.split(',').map(t => t.trim()).filter(Boolean),
         student_count: form.student_count ? parseInt(form.student_count) : null,
@@ -49,9 +51,9 @@ export default function AddEntryPage() {
       setSuccess(true)
       setForm(BLANK)
       setTimeout(() => setSuccess(false), 4000)
-    } catch (err: any) {
-      setError(err.message || 'Failed to save entry.')
-    }
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Failed to save entry.'))
+    } 
     setSaving(false)
   }
 

@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useAuth } from '@/hooks/useAuth'
-import { db } from '@/lib/db'
-import type { UserRecord, Entry } from '@/lib/db'
+import { useAppData } from '@/hooks/useAppData'
+import type { AppUser, Entry } from '@/lib/app-types'
 import { Crown, Users, FileText, Palette, Settings, Database, Search, Shield, UserCheck, User } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
@@ -26,7 +26,7 @@ function TeamContent({
   allEntries,
 }: {
   team: 'branding' | 'content'
-  allUsers: UserRecord[]
+  allUsers: AppUser[]
   allEntries: Entry[]
 }) {
   const s = TEAM_STYLE[team]
@@ -138,8 +138,7 @@ function TeamContent({
 
 export default function SuperAdminDashboard() {
   const { profile } = useAuth()
-  const users   = useMemo(() => db.users.getAll(), [])
-  const entries = useMemo(() => db.entries.getAll(), [])
+  const { users, entries } = useAppData()
 
   const stats = useMemo(() => ({
     totalUsers:   users.filter(u => u.role !== 'super_admin').length,

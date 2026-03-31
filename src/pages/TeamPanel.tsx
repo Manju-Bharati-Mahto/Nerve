@@ -1,12 +1,12 @@
 import { useMemo } from 'react'
 import { useAuth } from '@/hooks/useAuth'
-import { db, TEAM_COLOR_MAP, FALLBACK_COLOR } from '@/lib/db'
+import { TEAM_COLOR_MAP, FALLBACK_COLOR } from '@/lib/db'
+import { useAppData } from '@/hooks/useAppData'
 import { Layers, Users, UserCheck } from 'lucide-react'
 
 export default function TeamPanel() {
   const { team: myTeam, role } = useAuth()
-  const allUsers = useMemo(() => db.users.getAll(), [])
-  const allTeams = useMemo(() => db.teams.getAll(), [])
+  const { users: allUsers, teams: allTeams } = useAppData()
 
   const showTeams = role === 'super_admin'
     ? allTeams
@@ -41,9 +41,9 @@ export default function TeamPanel() {
             </div>
 
             {[
-              { label: 'Admins',                     items: admins,    icon: Layers,    badge: c.badge },
-              { label: 'Team Leaders (Sub Admin)',    items: subAdmins, icon: UserCheck, badge: 'bg-teal-100 text-teal-700' },
-              { label: 'Members',                    items: users,     icon: Users,     badge: 'bg-green-100 text-green-700' },
+              { label: 'Admins', items: admins, badge: c.badge },
+              { label: 'Team Leaders (Sub Admin)', items: subAdmins, badge: 'bg-teal-100 text-teal-700' },
+              { label: 'Members', items: users, badge: 'bg-green-100 text-green-700' },
             ].map(group => group.items.length > 0 && (
               <div key={group.label} className="mb-4 last:mb-0">
                 <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-2 px-1">

@@ -1,7 +1,7 @@
-import { useState, useMemo } from 'react'
+import { useMemo } from 'react'
 import { useAuth } from '@/hooks/useAuth'
-import { db } from '@/lib/db'
-import type { BrandingTableRow } from '@/lib/db'
+import { useAppData } from '@/hooks/useAppData'
+import type { BrandingTableRow } from '@/lib/app-types'
 import { BRANDING_TYPES, DEPARTMENTS } from '@/lib/constants'
 import { Palette, Plus, Trash2 } from 'lucide-react'
 
@@ -16,33 +16,38 @@ const SEL = 'w-full min-w-[130px] bg-transparent text-sm px-2 py-1 rounded borde
 const INP = 'w-full min-w-[160px] bg-transparent text-sm px-2 py-1 rounded border border-transparent hover:border-input focus:border-primary focus:outline-none focus:ring-1 focus:ring-ring/30 transition-all placeholder:text-muted-foreground/50'
 
 function blankRow(): BrandingTableRow {
-  return { id: `br-${Date.now()}-${Math.random()}`, category: '', sub_category: '', time_taken: '', team_member: '', project_name: '', additional_info: '' }
+  return {
+    id: '',
+    category: '',
+    sub_category: '',
+    time_taken: '',
+    team_member: '',
+    project_name: '',
+    additional_info: '',
+    created_at: '',
+    updated_at: '',
+  }
 }
 
 export default function BrandingUserDashboard() {
   const { profile } = useAuth()
-  const [rows, setRows] = useState<BrandingTableRow[]>(() => db.brandingTable.getAll())
+  const { brandingRows: rows, users, addBrandingRow, updateBrandingRow, deleteBrandingRow } = useAppData()
 
   const brandingMembers = useMemo(
-    () => db.users.getAll().filter(u => u.team === 'branding' && u.role !== 'super_admin' && u.role !== 'admin'),
-    []
+    () => users.filter(u => u.team === 'branding' && u.role !== 'super_admin' && u.role !== 'admin'),
+    [users]
   )
 
-  function persist(updated: BrandingTableRow[]) {
-    setRows(updated)
-    db.brandingTable.save(updated)
+  async function addRow() {
+    await addBrandingRow(blankRow())
   }
 
-  function addRow() {
-    persist([...rows, blankRow()])
+  async function updateRow(id: string, field: keyof BrandingTableRow, value: string) {
+    await updateBrandingRow(id, { [field]: value })
   }
 
-  function updateRow(id: string, field: keyof BrandingTableRow, value: string) {
-    persist(rows.map(r => r.id === id ? { ...r, [field]: value } : r))
-  }
-
-  function deleteRow(id: string) {
-    persist(rows.filter(r => r.id !== id))
+  async function deleteRow(id: string) {
+    await deleteBrandingRow(id)
   }
 
   return (
@@ -61,7 +66,7 @@ export default function BrandingUserDashboard() {
             <p className="text-sm text-muted-foreground">Branding Team · Project Tracker</p>
           </div>
         </div>
-        <button onClick={addRow}
+        <button onClick={() => void addRow()}
           className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-brand-dark transition-colors">
           <Plus className="w-4 h-4" /> Add Row
         </button>
@@ -102,7 +107,7 @@ export default function BrandingUserDashboard() {
 
                   {/* Category — dropdown */}
                   <td className="px-1.5 py-1.5">
-                    <select value={row.category} onChange={e => updateRow(row.id, 'category', e.target.value)} className={SEL}>
+                    <select value={row.category} onChange={e => void updateRow(row.id, 'category', e.target.value)} className={SEL}>
                       <option value="">Select…</option>
                       {BRANDING_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
                     </select>
@@ -110,7 +115,7 @@ export default function BrandingUserDashboard() {
 
                   {/* Sub Category — dropdown */}
                   <td className="px-1.5 py-1.5">
-                    <select value={row.sub_category} onChange={e => updateRow(row.id, 'sub_category', e.target.value)} className={SEL}>
+                    <select value={row.sub_category} onChange={e => void updateRow(row.id, 'sub_category', e.target.value)} className={SEL}>
                       <option value="">Select…</option>
                       {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
                     </select>
@@ -118,7 +123,7 @@ export default function BrandingUserDashboard() {
 
                   {/* Time Taken — dropdown */}
                   <td className="px-1.5 py-1.5">
-                    <select value={row.time_taken} onChange={e => updateRow(row.id, 'time_taken', e.target.value)} className={SEL}>
+                    <select value={row.time_taken} onChange={e => void updateRow(row.id, 'time_taken', e.target.value)} className={SEL}>
                       <option value="">Select…</option>
                       {TIME_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}
                     </select>
@@ -126,7 +131,7 @@ export default function BrandingUserDashboard() {
 
                   {/* Team Member — dropdown from branding team */}
                   <td className="px-1.5 py-1.5">
-                    <select value={row.team_member} onChange={e => updateRow(row.id, 'team_member', e.target.value)} className={SEL}>
+                    <select value={row.team_member} onChange={e => void updateRow(row.id, 'team_member', e.target.value)} className={SEL}>
                       <option value="">Select…</option>
                       {brandingMembers.map(m => (
                         <option key={m.id} value={m.full_name || m.email}>
@@ -141,7 +146,7 @@ export default function BrandingUserDashboard() {
                     <input
                       type="text"
                       value={row.project_name}
-                      onChange={e => updateRow(row.id, 'project_name', e.target.value)}
+                      onChange={e => void updateRow(row.id, 'project_name', e.target.value)}
                       className={INP}
                       placeholder="Project or event name"
                     />
@@ -152,7 +157,7 @@ export default function BrandingUserDashboard() {
                     <input
                       type="text"
                       value={row.additional_info}
-                      onChange={e => updateRow(row.id, 'additional_info', e.target.value)}
+                      onChange={e => void updateRow(row.id, 'additional_info', e.target.value)}
                       className={INP}
                       placeholder="Additional details"
                     />
@@ -161,7 +166,7 @@ export default function BrandingUserDashboard() {
                   {/* Delete */}
                   <td className="px-2 py-1.5">
                     <button
-                      onClick={() => deleteRow(row.id)}
+                      onClick={() => void deleteRow(row.id)}
                       className="opacity-0 group-hover:opacity-100 p-1 rounded text-muted-foreground hover:text-destructive transition-all"
                       title="Delete row"
                     >
@@ -179,7 +184,7 @@ export default function BrandingUserDashboard() {
           <span className="text-xs text-muted-foreground">
             {rows.length} {rows.length === 1 ? 'entry' : 'entries'} · Changes saved automatically
           </span>
-          <button onClick={addRow}
+          <button onClick={() => void addRow()}
             className="flex items-center gap-1 text-xs font-medium text-pink-600 hover:text-pink-700 transition-colors">
             <Plus className="w-3.5 h-3.5" /> Add Row
           </button>

@@ -1,14 +1,14 @@
 import { useState } from 'react'
-import { db } from '@/lib/db'
+import { useAppData } from '@/hooks/useAppData'
+import type { Entry } from '@/lib/app-types'
 import { Download } from 'lucide-react'
 
 export default function ExportPage() {
+  const { entries } = useAppData()
   const [loading, setLoading] = useState(false)
 
   function exportData(format: 'json' | 'csv') {
     setLoading(true)
-    const entries = db.entries.getAll()
-
     let content: string
     let mimeType: string
 
@@ -16,9 +16,9 @@ export default function ExportPage() {
       content = JSON.stringify(entries, null, 2)
       mimeType = 'application/json'
     } else {
-      const headers = ['id', 'dept', 'type', 'title', 'body', 'entry_date', 'priority', 'author_name', 'academic_year', 'student_count', 'external_link', 'collaborating_org', 'created_at']
+      const headers: Array<keyof Pick<Entry, 'id' | 'dept' | 'type' | 'title' | 'body' | 'entry_date' | 'priority' | 'author_name' | 'academic_year' | 'student_count' | 'external_link' | 'collaborating_org' | 'created_at'>> = ['id', 'dept', 'type', 'title', 'body', 'entry_date', 'priority', 'author_name', 'academic_year', 'student_count', 'external_link', 'collaborating_org', 'created_at']
       const rows = entries.map(e => headers.map(h => {
-        const val = (e as any)[h]
+        const val = e[h]
         return typeof val === 'string' ? `"${val.replace(/"/g, '""')}"` : val ?? ''
       }).join(','))
       content = [headers.join(','), ...rows].join('\n')

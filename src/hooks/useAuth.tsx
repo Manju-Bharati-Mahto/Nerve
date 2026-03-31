@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
-import { db } from '@/lib/db'
+import { api } from '@/lib/api'
 import type { AppRole, AppTeam } from '@/lib/constants'
+import type { AppUser } from '@/lib/app-types'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -22,8 +23,6 @@ interface AuthContextType {
   signOut: () => Promise<void>
 }
 
-const SESSION_KEY = 'pu_session_user_id'
-
 const AuthContext = createContext<AuthContextType>({} as AuthContextType)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -32,7 +31,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [team, setTeam]       = useState<AppTeam | null>(null)
   const [loading, setLoading] = useState(true)
 
-  function applyRecord(record: ReturnType<typeof db.users.findById>) {
+  function applyRecord(record: AppUser | null) {
     if (!record) return
     setUser({ id: record.id, full_name: record.full_name, email: record.email, department: record.department })
     setRole(record.role)
@@ -40,16 +39,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   useEffect(() => {
-    const id = localStorage.getItem(SESSION_KEY)
-    if (id) applyRecord(db.users.findById(id))
-    setLoading(false)
+    let active = true
+
+    async function restoreSession() {
+      try {
+        const { user: me } = await api.getMe()
+        if (!active) return
+        if (me) applyRecord(me)
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+
+    void restoreSession()
+    return () => {
+      active = false
+    }
   }, [])
 
   async function signIn(email: string, password: string) {
-    const record = db.users.findByEmail(email)
-    if (!record || record.password !== password) throw new Error('Invalid email or password.')
-    localStorage.setItem(SESSION_KEY, record.id)
-    applyRecord(record)
+    const { user: me } = await api.login(email, password)
+    applyRecord(me)
   }
 
   async function signUp(_e: string, _p: string, _n: string) {
@@ -57,7 +67,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function signOut() {
-    localStorage.removeItem(SESSION_KEY)
+    await api.logout()
     setUser(null); setRole(null); setTeam(null)
   }
 

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth, getRoleDashboard } from '@/hooks/useAuth'
+import { getErrorMessage } from '@/lib/error-utils'
 import { BookOpen } from 'lucide-react'
 
 export default function LoginPage() {
@@ -22,8 +23,8 @@ export default function LoginPage() {
     setError('')
     try {
       await signIn(email, password)
-    } catch (err: any) {
-      setError(err.message || 'Login failed.')
+    } catch (err: unknown) {
+      setError(getErrorMessage(err, 'Login failed.'))
     }
     setLoading(false)
   }

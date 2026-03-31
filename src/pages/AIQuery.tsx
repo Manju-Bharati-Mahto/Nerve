@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
-import { db } from '@/lib/db'
+import { useAppData } from '@/hooks/useAppData'
+import type { Entry } from '@/lib/app-types'
 import { DEPARTMENTS } from '@/lib/constants'
 import { Send, Sparkles, Copy, Check, WifiOff } from 'lucide-react'
 
@@ -15,7 +16,7 @@ const QUICK_PROMPTS = [
 
 type Msg = { role: 'user' | 'assistant'; content: string }
 
-function buildLocalAnswer(question: string, entries: any[]): string {
+function buildLocalAnswer(question: string, entries: Entry[]): string {
   const q = question.toLowerCase()
 
   const relevant = entries.filter(e =>
@@ -42,6 +43,7 @@ function buildLocalAnswer(question: string, entries: any[]): string {
 }
 
 export default function AIQueryPage() {
+  const { entries: allEntries } = useAppData()
   const [question, setQuestion]   = useState('')
   const [deptFilter, setDeptFilter] = useState('')
   const [messages, setMessages]   = useState<Msg[]>([])
@@ -61,7 +63,7 @@ export default function AIQueryPage() {
     setQuestion('')
     setLoading(true)
 
-    let entries = db.entries.getAll()
+    let entries = allEntries
     if (deptFilter) entries = entries.filter(e => e.dept === deptFilter)
 
     const userMsg: Msg = { role: 'user', content: q }

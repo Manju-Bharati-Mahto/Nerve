@@ -1,17 +1,15 @@
 import { useState, useMemo, useCallback } from 'react'
 import { DEPARTMENTS, ENTRY_TYPES } from '@/lib/constants'
-import { db } from '@/lib/db'
+import { useAppData } from '@/hooks/useAppData'
 import { ChevronDown, ChevronUp, Trash2, ExternalLink, Paperclip } from 'lucide-react'
 
 export default function BrowsePage() {
-  const [entries, setEntries]         = useState(() => db.entries.getAll())
+  const { entries, deleteEntry: removeEntry } = useAppData()
   const [search, setSearch]           = useState('')
   const [filterDept, setFilterDept]   = useState('')
   const [filterType, setFilterType]   = useState('')
   const [filterPriority, setFilterPriority] = useState('')
   const [expanded, setExpanded]       = useState<string | null>(null)
-
-  const refresh = useCallback(() => setEntries(db.entries.getAll()), [])
 
   const filtered = useMemo(() => {
     let r = entries
@@ -28,11 +26,10 @@ export default function BrowsePage() {
     return r
   }, [entries, filterDept, filterType, filterPriority, search])
 
-  function deleteEntry(id: string) {
+  const deleteEntry = useCallback(async (id: string) => {
     if (!confirm('Delete this entry?')) return
-    db.entries.delete(id)
-    refresh()
-  }
+    await removeEntry(id)
+  }, [removeEntry])
 
   const priorityColor: Record<string, string> = {
     'Normal': 'bg-muted text-muted-foreground',
@@ -94,7 +91,7 @@ export default function BrowsePage() {
                   className="p-2 rounded-lg text-muted-foreground hover:bg-accent transition-colors">
                   {expanded === e.id ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                 </button>
-                <button onClick={() => deleteEntry(e.id)}
+                <button onClick={() => void deleteEntry(e.id)}
                   className="p-2 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors">
                   <Trash2 className="w-4 h-4" />
                 </button>

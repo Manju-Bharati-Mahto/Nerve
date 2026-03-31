@@ -1,14 +1,13 @@
 import { useMemo } from 'react'
 import { useAuth } from '@/hooks/useAuth'
-import { db } from '@/lib/db'
+import { useAppData } from '@/hooks/useAppData'
 import { BRANDING_TYPES } from '@/lib/constants'
 import { Palette, PlusCircle, Search, Users, Trophy } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 export default function BrandingSubAdminDashboard() {
   const { profile } = useAuth()
-  const allEntries = useMemo(() => db.entries.getAll(), [])
-  const allUsers   = useMemo(() => db.users.getAll(), [])
+  const { entries: allEntries, users: allUsers } = useAppData()
 
   const brandingEntries = useMemo(
     () => allEntries.filter(e => (BRANDING_TYPES as readonly string[]).includes(e.type)),

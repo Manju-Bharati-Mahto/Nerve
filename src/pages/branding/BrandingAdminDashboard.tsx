@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useAuth } from '@/hooks/useAuth'
-import { db } from '@/lib/db'
+import { useAppData } from '@/hooks/useAppData'
+import { getErrorMessage } from '@/lib/error-utils'
 import { BRANDING_TYPES } from '@/lib/constants'
 import { Palette, Trophy, Handshake, Star, Users, Download, PlusCircle, Search, Plus } from 'lucide-react'
 import { Link } from 'react-router-dom'
@@ -12,8 +13,7 @@ const BLANK = { full_name: '', email: '', password: '', department: '' }
 
 export default function BrandingAdminDashboard() {
   const { profile } = useAuth()
-  const allEntries = useMemo(() => db.entries.getAll(), [])
-  const [allUsers, setAllUsers] = useState(() => db.users.getAll())
+  const { entries: allEntries, users: allUsers, addUser } = useAppData()
 
   // dialog state — managedBy is set to a lead's ID when adding a member under that lead
   const [dialog, setDialog] = useState<{
@@ -25,8 +25,6 @@ export default function BrandingAdminDashboard() {
     error: string
   }>({ open: false, role: 'user', managedBy: null, leadName: '', form: BLANK, error: '' })
 
-  function refresh() { setAllUsers(db.users.getAll()) }
-
   function openAddLead() {
     setDialog({ open: true, role: 'sub_admin', managedBy: null, leadName: '', form: BLANK, error: '' })
   }
@@ -35,7 +33,7 @@ export default function BrandingAdminDashboard() {
     setDialog({ open: true, role: 'user', managedBy: leadId, leadName, form: BLANK, error: '' })
   }
 
-  function submitAdd() {
+  async function submitAdd() {
     const { form, role, managedBy } = dialog
     if (!form.full_name.trim() || !form.email.trim() || !form.password.trim()) {
       setDialog(d => ({ ...d, error: 'Name, email and password are required.' }))
@@ -45,13 +43,16 @@ export default function BrandingAdminDashboard() {
       setDialog(d => ({ ...d, error: 'An account with this email already exists.' }))
       return
     }
-    db.users.insert({
-      full_name: form.full_name.trim(), email: form.email.trim(),
-      password: form.password, department: form.department.trim(),
-      role, team: 'branding', managed_by: managedBy,
-    })
-    refresh()
-    setDialog(d => ({ ...d, open: false }))
+    try {
+      await addUser({
+        full_name: form.full_name.trim(), email: form.email.trim(),
+        password: form.password, department: form.department.trim(),
+        role, team: 'branding', managed_by: managedBy,
+      })
+      setDialog(d => ({ ...d, open: false }))
+    } catch (err: unknown) {
+      setDialog(d => ({ ...d, error: getErrorMessage(err, 'Failed to add user.') }))
+    }
   }
 
   const brandingEntries = useMemo(
@@ -334,7 +335,7 @@ export default function BrandingAdminDashboard() {
               <p className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-lg">{dialog.error}</p>
             )}
             <div className="flex gap-3 pt-1">
-              <button onClick={submitAdd}
+              <button onClick={() => void submitAdd()}
                 className="flex-1 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-brand-dark transition-colors">
                 Add user
               </button>

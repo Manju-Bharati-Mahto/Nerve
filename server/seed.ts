@@ -1,0 +1,330 @@
+export type SeedRole = "super_admin" | "admin" | "sub_admin" | "user";
+
+export interface SeedTeam {
+  id: string;
+  name: string;
+  color: string;
+  isBuiltIn: boolean;
+}
+
+export interface SeedUser {
+  id: string;
+  full_name: string;
+  email: string;
+  password: string;
+  department: string;
+  role: SeedRole;
+  team: string | null;
+  managed_by: string | null;
+}
+
+export interface SeedEntry {
+  id: string;
+  title: string;
+  dept: string;
+  type: string;
+  body: string;
+  priority: "Normal" | "High" | "Key highlight";
+  entry_date: string;
+  created_by: string | null;
+  tags: string[];
+  author_name: string;
+  academic_year: string;
+  student_count: number | null;
+  external_link: string;
+  collaborating_org: string;
+  created_at: string;
+}
+
+export const BUILT_IN_TEAMS: SeedTeam[] = [
+  { id: "branding", name: "Branding", color: "pink", isBuiltIn: true },
+  { id: "content", name: "Content", color: "blue", isBuiltIn: true },
+];
+
+export const SUPER_ADMIN_SEED_ID = "sa-001";
+export const DEFAULT_SUPER_ADMIN_EMAIL = "super@parul.ac.in";
+export const LEGACY_SUPER_ADMIN_PASSWORD = "super123";
+
+export function isSeedSuperAdmin(user: Pick<SeedUser, "id" | "role">) {
+  return user.id === SUPER_ADMIN_SEED_ID && user.role === "super_admin";
+}
+
+export const SEED_USERS: SeedUser[] = [
+  {
+    id: SUPER_ADMIN_SEED_ID,
+    full_name: "Super Admin",
+    email: DEFAULT_SUPER_ADMIN_EMAIL,
+    password: "__configured_via_env__",
+    department: "University-Wide",
+    role: "super_admin",
+    team: null,
+    managed_by: null,
+  },
+  {
+    id: "ba-001",
+    full_name: "Branding Admin",
+    email: "brand-admin@parul.ac.in",
+    password: "brand123",
+    department: "University-Wide",
+    role: "admin",
+    team: "branding",
+    managed_by: null,
+  },
+  {
+    id: "ca-001",
+    full_name: "Content Admin",
+    email: "content-admin@parul.ac.in",
+    password: "content123",
+    department: "University-Wide",
+    role: "admin",
+    team: "content",
+    managed_by: null,
+  },
+  {
+    id: "bs-001",
+    full_name: "Branding Lead",
+    email: "brand-lead@parul.ac.in",
+    password: "brandlead123",
+    department: "Engineering",
+    role: "sub_admin",
+    team: "branding",
+    managed_by: null,
+  },
+  {
+    id: "cs-001",
+    full_name: "Content Lead",
+    email: "content-lead@parul.ac.in",
+    password: "contentlead123",
+    department: "Engineering",
+    role: "sub_admin",
+    team: "content",
+    managed_by: null,
+  },
+  {
+    id: "bu-001",
+    full_name: "Branding User",
+    email: "brand-user@parul.ac.in",
+    password: "branduser123",
+    department: "Design",
+    role: "user",
+    team: "branding",
+    managed_by: "bs-001",
+  },
+  {
+    id: "cu-001",
+    full_name: "Content User",
+    email: "content-user@parul.ac.in",
+    password: "contentuser123",
+    department: "Sciences",
+    role: "user",
+    team: "content",
+    managed_by: "cs-001",
+  },
+];
+
+export const SEED_ENTRIES: SeedEntry[] = [
+  {
+    id: "e-001",
+    title: "International MOU with TU Delft for AI Research",
+    dept: "Engineering",
+    type: "MOU / Partnership",
+    priority: "Key highlight",
+    entry_date: "2026-03-10",
+    created_by: "ba-001",
+    tags: ["mou", "ai", "international"],
+    author_name: "Dr. Rajesh Kumar",
+    academic_year: "2025-26",
+    student_count: null,
+    external_link: "",
+    collaborating_org: "TU Delft, Netherlands",
+    body: "Parul University signed an MOU with TU Delft, Netherlands for collaborative AI research, student exchange programs, and joint publications. The agreement covers a 5-year period and includes funding for 10 PhD scholars.",
+    created_at: "2026-03-10T08:00:00Z",
+  },
+  {
+    id: "e-002",
+    title: "Engineering Department Achieves 95% Placement Rate",
+    dept: "Engineering",
+    type: "Placement",
+    priority: "Key highlight",
+    entry_date: "2026-03-05",
+    created_by: "ba-001",
+    tags: ["placement", "engineering"],
+    author_name: "Prof. Anjali Shah",
+    academic_year: "2025-26",
+    student_count: 420,
+    external_link: "",
+    collaborating_org: "",
+    body: "The Engineering department has achieved a record 95% placement rate for the batch of 2026, with students placed at top companies including Google, Microsoft, Infosys, and TCS. Average package stands at ₹8.5 LPA.",
+    created_at: "2026-03-05T10:00:00Z",
+  },
+  {
+    id: "e-006",
+    title: "Architecture Students Win National Design Competition",
+    dept: "Architecture",
+    type: "Achievement",
+    priority: "Key highlight",
+    entry_date: "2026-02-01",
+    created_by: "bs-001",
+    tags: ["award", "design", "students"],
+    author_name: "Prof. Amit Desai",
+    academic_year: "2025-26",
+    student_count: 5,
+    external_link: "",
+    collaborating_org: "Council of Architecture India",
+    body: "A team of 5 Architecture students won the National Design Competition organized by the Council of Architecture India. Their project \"Green Vertical Cities\" was selected from over 300 entries across 80 institutions.",
+    created_at: "2026-02-01T14:00:00Z",
+  },
+  {
+    id: "e-007",
+    title: "Annual Founders Day Celebration",
+    dept: "University-Wide",
+    type: "Event",
+    priority: "High",
+    entry_date: "2026-01-25",
+    created_by: "bu-001",
+    tags: ["event", "founders day"],
+    author_name: "Communications Team",
+    academic_year: "2025-26",
+    student_count: 5000,
+    external_link: "",
+    collaborating_org: "",
+    body: "Parul University celebrated its Annual Founders Day with a grand ceremony attended by over 5,000 students, faculty, and alumni. The event featured felicitation of top performers, cultural performances, and an address by the Chancellor.",
+    created_at: "2026-01-25T08:00:00Z",
+  },
+  {
+    id: "e-010",
+    title: "Design Department Partners with Adobe for Creative Suite",
+    dept: "Design",
+    type: "MOU / Partnership",
+    priority: "Normal",
+    entry_date: "2026-01-10",
+    created_by: "ba-001",
+    tags: ["adobe", "software", "design"],
+    author_name: "Prof. Neha Gupta",
+    academic_year: "2025-26",
+    student_count: 200,
+    external_link: "",
+    collaborating_org: "Adobe Inc.",
+    body: "Parul University's Design Department has partnered with Adobe to provide all 200 design students with free access to the full Adobe Creative Suite including Photoshop, Illustrator, Premiere Pro, and After Effects for their entire academic tenure.",
+    created_at: "2026-01-10T11:00:00Z",
+  },
+  {
+    id: "e-008",
+    title: "Medical College Gets NABH Accreditation",
+    dept: "Medical",
+    type: "Achievement",
+    priority: "Key highlight",
+    entry_date: "2026-01-20",
+    created_by: "ba-001",
+    tags: ["accreditation", "nabh"],
+    author_name: "Dr. Vikram Singh",
+    academic_year: "2025-26",
+    student_count: null,
+    external_link: "",
+    collaborating_org: "National Accreditation Board for Hospitals",
+    body: "Parul Institute of Medical Sciences and Research has been granted NABH accreditation, recognizing excellence in patient care, infrastructure, and clinical outcomes. This makes it one of only 3 private medical colleges in Gujarat with this distinction.",
+    created_at: "2026-01-20T10:00:00Z",
+  },
+  {
+    id: "e-003",
+    title: "Physiotherapy Research Published in Nature Medicine",
+    dept: "Physiotherapy",
+    type: "Research",
+    priority: "Key highlight",
+    entry_date: "2026-02-20",
+    created_by: "ca-001",
+    tags: ["research", "publication"],
+    author_name: "Dr. Meena Patel",
+    academic_year: "2025-26",
+    student_count: null,
+    external_link: "",
+    collaborating_org: "AIIMS Delhi",
+    body: "The Department of Physiotherapy published a landmark research paper on non-invasive neural stimulation for stroke rehabilitation in Nature Medicine, a Q1 journal with impact factor 87.2.",
+    created_at: "2026-02-20T09:00:00Z",
+  },
+  {
+    id: "e-004",
+    title: "New Pharmaceutical Simulation Lab Inaugurated",
+    dept: "Pharmacy",
+    type: "Program update",
+    priority: "High",
+    entry_date: "2026-02-15",
+    created_by: "cs-001",
+    tags: ["lab", "program"],
+    author_name: "Dr. Suresh Joshi",
+    academic_year: "2025-26",
+    student_count: null,
+    external_link: "",
+    collaborating_org: "",
+    body: "A new pharmaceutical simulation lab has been added to the Pharmacy curriculum. The lab features advanced drug synthesis simulation software, HPLC systems, and analytical instruments, benefiting over 800 pharmacy students.",
+    created_at: "2026-02-15T11:00:00Z",
+  },
+  {
+    id: "e-005",
+    title: "MBA Entrepreneurship Track Launched",
+    dept: "Management",
+    type: "Program update",
+    priority: "Normal",
+    entry_date: "2026-02-10",
+    created_by: "ca-001",
+    tags: ["mba", "entrepreneurship"],
+    author_name: "Prof. Kavita Rao",
+    academic_year: "2025-26",
+    student_count: 60,
+    external_link: "",
+    collaborating_org: "Gujarat Startup Ecosystem",
+    body: "The Management Department has launched a specialized MBA track in Entrepreneurship in collaboration with the Gujarat Startup Ecosystem. The track includes mentorship from 20 industry leaders and a seed fund of ₹5 lakh for top projects.",
+    created_at: "2026-02-10T09:00:00Z",
+  },
+  {
+    id: "e-009",
+    title: "Law School Moot Court Team Reaches International Finals",
+    dept: "Law",
+    type: "Student activity",
+    priority: "High",
+    entry_date: "2026-01-15",
+    created_by: "cu-001",
+    tags: ["moot", "law", "students"],
+    author_name: "Prof. Priya Nair",
+    academic_year: "2025-26",
+    student_count: 4,
+    external_link: "",
+    collaborating_org: "",
+    body: "The Parul Law School moot court team has qualified for the Philip C. Jessup International Law Moot Court Competition finals to be held in Washington DC. The team defeated 12 other law schools in the national rounds.",
+    created_at: "2026-01-15T13:00:00Z",
+  },
+  {
+    id: "e-011",
+    title: "Annual Science Fair Draws Record Participation",
+    dept: "Sciences",
+    type: "Student activity",
+    priority: "Normal",
+    entry_date: "2025-12-15",
+    created_by: "cu-001",
+    tags: ["science", "fair"],
+    author_name: "Dr. Anil Mehta",
+    academic_year: "2025-26",
+    student_count: 600,
+    external_link: "",
+    collaborating_org: "",
+    body: "The Annual Science Fair 2025 saw record participation with 600 students presenting 180 projects across Biology, Chemistry, Physics, and Environmental Sciences.",
+    created_at: "2025-12-15T09:00:00Z",
+  },
+  {
+    id: "e-012",
+    title: "University Ranks in Top 100 NIRF 2025",
+    dept: "University-Wide",
+    type: "General update",
+    priority: "Key highlight",
+    entry_date: "2025-12-01",
+    created_by: "ca-001",
+    tags: ["nirf", "ranking"],
+    author_name: "Vice Chancellor Office",
+    academic_year: "2025-26",
+    student_count: null,
+    external_link: "",
+    collaborating_org: "",
+    body: "Parul University has been ranked among the top 100 universities in India in the NIRF Rankings 2025, improving its position by 18 places from last year.",
+    created_at: "2025-12-01T12:00:00Z",
+  },
+];

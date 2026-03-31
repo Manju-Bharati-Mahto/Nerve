@@ -1,0 +1,44 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: nerve-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ${POSTGRES_DATA_DIR:-./.local/postgres-data}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nerve
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: nerve-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_BASE_URL: ${APP_BASE_URL}
+      API_PORT: ${API_PORT:-3001}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      DATABASE_URL: ${DATABASE_URL}
+      SESSION_SECRET: ${SESSION_SECRET}
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-super@parul.ac.in}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD}
+    ports:
+      - "127.0.0.1:${API_PORT:-3001}:${API_PORT:-3001}"
+    networks:
+      - nerve
+
+networks:
+  nerve:
+    driver: bridge

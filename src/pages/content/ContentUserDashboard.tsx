@@ -1,13 +1,13 @@
 import { useState, useMemo } from 'react'
 import { useAuth } from '@/hooks/useAuth'
-import { db } from '@/lib/db'
+import { useAppData } from '@/hooks/useAppData'
 import { CONTENT_TYPES, DEPARTMENTS } from '@/lib/constants'
 import { FileText, Search, BookOpen, PlusCircle, MessageSquare, Newspaper, Download } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 export default function ContentUserDashboard() {
   const { profile } = useAuth()
-  const allEntries = useMemo(() => db.entries.getAll(), [])
+  const { entries: allEntries } = useAppData()
   const [search, setSearch] = useState('')
   const [type, setType]     = useState('')
   const [dept, setDept]     = useState('')

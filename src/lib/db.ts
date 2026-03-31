@@ -72,32 +72,31 @@ export interface UserRecord extends Profile {
   role: AppRole
   team: string | null       // null for super_admin; 'branding', 'content', or custom team id
   managed_by: string | null // team lead (sub_admin) ID for members; null for everyone else
-  password: string
 }
 
 // ── Seed users (one per role×team combination) ─────────────────────────────
 
 export const SEED_USERS: UserRecord[] = [
   { id: 'sa-001', full_name: 'Super Admin',
-    email: 'super@parul.ac.in',         password: 'super123',
+    email: 'super@parul.ac.in',
     department: 'University-Wide', role: 'super_admin', team: null,       managed_by: null },
   { id: 'ba-001', full_name: 'Branding Admin',
-    email: 'brand-admin@parul.ac.in',   password: 'brand123',
+    email: 'brand-admin@parul.ac.in',
     department: 'University-Wide', role: 'admin',       team: 'branding', managed_by: null },
   { id: 'ca-001', full_name: 'Content Admin',
-    email: 'content-admin@parul.ac.in', password: 'content123',
+    email: 'content-admin@parul.ac.in',
     department: 'University-Wide', role: 'admin',       team: 'content',  managed_by: null },
   { id: 'bs-001', full_name: 'Branding Lead',
-    email: 'brand-lead@parul.ac.in',    password: 'brandlead123',
+    email: 'brand-lead@parul.ac.in',
     department: 'Engineering',     role: 'sub_admin',   team: 'branding', managed_by: null },
   { id: 'cs-001', full_name: 'Content Lead',
-    email: 'content-lead@parul.ac.in',  password: 'contentlead123',
+    email: 'content-lead@parul.ac.in',
     department: 'Engineering',     role: 'sub_admin',   team: 'content',  managed_by: null },
   { id: 'bu-001', full_name: 'Branding User',
-    email: 'brand-user@parul.ac.in',    password: 'branduser123',
+    email: 'brand-user@parul.ac.in',
     department: 'Design',          role: 'user',        team: 'branding', managed_by: 'bs-001' },
   { id: 'cu-001', full_name: 'Content User',
-    email: 'content-user@parul.ac.in',  password: 'contentuser123',
+    email: 'content-user@parul.ac.in',
     department: 'Sciences',        role: 'user',        team: 'content',  managed_by: 'cs-001' },
 ]
 
@@ -245,8 +244,8 @@ function loadUsers(): UserRecord[] {
   try {
     const raw = localStorage.getItem(KEYS.users)
     if (!raw) return SEED_USERS
-    const parsed: UserRecord[] = JSON.parse(raw)
-    return parsed.map(u => ({
+    const parsed: Array<UserRecord & { password?: string }> = JSON.parse(raw)
+    return parsed.map(({ password: _password, ...u }) => ({
       ...u,
       team:       'team'       in u ? u.team       : null,
       managed_by: 'managed_by' in u ? u.managed_by : null,

@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { db } from '@/lib/db'
+import { useAppData } from '@/hooks/useAppData'
+import type { Entry } from '@/lib/app-types'
 import { DEPARTMENTS } from '@/lib/constants'
 import { Newspaper, Copy, Check, WifiOff } from 'lucide-react'
 
-function generateLocalNewsletter(entries: any[], dept: string, dateRange: string): string {
+function generateLocalNewsletter(entries: Entry[], dept: string, dateRange: string): string {
   const rangeLabel = dateRange === 'week' ? 'Past Week'
     : dateRange === 'month' ? 'Past Month'
     : dateRange === 'quarter' ? 'Past Quarter'
@@ -11,7 +12,7 @@ function generateLocalNewsletter(entries: any[], dept: string, dateRange: string
 
   const highlights  = entries.filter(e => e.priority === 'Key highlight')
   const highs       = entries.filter(e => e.priority === 'High')
-  const byType      = entries.reduce<Record<string, any[]>>((acc, e) => {
+  const byType      = entries.reduce<Record<string, Entry[]>>((acc, e) => {
     acc[e.type] = acc[e.type] || []
     acc[e.type].push(e)
     return acc
@@ -61,6 +62,7 @@ function generateLocalNewsletter(entries: any[], dept: string, dateRange: string
 }
 
 export default function AINewsletterPage() {
+  const { entries: allEntries } = useAppData()
   const [deptFilter, setDeptFilter] = useState('')
   const [dateRange, setDateRange]   = useState('month')
   const [output, setOutput]         = useState('')
@@ -71,7 +73,7 @@ export default function AINewsletterPage() {
     setLoading(true)
     setOutput('')
 
-    let entries = db.entries.getAll()
+    let entries = allEntries
     if (deptFilter) entries = entries.filter(e => e.dept === deptFilter)
 
     const now = new Date()

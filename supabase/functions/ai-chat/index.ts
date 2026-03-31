@@ -1,4 +1,4 @@
-// @ts-ignore: Deno types are not available in the main tsconfig
+// @ts-expect-error: Deno types are not available in the main tsconfig
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 const corsHeaders = {
@@ -11,7 +11,7 @@ serve(async (req: Request) => {
 
   try {
     const { messages, mode } = await req.json();
-    // @ts-ignore: Deno global is available at runtime
+    // @ts-expect-error: Deno global is available at runtime
     const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
     if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY is not configured");
 

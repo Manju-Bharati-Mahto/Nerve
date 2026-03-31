@@ -1,14 +1,13 @@
 import { useMemo } from 'react'
 import { useAuth } from '@/hooks/useAuth'
-import { db } from '@/lib/db'
+import { useAppData } from '@/hooks/useAppData'
 import { CONTENT_TYPES } from '@/lib/constants'
 import { FileText, PlusCircle, Search, Users, BookOpen, MessageSquare } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 export default function ContentSubAdminDashboard() {
   const { profile } = useAuth()
-  const allEntries = useMemo(() => db.entries.getAll(), [])
-  const allUsers   = useMemo(() => db.users.getAll(), [])
+  const { entries: allEntries, users: allUsers } = useAppData()
 
   const contentEntries = useMemo(
     () => allEntries.filter(e => (CONTENT_TYPES as readonly string[]).includes(e.type)),

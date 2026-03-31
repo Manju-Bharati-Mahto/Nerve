@@ -1,7 +1,9 @@
-import { useState, useMemo } from 'react'
-import { db, TEAM_COLOR_MAP, FALLBACK_COLOR } from '@/lib/db'
-import type { UserRecord, TeamRecord } from '@/lib/db'
+import { useMemo, useState } from 'react'
+import { TEAM_COLOR_MAP, FALLBACK_COLOR } from '@/lib/db'
+import type { TeamRecord, AppUser } from '@/lib/app-types'
 import { useAuth } from '@/hooks/useAuth'
+import { useAppData } from '@/hooks/useAppData'
+import { getErrorMessage } from '@/lib/error-utils'
 import { Crown, Shield, UserCheck, User, Search, RefreshCw, Plus, Trash2, Layers } from 'lucide-react'
 import type { AppRole } from '@/lib/constants'
 import {
@@ -9,22 +11,22 @@ import {
 } from '@/components/ui/dialog'
 
 const ROLE_CFG: Record<AppRole, { label: string; icon: React.ElementType; color: string; bg: string }> = {
-  super_admin: { label: 'Super Admin', icon: Crown,      color: 'text-purple-600', bg: 'bg-purple-100' },
-  admin:       { label: 'Admin',       icon: Shield,     color: 'text-blue-600',   bg: 'bg-blue-100' },
-  sub_admin:   { label: 'Team Lead',   icon: UserCheck,  color: 'text-teal-600',   bg: 'bg-teal-100' },
-  user:        { label: 'Member',      icon: User,       color: 'text-green-600',  bg: 'bg-green-100' },
+  super_admin: { label: 'Super Admin', icon: Crown, color: 'text-purple-600', bg: 'bg-purple-100' },
+  admin: { label: 'Admin', icon: Shield, color: 'text-blue-600', bg: 'bg-blue-100' },
+  sub_admin: { label: 'Team Lead', icon: UserCheck, color: 'text-teal-600', bg: 'bg-teal-100' },
+  user: { label: 'Member', icon: User, color: 'text-green-600', bg: 'bg-green-100' },
 }
 
 const BLANK_USER = { full_name: '', email: '', password: '', department: '' }
 const BLANK_TEAM = { name: '', color: 'violet', error: '' }
 
 const CUSTOM_COLORS = [
-  { id: 'violet',  dot: 'bg-violet-500' },
-  { id: 'amber',   dot: 'bg-amber-500' },
-  { id: 'rose',    dot: 'bg-rose-500' },
+  { id: 'violet', dot: 'bg-violet-500' },
+  { id: 'amber', dot: 'bg-amber-500' },
+  { id: 'rose', dot: 'bg-rose-500' },
   { id: 'emerald', dot: 'bg-emerald-500' },
-  { id: 'orange',  dot: 'bg-orange-500' },
-  { id: 'cyan',    dot: 'bg-cyan-500' },
+  { id: 'orange', dot: 'bg-orange-500' },
+  { id: 'cyan', dot: 'bg-cyan-500' },
 ]
 
 const ROLE_LABEL: Record<AppRole, string> = {
@@ -32,12 +34,17 @@ const ROLE_LABEL: Record<AppRole, string> = {
 }
 
 function UserRow({
-  u, meId, teams, onUpdate,
+  u,
+  meId,
+  teams,
+  onUpdate,
+  onDelete,
 }: {
-  u: UserRecord
+  u: AppUser
   meId: string | undefined
   teams: TeamRecord[]
   onUpdate: (id: string, role: AppRole, team: string | null) => void
+  onDelete: (id: string) => void
 }) {
   const roleCfg = ROLE_CFG[u.role] || ROLE_CFG.user
   const RoleIcon = roleCfg.icon
@@ -60,7 +67,7 @@ function UserRow({
         </div>
       </div>
       {!isSelf && (
-        <div className="flex gap-2 shrink-0">
+        <div className="flex gap-2 shrink-0 items-center">
           <select
             className="hub-input text-xs py-1 w-28"
             value={u.role}
@@ -78,6 +85,13 @@ function UserRow({
             <option value="">No team</option>
             {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
+          <button
+            onClick={() => onDelete(u.id)}
+            className="p-2 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+            title="Delete user"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
         </div>
       )}
     </div>
@@ -86,9 +100,17 @@ function UserRow({
 
 export default function SuperAdminUsers() {
   const { user: me } = useAuth()
-  const [users,   setUsers]  = useState(() => db.users.getAll())
-  const [teams,   setTeams]  = useState(() => db.teams.getAll())
-  const [search,  setSearch] = useState('')
+  const {
+    users,
+    teams,
+    refreshAll,
+    updateUser,
+    addUser,
+    addTeam,
+    deleteTeam,
+    deleteUser,
+  } = useAppData()
+  const [search, setSearch] = useState('')
 
   const [userDialog, setUserDialog] = useState<{
     open: boolean; role: AppRole; team: string | null
@@ -100,20 +122,18 @@ export default function SuperAdminUsers() {
   } & typeof BLANK_TEAM>({ open: false, ...BLANK_TEAM })
 
   function refresh() {
-    setUsers(db.users.getAll())
-    setTeams(db.teams.getAll())
+    void refreshAll()
   }
 
-  function updateUser(id: string, role: AppRole, team: string | null) {
-    db.users.updateRoleAndTeam(id, role, team)
-    setUsers(db.users.getAll())
+  async function handleUpdateUser(id: string, role: AppRole, team: string | null) {
+    await updateUser(id, { role, team })
   }
 
   function openAddUser(role: AppRole, team: string | null) {
     setUserDialog({ open: true, role, team, form: BLANK_USER, error: '' })
   }
 
-  function submitUser() {
+  async function submitUser() {
     const { form, role, team } = userDialog
     if (!form.full_name.trim() || !form.email.trim() || !form.password.trim()) {
       setUserDialog(d => ({ ...d, error: 'Name, email and password are required.' }))
@@ -123,16 +143,24 @@ export default function SuperAdminUsers() {
       setUserDialog(d => ({ ...d, error: 'An account with this email already exists.' }))
       return
     }
-    db.users.insert({
-      full_name: form.full_name.trim(), email: form.email.trim(),
-      password: form.password, department: form.department.trim(),
-      role, team,
-    })
-    refresh()
-    setUserDialog(d => ({ ...d, open: false }))
+
+    try {
+      await addUser({
+        full_name: form.full_name.trim(),
+        email: form.email.trim(),
+        password: form.password,
+        department: form.department.trim(),
+        role,
+        team,
+        managed_by: null,
+      })
+      setUserDialog(d => ({ ...d, open: false }))
+    } catch (err: unknown) {
+      setUserDialog(d => ({ ...d, error: getErrorMessage(err, 'Failed to add user.') }))
+    }
   }
 
-  function submitTeam() {
+  async function submitTeam() {
     if (!teamDialog.name.trim()) {
       setTeamDialog(d => ({ ...d, error: 'Team name is required.' }))
       return
@@ -142,19 +170,27 @@ export default function SuperAdminUsers() {
       setTeamDialog(d => ({ ...d, error: 'A team with this name already exists.' }))
       return
     }
-    db.teams.insert(teamDialog.name.trim(), teamDialog.color)
-    refresh()
-    setTeamDialog({ open: false, ...BLANK_TEAM })
+
+    try {
+      await addTeam({ name: teamDialog.name.trim(), color: teamDialog.color })
+      setTeamDialog({ open: false, ...BLANK_TEAM })
+    } catch (err: unknown) {
+      setTeamDialog(d => ({ ...d, error: getErrorMessage(err, 'Failed to create team.') }))
+    }
   }
 
-  function deleteTeam(teamId: string) {
+  async function handleDeleteTeam(teamId: string) {
     const hasUsers = users.some(u => u.team === teamId)
     if (hasUsers) {
       alert('Reassign all users from this team before deleting it.')
       return
     }
-    db.teams.delete(teamId)
-    refresh()
+    await deleteTeam(teamId)
+  }
+
+  async function handleDeleteUser(userId: string) {
+    if (!confirm('Delete this user?')) return
+    await deleteUser(userId)
   }
 
   const visible = useMemo(() => {
@@ -178,9 +214,9 @@ export default function SuperAdminUsers() {
   }, [users])
 
   const roleGroups: { role: AppRole; label: string; addLabel: string }[] = [
-    { role: 'admin',     label: 'Admins',     addLabel: 'Add Admin' },
+    { role: 'admin', label: 'Admins', addLabel: 'Add Admin' },
     { role: 'sub_admin', label: 'Team Leads', addLabel: 'Add Team Lead' },
-    { role: 'user',      label: 'Members',    addLabel: 'Add Member' },
+    { role: 'user', label: 'Members', addLabel: 'Add Member' },
   ]
 
   const userDialogTeamName = userDialog.team
@@ -193,8 +229,6 @@ export default function SuperAdminUsers() {
 
   return (
     <div className="animate-fade-in space-y-6">
-
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-serif text-foreground">User management</h1>
@@ -214,7 +248,6 @@ export default function SuperAdminUsers() {
         </div>
       </div>
 
-      {/* Summary cards */}
       <div className="grid grid-cols-4 gap-3">
         {teams.map(t => {
           const c = TEAM_COLOR_MAP[t.color] ?? FALLBACK_COLOR
@@ -241,7 +274,6 @@ export default function SuperAdminUsers() {
         </div>
       </div>
 
-      {/* Search */}
       <div className="hub-card">
         <div className="flex gap-3 items-center">
           <div className="relative flex-1">
@@ -256,18 +288,16 @@ export default function SuperAdminUsers() {
         </div>
       </div>
 
-      {/* Team sections */}
       {teams.map(t => {
         const c = TEAM_COLOR_MAP[t.color] ?? FALLBACK_COLOR
         return (
           <div key={t.id} className="hub-card overflow-hidden p-0">
-            {/* Team header */}
             <div className={`flex items-center gap-2.5 px-5 py-3 ${c.headerBg} border-b border-border`}>
               <Layers className={`w-4 h-4 ${c.text}`} />
               <h2 className={`text-sm font-semibold ${c.text}`}>{t.name} Team</h2>
               <span className="ml-auto text-xs text-muted-foreground mr-2">{counts[t.id] ?? 0} members</span>
               {!t.isBuiltIn && (
-                <button onClick={() => deleteTeam(t.id)}
+                <button onClick={() => void handleDeleteTeam(t.id)}
                   className="p-1 rounded text-muted-foreground hover:text-destructive transition-colors"
                   title="Delete team">
                   <Trash2 className="w-3.5 h-3.5" />
@@ -291,7 +321,14 @@ export default function SuperAdminUsers() {
                     </div>
                     {groupUsers.length > 0
                       ? groupUsers.map(u => (
-                          <UserRow key={u.id} u={u} meId={me?.id} teams={teams} onUpdate={updateUser} />
+                          <UserRow
+                            key={u.id}
+                            u={u}
+                            meId={me?.id}
+                            teams={teams}
+                            onUpdate={(id, nextRole, nextTeam) => void handleUpdateUser(id, nextRole, nextTeam)}
+                            onDelete={(id) => void handleDeleteUser(id)}
+                          />
                         ))
                       : <p className="text-xs text-muted-foreground py-1">No {groupLabel.toLowerCase()} assigned yet.</p>
                     }
@@ -303,17 +340,22 @@ export default function SuperAdminUsers() {
         )
       })}
 
-      {/* Unassigned */}
       {unassigned.length > 0 && (
         <div className="hub-card">
           <h2 className="text-sm font-semibold text-foreground mb-3">Unassigned users</h2>
           {unassigned.map(u => (
-            <UserRow key={u.id} u={u} meId={me?.id} teams={teams} onUpdate={updateUser} />
+            <UserRow
+              key={u.id}
+              u={u}
+              meId={me?.id}
+              teams={teams}
+              onUpdate={(id, role, team) => void handleUpdateUser(id, role, team)}
+              onDelete={(id) => void handleDeleteUser(id)}
+            />
           ))}
         </div>
       )}
 
-      {/* ── Add User dialog ── */}
       <Dialog open={userDialog.open} onOpenChange={open => setUserDialog(d => ({ ...d, open }))}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -357,7 +399,7 @@ export default function SuperAdminUsers() {
               <p className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-lg">{userDialog.error}</p>
             )}
             <div className="flex gap-3 pt-1">
-              <button onClick={submitUser}
+              <button onClick={() => void submitUser()}
                 className="flex-1 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-brand-dark transition-colors">
                 Add user
               </button>
@@ -370,7 +412,6 @@ export default function SuperAdminUsers() {
         </DialogContent>
       </Dialog>
 
-      {/* ── Add Team dialog ── */}
       <Dialog open={teamDialog.open} onOpenChange={open => setTeamDialog(d => ({ ...d, open }))}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
@@ -398,7 +439,7 @@ export default function SuperAdminUsers() {
               <p className="text-sm text-destructive bg-destructive/10 px-3 py-2 rounded-lg">{teamDialog.error}</p>
             )}
             <div className="flex gap-3">
-              <button onClick={submitTeam}
+              <button onClick={() => void submitTeam()}
                 className="flex-1 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-brand-dark transition-colors">
                 Create team
               </button>
