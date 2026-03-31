@@ -116,6 +116,22 @@ function sendError(res: express.Response, status: number, message: string) {
   return res.status(status).json({ message });
 }
 
+function asyncHandler(
+  handler: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<unknown>,
+): express.RequestHandler {
+  return (req, res, next) => {
+    void handler(req, res, next).catch(next);
+  };
+}
+
+function isPgUniqueViolation(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
+}
+
+function getSingleParam(value: string | string[]) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
 async function getSessionUser(req: SessionRequest) {
   if (!req.session.userId) return null;
   return getUserById(req.session.userId);
@@ -139,12 +155,12 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "nerve-api" });
 });
 
-app.get("/api/auth/me", async (req, res) => {
+app.get("/api/auth/me", asyncHandler(async (req, res) => {
   const user = await getSessionUser(req as SessionRequest);
   res.json({ user: user ? { ...user, password_hash: undefined } : null });
-});
+}));
 
-app.post("/api/auth/login", async (req, res) => {
+app.post("/api/auth/login", asyncHandler(async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, "Invalid login payload.");
 
@@ -156,7 +172,7 @@ app.post("/api/auth/login", async (req, res) => {
 
   (req as SessionRequest).session.userId = user.id;
   res.json({ user: { ...user, password_hash: undefined } });
-});
+}));
 
 app.post("/api/auth/logout", (req, res) => {
   req.session.destroy(() => {
@@ -165,25 +181,25 @@ app.post("/api/auth/logout", (req, res) => {
   });
 });
 
-app.use("/api", async (req, res, next) => {
+app.use("/api", asyncHandler(async (req, res, next) => {
   if (req.path === "/health" || req.path.startsWith("/auth/")) return next();
   const user = await getSessionUser(req as SessionRequest);
   if (!user) return sendError(res, 401, "Authentication required.");
   res.locals.currentUser = user;
   return next();
-});
+}));
 
-app.get("/api/bootstrap", async (_req, res) => {
+app.get("/api/bootstrap", asyncHandler(async (_req, res) => {
   const currentUser = res.locals.currentUser;
   const data = await getBootstrapData(isBrandingManager(currentUser.role, currentUser.team));
   res.json(data);
-});
+}));
 
-app.get("/api/entries", async (_req, res) => {
+app.get("/api/entries", asyncHandler(async (_req, res) => {
   res.json({ entries: await listEntries() });
-});
+}));
 
-app.post("/api/entries", async (req, res) => {
+app.post("/api/entries", asyncHandler(async (req, res) => {
   const parsed = entrySchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, "Invalid entry payload.");
 
@@ -193,18 +209,18 @@ app.post("/api/entries", async (req, res) => {
     created_by: currentUser.id,
   });
   res.status(201).json({ entry });
-});
+}));
 
-app.delete("/api/entries/:id", async (req, res) => {
-  await deleteEntry(req.params.id);
+app.delete("/api/entries/:id", asyncHandler(async (req, res) => {
+  await deleteEntry(getSingleParam(req.params.id));
   res.json({ ok: true });
-});
+}));
 
-app.get("/api/users", async (_req, res) => {
+app.get("/api/users", asyncHandler(async (_req, res) => {
   res.json({ users: await listUsers() });
-});
+}));
 
-app.post("/api/users", async (req, res) => {
+app.post("/api/users", asyncHandler(async (req, res) => {
   const parsed = createUserSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, "Invalid user payload.");
 
@@ -218,9 +234,10 @@ app.post("/api/users", async (req, res) => {
 
   const user = await createUser(parsed.data);
   res.status(201).json({ user });
-});
+}));
 
-app.patch("/api/users/:id", async (req, res) => {
+app.patch("/api/users/:id", asyncHandler(async (req, res) => {
+  const userId = getSingleParam(req.params.id);
   const currentUser = res.locals.currentUser;
   if (currentUser.role !== "super_admin") {
     return sendError(res, 403, "Only the super admin can modify users.");
@@ -229,29 +246,30 @@ app.patch("/api/users/:id", async (req, res) => {
   const parsed = updateUserSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, "Invalid user update payload.");
 
-  const updated = await updateUser(req.params.id, parsed.data);
+  const updated = await updateUser(userId, parsed.data);
   if (!updated) return sendError(res, 404, "User not found.");
   res.json({ user: updated });
-});
+}));
 
-app.delete("/api/users/:id", async (req, res) => {
+app.delete("/api/users/:id", asyncHandler(async (req, res) => {
+  const userId = getSingleParam(req.params.id);
   const currentUser = res.locals.currentUser;
   if (currentUser.role !== "super_admin") {
     return sendError(res, 403, "Only the super admin can delete users.");
   }
-  if (currentUser.id === req.params.id) {
+  if (currentUser.id === userId) {
     return sendError(res, 400, "You cannot delete the currently logged-in super admin.");
   }
 
-  await deleteUser(req.params.id);
+  await deleteUser(userId);
   res.json({ ok: true });
-});
+}));
 
-app.get("/api/teams", async (_req, res) => {
+app.get("/api/teams", asyncHandler(async (_req, res) => {
   res.json({ teams: await listTeams() });
-});
+}));
 
-app.post("/api/teams", async (req, res) => {
+app.post("/api/teams", asyncHandler(async (req, res, next) => {
   const currentUser = res.locals.currentUser;
   if (currentUser.role !== "super_admin") {
     return sendError(res, 403, "Only the super admin can create teams.");
@@ -264,37 +282,38 @@ app.post("/api/teams", async (req, res) => {
     const team = await createTeam(parsed.data);
     res.status(201).json({ team });
   } catch (error: unknown) {
-    if (typeof error === "object" && error !== null && "code" in error && error.code === "23505") {
+    if (isPgUniqueViolation(error)) {
       return sendError(res, 409, "A team with this name already exists.");
     }
-    throw error;
+    return next(error);
   }
-});
+}));
 
-app.delete("/api/teams/:id", async (req, res) => {
+app.delete("/api/teams/:id", asyncHandler(async (req, res) => {
+  const teamId = getSingleParam(req.params.id);
   const currentUser = res.locals.currentUser;
   if (currentUser.role !== "super_admin") {
     return sendError(res, 403, "Only the super admin can delete teams.");
   }
 
   const users = await listUsers();
-  if (users.some((user) => user.team === req.params.id)) {
+  if (users.some((user) => user.team === teamId)) {
     return sendError(res, 400, "Reassign users before deleting this team.");
   }
 
-  await deleteTeam(req.params.id);
+  await deleteTeam(teamId);
   res.json({ ok: true });
-});
+}));
 
-app.get("/api/branding-rows", async (_req, res) => {
+app.get("/api/branding-rows", asyncHandler(async (_req, res) => {
   const currentUser = res.locals.currentUser;
   if (!isBrandingManager(currentUser.role, currentUser.team)) {
     return sendError(res, 403, "Branding rows are only available to the branding team.");
   }
   res.json({ brandingRows: await listBrandingRows() });
-});
+}));
 
-app.post("/api/branding-rows", async (req, res) => {
+app.post("/api/branding-rows", asyncHandler(async (req, res) => {
   const currentUser = res.locals.currentUser;
   if (!isBrandingManager(currentUser.role, currentUser.team)) {
     return sendError(res, 403, "Only the branding team can add branding rows.");
@@ -305,9 +324,10 @@ app.post("/api/branding-rows", async (req, res) => {
 
   const brandingRow = await createBrandingRow(parsed.data);
   res.status(201).json({ brandingRow });
-});
+}));
 
-app.patch("/api/branding-rows/:id", async (req, res) => {
+app.patch("/api/branding-rows/:id", asyncHandler(async (req, res) => {
+  const rowId = getSingleParam(req.params.id);
   const currentUser = res.locals.currentUser;
   if (!isBrandingManager(currentUser.role, currentUser.team)) {
     return sendError(res, 403, "Only the branding team can edit branding rows.");
@@ -316,20 +336,27 @@ app.patch("/api/branding-rows/:id", async (req, res) => {
   const parsed = brandingRowSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, "Invalid branding row update payload.");
 
-  const brandingRow = await updateBrandingRow(req.params.id, parsed.data);
+  const brandingRow = await updateBrandingRow(rowId, parsed.data);
   if (!brandingRow) return sendError(res, 404, "Branding row not found.");
   res.json({ brandingRow });
-});
+}));
 
-app.delete("/api/branding-rows/:id", async (req, res) => {
+app.delete("/api/branding-rows/:id", asyncHandler(async (req, res) => {
+  const rowId = getSingleParam(req.params.id);
   const currentUser = res.locals.currentUser;
   if (!isBrandingManager(currentUser.role, currentUser.team)) {
     return sendError(res, 403, "Only the branding team can delete branding rows.");
   }
 
-  await deleteBrandingRow(req.params.id);
+  await deleteBrandingRow(rowId);
   res.json({ ok: true });
-});
+}));
+
+app.use(((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) return next(error);
+  console.error("Unhandled API error", error);
+  return sendError(res, 500, "Internal server error.");
+}) as express.ErrorRequestHandler);
 
 bootstrapDatabase()
   .then(() => {
