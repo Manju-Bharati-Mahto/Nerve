@@ -426,6 +426,7 @@ function DesignCard({
   showCountdown: boolean   // true when this is the current user's own upload within window
 }) {
   const [loaded, setLoaded] = useState(false)
+  const [imgError, setImgError] = useState(false)
   const [countdown, setCountdown] = useState(() => showCountdown ? Math.max(0, msUntilExpiry(design.created_at)) : 0)
 
   useEffect(() => {
@@ -440,14 +441,26 @@ function DesignCard({
 
   return (
     <div className="group relative cursor-pointer rounded-xl overflow-hidden bg-muted break-inside-avoid mb-3">
-      <div onClick={onOpen}>
+      <div onClick={onOpen} style={{ minHeight: 160 }}>
         <img
           src={design.image_url}
           alt={design.title}
           onLoad={() => setLoaded(true)}
-          className={`w-full object-cover transition-transform duration-300 group-hover:scale-105 ${loaded ? 'opacity-100' : 'opacity-0'}`}
+          onError={() => setImgError(true)}
+          className={`w-full object-cover transition-transform duration-300 group-hover:scale-105 ${loaded && !imgError ? 'opacity-100' : 'opacity-0'}`}
         />
-        {!loaded && <div className="absolute inset-0 bg-muted animate-pulse" style={{ minHeight: 160 }} />}
+        {!loaded && !imgError && <div className="absolute inset-0 bg-muted animate-pulse" />}
+        {imgError && (
+          <div className="absolute inset-0 flex items-center justify-center bg-muted">
+            <div className="flex flex-col items-center gap-1.5 text-muted-foreground/50">
+              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+              <span className="text-[10px]">Preview unavailable</span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Countdown badge — top-left, only for own recent uploads */}
