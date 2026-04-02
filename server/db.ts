@@ -69,6 +69,7 @@ export interface AppUser {
   role: AppRole;
   team: string | null;
   managed_by: string | null;
+  email_verified: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -138,6 +139,7 @@ interface UserRow {
   team: string | null;
   managed_by: string | null;
   password_hash: string;
+  email_verified: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -197,6 +199,7 @@ function mapUser(row: UserRow): AppUser {
     role: row.role,
     team: row.team,
     managed_by: row.managed_by,
+    email_verified: row.email_verified ?? false,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };

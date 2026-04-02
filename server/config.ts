@@ -24,4 +24,11 @@ export const config = {
   sessionSecret,
   superAdminEmail: process.env.SUPER_ADMIN_EMAIL?.trim() || DEFAULT_SUPER_ADMIN_EMAIL,
   superAdminPassword,
+  smtp: {
+    host: process.env.SMTP_HOST || "smtp.gmail.com",
+    port: Number(process.env.SMTP_PORT || 587),
+    user: process.env.SMTP_USER || "",
+    pass: process.env.SMTP_PASS || "",
+    from: process.env.SMTP_FROM || "noreply@parul.ac.in",
+  },
 };

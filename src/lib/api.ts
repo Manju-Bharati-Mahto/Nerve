@@ -89,4 +89,28 @@ export const api = {
     }),
   deleteBrandingRow: (id: string) =>
     request<{ ok: boolean }>(`/branding-rows/${id}`, { method: "DELETE" }),
+  getSettings: () =>
+    request<{ settings: Record<string, string> }>("/settings"),
+  updateSettings: (patch: Record<string, string>) =>
+    request<{ ok: boolean; settings: Record<string, string> }>("/settings", {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  forgotPassword: (email: string) =>
+    request<{ ok: boolean }>("/auth/forgot-password", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+  resetPassword: (token: string, password: string) =>
+    request<{ ok: boolean }>("/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ token, password }),
+    }),
+  sendVerification: (email: string) =>
+    request<{ ok: boolean }>("/auth/send-verification", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+  verifyEmail: (token: string) =>
+    request<{ ok: boolean }>(`/auth/verify-email?token=${token}`),
 };

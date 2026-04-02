@@ -10,6 +10,8 @@ import RoleGuard from "@/components/RoleGuard";
 
 // Public
 import LoginPage from "@/pages/Login";
+import ResetPasswordPage from "@/pages/ResetPassword";
+import VerifyEmailPage from "@/pages/VerifyEmail";
 
 // Shared
 import BrowsePage from "@/pages/Browse";
@@ -30,6 +32,8 @@ import AINewsletterPage from "@/pages/AINewsletter";
 import BrandingAdminDashboard from "@/pages/branding/BrandingAdminDashboard";
 import BrandingSubAdminDashboard from "@/pages/branding/BrandingSubAdminDashboard";
 import BrandingUserDashboard from "@/pages/branding/BrandingUserDashboard";
+import BrandingTeamPanel from "@/pages/branding/BrandingTeamPanel";
+import BrandingBrowse from "@/pages/branding/BrandingBrowse";
 
 // Content team
 import ContentAdminDashboard from "@/pages/content/ContentAdminDashboard";
@@ -51,6 +55,8 @@ const App = () => (
             <Routes>
             {/* Public */}
             <Route path="/login" element={<LoginPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
+            <Route path="/verify-email" element={<VerifyEmailPage />} />
             <Route path="/" element={<Navigate to="/login" replace />} />
 
             {/* All authenticated routes */}
@@ -91,7 +97,12 @@ const App = () => (
               } />
               <Route path="/branding/team" element={
                 <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding">
-                  <TeamPanel />
+                  <BrandingTeamPanel />
+                </RoleGuard>
+              } />
+              <Route path="/branding/browse" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']} team="branding">
+                  <BrandingBrowse />
                 </RoleGuard>
               } />
 
@@ -134,9 +145,9 @@ const App = () => (
                 </RoleGuard>
               } />
 
-              {/* ── Add entry — all except bare user ── */}
+              {/* ── Add entry — all except branding team ── */}
               <Route path="/add" element={
-                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']}>
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']} excludeTeam="branding">
                   <AddEntryPage />
                 </RoleGuard>
               } />

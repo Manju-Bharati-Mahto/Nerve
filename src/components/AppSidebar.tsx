@@ -48,8 +48,7 @@ const SIDEBAR: Record<string, RoleConfig> = {
   'admin:branding': cfg('Branding Admin', Palette, 'text-pink-600', 'bg-pink-100', [
     { items: [
       { path: '/branding/dashboard', label: 'Dashboard',    icon: LayoutDashboard },
-      { path: '/browse',             label: 'Browse',       icon: Search },
-      { path: '/add',                label: 'Add entry',    icon: PlusCircle },
+      { path: '/branding/browse',    label: 'Design Gallery', icon: Search },
     ]},
     { heading: 'Team', items: [
       { path: '/branding/team',  label: 'Team members', icon: Users },
@@ -75,10 +74,9 @@ const SIDEBAR: Record<string, RoleConfig> = {
 
   'sub_admin:branding': cfg('Branding Lead', UserCheck, 'text-pink-600', 'bg-pink-100', [
     { items: [
-      { path: '/branding/sub-admin', label: 'Dashboard',    icon: LayoutDashboard },
-      { path: '/browse',             label: 'Browse',       icon: Search },
-      { path: '/add',                label: 'Add entry',    icon: PlusCircle },
-      { path: '/branding/team',      label: 'My team',      icon: Users },
+      { path: '/branding/sub-admin', label: 'Dashboard',      icon: LayoutDashboard },
+      { path: '/branding/browse',    label: 'Design Gallery', icon: Search },
+      { path: '/branding/team',      label: 'My team',        icon: Users },
     ]},
   ]),
 
@@ -97,9 +95,8 @@ const SIDEBAR: Record<string, RoleConfig> = {
 
   'user:branding': cfg('Branding Team', User, 'text-pink-600', 'bg-pink-100', [
     { items: [
-      { path: '/branding/user', label: 'My Dashboard', icon: LayoutDashboard },
-      { path: '/add',           label: 'Add entry',    icon: PlusCircle },
-      { path: '/browse',        label: 'Browse',       icon: Search },
+      { path: '/branding/user',   label: 'My Dashboard',   icon: LayoutDashboard },
+      { path: '/branding/browse', label: 'Design Gallery', icon: Search },
     ]},
   ]),
 
