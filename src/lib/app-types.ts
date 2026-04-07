@@ -54,6 +54,7 @@ export interface AppUser {
   role: AppRole;
   team: AppTeam | null;
   managed_by: string | null;
+  avatar_url?: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -110,6 +110,20 @@ export interface KraReport {
   is_final_pushed: boolean;
 }
 
+export interface BrandingLeave {
+  id: string;
+  user_id: string;
+  leave_date: string;          // YYYY-MM-DD
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  transfer_date: string | null; // YYYY-MM-DD — day the user will compensate
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  user_name?: string;
+  user_email?: string;
+}
+
 // ── Bootstrap ──────────────────────────────────────────────────────────────
 
 export async function bootstrapBrandingDatabase() {
@@ -264,6 +278,21 @@ export async function bootstrapBrandingDatabase() {
       vote_type TEXT NOT NULL CHECK (vote_type IN ('up','down')),
       voted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE(design_id, user_id)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS branding_leaves (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      leave_date DATE NOT NULL,
+      reason TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+      transfer_date DATE,
+      reviewed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      reviewed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, leave_date)
     )
   `);
 
@@ -488,8 +517,10 @@ async function fetchReportRows(reportId: string): Promise<DailyReportRow[]> {
   return res.rows;
 }
 
-function normalizeDate(d: string): string {
-  return typeof d === "string" && d.includes("T") ? d.split("T")[0] : d;
+function normalizeDate(d: string | Date | unknown): string {
+  if (d instanceof Date) return d.toISOString().split("T")[0];
+  if (typeof d === "string" && d.includes("T")) return d.split("T")[0];
+  return String(d);
 }
 
 export async function getOrCreateDailyReport(userId: string, date: string): Promise<DailyReport> {
@@ -569,12 +600,20 @@ export async function listAllDailyReports(filters?: {
     SELECT dr.*, u.full_name AS user_name, u.email AS user_email
     FROM daily_reports dr
     JOIN users u ON dr.user_id = u.id
-    WHERE u.team = 'branding'
+    WHERE 1=1
   `;
   const params: unknown[] = [];
   let idx = 1;
 
-  if (filters?.userId)   { query += ` AND dr.user_id = $${idx++}`;             params.push(filters.userId); }
+  // When a specific userId is given, filter by that user directly (no team filter needed —
+  // access control is already enforced at the route level).
+  // When no userId is given (admin fetching all), scope to the branding team.
+  if (filters?.userId) {
+    query += ` AND dr.user_id = $${idx++}`;
+    params.push(filters.userId);
+  } else {
+    query += ` AND u.team = 'branding'`;
+  }
   if (filters?.dateFrom) { query += ` AND dr.report_date >= $${idx++}::date`;   params.push(filters.dateFrom); }
   if (filters?.dateTo)   { query += ` AND dr.report_date <= $${idx++}::date`;   params.push(filters.dateTo); }
   if (filters?.lockedOnly) { query += ` AND dr.is_locked = true`; }
@@ -620,7 +659,24 @@ export async function getUserAnalytics(userId: string, dateFrom: string, dateTo:
       }
     }
   }
-  return { typeHours, subCatHours, collaboratorMap, totalReports: reports.length };
+
+  // Resolve collaborator IDs → names so the frontend can display them directly
+  const ids = Object.keys(collaboratorMap);
+  const namedMap: Record<string, { hours: number; count: number }> = {};
+  if (ids.length > 0) {
+    const res = await pool.query<{ id: string; full_name: string }>(
+      `SELECT id, full_name FROM users WHERE id = ANY($1)`,
+      [ids]
+    );
+    const nameById: Record<string, string> = {};
+    for (const row of res.rows) nameById[row.id] = row.full_name || row.id;
+    for (const id of ids) {
+      const name = nameById[id] || id;
+      namedMap[name] = collaboratorMap[id];
+    }
+  }
+
+  return { typeHours, subCatHours, collaboratorMap: namedMap, totalReports: reports.length };
 }
 
 // ── KRA functions ──────────────────────────────────────────────────────────
@@ -1169,4 +1225,94 @@ export async function deleteBrandingProject(id: string): Promise<boolean> {
     `DELETE FROM branding_projects WHERE id = $1`, [id]
   );
   return (res.rowCount ?? 0) > 0;
+}
+
+// ── Leave functions ────────────────────────────────────────────────────────
+
+interface LeaveDbRow {
+  id: string; user_id: string; leave_date: string; reason: string;
+  status: string; transfer_date: string | null; reviewed_by: string | null;
+  reviewed_at: string | null; created_at: string;
+  user_name?: string; user_email?: string;
+}
+
+function mapLeave(row: LeaveDbRow): BrandingLeave {
+  return {
+    ...row,
+    status: row.status as BrandingLeave['status'],
+    leave_date: normalizeDate(row.leave_date),
+    transfer_date: row.transfer_date ? normalizeDate(row.transfer_date) : null,
+  };
+}
+
+export async function applyLeave(
+  userId: string, leaveDate: string, reason: string, transferDate?: string
+): Promise<BrandingLeave> {
+  const id = generateId("lv");
+  const res = await pool.query<LeaveDbRow>(
+    `INSERT INTO branding_leaves (id, user_id, leave_date, reason, transfer_date)
+     VALUES ($1, $2, $3::date, $4, $5)
+     ON CONFLICT (user_id, leave_date)
+     DO UPDATE SET reason = $4, transfer_date = $5, status = 'pending', reviewed_by = NULL, reviewed_at = NULL
+     RETURNING *`,
+    [id, userId, leaveDate, reason, transferDate ?? null]
+  );
+  return mapLeave(res.rows[0]);
+}
+
+export async function getUserLeaves(userId: string): Promise<BrandingLeave[]> {
+  const res = await pool.query<LeaveDbRow>(
+    `SELECT * FROM branding_leaves WHERE user_id = $1 ORDER BY leave_date DESC`,
+    [userId]
+  );
+  return res.rows.map(mapLeave);
+}
+
+export async function getAllLeaves(status?: string): Promise<BrandingLeave[]> {
+  let q = `SELECT l.*, u.full_name AS user_name, u.email AS user_email
+           FROM branding_leaves l
+           JOIN users u ON l.user_id = u.id`;
+  const params: unknown[] = [];
+  if (status) { q += ` WHERE l.status = $1`; params.push(status); }
+  q += ` ORDER BY l.leave_date DESC`;
+  const res = await pool.query<LeaveDbRow>(q, params);
+  return res.rows.map(mapLeave);
+}
+
+export async function reviewLeave(
+  leaveId: string, adminId: string, status: 'approved' | 'rejected'
+): Promise<BrandingLeave | null> {
+  const res = await pool.query<LeaveDbRow>(
+    `UPDATE branding_leaves SET status = $2, reviewed_by = $3, reviewed_at = NOW()
+     WHERE id = $1 RETURNING *`,
+    [leaveId, status, adminId]
+  );
+  return res.rows[0] ? mapLeave(res.rows[0]) : null;
+}
+
+export async function updateLeaveTransfer(
+  leaveId: string, userId: string, transferDate: string | null
+): Promise<BrandingLeave | null> {
+  const res = await pool.query<LeaveDbRow>(
+    `UPDATE branding_leaves SET transfer_date = $3
+     WHERE id = $1 AND user_id = $2 AND status = 'pending' RETURNING *`,
+    [leaveId, userId, transferDate]
+  );
+  return res.rows[0] ? mapLeave(res.rows[0]) : null;
+}
+
+export async function cancelLeave(leaveId: string, userId: string): Promise<boolean> {
+  const res = await pool.query(
+    `DELETE FROM branding_leaves WHERE id = $1 AND user_id = $2 AND status = 'pending'`,
+    [leaveId, userId]
+  );
+  return (res.rowCount ?? 0) > 0;
+}
+
+export async function getLeaveForDate(userId: string, date: string): Promise<BrandingLeave | null> {
+  const res = await pool.query<LeaveDbRow>(
+    `SELECT * FROM branding_leaves WHERE user_id = $1 AND leave_date = $2::date`,
+    [userId, date]
+  );
+  return res.rows[0] ? mapLeave(res.rows[0]) : null;
 }
