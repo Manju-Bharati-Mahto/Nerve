@@ -70,6 +70,7 @@ export interface AppUser {
   team: string | null;
   managed_by: string | null;
   email_verified: boolean;
+  avatar_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -96,6 +97,7 @@ export interface UpdateUserInput {
   role?: AppRole;
   team?: string | null;
   managed_by?: string | null;
+  avatar_url?: string | null;
 }
 
 export interface CreateEntryInput {
@@ -140,6 +142,7 @@ interface UserRow {
   managed_by: string | null;
   password_hash: string;
   email_verified: boolean;
+  avatar_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -200,6 +203,7 @@ function mapUser(row: UserRow): AppUser {
     team: row.team,
     managed_by: row.managed_by,
     email_verified: row.email_verified ?? false,
+    avatar_url: row.avatar_url ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -275,6 +279,11 @@ export async function bootstrapDatabase() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `);
+
+  // Add avatar_url column if it doesn't exist (safe migration)
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT DEFAULT NULL
   `);
 
   await pool.query(`
@@ -464,6 +473,8 @@ export async function updateUser(id: string, input: UpdateUserInput) {
     ? (input.managed_by === undefined ? current.managed_by : input.managed_by)
     : null;
 
+  const avatarUrl = input.avatar_url !== undefined ? input.avatar_url : current.avatar_url;
+
   const result = await pool.query<UserRow>(
     `UPDATE users
      SET full_name = $2,
@@ -473,6 +484,7 @@ export async function updateUser(id: string, input: UpdateUserInput) {
          team = $6,
          managed_by = $7,
          password_hash = $8,
+         avatar_url = $9,
          updated_at = NOW()
      WHERE id = $1
      RETURNING *`,
@@ -485,6 +497,7 @@ export async function updateUser(id: string, input: UpdateUserInput) {
       team,
       managedBy,
       passwordHash,
+      avatarUrl,
     ],
   );
 

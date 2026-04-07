@@ -2,7 +2,7 @@ import type {
   WorkCategory, WorkSubCategory, DailyReport, DailyReportRow,
   KraParameter, SelfAppraisal, PeerMarking, AdminKraScore, KraReport,
   BrandingProject, MemberReportStatus, BrandingDesign, DesignVoter,
-  BrandingPortalStats,
+  BrandingPortalStats, BrandingLeave,
 } from "./branding-types";
 
 const BASE = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
@@ -139,6 +139,22 @@ export const brandingApi = {
     ),
   getVoters: (id: string) =>
     req<{ voters: DesignVoter[] }>(`/designs/${id}/voters`),
+
+  // ── Leaves ─────────────────────────────────────────────────────────────
+  applyLeave: (data: { leave_date: string; reason: string; transfer_date?: string }) =>
+    req<{ leave: BrandingLeave }>("/leave", { method: "POST", body: JSON.stringify(data) }),
+  getLeaves: (status?: string) => {
+    const qs = status ? `?status=${status}` : "";
+    return req<{ leaves: BrandingLeave[] }>(`/leaves${qs}`);
+  },
+  getLeaveForDate: (date: string) =>
+    req<{ leave: BrandingLeave | null }>(`/leave/date/${date}`),
+  reviewLeave: (id: string, status: 'approved' | 'rejected') =>
+    req<{ leave: BrandingLeave }>(`/leave/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
+  updateLeaveTransfer: (id: string, transfer_date: string | null) =>
+    req<{ leave: BrandingLeave }>(`/leave/${id}`, { method: "PATCH", body: JSON.stringify({ transfer_date }) }),
+  cancelLeave: (id: string) =>
+    req<{ ok: boolean }>(`/leave/${id}`, { method: "DELETE" }),
 
   // ── Projects ───────────────────────────────────────────────────────────
   getProjects: () =>

@@ -788,12 +788,12 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                       {params.map(p => (
                         <div key={p.id} className="flex items-center gap-3">
                           <span className="text-xs text-foreground w-40 shrink-0">{p.name}</span>
-                          <input type="range" min={0} max={p.max_score} step={1}
-                            value={adminScores[p.id] ?? 5}
+                          <input type="range" min={0} max={5} step={1}
+                            value={adminScores[p.id] ?? 0}
                             onChange={e => setAdminScores(prev => ({ ...prev, [p.id]: parseInt(e.target.value) }))}
                             className="flex-1 accent-purple-500" />
                           <span className="text-sm font-semibold text-purple-600 w-8 text-right">
-                            {adminScores[p.id] ?? 5}
+                            {adminScores[p.id] ?? 0}
                           </span>
                         </div>
                       ))}
