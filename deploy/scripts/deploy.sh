@@ -42,6 +42,10 @@ if [ ! -f "$SHARED_ENV_FILE" ]; then
   exit 1
 fi
 
+if ! grep -Eq '^POSTGRES_DATA_DIR=.+' "$SHARED_ENV_FILE"; then
+  fail "POSTGRES_DATA_DIR must be set in $SHARED_ENV_FILE"
+fi
+
 cp "$SHARED_ENV_FILE" .env
 
 npm ci
@@ -56,7 +60,7 @@ mkdir -p "$release_dir"
 rsync -a --delete dist/ "$release_dir"/
 ln -sfn "$release_dir" "$CURRENT_LINK"
 
-nginx -t
-systemctl reload nginx
+sudo nginx -t
+sudo systemctl reload nginx
 
 echo "Deployed release at $release_dir"
