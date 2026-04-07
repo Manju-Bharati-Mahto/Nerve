@@ -163,6 +163,20 @@ export interface BrandingProject {
   assigned_user_ids: string[];
 }
 
+export interface BrandingLeave {
+  id: string;
+  user_id: string;
+  leave_date: string;           // YYYY-MM-DD
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected';
+  transfer_date: string | null; // YYYY-MM-DD
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  user_name?: string;
+  user_email?: string;
+}
+
 export const TIME_OPTIONS = [
   "30 min", "1 hr", "1.5 hr", "2 hr", "2.5 hr", "3 hr", "3.5 hr",
   "4 hr", "4.5 hr", "5 hr", "5.5 hr", "6 hr", "6.5 hr", "7 hr", "7.5 hr", "8 hr",

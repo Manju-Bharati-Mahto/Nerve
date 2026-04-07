@@ -7,7 +7,7 @@ import type { AppUser } from '@/lib/app-types'
 import {
   Users, FolderKanban, Plus, Pencil, Trash2, X, Check,
   CalendarDays, UserPlus, ChevronDown, ChevronUp,
-  ClipboardList, CheckCircle2, XCircle, RefreshCw,
+  CheckCircle2, XCircle,
 } from 'lucide-react'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -140,7 +140,7 @@ function MemberDialog({ mode, initial, onSave, onClose }: MemberDialogProps) {
               Cancel
             </button>
             <button type="submit" disabled={saving}
-              className="px-4 py-2 text-sm rounded-lg bg-pink-600 text-white hover:bg-pink-700 disabled:opacity-50">
+              className="px-4 py-2 text-sm rounded-lg text-white disabled:opacity-50" style={{ background: '#1a472a' }}>
               {saving ? 'Saving…' : mode === 'add' ? 'Add Member' : 'Save Changes'}
             </button>
           </div>
@@ -306,7 +306,7 @@ function ProjectDialog({ mode, initial, members, onSave, onClose }: ProjectDialo
               Cancel
             </button>
             <button type="submit" disabled={saving}
-              className="px-4 py-2 text-sm rounded-lg bg-pink-600 text-white hover:bg-pink-700 disabled:opacity-50">
+              className="px-4 py-2 text-sm rounded-lg text-white disabled:opacity-50" style={{ background: '#1a472a' }}>
               {saving ? 'Saving…' : mode === 'add' ? 'Create Project' : 'Save Changes'}
             </button>
           </div>
@@ -316,119 +316,8 @@ function ProjectDialog({ mode, initial, members, onSave, onClose }: ProjectDialo
   )
 }
 
-// ── Report Status Tab ──────────────────────────────────────────────────────
-
 function todayIso() {
   return new Date().toISOString().slice(0, 10)
-}
-
-function ReportStatusTab({ members }: { members: AppUser[] }) {
-  const [date, setDate] = useState(todayIso)
-  const [statuses, setStatuses] = useState<MemberReportStatus[]>([])
-  const [loading, setLoading] = useState(false)
-  const [err, setErr] = useState('')
-
-  const load = useCallback((d: string) => {
-    setLoading(true)
-    setErr('')
-    brandingApi.getTeamReportStatus(d)
-      .then(r => setStatuses(r.statuses))
-      .catch(e => setErr(e instanceof Error ? e.message : 'Failed to load.'))
-      .finally(() => setLoading(false))
-  }, [])
-
-  useEffect(() => { load(date) }, [load, date])
-
-  const submitted = statuses.filter(s => s.has_submitted).length
-  const total = statuses.length
-
-  return (
-    <div className="space-y-4">
-      {/* Date picker + refresh */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <div>
-          <label className="text-xs font-medium text-muted-foreground block mb-1">Select Date</label>
-          <input
-            type="date"
-            max={todayIso()}
-            value={date}
-            onChange={e => setDate(e.target.value)}
-            className="border border-border rounded-lg px-3 py-2 text-sm bg-background"
-          />
-        </div>
-        <button
-          onClick={() => load(date)}
-          disabled={loading}
-          className="mt-5 flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-border text-muted-foreground hover:bg-accent disabled:opacity-50"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
-        </button>
-        {!loading && total > 0 && (
-          <div className="mt-5 flex items-center gap-2">
-            <span className="text-xs font-medium text-green-700 bg-green-100 px-2.5 py-1 rounded-full">
-              {submitted} submitted
-            </span>
-            <span className="text-xs font-medium text-red-700 bg-red-100 px-2.5 py-1 rounded-full">
-              {total - submitted} pending
-            </span>
-          </div>
-        )}
-      </div>
-
-      {err && <p className="text-xs text-red-500">{err}</p>}
-
-      {/* Status list */}
-      {loading ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
-      ) : statuses.length === 0 ? (
-        <p className="text-sm text-muted-foreground text-center py-6">No team members found.</p>
-      ) : (
-        <div className="hub-card divide-y divide-border">
-          {/* Only show regular members (role=user) under "Members", leads under "Team Leads" */}
-          {(['sub_admin', 'user'] as const).map(r => {
-            const group = statuses.filter(s => s.role === r)
-            if (group.length === 0) return null
-            return (
-              <div key={r} className="py-3 first:pt-0 last:pb-0">
-                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-2 px-1">
-                  {r === 'sub_admin' ? 'Team Leads' : 'Members'}
-                </p>
-                <div className="space-y-1">
-                  {group.map(s => (
-                    <div key={s.user_id} className="flex items-center justify-between py-2 px-1">
-                      <div className="flex items-center gap-3">
-                        <div className="w-7 h-7 rounded-full bg-pink-100 flex items-center justify-center shrink-0">
-                          <span className="text-xs font-semibold text-pink-600">
-                            {(s.user_name || s.user_email)[0].toUpperCase()}
-                          </span>
-                        </div>
-                        <div>
-                          <p className="text-sm font-medium text-foreground">{s.user_name || 'Unnamed'}</p>
-                          <p className="text-xs text-muted-foreground">{s.user_email}</p>
-                        </div>
-                      </div>
-                      {s.has_submitted ? (
-                        <div className="flex items-center gap-1.5 text-green-700 bg-green-50 px-2.5 py-1 rounded-full">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span className="text-xs font-medium">Submitted</span>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-1.5 text-red-600 bg-red-50 px-2.5 py-1 rounded-full">
-                          <XCircle className="w-3.5 h-3.5" />
-                          <span className="text-xs font-medium">Not submitted</span>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
 }
 
 // ── Main Component ─────────────────────────────────────────────────────────
@@ -439,14 +328,35 @@ export default function BrandingTeamPanel() {
   const isAdmin = role === 'admin' || role === 'super_admin'
   const isLead = role === 'sub_admin'
 
-  // Branding members only (excluding super_admin; team lead excludes self)
+  // Branding members only
+  // - admin/super_admin: all branding members
+  // - sub_admin (lead): members they manage + themselves (so their own report is visible)
   const members = allUsers.filter(u =>
     u.team === 'branding' &&
     u.role !== 'super_admin' &&
-    (isAdmin ? true : u.id !== user?.id)
+    (isAdmin
+      ? true
+      : isLead
+        ? u.managed_by === user?.id || u.id === user?.id
+        : u.id !== user?.id)
   )
 
-  const [tab, setTab] = useState<'members' | 'report-status' | 'projects'>('members')
+  const [tab, setTab] = useState<'members' | 'projects'>('members')
+
+  // ── Report statuses — date-filtered ──────────────────────────────────
+  const [filterDate, setFilterDate] = useState(todayIso)
+  const [todayStatuses, setTodayStatuses] = useState<MemberReportStatus[]>([])
+  const [statusLoading, setStatusLoading] = useState(false)
+
+  const loadStatuses = useCallback((d: string) => {
+    setStatusLoading(true)
+    brandingApi.getTeamReportStatus(d)
+      .then(r => setTodayStatuses(r.statuses))
+      .catch(() => {})
+      .finally(() => setStatusLoading(false))
+  }, [])
+
+  useEffect(() => { loadStatuses(filterDate) }, [loadStatuses, filterDate])
 
   // ── Members state ─────────────────────────────────────────────────────
   const [memberDialog, setMemberDialog] = useState<null | 'add' | { mode: 'edit'; member: AppUser }>(null)
@@ -500,6 +410,10 @@ export default function BrandingTeamPanel() {
     setDeleteConfirm(false)
   }
 
+  async function handleAssignMember(memberId: string, leadId: string | null) {
+    await updateUser(memberId, { managed_by: leadId })
+  }
+
   // ── Project handlers ──────────────────────────────────────────────────
 
   async function handleAddProject(data: ProjectFormState) {
@@ -539,17 +453,18 @@ export default function BrandingTeamPanel() {
     <div className="animate-fade-in space-y-6">
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-serif text-foreground">
+          <h1 className="text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>
             {isLead ? 'My Team' : 'Team Management'}
           </h1>
-          <p className="text-sm text-muted-foreground mt-1">
+          <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>
             {isLead ? 'Branding team — members & daily report status' : 'Branding team — members & projects'}
           </p>
         </div>
         {isAdmin && tab === 'members' && (
           <button
             onClick={() => setMemberDialog('add')}
-            className="flex items-center gap-2 px-4 py-2 bg-pink-600 text-white rounded-lg text-sm hover:bg-pink-700"
+            className="flex items-center gap-2 px-4 py-2 text-white rounded-xl text-sm font-semibold"
+            style={{ background: '#1a472a' }}
           >
             <UserPlus className="w-4 h-4" />
             Add Member
@@ -558,7 +473,8 @@ export default function BrandingTeamPanel() {
         {isAdmin && tab === 'projects' && (
           <button
             onClick={() => setProjDialog('add')}
-            className="flex items-center gap-2 px-4 py-2 bg-pink-600 text-white rounded-lg text-sm hover:bg-pink-700"
+            className="flex items-center gap-2 px-4 py-2 text-white rounded-xl text-sm font-semibold"
+            style={{ background: '#1a472a' }}
           >
             <Plus className="w-4 h-4" />
             New Project
@@ -571,26 +487,17 @@ export default function BrandingTeamPanel() {
         <button
           onClick={() => setTab('members')}
           className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-            tab === 'members' ? 'border-pink-600 text-pink-600' : 'border-transparent text-muted-foreground hover:text-foreground'
+            tab === 'members' ? 'border-[#1a472a] text-[#1a472a]' : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
           <Users className="w-4 h-4" />
           Members ({members.length})
         </button>
-        <button
-          onClick={() => setTab('report-status')}
-          className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-            tab === 'report-status' ? 'border-pink-600 text-pink-600' : 'border-transparent text-muted-foreground hover:text-foreground'
-          }`}
-        >
-          <ClipboardList className="w-4 h-4" />
-          Daily Report Status
-        </button>
         {isAdmin && (
           <button
             onClick={() => setTab('projects')}
             className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-              tab === 'projects' ? 'border-pink-600 text-pink-600' : 'border-transparent text-muted-foreground hover:text-foreground'
+              tab === 'projects' ? 'border-[#1a472a] text-[#1a472a]' : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
           >
             <FolderKanban className="w-4 h-4" />
@@ -602,21 +509,58 @@ export default function BrandingTeamPanel() {
       {/* ── Members Tab ── */}
       {tab === 'members' && (
         <div className="space-y-5">
+          {/* Date filter + summary */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-2">
+              <CalendarDays className="w-4 h-4 shrink-0" style={{ color: '#52b788' }} />
+              <input
+                type="date"
+                max={todayIso()}
+                value={filterDate}
+                onChange={e => setFilterDate(e.target.value)}
+                className="text-sm bg-transparent outline-none cursor-pointer"
+                style={{ color: '#1a472a' }}
+              />
+            </div>
+            {statusLoading ? (
+              <span className="text-xs font-medium text-gray-400 animate-pulse">Loading…</span>
+            ) : todayStatuses.length > 0 && (
+              <>
+                <span className="flex items-center gap-1 text-xs font-semibold text-green-700 bg-green-50 px-3 py-1.5 rounded-full">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  {todayStatuses.filter(s => s.has_submitted).length} submitted
+                </span>
+                <span className="flex items-center gap-1 text-xs font-semibold text-red-600 bg-red-50 px-3 py-1.5 rounded-full">
+                  <XCircle className="w-3.5 h-3.5" />
+                  {todayStatuses.filter(s => !s.has_submitted).length} pending
+                </span>
+              </>
+            )}
+          </div>
+
           <MemberGroup
             label="Team Leads"
-            badge="bg-teal-100 text-teal-700"
             items={teamLeads}
             isAdmin={isAdmin}
+            statuses={todayStatuses}
+            loading={statusLoading}
+            currentUserId={user?.id}
+            teamLeads={teamLeads}
             onEdit={m => setMemberDialog({ mode: 'edit', member: m })}
             onDelete={m => { setDeleteTarget(m); setDeleteConfirm(false) }}
+            onAssign={handleAssignMember}
           />
           <MemberGroup
             label="Members"
-            badge="bg-pink-100 text-pink-700"
             items={teamMembers}
             isAdmin={isAdmin}
+            statuses={todayStatuses}
+            loading={statusLoading}
+            currentUserId={user?.id}
+            teamLeads={teamLeads}
             onEdit={m => setMemberDialog({ mode: 'edit', member: m })}
             onDelete={m => { setDeleteTarget(m); setDeleteConfirm(false) }}
+            onAssign={handleAssignMember}
           />
           {members.length === 0 && (
             <p className="text-sm text-muted-foreground text-center py-8">
@@ -625,9 +569,6 @@ export default function BrandingTeamPanel() {
           )}
         </div>
       )}
-
-      {/* ── Report Status Tab ── */}
-      {tab === 'report-status' && <ReportStatusTab members={members} />}
 
       {/* ── Projects Tab ── */}
       {tab === 'projects' && (
@@ -761,56 +702,115 @@ export default function BrandingTeamPanel() {
 // ── MemberGroup sub-component ──────────────────────────────────────────────
 
 function MemberGroup({
-  label, badge, items, isAdmin, onEdit, onDelete
+  label, items, isAdmin, statuses, loading, currentUserId, teamLeads, onEdit, onDelete, onAssign
 }: {
   label: string
-  badge: string
   items: AppUser[]
   isAdmin: boolean
+  statuses: MemberReportStatus[]
+  loading: boolean
+  currentUserId?: string
+  teamLeads: AppUser[]
   onEdit: (m: AppUser) => void
   onDelete: (m: AppUser) => void
+  onAssign: (memberId: string, leadId: string | null) => Promise<void>
 }) {
   if (items.length === 0) return null
   return (
-    <div className="hub-card">
-      <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-3 px-1">{label}</p>
-      <div className="space-y-1">
-        {items.map(m => (
-          <div key={m.id} className="flex items-center justify-between py-2.5 px-1 border-b border-border last:border-0">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-full bg-pink-100 flex items-center justify-center shrink-0">
-                <span className="text-xs font-semibold text-pink-600">
-                  {(m.full_name || m.email)[0].toUpperCase()}
-                </span>
+    <div>
+      <p className="text-[11px] font-bold uppercase tracking-widest mb-4 px-1" style={{ color: '#52b788' }}>{label}</p>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+        {items.map(m => {
+          const status = statuses.find(s => s.user_id === m.id)
+          const isLead = m.role === 'sub_admin'
+          const isSelf = m.id === currentUserId
+          const initials = (m.full_name || m.email).slice(0, 2).toUpperCase()
+          return (
+            <div key={m.id} className={`bg-white rounded-2xl border shadow-sm overflow-hidden flex flex-col ${isSelf ? 'border-[#1a472a] ring-2 ring-[#1a472a]/10' : 'border-gray-100'}`}>
+              {/* Avatar area — full-width cover */}
+              <div className="h-56 overflow-hidden rounded-t-2xl">
+                {m.avatar_url ? (
+                  <img src={m.avatar_url} alt={m.full_name} className="w-full h-full object-cover" />
+                ) : (
+                  <div
+                    className="w-full h-full flex items-center justify-center text-3xl font-bold text-white"
+                    style={{ background: isLead ? 'linear-gradient(135deg, #1a472a, #2d6a4f)' : 'linear-gradient(135deg, #2d6a4f, #52b788)' }}
+                  >
+                    {initials}
+                  </div>
+                )}
               </div>
-              <div>
-                <p className="text-sm font-medium text-foreground">{m.full_name || 'Unnamed'}</p>
-                <p className="text-xs text-muted-foreground">{m.email}{m.department ? ` · ${m.department}` : ''}</p>
+
+              {/* Info */}
+              <div className="px-4 pt-3 pb-4 flex flex-col flex-1">
+                {/* Name + verified badge */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="font-bold text-gray-800 text-[14px] truncate leading-tight">{m.full_name || 'Unnamed'}</span>
+                  <span className={`shrink-0 w-[18px] h-[18px] rounded-full flex items-center justify-center ${isLead ? 'bg-green-500' : 'bg-gray-300'}`}>
+                    <Check className="w-2.5 h-2.5 text-white" />
+                  </span>
+                  {isSelf && (
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md text-white shrink-0" style={{ background: '#1a472a' }}>You</span>
+                  )}
+                </div>
+
+                {/* Designation */}
+                <p className="text-[12px] text-gray-500 mt-0.5 leading-snug">
+                  {m.department || (isLead ? 'Team Lead' : 'Team Member')}
+                </p>
+
+                {/* Assign to lead — admin only, regular members only */}
+                {isAdmin && !isLead && (
+                  <div className="mt-2">
+                    <select
+                      defaultValue={m.managed_by ?? ''}
+                      onChange={e => void onAssign(m.id, e.target.value || null)}
+                      className="w-full text-[11px] px-2 py-1 rounded-lg border border-gray-200 bg-gray-50 focus:border-green-600 focus:outline-none cursor-pointer"
+                      style={{ color: m.managed_by ? '#1a472a' : '#9ca3af' }}
+                    >
+                      <option value="">Unassigned</option>
+                      {teamLeads.map(lead => (
+                        <option key={lead.id} value={lead.id}>
+                          {lead.full_name || lead.email}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Bottom row: report status + actions */}
+                <div className="flex items-center justify-between mt-3 gap-2">
+                  {loading ? (
+                    <span className="h-6 w-20 rounded-full bg-gray-100 animate-pulse inline-block" />
+                  ) : status ? (
+                    status.has_submitted ? (
+                      <span className="flex items-center gap-1 text-[11px] font-semibold text-green-700 bg-green-50 px-2 py-1 rounded-full whitespace-nowrap">
+                        <CheckCircle2 className="w-3 h-3 shrink-0" /> Submitted
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-[11px] font-semibold text-red-600 bg-red-50 px-2 py-1 rounded-full whitespace-nowrap">
+                        <XCircle className="w-3 h-3 shrink-0" /> Pending
+                      </span>
+                    )
+                  ) : (
+                    <span className="text-[11px] text-gray-400">No data</span>
+                  )}
+
+                  {isAdmin && (
+                    <div className="flex gap-1 shrink-0">
+                      <button onClick={() => onEdit(m)} className="p-1.5 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors" title="Edit">
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button onClick={() => onDelete(m)} className="p-1.5 rounded-lg text-gray-400 hover:bg-red-50 hover:text-red-500 transition-colors" title="Remove">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className={`hub-badge ${badge}`}>{label.split(' ')[0]}</span>
-              {isAdmin && (
-                <>
-                  <button
-                    onClick={() => onEdit(m)}
-                    className="p-1.5 rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-                    title="Edit"
-                  >
-                    <Pencil className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => onDelete(m)}
-                    className="p-1.5 rounded-lg text-muted-foreground hover:bg-red-50 hover:text-red-600 transition-colors"
-                    title="Remove"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
     </div>
   )
@@ -887,10 +887,10 @@ function ProjectCard({
           ) : (
             <div className="flex flex-wrap gap-2">
               {assignedMembers.map(m => (
-                <div key={m.id} className="flex items-center gap-1.5 px-2.5 py-1 bg-pink-50 rounded-full">
-                  <Check className="w-3 h-3 text-pink-600" />
-                  <span className="text-xs font-medium text-pink-700">{m.full_name || m.email}</span>
-                  <span className="text-[10px] text-pink-400">
+                <div key={m.id} className="flex items-center gap-1.5 px-2.5 py-1 rounded-full" style={{ background: 'rgba(26,71,42,0.08)' }}>
+                  <Check className="w-3 h-3" style={{ color: '#1a472a' }} />
+                  <span className="text-xs font-medium" style={{ color: '#1a472a' }}>{m.full_name || m.email}</span>
+                  <span className="text-[10px]" style={{ color: '#52b788' }}>
                     {m.role === 'sub_admin' ? 'Lead' : 'Member'}
                   </span>
                 </div>

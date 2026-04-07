@@ -96,6 +96,24 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
+  updateMe: (patch: { full_name?: string; department?: string }) =>
+    request<{ user: AppUser }>("/users/me", {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  uploadAvatar: (file: File) => {
+    const formData = new FormData()
+    formData.append("avatar", file)
+    return fetch(`${API_BASE_URL}/users/me/avatar`, {
+      method: "POST",
+      credentials: "include",
+      body: formData,
+    }).then(async r => {
+      const payload = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(payload.message || "Upload failed.")
+      return payload as { user: AppUser; avatar_url: string }
+    })
+  },
   forgotPassword: (email: string) =>
     request<{ ok: boolean }>("/auth/forgot-password", {
       method: "POST",

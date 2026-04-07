@@ -85,6 +85,13 @@ import {
   getBrandingDesignById,
   castDesignVote,
   getDesignVoters,
+  applyLeave,
+  getUserLeaves,
+  getAllLeaves,
+  reviewLeave,
+  updateLeaveTransfer,
+  cancelLeave,
+  getLeaveForDate,
 } from "./branding-db.js";
 
 const app = express();
@@ -93,6 +100,24 @@ const PgStore = connectPgSimple(session);
 // ── File upload setup ──────────────────────────────────────────────────────
 const UPLOADS_DIR = path.resolve("uploads/branding");
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+const AVATARS_DIR = path.resolve("uploads/avatars");
+fs.mkdirSync(AVATARS_DIR, { recursive: true });
+
+const avatarUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, AVATARS_DIR),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+    },
+  }),
+  limits: { fileSize: 3 * 1024 * 1024 }, // 3 MB
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith("image/")) cb(null, true);
+    else cb(new Error("Only image files are allowed."));
+  },
+});
 
 const designUpload = multer({
   storage: multer.diskStorage({
@@ -405,6 +430,30 @@ app.post("/api/users", asyncHandler(async (req, res) => {
   res.status(201).json({ user });
 }));
 
+// ── Self-update: any logged-in user can update their own name/department ────
+app.patch("/api/users/me", asyncHandler(async (req, res) => {
+  const currentUser = res.locals.currentUser;
+  const schema = z.object({
+    full_name: z.string().min(1).optional(),
+    department: z.string().optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, 400, "Invalid payload.");
+  const updated = await updateUser(currentUser.id, parsed.data);
+  if (!updated) return sendError(res, 404, "User not found.");
+  res.json({ user: updated });
+}));
+
+// ── Avatar upload: any logged-in user uploads their own photo ───────────────
+app.post("/api/users/me/avatar", avatarUpload.single("avatar"), asyncHandler(async (req, res) => {
+  const currentUser = res.locals.currentUser;
+  if (!req.file) return sendError(res, 400, "No file uploaded.");
+  const avatarUrl = `/uploads/avatars/${req.file.filename}`;
+  const updated = await updateUser(currentUser.id, { avatar_url: avatarUrl });
+  if (!updated) return sendError(res, 404, "User not found.");
+  res.json({ user: updated, avatar_url: avatarUrl });
+}));
+
 app.patch("/api/users/:id", asyncHandler(async (req, res) => {
   const userId = getSingleParam(req.params.id);
   const currentUser = res.locals.currentUser;
@@ -690,10 +739,15 @@ app.post("/api/branding/portal/report/:reportId/submit", asyncHandler(async (req
 }));
 
 app.get("/api/branding/portal/reports", asyncHandler(async (req, res) => {
-  if (!requireBrandingAdmin(res)) return;
+  if (!requireBranding(res)) return;
   const q = req.query as Record<string, string>;
+  const user = res.locals.currentUser;
+  // Admins/super can query any userId; regular members can only see their own reports
+  const targetUserId = isBrandingAdminOrSuper(user.role, user.team) && q["userId"]
+    ? q["userId"]
+    : user.id;
   const reports = await listAllDailyReports({
-    userId:      q["userId"]      || undefined,
+    userId:      targetUserId,
     dateFrom:    q["dateFrom"]    || undefined,
     dateTo:      q["dateTo"]      || undefined,
     typeOfWork:  q["typeOfWork"]  || undefined,
@@ -857,7 +911,10 @@ app.get("/api/branding/portal/team/report-status", asyncHandler(async (req, res)
   if (!requireBrandingLead(res)) return;
   const date = getSingleParam((req.query as Record<string, string>).date ?? "");
   if (!date) return sendError(res, 400, "date query param required (YYYY-MM-DD).");
-  const statuses = await getTeamReportStatus(date);
+  const u = res.locals.currentUser;
+  // sub_admin sees only their own managed members; admin/super_admin sees everyone
+  const managedBy = u.role === "sub_admin" ? u.id : null;
+  const statuses = await getTeamReportStatus(date, managedBy);
   res.json({ statuses });
 }));
 
@@ -1004,6 +1061,70 @@ app.delete("/api/branding/portal/projects/:id", asyncHandler(async (req, res) =>
   const ok = await deleteBrandingProject(id);
   if (!ok) return sendError(res, 404, "Project not found.");
   res.json({ ok: true });
+}));
+
+// ── Leave routes ───────────────────────────────────────────────────────────
+
+// Apply for leave (any branding member, today or future only)
+app.post("/api/branding/portal/leave", asyncHandler(async (req, res) => {
+  if (!requireBranding(res)) return;
+  const user = res.locals.currentUser;
+  const { leave_date, reason, transfer_date } = req.body as {
+    leave_date?: string; reason?: string; transfer_date?: string;
+  };
+  if (!leave_date) return sendError(res, 400, "leave_date is required.");
+  const today = new Date().toISOString().split("T")[0];
+  if (leave_date < today) return sendError(res, 400, "Cannot apply leave for a past date.");
+  const leave = await applyLeave(user.id, leave_date, reason || "", transfer_date || undefined);
+  res.status(201).json({ leave });
+}));
+
+// Get leaves — user sees own; admin sees all (optionally filtered by status)
+app.get("/api/branding/portal/leaves", asyncHandler(async (req, res) => {
+  if (!requireBranding(res)) return;
+  const user = res.locals.currentUser;
+  if (isBrandingAdminOrSuper(user.role, user.team)) {
+    const status = typeof req.query["status"] === "string" ? req.query["status"] : undefined;
+    res.json({ leaves: await getAllLeaves(status) });
+  } else {
+    res.json({ leaves: await getUserLeaves(user.id) });
+  }
+}));
+
+// Review a leave (admin: approve/reject) or update transfer_date (user: own pending leave)
+app.patch("/api/branding/portal/leave/:id", asyncHandler(async (req, res) => {
+  if (!requireBranding(res)) return;
+  const user = res.locals.currentUser;
+  const leaveId = getSingleParam(req.params.id);
+  if (isBrandingAdminOrSuper(user.role, user.team)) {
+    const { status } = req.body as { status?: string };
+    if (status !== "approved" && status !== "rejected") return sendError(res, 400, "status must be approved or rejected.");
+    const leave = await reviewLeave(leaveId, user.id, status);
+    if (!leave) return sendError(res, 404, "Leave not found.");
+    res.json({ leave });
+  } else {
+    const { transfer_date } = req.body as { transfer_date?: string | null };
+    const leave = await updateLeaveTransfer(leaveId, user.id, transfer_date ?? null);
+    if (!leave) return sendError(res, 404, "Leave not found or already reviewed.");
+    res.json({ leave });
+  }
+}));
+
+// Cancel own pending leave
+app.delete("/api/branding/portal/leave/:id", asyncHandler(async (req, res) => {
+  if (!requireBranding(res)) return;
+  const user = res.locals.currentUser;
+  const ok = await cancelLeave(getSingleParam(req.params.id), user.id);
+  if (!ok) return sendError(res, 404, "Leave not found or already reviewed.");
+  res.json({ ok: true });
+}));
+
+// Check leave status for a specific date (used by report page)
+app.get("/api/branding/portal/leave/date/:date", asyncHandler(async (req, res) => {
+  if (!requireBranding(res)) return;
+  const user = res.locals.currentUser;
+  const leave = await getLeaveForDate(user.id, getSingleParam(req.params.date));
+  res.json({ leave });
 }));
 
 // ── Start server ───────────────────────────────────────────────────────────
