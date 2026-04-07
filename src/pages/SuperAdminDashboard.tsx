@@ -7,11 +7,23 @@ import {
   Shield, UserCheck, User, Image, FolderKanban, ClipboardCheck,
   ThumbsUp, ThumbsDown, Clock,
 } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { CONTENT_TYPES } from '@/lib/constants'
 import { brandingApi } from '@/lib/branding-api'
 import type { BrandingPortalStats } from '@/lib/branding-types'
+
+const DASHBOARD_TABS = ['overview', 'branding', 'content'] as const
+
+type DashboardTab = (typeof DASHBOARD_TABS)[number]
+
+function isDashboardTab(value: string | null): value is DashboardTab {
+  return value !== null && DASHBOARD_TABS.includes(value as DashboardTab)
+}
+
+function getDashboardTab(value: string | null): DashboardTab {
+  return isDashboardTab(value) ? value : 'overview'
+}
 
 // ── Content team section (unchanged) ──────────────────────────────────────
 
@@ -295,6 +307,12 @@ function BrandingTeamContent({ allUsers }: { allUsers: AppUser[] }) {
 export default function SuperAdminDashboard() {
   const { profile } = useAuth()
   const { users, entries } = useAppData()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const rawTabs = searchParams.getAll('tab')
+  const hasTabParam = rawTabs.length > 0
+  const activeTab = getDashboardTab(rawTabs[0] ?? null)
+  const shouldNormalizeTabParams =
+    hasTabParam && (rawTabs.length !== 1 || rawTabs[0] !== activeTab)
 
   const stats = useMemo(() => ({
     totalUsers:   users.filter(u => u.role !== 'super_admin').length,
@@ -305,6 +323,23 @@ export default function SuperAdminDashboard() {
 
   const contentEntries = useMemo(() =>
     entries.filter(e => (CONTENT_TYPES as readonly string[]).includes(e.type)), [entries])
+
+  useEffect(() => {
+    if (!shouldNormalizeTabParams) return
+
+    const nextParams = new URLSearchParams(searchParams)
+    nextParams.delete('tab')
+    nextParams.set('tab', activeTab)
+    setSearchParams(nextParams, { replace: true })
+  }, [activeTab, searchParams, setSearchParams, shouldNormalizeTabParams])
+
+  function handleTabChange(nextTab: string) {
+    if (!isDashboardTab(nextTab) || nextTab === activeTab) return
+
+    const nextParams = new URLSearchParams(searchParams)
+    nextParams.set('tab', nextTab)
+    setSearchParams(nextParams)
+  }
 
   return (
     <div className="animate-fade-in space-y-5">
@@ -320,7 +355,7 @@ export default function SuperAdminDashboard() {
         </div>
       </div>
 
-      <Tabs defaultValue="overview" className="w-full">
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
         <TabsList className="w-full justify-start gap-1">
           <TabsTrigger value="overview" className="flex items-center gap-1.5">
             <Crown className="w-3.5 h-3.5" /> Overview
