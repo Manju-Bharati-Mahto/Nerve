@@ -5,13 +5,13 @@ import { brandingApi } from '@/lib/branding-api'
 import { MONTHS, timeToHours } from '@/lib/branding-types'
 import type {
   WorkCategory, DailyReport, KraParameter, KraReport,
-  AdminKraScore, PeerMarking,
+  AdminKraScore, PeerMarking, BrandingLeave,
 } from '@/lib/branding-types'
 import {
   Palette, BarChart2, Award, Settings2, Plus, Trash2, Edit3,
   ChevronDown, ChevronUp, Check, AlertTriangle, Lock,
   Download, Users, Filter, ToggleLeft, ToggleRight, X,
-  ArrowUp, ArrowDown,
+  ArrowUp, ArrowDown, CalendarOff,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -270,8 +270,9 @@ function DailyReportsTab({ brandingUsers }: { brandingUsers: { id: string; full_
   const [reports, setReports] = useState<DailyReport[]>([])
   const [loading, setLoading] = useState(false)
   const [filters, setFilters] = useState({
-    userId: '', dateFrom: '', dateTo: '', typeOfWork: '', subCategory: '', lockedOnly: false,
+    userIds: [] as string[], dateFrom: '', dateTo: '', typeOfWork: '', subCategory: '', lockedOnly: false,
   })
+  const [userDropOpen, setUserDropOpen] = useState(false)
   const [categories, setCategories] = useState<WorkCategory[]>([])
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [viewMode, setViewMode] = useState<'all' | 'user' | 'category' | 'summary' | 'collab'>('all')
@@ -280,10 +281,13 @@ function DailyReportsTab({ brandingUsers }: { brandingUsers: { id: string; full_
     brandingApi.getCategories().then(r => setCategories(r.categories)).catch(() => {})
   }, [])
 
+  const toggleUser = (id: string) =>
+    setFilters(p => ({ ...p, userIds: p.userIds.includes(id) ? p.userIds.filter(u => u !== id) : [...p.userIds, id] }))
+
   const loadReports = useCallback(() => {
     setLoading(true)
     brandingApi.getAllReports({
-      userId:      filters.userId      || undefined,
+      userIds:     filters.userIds.length > 0 ? filters.userIds : undefined,
       dateFrom:    filters.dateFrom    || undefined,
       dateTo:      filters.dateTo      || undefined,
       typeOfWork:  filters.typeOfWork  || undefined,
@@ -357,16 +361,47 @@ function DailyReportsTab({ brandingUsers }: { brandingUsers: { id: string; full_
           <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
             <Filter className="w-4 h-4 text-muted-foreground" /> Filters
           </h2>
-          <button onClick={() => setFilters({ userId: '', dateFrom: '', dateTo: '', typeOfWork: '', subCategory: '', lockedOnly: false })}
+          <button onClick={() => { setFilters({ userIds: [], dateFrom: '', dateTo: '', typeOfWork: '', subCategory: '', lockedOnly: false }); setUserDropOpen(false) }}
             className="text-xs text-muted-foreground hover:text-foreground">Reset all</button>
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-          <div>
+          {/* Multi-select user/designer */}
+          <div className="relative">
             <label className="text-xs text-muted-foreground block mb-1">User / Designer</label>
-            <select value={filters.userId} onChange={e => setFilters(p => ({ ...p, userId: e.target.value }))} className={SEL + ' w-full'}>
-              <option value="">All users</option>
-              {brandingUsers.map(u => <option key={u.id} value={u.id}>{u.full_name || u.email}</option>)}
-            </select>
+            <button type="button" onClick={() => setUserDropOpen(o => !o)}
+              className={SEL + ' w-full flex items-center justify-between gap-2'}>
+              <span className="truncate text-sm">
+                {filters.userIds.length === 0
+                  ? 'All users'
+                  : filters.userIds.length === 1
+                    ? (brandingUsers.find(u => u.id === filters.userIds[0])?.full_name || 'Unknown')
+                    : `${filters.userIds.length} selected`}
+              </span>
+              <ChevronDown className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+            </button>
+            {userDropOpen && (
+              <div className="absolute z-50 top-full mt-1 left-0 w-full min-w-[200px] bg-background border border-border rounded-lg shadow-lg py-1 max-h-52 overflow-y-auto">
+                <label className="flex items-center gap-2 px-3 py-1.5 hover:bg-muted/40 cursor-pointer">
+                  <input type="checkbox" checked={filters.userIds.length === 0}
+                    onChange={() => setFilters(p => ({ ...p, userIds: [] }))}
+                    className="w-3.5 h-3.5 accent-pink-500" />
+                  <span className="text-sm">All users</span>
+                </label>
+                <div className="border-t border-border my-1" />
+                {brandingUsers.map(u => (
+                  <label key={u.id} className="flex items-center gap-2 px-3 py-1.5 hover:bg-muted/40 cursor-pointer">
+                    <input type="checkbox" checked={filters.userIds.includes(u.id)}
+                      onChange={() => toggleUser(u.id)}
+                      className="w-3.5 h-3.5 accent-pink-500" />
+                    <span className="text-sm truncate">{u.full_name || u.email}</span>
+                  </label>
+                ))}
+                <div className="border-t border-border mt-1 pt-1 px-2 pb-1">
+                  <button type="button" onClick={() => setUserDropOpen(false)}
+                    className="w-full text-xs text-center text-muted-foreground hover:text-foreground py-0.5">Done</button>
+                </div>
+              </div>
+            )}
           </div>
           <div>
             <label className="text-xs text-muted-foreground block mb-1">Date From</label>
@@ -593,6 +628,9 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
   const [finalPushState, setFinalPushState] = useState<'idle' | 'confirm1' | 'confirm2'>('idle')
   const [peerMarkings, setPeerMarkings] = useState<PeerMarking[]>([])
   const [showPeerMarkings, setShowPeerMarkings] = useState(false)
+  const [userPeerMarkings, setUserPeerMarkings] = useState<PeerMarking[]>([])
+  const [userPeerLoading, setUserPeerLoading] = useState(false)
+  const [detailTab, setDetailTab] = useState<'admin' | 'self' | 'peer'>('admin')
 
   const load = useCallback(() => {
     setLoading(true)
@@ -612,12 +650,17 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
 
   useEffect(() => { load() }, [load])
 
-  // Load admin scores when selecting a user
+  // Load admin scores + peer markings when selecting a user
   useEffect(() => {
     if (!selectedUser) return
     brandingApi.getAdminScore(selectedUser, month, year)
       .then(r => setAdminScores(r.score?.scores || Object.fromEntries(params.map(p => [p.id, 5]))))
       .catch(() => {})
+    setUserPeerLoading(true)
+    brandingApi.getUserPeerMarkings(selectedUser, month, year)
+      .then(r => setUserPeerMarkings(r.markings))
+      .catch(() => {})
+      .finally(() => setUserPeerLoading(false))
   }, [selectedUser, month, year, params])
 
   async function togglePeer(enabled: boolean) {
@@ -685,12 +728,32 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
       {/* Controls */}
       <div className="hub-card flex items-center justify-between flex-wrap gap-4">
         <div className="flex items-center gap-3">
-          <select value={month} onChange={e => setMonth(parseInt(e.target.value))} className={SEL}>
-            {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
-          </select>
-          <select value={year} onChange={e => setYear(parseInt(e.target.value))} className={SEL}>
-            {[2024, 2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
-          </select>
+          {(() => {
+            const now = new Date()
+            const curYear = now.getFullYear()
+            const curMonth = now.getMonth() + 1
+            const years = Array.from({ length: curYear - 2023 }, (_, i) => 2024 + i)
+            return (
+              <>
+                <select value={month} onChange={e => {
+                  const m = parseInt(e.target.value)
+                  if (year === curYear && m > curMonth) return
+                  setMonth(m)
+                }} className={SEL}>
+                  {MONTHS.map((m, i) => (
+                    <option key={m} value={i + 1} disabled={year === curYear && i + 1 > curMonth}>{m}</option>
+                  ))}
+                </select>
+                <select value={year} onChange={e => {
+                  const y = parseInt(e.target.value)
+                  setYear(y)
+                  if (y === curYear && month > curMonth) setMonth(curMonth)
+                }} className={SEL}>
+                  {years.map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
+              </>
+            )
+          })()}
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
@@ -724,7 +787,7 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
               const composite = r.composite_score
               return (
                 <button key={r.user_id}
-                  onClick={() => { setSelectedUser(r.user_id); setFinalPushState('idle') }}
+                  onClick={() => { setSelectedUser(r.user_id); setFinalPushState('idle'); setDetailTab('admin') }}
                   className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${selectedUser === r.user_id ? 'border-pink-400 bg-pink-50/40' : 'border-border hover:border-pink-200 hover:bg-muted/20'}`}>
                   <div className="w-8 h-8 rounded-full bg-pink-100 flex items-center justify-center shrink-0">
                     <span className="text-xs font-semibold text-pink-700">{r.user_name[0]?.toUpperCase()}</span>
@@ -765,7 +828,7 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                   </div>
                 </div>
 
-                {/* Score overview */}
+                {/* Score overview cards */}
                 <div className="grid grid-cols-4 gap-2">
                   {[
                     { label: 'Self Score',   value: scoreAvg(selectedReport.self_appraisal?.scores || null, params)?.toFixed(1) ?? '—', bg: 'bg-pink-50 text-pink-700' },
@@ -780,10 +843,23 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                   ))}
                 </div>
 
+                {/* Detail sub-tabs */}
+                <div className="flex gap-1 bg-muted/30 p-1 rounded-lg w-fit">
+                  {([
+                    { key: 'admin', label: 'Admin Score' },
+                    { key: 'self',  label: 'Self Score' },
+                    { key: 'peer',  label: `Peer Scores (${userPeerMarkings.length})` },
+                  ] as const).map(t => (
+                    <button key={t.key} onClick={() => setDetailTab(t.key)}
+                      className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${detailTab === t.key ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+
                 {/* Admin Scoring */}
-                {!selectedReport.is_final_pushed && params.length > 0 && (
+                {detailTab === 'admin' && !selectedReport.is_final_pushed && params.length > 0 && (
                   <div>
-                    <h4 className="text-sm font-semibold text-foreground mb-3">Admin Score (Editable)</h4>
                     <div className="space-y-3">
                       {params.map(p => (
                         <div key={p.id} className="flex items-center gap-3">
@@ -802,6 +878,84 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                       className="mt-4 w-full py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 disabled:opacity-50 transition-colors">
                       {adminSaving ? 'Saving…' : 'Save Admin Score'}
                     </button>
+                  </div>
+                )}
+                {detailTab === 'admin' && selectedReport.is_final_pushed && (
+                  <p className="text-xs text-muted-foreground text-center py-4">KRA is final-published. Admin scores are locked.</p>
+                )}
+
+                {/* Self Score Detail */}
+                {detailTab === 'self' && (
+                  <div>
+                    {!selectedReport.self_appraisal ? (
+                      <p className="text-sm text-muted-foreground text-center py-6">Member has not submitted self-appraisal yet.</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {params.map(p => {
+                          const score = selectedReport.self_appraisal?.scores[p.id] ?? null
+                          return (
+                            <div key={p.id} className="flex items-center gap-3">
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-medium text-foreground">{p.name}</p>
+                                {p.description && <p className="text-[10px] text-muted-foreground">{p.description}</p>}
+                              </div>
+                              <div className="w-32 h-2 bg-muted rounded-full shrink-0">
+                                <div className="h-full bg-pink-500 rounded-full transition-all"
+                                  style={{ width: score !== null ? `${(score / (p.max_score || 5)) * 100}%` : '0%' }} />
+                              </div>
+                              <span className="text-sm font-semibold text-pink-600 w-10 text-right shrink-0">
+                                {score ?? '—'}<span className="text-xs text-muted-foreground font-normal">/{p.max_score}</span>
+                              </span>
+                            </div>
+                          )
+                        })}
+                        <p className="text-[10px] text-muted-foreground pt-1">
+                          Submitted: {new Date(selectedReport.self_appraisal.submitted_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Peer Scores Detail */}
+                {detailTab === 'peer' && (
+                  <div>
+                    {userPeerLoading ? (
+                      <p className="text-sm text-muted-foreground text-center py-6 animate-pulse">Loading peer markings…</p>
+                    ) : userPeerMarkings.length === 0 ? (
+                      <p className="text-sm text-muted-foreground text-center py-6">No peer markings received for this period.</p>
+                    ) : (
+                      <div className="space-y-4">
+                        {userPeerMarkings.map(pm => (
+                          <div key={pm.id} className="border border-border rounded-xl p-3 space-y-2">
+                            <p className="text-xs font-semibold text-foreground">
+                              From: {pm.reviewer_name || pm.reviewer_id}
+                              <span className="ml-2 text-muted-foreground font-normal">
+                                · Avg: {(Object.values(pm.scores).reduce((a, b) => a + b, 0) / Math.max(Object.keys(pm.scores).length, 1)).toFixed(1)}
+                              </span>
+                            </p>
+                            {params.map(p => {
+                              const score = pm.scores[p.id] ?? null
+                              return (
+                                <div key={p.id} className="flex items-center gap-3">
+                                  <span className="text-xs text-muted-foreground flex-1 truncate">{p.name}</span>
+                                  <div className="w-24 h-1.5 bg-muted rounded-full shrink-0">
+                                    <div className="h-full bg-blue-500 rounded-full transition-all"
+                                      style={{ width: score !== null ? `${(score / (p.max_score || 5)) * 100}%` : '0%' }} />
+                                  </div>
+                                  <span className="text-xs font-semibold text-blue-600 w-8 text-right shrink-0">
+                                    {score ?? '—'}
+                                  </span>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        ))}
+                        <p className="text-[10px] text-muted-foreground">
+                          Average peer score shown in the summary card above is averaged across all {userPeerMarkings.length} reviewer{userPeerMarkings.length !== 1 ? 's' : ''}.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -914,12 +1068,146 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
   )
 }
 
+// ── Leave Management Tab ───────────────────────────────────────────────────
+
+function LeaveManagementTab() {
+  const [leaves, setLeaves] = useState<BrandingLeave[]>([])
+  const [loading, setLoading] = useState(false)
+  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('pending')
+  const [transferEdit, setTransferEdit] = useState<string | null>(null)
+  const [transferVal, setTransferVal] = useState('')
+
+  const load = useCallback(() => {
+    setLoading(true)
+    brandingApi.getLeaves(statusFilter === 'all' ? undefined : statusFilter)
+      .then(r => setLeaves(r.leaves))
+      .catch(() => toast.error('Failed to load leaves'))
+      .finally(() => setLoading(false))
+  }, [statusFilter])
+
+  useEffect(() => { load() }, [load])
+
+  async function handleReview(id: string, status: 'approved' | 'rejected') {
+    try {
+      const res = await brandingApi.reviewLeave(id, status)
+      setLeaves(prev => prev.map(l => l.id === id ? res.leave : l).filter(l => statusFilter === 'all' || l.status === statusFilter || l.id === id))
+      // Reload to reflect filter
+      load()
+      toast.success(status === 'approved' ? 'Leave approved.' : 'Leave rejected.')
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Failed') }
+  }
+
+  async function handleTransferSave(id: string) {
+    try {
+      const res = await brandingApi.updateLeaveTransfer(id, transferVal || null)
+      setLeaves(prev => prev.map(l => l.id === id ? res.leave : l))
+      setTransferEdit(null)
+      toast.success('Transfer date updated.')
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Failed') }
+  }
+
+  const today = new Date().toISOString().split('T')[0]
+
+  return (
+    <div className="space-y-5">
+      {/* Filter bar */}
+      <div className="hub-card flex items-center gap-3 flex-wrap">
+        <span className="text-sm font-semibold text-foreground flex items-center gap-2">
+          <CalendarOff className="w-4 h-4 text-muted-foreground" /> Leave Requests
+        </span>
+        <div className="flex gap-1 bg-muted/40 p-1 rounded-xl ml-auto">
+          {(['pending', 'approved', 'rejected', 'all'] as const).map(s => (
+            <button key={s} onClick={() => setStatusFilter(s)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${statusFilter === s ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
+              {s === 'all' ? 'All' : s}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {loading && <p className="text-sm text-muted-foreground text-center py-10 animate-pulse">Loading…</p>}
+
+      {!loading && leaves.length === 0 && (
+        <p className="text-sm text-muted-foreground text-center py-10">
+          No {statusFilter === 'all' ? '' : statusFilter} leave requests.
+        </p>
+      )}
+
+      {!loading && leaves.length > 0 && (
+        <div className="space-y-3">
+          {leaves.map(lv => (
+            <div key={lv.id} className="hub-card p-4 flex items-start gap-4 border border-border">
+              {/* Avatar */}
+              <div className="w-9 h-9 rounded-full bg-pink-100 flex items-center justify-center shrink-0">
+                <span className="text-xs font-semibold text-pink-700">
+                  {(lv.user_name || lv.user_email || '?')[0].toUpperCase()}
+                </span>
+              </div>
+
+              <div className="flex-1 min-w-0 space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-sm font-semibold text-foreground">{lv.user_name || lv.user_email || lv.user_id}</span>
+                  <span className="text-sm text-muted-foreground">{lv.leave_date}</span>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                    lv.status === 'approved' ? 'bg-green-50 text-green-700' :
+                    lv.status === 'rejected' ? 'bg-red-50 text-red-600' :
+                    'bg-amber-50 text-amber-700'
+                  }`}>
+                    {lv.status.charAt(0).toUpperCase() + lv.status.slice(1)}
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground">{lv.reason || '—'}</p>
+
+                {/* Transfer date — admin editable */}
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-xs text-muted-foreground">Transfer day:</span>
+                  {transferEdit === lv.id ? (
+                    <div className="flex items-center gap-1.5">
+                      <input type="date" value={transferVal} min={today}
+                        onChange={e => setTransferVal(e.target.value)}
+                        className={SEL + ' py-0.5 px-2 text-xs'} />
+                      <button onClick={() => void handleTransferSave(lv.id)}
+                        className="text-xs font-bold text-green-700 hover:text-green-900">Save</button>
+                      <button onClick={() => setTransferEdit(null)}
+                        className="text-xs text-muted-foreground hover:text-foreground">Cancel</button>
+                    </div>
+                  ) : (
+                    <span className="text-xs font-medium text-foreground">
+                      {lv.transfer_date || 'Not set'}
+                      <button onClick={() => { setTransferEdit(lv.id); setTransferVal(lv.transfer_date || '') }}
+                        className="ml-2 text-[10px] text-muted-foreground underline hover:text-foreground">edit</button>
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Approve / Reject — only for pending */}
+              {lv.status === 'pending' && (
+                <div className="flex gap-2 shrink-0">
+                  <button onClick={() => void handleReview(lv.id, 'approved')}
+                    className="px-3 py-1.5 text-xs font-bold text-white rounded-lg bg-green-700 hover:bg-green-800 transition-colors">
+                    Approve
+                  </button>
+                  <button onClick={() => void handleReview(lv.id, 'rejected')}
+                    className="px-3 py-1.5 text-xs font-bold text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors">
+                    Reject
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main Component ─────────────────────────────────────────────────────────
 
 export default function BrandingAdminDashboard() {
   const { profile } = useAuth()
   const { users } = useAppData()
-  const [activeTab, setActiveTab] = useState<'reports' | 'kra' | 'categories'>('reports')
+  const [activeTab, setActiveTab] = useState<'reports' | 'kra' | 'categories' | 'leaves'>('reports')
 
   const brandingUsers = useMemo(() =>
     users.filter(u => u.team === 'branding' && u.role !== 'super_admin')
@@ -943,11 +1231,12 @@ export default function BrandingAdminDashboard() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 bg-muted/40 p-1 rounded-xl w-fit">
+      <div className="flex gap-1 bg-muted/40 p-1 rounded-xl w-fit flex-wrap">
         {[
-          { key: 'reports',    icon: BarChart2, label: 'Daily Reports' },
-          { key: 'kra',        icon: Award,     label: 'KRA Management' },
-          { key: 'categories', icon: Settings2, label: 'Manage Categories' },
+          { key: 'reports',    icon: BarChart2,   label: 'Daily Reports' },
+          { key: 'kra',        icon: Award,       label: 'KRA Management' },
+          { key: 'leaves',     icon: CalendarOff, label: 'Leave Requests' },
+          { key: 'categories', icon: Settings2,   label: 'Manage Categories' },
         ].map(tab => {
           const Icon = tab.icon
           return (
@@ -966,6 +1255,7 @@ export default function BrandingAdminDashboard() {
 
       {activeTab === 'reports'    && <DailyReportsTab    brandingUsers={brandingUsers} />}
       {activeTab === 'kra'        && <KraManagementTab   brandingUsers={brandingUsers} />}
+      {activeTab === 'leaves'     && <LeaveManagementTab />}
       {activeTab === 'categories' && <ManageCategoriesTab />}
     </div>
   )
