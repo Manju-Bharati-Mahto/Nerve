@@ -131,4 +131,25 @@ export const api = {
     }),
   verifyEmail: (token: string) =>
     request<{ ok: boolean }>(`/auth/verify-email?token=${token}`),
+
+  // OTP — public (forgot password on login page)
+  sendOtp: (email: string) =>
+    request<{ ok: boolean }>("/auth/send-otp", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+  verifyOtp: (email: string, otp: string) =>
+    request<{ ok: boolean; token: string }>("/auth/verify-otp", {
+      method: "POST",
+      body: JSON.stringify({ email, otp }),
+    }),
+
+  // OTP — authenticated (profile change password)
+  sendChangeOtp: () =>
+    request<{ ok: boolean }>("/auth/send-change-otp", { method: "POST" }),
+  verifyChangeOtp: (otp: string) =>
+    request<{ ok: boolean; token: string }>("/auth/verify-change-otp", {
+      method: "POST",
+      body: JSON.stringify({ otp }),
+    }),
 };

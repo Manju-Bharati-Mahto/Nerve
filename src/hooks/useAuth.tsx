@@ -22,6 +22,7 @@ interface AuthContextType {
   signIn: (email: string, password: string) => Promise<void>
   signUp: (email: string, password: string, fullName: string) => Promise<void>
   signOut: () => Promise<void>
+  refreshProfile: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType>({} as AuthContextType)
@@ -72,8 +73,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null); setRole(null); setTeam(null)
   }
 
+  async function refreshProfile() {
+    const { user: me } = await api.getMe()
+    if (me) applyRecord(me)
+  }
+
   return (
-    <AuthContext.Provider value={{ user, profile: user, role, team, loading, signIn, signUp, signOut }}>
+    <AuthContext.Provider value={{ user, profile: user, role, team, loading, signIn, signUp, signOut, refreshProfile }}>
       {children}
     </AuthContext.Provider>
   )

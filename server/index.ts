@@ -14,11 +14,14 @@ import {
   consumePasswordResetToken,
   createEmailVerificationToken,
   consumeEmailVerificationToken,
+  createPasswordOtp,
+  verifyPasswordOtp,
 } from "./settings-db.js";
 import {
   sendMail,
   passwordResetEmail,
   emailVerificationMail,
+  passwordOtpEmail,
 } from "./mailer.js";
 import { config } from "./config.js";
 import {
@@ -320,6 +323,61 @@ app.post("/api/auth/reset-password", asyncHandler(async (req, res) => {
   const { hashPassword } = await import("./password.js");
   await updateUser(userId, { password });
   res.json({ ok: true });
+}));
+
+// ── OTP password reset — public (forgot password on login page) ───────────
+
+// Step 1: send OTP to email
+app.post("/api/auth/send-otp", asyncHandler(async (req, res) => {
+  const { email } = req.body as { email?: string };
+  if (!email?.trim()) return sendError(res, 400, "Email is required.");
+  const user = await getUserByEmail(email.trim());
+  if (user) {
+    const otp = await createPasswordOtp(user.id);
+    await sendMail({
+      to: user.email,
+      subject: "Your password reset code — Parul University",
+      html: passwordOtpEmail(user.full_name, otp),
+    });
+  }
+  res.json({ ok: true }); // always 200 to avoid email enumeration
+}));
+
+// Step 2: verify OTP → returns short-lived reset token
+app.post("/api/auth/verify-otp", asyncHandler(async (req, res) => {
+  const { email, otp } = req.body as { email?: string; otp?: string };
+  if (!email?.trim() || !otp?.trim()) return sendError(res, 400, "Email and OTP are required.");
+  const user = await getUserByEmail(email.trim());
+  if (!user) return sendError(res, 400, "Invalid OTP.");
+  const resetToken = await verifyPasswordOtp(user.id, otp.trim());
+  if (!resetToken) return sendError(res, 400, "OTP is incorrect or has expired.");
+  res.json({ ok: true, token: resetToken });
+}));
+
+// ── OTP password change — authenticated (profile settings) ────────────────
+
+// Send OTP to currently logged-in user's own email
+app.post("/api/auth/send-change-otp", asyncHandler(async (req, res) => {
+  const user = await getSessionUser(req as SessionRequest);
+  if (!user) return sendError(res, 401, "Authentication required.");
+  const otp = await createPasswordOtp(user.id);
+  await sendMail({
+    to: user.email,
+    subject: "Your password change code — Parul University",
+    html: passwordOtpEmail(user.full_name, otp),
+  });
+  res.json({ ok: true });
+}));
+
+// Verify OTP → returns reset token
+app.post("/api/auth/verify-change-otp", asyncHandler(async (req, res) => {
+  const user = await getSessionUser(req as SessionRequest);
+  if (!user) return sendError(res, 401, "Authentication required.");
+  const { otp } = req.body as { otp?: string };
+  if (!otp?.trim()) return sendError(res, 400, "OTP is required.");
+  const resetToken = await verifyPasswordOtp(user.id, otp.trim());
+  if (!resetToken) return sendError(res, 400, "OTP is incorrect or has expired.");
+  res.json({ ok: true, token: resetToken });
 }));
 
 // ── Email verification (public) ────────────────────────────────────────────
