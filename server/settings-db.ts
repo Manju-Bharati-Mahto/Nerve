@@ -42,6 +42,18 @@ export async function bootstrapSettingsDatabase() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT false
   `);
 
+  // OTP table for email-verified password reset / password change
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS password_otps (
+      id         TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      otp_hash   TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used       BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   // Seed defaults
   const defaults: Record<string, string> = {
     "site.name":                    "Parul University Knowledge Hub",
@@ -181,4 +193,45 @@ export async function isEmailVerified(userId: string): Promise<boolean> {
     `SELECT email_verified FROM users WHERE id = $1`, [userId]
   );
   return res.rows[0]?.email_verified ?? false;
+}
+
+// ── Password OTP ───────────────────────────────────────────────────────────
+
+/** Create a 6-digit OTP, store its hash (10 min TTL), return raw OTP to email. */
+export async function createPasswordOtp(userId: string): Promise<string> {
+  const otp = String(Math.floor(100000 + Math.random() * 900000));
+  const { createHash } = await import("node:crypto");
+  const hash = createHash("sha256").update(otp).digest("hex");
+  const id = `otp-${Date.now()}-${randomBytes(3).toString("hex")}`;
+
+  await pool.query(
+    `UPDATE password_otps SET used = true WHERE user_id = $1 AND used = false`,
+    [userId]
+  );
+  await pool.query(
+    `INSERT INTO password_otps (id, user_id, otp_hash, expires_at)
+     VALUES ($1, $2, $3, NOW() + interval '10 minutes')`,
+    [id, userId, hash]
+  );
+  return otp;
+}
+
+/**
+ * Verify OTP for a user. If valid, mark used and return a short-lived
+ * password-reset token the client sends in the next step.
+ */
+export async function verifyPasswordOtp(
+  userId: string,
+  otp: string
+): Promise<string | null> {
+  const { createHash } = await import("node:crypto");
+  const hash = createHash("sha256").update(otp).digest("hex");
+  const res = await pool.query<{ id: string }>(
+    `UPDATE password_otps SET used = true
+     WHERE user_id = $1 AND otp_hash = $2 AND used = false AND expires_at > NOW()
+     RETURNING id`,
+    [userId, hash]
+  );
+  if (!res.rows[0]) return null;
+  return createPasswordResetToken(userId);
 }

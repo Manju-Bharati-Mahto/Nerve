@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import {
@@ -5,6 +6,7 @@ import {
   LogOut, BookOpen, MessageSquare, Newspaper,
   Crown, UserCheck, User, Settings, Palette, FileText,
 } from 'lucide-react'
+import ProfileModal from './ProfileModal'
 
 type NavItem = { path: string; label: string; icon: React.ElementType }
 type SectionConfig = { heading?: string; items: NavItem[] }
@@ -122,6 +124,7 @@ export default function AppSidebar() {
   const { profile, role, team, signOut } = useAuth()
   const location = useLocation()
   const isActive = (path: string) => location.pathname === path
+  const [profileOpen, setProfileOpen] = useState(false)
 
   // Branding users and leads have their own full internal sidebar — hide the global one
   if (team === 'branding' && (role === 'user' || role === 'sub_admin')) return null
@@ -188,15 +191,23 @@ export default function AppSidebar() {
       {/* Footer */}
       <div className="p-4 border-t border-border">
         <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${config.iconBg}`}>
-              <BadgeIcon className={`w-3.5 h-3.5 ${config.iconColor}`} />
-            </div>
+          <button
+            onClick={() => setProfileOpen(true)}
+            className="flex items-center gap-2 min-w-0 flex-1 rounded-lg px-1 py-1 hover:bg-accent transition-colors text-left"
+            title="View profile"
+          >
+            {profile?.avatar_url ? (
+              <img src={profile.avatar_url} alt="avatar" className="w-7 h-7 rounded-lg object-cover shrink-0" />
+            ) : (
+              <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${config.iconBg}`}>
+                <BadgeIcon className={`w-3.5 h-3.5 ${config.iconColor}`} />
+              </div>
+            )}
             <div className="min-w-0">
               <p className="text-sm font-medium text-foreground truncate">{profile?.full_name || 'User'}</p>
               <p className="text-[11px] text-muted-foreground">{config.label}</p>
             </div>
-          </div>
+          </button>
           <button
             onClick={signOut}
             className="p-2 rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-colors shrink-0"
@@ -206,6 +217,8 @@ export default function AppSidebar() {
           </button>
         </div>
       </div>
+
+      <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
     </aside>
   )
 }
