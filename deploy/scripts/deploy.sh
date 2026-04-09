@@ -15,7 +15,7 @@ fail() {
 
 mkdir -p "$APP_ROOT" "$RELEASES_DIR"
 
-git config --global --add safe.directory "$APP_ROOT" || fail "unable to mark $APP_ROOT as safe git directory"
+git config --system --add safe.directory "$APP_ROOT" || fail "unable to mark $APP_ROOT as safe git directory"
 
 echo "Deploy source repo: $REPO_URL"
 echo "Deploy source branch: $BRANCH"
@@ -24,16 +24,9 @@ if [ ! -d "$APP_ROOT/.git" ]; then
   git clone --branch "$BRANCH" "$REPO_URL" "$APP_ROOT" || fail "unable to clone $REPO_URL branch $BRANCH into $APP_ROOT"
 fi
 
-git -C "$APP_ROOT" remote set-url origin "$REPO_URL" || fail "unable to set origin to $REPO_URL"
-git -C "$APP_ROOT" fetch origin "$BRANCH" --prune || fail "unable to fetch branch $BRANCH from $REPO_URL"
+git -C "$APP_ROOT" fetch "$REPO_URL" "$BRANCH" --prune || fail "unable to fetch branch $BRANCH from $REPO_URL"
 
-if git -C "$APP_ROOT" show-ref --verify --quiet "refs/heads/$BRANCH"; then
-  git -C "$APP_ROOT" checkout "$BRANCH" || fail "unable to checkout branch $BRANCH"
-else
-  git -C "$APP_ROOT" checkout -B "$BRANCH" "origin/$BRANCH" || fail "unable to create branch $BRANCH from origin/$BRANCH"
-fi
-
-git -C "$APP_ROOT" pull --ff-only origin "$BRANCH" || fail "unable to fast-forward branch $BRANCH from $REPO_URL"
+git -C "$APP_ROOT" checkout -B "$BRANCH" FETCH_HEAD || fail "unable to checkout branch $BRANCH from FETCH_HEAD"
 
 cd "$APP_ROOT"
 

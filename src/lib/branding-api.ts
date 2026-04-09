@@ -49,11 +49,15 @@ export const brandingApi = {
   submitReport: (reportId: string) =>
     req<{ report: DailyReport }>(`/report/${reportId}/submit`, { method: "POST" }),
   getAllReports: (filters?: {
-    userId?: string; dateFrom?: string; dateTo?: string;
+    userId?: string; userIds?: string[]; dateFrom?: string; dateTo?: string;
     typeOfWork?: string; subCategory?: string; collaborator?: string; lockedOnly?: boolean;
   }) => {
     const params = new URLSearchParams();
-    if (filters?.userId)       params.set("userId", filters.userId);
+    if (filters?.userIds && filters.userIds.length > 0) {
+      filters.userIds.forEach(id => params.append("userId", id));
+    } else if (filters?.userId) {
+      params.set("userId", filters.userId);
+    }
     if (filters?.dateFrom)     params.set("dateFrom", filters.dateFrom);
     if (filters?.dateTo)       params.set("dateTo", filters.dateTo);
     if (filters?.typeOfWork)   params.set("typeOfWork", filters.typeOfWork);
@@ -99,6 +103,8 @@ export const brandingApi = {
     req<{ ok: boolean; score: AdminKraScore }>("/kra/admin/final-push", { method: "POST", body: JSON.stringify({ userId, month, year }) }),
   getAllPeerMarkings: (month: number, year: number) =>
     req<{ markings: PeerMarking[] }>(`/kra/admin/peer-markings?month=${month}&year=${year}`),
+  getUserPeerMarkings: (userId: string, month: number, year: number) =>
+    req<{ markings: PeerMarking[] }>(`/kra/admin/user-peer-markings/${userId}?month=${month}&year=${year}`),
 
   // ── Super admin stats ──────────────────────────────────────────────────
   getSuperAdminStats: () =>

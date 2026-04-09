@@ -740,19 +740,33 @@ app.post("/api/branding/portal/report/:reportId/submit", asyncHandler(async (req
 
 app.get("/api/branding/portal/reports", asyncHandler(async (req, res) => {
   if (!requireBranding(res)) return;
-  const q = req.query as Record<string, string>;
+  const q = req.query as Record<string, string | string[]>;
   const user = res.locals.currentUser;
-  // Admins/super can query any userId; regular members can only see their own reports
-  const targetUserId = isBrandingAdminOrSuper(user.role, user.team) && q["userId"]
-    ? q["userId"]
-    : user.id;
+  const isAdmin = isBrandingAdminOrSuper(user.role, user.team);
+
+  // Parse userIds: supports ?userId=id1&userId=id2 (array) or ?userId=id1 (single)
+  let userIds: string[] | undefined;
+  let userId: string | undefined;
+  if (isAdmin) {
+    const raw = q["userId"];
+    if (Array.isArray(raw) && raw.length > 0) {
+      userIds = raw;
+    } else if (typeof raw === "string" && raw) {
+      userIds = [raw];
+    }
+    // If no filter, userIds stays undefined → fetches all branding team
+  } else {
+    userId = user.id;
+  }
+
   const reports = await listAllDailyReports({
-    userId:      targetUserId,
-    dateFrom:    q["dateFrom"]    || undefined,
-    dateTo:      q["dateTo"]      || undefined,
-    typeOfWork:  q["typeOfWork"]  || undefined,
-    subCategory: q["subCategory"] || undefined,
-    collaborator: q["collaborator"] || undefined,
+    userId,
+    userIds,
+    dateFrom:    typeof q["dateFrom"]    === "string" ? q["dateFrom"]    : undefined,
+    dateTo:      typeof q["dateTo"]      === "string" ? q["dateTo"]      : undefined,
+    typeOfWork:  typeof q["typeOfWork"]  === "string" ? q["typeOfWork"]  : undefined,
+    subCategory: typeof q["subCategory"] === "string" ? q["subCategory"] : undefined,
+    collaborator: typeof q["collaborator"] === "string" ? q["collaborator"] : undefined,
     lockedOnly:  q["lockedOnly"] === "true",
   });
   res.json({ reports });
@@ -894,6 +908,15 @@ app.get("/api/branding/portal/kra/admin/peer-markings", asyncHandler(async (req,
   if (!requireBrandingAdmin(res)) return;
   const { month, year } = req.query as { month: string; year: string };
   const markings = await getAllPeerMarkings(parseInt(month), parseInt(year));
+  res.json({ markings });
+}));
+
+// Get peer markings for a specific user (admin view of individual reviewer scores)
+app.get("/api/branding/portal/kra/admin/user-peer-markings/:userId", asyncHandler(async (req, res) => {
+  if (!requireBrandingAdmin(res)) return;
+  const { month, year } = req.query as { month: string; year: string };
+  const userId = getSingleParam(req.params.userId);
+  const markings = await getPeerMarkingsForUser(userId, parseInt(month), parseInt(year));
   res.json({ markings });
 }));
 
@@ -1091,21 +1114,24 @@ app.get("/api/branding/portal/leaves", asyncHandler(async (req, res) => {
   }
 }));
 
-// Review a leave (admin: approve/reject) or update transfer_date (user: own pending leave)
+// Review a leave (admin: approve/reject + update transfer_date); users can only cancel pending
 app.patch("/api/branding/portal/leave/:id", asyncHandler(async (req, res) => {
   if (!requireBranding(res)) return;
   const user = res.locals.currentUser;
   const leaveId = getSingleParam(req.params.id);
-  if (isBrandingAdminOrSuper(user.role, user.team)) {
-    const { status } = req.body as { status?: string };
+  if (!isBrandingAdminOrSuper(user.role, user.team)) {
+    return sendError(res, 403, "Only admins can modify leave records.");
+  }
+  const { status, transfer_date } = req.body as { status?: string; transfer_date?: string | null };
+  if (status) {
     if (status !== "approved" && status !== "rejected") return sendError(res, 400, "status must be approved or rejected.");
     const leave = await reviewLeave(leaveId, user.id, status);
     if (!leave) return sendError(res, 404, "Leave not found.");
     res.json({ leave });
   } else {
-    const { transfer_date } = req.body as { transfer_date?: string | null };
+    // Admin updating transfer_date (no status change)
     const leave = await updateLeaveTransfer(leaveId, user.id, transfer_date ?? null);
-    if (!leave) return sendError(res, 404, "Leave not found or already reviewed.");
+    if (!leave) return sendError(res, 404, "Leave not found.");
     res.json({ leave });
   }
 }));

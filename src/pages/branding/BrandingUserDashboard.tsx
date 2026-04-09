@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
 import { brandingApi } from '@/lib/branding-api'
@@ -163,19 +163,48 @@ function ColleaguesSelect({
   onChange: (v: string[]) => void
 }) {
   const [open, setOpen] = useState(false)
+  const [dropStyle, setDropStyle] = useState<React.CSSProperties>({})
+  const btnRef = useRef<HTMLButtonElement>(null)
+
   const toggle = (id: string) =>
     onChange(value.includes(id) ? value.filter(v => v !== id) : [...value, id])
   const labels = value.map(id => options.find(o => o.id === id)?.label || id)
 
+  const handleOpen = () => {
+    if (!open && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect()
+      setDropStyle({
+        position: 'fixed',
+        top: rect.bottom + 4,
+        left: rect.left,
+        minWidth: Math.max(rect.width, 192),
+        zIndex: 9999,
+      })
+    }
+    setOpen(o => !o)
+  }
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (btnRef.current && !btnRef.current.closest('[data-colleagues-select]')?.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
   return (
-    <div className="relative w-full min-w-[150px]">
-      <button type="button" onClick={() => setOpen(o => !o)}
+    <div className="relative w-full min-w-[150px]" data-colleagues-select="">
+      <button ref={btnRef} type="button" onClick={handleOpen}
         className="w-full flex items-center justify-between gap-1 text-sm px-2 py-1.5 rounded-lg border border-gray-200 hover:border-green-400 transition-colors text-left bg-white">
         <span className="truncate text-xs text-gray-500">{labels.length === 0 ? 'None' : labels.join(', ')}</span>
         <ChevronDown className="w-3.5 h-3.5 shrink-0 text-gray-400" />
       </button>
       {open && (
-        <div className="absolute z-50 top-full mt-1 left-0 min-w-full w-48 bg-white border border-gray-200 rounded-lg shadow-lg py-1 max-h-52 overflow-y-auto">
+        <div style={dropStyle} className="bg-white border border-gray-200 rounded-lg shadow-lg py-1 max-h-52 overflow-y-auto">
           {options.length === 0 && <p className="text-xs text-gray-400 px-3 py-2">No other members</p>}
           {options.map(opt => (
             <label key={opt.id} className="flex items-center gap-2 px-3 py-1.5 hover:bg-green-50 cursor-pointer">
@@ -1620,9 +1649,6 @@ function DailyReportsPage({
   const [leaveReason, setLeaveReason] = useState('')
   const [leaveTransferDate, setLeaveTransferDate] = useState('')
   const [leaveSubmitting, setLeaveSubmitting] = useState(false)
-  const [showTransferEdit, setShowTransferEdit] = useState<string | null>(null)
-  const [transferEditVal, setTransferEditVal] = useState('')
-  const isAdmin = profile?.role === 'admin' || profile?.role === 'super_admin'
 
   const [collabAnalytics, setCollabAnalytics] = useState<Record<string, { hours: number; count: number }>>({})
   const [collabFilter, setCollabFilter] = useState<'day' | 'week' | 'month' | 'custom'>('month')
@@ -1650,10 +1676,10 @@ function DailyReportsPage({
   }, [])
 
   useEffect(() => {
-    brandingApi.getLeaves(isAdmin ? 'pending' : undefined)
+    brandingApi.getLeaves()
       .then(r => setLeaves(r.leaves))
       .catch(() => {})
-  }, [isAdmin])
+  }, [])
 
   useEffect(() => {
     brandingApi.getProjects()
@@ -1800,22 +1826,6 @@ function DailyReportsPage({
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Failed to cancel') }
   }
 
-  async function saveTransferDate(id: string) {
-    try {
-      const res = await brandingApi.updateLeaveTransfer(id, transferEditVal || null)
-      setLeaves(prev => prev.map(l => l.id === id ? res.leave : l))
-      setShowTransferEdit(null)
-      toast.success('Transfer date updated.')
-    } catch (e) { toast.error(e instanceof Error ? e.message : 'Failed to update') }
-  }
-
-  async function reviewLeave(id: string, status: 'approved' | 'rejected') {
-    try {
-      const res = await brandingApi.reviewLeave(id, status)
-      setLeaves(prev => prev.filter(l => l.id !== res.leave.id))
-      toast.success(status === 'approved' ? 'Leave approved.' : 'Leave rejected.')
-    } catch (e) { toast.error(e instanceof Error ? e.message : 'Failed') }
-  }
 
   const todayLeave = leaves.find(l => l.leave_date === selectedDate)
 
@@ -2178,36 +2188,27 @@ function DailyReportsPage({
         </div>
       )}
 
-      {/* ── Leave History (user) / Pending Leave Requests (admin) ─────── */}
+      {/* ── My Leave Requests ──────────────────────────────────────────────── */}
       <div className="bg-white rounded-2xl border border-gray-100 p-5">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>
-            {isAdmin ? 'Pending Leave Requests' : 'My Leave Requests'}
-          </h3>
-          {!isAdmin && (
-            <button
-              onClick={() => { setLeaveDate(today()); setShowLeaveModal(true) }}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition-colors hover:bg-red-50"
-              style={{ border: '1.5px solid #dc2626', color: '#dc2626' }}
-            >
-              <AlertCircle className="w-3 h-3" /> Apply Leave
-            </button>
-          )}
+          <h3 className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>My Leave Requests</h3>
+          <button
+            onClick={() => { setLeaveDate(today()); setShowLeaveModal(true) }}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition-colors hover:bg-red-50"
+            style={{ border: '1.5px solid #dc2626', color: '#dc2626' }}
+          >
+            <AlertCircle className="w-3 h-3" /> Apply Leave
+          </button>
         </div>
 
         {leaves.length === 0 ? (
-          <p className="text-sm text-center py-6" style={{ color: '#52b788' }}>
-            {isAdmin ? 'No pending leave requests.' : 'No leave requests yet.'}
-          </p>
+          <p className="text-sm text-center py-6" style={{ color: '#52b788' }}>No leave requests yet.</p>
         ) : (
           <div className="space-y-3">
             {leaves.map(lv => (
               <div key={lv.id} className="flex items-start gap-4 p-3 rounded-xl border border-gray-100 hover:bg-gray-50 transition-colors">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    {isAdmin && lv.user_name && (
-                      <span className="text-sm font-bold font-serif" style={{ color: '#1a472a' }}>{lv.user_name}</span>
-                    )}
                     <span className="text-sm font-semibold text-gray-700">{lv.leave_date}</span>
                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                       lv.status === 'approved' ? 'bg-blue-100 text-blue-700' :
@@ -2218,46 +2219,14 @@ function DailyReportsPage({
                     </span>
                   </div>
                   <p className="text-xs text-gray-500 mt-0.5">{lv.reason || '—'}</p>
-                  {/* Transfer date row */}
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="text-xs font-semibold text-gray-400">Transfer day:</span>
-                    {showTransferEdit === lv.id ? (
-                      <div className="flex items-center gap-1.5">
-                        <input type="date" value={transferEditVal}
-                          onChange={e => setTransferEditVal(e.target.value)}
-                          min={today()}
-                          className="text-xs border border-gray-200 rounded-lg px-2 py-0.5 focus:outline-none focus:border-green-600" />
-                        <button onClick={() => void saveTransferDate(lv.id)}
-                          className="text-xs font-bold text-green-700 hover:text-green-900">Save</button>
-                        <button onClick={() => setShowTransferEdit(null)}
-                          className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
-                      </div>
-                    ) : (
-                      <span className="text-xs font-semibold" style={{ color: '#1a472a' }}>
-                        {lv.transfer_date || 'Not set'}
-                        {!isAdmin && lv.status === 'pending' && (
-                          <button
-                            onClick={() => { setShowTransferEdit(lv.id); setTransferEditVal(lv.transfer_date || '') }}
-                            className="ml-2 text-[10px] text-gray-400 underline hover:text-green-700"
-                          >edit</button>
-                        )}
-                      </span>
-                    )}
-                  </div>
+                  {lv.transfer_date && (
+                    <p className="text-xs mt-0.5" style={{ color: '#1a472a' }}>
+                      Transfer day: <span className="font-semibold">{lv.transfer_date}</span>
+                    </p>
+                  )}
                 </div>
-
-                {/* Admin actions */}
-                {isAdmin && lv.status === 'pending' && (
-                  <div className="flex gap-2 shrink-0">
-                    <button onClick={() => void reviewLeave(lv.id, 'approved')}
-                      className="px-3 py-1.5 text-xs font-bold text-white rounded-lg"
-                      style={{ background: '#1a472a' }}>Approve</button>
-                    <button onClick={() => void reviewLeave(lv.id, 'rejected')}
-                      className="px-3 py-1.5 text-xs font-bold text-red-600 border border-red-200 rounded-lg hover:bg-red-50">Reject</button>
-                  </div>
-                )}
-                {/* User cancel */}
-                {!isAdmin && lv.status === 'pending' && (
+                {/* User can only cancel pending leaves */}
+                {lv.status === 'pending' && (
                   <button onClick={() => void cancelLeaveById(lv.id)}
                     className="text-xs text-red-400 hover:text-red-600 shrink-0 underline">Cancel</button>
                 )}

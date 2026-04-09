@@ -589,6 +589,7 @@ export async function submitDailyReport(reportId: string, userId: string): Promi
 
 export async function listAllDailyReports(filters?: {
   userId?: string;
+  userIds?: string[];
   dateFrom?: string;
   dateTo?: string;
   typeOfWork?: string;
@@ -605,10 +606,11 @@ export async function listAllDailyReports(filters?: {
   const params: unknown[] = [];
   let idx = 1;
 
-  // When a specific userId is given, filter by that user directly (no team filter needed —
-  // access control is already enforced at the route level).
-  // When no userId is given (admin fetching all), scope to the branding team.
-  if (filters?.userId) {
+  // When specific userId(s) are given, filter directly; otherwise scope to branding team.
+  if (filters?.userIds && filters.userIds.length > 0) {
+    query += ` AND dr.user_id = ANY($${idx++}::uuid[])`;
+    params.push(filters.userIds);
+  } else if (filters?.userId) {
     query += ` AND dr.user_id = $${idx++}`;
     params.push(filters.userId);
   } else {
@@ -1292,12 +1294,12 @@ export async function reviewLeave(
 }
 
 export async function updateLeaveTransfer(
-  leaveId: string, userId: string, transferDate: string | null
+  leaveId: string, _adminId: string, transferDate: string | null
 ): Promise<BrandingLeave | null> {
   const res = await pool.query<LeaveDbRow>(
-    `UPDATE branding_leaves SET transfer_date = $3
-     WHERE id = $1 AND user_id = $2 AND status = 'pending' RETURNING *`,
-    [leaveId, userId, transferDate]
+    `UPDATE branding_leaves SET transfer_date = $2
+     WHERE id = $1 RETURNING *`,
+    [leaveId, transferDate]
   );
   return res.rows[0] ? mapLeave(res.rows[0]) : null;
 }
