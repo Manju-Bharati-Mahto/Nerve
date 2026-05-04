@@ -85,3 +85,80 @@ export function emailVerificationMail(name: string, verifyUrl: string): string {
       <p style="color:#999;font-size:12px">Parul University Knowledge Hub</p>
     </div>`;
 }
+
+// ── TradAI email sender (OTP) ─────────────────────────────────────────────
+
+const TRADAI_API_KEY = process.env.TRADAI_API_KEY ?? "";
+const TRADAI_URL = "https://eapi01.tradai.co/api/v1/email/send";
+
+export async function sendTradAiMail(opts: { to: string; subject: string; html: string }): Promise<void> {
+  const payload = {
+    from: "no-reply@paruluniversity.ac.in",
+    senderName: "Parul University",
+    to: [{ email: opts.to }],
+    subject: opts.subject,
+    trackOpens: false,
+    trackLinks: false,
+    htmlBody: opts.html,
+  };
+  const res = await fetch(TRADAI_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-apikey": TRADAI_API_KEY },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    console.error("TradAI email error:", err);
+    throw new Error(`Failed to send email via TradAI: ${err}`);
+  }
+  console.log(`✅ TradAI email sent to ${opts.to}`);
+}
+
+export async function sendOtpEmail(to: string, name: string, otp: string): Promise<void> {
+  const htmlBody = `
+    <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:24px;background:#f9fafb;border-radius:12px">
+      <div style="text-align:center;margin-bottom:24px">
+        <h2 style="color:#1a1a1a;margin:0">Parul University</h2>
+        <p style="color:#666;margin:4px 0 0">Knowledge Hub — Email Verification</p>
+      </div>
+      <p>Hi <strong>${name || "there"}</strong>,</p>
+      <p>Your account has been created. Please verify your email address using the OTP below:</p>
+      <div style="text-align:center;margin:32px 0">
+        <div style="display:inline-block;background:#1a1a2e;color:#fff;font-size:36px;font-weight:700;letter-spacing:12px;padding:16px 32px;border-radius:12px">
+          ${otp}
+        </div>
+      </div>
+      <p style="color:#666;font-size:13px;text-align:center">
+        This OTP expires in <strong>15 minutes</strong>.<br/>
+        If you did not expect this email, please ignore it.
+      </p>
+      <hr style="border:none;border-top:1px solid #eee;margin:24px 0">
+      <p style="color:#999;font-size:12px;text-align:center">Parul University Knowledge Hub</p>
+    </div>`;
+
+  const payload = {
+    from: "no-reply@paruluniversity.ac.in",
+    senderName: "Parul University",
+    to: [{ email: to }],
+    subject: "Your OTP — Parul University Knowledge Hub",
+    trackOpens: false,
+    trackLinks: false,
+    htmlBody,
+  };
+
+  const res = await fetch(TRADAI_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-apikey": TRADAI_API_KEY,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    console.error("TradAI email error:", err);
+    throw new Error(`Failed to send OTP email: ${err}`);
+  }
+  console.log(`✅ OTP email sent to ${to}`);
+}
