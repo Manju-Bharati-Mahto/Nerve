@@ -39,6 +39,7 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-noreply@parul.ac.in}
+      TRADAI_API_KEY: ${TRADAI_API_KEY}
     volumes:
       - ${UPLOADS_DIR:-/srv/nerve/data/uploads}:/app/uploads
     ports:

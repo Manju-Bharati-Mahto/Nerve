@@ -1,4 +1,5 @@
 import express from "express";
+import rateLimit from "express-rate-limit";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import multer from "multer";
@@ -140,6 +141,15 @@ const designUpload = multer({
 app.set("trust proxy", 1);
 app.use("/uploads", express.static(path.resolve("uploads")));
 app.use(express.json());
+
+// ── Security headers (VAPT TDL-003: missing headers, TDL-005: clickjacking) ─
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  next();
+});
+
 app.use(
   session({
     store: new PgStore({
@@ -240,6 +250,31 @@ function getSingleParam(value: string | string[]) {
   return Array.isArray(value) ? value[0] : value;
 }
 
+// ── Rate limiters (VAPT TDL-001: OTP brute-force / login throttling) ───────
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { message: "Too many login attempts. Please try again in 15 minutes." },
+});
+
+const otpSendLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { message: "Too many OTP requests. Please try again in 15 minutes." },
+});
+
+const otpVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { message: "Too many verification attempts. Please try again in 15 minutes." },
+});
+
 async function getSessionUser(req: SessionRequest) {
   if (!req.session.userId) return null;
   return getUserById(req.session.userId);
@@ -268,7 +303,7 @@ app.get("/api/auth/me", asyncHandler(async (req, res) => {
   res.json({ user: user ? { ...user, password_hash: undefined } : null });
 }));
 
-app.post("/api/auth/login", asyncHandler(async (req, res) => {
+app.post("/api/auth/login", loginLimiter, asyncHandler(async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, "Invalid login payload.");
 
@@ -297,7 +332,7 @@ app.post("/api/auth/logout", (req, res) => {
 
 // ── Forgot / Reset password (public) ──────────────────────────────────────
 
-app.post("/api/auth/forgot-password", asyncHandler(async (req, res) => {
+app.post("/api/auth/forgot-password", otpSendLimiter, asyncHandler(async (req, res) => {
   const { email } = req.body as { email?: string };
   if (!email?.trim()) return sendError(res, 400, "Email is required.");
   // Always return 200 to prevent email enumeration
@@ -328,7 +363,7 @@ app.post("/api/auth/reset-password", asyncHandler(async (req, res) => {
 // ── OTP password reset — public (forgot password on login page) ───────────
 
 // Step 1: send OTP to email
-app.post("/api/auth/send-otp", asyncHandler(async (req, res) => {
+app.post("/api/auth/send-otp", otpSendLimiter, asyncHandler(async (req, res) => {
   const { email } = req.body as { email?: string };
   if (!email?.trim()) return sendError(res, 400, "Email is required.");
   const user = await getUserByEmail(email.trim());
@@ -344,7 +379,7 @@ app.post("/api/auth/send-otp", asyncHandler(async (req, res) => {
 }));
 
 // Step 2: verify OTP → returns short-lived reset token
-app.post("/api/auth/verify-otp", asyncHandler(async (req, res) => {
+app.post("/api/auth/verify-otp", otpVerifyLimiter, asyncHandler(async (req, res) => {
   const { email, otp } = req.body as { email?: string; otp?: string };
   if (!email?.trim() || !otp?.trim()) return sendError(res, 400, "Email and OTP are required.");
   const user = await getUserByEmail(email.trim());
