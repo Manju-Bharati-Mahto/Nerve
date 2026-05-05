@@ -15,7 +15,9 @@ fail() {
 
 mkdir -p "$APP_ROOT" "$RELEASES_DIR"
 
-git config --system --add safe.directory "$APP_ROOT" || fail "unable to mark $APP_ROOT as safe git directory"
+# Use --global (per-user) so the deploy doesn't need root for /etc/gitconfig.
+# Idempotent: running multiple times just appends another (deduplicated) entry.
+git config --global --add safe.directory "$APP_ROOT" || fail "unable to mark $APP_ROOT as safe git directory"
 
 echo "Deploy source repo: $REPO_URL"
 echo "Deploy source branch: $BRANCH"
