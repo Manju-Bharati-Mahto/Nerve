@@ -173,7 +173,7 @@ type SessionRequest = express.Request & {
   session: express.Request["session"] & { userId?: string };
 };
 
-const roles = ["super_admin", "admin", "sub_admin", "user"] as const;
+const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager"] as const;
 
 const loginSchema = z.object({
   email: z.string().email(),
