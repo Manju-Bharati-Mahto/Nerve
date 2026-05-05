@@ -272,7 +272,7 @@ export async function bootstrapDatabase() {
       full_name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
       department TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user')),
+      role TEXT NOT NULL CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager')),
       team TEXT REFERENCES teams(id) ON DELETE SET NULL,
       managed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
       password_hash TEXT NOT NULL,
@@ -284,6 +284,16 @@ export async function bootstrapDatabase() {
   // Add avatar_url column if it doesn't exist (safe migration)
   await pool.query(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT DEFAULT NULL
+  `);
+
+  // Widen role CHECK constraint to include outreach_manager (safe migration)
+  await pool.query(`
+    DO $$
+    BEGIN
+      ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
+      ALTER TABLE users ADD CONSTRAINT users_role_check
+        CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager'));
+    END $$;
   `);
 
   await pool.query(`

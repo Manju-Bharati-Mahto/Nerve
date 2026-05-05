@@ -4,7 +4,7 @@ import type { TeamRecord, AppUser } from '@/lib/app-types'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
 import { getErrorMessage } from '@/lib/error-utils'
-import { Crown, Shield, UserCheck, User, Search, RefreshCw, Plus, Trash2, Layers } from 'lucide-react'
+import { Crown, Shield, UserCheck, User, Search, RefreshCw, Plus, Trash2, Layers, Megaphone } from 'lucide-react'
 import type { AppRole } from '@/lib/constants'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -15,6 +15,7 @@ const ROLE_CFG: Record<AppRole, { label: string; icon: React.ElementType; color:
   admin: { label: 'Admin', icon: Shield, color: 'text-blue-600', bg: 'bg-blue-100' },
   sub_admin: { label: 'Team Lead', icon: UserCheck, color: 'text-teal-600', bg: 'bg-teal-100' },
   user: { label: 'Member', icon: User, color: 'text-green-600', bg: 'bg-green-100' },
+  outreach_manager: { label: 'Outreach Manager', icon: Megaphone, color: 'text-orange-600', bg: 'bg-orange-100' },
 }
 
 const BLANK_USER = { full_name: '', email: '', password: '', department: '' }
@@ -30,7 +31,7 @@ const CUSTOM_COLORS = [
 ]
 
 const ROLE_LABEL: Record<AppRole, string> = {
-  super_admin: 'Super Admin', admin: 'Admin', sub_admin: 'Team Lead', user: 'Member',
+  super_admin: 'Super Admin', admin: 'Admin', sub_admin: 'Team Lead', user: 'Member', outreach_manager: 'Outreach Manager',
 }
 
 function UserRow({
@@ -69,13 +70,14 @@ function UserRow({
       {!isSelf && (
         <div className="flex gap-2 shrink-0 items-center">
           <select
-            className="hub-input text-xs py-1 w-28"
+            className="hub-input text-xs py-1 w-36"
             value={u.role}
             onChange={e => onUpdate(u.id, e.target.value as AppRole, u.team)}
           >
             <option value="user">Member</option>
             <option value="sub_admin">Team Lead</option>
             <option value="admin">Admin</option>
+            <option value="outreach_manager">Outreach Manager</option>
           </select>
           <select
             className="hub-input text-xs py-1 w-32"
@@ -215,6 +217,7 @@ export default function SuperAdminUsers() {
 
   const roleGroups: { role: AppRole; label: string; addLabel: string }[] = [
     { role: 'admin', label: 'Admins', addLabel: 'Add Admin' },
+    { role: 'outreach_manager', label: 'Outreach Managers', addLabel: 'Add Outreach Manager' },
     { role: 'sub_admin', label: 'Team Leads', addLabel: 'Add Team Lead' },
     { role: 'user', label: 'Members', addLabel: 'Add Member' },
   ]

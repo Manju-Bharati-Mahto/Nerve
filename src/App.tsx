@@ -40,6 +40,17 @@ import ContentAdminDashboard from "@/pages/content/ContentAdminDashboard";
 import ContentSubAdminDashboard from "@/pages/content/ContentSubAdminDashboard";
 import ContentUserDashboard from "@/pages/content/ContentUserDashboard";
 
+// Outreach team
+import OutreachDashboard from "@/pages/outreach/OutreachDashboard";
+import OutreachCampaigns from "@/pages/outreach/OutreachCampaigns";
+import OutreachCampaignDetail from "@/pages/outreach/OutreachCampaignDetail";
+import OutreachCalendar from "@/pages/outreach/OutreachCalendar";
+import OutreachAnalytics from "@/pages/outreach/OutreachAnalytics";
+import OutreachAllPages from "@/pages/outreach/OutreachAllPages";
+import OutreachCreators from "@/pages/outreach/OutreachCreators";
+import OutreachPageDetail from "@/pages/outreach/OutreachPageDetail";
+import OutreachAI from "@/pages/outreach/OutreachAI";
+
 import NotFound from "./pages/NotFound.tsx";
 
 const queryClient = new QueryClient();
@@ -125,6 +136,53 @@ const App = () => (
               <Route path="/content/team" element={
                 <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="content">
                   <TeamPanel />
+                </RoleGuard>
+              } />
+
+              {/* ── Outreach team routes ── */}
+              <Route path="/outreach/dashboard" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
+                  <OutreachDashboard />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/campaigns" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
+                  <OutreachCampaigns />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/campaigns/:campaignId" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
+                  <OutreachCampaignDetail />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/calendar" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
+                  <OutreachCalendar />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/analytics" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
+                  <OutreachAnalytics />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/pages" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
+                  <OutreachAllPages />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/creators" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
+                  <OutreachCreators />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/creators/:pageId" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
+                  <OutreachPageDetail />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/ai" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
+                  <OutreachAI />
                 </RoleGuard>
               } />
 
