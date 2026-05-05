@@ -1,4 +1,4 @@
-export type SeedRole = "super_admin" | "admin" | "sub_admin" | "user";
+export type SeedRole = "super_admin" | "admin" | "sub_admin" | "user" | "outreach_manager";
 
 export interface SeedTeam {
   id: string;
@@ -39,6 +39,7 @@ export interface SeedEntry {
 export const BUILT_IN_TEAMS: SeedTeam[] = [
   { id: "branding", name: "Branding", color: "pink", isBuiltIn: true },
   { id: "content", name: "Content", color: "blue", isBuiltIn: true },
+  { id: "outreach", name: "Outreach", color: "orange", isBuiltIn: true },
 ];
 
 export const SUPER_ADMIN_SEED_ID = "sa-001";
@@ -119,6 +120,16 @@ export const SEED_USERS: SeedUser[] = [
     role: "user",
     team: "content",
     managed_by: "cs-001",
+  },
+  {
+    id: "om-001",
+    full_name: "Outreach Manager",
+    email: "outreach-manager@parul.ac.in",
+    password: "outreach123",
+    department: "University-Wide",
+    role: "outreach_manager",
+    team: "outreach",
+    managed_by: null,
   },
 ];
 

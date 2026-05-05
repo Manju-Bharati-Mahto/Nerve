@@ -5,6 +5,7 @@ import {
   LayoutDashboard, Search, PlusCircle, Users, Download,
   LogOut, BookOpen, MessageSquare, Newspaper,
   Crown, UserCheck, User, Settings, Palette, FileText,
+  Megaphone, Send, Calendar, BarChart3, Sparkles,
 } from 'lucide-react'
 import ProfileModal from './ProfileModal'
 
@@ -114,6 +115,22 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/ai/newsletter', label: 'Newsletter', icon: Newspaper },
     ]},
   ]),
+
+  'outreach_manager:outreach': cfg('Outreach Manager', Megaphone, 'text-orange-600', 'bg-orange-100', [
+    { items: [
+      { path: '/outreach/dashboard', label: 'Dashboard',  icon: LayoutDashboard },
+      { path: '/outreach/campaigns', label: 'Campaigns',  icon: Send },
+      { path: '/outreach/calendar',  label: 'Calendar',   icon: Calendar },
+      { path: '/outreach/analytics', label: 'Analytics',  icon: BarChart3 },
+    ]},
+    { heading: 'Content', items: [
+      { path: '/outreach/pages',    label: 'All Pages', icon: FileText },
+      { path: '/outreach/creators', label: 'Creators',  icon: Users },
+    ]},
+    { heading: 'AI', items: [
+      { path: '/outreach/ai', label: 'AI', icon: Sparkles },
+    ]},
+  ]),
 }
 
 const FALLBACK: RoleConfig = cfg('User', User, 'text-muted-foreground', 'bg-muted', [
@@ -154,7 +171,10 @@ export default function AppSidebar() {
         <div className={`mx-3 mt-3 px-3 py-2 rounded-lg flex items-center gap-2 ${config.iconBg}`}>
           <BadgeIcon className={`w-3.5 h-3.5 ${config.iconColor}`} />
           <span className={`text-xs font-semibold ${config.iconColor}`}>
-            {team === 'branding' ? 'Branding Team' : 'Content Team'}
+            {team === 'branding' ? 'Branding Team'
+              : team === 'content' ? 'Content Team'
+              : team === 'outreach' ? 'Outreach Team'
+              : `${team.charAt(0).toUpperCase()}${team.slice(1)} Team`}
           </span>
         </div>
       )}

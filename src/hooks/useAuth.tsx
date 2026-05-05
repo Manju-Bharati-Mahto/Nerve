@@ -89,9 +89,10 @@ export const useAuth = () => useContext(AuthContext)
 
 /** Home route based on role + team */
 export function getRoleDashboard(role: AppRole | null, team: AppTeam | null): string {
-  if (role === 'super_admin') return '/super-admin/dashboard'
-  if (role === 'admin')       return team === 'content' ? '/content/dashboard'   : '/branding/dashboard'
-  if (role === 'sub_admin')   return team === 'content' ? '/content/sub-admin'   : '/branding/sub-admin'
-  if (role === 'user')        return team === 'content' ? '/content/user'        : '/branding/user'
+  if (role === 'super_admin')      return '/super-admin/dashboard'
+  if (role === 'outreach_manager') return '/outreach/dashboard'
+  if (role === 'admin')            return team === 'content' ? '/content/dashboard'   : '/branding/dashboard'
+  if (role === 'sub_admin')        return team === 'content' ? '/content/sub-admin'   : '/branding/sub-admin'
+  if (role === 'user')             return team === 'content' ? '/content/user'        : '/branding/user'
   return '/login'
 }

@@ -41,9 +41,9 @@ export const ENTRY_TYPES = [...BRANDING_TYPES, ...CONTENT_TYPES]
 
 export const PRIORITIES = ['Normal', 'High', 'Key highlight'] as const
 
-export const ROLES = ['super_admin', 'admin', 'sub_admin', 'user'] as const
+export const ROLES = ['super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager'] as const
 export type AppRole = typeof ROLES[number]
 
-export const TEAMS = ['branding', 'content'] as const
+export const TEAMS = ['branding', 'content', 'outreach'] as const
 export type BuiltInTeam = typeof TEAMS[number]
 export type AppTeam = string  // BuiltInTeam or any custom team slug
