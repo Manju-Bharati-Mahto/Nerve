@@ -416,7 +416,7 @@ function normalizeDate(raw: string): string | null {
   const s = raw.trim()
   if (!s) return null
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
-  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/)
+  const m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/)
   if (!m) return null
   const [, d, mo, y] = m
   const yyyy = y.length === 2 ? `20${y}` : y
