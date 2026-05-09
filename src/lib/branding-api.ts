@@ -51,6 +51,7 @@ export const brandingApi = {
   getAllReports: (filters?: {
     userId?: string; userIds?: string[]; dateFrom?: string; dateTo?: string;
     typeOfWork?: string; subCategory?: string; collaborator?: string; lockedOnly?: boolean;
+    teamScope?: boolean;
   }) => {
     const params = new URLSearchParams();
     if (filters?.userIds && filters.userIds.length > 0) {
@@ -64,6 +65,7 @@ export const brandingApi = {
     if (filters?.subCategory)  params.set("subCategory", filters.subCategory);
     if (filters?.collaborator) params.set("collaborator", filters.collaborator);
     if (filters?.lockedOnly)   params.set("lockedOnly", "true");
+    if (filters?.teamScope)    params.set("scope", "team");
     const qs = params.toString();
     return req<{ reports: DailyReport[] }>(`/reports${qs ? `?${qs}` : ""}`);
   },
@@ -99,6 +101,11 @@ export const brandingApi = {
     req<{ score: AdminKraScore | null }>(`/kra/admin/score/${userId}/${month}/${year}`),
   setAdminScore: (userId: string, month: number, year: number, scores: Record<string, number>) =>
     req<{ score: AdminKraScore }>("/kra/admin/score", { method: "POST", body: JSON.stringify({ userId, month, year, scores }) }),
+  setAdminPenalty: (userId: string, month: number, year: number, penalty_percent: number, reason: string) =>
+    req<{ score: AdminKraScore }>("/kra/admin/penalty", {
+      method: "POST",
+      body: JSON.stringify({ userId, month, year, penalty_percent, reason }),
+    }),
   finalPush: (userId: string, month: number, year: number) =>
     req<{ ok: boolean; score: AdminKraScore }>("/kra/admin/final-push", { method: "POST", body: JSON.stringify({ userId, month, year }) }),
   getAllPeerMarkings: (month: number, year: number) =>
@@ -147,7 +154,7 @@ export const brandingApi = {
     req<{ voters: DesignVoter[] }>(`/designs/${id}/voters`),
 
   // ── Leaves ─────────────────────────────────────────────────────────────
-  applyLeave: (data: { leave_date: string; reason: string; transfer_date?: string }) =>
+  applyLeave: (data: { start_at: string; end_at: string; reason: string; transfer_date?: string }) =>
     req<{ leave: BrandingLeave }>("/leave", { method: "POST", body: JSON.stringify(data) }),
   getLeaves: (status?: string) => {
     const qs = status ? `?status=${status}` : "";
