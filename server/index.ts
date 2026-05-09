@@ -74,6 +74,7 @@ import {
   getAllPeerMarkings,
   getAdminKraScore,
   setAdminKraScore,
+  setAdminManualPenalty,
   finalPushKra,
   getKraReport,
   getAdminKraDashboard,
@@ -801,6 +802,10 @@ const saveRowsSchema = z.object({
     specific_work: z.string(),
     time_taken: z.string(),
     collaborative_colleagues: z.array(z.string()).default([]),
+    stopwatch_status: z.enum(['idle', 'running', 'paused', 'finished']).optional(),
+    elapsed_seconds: z.number().int().min(0).optional(),
+    stopwatch_started_at: z.string().nullable().optional(),
+    carried_over_from_row_id: z.string().nullable().optional(),
   })),
 });
 
@@ -836,11 +841,12 @@ app.get("/api/branding/portal/reports", asyncHandler(async (req, res) => {
   const q = req.query as Record<string, string | string[]>;
   const user = res.locals.currentUser;
   const isAdmin = isBrandingAdminOrSuper(user.role, user.team);
+  const teamScope = q["scope"] === "team"; // non-admin members may opt-in for live-collab UI
 
   // Parse userIds: supports ?userId=id1&userId=id2 (array) or ?userId=id1 (single)
   let userIds: string[] | undefined;
   let userId: string | undefined;
-  if (isAdmin) {
+  if (isAdmin || teamScope) {
     const raw = q["userId"];
     if (Array.isArray(raw) && raw.length > 0) {
       userIds = raw;
@@ -951,7 +957,15 @@ app.get("/api/branding/portal/kra/report/:userId/:month/:year", asyncHandler(asy
   if (!report) return sendError(res, 404, "KRA report not found.");
   // Non-admins only see composite if final-pushed
   if (!isBrandingAdminOrSuper(currentUser.role, currentUser.team) && !report.is_final_pushed) {
-    return res.json({ report: { ...report, peer_average: {}, admin_score: null, composite_score: null } });
+    return res.json({
+      report: {
+        ...report,
+        peer_average: {},
+        admin_score: null,
+        composite_score: null,
+        composite_score_after_penalty: null,
+      },
+    });
   }
   res.json({ report });
 }));
@@ -981,6 +995,21 @@ app.post("/api/branding/portal/kra/admin/score", asyncHandler(async (req, res) =
   const adminScore = await getAdminKraScore(userId, month, year);
   if (adminScore?.is_final_pushed) return sendError(res, 403, "KRA is already final-pushed and locked.");
   const score = await setAdminKraScore(userId, month, year, scores, res.locals.currentUser.id);
+  res.json({ score });
+}));
+
+app.post("/api/branding/portal/kra/admin/penalty", asyncHandler(async (req, res) => {
+  if (!requireBrandingAdmin(res)) return;
+  const { userId, month, year, penalty_percent, reason } = z.object({
+    userId: z.string(),
+    month:  z.number().int().min(1).max(12),
+    year:   z.number().int().min(2020),
+    penalty_percent: z.number().min(0).max(100),
+    reason: z.string().optional().default(''),
+  }).parse(req.body);
+  const existing = await getAdminKraScore(userId, month, year);
+  if (existing?.is_final_pushed) return sendError(res, 403, "KRA is already final-pushed and locked.");
+  const score = await setAdminManualPenalty(userId, month, year, penalty_percent, reason);
   res.json({ score });
 }));
 
@@ -1185,14 +1214,27 @@ app.delete("/api/branding/portal/projects/:id", asyncHandler(async (req, res) =>
 app.post("/api/branding/portal/leave", asyncHandler(async (req, res) => {
   if (!requireBranding(res)) return;
   const user = res.locals.currentUser;
-  const { leave_date, reason, transfer_date } = req.body as {
-    leave_date?: string; reason?: string; transfer_date?: string;
+  const body = req.body as {
+    start_at?: string; end_at?: string;
+    leave_date?: string;       // legacy clients (single full-day leave)
+    reason?: string; transfer_date?: string;
   };
-  if (!leave_date) return sendError(res, 400, "leave_date is required.");
+  let startAt = body.start_at;
+  let endAt = body.end_at;
+  if (!startAt || !endAt) {
+    if (!body.leave_date) return sendError(res, 400, "start_at and end_at (or leave_date) are required.");
+    startAt = `${body.leave_date}T09:00:00.000Z`;
+    endAt   = `${body.leave_date}T17:00:00.000Z`;
+  }
+  const startDate = startAt.split("T")[0];
   const today = new Date().toISOString().split("T")[0];
-  if (leave_date < today) return sendError(res, 400, "Cannot apply leave for a past date.");
-  const leave = await applyLeave(user.id, leave_date, reason || "", transfer_date || undefined);
-  res.status(201).json({ leave });
+  if (startDate < today) return sendError(res, 400, "Cannot apply leave for a past date.");
+  try {
+    const leave = await applyLeave(user.id, startAt, endAt, body.reason || "", body.transfer_date || undefined);
+    res.status(201).json({ leave });
+  } catch (e) {
+    return sendError(res, 400, e instanceof Error ? e.message : "Invalid leave window.");
+  }
 }));
 
 // Get leaves — user sees own; admin sees all (optionally filtered by status)

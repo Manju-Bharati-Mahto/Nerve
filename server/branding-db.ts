@@ -36,6 +36,8 @@ export interface DailyReport {
   user_email?: string;
 }
 
+export type StopwatchStatus = 'idle' | 'running' | 'paused' | 'finished';
+
 export interface DailyReportRow {
   id: string;
   report_id: string;
@@ -46,6 +48,10 @@ export interface DailyReportRow {
   time_taken: string;
   collaborative_colleagues: string[];
   created_at: string;
+  stopwatch_status: StopwatchStatus;
+  elapsed_seconds: number;
+  stopwatch_started_at: string | null;
+  carried_over_from_row_id: string | null;
 }
 
 export interface SaveRowInput {
@@ -55,6 +61,10 @@ export interface SaveRowInput {
   specific_work: string;
   time_taken: string;
   collaborative_colleagues: string[];
+  stopwatch_status?: StopwatchStatus;
+  elapsed_seconds?: number;
+  stopwatch_started_at?: string | null;
+  carried_over_from_row_id?: string | null;
 }
 
 export interface KraParameter {
@@ -95,6 +105,8 @@ export interface AdminKraScore {
   pushed_at: string | null;
   pushed_by: string | null;
   updated_at: string;
+  manual_penalty_percent: number;   // Admin-applied penalty (% off composite)
+  manual_penalty_reason: string;
 }
 
 export interface KraReport {
@@ -107,13 +119,27 @@ export interface KraReport {
   peer_count: number;
   admin_score: AdminKraScore | null;
   composite_score: number | null;
+  expected_report_days: number;
+  submitted_report_days: number;
+  missed_report_days: number;
+  penalty_percent: number;            // auto-penalty from missed reports
+  manual_penalty_percent: number;     // admin-applied additional penalty
+  manual_penalty_reason: string;
+  total_penalty_percent: number;      // auto + manual (capped at 100)
+  composite_score_after_penalty: number | null;
   is_final_pushed: boolean;
 }
+
+export type HalfDayPeriod = 'first' | 'second';
 
 export interface BrandingLeave {
   id: string;
   user_id: string;
-  leave_date: string;          // YYYY-MM-DD
+  leave_date: string;          // YYYY-MM-DD (day portion of start_at)
+  start_at: string;            // ISO datetime — start of leave window
+  end_at: string;              // ISO datetime — end of leave window
+  is_half_day: boolean;
+  half_day_period: HalfDayPeriod | null; // 'first' (9-1) | 'second' (2-5) | null
   reason: string;
   status: 'pending' | 'approved' | 'rejected';
   transfer_date: string | null; // YYYY-MM-DD — day the user will compensate
@@ -296,6 +322,29 @@ export async function bootstrapBrandingDatabase() {
     )
   `);
 
+  // ── Migration: stopwatch fields on daily_report_rows ─────────────────────
+  await pool.query(`ALTER TABLE daily_report_rows ADD COLUMN IF NOT EXISTS stopwatch_status TEXT NOT NULL DEFAULT 'idle'`);
+  await pool.query(`ALTER TABLE daily_report_rows ADD COLUMN IF NOT EXISTS elapsed_seconds INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE daily_report_rows ADD COLUMN IF NOT EXISTS stopwatch_started_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE daily_report_rows ADD COLUMN IF NOT EXISTS carried_over_from_row_id TEXT`);
+
+  // ── Migration: manual penalty on admin_kra_scores ────────────────────────
+  await pool.query(`ALTER TABLE admin_kra_scores ADD COLUMN IF NOT EXISTS manual_penalty_percent NUMERIC(5,2) NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE admin_kra_scores ADD COLUMN IF NOT EXISTS manual_penalty_reason TEXT NOT NULL DEFAULT ''`);
+
+  // ── Migration: half-day + datetime range on branding_leaves ──────────────
+  await pool.query(`ALTER TABLE branding_leaves ADD COLUMN IF NOT EXISTS start_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE branding_leaves ADD COLUMN IF NOT EXISTS end_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE branding_leaves ADD COLUMN IF NOT EXISTS is_half_day BOOLEAN NOT NULL DEFAULT false`);
+  await pool.query(`ALTER TABLE branding_leaves ADD COLUMN IF NOT EXISTS half_day_period TEXT`);
+  // Backfill start_at / end_at for legacy single-date rows
+  await pool.query(`
+    UPDATE branding_leaves
+       SET start_at = (leave_date::timestamp + INTERVAL '9 hours'),
+           end_at   = (leave_date::timestamp + INTERVAL '17 hours')
+     WHERE start_at IS NULL
+  `);
+
   await seedBrandingDefaults();
 }
 
@@ -400,6 +449,10 @@ interface ReportRowDb {
   id: string; report_id: string; sr_no: number;
   type_of_work: string; sub_category: string; specific_work: string;
   time_taken: string; collaborative_colleagues: string[]; created_at: string;
+  stopwatch_status: StopwatchStatus;
+  elapsed_seconds: number;
+  stopwatch_started_at: string | null;
+  carried_over_from_row_id: string | null;
 }
 interface KraParamRow {
   id: string; name: string; description: string; max_score: number; sort_order: number;
@@ -417,6 +470,8 @@ interface AdminKraRow {
   id: string; user_id: string; month: number; year: number;
   scores: Record<string, number>; is_final_pushed: boolean;
   pushed_at: string | null; pushed_by: string | null; updated_at: string;
+  manual_penalty_percent: string | number; // pg returns NUMERIC as string
+  manual_penalty_reason: string;
 }
 
 // ── Category functions ─────────────────────────────────────────────────────
@@ -530,14 +585,71 @@ export async function getOrCreateDailyReport(userId: string, date: string): Prom
   );
   if (existing.rows[0]) {
     const rows = await fetchReportRows(existing.rows[0].id);
-    return { ...existing.rows[0], rows, report_date: normalizeDate(existing.rows[0].report_date) };
+    await carryOverPausedRows(userId, existing.rows[0].id, date, rows);
+    const finalRows = await fetchReportRows(existing.rows[0].id);
+    return { ...existing.rows[0], rows: finalRows, report_date: normalizeDate(existing.rows[0].report_date) };
   }
   const id = generateId("dr");
   const result = await pool.query<ReportDbRow>(
     `INSERT INTO daily_reports (id, user_id, report_date) VALUES ($1, $2, $3::date) RETURNING *`,
     [id, userId, date]
   );
-  return { ...result.rows[0], rows: [], report_date: normalizeDate(result.rows[0].report_date) };
+  await carryOverPausedRows(userId, id, date, []);
+  const seeded = await fetchReportRows(id);
+  return { ...result.rows[0], rows: seeded, report_date: normalizeDate(result.rows[0].report_date) };
+}
+
+// Copy any 'paused' rows from the user's most recent prior report into today's
+// draft so the user can continue tracking. Skips duplicates via carried_over_from_row_id.
+async function carryOverPausedRows(
+  userId: string,
+  todayReportId: string,
+  todayDate: string,
+  existingTodayRows: DailyReportRow[]
+): Promise<void> {
+  const lockCheck = await pool.query<{ is_locked: boolean }>(
+    `SELECT is_locked FROM daily_reports WHERE id = $1`, [todayReportId]
+  );
+  if (lockCheck.rows[0]?.is_locked) return;
+
+  const prevReport = await pool.query<{ id: string }>(
+    `SELECT id FROM daily_reports
+      WHERE user_id = $1 AND report_date < $2::date
+      ORDER BY report_date DESC LIMIT 1`,
+    [userId, todayDate]
+  );
+  if (!prevReport.rows[0]) return;
+
+  const pausedRows = await pool.query<ReportRowDb>(
+    `SELECT * FROM daily_report_rows
+      WHERE report_id = $1 AND stopwatch_status = 'paused'
+      ORDER BY sr_no ASC`,
+    [prevReport.rows[0].id]
+  );
+  if (pausedRows.rows.length === 0) return;
+
+  const alreadyCarried = new Set(
+    existingTodayRows.map(r => r.carried_over_from_row_id).filter(Boolean) as string[]
+  );
+
+  let nextSrNo = existingTodayRows.length > 0
+    ? Math.max(...existingTodayRows.map(r => r.sr_no)) + 1
+    : 1;
+
+  for (const src of pausedRows.rows) {
+    if (alreadyCarried.has(src.id)) continue;
+    const id = generateId("drr");
+    await pool.query(
+      `INSERT INTO daily_report_rows
+         (id, report_id, sr_no, type_of_work, sub_category, specific_work, time_taken,
+          collaborative_colleagues, stopwatch_status, elapsed_seconds, stopwatch_started_at,
+          carried_over_from_row_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'paused', $9, NULL, $10)`,
+      [id, todayReportId, nextSrNo, src.type_of_work, src.sub_category, src.specific_work,
+       src.time_taken, src.collaborative_colleagues, src.elapsed_seconds, src.id]
+    );
+    nextSrNo += 1;
+  }
 }
 
 export async function getDailyReport(userId: string, date: string): Promise<DailyReport | null> {
@@ -561,12 +673,18 @@ export async function saveReportRows(reportId: string, userId: string, rows: Sav
   const saved: DailyReportRow[] = [];
   for (const row of rows) {
     const id = generateId("drr");
+    const status: StopwatchStatus = row.stopwatch_status ?? 'idle';
+    const elapsed = row.elapsed_seconds ?? 0;
+    const startedAt = status === 'running' ? (row.stopwatch_started_at ?? new Date().toISOString()) : null;
     const res = await pool.query<ReportRowDb>(
       `INSERT INTO daily_report_rows
-         (id, report_id, sr_no, type_of_work, sub_category, specific_work, time_taken, collaborative_colleagues)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+         (id, report_id, sr_no, type_of_work, sub_category, specific_work, time_taken,
+          collaborative_colleagues, stopwatch_status, elapsed_seconds, stopwatch_started_at,
+          carried_over_from_row_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
       [id, reportId, row.sr_no, row.type_of_work, row.sub_category,
-       row.specific_work, row.time_taken, row.collaborative_colleagues]
+       row.specific_work, row.time_taken, row.collaborative_colleagues,
+       status, elapsed, startedAt, row.carried_over_from_row_id ?? null]
     );
     saved.push(res.rows[0]);
   }
@@ -641,15 +759,26 @@ export async function getUserAnalytics(userId: string, dateFrom: string, dateTo:
   const subCatHours: Record<string, Record<string, number>> = {};
   const collaboratorMap: Record<string, { hours: number; count: number }> = {};
 
-  const toHours = (t: string) => {
+  const toHours = (t: string, elapsedSeconds?: number) => {
+    // Stopwatch path: prefer elapsed_seconds when present (covers running/paused/finished)
+    if (typeof elapsedSeconds === "number" && elapsedSeconds > 0) return elapsedSeconds / 3600;
+    if (!t) return 0;
     if (t === "30 min") return 0.5;
+    // Composite "Xh Ym Zs" (any subset, all optional)
+    const composite = t.match(/^(?:(\d+)h\s*)?(?:(\d+)m\s*)?(?:(\d+)s)?$/);
+    if (composite && (composite[1] || composite[2] || composite[3])) {
+      const h = composite[1] ? parseInt(composite[1], 10) : 0;
+      const m = composite[2] ? parseInt(composite[2], 10) : 0;
+      const s = composite[3] ? parseInt(composite[3], 10) : 0;
+      return h + m / 60 + s / 3600;
+    }
     const m = t.match(/^(\d+(?:\.\d+)?)/);
     return m ? parseFloat(m[1]) : 0;
   };
 
   for (const report of reports) {
     for (const row of report.rows) {
-      const h = toHours(row.time_taken);
+      const h = toHours(row.time_taken, row.elapsed_seconds);
       typeHours[row.type_of_work] = (typeHours[row.type_of_work] || 0) + h;
       if (!subCatHours[row.type_of_work]) subCatHours[row.type_of_work] = {};
       subCatHours[row.type_of_work][row.sub_category] =
@@ -787,12 +916,20 @@ export async function getAllPeerMarkings(month: number, year: number): Promise<(
   return res.rows;
 }
 
+function mapAdminScore(row: AdminKraRow): AdminKraScore {
+  return {
+    ...row,
+    manual_penalty_percent: Number(row.manual_penalty_percent ?? 0),
+    manual_penalty_reason: row.manual_penalty_reason ?? '',
+  };
+}
+
 export async function getAdminKraScore(userId: string, month: number, year: number): Promise<AdminKraScore | null> {
   const res = await pool.query<AdminKraRow>(
     `SELECT * FROM admin_kra_scores WHERE user_id = $1 AND month = $2 AND year = $3`,
     [userId, month, year]
   );
-  return res.rows[0] || null;
+  return res.rows[0] ? mapAdminScore(res.rows[0]) : null;
 }
 
 export async function setAdminKraScore(
@@ -807,7 +944,30 @@ export async function setAdminKraScore(
      RETURNING *`,
     [id, userId, month, year, JSON.stringify(scores)]
   );
-  return res.rows[0];
+  return mapAdminScore(res.rows[0]);
+}
+
+// Set / update the admin-applied manual penalty for a user-month.
+// Creates the admin_kra_scores row if it doesn't exist yet (so admins can apply
+// a penalty before they finish setting per-parameter scores).
+export async function setAdminManualPenalty(
+  userId: string, month: number, year: number,
+  penaltyPercent: number, reason: string,
+): Promise<AdminKraScore> {
+  const pct = Math.max(0, Math.min(100, Number(penaltyPercent) || 0));
+  const id = generateId("aks");
+  const res = await pool.query<AdminKraRow>(
+    `INSERT INTO admin_kra_scores
+       (id, user_id, month, year, scores, manual_penalty_percent, manual_penalty_reason, updated_at)
+     VALUES ($1, $2, $3, $4, '{}'::jsonb, $5, $6, NOW())
+     ON CONFLICT (user_id, month, year) DO UPDATE
+       SET manual_penalty_percent = EXCLUDED.manual_penalty_percent,
+           manual_penalty_reason  = EXCLUDED.manual_penalty_reason,
+           updated_at = NOW()
+     RETURNING *`,
+    [id, userId, month, year, pct, reason]
+  );
+  return mapAdminScore(res.rows[0]);
 }
 
 export async function finalPushKra(
@@ -823,7 +983,7 @@ export async function finalPushKra(
      RETURNING *`,
     [userId, month, year, adminId]
   );
-  return res.rows[0];
+  return mapAdminScore(res.rows[0]);
 }
 
 function avgScores(markings: PeerMarking[]): Record<string, number> {
@@ -853,6 +1013,68 @@ function compositeScore(
   return count ? Math.round((total / count) * 10) / 10 : null;
 }
 
+// Working days (Mon-Fri) from `from` through `to` inclusive.
+function countWorkingDays(from: Date, to: Date): number {
+  let count = 0;
+  const d = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  const last = new Date(to.getFullYear(), to.getMonth(), to.getDate());
+  while (d <= last) {
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) count++;
+    d.setDate(d.getDate() + 1);
+  }
+  return count;
+}
+
+// −1% per missed working day. Half-day approved leaves count as 0.5.
+async function computeMissedReportPenalty(
+  userId: string, month: number, year: number
+): Promise<{ expected: number; submitted: number; missed: number; penaltyPct: number }> {
+  const today = new Date();
+  const monthStart = new Date(year, month - 1, 1);
+  const monthEnd = new Date(year, month, 0);
+  const rangeEnd = today < monthEnd ? today : monthEnd;
+  if (rangeEnd < monthStart) {
+    return { expected: 0, submitted: 0, missed: 0, penaltyPct: 0 };
+  }
+  const workingDays = countWorkingDays(monthStart, rangeEnd);
+
+  const fromStr = monthStart.toISOString().split("T")[0];
+  const toStr = rangeEnd.toISOString().split("T")[0];
+  const leaveRes = await pool.query<{ leave_date: string; is_half_day: boolean }>(
+    `SELECT leave_date, is_half_day FROM branding_leaves
+      WHERE user_id = $1 AND status = 'approved'
+        AND leave_date >= $2::date AND leave_date <= $3::date`,
+    [userId, fromStr, toStr]
+  );
+  let leaveOffset = 0;
+  for (const r of leaveRes.rows) {
+    const d = new Date(r.leave_date);
+    const dow = d.getDay();
+    if (dow === 0 || dow === 6) continue;
+    leaveOffset += r.is_half_day ? 0.5 : 1;
+  }
+  const expected = Math.max(0, workingDays - leaveOffset);
+
+  const subRes = await pool.query<{ count: string }>(
+    `SELECT COUNT(*)::int AS count FROM daily_reports
+      WHERE user_id = $1 AND is_locked = true
+        AND report_date >= $2::date AND report_date <= $3::date`,
+    [userId, fromStr, toStr]
+  );
+  const submitted = Number(subRes.rows[0]?.count ?? 0);
+
+  const missedRaw = expected - submitted;
+  const missed = missedRaw > 0 ? Math.round(missedRaw * 10) / 10 : 0;
+  const penaltyPct = Math.min(100, Math.round(missed * 10) / 10);
+  return {
+    expected: Math.round(expected * 10) / 10,
+    submitted,
+    missed,
+    penaltyPct,
+  };
+}
+
 export async function getKraReport(userId: string, month: number, year: number): Promise<KraReport | null> {
   const userRes = await pool.query<{ full_name: string }>(
     `SELECT full_name FROM users WHERE id = $1`, [userId]
@@ -864,10 +1086,24 @@ export async function getKraReport(userId: string, month: number, year: number):
   const admin    = await getAdminKraScore(userId, month, year);
   const peerAvg  = avgScores(peers);
   const composite = compositeScore(self?.scores || null, peerAvg, admin?.scores || null, params);
+  const penalty  = await computeMissedReportPenalty(userId, month, year);
+  const manualPct = admin?.manual_penalty_percent ?? 0;
+  const totalPct = Math.min(100, Math.round((penalty.penaltyPct + manualPct) * 10) / 10);
+  const compositeAfter = composite === null
+    ? null
+    : Math.max(0, Math.round(composite * (1 - totalPct / 100) * 10) / 10);
   return {
     user_id: userId, user_name: userRes.rows[0].full_name, month, year,
     self_appraisal: self, peer_average: peerAvg, peer_count: peers.length,
     admin_score: admin, composite_score: composite,
+    expected_report_days: penalty.expected,
+    submitted_report_days: penalty.submitted,
+    missed_report_days: penalty.missed,
+    penalty_percent: penalty.penaltyPct,
+    manual_penalty_percent: manualPct,
+    manual_penalty_reason: admin?.manual_penalty_reason ?? '',
+    total_penalty_percent: totalPct,
+    composite_score_after_penalty: compositeAfter,
     is_final_pushed: admin?.is_final_pushed ?? false,
   };
 }
@@ -1236,29 +1472,80 @@ interface LeaveDbRow {
   id: string; user_id: string; leave_date: string; reason: string;
   status: string; transfer_date: string | null; reviewed_by: string | null;
   reviewed_at: string | null; created_at: string;
+  start_at: string | null; end_at: string | null;
+  is_half_day: boolean; half_day_period: string | null;
   user_name?: string; user_email?: string;
 }
 
 function mapLeave(row: LeaveDbRow): BrandingLeave {
+  const leaveDate = normalizeDate(row.leave_date);
+  const startAt = row.start_at ?? `${leaveDate}T09:00:00.000Z`;
+  const endAt = row.end_at ?? `${leaveDate}T17:00:00.000Z`;
   return {
-    ...row,
+    id: row.id,
+    user_id: row.user_id,
+    leave_date: leaveDate,
+    start_at: typeof startAt === 'string' ? startAt : new Date(startAt).toISOString(),
+    end_at: typeof endAt === 'string' ? endAt : new Date(endAt).toISOString(),
+    is_half_day: !!row.is_half_day,
+    half_day_period: (row.half_day_period === 'first' || row.half_day_period === 'second')
+      ? row.half_day_period
+      : null,
+    reason: row.reason,
     status: row.status as BrandingLeave['status'],
-    leave_date: normalizeDate(row.leave_date),
     transfer_date: row.transfer_date ? normalizeDate(row.transfer_date) : null,
+    reviewed_by: row.reviewed_by,
+    reviewed_at: row.reviewed_at,
+    created_at: row.created_at,
+    user_name: row.user_name,
+    user_email: row.user_email,
   };
 }
 
+// First half: 09:00-13:00 same day. Second half: 14:00-17:00 same day.
+function detectHalfDay(startIso: string, endIso: string): { is_half_day: boolean; period: HalfDayPeriod | null } {
+  const s = new Date(startIso);
+  const e = new Date(endIso);
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return { is_half_day: false, period: null };
+  const sameDay = s.getUTCFullYear() === e.getUTCFullYear()
+    && s.getUTCMonth() === e.getUTCMonth()
+    && s.getUTCDate() === e.getUTCDate();
+  if (!sameDay) return { is_half_day: false, period: null };
+  const sh = s.getUTCHours(), sm = s.getUTCMinutes();
+  const eh = e.getUTCHours(), em = e.getUTCMinutes();
+  if (sh === 9 && sm === 0 && eh === 13 && em === 0) return { is_half_day: true, period: 'first' };
+  if (sh === 14 && sm === 0 && eh === 17 && em === 0) return { is_half_day: true, period: 'second' };
+  return { is_half_day: false, period: null };
+}
+
 export async function applyLeave(
-  userId: string, leaveDate: string, reason: string, transferDate?: string
+  userId: string,
+  startAt: string,
+  endAt: string,
+  reason: string,
+  transferDate?: string
 ): Promise<BrandingLeave> {
+  const start = new Date(startAt);
+  const end = new Date(endAt);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    throw new Error("Invalid start_at / end_at.");
+  }
+  if (end <= start) throw new Error("end_at must be after start_at.");
+
+  const leaveDate = start.toISOString().split("T")[0];
+  const { is_half_day, period } = detectHalfDay(startAt, endAt);
+
   const id = generateId("lv");
   const res = await pool.query<LeaveDbRow>(
-    `INSERT INTO branding_leaves (id, user_id, leave_date, reason, transfer_date)
-     VALUES ($1, $2, $3::date, $4, $5)
+    `INSERT INTO branding_leaves
+       (id, user_id, leave_date, reason, transfer_date, start_at, end_at, is_half_day, half_day_period)
+     VALUES ($1, $2, $3::date, $4, $5, $6::timestamptz, $7::timestamptz, $8, $9)
      ON CONFLICT (user_id, leave_date)
-     DO UPDATE SET reason = $4, transfer_date = $5, status = 'pending', reviewed_by = NULL, reviewed_at = NULL
+     DO UPDATE SET reason = $4, transfer_date = $5, start_at = $6::timestamptz, end_at = $7::timestamptz,
+                   is_half_day = $8, half_day_period = $9,
+                   status = 'pending', reviewed_by = NULL, reviewed_at = NULL
      RETURNING *`,
-    [id, userId, leaveDate, reason, transferDate ?? null]
+    [id, userId, leaveDate, reason, transferDate ?? null, startAt, endAt, is_half_day, period]
   );
   return mapLeave(res.rows[0]);
 }

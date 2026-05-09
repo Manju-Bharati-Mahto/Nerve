@@ -301,6 +301,15 @@ function DailyReportsTab({ brandingUsers }: { brandingUsers: { id: string; full_
 
   useEffect(() => { loadReports() }, [loadReports])
 
+  // ID → display name map for collaborator chips. Falls back to the raw id if
+  // the user is no longer in the branding list (e.g. moved teams or deleted).
+  const userNameById = useMemo(() => {
+    const m: Record<string, string> = {}
+    for (const u of brandingUsers) m[u.id] = u.full_name || u.email || u.id
+    return m
+  }, [brandingUsers])
+  const labelCollab = (id: string) => userNameById[id] || id
+
   // Derived aggregates for summary view
   const summaryData = useMemo(() => {
     const map: Record<string, { name: string; hours: number; rows: number }> = {}
@@ -331,18 +340,19 @@ function DailyReportsTab({ brandingUsers }: { brandingUsers: { id: string; full_
       for (const row of r.rows) {
         for (const c of row.collaborative_colleagues) {
           if (!map[name]) map[name] = {}
-          map[name][c] = (map[name][c] || 0) + 1
+          const collabName = userNameById[c] || c
+          map[name][collabName] = (map[name][collabName] || 0) + 1
         }
       }
     }
     return map
-  }, [reports])
+  }, [reports, userNameById])
 
   function exportCSV() {
     const rows: string[][] = [['Date', 'User', 'Sr', 'Type of Work', 'Sub Category', 'Specific Work', 'Time Taken', 'Collaborators']]
     for (const r of reports)
       for (const row of r.rows)
-        rows.push([r.report_date, r.user_name || '', String(row.sr_no), row.type_of_work, row.sub_category, row.specific_work, row.time_taken, row.collaborative_colleagues.join('; ')])
+        rows.push([r.report_date, r.user_name || '', String(row.sr_no), row.type_of_work, row.sub_category, row.specific_work, row.time_taken, row.collaborative_colleagues.map(labelCollab).join('; ')])
     const csv = rows.map(r => r.map(c => `"${c.replace(/"/g, '""')}"`).join(',')).join('\n')
     const a = document.createElement('a')
     a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv)
@@ -501,7 +511,7 @@ function DailyReportsTab({ brandingUsers }: { brandingUsers: { id: string; full_
                               <td className="px-3 py-1.5 text-muted-foreground">{row.sub_category || '—'}</td>
                               <td className="px-3 py-1.5">{row.specific_work}</td>
                               <td className="px-3 py-1.5 text-pink-600 font-medium">{row.time_taken}</td>
-                              <td className="px-3 py-1.5 text-muted-foreground">{row.collaborative_colleagues.join(', ') || '—'}</td>
+                              <td className="px-3 py-1.5 text-muted-foreground">{row.collaborative_colleagues.map(labelCollab).join(', ') || '—'}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -631,6 +641,11 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
   const [userPeerMarkings, setUserPeerMarkings] = useState<PeerMarking[]>([])
   const [userPeerLoading, setUserPeerLoading] = useState(false)
   const [detailTab, setDetailTab] = useState<'admin' | 'self' | 'peer'>('admin')
+  // Manual penalty modal state
+  const [penaltyOpen, setPenaltyOpen] = useState(false)
+  const [penaltyPct, setPenaltyPct] = useState('0')
+  const [penaltyReason, setPenaltyReason] = useState('')
+  const [penaltySaving, setPenaltySaving] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -685,6 +700,34 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
     }
   }
 
+  function openPenaltyModal() {
+    if (!selectedUser) return
+    const cur = dashboard.find(d => d.user_id === selectedUser)
+    setPenaltyPct(String(cur?.manual_penalty_percent ?? 0))
+    setPenaltyReason(cur?.manual_penalty_reason ?? '')
+    setPenaltyOpen(true)
+  }
+
+  async function saveManualPenalty() {
+    if (!selectedUser) return
+    const pct = Number(penaltyPct)
+    if (Number.isNaN(pct) || pct < 0 || pct > 100) {
+      toast.error('Penalty must be between 0 and 100.')
+      return
+    }
+    setPenaltySaving(true)
+    try {
+      await brandingApi.setAdminPenalty(selectedUser, month, year, pct, penaltyReason.trim())
+      await load()
+      toast.success(pct === 0 ? 'Penalty cleared.' : `Penalty of −${pct}% applied.`)
+      setPenaltyOpen(false)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed')
+    } finally {
+      setPenaltySaving(false)
+    }
+  }
+
   async function doFinalPush() {
     if (!selectedUser) return
     try {
@@ -708,12 +751,24 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
   const selectedReport = dashboard.find(r => r.user_id === selectedUser)
 
   function downloadKraCsv() {
-    const rows: string[][] = [['User', 'Self Score', 'Peer Score', 'Admin Score', 'Final Score', 'Status']]
+    const rows: string[][] = [['User', 'Self Score', 'Peer Score', 'Admin Score', 'Composite', 'Missed Days', 'Auto Penalty %', 'Manual Penalty %', 'Total Penalty %', 'Final Score', 'Status']]
     for (const r of dashboard) {
       const self  = scoreAvg(r.self_appraisal?.scores || null, params)
       const peer  = scoreAvg(r.peer_average, params)
       const admin = scoreAvg(r.admin_score?.scores || null, params)
-      rows.push([r.user_name, self?.toFixed(1) ?? '—', peer?.toFixed(1) ?? '—', admin?.toFixed(1) ?? '—', r.composite_score?.toFixed(1) ?? '—', r.is_final_pushed ? 'Published' : 'Pending'])
+      rows.push([
+        r.user_name,
+        self?.toFixed(1) ?? '—',
+        peer?.toFixed(1) ?? '—',
+        admin?.toFixed(1) ?? '—',
+        r.composite_score?.toFixed(1) ?? '—',
+        String(r.missed_report_days ?? 0),
+        `-${r.penalty_percent ?? 0}%`,
+        `-${r.manual_penalty_percent ?? 0}%`,
+        `-${r.total_penalty_percent ?? 0}%`,
+        r.composite_score_after_penalty?.toFixed(1) ?? '—',
+        r.is_final_pushed ? 'Published' : 'Pending',
+      ])
     }
     const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n')
     const a = document.createElement('a')
@@ -785,6 +840,7 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
             {dashboard.length === 0 && <p className="text-sm text-muted-foreground py-4">No team members found.</p>}
             {dashboard.map(r => {
               const composite = r.composite_score
+              const final = r.composite_score_after_penalty
               return (
                 <button key={r.user_id}
                   onClick={() => { setSelectedUser(r.user_id); setFinalPushState('idle'); setDetailTab('admin') }}
@@ -796,10 +852,19 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                     <p className="text-sm font-medium text-foreground truncate">{r.user_name}</p>
                     <p className="text-xs text-muted-foreground">
                       {r.self_appraisal ? '✓ Self' : '○ Self'} · {r.peer_count > 0 ? `✓ ${r.peer_count} peers` : '○ Peers'}
+                      {(r.total_penalty_percent ?? 0) > 0 && (
+                        <span className="ml-1 text-red-600 font-semibold">· −{r.total_penalty_percent}%</span>
+                      )}
                     </p>
                   </div>
                   <div className="text-right shrink-0">
-                    {composite !== null && <p className="text-sm font-semibold text-pink-600">{composite}</p>}
+                    {composite !== null && (
+                      <p className="text-sm font-semibold text-pink-600">
+                        {final !== null && final !== composite
+                          ? <><span className="line-through text-gray-400 text-[11px] mr-1">{composite}</span>{final}</>
+                          : composite}
+                      </p>
+                    )}
                     {r.is_final_pushed
                       ? <p className="text-[10px] text-green-600 font-medium">Published</p>
                       : <p className="text-[10px] text-amber-600 font-medium">Pending</p>}
@@ -843,6 +908,42 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                   ))}
                 </div>
 
+                {/* Penalty bar — auto + manual combined */}
+                {(selectedReport.expected_report_days > 0 || selectedReport.manual_penalty_percent > 0) && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 space-y-2">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                      <span className="font-bold text-amber-800">Daily Report Attendance</span>
+                      <span className="text-amber-700">
+                        Submitted <span className="font-semibold">{selectedReport.submitted_report_days}</span>
+                        {' / '}
+                        Expected <span className="font-semibold">{selectedReport.expected_report_days}</span>
+                      </span>
+                      <span className="text-amber-700">
+                        Missed: <span className="font-semibold">{selectedReport.missed_report_days}</span> day(s)
+                      </span>
+                      <span className="text-red-700 font-semibold">
+                        Auto: −{selectedReport.penalty_percent}%
+                      </span>
+                      {selectedReport.manual_penalty_percent > 0 && (
+                        <span className="text-red-700 font-semibold">
+                          Manual: −{selectedReport.manual_penalty_percent}%
+                        </span>
+                      )}
+                      <span className="text-red-800 font-bold">
+                        Total: −{selectedReport.total_penalty_percent}%
+                      </span>
+                      <span className="ml-auto text-green-800 font-bold">
+                        Final: {selectedReport.composite_score_after_penalty?.toFixed(1) ?? '—'}<span className="text-[10px] font-normal opacity-60">/10</span>
+                      </span>
+                    </div>
+                    {selectedReport.manual_penalty_reason && (
+                      <p className="text-[11px] text-amber-700 italic">
+                        Manual penalty reason: {selectedReport.manual_penalty_reason}
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 {/* Detail sub-tabs */}
                 <div className="flex gap-1 bg-muted/30 p-1 rounded-lg w-fit">
                   {([
@@ -877,6 +978,14 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                     <button onClick={() => void saveAdminScore()} disabled={adminSaving}
                       className="mt-4 w-full py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 disabled:opacity-50 transition-colors">
                       {adminSaving ? 'Saving…' : 'Save Admin Score'}
+                    </button>
+                    {/* Manual penalty — applied on top of the auto missed-report penalty */}
+                    <button onClick={openPenaltyModal}
+                      className="mt-2 w-full py-2 rounded-lg border border-red-300 text-red-700 text-sm font-medium hover:bg-red-50 transition-colors flex items-center justify-center gap-2">
+                      <AlertTriangle className="w-4 h-4" />
+                      {selectedReport.manual_penalty_percent > 0
+                        ? `Edit Penalty (currently −${selectedReport.manual_penalty_percent}%)`
+                        : 'Add Penalty'}
                     </button>
                   </div>
                 )}
@@ -1064,6 +1173,48 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
           </div>
         </div>
       )}
+
+      {/* Manual penalty modal */}
+      {penaltyOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.45)' }}
+          onClick={() => setPenaltyOpen(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-semibold text-foreground flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-600" /> Add Manual Penalty
+              </h3>
+              <button onClick={() => setPenaltyOpen(false)} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground"><X className="w-4 h-4" /></button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Applied on top of the auto missed-report penalty. Final score = composite × (1 − total %).
+              Set to 0 to clear.
+            </p>
+            <div>
+              <label className="text-xs font-bold uppercase tracking-wide mb-1 block text-foreground">Penalty (%)</label>
+              <input type="number" min={0} max={100} step={0.5}
+                value={penaltyPct}
+                onChange={e => setPenaltyPct(e.target.value)}
+                className={INP} autoFocus />
+            </div>
+            <div>
+              <label className="text-xs font-bold uppercase tracking-wide mb-1 block text-foreground">Reason (optional)</label>
+              <textarea value={penaltyReason} onChange={e => setPenaltyReason(e.target.value)}
+                rows={3} placeholder="e.g. Repeated late submissions, missed deadline on Project X…"
+                className={INP + ' resize-none'} />
+            </div>
+            <div className="flex gap-3 pt-1">
+              <button onClick={() => void saveManualPenalty()} disabled={penaltySaving}
+                className="flex-1 py-2 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700 disabled:opacity-50">
+                {penaltySaving ? 'Saving…' : 'Apply Penalty'}
+              </button>
+              <button onClick={() => setPenaltyOpen(false)}
+                className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-muted">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1148,6 +1299,11 @@ function LeaveManagementTab() {
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-sm font-semibold text-foreground">{lv.user_name || lv.user_email || lv.user_id}</span>
                   <span className="text-sm text-muted-foreground">{lv.leave_date}</span>
+                  {lv.is_half_day && lv.half_day_period && (
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">
+                      {lv.half_day_period === 'first' ? 'First half' : 'Second half'}
+                    </span>
+                  )}
                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                     lv.status === 'approved' ? 'bg-green-50 text-green-700' :
                     lv.status === 'rejected' ? 'bg-red-50 text-red-600' :
@@ -1156,6 +1312,11 @@ function LeaveManagementTab() {
                     {lv.status.charAt(0).toUpperCase() + lv.status.slice(1)}
                   </span>
                 </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {new Date(lv.start_at).toLocaleString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
+                  {' – '}
+                  {new Date(lv.end_at).toLocaleString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
+                </p>
                 <p className="text-xs text-muted-foreground">{lv.reason || '—'}</p>
 
                 {/* Transfer date — admin editable */}
