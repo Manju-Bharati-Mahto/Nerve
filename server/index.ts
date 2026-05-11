@@ -47,6 +47,23 @@ import {
   updateUser,
   type AppRole,
 } from "./db.js";
+import {
+  bootstrapOutreach,
+  listPages as listOutreachPages,
+  createPage as createOutreachPage,
+  updatePage as updateOutreachPage,
+  deletePage as deleteOutreachPage,
+  listCampaigns as listOutreachCampaigns,
+  createCampaign as createOutreachCampaign,
+  updateCampaign as updateOutreachCampaign,
+  deleteCampaign as deleteOutreachCampaign,
+  listPosts as listOutreachPosts,
+  deletePost as deleteOutreachPost,
+  PAGE_TYPES as OUTREACH_PAGE_TYPES,
+  FOLLOWER_TIERS as OUTREACH_FOLLOWER_TIERS,
+  CAMPAIGN_STATUSES as OUTREACH_CAMPAIGN_STATUSES,
+} from "./outreach-db.js";
+import { syncOutreach } from "./outreach-sync.js";
 import { verifyPassword } from "./password.js";
 import {
   bootstrapBrandingDatabase,
@@ -1246,11 +1263,139 @@ app.get("/api/branding/portal/leave/date/:date", asyncHandler(async (req, res) =
   res.json({ leave });
 }));
 
+// ── Outreach routes ────────────────────────────────────────────────────────
+
+function requireOutreach(res: express.Response): boolean {
+  const role = res.locals.currentUser?.role;
+  if (role === "outreach_manager" || role === "super_admin") return true;
+  sendError(res, 403, "Outreach manager only.");
+  return false;
+}
+
+const outreachPageSchema = z.object({
+  handle: z.string().min(1),
+  geography: z.string().min(1),
+  state: z.string().min(1),
+  type: z.enum(OUTREACH_PAGE_TYPES),
+  follower_tier: z.enum(OUTREACH_FOLLOWER_TIERS),
+  followers: z.number().int().nonnegative().optional(),
+  inventory_posts: z.number().int().nonnegative(),
+  inventory_stories: z.number().int().nonnegative(),
+  notes: z.string().optional(),
+});
+
+const outreachCampaignSchema = z.object({
+  name: z.string().min(1),
+  start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  goal: z.string().optional(),
+  status: z.enum(OUTREACH_CAMPAIGN_STATUSES),
+  budget_posts: z.number().int().nonnegative(),
+  budget_stories: z.number().int().nonnegative(),
+  budget_reels: z.number().int().nonnegative(),
+  approvers: z.array(z.string()),
+  creative_variants: z.array(z.string()),
+  assigned_page_ids: z.array(z.string()),
+});
+
+// Pages
+
+app.get("/api/outreach/pages", asyncHandler(async (_req, res) => {
+  if (!requireOutreach(res)) return;
+  res.json({ pages: await listOutreachPages() });
+}));
+
+app.post("/api/outreach/pages", asyncHandler(async (req, res) => {
+  if (!requireOutreach(res)) return;
+  const parsed = outreachPageSchema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, 400, "Invalid page payload.");
+  const page = await createOutreachPage(parsed.data);
+  res.status(201).json({ page });
+}));
+
+app.patch("/api/outreach/pages/:id", asyncHandler(async (req, res) => {
+  if (!requireOutreach(res)) return;
+  const parsed = outreachPageSchema.partial().safeParse(req.body);
+  if (!parsed.success) return sendError(res, 400, "Invalid patch payload.");
+  const page = await updateOutreachPage(getSingleParam(req.params.id), parsed.data);
+  if (!page) return sendError(res, 404, "Page not found.");
+  res.json({ page });
+}));
+
+app.delete("/api/outreach/pages/:id", asyncHandler(async (req, res) => {
+  if (!requireOutreach(res)) return;
+  await deleteOutreachPage(getSingleParam(req.params.id));
+  res.json({ ok: true });
+}));
+
+// Campaigns
+
+app.get("/api/outreach/campaigns", asyncHandler(async (_req, res) => {
+  if (!requireOutreach(res)) return;
+  res.json({ campaigns: await listOutreachCampaigns() });
+}));
+
+app.post("/api/outreach/campaigns", asyncHandler(async (req, res) => {
+  if (!requireOutreach(res)) return;
+  const parsed = outreachCampaignSchema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, 400, "Invalid campaign payload.");
+  const campaign = await createOutreachCampaign(parsed.data);
+  res.status(201).json({ campaign });
+}));
+
+app.patch("/api/outreach/campaigns/:id", asyncHandler(async (req, res) => {
+  if (!requireOutreach(res)) return;
+  const parsed = outreachCampaignSchema.partial().safeParse(req.body);
+  if (!parsed.success) return sendError(res, 400, "Invalid patch payload.");
+  const campaign = await updateOutreachCampaign(getSingleParam(req.params.id), parsed.data);
+  if (!campaign) return sendError(res, 404, "Campaign not found.");
+  res.json({ campaign });
+}));
+
+app.delete("/api/outreach/campaigns/:id", asyncHandler(async (req, res) => {
+  if (!requireOutreach(res)) return;
+  await deleteOutreachCampaign(getSingleParam(req.params.id));
+  res.json({ ok: true });
+}));
+
+// Posts
+
+app.get("/api/outreach/posts", asyncHandler(async (req, res) => {
+  if (!requireOutreach(res)) return;
+  const pageId = typeof req.query.page_id === "string" ? req.query.page_id : undefined;
+  const campaignId = typeof req.query.campaign_id === "string" ? req.query.campaign_id : undefined;
+  res.json({ posts: await listOutreachPosts({ pageId, campaignId }) });
+}));
+
+app.delete("/api/outreach/posts/:id", asyncHandler(async (req, res) => {
+  if (!requireOutreach(res)) return;
+  await deleteOutreachPost(getSingleParam(req.params.id));
+  res.json({ ok: true });
+}));
+
+// Sync — pulls latest profile + posts from Apify for all pages (or a subset)
+
+app.post("/api/outreach/sync", asyncHandler(async (req, res) => {
+  if (!requireOutreach(res)) return;
+  const handlesRaw = req.body?.handles;
+  const handles = Array.isArray(handlesRaw)
+    ? handlesRaw.filter((h: unknown): h is string => typeof h === "string")
+    : undefined;
+  try {
+    const result = await syncOutreach({ handles });
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Sync failed.";
+    return sendError(res, 502, msg);
+  }
+}));
+
 // ── Start server ───────────────────────────────────────────────────────────
 
 bootstrapDatabase()
   .then(() => bootstrapBrandingDatabase())
   .then(() => bootstrapSettingsDatabase())
+  .then(() => bootstrapOutreach())
   .then(() => {
     app.listen(config.apiPort, () => {
       console.log(`Nerve API listening on ${config.apiPort}`);

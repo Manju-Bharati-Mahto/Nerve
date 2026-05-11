@@ -13,14 +13,13 @@ type SortDir = 'asc' | 'desc'
 type InvFilter = 'all' | 'over-used' | 'under-used' | 'on-track' | 'idle'
 
 const TABS: { id: PageType; label: string }[] = [
-  { id: 'outreach', label: 'Outreach' },
-  { id: 'ugc',      label: 'UGC' },
-  { id: 'static',   label: 'Static' },
+  { id: 'state', label: 'State' },
+  { id: 'pu',    label: 'PU' },
 ]
 
 export default function OutreachCreators() {
   const { pages, posts } = useOutreachData()
-  const [tab, setTab] = useState<PageType>('outreach')
+  const [tab, setTab] = useState<PageType>('state')
   const [search, setSearch] = useState('')
   const [geography, setGeography] = useState<string>('')
   const [state, setState] = useState<string>('')
@@ -32,9 +31,8 @@ export default function OutreachCreators() {
   const states = useMemo(() => Array.from(new Set(pages.map(p => p.state))).sort(), [pages])
 
   const counts = useMemo(() => ({
-    outreach: pages.filter(p => p.type === 'outreach').length,
-    ugc:      pages.filter(p => p.type === 'ugc').length,
-    static:   pages.filter(p => p.type === 'static').length,
+    state: pages.filter(p => p.type === 'state').length,
+    pu:    pages.filter(p => p.type === 'pu').length,
   }), [pages])
 
   const rows = useMemo(() => {
@@ -88,8 +86,8 @@ export default function OutreachCreators() {
             <Users className="w-5 h-5 text-orange-600" />
           </div>
           <div>
-            <h1 className="text-2xl font-serif text-foreground">Creators (Pages)</h1>
-            <p className="text-sm text-muted-foreground">Directory of social media pages by type and geography.</p>
+            <h1 className="text-2xl font-serif text-foreground">Creators (UGC Pages)</h1>
+            <p className="text-sm text-muted-foreground">Directory of UGC pages, split as State-level reach and PU-owned.</p>
           </div>
         </div>
       </div>

@@ -9,7 +9,9 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-export const PAGE_TYPES = ['outreach', 'ugc', 'static'] as const
+// Creator types — all pages are UGC; bifurcated as 'state' (state-level reach pages)
+// or 'pu' (Parul University owned/operated pages).
+export const PAGE_TYPES = ['state', 'pu'] as const
 export type PageType = typeof PAGE_TYPES[number]
 
 export const POST_TYPES = ['static', 'reel', 'story', 'carousel'] as const
@@ -77,110 +79,110 @@ interface OutreachDB {
 // ── Seed data (extracted from BR_POST_2026 - All Pages.pdf) ────────────────
 
 const SEED_PAGES: OutreachPage[] = [
-  // Vadodara (Outreach + Static)
-  pg('vadodaraourcity', 'Vadodara', 'Gujarat', 'outreach', 'mid', 48, 24),
-  pg('Vadodara Sankari Nagri', 'Vadodara', 'Gujarat', 'outreach', 'mid', 48, 24),
-  pg('Vadodara the Amazing city', 'Vadodara', 'Gujarat', 'outreach', 'mid', 48, 24),
-  pg('Aapdu Vadodara', 'Vadodara', 'Gujarat', 'static', 'mid', 48, 24),
-  pg('Smart city Vadodara', 'Vadodara', 'Gujarat', 'outreach', 'micro', 48, 24),
-  pg('Vadodara Sankari Nagri (club)', 'Vadodara', 'Gujarat', 'outreach', 'mid', 48, 24),
-  pg('Trending in vadodara', 'Vadodara', 'Gujarat', 'ugc', 'mid', 48, 24, 'Club Deal A'),
-  pg('Vadodara Media (club)', 'Vadodara', 'Gujarat', 'outreach', 'mid', 48, 24),
-  pg('Vadodara Live', 'Vadodara', 'Gujarat', 'outreach', 'mid', 48, 24),
-  pg('The People of Vadodara', 'Vadodara', 'Gujarat', 'outreach', 'mid', 48, 24),
-  pg('Our City Vadodara', 'Vadodara', 'Gujarat', 'outreach', 'mid', 48, 24),
-  pg('Baroda Mirror', 'Vadodara', 'Gujarat', 'static', 'mid', 48, 24),
-  pg('OUR PADRA', 'Vadodara', 'Gujarat', 'outreach', 'micro', 24, 24),
-  pg('Barodian', 'Vadodara', 'Gujarat', 'outreach', 'mid', 48, 24),
-  pg('Sweet Vadodara', 'Vadodara', 'Gujarat', 'outreach', 'mid', 48, 24),
-  pg('I am Vadodara | Micro-Nano', 'Vadodara', 'Gujarat', 'static', 'micro', 25, 30),
-  pg('hu chu vadodara', 'Vadodara', 'Gujarat', 'static', 'mid', 48, 24),
-  pg('Vadodara Baroda', 'Vadodara', 'Gujarat', 'outreach', 'micro', 16, 10),
-  pg('Vadodara Attraction', 'Vadodara', 'Gujarat', 'outreach', 'mid', 48, 24),
-  pg('Vadodara Vibez', 'Vadodara', 'Gujarat', 'outreach', 'micro', 20, 24),
-  pg('Vadodara Darshan', 'Vadodara', 'Gujarat', 'static', 'micro', 20, 20),
-  pg('Baroda Breaking News', 'Vadodara', 'Gujarat', 'outreach', 'micro', 20, 20),
-  pg('Our VD News', 'Vadodara', 'Gujarat', 'outreach', 'micro', 20, 24),
-  pg('thetimesofvadodara_', 'Vadodara', 'Gujarat', 'outreach', 'micro', 20, 20),
+  // Vadodara
+  pg('vadodaraourcity', 'Vadodara', 'Gujarat', 'state', 'mid', 48, 24),
+  pg('Vadodara Sankari Nagri', 'Vadodara', 'Gujarat', 'state', 'mid', 48, 24),
+  pg('Vadodara the Amazing city', 'Vadodara', 'Gujarat', 'state', 'mid', 48, 24),
+  pg('Aapdu Vadodara', 'Vadodara', 'Gujarat', 'pu', 'mid', 48, 24),
+  pg('Smart city Vadodara', 'Vadodara', 'Gujarat', 'state', 'micro', 48, 24),
+  pg('Vadodara Sankari Nagri (club)', 'Vadodara', 'Gujarat', 'state', 'mid', 48, 24),
+  pg('Trending in vadodara', 'Vadodara', 'Gujarat', 'state', 'mid', 48, 24, 'Club Deal A'),
+  pg('Vadodara Media (club)', 'Vadodara', 'Gujarat', 'state', 'mid', 48, 24),
+  pg('Vadodara Live', 'Vadodara', 'Gujarat', 'state', 'mid', 48, 24),
+  pg('The People of Vadodara', 'Vadodara', 'Gujarat', 'state', 'mid', 48, 24),
+  pg('Our City Vadodara', 'Vadodara', 'Gujarat', 'state', 'mid', 48, 24),
+  pg('Baroda Mirror', 'Vadodara', 'Gujarat', 'pu', 'mid', 48, 24),
+  pg('OUR PADRA', 'Vadodara', 'Gujarat', 'state', 'micro', 24, 24),
+  pg('Barodian', 'Vadodara', 'Gujarat', 'state', 'mid', 48, 24),
+  pg('Sweet Vadodara', 'Vadodara', 'Gujarat', 'state', 'mid', 48, 24),
+  pg('I am Vadodara | Micro-Nano', 'Vadodara', 'Gujarat', 'pu', 'micro', 25, 30),
+  pg('hu chu vadodara', 'Vadodara', 'Gujarat', 'pu', 'mid', 48, 24),
+  pg('Vadodara Baroda', 'Vadodara', 'Gujarat', 'state', 'micro', 16, 10),
+  pg('Vadodara Attraction', 'Vadodara', 'Gujarat', 'state', 'mid', 48, 24),
+  pg('Vadodara Vibez', 'Vadodara', 'Gujarat', 'state', 'micro', 20, 24),
+  pg('Vadodara Darshan', 'Vadodara', 'Gujarat', 'pu', 'micro', 20, 20),
+  pg('Baroda Breaking News', 'Vadodara', 'Gujarat', 'state', 'micro', 20, 20),
+  pg('Our VD News', 'Vadodara', 'Gujarat', 'state', 'micro', 20, 24),
+  pg('thetimesofvadodara_', 'Vadodara', 'Gujarat', 'state', 'micro', 20, 20),
 
   // Gujarat (rest of state)
-  pg('Dev Bhumi Dwarka', 'Gujarat', 'Gujarat', 'static', 'mid', 48, 24),
-  pg('Sanskari nagri navsari', 'Gujarat', 'Gujarat', 'outreach', 'micro', 48, 24),
-  pg('I Love Jamnagar', 'Gujarat', 'Gujarat', 'static', 'mid', 48, 24),
-  pg('Our Rajkot', 'Gujarat', 'Gujarat', 'static', 'mid', 48, 24),
-  pg('iamsuratcity', 'Gujarat', 'Gujarat', 'outreach', 'mid', 48, 24),
-  pg('Our Vapi', 'Gujarat', 'Gujarat', 'outreach', 'micro', 48, 24),
-  pg('aapdujunagadh', 'Gujarat', 'Gujarat', 'static', 'micro', 26, 25),
-  pg('Modasa City Arvalli', 'Gujarat', 'Gujarat', 'outreach', 'micro', 48, 24),
-  pg('Our Kutch', 'Gujarat', 'Gujarat', 'static', 'mid', 48, 24),
-  pg('Its all about Nadiad', 'Gujarat', 'Gujarat', 'outreach', 'micro', 48, 24),
-  pg('Surat Update', 'Gujarat', 'Gujarat', 'ugc', 'mid', 48, 24, 'Club Deal B'),
-  pg('Ahmedabad Updates', 'Gujarat', 'Gujarat', 'ugc', 'mid', 48, 24, 'Club Deal B'),
-  pg('Apnu Amdavad', 'Gujarat', 'Gujarat', 'ugc', 'mid', 48, 24, 'Club Deal A'),
-  pg('Maru Gandhinagar', 'Gujarat', 'Gujarat', 'static', 'mid', 48, 24),
-  pg('Aapnu Amreli', 'Gujarat', 'Gujarat', 'static', 'mid', 48, 24),
-  pg('Aapdu Porbandar', 'Gujarat', 'Gujarat', 'static', 'mid', 48, 24),
-  pg('CityofAmdavad', 'Gujarat', 'Gujarat', 'static', 'mid', 24, 24),
-  pg('Incredible Bharuch', 'Gujarat', 'Gujarat', 'outreach', 'micro', 24, 12),
-  pg('Dahod Live', 'Gujarat', 'Gujarat', 'outreach', 'micro', 48, 24),
+  pg('Dev Bhumi Dwarka', 'Gujarat', 'Gujarat', 'pu', 'mid', 48, 24),
+  pg('Sanskari nagri navsari', 'Gujarat', 'Gujarat', 'state', 'micro', 48, 24),
+  pg('I Love Jamnagar', 'Gujarat', 'Gujarat', 'pu', 'mid', 48, 24),
+  pg('Our Rajkot', 'Gujarat', 'Gujarat', 'pu', 'mid', 48, 24),
+  pg('iamsuratcity', 'Gujarat', 'Gujarat', 'state', 'mid', 48, 24),
+  pg('Our Vapi', 'Gujarat', 'Gujarat', 'state', 'micro', 48, 24),
+  pg('aapdujunagadh', 'Gujarat', 'Gujarat', 'pu', 'micro', 26, 25),
+  pg('Modasa City Arvalli', 'Gujarat', 'Gujarat', 'state', 'micro', 48, 24),
+  pg('Our Kutch', 'Gujarat', 'Gujarat', 'pu', 'mid', 48, 24),
+  pg('Its all about Nadiad', 'Gujarat', 'Gujarat', 'state', 'micro', 48, 24),
+  pg('Surat Update', 'Gujarat', 'Gujarat', 'state', 'mid', 48, 24, 'Club Deal B'),
+  pg('Ahmedabad Updates', 'Gujarat', 'Gujarat', 'state', 'mid', 48, 24, 'Club Deal B'),
+  pg('Apnu Amdavad', 'Gujarat', 'Gujarat', 'state', 'mid', 48, 24, 'Club Deal A'),
+  pg('Maru Gandhinagar', 'Gujarat', 'Gujarat', 'pu', 'mid', 48, 24),
+  pg('Aapnu Amreli', 'Gujarat', 'Gujarat', 'pu', 'mid', 48, 24),
+  pg('Aapdu Porbandar', 'Gujarat', 'Gujarat', 'pu', 'mid', 48, 24),
+  pg('CityofAmdavad', 'Gujarat', 'Gujarat', 'pu', 'mid', 24, 24),
+  pg('Incredible Bharuch', 'Gujarat', 'Gujarat', 'state', 'micro', 24, 12),
+  pg('Dahod Live', 'Gujarat', 'Gujarat', 'state', 'micro', 48, 24),
 
   // Maharashtra
-  pg('pune guide', 'Maharashtra', 'Maharashtra', 'outreach', 'micro', 24, 12),
-  pg('I love Aurangabad', 'Maharashtra', 'Maharashtra', 'outreach', 'mid', 48, 24),
-  pg('aurangabadtak', 'Maharashtra', 'Maharashtra', 'outreach', 'mid', 48, 24),
-  pg('Being Punekar', 'Maharashtra', 'Maharashtra', 'static', 'mid', 25, 25),
-  pg('Apla Akola', 'Maharashtra', 'Maharashtra', 'outreach', 'micro', 22, 22),
-  pg('Dhulenews24', 'Maharashtra', 'Maharashtra', 'static', 'micro', 24, 24),
-  pg('My Nashik', 'Maharashtra', 'Maharashtra', 'outreach', 'micro', 22, 22),
-  pg('trending_amravati', 'Maharashtra', 'Maharashtra', 'outreach', 'micro', 22, 22),
+  pg('pune guide', 'Maharashtra', 'Maharashtra', 'state', 'micro', 24, 12),
+  pg('I love Aurangabad', 'Maharashtra', 'Maharashtra', 'state', 'mid', 48, 24),
+  pg('aurangabadtak', 'Maharashtra', 'Maharashtra', 'state', 'mid', 48, 24),
+  pg('Being Punekar', 'Maharashtra', 'Maharashtra', 'pu', 'mid', 25, 25),
+  pg('Apla Akola', 'Maharashtra', 'Maharashtra', 'state', 'micro', 22, 22),
+  pg('Dhulenews24', 'Maharashtra', 'Maharashtra', 'pu', 'micro', 24, 24),
+  pg('My Nashik', 'Maharashtra', 'Maharashtra', 'state', 'micro', 22, 22),
+  pg('trending_amravati', 'Maharashtra', 'Maharashtra', 'state', 'micro', 22, 22),
 
   // Rajasthan
-  pg('Udaipur Blog', 'Rajasthan', 'Rajasthan', 'static', 'mid', 48, 24),
-  pg('banswara blog', 'Rajasthan', 'Rajasthan', 'outreach', 'micro', 48, 24),
-  pg('abutimes', 'Rajasthan', 'Rajasthan', 'outreach', 'micro', 48, 24),
-  pg('Jodhpur the blue heaven', 'Rajasthan', 'Rajasthan', 'static', 'mid', 48, 24),
-  pg('Bharatpur Buzz', 'Rajasthan', 'Rajasthan', 'outreach', 'micro', 48, 24),
-  pg('Banjare Yaar', 'Rajasthan', 'Rajasthan', 'outreach', 'nano', 15, 15),
-  pg('Jaipur Waley', 'Rajasthan', 'Rajasthan', 'static', 'micro', 15, 15),
+  pg('Udaipur Blog', 'Rajasthan', 'Rajasthan', 'pu', 'mid', 48, 24),
+  pg('banswara blog', 'Rajasthan', 'Rajasthan', 'state', 'micro', 48, 24),
+  pg('abutimes', 'Rajasthan', 'Rajasthan', 'state', 'micro', 48, 24),
+  pg('Jodhpur the blue heaven', 'Rajasthan', 'Rajasthan', 'pu', 'mid', 48, 24),
+  pg('Bharatpur Buzz', 'Rajasthan', 'Rajasthan', 'state', 'micro', 48, 24),
+  pg('Banjare Yaar', 'Rajasthan', 'Rajasthan', 'state', 'nano', 15, 15),
+  pg('Jaipur Waley', 'Rajasthan', 'Rajasthan', 'pu', 'micro', 15, 15),
 
   // North-East
-  pg('Justassamthings', 'North-East', 'Assam', 'outreach', 'mid', 48, 24),
-  pg('North Eastern Chronicle', 'North-East', 'Assam', 'static', 'mid', 48, 24),
-  pg('Guwahati Plus', 'North-East', 'Assam', 'static', 'mid', 48, 24),
-  pg('Dibrugarh 24x7', 'North-East', 'Assam', 'outreach', 'micro', 48, 24),
-  pg('Assam Unofficial', 'North-East', 'Assam', 'outreach', 'micro', 48, 24),
+  pg('Justassamthings', 'North-East', 'Assam', 'state', 'mid', 48, 24),
+  pg('North Eastern Chronicle', 'North-East', 'Assam', 'pu', 'mid', 48, 24),
+  pg('Guwahati Plus', 'North-East', 'Assam', 'pu', 'mid', 48, 24),
+  pg('Dibrugarh 24x7', 'North-East', 'Assam', 'state', 'micro', 48, 24),
+  pg('Assam Unofficial', 'North-East', 'Assam', 'state', 'micro', 48, 24),
 
   // Madhya Pradesh
-  pg('Balaghat', 'Madhya Pradesh', 'Madhya Pradesh', 'outreach', 'micro', 48, 24),
-  pg('apna bhopal', 'Madhya Pradesh', 'Madhya Pradesh', 'outreach', 'micro', 48, 24),
-  pg('chhindwara city', 'Madhya Pradesh', 'Madhya Pradesh', 'outreach', 'micro', 48, 24),
-  pg('Dewas live', 'Madhya Pradesh', 'Madhya Pradesh', 'outreach', 'micro', 48, 24),
-  pg('namaste_narmadapuram', 'Madhya Pradesh', 'Madhya Pradesh', 'outreach', 'micro', 48, 24),
-  pg('ujjain nagri', 'Madhya Pradesh', 'Madhya Pradesh', 'static', 'micro', 48, 24),
+  pg('Balaghat', 'Madhya Pradesh', 'Madhya Pradesh', 'state', 'micro', 48, 24),
+  pg('apna bhopal', 'Madhya Pradesh', 'Madhya Pradesh', 'state', 'micro', 48, 24),
+  pg('chhindwara city', 'Madhya Pradesh', 'Madhya Pradesh', 'state', 'micro', 48, 24),
+  pg('Dewas live', 'Madhya Pradesh', 'Madhya Pradesh', 'state', 'micro', 48, 24),
+  pg('namaste_narmadapuram', 'Madhya Pradesh', 'Madhya Pradesh', 'state', 'micro', 48, 24),
+  pg('ujjain nagri', 'Madhya Pradesh', 'Madhya Pradesh', 'pu', 'micro', 48, 24),
 
   // Uttar Pradesh
-  pg('Kanpur Wale', 'Uttar Pradesh', 'Uttar Pradesh', 'outreach', 'micro', 24, 24),
-  pg('360 Kanpur', 'Uttar Pradesh', 'Uttar Pradesh', 'outreach', 'micro', 12, 12),
-  pg('UP Wale', 'Uttar Pradesh', 'Uttar Pradesh', 'outreach', 'micro', 48, 24),
-  pg('agraalive_', 'Uttar Pradesh', 'Uttar Pradesh', 'outreach', 'micro', 48, 24),
-  pg('Lucknow Hearts', 'Uttar Pradesh', 'Uttar Pradesh', 'static', 'mid', 48, 24),
-  pg('Apna Sultanpur', 'Uttar Pradesh', 'Uttar Pradesh', 'outreach', 'micro', 48, 24),
+  pg('Kanpur Wale', 'Uttar Pradesh', 'Uttar Pradesh', 'state', 'micro', 24, 24),
+  pg('360 Kanpur', 'Uttar Pradesh', 'Uttar Pradesh', 'state', 'micro', 12, 12),
+  pg('UP Wale', 'Uttar Pradesh', 'Uttar Pradesh', 'state', 'micro', 48, 24),
+  pg('agraalive_', 'Uttar Pradesh', 'Uttar Pradesh', 'state', 'micro', 48, 24),
+  pg('Lucknow Hearts', 'Uttar Pradesh', 'Uttar Pradesh', 'pu', 'mid', 48, 24),
+  pg('Apna Sultanpur', 'Uttar Pradesh', 'Uttar Pradesh', 'state', 'micro', 48, 24),
 
   // Bihar
-  pg('Patna Se Hai', 'Bihar', 'Bihar', 'outreach', 'micro', 12, 12),
-  pg('Patna Planet', 'Bihar', 'Bihar', 'outreach', 'micro', 36, 36),
-  pg('Muzaffarpur Live', 'Bihar', 'Bihar', 'outreach', 'micro', 36, 36),
+  pg('Patna Se Hai', 'Bihar', 'Bihar', 'state', 'micro', 12, 12),
+  pg('Patna Planet', 'Bihar', 'Bihar', 'state', 'micro', 36, 36),
+  pg('Muzaffarpur Live', 'Bihar', 'Bihar', 'state', 'micro', 36, 36),
 
   // Goa
-  pg('Goa Viral News', 'Goa', 'Goa', 'outreach', 'micro', 24, 24),
-  pg('Goa Darling', 'Goa', 'Goa', 'outreach', 'micro', 24, 24),
-  pg('Goastory', 'Goa', 'Goa', 'outreach', 'micro', 24, 24),
-  pg('Goa_Dreamy', 'Goa', 'Goa', 'outreach', 'micro', 22, 22),
-  pg('amchegoa_', 'Goa', 'Goa', 'outreach', 'micro', 24, 24),
+  pg('Goa Viral News', 'Goa', 'Goa', 'state', 'micro', 24, 24),
+  pg('Goa Darling', 'Goa', 'Goa', 'state', 'micro', 24, 24),
+  pg('Goastory', 'Goa', 'Goa', 'state', 'micro', 24, 24),
+  pg('Goa_Dreamy', 'Goa', 'Goa', 'state', 'micro', 22, 22),
+  pg('amchegoa_', 'Goa', 'Goa', 'state', 'micro', 24, 24),
 
   // J&K
-  pg('srinagarnawakadalofficial', 'JK', 'Jammu & Kashmir', 'outreach', 'nano', 22, 22),
-  pg('newsxnagaland', 'JK', 'Jammu & Kashmir', 'outreach', 'nano', 22, 22),
+  pg('srinagarnawakadalofficial', 'JK', 'Jammu & Kashmir', 'state', 'nano', 22, 22),
+  pg('newsxnagaland', 'JK', 'Jammu & Kashmir', 'state', 'nano', 22, 22),
 ]
 
 const SEED_CAMPAIGNS: Campaign[] = [
@@ -313,7 +315,9 @@ function seedRand(key: string): number {
 
 // ── Store ──────────────────────────────────────────────────────────────────
 
-const STORAGE_KEY = 'nerve.outreach.v1'
+// Bumped to v2 when PAGE_TYPES changed from outreach/ugc/static → state/pu.
+// Old localStorage payloads would carry invalid `type` values and break filters.
+const STORAGE_KEY = 'nerve.outreach.v2'
 
 function loadDB(): OutreachDB {
   if (typeof window === 'undefined') return SEED
@@ -367,6 +371,11 @@ export function addPage(page: Omit<OutreachPage, 'id'>) {
   notify()
 }
 
+export function updatePage(id: string, patch: Partial<OutreachPage>) {
+  store = { ...store, pages: store.pages.map(p => p.id === id ? { ...p, ...patch } : p) }
+  notify()
+}
+
 export function addCampaign(campaign: Omit<Campaign, 'id'>) {
   const id = slug(campaign.name) || `c-${Date.now()}`
   store = { ...store, campaigns: [...store.campaigns, { ...campaign, id }] }
@@ -415,6 +424,22 @@ export interface PageMetrics {
   avgEngagement: number
   lastPostDate: string | null
   status: 'over-used' | 'under-used' | 'on-track' | 'idle'
+}
+
+/**
+ * Recommended monthly inventory burn for a page.
+ * Naive model: pace = total inventory ÷ 12 months, then nudged by recent
+ * engagement — pages performing well (>4k avg eng) get +20%, low performers
+ * (<500 avg eng) get -30%. Floors at 1 unit.
+ */
+export function suggestedMonthlyUsage(page: OutreachPage, posts: Post[]): number {
+  const total = page.inventoryPosts + page.inventoryStories
+  if (total <= 0) return 0
+  const m = pageMetrics(page, posts)
+  let pace = total / 12
+  if (m.avgEngagement >= 4000) pace *= 1.2
+  else if (m.avgEngagement > 0 && m.avgEngagement < 500) pace *= 0.7
+  return Math.max(1, Math.round(pace))
 }
 
 export function pageMetrics(page: OutreachPage, posts: Post[], referenceDate = new Date()): PageMetrics {

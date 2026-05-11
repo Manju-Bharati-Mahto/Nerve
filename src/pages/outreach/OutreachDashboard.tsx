@@ -59,13 +59,13 @@ export default function OutreachDashboard() {
   }, [campaigns, filteredPosts])
 
   const topByType = useMemo(() => {
-    function topPagesOfType(type: 'outreach' | 'ugc') {
+    function topPagesOfType(type: 'state' | 'pu') {
       return pages.filter(p => p.type === type)
         .map(p => ({ page: p, m: pageMetrics(p, filteredPosts) }))
         .sort((a, b) => b.m.avgEngagement - a.m.avgEngagement)
         .slice(0, 5)
     }
-    return { outreach: topPagesOfType('outreach'), ugc: topPagesOfType('ugc') }
+    return { state: topPagesOfType('state'), pu: topPagesOfType('pu') }
   }, [pages, filteredPosts])
 
   const alerts = useMemo(() => {
@@ -265,14 +265,14 @@ export default function OutreachDashboard() {
 
       {/* Top pages split by type */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        {(['outreach', 'ugc'] as const).map(t => (
+        {(['state', 'pu'] as const).map(t => (
           <div key={t} className="hub-card">
             <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-foreground capitalize">Top {t} pages</h2>
+              <h2 className="text-sm font-semibold text-foreground">Top {t === 'pu' ? 'PU' : 'State'} pages</h2>
               <Link to="/outreach/creators" className="text-xs text-orange-600 hover:underline">All creators</Link>
             </div>
             {topByType[t].length === 0 ? (
-              <p className="text-sm text-muted-foreground py-6 text-center">No {t} pages yet.</p>
+              <p className="text-sm text-muted-foreground py-6 text-center">No {t === 'pu' ? 'PU' : 'state'} pages yet.</p>
             ) : (
               <div className="space-y-1">
                 {topByType[t].map(({ page, m }) => (
