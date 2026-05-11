@@ -10,9 +10,12 @@ import {
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
-// Stable hash → palette (one color per campaign)
+// Stable hash → palette (one color per campaign). Unattributed posts
+// (campaignId === null) render as muted grey.
 const PALETTE = ['#f97316', '#3b82f6', '#10b981', '#8b5cf6', '#ec4899', '#f59e0b', '#06b6d4', '#ef4444', '#84cc16', '#a855f7', '#0ea5e9', '#facc15']
-function colorFor(id: string): string {
+const UNATTRIBUTED_COLOR = '#94a3b8'
+function colorFor(id: string | null): string {
+  if (!id) return UNATTRIBUTED_COLOR
   let h = 0
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
   return PALETTE[h % PALETTE.length]
@@ -132,15 +135,16 @@ export default function OutreachCalendar() {
                 )}
                 <div className="flex-1 overflow-y-auto space-y-0.5">
                   {events.slice(0, view === 'week' ? 12 : 4).map(p => {
-                    const camp = campaigns.find(c => c.id === p.campaignId)
+                    const camp = p.campaignId ? campaigns.find(c => c.id === p.campaignId) : null
                     const page = pages.find(pp => pp.id === p.pageId)
                     const color = colorFor(p.campaignId)
+                    const label = camp?.name ?? (page ? `@${page.handle}` : 'post')
                     return (
-                      <Link key={p.id} to={camp ? `/outreach/campaigns/${camp.id}` : '#'}
-                        title={`${camp?.name ?? ''} — @${page?.handle ?? ''} — ${p.type}`}
+                      <Link key={p.id} to={camp ? `/outreach/campaigns/${camp.id}` : page ? `/outreach/creators/${page.id}` : '#'}
+                        title={`${camp?.name ?? 'Unattributed'} — @${page?.handle ?? '?'} — ${p.type}`}
                         className="block px-1.5 py-0.5 rounded text-[10px] truncate text-white"
                         style={{ backgroundColor: color }}>
-                        {camp?.name ?? '—'}
+                        {label}
                       </Link>
                     )
                   })}
