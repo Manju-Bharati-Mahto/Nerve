@@ -352,6 +352,44 @@ export async function listPosts(filters: { pageId?: string; campaignId?: string 
   return rows.map(mapPostRow);
 }
 
+export interface CreatePlannedPostInput {
+  page_id: string;
+  campaign_id?: string | null;
+  date: string;
+  type: PostType;
+  creative_variant?: string | null;
+  caption?: string;
+  status: PostStatus;
+}
+
+/**
+ * Creates planned/scheduled posts (no instagram_id yet). Used by the
+ * calendar's CSV importer. Metrics default to 0 — Apify sync will
+ * supersede them with the real numbers once the post goes live, although
+ * the current schema doesn't link a planned row to its synced row.
+ */
+export async function createPostsBulk(inputs: CreatePlannedPostInput[]): Promise<OutreachPost[]> {
+  if (inputs.length === 0) return [];
+  const created: OutreachPost[] = [];
+  for (const input of inputs) {
+    const id = newId("post");
+    const { rows } = await pool.query<OutreachPost>(
+      `INSERT INTO outreach_posts
+         (id, instagram_id, page_id, campaign_id, date, type, creative_variant, caption,
+          status, likes, comments, views, saves, shares)
+       VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, 0, 0, 0, 0, 0)
+       RETURNING *`,
+      [
+        id, input.page_id, input.campaign_id ?? null,
+        input.date, input.type, input.creative_variant ?? null, input.caption ?? "",
+        input.status,
+      ],
+    );
+    created.push(mapPostRow(rows[0]));
+  }
+  return created;
+}
+
 export async function upsertPostByInstagramId(input: UpsertPostInput): Promise<OutreachPost> {
   const id = newId("post");
   const { rows } = await pool.query<OutreachPost>(

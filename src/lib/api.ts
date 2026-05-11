@@ -152,4 +152,112 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ otp }),
     }),
+
+  // Outreach — pages
+  listOutreachPages: () => request<{ pages: ServerOutreachPage[] }>("/outreach/pages"),
+  createOutreachPage: (input: Partial<ServerOutreachPage>) =>
+    request<{ page: ServerOutreachPage }>("/outreach/pages", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateOutreachPage: (id: string, patch: Partial<ServerOutreachPage>) =>
+    request<{ page: ServerOutreachPage }>(`/outreach/pages/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  deleteOutreachPage: (id: string) =>
+    request<{ ok: boolean }>(`/outreach/pages/${id}`, { method: "DELETE" }),
+
+  // Outreach — campaigns
+  listOutreachCampaigns: () => request<{ campaigns: ServerOutreachCampaign[] }>("/outreach/campaigns"),
+  createOutreachCampaign: (input: Partial<ServerOutreachCampaign>) =>
+    request<{ campaign: ServerOutreachCampaign }>("/outreach/campaigns", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateOutreachCampaign: (id: string, patch: Partial<ServerOutreachCampaign>) =>
+    request<{ campaign: ServerOutreachCampaign }>(`/outreach/campaigns/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  deleteOutreachCampaign: (id: string) =>
+    request<{ ok: boolean }>(`/outreach/campaigns/${id}`, { method: "DELETE" }),
+
+  // Outreach — posts
+  listOutreachPosts: () => request<{ posts: ServerOutreachPost[] }>("/outreach/posts"),
+  createOutreachPosts: (posts: Partial<ServerOutreachPost>[]) =>
+    request<{ posts: ServerOutreachPost[] }>("/outreach/posts", {
+      method: "POST",
+      body: JSON.stringify({ posts }),
+    }),
+  deleteOutreachPost: (id: string) =>
+    request<{ ok: boolean }>(`/outreach/posts/${id}`, { method: "DELETE" }),
+
+  // Outreach — sync
+  syncOutreach: (handles?: string[]) =>
+    request<{
+      ok: true;
+      synced_pages: number;
+      upserted_posts: number;
+      skipped: { handle: string; reason: string }[];
+      attribution: { matched: number; unmatched: number };
+    }>("/outreach/sync", {
+      method: "POST",
+      body: JSON.stringify(handles ? { handles } : {}),
+    }),
 };
+
+// Server-side row shapes (snake_case). The outreach-data store maps these
+// to camelCase before exposing to components.
+export interface ServerOutreachPage {
+  id: string;
+  handle: string;
+  geography: string;
+  state: string;
+  type: "state" | "pu";
+  follower_tier: "nano" | "micro" | "mid" | "macro";
+  followers: number;
+  inventory_posts: number;
+  inventory_stories: number;
+  notes: string;
+  last_synced_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ServerOutreachCampaign {
+  id: string;
+  name: string;
+  start_date: string;
+  end_date: string;
+  goal: string;
+  status: "planning" | "active" | "completed" | "paused";
+  budget_posts: number;
+  budget_stories: number;
+  budget_reels: number;
+  approvers: string[];
+  creative_variants: string[];
+  assigned_page_ids: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ServerOutreachPost {
+  id: string;
+  instagram_id: string | null;
+  page_id: string;
+  campaign_id: string | null;
+  date: string;
+  type: "static" | "reel" | "story" | "carousel";
+  creative_variant: string | null;
+  caption: string;
+  status: "draft" | "scheduled" | "pending_approval" | "published";
+  likes: number;
+  comments: number;
+  views: number;
+  saves: number;
+  shares: number;
+  media_url: string | null;
+  permalink: string | null;
+  synced_at: string | null;
+}

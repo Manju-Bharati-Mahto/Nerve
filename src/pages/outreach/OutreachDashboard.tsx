@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Megaphone, Send, Calendar as CalendarIcon, BarChart3, FileText, Users, Sparkles,
-  TrendingUp, Heart, Eye, AlertTriangle, AlertCircle, Activity, Layers,
+  TrendingUp, Heart, Eye, AlertTriangle, AlertCircle, Activity, Layers, RefreshCw,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -10,7 +10,7 @@ import {
 } from 'recharts'
 import { useAuth } from '@/hooks/useAuth'
 import {
-  useOutreachData, pageMetrics, campaignMetrics,
+  useOutreachData, pageMetrics, campaignMetrics, syncNow,
 } from '@/lib/outreach-data'
 
 type Range = '7d' | '30d' | 'mtd' | 'all'
@@ -27,6 +27,30 @@ export default function OutreachDashboard() {
   const { profile } = useAuth()
   const { pages, campaigns, posts } = useOutreachData()
   const [range, setRange] = useState<Range>('30d')
+  const [syncing, setSyncing] = useState(false)
+  const [syncErr, setSyncErr] = useState<string | null>(null)
+
+  const mostRecentSync = useMemo(() => {
+    const ts = pages
+      .map(p => p.lastSyncedAt)
+      .filter((x): x is string => !!x)
+      .sort()
+      .pop()
+    return ts ?? null
+  }, [pages])
+
+  async function onSyncNow() {
+    if (syncing) return
+    setSyncing(true)
+    setSyncErr(null)
+    try {
+      await syncNow()
+    } catch (err) {
+      setSyncErr(err instanceof Error ? err.message : 'Sync failed.')
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   const filteredPosts = useMemo(() => {
     const start = rangeStart(range)
@@ -35,7 +59,7 @@ export default function OutreachDashboard() {
 
   const kpis = useMemo(() => {
     const reach = filteredPosts.reduce((s, p) => s + p.views, 0)
-    const eng = filteredPosts.reduce((s, p) => s + p.likes + p.comments + p.saves + p.shares, 0)
+    const eng = filteredPosts.reduce((s, p) => s + p.likes + p.comments, 0)
     const active = campaigns.filter(c => c.status === 'active').length
     const totalInv = pages.reduce((s, p) => s + p.inventoryPosts + p.inventoryStories, 0)
     const used = filteredPosts.length
@@ -45,7 +69,7 @@ export default function OutreachDashboard() {
 
   const topPosts = useMemo(() => {
     return [...filteredPosts]
-      .map(p => ({ post: p, score: p.likes + p.comments * 4 + p.saves * 5 + p.shares * 3 }))
+      .map(p => ({ post: p, score: p.likes + p.comments * 4 }))
       .sort((a, b) => b.score - a.score)
       .slice(0, 5)
   }, [filteredPosts])
@@ -111,7 +135,7 @@ export default function OutreachDashboard() {
 
   const kpiCards = [
     { label: 'Reach (views)', value: fmt(kpis.reach), sub: `${kpis.postsCount} posts`, icon: Eye, bg: 'bg-orange-50', color: 'text-orange-600' },
-    { label: 'Engagement', value: fmt(kpis.eng), sub: 'likes + comments + saves + shares', icon: Heart, bg: 'bg-rose-50', color: 'text-rose-600' },
+    { label: 'Engagement', value: fmt(kpis.eng), sub: 'likes + comments', icon: Heart, bg: 'bg-rose-50', color: 'text-rose-600' },
     { label: 'Active campaigns', value: String(kpis.active), sub: `${campaigns.length} total`, icon: Send, bg: 'bg-blue-50', color: 'text-blue-600' },
     { label: 'Inventory used', value: `${kpis.pctInv}%`, sub: `${pages.length} pages`, icon: Layers, bg: 'bg-emerald-50', color: 'text-emerald-600' },
   ]
@@ -131,13 +155,27 @@ export default function OutreachDashboard() {
             </p>
           </div>
         </div>
-        <div className="inline-flex bg-card border border-border rounded-lg overflow-hidden text-xs">
-          {(['7d', '30d', 'mtd', 'all'] as Range[]).map(r => (
-            <button key={r} onClick={() => setRange(r)}
-              className={`px-3 py-1.5 transition-colors ${range === r ? 'bg-orange-100 text-orange-700 font-medium' : 'text-muted-foreground hover:bg-accent'}`}>
-              {r === '7d' ? 'Last 7d' : r === '30d' ? 'Last 30d' : r === 'mtd' ? 'MTD' : 'All time'}
-            </button>
-          ))}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="inline-flex bg-card border border-border rounded-lg overflow-hidden text-xs">
+            {(['7d', '30d', 'mtd', 'all'] as Range[]).map(r => (
+              <button key={r} onClick={() => setRange(r)}
+                className={`px-3 py-1.5 transition-colors ${range === r ? 'bg-orange-100 text-orange-700 font-medium' : 'text-muted-foreground hover:bg-accent'}`}>
+                {r === '7d' ? 'Last 7d' : r === '30d' ? 'Last 30d' : r === 'mtd' ? 'MTD' : 'All time'}
+              </button>
+            ))}
+          </div>
+          <button onClick={onSyncNow} disabled={syncing}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-orange-600 text-white hover:opacity-90 disabled:opacity-50">
+            <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+            {syncing ? 'Syncing…' : 'Sync now'}
+          </button>
+          <span className="text-[11px] text-muted-foreground">
+            {syncErr
+              ? <span className="text-rose-600">{syncErr}</span>
+              : mostRecentSync
+                ? `Last synced ${formatRelative(mostRecentSync)}`
+                : 'Not synced yet'}
+          </span>
         </div>
       </div>
 
@@ -327,4 +365,12 @@ function fmt(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
   return String(n)
+}
+
+function formatRelative(iso: string): string {
+  const diffSec = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
+  if (diffSec < 60) return 'just now'
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`
+  return `${Math.floor(diffSec / 86400)}d ago`
 }

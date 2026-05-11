@@ -236,7 +236,9 @@ function BestPosts() {
   const [dir, setDir] = useState<'desc' | 'asc'>('desc')
 
   const scored = useMemo(() => posts.map(p => {
-    const eng = p.likes + p.comments + p.saves + p.shares
+    // Apify can't read saves/shares (Instagram only exposes those to the
+    // post owner), so engagement here is likes + comments only.
+    const eng = p.likes + p.comments
     const t: 'high' | 'moderate' | 'low' = eng >= TIERS.high ? 'high' : eng >= TIERS.moderate ? 'moderate' : 'low'
     return { post: p, eng, tier: t }
   }), [posts])
@@ -331,7 +333,7 @@ function CampaignTrend() {
       const cur = byDay.get(p.date) ?? { posts: 0, reach: 0, eng: 0 }
       cur.posts++
       cur.reach += p.views
-      cur.eng += p.likes + p.comments + p.saves + p.shares
+      cur.eng += p.likes + p.comments
       byDay.set(p.date, cur)
     }
     return Array.from(byDay.entries()).sort(([a], [b]) => a.localeCompare(b))
