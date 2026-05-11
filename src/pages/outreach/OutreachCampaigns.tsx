@@ -182,7 +182,7 @@ export default function OutreachCampaigns() {
 function CreateCampaignModal({ pages, onClose }: { pages: ReturnType<typeof useOutreachData>['pages']; onClose: () => void }) {
   const [step, setStep] = useState(1)
   const [form, setForm] = useState({
-    name: '', startDate: '', endDate: '', goal: '',
+    name: '', startDate: '', goal: '',
     budgetPosts: 0, budgetStories: 0, budgetReels: 0,
     variantsRaw: 'set_1, set_2',
     pageIds: [] as string[],
@@ -203,7 +203,9 @@ function CreateCampaignModal({ pages, onClose }: { pages: ReturnType<typeof useO
     addCampaign({
       name: form.name.trim(),
       startDate: form.startDate,
-      endDate: form.endDate,
+      // End date intentionally mirrors start date — campaigns are now open-ended
+      // until manually marked completed. Kept on the Campaign type for back-compat.
+      endDate: form.startDate,
       goal: form.goal.trim(),
       status: 'planning',
       budgetPosts: form.budgetPosts,
@@ -216,7 +218,7 @@ function CreateCampaignModal({ pages, onClose }: { pages: ReturnType<typeof useO
     onClose()
   }
 
-  const canStep1 = !!form.name && !!form.startDate && !!form.endDate
+  const canStep1 = !!form.name && !!form.startDate
   const canStep2 = form.budgetPosts + form.budgetStories + form.budgetReels > 0
   const canStep3 = form.pageIds.length > 0
 
@@ -250,15 +252,9 @@ function CreateCampaignModal({ pages, onClose }: { pages: ReturnType<typeof useO
                 <input className="hub-input" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                   placeholder="e.g. Tech Expo April" />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="hub-label">Start date *</label>
-                  <input type="date" className="hub-input" value={form.startDate} onChange={e => setForm(f => ({ ...f, startDate: e.target.value }))} />
-                </div>
-                <div>
-                  <label className="hub-label">End date *</label>
-                  <input type="date" className="hub-input" value={form.endDate} onChange={e => setForm(f => ({ ...f, endDate: e.target.value }))} />
-                </div>
+              <div>
+                <label className="hub-label">Start date *</label>
+                <input type="date" className="hub-input" value={form.startDate} onChange={e => setForm(f => ({ ...f, startDate: e.target.value }))} />
               </div>
               <div>
                 <label className="hub-label">Goal / KPI</label>
@@ -330,7 +326,7 @@ function CreateCampaignModal({ pages, onClose }: { pages: ReturnType<typeof useO
                   placeholder="Outreach Manager, Brand Lead" />
               </div>
               <div className="hub-card bg-muted text-xs space-y-1">
-                <p><strong>{form.name}</strong> · {form.startDate} → {form.endDate}</p>
+                <p><strong>{form.name}</strong> · starts {form.startDate}</p>
                 <p>{form.budgetPosts} posts · {form.budgetStories} stories · {form.budgetReels} reels</p>
                 <p>{form.pageIds.length} pages · {form.variantsRaw.split(',').filter(Boolean).length} variants</p>
               </div>

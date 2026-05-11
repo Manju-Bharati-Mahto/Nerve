@@ -1,14 +1,17 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  BarChart3, Download, Layers, TrendingUp, Award, FileText, Send,
+  BarChart3, Download, Layers, TrendingUp, Award, FileText, Send, Plus,
+  Filter as FilterIcon, ArrowUp, ArrowDown,
 } from 'lucide-react'
 import {
   BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
   LineChart, Line, Legend,
 } from 'recharts'
 import {
-  useOutreachData, pageMetrics, campaignMetrics,
+  useOutreachData, pageMetrics, campaignMetrics, addPage, updatePage,
+  PAGE_TYPES, FOLLOWER_TIERS,
+  type PageType, type FollowerTier, type OutreachPage,
 } from '@/lib/outreach-data'
 
 type Tab = 'pages' | 'campaigns' | 'posts' | 'trend' | 'inventory'
@@ -70,12 +73,27 @@ export default function OutreachAnalytics() {
 // ── Tab: Pages Performance ─────────────────────────────────────────────────
 
 function PagesPerformance() {
-  const { pages, posts } = useOutreachData()
-  const rows = useMemo(() =>
-    pages.map(p => ({ page: p, m: pageMetrics(p, posts) }))
-      .sort((a, b) => b.m.avgEngagement - a.m.avgEngagement),
-    [pages, posts]
-  )
+  const { pages, posts, campaigns } = useOutreachData()
+  const [statusFilter, setStatusFilter] = useState<'all' | 'over-used' | 'on-track' | 'under-used' | 'idle'>('all')
+  const [campaignFilter, setCampaignFilter] = useState<string>('')
+  const [creating, setCreating] = useState(false)
+
+  const pagesByCampaign = useMemo(() => {
+    if (!campaignFilter) return null
+    const c = campaigns.find(cc => cc.id === campaignFilter)
+    return c ? new Set(c.assignedPageIds) : new Set<string>()
+  }, [campaigns, campaignFilter])
+
+  const rows = useMemo(() => {
+    const enriched = pages.map(p => ({ page: p, m: pageMetrics(p, posts) }))
+    return enriched
+      .filter(({ page, m }) => {
+        if (statusFilter !== 'all' && m.status !== statusFilter) return false
+        if (pagesByCampaign && !pagesByCampaign.has(page.id)) return false
+        return true
+      })
+      .sort((a, b) => b.m.avgEngagement - a.m.avgEngagement)
+  }, [pages, posts, statusFilter, pagesByCampaign])
 
   function exportCSV() {
     const header = ['handle', 'geography', 'state', 'type', 'inventory_posts', 'inventory_stories', 'posts_mtd', 'pct_consumed', 'avg_engagement', 'last_post', 'status']
@@ -90,10 +108,28 @@ function PagesPerformance() {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-end">
-        <button onClick={exportCSV} className="text-xs px-3 py-1.5 rounded-lg border border-border hover:bg-accent inline-flex items-center gap-1.5">
-          <Download className="w-3.5 h-3.5" /> Export
-        </button>
+      <div className="hub-card py-3 flex items-center gap-2 flex-wrap">
+        <FilterIcon className="w-4 h-4 text-muted-foreground" />
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as typeof statusFilter)} className="hub-input py-1.5 text-xs w-36">
+          <option value="all">Any status</option>
+          <option value="over-used">Over-used</option>
+          <option value="on-track">On-track</option>
+          <option value="under-used">Under-used</option>
+          <option value="idle">Idle</option>
+        </select>
+        <select value={campaignFilter} onChange={e => setCampaignFilter(e.target.value)} className="hub-input py-1.5 text-xs w-48">
+          <option value="">Any campaign</option>
+          {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <span className="text-xs text-muted-foreground">{rows.length} pages</span>
+        <div className="ml-auto flex items-center gap-2">
+          <button onClick={() => setCreating(true)} className="text-xs px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:opacity-90 inline-flex items-center gap-1.5">
+            <Plus className="w-3.5 h-3.5" /> Add page
+          </button>
+          <button onClick={exportCSV} className="text-xs px-3 py-1.5 rounded-lg border border-border hover:bg-accent inline-flex items-center gap-1.5">
+            <Download className="w-3.5 h-3.5" /> Export
+          </button>
+        </div>
       </div>
       <div className="hub-card p-0 overflow-x-auto">
         <table className="w-full text-sm">
@@ -109,13 +145,15 @@ function PagesPerformance() {
             </tr>
           </thead>
           <tbody>
-            {rows.map(({ page, m }) => (
+            {rows.length === 0 ? (
+              <tr><td colSpan={7} className="px-3 py-12 text-center text-sm text-muted-foreground">No pages match these filters.</td></tr>
+            ) : rows.map(({ page, m }) => (
               <tr key={page.id} className="border-b border-border last:border-0 hover:bg-accent/40">
                 <td className="px-3 py-2.5">
                   <Link to={`/outreach/creators/${page.id}`} className="text-xs font-medium text-foreground hover:underline">@{page.handle}</Link>
                 </td>
                 <td className="px-3 py-2.5 text-xs text-muted-foreground">{page.geography}</td>
-                <td className="px-3 py-2.5 text-xs capitalize text-muted-foreground">{page.type}</td>
+                <td className="px-3 py-2.5 text-xs uppercase text-muted-foreground">{page.type}</td>
                 <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{m.postsDoneMTD + m.storiesDoneMTD}</td>
                 <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{Math.round(m.pctConsumed * 100)}%</td>
                 <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{fmt(m.avgEngagement)}</td>
@@ -125,6 +163,7 @@ function PagesPerformance() {
           </tbody>
         </table>
       </div>
+      {creating && <AddPageModal onClose={() => setCreating(false)} />}
     </div>
   )
 }
@@ -192,6 +231,9 @@ function CampaignsCompare() {
 function BestPosts() {
   const { posts, pages, campaigns } = useOutreachData()
   const [tier, setTier] = useState<'all' | 'high' | 'moderate' | 'low'>('high')
+  const [campaignFilter, setCampaignFilter] = useState<string>('')
+  const [pageFilter, setPageFilter] = useState<string>('')
+  const [dir, setDir] = useState<'desc' | 'asc'>('desc')
 
   const scored = useMemo(() => posts.map(p => {
     const eng = p.likes + p.comments + p.saves + p.shares
@@ -199,15 +241,21 @@ function BestPosts() {
     return { post: p, eng, tier: t }
   }), [posts])
 
-  const filtered = useMemo(() => scored
-    .filter(x => tier === 'all' || x.tier === tier)
-    .sort((a, b) => b.eng - a.eng)
-    .slice(0, 50), [scored, tier])
+  const filtered = useMemo(() => {
+    const out = scored.filter(x => {
+      if (tier !== 'all' && x.tier !== tier) return false
+      if (campaignFilter && x.post.campaignId !== campaignFilter) return false
+      if (pageFilter && x.post.pageId !== pageFilter) return false
+      return true
+    })
+    out.sort((a, b) => dir === 'desc' ? b.eng - a.eng : a.eng - b.eng)
+    return out.slice(0, 50)
+  }, [scored, tier, campaignFilter, pageFilter, dir])
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-muted-foreground">Performance tier:</span>
+      <div className="hub-card py-3 flex items-center gap-2 flex-wrap">
+        <span className="text-xs text-muted-foreground">Tier:</span>
         {(['all', 'high', 'moderate', 'low'] as const).map(t => (
           <button key={t} onClick={() => setTier(t)}
             className={`text-xs px-3 py-1.5 rounded-lg capitalize transition-colors ${
@@ -216,7 +264,22 @@ function BestPosts() {
             {t}
           </button>
         ))}
-        <span className="text-[11px] text-muted-foreground ml-2">Thresholds: ≥{TIERS.high} = high · ≥{TIERS.moderate} = moderate · &lt; that = low (set in Settings)</span>
+        <span className="w-px h-5 bg-border mx-1" />
+        <FilterIcon className="w-4 h-4 text-muted-foreground" />
+        <select value={campaignFilter} onChange={e => setCampaignFilter(e.target.value)} className="hub-input py-1.5 text-xs w-44">
+          <option value="">Any campaign</option>
+          {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <select value={pageFilter} onChange={e => setPageFilter(e.target.value)} className="hub-input py-1.5 text-xs w-40">
+          <option value="">Any page</option>
+          {pages.map(p => <option key={p.id} value={p.id}>@{p.handle}</option>)}
+        </select>
+        <button onClick={() => setDir(d => d === 'desc' ? 'asc' : 'desc')}
+          className="text-xs px-3 py-1.5 rounded-lg border border-border hover:bg-accent inline-flex items-center gap-1.5">
+          {dir === 'desc' ? <ArrowDown className="w-3.5 h-3.5" /> : <ArrowUp className="w-3.5 h-3.5" />}
+          {dir === 'desc' ? 'Descending' : 'Ascending'}
+        </button>
+        <span className="text-[11px] text-muted-foreground ml-auto">Thresholds: ≥{TIERS.high} = high · ≥{TIERS.moderate} = moderate</span>
       </div>
       <div className="hub-card p-0 overflow-x-auto">
         <table className="w-full text-sm">
@@ -299,8 +362,18 @@ function CampaignTrend() {
 
 function InventoryHeatmap() {
   const { pages, posts } = useOutreachData()
-  const rows = useMemo(() => pages.map(p => ({ page: p, m: pageMetrics(p, posts) }))
-    .sort((a, b) => b.m.pctConsumed - a.m.pctConsumed), [pages, posts])
+  const [geoFilter, setGeoFilter] = useState<string>('')
+  const [typeFilter, setTypeFilter] = useState<PageType | ''>('')
+  const [topUp, setTopUp] = useState<OutreachPage | null>(null)
+
+  const geographies = useMemo(() => Array.from(new Set(pages.map(p => p.geography))).sort(), [pages])
+
+  const rows = useMemo(() => {
+    return pages
+      .filter(p => (!geoFilter || p.geography === geoFilter) && (!typeFilter || p.type === typeFilter))
+      .map(p => ({ page: p, m: pageMetrics(p, posts) }))
+      .sort((a, b) => b.m.pctConsumed - a.m.pctConsumed)
+  }, [pages, posts, geoFilter, typeFilter])
 
   function bg(pct: number): string {
     if (pct >= 0.95) return 'bg-rose-500/90 text-white'
@@ -324,6 +397,23 @@ function InventoryHeatmap() {
 
   return (
     <div className="space-y-4">
+      <div className="hub-card py-3 flex items-center gap-2 flex-wrap">
+        <FilterIcon className="w-4 h-4 text-muted-foreground" />
+        <select value={geoFilter} onChange={e => setGeoFilter(e.target.value)} className="hub-input py-1.5 text-xs w-40">
+          <option value="">All geographies</option>
+          {geographies.map(g => <option key={g} value={g}>{g}</option>)}
+        </select>
+        <select value={typeFilter} onChange={e => setTypeFilter(e.target.value as PageType | '')} className="hub-input py-1.5 text-xs w-32">
+          <option value="">Any type</option>
+          {PAGE_TYPES.map(t => <option key={t} value={t}>{t === 'pu' ? 'PU' : 'State'}</option>)}
+        </select>
+        <span className="text-xs text-muted-foreground">{rows.length} pages</span>
+        <button onClick={() => setTopUp(pages[0] ?? null)} disabled={pages.length === 0}
+          className="text-xs px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:opacity-90 disabled:opacity-40 inline-flex items-center gap-1.5 ml-auto">
+          <Plus className="w-3.5 h-3.5" /> Add inventory
+        </button>
+      </div>
+
       <div className="hub-card flex items-center gap-3 text-xs flex-wrap">
         <span className="text-muted-foreground">Inventory consumption legend:</span>
         <Legend2 cls="bg-emerald-100 text-emerald-700"  label="<30% (under-used)" />
@@ -333,6 +423,8 @@ function InventoryHeatmap() {
         <Legend2 cls="bg-rose-500/90 text-white"       label="≥95% (burned)" />
         <Legend2 cls="bg-muted text-muted-foreground"   label="Idle" />
       </div>
+
+      {topUp && <AddInventoryModal pages={pages} initialPage={topUp} onClose={() => setTopUp(null)} />}
 
       {grouped.map(([geo, gRows]) => (
         <div key={geo} className="hub-card">
@@ -396,4 +488,148 @@ function fmt(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
   return String(n)
+}
+
+// ── Modals ─────────────────────────────────────────────────────────────────
+
+export function AddPageModal({ onClose }: { onClose: () => void }) {
+  const [form, setForm] = useState<{
+    handle: string; geography: string; state: string; type: PageType;
+    followerTier: FollowerTier; followers: number; inventoryPosts: number; inventoryStories: number; notes: string;
+  }>({
+    handle: '', geography: '', state: '', type: 'state',
+    followerTier: 'micro', followers: 20000, inventoryPosts: 24, inventoryStories: 24, notes: '',
+  })
+
+  const canSubmit = form.handle.trim() && form.geography.trim() && form.state.trim()
+
+  function submit() {
+    addPage({ ...form, handle: form.handle.trim(), geography: form.geography.trim(), state: form.state.trim() })
+    onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-fade-in" onClick={onClose}>
+      <div className="bg-card rounded-xl border border-border w-full max-w-lg" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <h2 className="text-base font-serif text-foreground">Add page</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+        </div>
+        <div className="p-4 space-y-3">
+          <div>
+            <label className="hub-label">Handle *</label>
+            <input className="hub-input" value={form.handle} onChange={e => setForm(f => ({ ...f, handle: e.target.value }))} placeholder="e.g. mycitypage" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="hub-label">Geography *</label>
+              <input className="hub-input" value={form.geography} onChange={e => setForm(f => ({ ...f, geography: e.target.value }))} placeholder="Vadodara" />
+            </div>
+            <div>
+              <label className="hub-label">State *</label>
+              <input className="hub-input" value={form.state} onChange={e => setForm(f => ({ ...f, state: e.target.value }))} placeholder="Gujarat" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="hub-label">Type</label>
+              <select className="hub-input" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value as PageType }))}>
+                {PAGE_TYPES.map(t => <option key={t} value={t}>{t === 'pu' ? 'PU' : 'State'}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="hub-label">Follower tier</label>
+              <select className="hub-input" value={form.followerTier} onChange={e => setForm(f => ({ ...f, followerTier: e.target.value as FollowerTier }))}>
+                {FOLLOWER_TIERS.map(t => <option key={t} value={t} className="capitalize">{t}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="hub-label">Followers</label>
+              <input type="number" min={0} className="hub-input" value={form.followers}
+                onChange={e => setForm(f => ({ ...f, followers: Number(e.target.value) || 0 }))} />
+            </div>
+            <div>
+              <label className="hub-label">Inv. posts</label>
+              <input type="number" min={0} className="hub-input" value={form.inventoryPosts}
+                onChange={e => setForm(f => ({ ...f, inventoryPosts: Number(e.target.value) || 0 }))} />
+            </div>
+            <div>
+              <label className="hub-label">Inv. stories</label>
+              <input type="number" min={0} className="hub-input" value={form.inventoryStories}
+                onChange={e => setForm(f => ({ ...f, inventoryStories: Number(e.target.value) || 0 }))} />
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 p-4 border-t border-border">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent">Cancel</button>
+          <button onClick={submit} disabled={!canSubmit}
+            className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">
+            Add page
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function AddInventoryModal({ pages, initialPage, onClose }:
+  { pages: OutreachPage[]; initialPage: OutreachPage; onClose: () => void }) {
+  const [pageId, setPageId] = useState(initialPage.id)
+  const [addPosts, setAddPosts] = useState(0)
+  const [addStories, setAddStories] = useState(0)
+  const current = pages.find(p => p.id === pageId) ?? initialPage
+
+  function submit() {
+    updatePage(pageId, {
+      inventoryPosts: current.inventoryPosts + addPosts,
+      inventoryStories: current.inventoryStories + addStories,
+    })
+    onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-fade-in" onClick={onClose}>
+      <div className="bg-card rounded-xl border border-border w-full max-w-md" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <h2 className="text-base font-serif text-foreground">Top up inventory</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+        </div>
+        <div className="p-4 space-y-3">
+          <div>
+            <label className="hub-label">Page</label>
+            <select className="hub-input" value={pageId} onChange={e => setPageId(e.target.value)}>
+              {pages.map(p => <option key={p.id} value={p.id}>@{p.handle}</option>)}
+            </select>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              Current: {current.inventoryPosts} posts · {current.inventoryStories} stories
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="hub-label">Add posts</label>
+              <input type="number" min={0} className="hub-input" value={addPosts}
+                onChange={e => setAddPosts(Number(e.target.value) || 0)} />
+            </div>
+            <div>
+              <label className="hub-label">Add stories</label>
+              <input type="number" min={0} className="hub-input" value={addStories}
+                onChange={e => setAddStories(Number(e.target.value) || 0)} />
+            </div>
+          </div>
+          <div className="hub-card bg-muted text-xs py-2">
+            New totals: <strong>{current.inventoryPosts + addPosts}</strong> posts · <strong>{current.inventoryStories + addStories}</strong> stories
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 p-4 border-t border-border">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent">Cancel</button>
+          <button onClick={submit} disabled={addPosts + addStories === 0}
+            className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">
+            Add inventory
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }

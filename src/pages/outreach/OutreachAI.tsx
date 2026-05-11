@@ -231,7 +231,7 @@ function MatchingPanel() {
               <tr key={r.page.id} className="border-b border-border last:border-0 hover:bg-accent/40">
                 <td className="px-3 py-2.5 text-xs font-medium text-foreground">@{r.page.handle}</td>
                 <td className="px-3 py-2.5 text-xs text-muted-foreground">{r.page.geography}</td>
-                <td className="px-3 py-2.5 text-xs capitalize">{r.page.type}</td>
+                <td className="px-3 py-2.5 text-xs uppercase">{r.page.type}</td>
                 <td className="px-3 py-2.5 text-xs text-muted-foreground">{r.reason}</td>
                 <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{fmt(Math.round(r.score))}</td>
               </tr>

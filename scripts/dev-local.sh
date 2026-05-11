@@ -119,4 +119,8 @@ WEB_PID=$!
 echo "Local dev is running."
 echo "Login with ${SUPER_ADMIN_EMAIL:-super@parul.ac.in} and the SUPER_ADMIN_PASSWORD from $(basename "$ENV_FILE")."
 
-wait -n "$API_PID" "$WEB_PID"
+# Wait until either child exits. Use polling instead of `wait -n` because the
+# default macOS bash is 3.2 and does not support that flag.
+while kill -0 "$API_PID" 2>/dev/null && kill -0 "$WEB_PID" 2>/dev/null; do
+  sleep 1
+done

@@ -77,7 +77,7 @@ export default function OutreachPageDetail() {
             <div>
               <h1 className="text-xl font-serif text-foreground">@{page.handle}</h1>
               <p className="text-sm text-muted-foreground">
-                {page.geography} · {page.state} · <span className="capitalize">{page.type}</span> · {page.followerTier} tier
+                {page.geography} · {page.state} · <span className="uppercase">{page.type}</span> · {page.followerTier} tier
               </p>
               {page.notes && <p className="text-xs text-muted-foreground mt-1">{page.notes}</p>}
             </div>

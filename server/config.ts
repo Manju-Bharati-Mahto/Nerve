@@ -31,4 +31,8 @@ export const config = {
     pass: process.env.SMTP_PASS || "",
     from: process.env.SMTP_FROM || "noreply@parul.ac.in",
   },
+  apify: {
+    token: process.env.APIFY_TOKEN?.trim() || "",
+    profileActor: process.env.APIFY_PROFILE_ACTOR?.trim() || "apify~instagram-profile-scraper",
+  },
 };
