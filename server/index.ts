@@ -58,10 +58,13 @@ import {
   updateCampaign as updateOutreachCampaign,
   deleteCampaign as deleteOutreachCampaign,
   listPosts as listOutreachPosts,
+  createPostsBulk as createOutreachPostsBulk,
   deletePost as deleteOutreachPost,
   PAGE_TYPES as OUTREACH_PAGE_TYPES,
   FOLLOWER_TIERS as OUTREACH_FOLLOWER_TIERS,
   CAMPAIGN_STATUSES as OUTREACH_CAMPAIGN_STATUSES,
+  POST_TYPES as OUTREACH_POST_TYPES,
+  POST_STATUSES as OUTREACH_POST_STATUSES,
 } from "./outreach-db.js";
 import { syncOutreach } from "./outreach-sync.js";
 import { verifyPassword } from "./password.js";
@@ -1365,6 +1368,24 @@ app.get("/api/outreach/posts", asyncHandler(async (req, res) => {
   const pageId = typeof req.query.page_id === "string" ? req.query.page_id : undefined;
   const campaignId = typeof req.query.campaign_id === "string" ? req.query.campaign_id : undefined;
   res.json({ posts: await listOutreachPosts({ pageId, campaignId }) });
+}));
+
+const outreachPlannedPostSchema = z.object({
+  page_id: z.string().min(1),
+  campaign_id: z.string().nullable().optional(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  type: z.enum(OUTREACH_POST_TYPES),
+  creative_variant: z.string().nullable().optional(),
+  caption: z.string().optional(),
+  status: z.enum(OUTREACH_POST_STATUSES),
+});
+
+app.post("/api/outreach/posts", asyncHandler(async (req, res) => {
+  if (!requireOutreach(res)) return;
+  const parsed = z.object({ posts: z.array(outreachPlannedPostSchema).min(1) }).safeParse(req.body);
+  if (!parsed.success) return sendError(res, 400, "Invalid posts payload.");
+  const created = await createOutreachPostsBulk(parsed.data.posts);
+  res.status(201).json({ posts: created });
 }));
 
 app.delete("/api/outreach/posts/:id", asyncHandler(async (req, res) => {
