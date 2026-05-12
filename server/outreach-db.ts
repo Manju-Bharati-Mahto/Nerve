@@ -22,11 +22,17 @@ const pool = new Pool({ connectionString: config.databaseUrl });
 export const PAGE_TYPES = ["state", "pu"] as const;
 export type PageType = typeof PAGE_TYPES[number];
 
-export const FOLLOWER_TIERS = ["nano", "micro", "mid", "macro"] as const;
+export const FOLLOWER_TIERS = ["1", "2", "3", "4", "5"] as const;
 export type FollowerTier = typeof FOLLOWER_TIERS[number];
 
 export const POST_TYPES = ["static", "reel", "story", "carousel"] as const;
 export type PostType = typeof POST_TYPES[number];
+
+// Content types a page produces. Subset of POST_TYPES that the team uses
+// when classifying pages on add/filter (no `story` — stories aren't classed
+// per page in this workflow).
+export const PAGE_CONTENT_TYPES = ["static", "reel", "carousel"] as const;
+export type PageContentType = typeof PAGE_CONTENT_TYPES[number];
 
 export const POST_STATUSES = ["draft", "scheduled", "pending_approval", "published"] as const;
 export type PostStatus = typeof POST_STATUSES[number];
@@ -41,6 +47,7 @@ export interface OutreachPage {
   state: string;
   type: PageType;
   follower_tier: FollowerTier;
+  content_types: PageContentType[];
   followers: number;
   inventory_posts: number;
   inventory_stories: number;
@@ -97,7 +104,8 @@ export async function bootstrapOutreach() {
       geography TEXT NOT NULL DEFAULT '',
       state TEXT NOT NULL DEFAULT '',
       type TEXT NOT NULL CHECK (type IN ('state', 'pu')),
-      follower_tier TEXT NOT NULL CHECK (follower_tier IN ('nano', 'micro', 'mid', 'macro')),
+      follower_tier TEXT NOT NULL CHECK (follower_tier IN ('1', '2', '3', '4', '5')),
+      content_types JSONB NOT NULL DEFAULT '[]'::JSONB,
       followers INTEGER NOT NULL DEFAULT 0,
       inventory_posts INTEGER NOT NULL DEFAULT 0,
       inventory_stories INTEGER NOT NULL DEFAULT 0,
@@ -107,6 +115,24 @@ export async function bootstrapOutreach() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  // Migrations for installations created before the tier-rename + content_types
+  // addition. Idempotent: safe to re-run on a fresh schema.
+  //
+  // Order matters: drop the OLD check constraint before remapping values,
+  // otherwise the UPDATE would violate the constraint that the new values
+  // don't satisfy yet.
+  await pool.query(`ALTER TABLE outreach_pages DROP CONSTRAINT IF EXISTS outreach_pages_follower_tier_check`);
+  await pool.query(`UPDATE outreach_pages SET follower_tier = '1' WHERE follower_tier = 'nano'`);
+  await pool.query(`UPDATE outreach_pages SET follower_tier = '2' WHERE follower_tier = 'micro'`);
+  await pool.query(`UPDATE outreach_pages SET follower_tier = '3' WHERE follower_tier = 'mid'`);
+  await pool.query(`UPDATE outreach_pages SET follower_tier = '4' WHERE follower_tier = 'macro'`);
+  await pool.query(`
+    ALTER TABLE outreach_pages
+    ADD CONSTRAINT outreach_pages_follower_tier_check
+    CHECK (follower_tier IN ('1', '2', '3', '4', '5'))
+  `);
+  await pool.query(`ALTER TABLE outreach_pages ADD COLUMN IF NOT EXISTS content_types JSONB NOT NULL DEFAULT '[]'::JSONB`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS outreach_campaigns (
@@ -153,12 +179,14 @@ export async function bootstrapOutreach() {
   await pool.query(`CREATE INDEX IF NOT EXISTS outreach_posts_campaign_id_idx ON outreach_posts(campaign_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS outreach_posts_date_idx ON outreach_posts(date)`);
 
-  // One-time importer: seed the page directory with the handle list from the
-  // original BR_POST_2026 PDF so the team doesn't have to type ~80 handles.
-  // Followers + post metrics stay zero until the first Apify sync.
-  const { rows } = await pool.query<{ count: string }>(`SELECT COUNT(*) FROM outreach_pages`);
-  if (Number(rows[0].count) === 0) {
-    await importSeedHandles();
+  // Page directory seeding is opt-in. Set OUTREACH_SEED_HANDLES=true to import
+  // the original BR_POST_2026 handle list on an empty table. Otherwise the
+  // team adds pages manually through the UI.
+  if (process.env.OUTREACH_SEED_HANDLES === "true") {
+    const { rows } = await pool.query<{ count: string }>(`SELECT COUNT(*) FROM outreach_pages`);
+    if (Number(rows[0].count) === 0) {
+      await importSeedHandles();
+    }
   }
 }
 
@@ -180,6 +208,7 @@ export interface CreatePageInput {
   state: string;
   type: PageType;
   follower_tier: FollowerTier;
+  content_types?: PageContentType[];
   followers?: number;
   inventory_posts: number;
   inventory_stories: number;
@@ -188,21 +217,22 @@ export interface CreatePageInput {
 
 export async function listPages(): Promise<OutreachPage[]> {
   const { rows } = await pool.query<OutreachPage>(`SELECT * FROM outreach_pages ORDER BY handle`);
-  return rows;
+  return rows.map(mapPageRow);
 }
 
 export async function createPage(input: CreatePageInput): Promise<OutreachPage> {
   const id = slug(input.handle) || newId("page");
   const { rows } = await pool.query<OutreachPage>(
-    `INSERT INTO outreach_pages (id, handle, geography, state, type, follower_tier, followers, inventory_posts, inventory_stories, notes)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    `INSERT INTO outreach_pages (id, handle, geography, state, type, follower_tier, content_types, followers, inventory_posts, inventory_stories, notes)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11)
      RETURNING *`,
     [
       id, input.handle.trim(), input.geography, input.state, input.type, input.follower_tier,
+      JSON.stringify(input.content_types ?? []),
       input.followers ?? 0, input.inventory_posts, input.inventory_stories, input.notes ?? "",
     ],
   );
-  return rows[0];
+  return mapPageRow(rows[0]);
 }
 
 export async function updatePage(id: string, patch: Partial<CreatePageInput> & { last_synced_at?: string }): Promise<OutreachPage | null> {
@@ -211,12 +241,17 @@ export async function updatePage(id: string, patch: Partial<CreatePageInput> & {
   let i = 1;
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined) continue;
-    fields.push(`${k} = $${i++}`);
-    values.push(v);
+    if (k === "content_types") {
+      fields.push(`${k} = $${i++}::jsonb`);
+      values.push(JSON.stringify(v));
+    } else {
+      fields.push(`${k} = $${i++}`);
+      values.push(v);
+    }
   }
   if (fields.length === 0) {
     const { rows } = await pool.query<OutreachPage>(`SELECT * FROM outreach_pages WHERE id = $1`, [id]);
-    return rows[0] ?? null;
+    return rows[0] ? mapPageRow(rows[0]) : null;
   }
   fields.push(`updated_at = NOW()`);
   values.push(id);
@@ -224,7 +259,16 @@ export async function updatePage(id: string, patch: Partial<CreatePageInput> & {
     `UPDATE outreach_pages SET ${fields.join(", ")} WHERE id = $${i} RETURNING *`,
     values,
   );
-  return rows[0] ?? null;
+  return rows[0] ? mapPageRow(rows[0]) : null;
+}
+
+function mapPageRow(row: OutreachPage): OutreachPage {
+  // pg returns JSONB pre-parsed, but defend against legacy string-encoded values.
+  const ct = (row as unknown as { content_types: unknown }).content_types;
+  return {
+    ...row,
+    content_types: Array.isArray(ct) ? ct as PageContentType[] : safeJson(ct, [] as PageContentType[]),
+  };
 }
 
 export async function deletePage(id: string): Promise<void> {
@@ -252,6 +296,22 @@ export async function listCampaigns(): Promise<OutreachCampaign[]> {
     `SELECT * FROM outreach_campaigns ORDER BY start_date DESC`,
   );
   return rows.map(mapCampaignRow);
+}
+
+export async function getCampaign(id: string): Promise<OutreachCampaign | null> {
+  const { rows } = await pool.query<OutreachCampaign>(
+    `SELECT * FROM outreach_campaigns WHERE id = $1`,
+    [id],
+  );
+  return rows[0] ? mapCampaignRow(rows[0]) : null;
+}
+
+export async function getPage(id: string): Promise<OutreachPage | null> {
+  const { rows } = await pool.query<OutreachPage>(
+    `SELECT * FROM outreach_pages WHERE id = $1`,
+    [id],
+  );
+  return rows[0] ?? null;
 }
 
 export async function createCampaign(input: CreateCampaignInput): Promise<OutreachCampaign> {
@@ -441,40 +501,40 @@ function mapPostRow(row: OutreachPost): OutreachPost {
 type Seed = [handle: string, geography: string, state: string, type: PageType, tier: FollowerTier, posts: number, stories: number];
 const SEED_HANDLES: Seed[] = [
   // Vadodara
-  ["vadodaraourcity", "Vadodara", "Gujarat", "state", "mid", 48, 24],
-  ["Vadodara Sankari Nagri", "Vadodara", "Gujarat", "state", "mid", 48, 24],
-  ["Vadodara the Amazing city", "Vadodara", "Gujarat", "state", "mid", 48, 24],
-  ["Aapdu Vadodara", "Vadodara", "Gujarat", "pu", "mid", 48, 24],
-  ["Smart city Vadodara", "Vadodara", "Gujarat", "state", "micro", 48, 24],
-  ["Vadodara Live", "Vadodara", "Gujarat", "state", "mid", 48, 24],
-  ["Baroda Mirror", "Vadodara", "Gujarat", "pu", "mid", 48, 24],
-  ["Sweet Vadodara", "Vadodara", "Gujarat", "state", "mid", 48, 24],
-  ["I am Vadodara | Micro-Nano", "Vadodara", "Gujarat", "pu", "micro", 25, 30],
-  ["Vadodara Darshan", "Vadodara", "Gujarat", "pu", "micro", 20, 20],
+  ["vadodaraourcity", "Vadodara", "Gujarat", "state", "3",48, 24],
+  ["Vadodara Sankari Nagri", "Vadodara", "Gujarat", "state", "3",48, 24],
+  ["Vadodara the Amazing city", "Vadodara", "Gujarat", "state", "3",48, 24],
+  ["Aapdu Vadodara", "Vadodara", "Gujarat", "pu", "3",48, 24],
+  ["Smart city Vadodara", "Vadodara", "Gujarat", "state", "2",48, 24],
+  ["Vadodara Live", "Vadodara", "Gujarat", "state", "3",48, 24],
+  ["Baroda Mirror", "Vadodara", "Gujarat", "pu", "3",48, 24],
+  ["Sweet Vadodara", "Vadodara", "Gujarat", "state", "3",48, 24],
+  ["I am Vadodara | Micro-Nano", "Vadodara", "Gujarat", "pu", "2",25, 30],
+  ["Vadodara Darshan", "Vadodara", "Gujarat", "pu", "2",20, 20],
   // Gujarat
-  ["iamsuratcity", "Gujarat", "Gujarat", "state", "mid", 48, 24],
-  ["Ahmedabad Updates", "Gujarat", "Gujarat", "state", "mid", 48, 24],
-  ["Apnu Amdavad", "Gujarat", "Gujarat", "state", "mid", 48, 24],
-  ["CityofAmdavad", "Gujarat", "Gujarat", "pu", "mid", 24, 24],
+  ["iamsuratcity", "Gujarat", "Gujarat", "state", "3",48, 24],
+  ["Ahmedabad Updates", "Gujarat", "Gujarat", "state", "3",48, 24],
+  ["Apnu Amdavad", "Gujarat", "Gujarat", "state", "3",48, 24],
+  ["CityofAmdavad", "Gujarat", "Gujarat", "pu", "3",24, 24],
   // Maharashtra
-  ["pune guide", "Maharashtra", "Maharashtra", "state", "micro", 24, 12],
-  ["I love Aurangabad", "Maharashtra", "Maharashtra", "state", "mid", 48, 24],
-  ["Being Punekar", "Maharashtra", "Maharashtra", "pu", "mid", 25, 25],
+  ["pune guide", "Maharashtra", "Maharashtra", "state", "2",24, 12],
+  ["I love Aurangabad", "Maharashtra", "Maharashtra", "state", "3",48, 24],
+  ["Being Punekar", "Maharashtra", "Maharashtra", "pu", "3",25, 25],
   // Rajasthan
-  ["Udaipur Blog", "Rajasthan", "Rajasthan", "pu", "mid", 48, 24],
-  ["Jaipur Waley", "Rajasthan", "Rajasthan", "pu", "micro", 15, 15],
+  ["Udaipur Blog", "Rajasthan", "Rajasthan", "pu", "3",48, 24],
+  ["Jaipur Waley", "Rajasthan", "Rajasthan", "pu", "2",15, 15],
   // North-East
-  ["Justassamthings", "North-East", "Assam", "state", "mid", 48, 24],
-  ["Guwahati Plus", "North-East", "Assam", "pu", "mid", 48, 24],
+  ["Justassamthings", "North-East", "Assam", "state", "3",48, 24],
+  ["Guwahati Plus", "North-East", "Assam", "pu", "3",48, 24],
   // Madhya Pradesh
-  ["apna bhopal", "Madhya Pradesh", "Madhya Pradesh", "state", "micro", 48, 24],
+  ["apna bhopal", "Madhya Pradesh", "Madhya Pradesh", "state", "2",48, 24],
   // Uttar Pradesh
-  ["Lucknow Hearts", "Uttar Pradesh", "Uttar Pradesh", "pu", "mid", 48, 24],
-  ["Kanpur Wale", "Uttar Pradesh", "Uttar Pradesh", "state", "micro", 24, 24],
+  ["Lucknow Hearts", "Uttar Pradesh", "Uttar Pradesh", "pu", "3",48, 24],
+  ["Kanpur Wale", "Uttar Pradesh", "Uttar Pradesh", "state", "2",24, 24],
   // Goa
-  ["Goa Viral News", "Goa", "Goa", "state", "micro", 24, 24],
-  ["Goastory", "Goa", "Goa", "state", "micro", 24, 24],
-  ["amchegoa_", "Goa", "Goa", "state", "micro", 24, 24],
+  ["Goa Viral News", "Goa", "Goa", "state", "2",24, 24],
+  ["Goastory", "Goa", "Goa", "state", "2",24, 24],
+  ["amchegoa_", "Goa", "Goa", "state", "2",24, 24],
 ];
 
 async function importSeedHandles() {

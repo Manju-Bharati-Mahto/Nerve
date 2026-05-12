@@ -1,12 +1,13 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   FileText, Search, Filter as FilterIcon, Download, Plus,
-  ArrowUpDown, ArrowUp, ArrowDown, Sparkles,
+  ArrowUpDown, ArrowUp, ArrowDown, Sparkles, ExternalLink, Trash2,
 } from 'lucide-react'
 import {
-  useOutreachData, pageMetrics, suggestedMonthlyUsage,
-  PAGE_TYPES, type PageType,
+  useOutreachData, pageMetrics, suggestedMonthlyUsage, removePage,
+  instagramUrlForHandle, isValidInstagramHandle,
+  PAGE_TYPES, PAGE_CONTENT_TYPES, type PageType, type PageContentType, type OutreachPage,
 } from '@/lib/outreach-data'
 import { AddPageModal } from './OutreachAnalytics'
 
@@ -15,15 +16,35 @@ type SortDir = 'asc' | 'desc'
 
 export default function OutreachAllPages() {
   const { pages, posts } = useOutreachData()
+  const [searchParams] = useSearchParams()
+  // Pages to highlight, sourced from ?ids=ID1,ID2 (e.g. coming from the
+  // dashboard's "X pages have not posted this month" alert).
+  const highlightIds = useMemo(() => {
+    const raw = searchParams.get('ids')
+    return new Set(raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [])
+  }, [searchParams])
 
   const [search, setSearch] = useState('')
   const [type, setType] = useState<PageType | ''>('')
+  const [contentTypeFilter, setContentTypeFilter] = useState<Set<PageContentType>>(new Set())
   const [geography, setGeography] = useState<string>('')
-  const [invStatus, setInvStatus] = useState<'all' | 'over-used' | 'under-used' | 'on-track' | 'idle'>('all')
+  const [invStatus, setInvStatus] = useState<'all' | 'over-used' | 'under-used' | 'on-track' | 'idle'>(
+    // If we arrived from the idle-pages alert, default the filter to idle so the
+    // user sees the relevant set right away.
+    searchParams.get('filter') === 'idle' ? 'idle' : 'all',
+  )
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: 'consumed', dir: 'desc' })
   const [creating, setCreating] = useState(false)
 
   const geographies = useMemo(() => Array.from(new Set(pages.map(p => p.geography))).sort(), [pages])
+
+  function toggleContentType(t: PageContentType) {
+    setContentTypeFilter(prev => {
+      const next = new Set(prev)
+      if (next.has(t)) next.delete(t); else next.add(t)
+      return next
+    })
+  }
 
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -38,6 +59,8 @@ export default function OutreachAllPages() {
       if (type && page.type !== type) return false
       if (geography && page.geography !== geography) return false
       if (invStatus !== 'all' && m.status !== invStatus) return false
+      // Content-type filter: page must have AT LEAST ONE of the selected types.
+      if (contentTypeFilter.size > 0 && !page.contentTypes.some(t => contentTypeFilter.has(t))) return false
       return true
     })
     const dir = sort.dir === 'asc' ? 1 : -1
@@ -63,7 +86,17 @@ export default function OutreachAllPages() {
       return ((av as number) - (bv as number)) * dir
     })
     return filtered
-  }, [pages, posts, search, type, geography, invStatus, sort])
+  }, [pages, posts, search, type, contentTypeFilter, geography, invStatus, sort])
+
+  async function confirmDelete(page: OutreachPage) {
+    const linked = posts.filter(p => p.pageId === page.id).length
+    const msg = linked > 0
+      ? `Delete @${page.handle}? This will also remove ${linked} post${linked === 1 ? '' : 's'}. This cannot be undone.`
+      : `Delete @${page.handle}? This cannot be undone.`
+    if (!window.confirm(msg)) return
+    try { await removePage(page.id) }
+    catch (err) { alert(err instanceof Error ? err.message : 'Failed to delete page.') }
+  }
 
   function toggleSort(key: SortKey) {
     setSort(s => s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' })
@@ -134,6 +167,30 @@ export default function OutreachAllPages() {
           </select>
           <span className="text-xs text-muted-foreground ml-auto">{rows.length} pages</span>
         </div>
+        {/* Content-type chips — multi-select. Page matches if it has at least
+            one of the selected content types. */}
+        <div className="flex items-center gap-2 mt-2 flex-wrap">
+          <span className="text-[11px] uppercase tracking-widest text-muted-foreground">Content type</span>
+          {PAGE_CONTENT_TYPES.map(t => {
+            const selected = contentTypeFilter.has(t)
+            return (
+              <button key={t} type="button" onClick={() => toggleContentType(t)}
+                className={`text-[11px] px-2.5 py-1 rounded-lg border transition-colors capitalize ${
+                  selected
+                    ? 'bg-orange-100 border-orange-300 text-orange-700 font-medium'
+                    : 'bg-card border-border text-muted-foreground hover:bg-accent'
+                }`}>
+                {t}
+              </button>
+            )
+          })}
+          {contentTypeFilter.size > 0 && (
+            <button type="button" onClick={() => setContentTypeFilter(new Set())}
+              className="text-[11px] text-muted-foreground hover:text-foreground underline">
+              Clear
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Table */}
@@ -148,15 +205,27 @@ export default function OutreachAllPages() {
               <Th label="Consumed"    sk="consumed"  sort={sort} onClick={toggleSort} className="text-right" />
               <Th label="AI suggested / mo" sk="suggested" sort={sort} onClick={toggleSort} className="text-right" />
               <Th label="Status"      sk="status"    sort={sort} onClick={toggleSort} />
+              <th className="px-3 py-2 w-8"></th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
-              <tr><td colSpan={7} className="px-3 py-12 text-center text-sm text-muted-foreground">No pages match these filters.</td></tr>
+              <tr><td colSpan={8} className="px-3 py-12 text-center text-sm text-muted-foreground">No pages match these filters.</td></tr>
             ) : rows.map(({ page, m, total, consumed, suggested }) => (
-              <tr key={page.id} className="border-b border-border last:border-0 hover:bg-accent/40 transition-colors">
+              <tr key={page.id} className={`border-b border-border last:border-0 transition-colors ${
+                highlightIds.has(page.id) ? 'bg-orange-50 hover:bg-orange-100' : 'hover:bg-accent/40'
+              }`}>
                 <td className="px-3 py-2.5">
-                  <Link to={`/outreach/creators/${page.id}`} className="text-xs font-medium text-foreground hover:underline">@{page.handle}</Link>
+                  <div className="flex items-center gap-1.5">
+                    <Link to={`/outreach/creators/${page.id}`} className="text-xs font-medium text-foreground hover:underline">@{page.handle}</Link>
+                    {isValidInstagramHandle(page.handle) && (
+                      <a href={instagramUrlForHandle(page.handle)} target="_blank" rel="noreferrer"
+                        title={`Open @${page.handle} on Instagram`}
+                        className="text-muted-foreground hover:text-orange-600">
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    )}
+                  </div>
                 </td>
                 <td className="px-3 py-2.5 text-xs text-foreground">{page.geography}</td>
                 <td className="px-3 py-2.5"><span className="hub-badge bg-orange-50 text-orange-700 uppercase text-[10px]">{page.type}</span></td>
@@ -171,6 +240,13 @@ export default function OutreachAllPages() {
                   </span>
                 </td>
                 <td className="px-3 py-2.5"><StatusBadge status={m.status} /></td>
+                <td className="px-3 py-2.5">
+                  <button onClick={() => confirmDelete(page)}
+                    title="Delete page"
+                    className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>

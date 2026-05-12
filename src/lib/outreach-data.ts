@@ -26,8 +26,11 @@ export type PostStatus = typeof POST_STATUSES[number]
 export const CAMPAIGN_STATUSES = ['planning', 'active', 'completed', 'paused'] as const
 export type CampaignStatus = typeof CAMPAIGN_STATUSES[number]
 
-export const FOLLOWER_TIERS = ['nano', 'micro', 'mid', 'macro'] as const
+export const FOLLOWER_TIERS = ['1', '2', '3', '4', '5'] as const
 export type FollowerTier = typeof FOLLOWER_TIERS[number]
+
+export const PAGE_CONTENT_TYPES = ['static', 'reel', 'carousel'] as const
+export type PageContentType = typeof PAGE_CONTENT_TYPES[number]
 
 export interface OutreachPage {
   id: string
@@ -36,6 +39,7 @@ export interface OutreachPage {
   state: string
   type: PageType
   followerTier: FollowerTier
+  contentTypes: PageContentType[]
   followers: number
   inventoryPosts: number
   inventoryStories: number
@@ -95,6 +99,7 @@ function toPage(p: ServerOutreachPage): OutreachPage {
     state: p.state,
     type: p.type,
     followerTier: p.follower_tier,
+    contentTypes: Array.isArray(p.content_types) ? p.content_types : [],
     followers: p.followers,
     inventoryPosts: p.inventory_posts,
     inventoryStories: p.inventory_stories,
@@ -110,6 +115,7 @@ function fromPage(p: Omit<OutreachPage, 'id' | 'lastSyncedAt'> & Partial<Pick<Ou
     state: p.state,
     type: p.type,
     follower_tier: p.followerTier,
+    content_types: p.contentTypes,
     followers: p.followers,
     inventory_posts: p.inventoryPosts,
     inventory_stories: p.inventoryStories,
@@ -246,6 +252,7 @@ export async function updatePage(id: string, patch: Partial<Omit<OutreachPage, '
   if (patch.state !== undefined) serverPatch.state = patch.state
   if (patch.type !== undefined) serverPatch.type = patch.type
   if (patch.followerTier !== undefined) serverPatch.follower_tier = patch.followerTier
+  if (patch.contentTypes !== undefined) serverPatch.content_types = patch.contentTypes
   if (patch.followers !== undefined) serverPatch.followers = patch.followers
   if (patch.inventoryPosts !== undefined) serverPatch.inventory_posts = patch.inventoryPosts
   if (patch.inventoryStories !== undefined) serverPatch.inventory_stories = patch.inventoryStories
@@ -254,8 +261,28 @@ export async function updatePage(id: string, patch: Partial<Omit<OutreachPage, '
   await fetchAll()
 }
 
-export async function addCampaign(campaign: Omit<Campaign, 'id'>) {
-  await api.createOutreachCampaign(fromCampaign(campaign))
+export async function addCampaign(campaign: Omit<Campaign, 'id'>): Promise<Campaign> {
+  const { campaign: created } = await api.createOutreachCampaign(fromCampaign(campaign))
+  await fetchAll()
+  return toCampaign(created)
+}
+
+/**
+ * Deletes a campaign and refreshes the store. Posts that were attributed to
+ * the campaign survive (the FK is ON DELETE SET NULL) — their `campaignId`
+ * becomes null so they appear as unattributed on dashboards/analytics.
+ */
+export async function removeCampaign(id: string) {
+  await api.deleteOutreachCampaign(id)
+  await fetchAll()
+}
+
+/**
+ * Deletes a page and refreshes the store. CASCADES to outreach_posts so any
+ * posts tied to this page are removed too. There is no undo.
+ */
+export async function removePage(id: string) {
+  await api.deleteOutreachPage(id)
   await fetchAll()
 }
 
@@ -296,6 +323,22 @@ export async function syncNow(handles?: string[]) {
   const result = await api.syncOutreach(handles)
   await fetchAll()
   return result
+}
+
+/**
+ * Pulls metrics for specific Instagram post/reel URLs and persists them under
+ * (campaign, page). Returns the saved posts plus any URLs that were skipped
+ * (bad URL, owner mismatch, Apify failure). Triggers a store refetch so
+ * dashboards / analytics pick up the new rows.
+ */
+export async function addLivePostsByUrl(campaignId: string, pageId: string, urls: string[]) {
+  const result = await api.fetchOutreachPostsByUrls(campaignId, pageId, urls)
+  await fetchAll()
+  return {
+    ok: result.ok,
+    posts: result.posts.map(toPost),
+    skipped: result.skipped,
+  }
 }
 
 // ── Pure helpers — used by analytics widgets, no store state ───────────────
@@ -364,4 +407,49 @@ export function suggestedMonthlyUsage(page: OutreachPage, posts: Post[]): number
 
 export function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60)
+}
+
+/**
+ * Normalises a handle input: accepts a bare username, `@username`, or any
+ * Instagram URL form (instagram.com/username, with/without protocol, with
+ * trailing path / querystring) and returns the canonical handle.
+ *
+ * Returns empty string if nothing usable can be extracted.
+ */
+export function parseInstagramHandle(input: string): string {
+  const trimmed = input.trim()
+  if (!trimmed) return ''
+  // URL form — pull the first path segment after instagram.com.
+  const urlMatch = trimmed.match(/instagram\.com\/([^/?#\s]+)/i)
+  if (urlMatch) return urlMatch[1].replace(/^@/, '')
+  // Bare handle (allow leading @, strip query / path leftovers just in case).
+  return trimmed.replace(/^@/, '').split(/[/?#\s]/)[0]
+}
+
+/** Returns the public Instagram profile URL for a handle. */
+export function instagramUrlForHandle(handle: string): string {
+  const h = handle.trim().replace(/^@/, '')
+  return `https://www.instagram.com/${encodeURIComponent(h)}/`
+}
+
+/**
+ * Returns true if `handle` is a syntactically valid Instagram username.
+ * Legacy seed entries that contained spaces or other display-only text
+ * fail this check, so callers can hide a broken "Open on Instagram" link.
+ */
+export function isValidInstagramHandle(handle: string): boolean {
+  return /^[A-Za-z0-9._]{1,30}$/.test(handle.trim().replace(/^@/, ''))
+}
+
+/**
+ * Formats a Date as a local-time YYYY-MM-DD string. Important: `toISOString`
+ * uses UTC, which shifts the day by ±1 in non-UTC timezones (e.g. IST).
+ * Every date bucket in this domain (post.date, campaign dates) is a local
+ * calendar day, so we must format in local time to compare correctly.
+ */
+export function formatLocalDate(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
 }

@@ -1,13 +1,15 @@
 import { useMemo, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Send, Calendar, Heart, Eye, FileText, Pause, Play, CheckCircle,
+  Link as LinkIcon, Trash2,
 } from 'lucide-react'
+import AddLivePostsDialog from './AddLivePostsDialog'
 import {
   BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
 import {
-  useOutreachData, updateCampaign, campaignMetrics,
+  useOutreachData, updateCampaign, removeCampaign, campaignMetrics,
   type CampaignStatus,
 } from '@/lib/outreach-data'
 
@@ -21,8 +23,28 @@ const STATUS_CFG: Record<CampaignStatus, { label: string; cls: string }> = {
 export default function OutreachCampaignDetail() {
   const { campaignId } = useParams<{ campaignId: string }>()
   const { campaigns, posts, pages } = useOutreachData()
+  const navigate = useNavigate()
   const campaign = campaigns.find(c => c.id === campaignId)
   const [showAllPages, setShowAllPages] = useState(false)
+  const [livePostsOpen, setLivePostsOpen] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  async function handleDelete() {
+    if (!campaign) return
+    const linked = posts.filter(p => p.campaignId === campaign.id).length
+    const msg = linked > 0
+      ? `Delete "${campaign.name}"? ${linked} post${linked === 1 ? '' : 's'} attributed to it will be kept but unattributed. This cannot be undone.`
+      : `Delete "${campaign.name}"? This cannot be undone.`
+    if (!window.confirm(msg)) return
+    setDeleting(true)
+    try {
+      await removeCampaign(campaign.id)
+      navigate('/outreach/campaigns')
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to delete campaign.')
+      setDeleting(false)
+    }
+  }
 
   const m = useMemo(() => campaign ? campaignMetrics(campaign, posts) : null, [campaign, posts])
 
@@ -93,8 +115,14 @@ export default function OutreachCampaignDetail() {
               {campaign.goal && <p className="text-xs text-muted-foreground mt-1">Goal: {campaign.goal}</p>}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className={`hub-badge ${STATUS_CFG[campaign.status].cls}`}>{STATUS_CFG[campaign.status].label}</span>
+            <button
+              onClick={() => setLivePostsOpen(true)}
+              className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1"
+            >
+              <LinkIcon className="w-3 h-3" /> Add live posts
+            </button>
             {campaign.status === 'planning' && (
               <button onClick={() => setStatus('active')} className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 hover:opacity-80 inline-flex items-center gap-1">
                 <Play className="w-3 h-3" /> Activate
@@ -115,6 +143,11 @@ export default function OutreachCampaignDetail() {
                 <Play className="w-3 h-3" /> Resume
               </button>
             )}
+            <button onClick={handleDelete} disabled={deleting}
+              title="Delete campaign"
+              className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
+              <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
+            </button>
           </div>
         </div>
 
@@ -218,6 +251,10 @@ export default function OutreachCampaignDetail() {
           ))}
         </div>
       </div>
+
+      {livePostsOpen && (
+        <AddLivePostsDialog campaign={campaign} onClose={() => setLivePostsOpen(false)} />
+      )}
 
     </div>
   )

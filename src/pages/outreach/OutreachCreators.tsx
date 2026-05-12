@@ -1,11 +1,12 @@
-import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import {
   Users, Search, ArrowUpDown, ArrowUp, ArrowDown, ChevronRight, Filter as FilterIcon,
+  ExternalLink, Trash2,
 } from 'lucide-react'
 import {
-  useOutreachData, pageMetrics,
-  type PageType, type FollowerTier,
+  useOutreachData, pageMetrics, removePage, instagramUrlForHandle, isValidInstagramHandle,
+  type PageType, type FollowerTier, type OutreachPage,
 } from '@/lib/outreach-data'
 
 type SortKey = 'handle' | 'geography' | 'inventory' | 'mtd' | 'pct' | 'eng' | 'last' | 'status'
@@ -19,13 +20,36 @@ const TABS: { id: PageType; label: string }[] = [
 
 export default function OutreachCreators() {
   const { pages, posts } = useOutreachData()
+  const [searchParams] = useSearchParams()
+  // Page IDs to highlight (e.g. from dashboard idle-pages alert). Reading
+  // query params on first render — we don't react to back/forward changes
+  // because the alert link always replaces the URL.
+  const highlightIds = useMemo(() => {
+    const raw = searchParams.get('ids')
+    return new Set(raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [])
+  }, [searchParams])
+
   const [tab, setTab] = useState<PageType>('state')
   const [search, setSearch] = useState('')
   const [geography, setGeography] = useState<string>('')
   const [state, setState] = useState<string>('')
-  const [inv, setInv] = useState<InvFilter>('all')
+  const [inv, setInv] = useState<InvFilter>(
+    // Default to "idle" when the URL came from the idle-pages alert.
+    (searchParams.get('filter') === 'idle' ? 'idle' : 'all') as InvFilter,
+  )
   const [tier, setTier] = useState<FollowerTier | ''>('')
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: 'pct', dir: 'desc' })
+
+  // If the alert pointed at pages on the OTHER tab (state vs pu), flip to that
+  // tab once pages have loaded so the user actually sees them.
+  useEffect(() => {
+    if (highlightIds.size === 0) return
+    const target = pages.find(p => highlightIds.has(p.id))
+    if (target) setTab(target.type)
+    // Run only when pages first arrive — re-running on every page mutation
+    // would clobber the user's tab choice after they switch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pages.length === 0])
 
   const geographies = useMemo(() => Array.from(new Set(pages.map(p => p.geography))).sort(), [pages])
   const states = useMemo(() => Array.from(new Set(pages.map(p => p.state))).sort(), [pages])
@@ -72,6 +96,16 @@ export default function OutreachCreators() {
     })
     return filtered
   }, [pages, posts, tab, search, geography, state, tier, inv, sort])
+
+  async function confirmDelete(page: OutreachPage) {
+    const linked = posts.filter(p => p.pageId === page.id).length
+    const msg = linked > 0
+      ? `Delete @${page.handle}? This will also remove ${linked} post${linked === 1 ? '' : 's'}. This cannot be undone.`
+      : `Delete @${page.handle}? This cannot be undone.`
+    if (!window.confirm(msg)) return
+    try { await removePage(page.id) }
+    catch (err) { alert(err instanceof Error ? err.message : 'Failed to delete page.') }
+  }
 
   function toggleSort(key: SortKey) {
     setSort(s => s.key === key ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' })
@@ -124,10 +158,11 @@ export default function OutreachCreators() {
           </select>
           <select value={tier} onChange={e => setTier(e.target.value as FollowerTier | '')} className="hub-input py-1.5 text-xs w-32">
             <option value="">Any tier</option>
-            <option value="nano">Nano (&lt;10k)</option>
-            <option value="micro">Micro (10–50k)</option>
-            <option value="mid">Mid (50–250k)</option>
-            <option value="macro">Macro (250k+)</option>
+            <option value="1">Tier 1</option>
+            <option value="2">Tier 2</option>
+            <option value="3">Tier 3</option>
+            <option value="4">Tier 4</option>
+            <option value="5">Tier 5</option>
           </select>
           <select value={inv} onChange={e => setInv(e.target.value as InvFilter)} className="hub-input py-1.5 text-xs w-36">
             <option value="all">Any inventory</option>
@@ -161,17 +196,29 @@ export default function OutreachCreators() {
             {rows.length === 0 ? (
               <tr><td colSpan={9} className="px-3 py-12 text-center text-sm text-muted-foreground">No pages match these filters.</td></tr>
             ) : rows.map(({ page, m }) => (
-              <tr key={page.id} className="border-b border-border last:border-0 hover:bg-accent/40 transition-colors">
+              <tr key={page.id} className={`border-b border-border last:border-0 transition-colors ${
+                highlightIds.has(page.id) ? 'bg-orange-50 hover:bg-orange-100' : 'hover:bg-accent/40'
+              }`}>
                 <td className="px-3 py-2.5">
-                  <Link to={`/outreach/creators/${page.id}`} className="flex items-center gap-2 group">
-                    <div className="w-7 h-7 rounded-full bg-orange-100 flex items-center justify-center shrink-0">
-                      <span className="text-[10px] font-semibold text-orange-700">{page.handle[0]?.toUpperCase()}</span>
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-xs font-medium text-foreground truncate group-hover:underline">@{page.handle}</p>
-                      <p className="text-[10px] text-muted-foreground">{fmt(page.followers)} followers · {page.followerTier}</p>
-                    </div>
-                  </Link>
+                  <div className="flex items-center gap-2">
+                    <Link to={`/outreach/creators/${page.id}`} className="flex items-center gap-2 group min-w-0 flex-1">
+                      <div className="w-7 h-7 rounded-full bg-orange-100 flex items-center justify-center shrink-0">
+                        <span className="text-[10px] font-semibold text-orange-700">{page.handle[0]?.toUpperCase()}</span>
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium text-foreground truncate group-hover:underline">@{page.handle}</p>
+                        <p className="text-[10px] text-muted-foreground">{fmt(page.followers)} followers · Tier {page.followerTier}</p>
+                      </div>
+                    </Link>
+                    {isValidInstagramHandle(page.handle) && (
+                      <a href={instagramUrlForHandle(page.handle)} target="_blank" rel="noreferrer"
+                        title={`Open @${page.handle} on Instagram`}
+                        className="p-1 rounded-md text-muted-foreground hover:bg-accent hover:text-orange-600 shrink-0"
+                        onClick={e => e.stopPropagation()}>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    )}
+                  </div>
                 </td>
                 <td className="px-3 py-2.5 text-xs text-foreground">{page.geography}</td>
                 <td className="px-3 py-2.5 text-xs text-muted-foreground hidden">{page.state}</td>
@@ -183,7 +230,16 @@ export default function OutreachCreators() {
                 <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground">{fmt(m.avgEngagement)}</td>
                 <td className="px-3 py-2.5 text-xs text-muted-foreground">{m.lastPostDate ?? '—'}</td>
                 <td className="px-3 py-2.5"><StatusBadge status={m.status} /></td>
-                <td className="px-3 py-2.5 text-muted-foreground"><ChevronRight className="w-4 h-4" /></td>
+                <td className="px-3 py-2.5">
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => confirmDelete(page)}
+                      title="Delete page"
+                      className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                    <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>

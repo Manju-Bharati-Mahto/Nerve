@@ -1,17 +1,37 @@
-import { useMemo } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { useMemo, useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Users, Calendar, TrendingUp, FileText, Heart, Eye, MessageSquare, Bookmark, Share2,
+  ExternalLink, Trash2,
 } from 'lucide-react'
 import {
   LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
-import { useOutreachData, pageMetrics } from '@/lib/outreach-data'
+import { useOutreachData, pageMetrics, removePage, instagramUrlForHandle, isValidInstagramHandle, formatLocalDate } from '@/lib/outreach-data'
 
 export default function OutreachPageDetail() {
   const { pageId } = useParams<{ pageId: string }>()
   const { pages, posts, campaigns } = useOutreachData()
+  const navigate = useNavigate()
   const page = pages.find(p => p.id === pageId)
+  const [deleting, setDeleting] = useState(false)
+
+  async function handleDelete() {
+    if (!page) return
+    const linked = posts.filter(p => p.pageId === page.id).length
+    const msg = linked > 0
+      ? `Delete @${page.handle}? This will also remove ${linked} post${linked === 1 ? '' : 's'} tied to this page. This cannot be undone.`
+      : `Delete @${page.handle}? This cannot be undone.`
+    if (!window.confirm(msg)) return
+    setDeleting(true)
+    try {
+      await removePage(page.id)
+      navigate('/outreach/creators')
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to delete page.')
+      setDeleting(false)
+    }
+  }
 
   const pagePosts = useMemo(
     () => posts.filter(p => p.pageId === pageId).sort((a, b) => b.date.localeCompare(a.date)),
@@ -25,7 +45,9 @@ export default function OutreachPageDetail() {
     return Array.from({ length: days }, (_, i) => {
       const d = new Date(today)
       d.setDate(today.getDate() - (days - 1 - i))
-      const iso = d.toISOString().slice(0, 10)
+      // Local date — see note in formatLocalDate. Was using toISOString here,
+      // which silently lost a day's worth of posts in IST.
+      const iso = formatLocalDate(d)
       const same = pagePosts.filter(p => p.date === iso)
       return {
         day: `${d.getDate()}/${d.getMonth() + 1}`,
@@ -75,16 +97,30 @@ export default function OutreachPageDetail() {
               <span className="text-xl font-semibold text-orange-700">{page.handle[0]?.toUpperCase()}</span>
             </div>
             <div>
-              <h1 className="text-xl font-serif text-foreground">@{page.handle}</h1>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="text-xl font-serif text-foreground">@{page.handle}</h1>
+                {isValidInstagramHandle(page.handle) && (
+                  <a href={instagramUrlForHandle(page.handle)} target="_blank" rel="noreferrer"
+                    title={`Open @${page.handle} on Instagram`}
+                    className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80">
+                    <ExternalLink className="w-3 h-3" /> Open on Instagram
+                  </a>
+                )}
+              </div>
               <p className="text-sm text-muted-foreground">
-                {page.geography} · {page.state} · <span className="uppercase">{page.type}</span> · {page.followerTier} tier
+                {page.geography} · {page.state} · <span className="uppercase">{page.type}</span> · Tier {page.followerTier}
               </p>
               {page.notes && <p className="text-xs text-muted-foreground mt-1">{page.notes}</p>}
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="hub-badge bg-orange-50 text-orange-700"><Users className="w-3 h-3 inline mr-1" />{fmt(page.followers)}</span>
             <span className="hub-badge bg-blue-50 text-blue-700">Inv {page.inventoryPosts}P / {page.inventoryStories}S</span>
+            <button onClick={handleDelete} disabled={deleting}
+              title="Delete page"
+              className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
+              <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
+            </button>
           </div>
         </div>
       </div>
@@ -142,7 +178,16 @@ export default function OutreachPageDetail() {
                   const c = campaigns.find(c => c.id === p.campaignId)
                   return (
                     <tr key={p.id} className="border-b border-border last:border-0 hover:bg-accent/40">
-                      <td className="px-3 py-2 text-xs text-foreground">{p.date}</td>
+                      <td className="px-3 py-2 text-xs text-foreground">
+                        {p.permalink ? (
+                          <a href={p.permalink} target="_blank" rel="noreferrer"
+                            title="Open on Instagram"
+                            className="inline-flex items-center gap-1 text-orange-600 hover:underline">
+                            {p.date}
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        ) : p.date}
+                      </td>
                       <td className="px-3 py-2 text-xs text-foreground truncate max-w-[160px]">{c?.name ?? '—'}</td>
                       <td className="px-3 py-2"><span className="hub-badge bg-orange-50 text-orange-700 capitalize">{p.type}</span></td>
                       <td className="px-3 py-2 text-xs text-muted-foreground">{p.creativeVariant ?? '—'}</td>

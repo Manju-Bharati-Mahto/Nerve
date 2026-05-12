@@ -34,5 +34,14 @@ export const config = {
   apify: {
     token: process.env.APIFY_TOKEN?.trim() || "",
     profileActor: process.env.APIFY_PROFILE_ACTOR?.trim() || "apify~instagram-profile-scraper",
+    postActor: process.env.APIFY_POST_ACTOR?.trim() || "apify~instagram-post-scraper",
+    // Optional Instagram session cookie. When set, we forward it to Apify so
+    // the scraper runs as a logged-in user, which returns live counts instead
+    // of the stale logged-out snapshots Instagram serves to bots.
+    //   - Easiest: paste just the `sessionid` cookie value from a logged-in
+    //     browser (DevTools → Application → Cookies → instagram.com → sessionid).
+    //   - Power user: paste a JSON array of cookie objects (we'll pass them
+    //     through verbatim).
+    instagramSessionCookie: process.env.APIFY_IG_SESSION_COOKIE?.trim() || "",
   },
 };

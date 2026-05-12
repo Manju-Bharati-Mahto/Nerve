@@ -4,7 +4,7 @@ import {
   Calendar as CalendarIcon, ChevronLeft, ChevronRight, Upload, X, AlertCircle, CheckCircle,
 } from 'lucide-react'
 import {
-  useOutreachData, addPostsBulk, slug,
+  useOutreachData, addPostsBulk, slug, formatLocalDate,
   type PostType, type PostStatus, type Post,
 } from '@/lib/outreach-data'
 
@@ -29,7 +29,9 @@ export default function OutreachCalendar() {
 
   const month = cursor.getMonth()
   const year = cursor.getFullYear()
-  const today = new Date().toISOString().slice(0, 10)
+  // Local date string — must NOT use toISOString (UTC) since cell dates are
+  // local calendar days; in IST that would shift every cell by one.
+  const today = formatLocalDate(new Date())
 
   const cells = useMemo(() => {
     if (view === 'month') {
@@ -38,7 +40,7 @@ export default function OutreachCalendar() {
       const out: { date: string | null; isToday: boolean }[] = []
       for (let i = 0; i < firstDay; i++) out.push({ date: null, isToday: false })
       for (let d = 1; d <= daysInMonth; d++) {
-        const iso = new Date(year, month, d).toISOString().slice(0, 10)
+        const iso = formatLocalDate(new Date(year, month, d))
         out.push({ date: iso, isToday: iso === today })
       }
       while (out.length % 7 !== 0) out.push({ date: null, isToday: false })
@@ -49,7 +51,7 @@ export default function OutreachCalendar() {
       return Array.from({ length: 7 }, (_, i) => {
         const d = new Date(start)
         d.setDate(start.getDate() + i)
-        const iso = d.toISOString().slice(0, 10)
+        const iso = formatLocalDate(d)
         return { date: iso, isToday: iso === today }
       })
     }
@@ -139,10 +141,25 @@ export default function OutreachCalendar() {
                     const page = pages.find(pp => pp.id === p.pageId)
                     const color = colorFor(p.campaignId)
                     const label = camp?.name ?? (page ? `@${page.handle}` : 'post')
+                    const title = `${camp?.name ?? 'Unattributed'} — @${page?.handle ?? '?'} — ${p.type}`
+                    const cls = "block px-1.5 py-0.5 rounded text-[10px] truncate text-white"
+                    // If this post has a real Instagram permalink, clicking
+                    // jumps to the live post; otherwise fall back to the
+                    // internal campaign / creator view as before.
+                    if (p.permalink) {
+                      return (
+                        <a key={p.id} href={p.permalink} target="_blank" rel="noreferrer"
+                          title={`${title} — open on Instagram`}
+                          className={cls}
+                          style={{ backgroundColor: color }}>
+                          {label}
+                        </a>
+                      )
+                    }
                     return (
                       <Link key={p.id} to={camp ? `/outreach/campaigns/${camp.id}` : page ? `/outreach/creators/${page.id}` : '#'}
-                        title={`${camp?.name ?? 'Unattributed'} — @${page?.handle ?? '?'} — ${p.type}`}
-                        className="block px-1.5 py-0.5 rounded text-[10px] truncate text-white"
+                        title={title}
+                        className={cls}
                         style={{ backgroundColor: color }}>
                         {label}
                       </Link>
