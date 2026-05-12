@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   BarChart3, Download, Layers, TrendingUp, Award, FileText, Send, Plus,
-  Filter as FilterIcon, ArrowUp, ArrowDown,
+  Filter as FilterIcon, ArrowUp, ArrowDown, ExternalLink,
 } from 'lucide-react'
 import {
   BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -10,8 +10,9 @@ import {
 } from 'recharts'
 import {
   useOutreachData, pageMetrics, campaignMetrics, addPage, updatePage,
-  PAGE_TYPES, FOLLOWER_TIERS,
-  type PageType, type FollowerTier, type OutreachPage,
+  parseInstagramHandle, instagramUrlForHandle,
+  PAGE_TYPES, FOLLOWER_TIERS, PAGE_CONTENT_TYPES,
+  type PageType, type FollowerTier, type PageContentType, type OutreachPage,
 } from '@/lib/outreach-data'
 
 type Tab = 'pages' | 'campaigns' | 'posts' | 'trend' | 'inventory'
@@ -173,7 +174,9 @@ function PagesPerformance() {
 function CampaignsCompare() {
   const { campaigns, posts } = useOutreachData()
   const enriched = useMemo(() => campaigns.map(c => ({ c, m: campaignMetrics(c, posts) })), [campaigns, posts])
-  const top3 = useMemo(() => enriched.sort((a, b) => b.m.totalReach - a.m.totalReach).slice(0, 3).map(x => x.c.id), [enriched])
+  // Don't sort `enriched` in place — useMemo handed us a reference that other
+  // consumers may still read in the natural (campaign-creation) order.
+  const top3 = useMemo(() => [...enriched].sort((a, b) => b.m.totalReach - a.m.totalReach).slice(0, 3).map(x => x.c.id), [enriched])
   const [selected, setSelected] = useState<string[]>(top3)
 
   function toggle(id: string) {
@@ -305,7 +308,16 @@ function BestPosts() {
               const camp = campaigns.find(c => c.id === post.campaignId)
               return (
                 <tr key={post.id} className="border-b border-border last:border-0 hover:bg-accent/40">
-                  <td className="px-3 py-2.5 text-xs">{post.date}</td>
+                  <td className="px-3 py-2.5 text-xs">
+                    {post.permalink ? (
+                      <a href={post.permalink} target="_blank" rel="noreferrer"
+                        title="Open on Instagram"
+                        className="inline-flex items-center gap-1 text-orange-600 hover:underline">
+                        {post.date}
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    ) : post.date}
+                  </td>
                   <td className="px-3 py-2.5 text-xs">{page ? <Link to={`/outreach/creators/${page.id}`} className="hover:underline">@{page.handle}</Link> : '—'}</td>
                   <td className="px-3 py-2.5 text-xs">{camp ? <Link to={`/outreach/campaigns/${camp.id}`} className="hover:underline">{camp.name}</Link> : '—'}</td>
                   <td className="px-3 py-2.5"><span className="hub-badge bg-orange-50 text-orange-700 capitalize">{post.type}</span></td>
@@ -497,17 +509,46 @@ function fmt(n: number): string {
 export function AddPageModal({ onClose }: { onClose: () => void }) {
   const [form, setForm] = useState<{
     handle: string; geography: string; state: string; type: PageType;
-    followerTier: FollowerTier; followers: number; inventoryPosts: number; inventoryStories: number; notes: string;
+    followerTier: FollowerTier; contentTypes: PageContentType[];
+    followers: number; inventoryPosts: number; inventoryStories: number; notes: string;
   }>({
     handle: '', geography: '', state: '', type: 'state',
-    followerTier: 'micro', followers: 20000, inventoryPosts: 24, inventoryStories: 24, notes: '',
+    followerTier: '1', contentTypes: [],
+    followers: 20000, inventoryPosts: 24, inventoryStories: 24, notes: '',
   })
 
-  const canSubmit = form.handle.trim() && form.geography.trim() && form.state.trim()
+  function toggleContentType(t: PageContentType) {
+    setForm(f => ({
+      ...f,
+      contentTypes: f.contentTypes.includes(t)
+        ? f.contentTypes.filter(x => x !== t)
+        : [...f.contentTypes, t],
+    }))
+  }
 
-  function submit() {
-    addPage({ ...form, handle: form.handle.trim(), geography: form.geography.trim(), state: form.state.trim() })
-    onClose()
+  // Accept either a bare username or a pasted Instagram URL — we store
+  // the canonical handle either way.
+  const normalisedHandle = parseInstagramHandle(form.handle)
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const canSubmit = !!normalisedHandle && form.geography.trim() && form.state.trim() && !submitting
+
+  async function submit() {
+    if (submitting) return
+    setSubmitting(true)
+    setSubmitError(null)
+    try {
+      await addPage({
+        ...form,
+        handle: normalisedHandle,
+        geography: form.geography.trim(),
+        state: form.state.trim(),
+      })
+      onClose()
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Failed to add page.')
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -519,8 +560,19 @@ export function AddPageModal({ onClose }: { onClose: () => void }) {
         </div>
         <div className="p-4 space-y-3">
           <div>
-            <label className="hub-label">Handle *</label>
-            <input className="hub-input" value={form.handle} onChange={e => setForm(f => ({ ...f, handle: e.target.value }))} placeholder="e.g. mycitypage" />
+            <label className="hub-label">Instagram handle or URL *</label>
+            <input className="hub-input" value={form.handle}
+              onChange={e => setForm(f => ({ ...f, handle: e.target.value }))}
+              placeholder="mycitypage  —or—  https://www.instagram.com/mycitypage/" />
+            {normalisedHandle && (
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Will save as <span className="font-mono text-foreground">@{normalisedHandle}</span> ·{' '}
+                <a href={instagramUrlForHandle(normalisedHandle)} target="_blank" rel="noreferrer"
+                  className="text-orange-600 hover:underline">
+                  preview on Instagram
+                </a>
+              </p>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -542,9 +594,28 @@ export function AddPageModal({ onClose }: { onClose: () => void }) {
             <div>
               <label className="hub-label">Follower tier</label>
               <select className="hub-input" value={form.followerTier} onChange={e => setForm(f => ({ ...f, followerTier: e.target.value as FollowerTier }))}>
-                {FOLLOWER_TIERS.map(t => <option key={t} value={t} className="capitalize">{t}</option>)}
+                {FOLLOWER_TIERS.map(t => <option key={t} value={t}>Tier {t}</option>)}
               </select>
             </div>
+          </div>
+          <div>
+            <label className="hub-label">Content type</label>
+            <div className="flex gap-2 flex-wrap">
+              {PAGE_CONTENT_TYPES.map(t => {
+                const selected = form.contentTypes.includes(t)
+                return (
+                  <button key={t} type="button" onClick={() => toggleContentType(t)}
+                    className={`text-xs px-3 py-1.5 rounded-lg border transition-colors capitalize ${
+                      selected
+                        ? 'bg-orange-100 border-orange-300 text-orange-700 font-medium'
+                        : 'bg-card border-border text-muted-foreground hover:bg-accent'
+                    }`}>
+                    {t}
+                  </button>
+                )
+              })}
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-1">Pick all formats this page accepts. Drives the filters on All pages.</p>
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div>
@@ -564,11 +635,14 @@ export function AddPageModal({ onClose }: { onClose: () => void }) {
             </div>
           </div>
         </div>
+        {submitError && (
+          <div className="px-4 py-2 text-xs text-rose-700 bg-rose-50 border-t border-rose-200">{submitError}</div>
+        )}
         <div className="flex items-center justify-end gap-2 p-4 border-t border-border">
-          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent">Cancel</button>
+          <button onClick={onClose} disabled={submitting} className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent disabled:opacity-40">Cancel</button>
           <button onClick={submit} disabled={!canSubmit}
             className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">
-            Add page
+            {submitting ? 'Adding…' : 'Add page'}
           </button>
         </div>
       </div>

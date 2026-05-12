@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import {
   Megaphone, Send, Calendar as CalendarIcon, BarChart3, FileText, Users, Sparkles,
   TrendingUp, Heart, Eye, AlertTriangle, AlertCircle, Activity, Layers, RefreshCw,
+  ExternalLink,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -111,9 +112,18 @@ export default function OutreachDashboard() {
         out.push({ id: `end-${c.id}`, severity: 'warn', text: `${c.name} ends in ${days}d`, link: `/outreach/campaigns/${c.id}` })
       }
     }
-    // Idle pages
-    const idle = pages.filter(p => pageMetrics(p, posts).status === 'idle').length
-    if (idle > 0) out.push({ id: 'idle', severity: 'info', text: `${idle} pages have no posts this month`, link: '/outreach/creators' })
+    // Idle pages — link out with the specific IDs so the destination tab can
+    // highlight them and pre-filter to status=idle.
+    const idlePages = pages.filter(p => pageMetrics(p, posts).status === 'idle')
+    if (idlePages.length > 0) {
+      const idsParam = idlePages.map(p => p.id).join(',')
+      out.push({
+        id: 'idle',
+        severity: 'info',
+        text: `${idlePages.length} pages have no posts this month`,
+        link: `/outreach/creators?filter=idle&ids=${encodeURIComponent(idsParam)}`,
+      })
+    }
     return out.slice(0, 8)
   }, [pages, campaigns, posts])
 
@@ -263,14 +273,26 @@ export default function OutreachDashboard() {
               {topPosts.map(({ post, score }) => {
                 const page = pages.find(p => p.id === post.pageId)
                 const camp = campaigns.find(c => c.id === post.campaignId)
-                return (
-                  <div key={post.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-accent transition-colors">
+                const body = (
+                  <>
                     <span className="hub-badge bg-orange-50 text-orange-700 shrink-0 capitalize">{post.type}</span>
                     <div className="min-w-0 flex-1">
                       <p className="text-xs font-medium text-foreground truncate">@{page?.handle ?? '—'}</p>
                       <p className="text-[11px] text-muted-foreground truncate">{camp?.name ?? '—'} · {post.date}</p>
                     </div>
                     <span className="text-xs font-mono text-foreground tabular-nums">{fmt(score)}</span>
+                    {post.permalink && <ExternalLink className="w-3 h-3 text-muted-foreground shrink-0" />}
+                  </>
+                )
+                return post.permalink ? (
+                  <a key={post.id} href={post.permalink} target="_blank" rel="noreferrer"
+                    title="Open on Instagram"
+                    className="flex items-center gap-3 p-2 rounded-lg hover:bg-accent transition-colors">
+                    {body}
+                  </a>
+                ) : (
+                  <div key={post.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-accent transition-colors">
+                    {body}
                   </div>
                 )
               })}

@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Send, Plus, Search, X, ChevronRight, Filter as FilterIcon } from 'lucide-react'
+import { Send, Plus, Search, X, ChevronRight, Filter as FilterIcon, Trash2 } from 'lucide-react'
 import {
-  useOutreachData, addCampaign, campaignMetrics,
-  type CampaignStatus,
+  useOutreachData, addCampaign, removeCampaign, campaignMetrics,
+  type Campaign, type CampaignStatus,
 } from '@/lib/outreach-data'
+import AddLivePostsDialog from './AddLivePostsDialog'
 
 const STATUS_CFG: Record<CampaignStatus, { label: string; cls: string }> = {
   planning:  { label: 'Planning',  cls: 'bg-blue-100 text-blue-700' },
@@ -19,8 +20,22 @@ export default function OutreachCampaigns() {
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<CampaignStatus | ''>('')
   const [creating, setCreating] = useState(false)
+  // Campaign whose "add live posts" dialog is currently open. Set when the
+  // CreateCampaignModal finishes (auto-open flow) or could be wired to a
+  // campaign-row action in the future.
+  const [livePostsFor, setLivePostsFor] = useState<Campaign | null>(null)
 
   const enriched = useMemo(() => campaigns.map(c => ({ c, m: campaignMetrics(c, posts) })), [campaigns, posts])
+
+  async function confirmDelete(c: Campaign) {
+    const linked = posts.filter(p => p.campaignId === c.id).length
+    const msg = linked > 0
+      ? `Delete "${c.name}"? ${linked} post${linked === 1 ? '' : 's'} attributed to it will be kept but unattributed. This cannot be undone.`
+      : `Delete "${c.name}"? This cannot be undone.`
+    if (!window.confirm(msg)) return
+    try { await removeCampaign(c.id) }
+    catch (err) { alert(err instanceof Error ? err.message : 'Failed to delete campaign.') }
+  }
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -163,7 +178,16 @@ export default function OutreachCampaigns() {
                   <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{m.postsDelivered + m.storiesDelivered + m.reelsDelivered}</td>
                   <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{Math.round(m.pctConsumed * 100)}%</td>
                   <td className="px-3 py-2.5"><span className={`hub-badge ${STATUS_CFG[c.status].cls}`}>{STATUS_CFG[c.status].label}</span></td>
-                  <td className="px-3 py-2.5"><ChevronRight className="w-4 h-4 text-muted-foreground" /></td>
+                  <td className="px-3 py-2.5">
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => confirmDelete(c)}
+                        title="Delete campaign"
+                        className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                      <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -171,7 +195,20 @@ export default function OutreachCampaigns() {
         </div>
       )}
 
-      {creating && <CreateCampaignModal pages={pages} onClose={() => setCreating(false)} />}
+      {creating && (
+        <CreateCampaignModal
+          pages={pages}
+          onClose={() => setCreating(false)}
+          onCreated={c => { setCreating(false); setLivePostsFor(c) }}
+        />
+      )}
+
+      {livePostsFor && (
+        <AddLivePostsDialog
+          campaign={livePostsFor}
+          onClose={() => setLivePostsFor(null)}
+        />
+      )}
 
     </div>
   )
@@ -179,7 +216,15 @@ export default function OutreachCampaigns() {
 
 // ── Create Campaign Modal ──────────────────────────────────────────────────
 
-function CreateCampaignModal({ pages, onClose }: { pages: ReturnType<typeof useOutreachData>['pages']; onClose: () => void }) {
+function CreateCampaignModal({
+  pages, onClose, onCreated,
+}: {
+  pages: ReturnType<typeof useOutreachData>['pages']
+  onClose: () => void
+  /** Fires with the freshly-created campaign so the parent can open the
+   *  "add live posts" dialog as a follow-on step. */
+  onCreated: (campaign: Campaign) => void
+}) {
   const [step, setStep] = useState(1)
   const [form, setForm] = useState({
     name: '', startDate: '', goal: '',
@@ -189,6 +234,8 @@ function CreateCampaignModal({ pages, onClose }: { pages: ReturnType<typeof useO
     approversRaw: 'Outreach Manager',
   })
   const [pageQuery, setPageQuery] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
 
   const filteredPages = useMemo(() => {
     const q = pageQuery.trim().toLowerCase()
@@ -199,23 +246,31 @@ function CreateCampaignModal({ pages, onClose }: { pages: ReturnType<typeof useO
     setForm(f => ({ ...f, pageIds: f.pageIds.includes(id) ? f.pageIds.filter(x => x !== id) : [...f.pageIds, id] }))
   }
 
-  function submit() {
-    addCampaign({
-      name: form.name.trim(),
-      startDate: form.startDate,
-      // End date intentionally mirrors start date — campaigns are now open-ended
-      // until manually marked completed. Kept on the Campaign type for back-compat.
-      endDate: form.startDate,
-      goal: form.goal.trim(),
-      status: 'planning',
-      budgetPosts: form.budgetPosts,
-      budgetStories: form.budgetStories,
-      budgetReels: form.budgetReels,
-      approvers: form.approversRaw.split(',').map(s => s.trim()).filter(Boolean),
-      creativeVariants: form.variantsRaw.split(',').map(s => s.trim()).filter(Boolean),
-      assignedPageIds: form.pageIds,
-    })
-    onClose()
+  async function submit() {
+    if (submitting) return
+    setSubmitting(true)
+    setSubmitError(null)
+    try {
+      const created = await addCampaign({
+        name: form.name.trim(),
+        startDate: form.startDate,
+        // End date intentionally mirrors start date — campaigns are now open-ended
+        // until manually marked completed. Kept on the Campaign type for back-compat.
+        endDate: form.startDate,
+        goal: form.goal.trim(),
+        status: 'planning',
+        budgetPosts: form.budgetPosts,
+        budgetStories: form.budgetStories,
+        budgetReels: form.budgetReels,
+        approvers: form.approversRaw.split(',').map(s => s.trim()).filter(Boolean),
+        creativeVariants: form.variantsRaw.split(',').map(s => s.trim()).filter(Boolean),
+        assignedPageIds: form.pageIds,
+      })
+      onCreated(created)
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Failed to create campaign.')
+      setSubmitting(false)
+    }
   }
 
   const canStep1 = !!form.name && !!form.startDate
@@ -334,9 +389,13 @@ function CreateCampaignModal({ pages, onClose }: { pages: ReturnType<typeof useO
           )}
         </div>
 
+        {submitError && (
+          <div className="px-4 py-2 text-xs text-rose-700 bg-rose-50 border-t border-rose-200">{submitError}</div>
+        )}
         <div className="flex items-center justify-between p-4 border-t border-border">
           <button onClick={() => step > 1 ? setStep(step - 1) : onClose()}
-            className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent">
+            disabled={submitting}
+            className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent disabled:opacity-40">
             {step > 1 ? 'Back' : 'Cancel'}
           </button>
           {step < 4 ? (
@@ -347,8 +406,9 @@ function CreateCampaignModal({ pages, onClose }: { pages: ReturnType<typeof useO
             </button>
           ) : (
             <button onClick={submit}
-              className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90">
-              Create campaign
+              disabled={submitting}
+              className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">
+              {submitting ? 'Creating…' : 'Create campaign'}
             </button>
           )}
         </div>

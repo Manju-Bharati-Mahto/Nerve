@@ -329,7 +329,7 @@ function ReachPanel() {
             </div>
             <div className="hub-card text-xs text-muted-foreground">
               <p className="mb-1"><strong>Sample size:</strong> {result.samples}. Confidence is low below ~10 samples — treat results as directional.</p>
-              <p><strong>Page:</strong> @{result.page.handle} · {result.page.geography} · {fmt(result.page.followers)} followers · {result.page.followerTier} tier.</p>
+              <p><strong>Page:</strong> @{result.page.handle} · {result.page.geography} · {fmt(result.page.followers)} followers · Tier {result.page.followerTier}.</p>
             </div>
           </>
         )}

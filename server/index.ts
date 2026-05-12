@@ -66,7 +66,7 @@ import {
   POST_TYPES as OUTREACH_POST_TYPES,
   POST_STATUSES as OUTREACH_POST_STATUSES,
 } from "./outreach-db.js";
-import { syncOutreach } from "./outreach-sync.js";
+import { syncOutreach, addLivePosts } from "./outreach-sync.js";
 import { verifyPassword } from "./password.js";
 import {
   bootstrapBrandingDatabase,
@@ -1281,6 +1281,7 @@ const outreachPageSchema = z.object({
   state: z.string().min(1),
   type: z.enum(OUTREACH_PAGE_TYPES),
   follower_tier: z.enum(OUTREACH_FOLLOWER_TIERS),
+  content_types: z.array(z.enum(["static", "reel", "carousel"])).optional(),
   followers: z.number().int().nonnegative().optional(),
   inventory_posts: z.number().int().nonnegative(),
   inventory_stories: z.number().int().nonnegative(),
@@ -1392,6 +1393,35 @@ app.delete("/api/outreach/posts/:id", asyncHandler(async (req, res) => {
   if (!requireOutreach(res)) return;
   await deleteOutreachPost(getSingleParam(req.params.id));
   res.json({ ok: true });
+}));
+
+// Fetch metrics for specific Instagram post/reel URLs and persist them as
+// posts under (campaign, page). Used by the "add live posts" dialog.
+
+const outreachLivePostsSchema = z.object({
+  campaign_id: z.string().min(1),
+  page_id: z.string().min(1),
+  urls: z.array(z.string().min(1)).min(1).max(20),
+});
+
+app.post("/api/outreach/posts/fetch-by-urls", asyncHandler(async (req, res) => {
+  if (!requireOutreach(res)) return;
+  const parsed = outreachLivePostsSchema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, 400, "Invalid payload.");
+  try {
+    const result = await addLivePosts({
+      campaignId: parsed.data.campaign_id,
+      pageId: parsed.data.page_id,
+      urls: parsed.data.urls,
+    });
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Failed to fetch posts.";
+    // Treat validation errors (campaign / page / membership) as 400; Apify or
+    // network errors bubble up as 502.
+    const status = /not found|not assigned/i.test(msg) ? 400 : 502;
+    return sendError(res, status, msg);
+  }
 }));
 
 // Sync — pulls latest profile + posts from Apify for all pages (or a subset)

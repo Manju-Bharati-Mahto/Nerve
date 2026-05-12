@@ -205,6 +205,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify(handles ? { handles } : {}),
     }),
+
+  // Outreach — fetch metrics for specific post / reel URLs and save under
+  // (campaign, page). Powers the "add live posts" dialog.
+  fetchOutreachPostsByUrls: (campaign_id: string, page_id: string, urls: string[]) =>
+    request<{
+      ok: true;
+      posts: ServerOutreachPost[];
+      skipped: { url: string; reason: string }[];
+    }>("/outreach/posts/fetch-by-urls", {
+      method: "POST",
+      body: JSON.stringify({ campaign_id, page_id, urls }),
+    }),
 };
 
 // Server-side row shapes (snake_case). The outreach-data store maps these
@@ -215,7 +227,8 @@ export interface ServerOutreachPage {
   geography: string;
   state: string;
   type: "state" | "pu";
-  follower_tier: "nano" | "micro" | "mid" | "macro";
+  follower_tier: "1" | "2" | "3" | "4" | "5";
+  content_types: ("static" | "reel" | "carousel")[];
   followers: number;
   inventory_posts: number;
   inventory_stories: number;
