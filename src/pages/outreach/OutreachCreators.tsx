@@ -1,17 +1,18 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useMemo, useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   Users, Search, ArrowUpDown, ArrowUp, ArrowDown, ChevronRight, Filter as FilterIcon,
-  ExternalLink, Trash2,
+  ExternalLink, Trash2, Plus,
 } from 'lucide-react'
 import {
-  useOutreachData, pageMetrics, removePage, instagramUrlForHandle, isValidInstagramHandle,
-  type PageType, type FollowerTier, type OutreachPage,
+  useOutreachData, removeCreator, addCreator,
+  instagramUrlForHandle, isValidInstagramHandle, parseInstagramHandle,
+  PAGE_TYPES, FOLLOWER_TIERS, PAGE_CONTENT_TYPES,
+  type PageType, type FollowerTier, type PageContentType, type OutreachCreator,
 } from '@/lib/outreach-data'
 
-type SortKey = 'handle' | 'geography' | 'inventory' | 'mtd' | 'pct' | 'eng' | 'last' | 'status'
+type SortKey = 'handle' | 'geography' | 'state' | 'tier' | 'followers' | 'inventory'
 type SortDir = 'asc' | 'desc'
-type InvFilter = 'all' | 'over-used' | 'under-used' | 'on-track' | 'idle'
 
 const TABS: { id: PageType; label: string }[] = [
   { id: 'state', label: 'State' },
@@ -19,92 +20,62 @@ const TABS: { id: PageType; label: string }[] = [
 ]
 
 export default function OutreachCreators() {
-  const { pages, posts } = useOutreachData()
-  const [searchParams] = useSearchParams()
-  // Page IDs to highlight (e.g. from dashboard idle-pages alert). Reading
-  // query params on first render — we don't react to back/forward changes
-  // because the alert link always replaces the URL.
-  const highlightIds = useMemo(() => {
-    const raw = searchParams.get('ids')
-    return new Set(raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [])
-  }, [searchParams])
+  const { creators } = useOutreachData()
+  const navigate = useNavigate()
 
   const [tab, setTab] = useState<PageType>('state')
   const [search, setSearch] = useState('')
   const [geography, setGeography] = useState<string>('')
   const [state, setState] = useState<string>('')
-  const [inv, setInv] = useState<InvFilter>(
-    // Default to "idle" when the URL came from the idle-pages alert.
-    (searchParams.get('filter') === 'idle' ? 'idle' : 'all') as InvFilter,
-  )
   const [tier, setTier] = useState<FollowerTier | ''>('')
-  const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: 'pct', dir: 'desc' })
+  const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: 'handle', dir: 'asc' })
+  const [adding, setAdding] = useState(false)
 
-  // If the alert pointed at pages on the OTHER tab (state vs pu), flip to that
-  // tab once pages have loaded so the user actually sees them.
-  useEffect(() => {
-    if (highlightIds.size === 0) return
-    const target = pages.find(p => highlightIds.has(p.id))
-    if (target) setTab(target.type)
-    // Run only when pages first arrive — re-running on every page mutation
-    // would clobber the user's tab choice after they switch.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pages.length === 0])
-
-  const geographies = useMemo(() => Array.from(new Set(pages.map(p => p.geography))).sort(), [pages])
-  const states = useMemo(() => Array.from(new Set(pages.map(p => p.state))).sort(), [pages])
+  const geographies = useMemo(() => Array.from(new Set(creators.map(c => c.geography))).sort(), [creators])
+  const states = useMemo(() => Array.from(new Set(creators.map(c => c.state))).sort(), [creators])
 
   const counts = useMemo(() => ({
-    state: pages.filter(p => p.type === 'state').length,
-    pu:    pages.filter(p => p.type === 'pu').length,
-  }), [pages])
+    state: creators.filter(c => c.type === 'state').length,
+    pu:    creators.filter(c => c.type === 'pu').length,
+  }), [creators])
 
   const rows = useMemo(() => {
-    const base = pages.filter(p => p.type === tab).map(page => ({ page, m: pageMetrics(page, posts) }))
+    const base = creators.filter(c => c.type === tab)
     const q = search.trim().toLowerCase()
-    const filtered = base.filter(({ page, m }) => {
-      if (q && !page.handle.toLowerCase().includes(q)) return false
-      if (geography && page.geography !== geography) return false
-      if (state && page.state !== state) return false
-      if (tier && page.followerTier !== tier) return false
-      if (inv !== 'all' && m.status !== inv) return false
+    const filtered = base.filter(c => {
+      if (q && !c.handle.toLowerCase().includes(q)) return false
+      if (geography && c.geography !== geography) return false
+      if (state && c.state !== state) return false
+      if (tier && c.followerTier !== tier) return false
       return true
     })
     const dir = sort.dir === 'asc' ? 1 : -1
     filtered.sort((a, b) => {
       const k = sort.key
       const av: number | string =
-        k === 'handle'    ? a.page.handle :
-        k === 'geography' ? a.page.geography :
-        k === 'inventory' ? a.page.inventoryPosts + a.page.inventoryStories :
-        k === 'mtd'       ? a.m.postsDoneMTD + a.m.storiesDoneMTD :
-        k === 'pct'       ? a.m.pctConsumed :
-        k === 'eng'       ? a.m.avgEngagement :
-        k === 'last'      ? (a.m.lastPostDate ?? '') :
-        a.m.status
+        k === 'handle'    ? a.handle :
+        k === 'geography' ? a.geography :
+        k === 'state'     ? a.state :
+        k === 'tier'      ? a.followerTier :
+        k === 'followers' ? a.followers :
+        a.inventoryPosts + a.inventoryStories
       const bv: number | string =
-        k === 'handle'    ? b.page.handle :
-        k === 'geography' ? b.page.geography :
-        k === 'inventory' ? b.page.inventoryPosts + b.page.inventoryStories :
-        k === 'mtd'       ? b.m.postsDoneMTD + b.m.storiesDoneMTD :
-        k === 'pct'       ? b.m.pctConsumed :
-        k === 'eng'       ? b.m.avgEngagement :
-        k === 'last'      ? (b.m.lastPostDate ?? '') :
-        b.m.status
+        k === 'handle'    ? b.handle :
+        k === 'geography' ? b.geography :
+        k === 'state'     ? b.state :
+        k === 'tier'      ? b.followerTier :
+        k === 'followers' ? b.followers :
+        b.inventoryPosts + b.inventoryStories
       if (typeof av === 'string' && typeof bv === 'string') return av.localeCompare(bv) * dir
       return ((av as number) - (bv as number)) * dir
     })
     return filtered
-  }, [pages, posts, tab, search, geography, state, tier, inv, sort])
+  }, [creators, tab, search, geography, state, tier, sort])
 
-  async function confirmDelete(page: OutreachPage) {
-    const linked = posts.filter(p => p.pageId === page.id).length
-    const msg = linked > 0
-      ? `Delete @${page.handle}? This will also remove ${linked} post${linked === 1 ? '' : 's'}. This cannot be undone.`
-      : `Delete @${page.handle}? This cannot be undone.`
-    if (!window.confirm(msg)) return
-    try { await removePage(page.id) }
-    catch (err) { alert(err instanceof Error ? err.message : 'Failed to delete page.') }
+  async function confirmDelete(c: OutreachCreator) {
+    if (!window.confirm(`Delete @${c.handle}? This cannot be undone.`)) return
+    try { await removeCreator(c.id) }
+    catch (err) { alert(err instanceof Error ? err.message : 'Failed to delete creator.') }
   }
 
   function toggleSort(key: SortKey) {
@@ -120,10 +91,14 @@ export default function OutreachCreators() {
             <Users className="w-5 h-5 text-orange-600" />
           </div>
           <div>
-            <h1 className="text-2xl font-serif text-foreground">Creators (UGC Pages)</h1>
-            <p className="text-sm text-muted-foreground">Directory of UGC pages, split as State-level reach and PU-owned.</p>
+            <h1 className="text-2xl font-serif text-foreground">Creators</h1>
+            <p className="text-sm text-muted-foreground">Directory of individual creators, split as State-level and PU-owned. Kept separate from the Pages ledger.</p>
           </div>
         </div>
+        <button onClick={() => setAdding(true)}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-orange-600 text-white hover:opacity-90">
+          <Plus className="w-4 h-4" /> Add creator
+        </button>
       </div>
 
       {/* Tabs */}
@@ -164,14 +139,7 @@ export default function OutreachCreators() {
             <option value="4">Tier 4</option>
             <option value="5">Tier 5</option>
           </select>
-          <select value={inv} onChange={e => setInv(e.target.value as InvFilter)} className="hub-input py-1.5 text-xs w-36">
-            <option value="all">Any inventory</option>
-            <option value="over-used">Over-used (≥90%)</option>
-            <option value="on-track">On-track</option>
-            <option value="under-used">Under-used (&lt;30%)</option>
-            <option value="idle">Idle (no posts)</option>
-          </select>
-          <span className="text-xs text-muted-foreground ml-auto">{rows.length} pages</span>
+          <span className="text-xs text-muted-foreground ml-auto">{rows.length} creators</span>
         </div>
       </div>
 
@@ -180,64 +148,56 @@ export default function OutreachCreators() {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[11px] uppercase tracking-widest text-muted-foreground border-b border-border">
-              <Th label="Handle"      sk="handle"    sort={sort} onClick={toggleSort} />
-              <Th label="Geography"   sk="geography" sort={sort} onClick={toggleSort} />
-              <Th label="State"       sk="geography" sort={sort} onClick={toggleSort} hidden />
-              <Th label="Inventory"   sk="inventory" sort={sort} onClick={toggleSort} className="text-right" />
-              <Th label="Done MTD"    sk="mtd"       sort={sort} onClick={toggleSort} className="text-right" />
-              <Th label="% consumed"  sk="pct"       sort={sort} onClick={toggleSort} className="text-right" />
-              <Th label="Avg eng"     sk="eng"       sort={sort} onClick={toggleSort} className="text-right" />
-              <Th label="Last post"   sk="last"      sort={sort} onClick={toggleSort} />
-              <Th label="Status"      sk="status"    sort={sort} onClick={toggleSort} />
+              <Th label="Handle"    sk="handle"    sort={sort} onClick={toggleSort} />
+              <Th label="Geography" sk="geography" sort={sort} onClick={toggleSort} />
+              <Th label="State"     sk="state"     sort={sort} onClick={toggleSort} />
+              <Th label="Tier"      sk="tier"      sort={sort} onClick={toggleSort} />
+              <Th label="Followers" sk="followers" sort={sort} onClick={toggleSort} className="text-right" />
+              <Th label="Inventory" sk="inventory" sort={sort} onClick={toggleSort} className="text-right" />
               <th className="px-3 py-2 w-8"></th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
-              <tr><td colSpan={9} className="px-3 py-12 text-center text-sm text-muted-foreground">No pages match these filters.</td></tr>
-            ) : rows.map(({ page, m }) => (
-              <tr key={page.id} className={`border-b border-border last:border-0 transition-colors ${
-                highlightIds.has(page.id) ? 'bg-orange-50 hover:bg-orange-100' : 'hover:bg-accent/40'
-              }`}>
+              <tr><td colSpan={7} className="px-3 py-12 text-center text-sm text-muted-foreground">No creators match these filters.</td></tr>
+            ) : rows.map(c => (
+              <tr key={c.id} className="border-b border-border last:border-0 transition-colors hover:bg-accent/40">
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-2">
-                    <Link to={`/outreach/creators/${page.id}`} className="flex items-center gap-2 group min-w-0 flex-1">
+                    <Link to={`/outreach/creators/${c.id}`} className="flex items-center gap-2 group min-w-0 flex-1">
                       <div className="w-7 h-7 rounded-full bg-orange-100 flex items-center justify-center shrink-0">
-                        <span className="text-[10px] font-semibold text-orange-700">{page.handle[0]?.toUpperCase()}</span>
+                        <span className="text-[10px] font-semibold text-orange-700">{c.handle[0]?.toUpperCase()}</span>
                       </div>
                       <div className="min-w-0">
-                        <p className="text-xs font-medium text-foreground truncate group-hover:underline">@{page.handle}</p>
-                        <p className="text-[10px] text-muted-foreground">{fmt(page.followers)} followers · Tier {page.followerTier}</p>
+                        <p className="text-xs font-medium text-foreground truncate group-hover:underline">@{c.handle}</p>
+                        {c.notes && <p className="text-[10px] text-muted-foreground truncate">{c.notes}</p>}
                       </div>
                     </Link>
-                    {isValidInstagramHandle(page.handle) && (
-                      <a href={instagramUrlForHandle(page.handle)} target="_blank" rel="noreferrer"
-                        title={`Open @${page.handle} on Instagram`}
-                        className="p-1 rounded-md text-muted-foreground hover:bg-accent hover:text-orange-600 shrink-0"
-                        onClick={e => e.stopPropagation()}>
+                    {isValidInstagramHandle(c.handle) && (
+                      <a href={instagramUrlForHandle(c.handle)} target="_blank" rel="noreferrer"
+                        title={`Open @${c.handle} on Instagram`}
+                        className="p-1 rounded-md text-muted-foreground hover:bg-accent hover:text-orange-600 shrink-0">
                         <ExternalLink className="w-3.5 h-3.5" />
                       </a>
                     )}
                   </div>
                 </td>
-                <td className="px-3 py-2.5 text-xs text-foreground">{page.geography}</td>
-                <td className="px-3 py-2.5 text-xs text-muted-foreground hidden">{page.state}</td>
-                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground">{page.inventoryPosts}/{page.inventoryStories}</td>
-                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground">{m.postsDoneMTD + m.storiesDoneMTD}</td>
-                <td className="px-3 py-2.5 text-right">
-                  <PctBar pct={m.pctConsumed} />
-                </td>
-                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground">{fmt(m.avgEngagement)}</td>
-                <td className="px-3 py-2.5 text-xs text-muted-foreground">{m.lastPostDate ?? '—'}</td>
-                <td className="px-3 py-2.5"><StatusBadge status={m.status} /></td>
+                <td className="px-3 py-2.5 text-xs text-foreground">{c.geography}</td>
+                <td className="px-3 py-2.5 text-xs text-muted-foreground">{c.state}</td>
+                <td className="px-3 py-2.5 text-xs text-foreground">Tier {c.followerTier}</td>
+                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground">{fmt(c.followers)}</td>
+                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground">{c.inventoryPosts}/{c.inventoryStories}</td>
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-1">
-                    <button onClick={() => confirmDelete(page)}
-                      title="Delete page"
+                    <button onClick={() => confirmDelete(c)}
+                      title="Delete creator"
                       className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
-                    <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                    <Link to={`/outreach/creators/${c.id}`} title="Open creator dashboard"
+                      className="p-1 rounded-md text-muted-foreground hover:bg-accent">
+                      <ChevronRight className="w-4 h-4" />
+                    </Link>
                   </div>
                 </td>
               </tr>
@@ -246,13 +206,22 @@ export default function OutreachCreators() {
         </table>
       </div>
 
+      {adding && (
+        <AddCreatorModal
+          defaultType={tab}
+          onClose={() => setAdding(false)}
+          onCreated={c => {
+            setAdding(false)
+            navigate(`/outreach/creators/${c.id}`)
+          }}
+        />
+      )}
     </div>
   )
 }
 
-function Th({ label, sk, sort, onClick, className = '', hidden = false }:
-  { label: string; sk: SortKey; sort: { key: SortKey; dir: SortDir }; onClick: (k: SortKey) => void; className?: string; hidden?: boolean }) {
-  if (hidden) return <th className="hidden">{label}</th>
+function Th({ label, sk, sort, onClick, className = '' }:
+  { label: string; sk: SortKey; sort: { key: SortKey; dir: SortDir }; onClick: (k: SortKey) => void; className?: string }) {
   const Icon = sort.key !== sk ? ArrowUpDown : sort.dir === 'asc' ? ArrowUp : ArrowDown
   return (
     <th className={`px-3 py-2 ${className}`}>
@@ -263,32 +232,161 @@ function Th({ label, sk, sort, onClick, className = '', hidden = false }:
   )
 }
 
-function PctBar({ pct }: { pct: number }) {
-  const clamped = Math.max(0, Math.min(1, pct))
-  const color = clamped >= 0.9 ? 'bg-rose-500' : clamped >= 0.6 ? 'bg-amber-500' : clamped >= 0.3 ? 'bg-emerald-500' : 'bg-blue-400'
-  return (
-    <div className="inline-flex items-center gap-2">
-      <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
-        <div className={`h-full ${color}`} style={{ width: `${clamped * 100}%` }} />
-      </div>
-      <span className="text-xs font-mono tabular-nums text-foreground w-9 text-right">{Math.round(clamped * 100)}%</span>
-    </div>
-  )
-}
-
-function StatusBadge({ status }: { status: 'over-used' | 'under-used' | 'on-track' | 'idle' }) {
-  const map = {
-    'over-used':  { label: 'Over-used',  cls: 'bg-rose-100 text-rose-700' },
-    'on-track':   { label: 'On-track',   cls: 'bg-emerald-100 text-emerald-700' },
-    'under-used': { label: 'Under-used', cls: 'bg-amber-100 text-amber-700' },
-    'idle':       { label: 'Idle',       cls: 'bg-muted text-muted-foreground' },
-  }
-  const m = map[status]
-  return <span className={`hub-badge ${m.cls}`}>{m.label}</span>
-}
-
 function fmt(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
   return String(n)
+}
+
+function AddCreatorModal({ defaultType, onClose, onCreated }: {
+  defaultType: PageType
+  onClose: () => void
+  /** Fires with the freshly-created creator so the parent can redirect to
+   *  the analytical dashboard for that creator. */
+  onCreated: (creator: OutreachCreator) => void
+}) {
+  const [form, setForm] = useState<{
+    handle: string; geography: string; state: string; type: PageType;
+    followerTier: FollowerTier; contentTypes: PageContentType[];
+    followers: number; inventoryPosts: number; inventoryStories: number; notes: string;
+  }>({
+    handle: '', geography: '', state: '', type: defaultType,
+    followerTier: '1', contentTypes: [],
+    followers: 0, inventoryPosts: 0, inventoryStories: 0, notes: '',
+  })
+
+  function toggleContentType(t: PageContentType) {
+    setForm(f => ({
+      ...f,
+      contentTypes: f.contentTypes.includes(t)
+        ? f.contentTypes.filter(x => x !== t)
+        : [...f.contentTypes, t],
+    }))
+  }
+
+  const normalisedHandle = parseInstagramHandle(form.handle)
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const canSubmit = !!normalisedHandle && form.geography.trim() && form.state.trim() && !submitting
+
+  async function submit() {
+    if (submitting) return
+    setSubmitting(true)
+    setSubmitError(null)
+    try {
+      const created = await addCreator({
+        ...form,
+        handle: normalisedHandle,
+        geography: form.geography.trim(),
+        state: form.state.trim(),
+      })
+      onCreated(created)
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Failed to add creator.')
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-fade-in" onClick={onClose}>
+      <div className="bg-card rounded-xl border border-border w-full max-w-lg" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <h2 className="text-base font-serif text-foreground">Add creator</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+        </div>
+        <div className="p-4 space-y-3">
+          <div>
+            <label className="hub-label">Instagram handle or URL *</label>
+            <input className="hub-input" value={form.handle}
+              onChange={e => setForm(f => ({ ...f, handle: e.target.value }))}
+              placeholder="creator_handle  —or—  https://www.instagram.com/creator_handle/" />
+            {normalisedHandle && (
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Will save as <span className="font-mono text-foreground">@{normalisedHandle}</span> ·{' '}
+                <a href={instagramUrlForHandle(normalisedHandle)} target="_blank" rel="noreferrer"
+                  className="text-orange-600 hover:underline">
+                  preview on Instagram
+                </a>
+              </p>
+            )}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="hub-label">Geography *</label>
+              <input className="hub-input" value={form.geography} onChange={e => setForm(f => ({ ...f, geography: e.target.value }))} placeholder="Vadodara" />
+            </div>
+            <div>
+              <label className="hub-label">State *</label>
+              <input className="hub-input" value={form.state} onChange={e => setForm(f => ({ ...f, state: e.target.value }))} placeholder="Gujarat" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="hub-label">Type</label>
+              <select className="hub-input" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value as PageType }))}>
+                {PAGE_TYPES.map(t => <option key={t} value={t}>{t === 'pu' ? 'PU' : 'State'}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="hub-label">Follower tier</label>
+              <select className="hub-input" value={form.followerTier} onChange={e => setForm(f => ({ ...f, followerTier: e.target.value as FollowerTier }))}>
+                {FOLLOWER_TIERS.map(t => <option key={t} value={t}>Tier {t}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="hub-label">Content type</label>
+            <div className="flex gap-2 flex-wrap">
+              {PAGE_CONTENT_TYPES.map(t => {
+                const selected = form.contentTypes.includes(t)
+                return (
+                  <button key={t} type="button" onClick={() => toggleContentType(t)}
+                    className={`text-xs px-3 py-1.5 rounded-lg border transition-colors capitalize ${
+                      selected
+                        ? 'bg-orange-100 border-orange-300 text-orange-700 font-medium'
+                        : 'bg-card border-border text-muted-foreground hover:bg-accent'
+                    }`}>
+                    {t}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="hub-label">Followers</label>
+              <input type="number" min={0} className="hub-input" value={form.followers}
+                onChange={e => setForm(f => ({ ...f, followers: Number(e.target.value) || 0 }))} />
+            </div>
+            <div>
+              <label className="hub-label">Inv. posts</label>
+              <input type="number" min={0} className="hub-input" value={form.inventoryPosts}
+                onChange={e => setForm(f => ({ ...f, inventoryPosts: Number(e.target.value) || 0 }))} />
+            </div>
+            <div>
+              <label className="hub-label">Inv. stories</label>
+              <input type="number" min={0} className="hub-input" value={form.inventoryStories}
+                onChange={e => setForm(f => ({ ...f, inventoryStories: Number(e.target.value) || 0 }))} />
+            </div>
+          </div>
+          <div>
+            <label className="hub-label">Notes</label>
+            <textarea className="hub-input resize-none" rows={2} value={form.notes}
+              onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+              placeholder="Optional — niche, contact, anything useful" />
+          </div>
+        </div>
+        {submitError && (
+          <div className="px-4 py-2 text-xs text-rose-700 bg-rose-50 border-t border-rose-200">{submitError}</div>
+        )}
+        <div className="flex items-center justify-end gap-2 p-4 border-t border-border">
+          <button onClick={onClose} disabled={submitting} className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent disabled:opacity-40">Cancel</button>
+          <button onClick={submit} disabled={!canSubmit}
+            className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">
+            {submitting ? 'Adding…' : 'Add creator'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }

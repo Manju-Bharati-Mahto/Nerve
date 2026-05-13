@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Send, Plus, Search, X, ChevronRight, Filter as FilterIcon, Trash2 } from 'lucide-react'
 import {
   useOutreachData, addCampaign, removeCampaign, campaignMetrics,
@@ -15,7 +15,8 @@ const STATUS_CFG: Record<CampaignStatus, { label: string; cls: string }> = {
 }
 
 export default function OutreachCampaigns() {
-  const { campaigns, posts, pages } = useOutreachData()
+  const { campaigns, posts, pages, creators } = useOutreachData()
+  const navigate = useNavigate()
   const [view, setView] = useState<'cards' | 'table'>('cards')
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<CampaignStatus | ''>('')
@@ -147,7 +148,10 @@ export default function OutreachCampaigns() {
                   <span key={v} className="hub-badge bg-muted text-muted-foreground text-[10px]">{v}</span>
                 ))}
               </div>
-              <p className="text-[11px] text-muted-foreground mt-2">{c.assignedPageIds.length} pages assigned</p>
+              <p className="text-[11px] text-muted-foreground mt-2">
+                {c.assignedPageIds.length} pages
+                {c.assignedCreatorIds.length > 0 && ` · ${c.assignedCreatorIds.length} creators`} assigned
+              </p>
             </Link>
           ))}
         </div>
@@ -159,7 +163,7 @@ export default function OutreachCampaigns() {
                 <th className="px-3 py-2">Name</th>
                 <th className="px-3 py-2">Dates</th>
                 <th className="px-3 py-2 text-right">Budget (P/S/R)</th>
-                <th className="px-3 py-2 text-right">Pages</th>
+                <th className="px-3 py-2 text-right">Pages + Creators</th>
                 <th className="px-3 py-2 text-right">Delivered</th>
                 <th className="px-3 py-2 text-right">% consumed</th>
                 <th className="px-3 py-2">Status</th>
@@ -174,7 +178,7 @@ export default function OutreachCampaigns() {
                   </td>
                   <td className="px-3 py-2.5 text-xs text-muted-foreground">{c.startDate} → {c.endDate}</td>
                   <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{c.budgetPosts}/{c.budgetStories}/{c.budgetReels}</td>
-                  <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{c.assignedPageIds.length}</td>
+                  <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{c.assignedPageIds.length} / {c.assignedCreatorIds.length}</td>
                   <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{m.postsDelivered + m.storiesDelivered + m.reelsDelivered}</td>
                   <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{Math.round(m.pctConsumed * 100)}%</td>
                   <td className="px-3 py-2.5"><span className={`hub-badge ${STATUS_CFG[c.status].cls}`}>{STATUS_CFG[c.status].label}</span></td>
@@ -198,8 +202,19 @@ export default function OutreachCampaigns() {
       {creating && (
         <CreateCampaignModal
           pages={pages}
+          creators={creators}
           onClose={() => setCreating(false)}
-          onCreated={c => { setCreating(false); setLivePostsFor(c) }}
+          onCreated={c => {
+            setCreating(false)
+            // Live posts can now attach to either a page or a creator, so the
+            // dialog opens whenever the campaign has at least one assignee of
+            // either kind. Otherwise jump to the campaign detail page.
+            if (c.assignedPageIds.length + c.assignedCreatorIds.length > 0) {
+              setLivePostsFor(c)
+            } else {
+              navigate(`/outreach/campaigns/${c.id}`)
+            }
+          }}
         />
       )}
 
@@ -217,9 +232,10 @@ export default function OutreachCampaigns() {
 // ── Create Campaign Modal ──────────────────────────────────────────────────
 
 function CreateCampaignModal({
-  pages, onClose, onCreated,
+  pages, creators, onClose, onCreated,
 }: {
   pages: ReturnType<typeof useOutreachData>['pages']
+  creators: ReturnType<typeof useOutreachData>['creators']
   onClose: () => void
   /** Fires with the freshly-created campaign so the parent can open the
    *  "add live posts" dialog as a follow-on step. */
@@ -231,9 +247,11 @@ function CreateCampaignModal({
     budgetPosts: 0, budgetStories: 0, budgetReels: 0,
     variantsRaw: 'set_1, set_2',
     pageIds: [] as string[],
+    creatorIds: [] as string[],
     approversRaw: 'Outreach Manager',
   })
   const [pageQuery, setPageQuery] = useState('')
+  const [creatorQuery, setCreatorQuery] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
@@ -242,8 +260,17 @@ function CreateCampaignModal({
     return pages.filter(p => !q || p.handle.toLowerCase().includes(q) || p.geography.toLowerCase().includes(q))
   }, [pages, pageQuery])
 
+  const filteredCreators = useMemo(() => {
+    const q = creatorQuery.trim().toLowerCase()
+    return creators.filter(c => !q || c.handle.toLowerCase().includes(q) || c.geography.toLowerCase().includes(q))
+  }, [creators, creatorQuery])
+
   function togglePage(id: string) {
     setForm(f => ({ ...f, pageIds: f.pageIds.includes(id) ? f.pageIds.filter(x => x !== id) : [...f.pageIds, id] }))
+  }
+
+  function toggleCreator(id: string) {
+    setForm(f => ({ ...f, creatorIds: f.creatorIds.includes(id) ? f.creatorIds.filter(x => x !== id) : [...f.creatorIds, id] }))
   }
 
   async function submit() {
@@ -265,6 +292,7 @@ function CreateCampaignModal({
         approvers: form.approversRaw.split(',').map(s => s.trim()).filter(Boolean),
         creativeVariants: form.variantsRaw.split(',').map(s => s.trim()).filter(Boolean),
         assignedPageIds: form.pageIds,
+        assignedCreatorIds: form.creatorIds,
       })
       onCreated(created)
     } catch (err) {
@@ -275,7 +303,8 @@ function CreateCampaignModal({
 
   const canStep1 = !!form.name && !!form.startDate
   const canStep2 = form.budgetPosts + form.budgetStories + form.budgetReels > 0
-  const canStep3 = form.pageIds.length > 0
+  // Need at least one assignee — page OR creator — to advance past step 3.
+  const canStep3 = form.pageIds.length + form.creatorIds.length > 0
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-fade-in">
@@ -290,7 +319,7 @@ function CreateCampaignModal({
 
         {/* Stepper */}
         <div className="flex border-b border-border">
-          {['Basics', 'Budget', 'Pages', 'Variants & Approvers'].map((label, i) => (
+          {['Basics', 'Budget', 'Pages & Creators', 'Variants & Approvers'].map((label, i) => (
             <div key={label} className={`flex-1 px-3 py-2 text-center text-[11px] uppercase tracking-widest border-b-2 transition-colors ${
               step === i + 1 ? 'border-orange-600 text-orange-700' : i + 1 < step ? 'border-emerald-500 text-emerald-700' : 'border-transparent text-muted-foreground'
             }`}>
@@ -340,27 +369,59 @@ function CreateCampaignModal({
                 </div>
               </div>
               <div className="hub-card bg-orange-50 border-orange-200 text-xs text-orange-900 py-2">
-                Total budget: <strong>{form.budgetPosts + form.budgetStories + form.budgetReels}</strong> units across {form.pageIds.length || '—'} pages
+                Total budget: <strong>{form.budgetPosts + form.budgetStories + form.budgetReels}</strong> units across {form.pageIds.length + form.creatorIds.length || '—'} pages + creators
               </div>
             </>
           )}
 
           {step === 3 && (
             <>
-              <div className="flex items-center justify-between">
-                <p className="text-xs text-muted-foreground">{form.pageIds.length} of {pages.length} pages selected</p>
-                <input value={pageQuery} onChange={e => setPageQuery(e.target.value)} placeholder="Filter pages…" className="hub-input py-1 text-xs w-48" />
+              {/* Pages section */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                    Pages <span className="font-normal normal-case tracking-normal">— {form.pageIds.length} of {pages.length} selected</span>
+                  </p>
+                  <input value={pageQuery} onChange={e => setPageQuery(e.target.value)} placeholder="Filter pages…" className="hub-input py-1 text-xs w-48" />
+                </div>
+                <div className="border border-border rounded-lg max-h-48 overflow-y-auto divide-y divide-border">
+                  {filteredPages.length === 0 ? (
+                    <p className="px-3 py-6 text-xs text-muted-foreground text-center">No pages match.</p>
+                  ) : filteredPages.map(p => (
+                    <label key={p.id} className="flex items-center gap-3 px-3 py-2 hover:bg-accent cursor-pointer">
+                      <input type="checkbox" checked={form.pageIds.includes(p.id)} onChange={() => togglePage(p.id)} />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-medium text-foreground truncate">@{p.handle}</p>
+                        <p className="text-[11px] text-muted-foreground truncate">{p.geography} · {p.type}</p>
+                      </div>
+                    </label>
+                  ))}
+                </div>
               </div>
-              <div className="border border-border rounded-lg max-h-72 overflow-y-auto divide-y divide-border">
-                {filteredPages.map(p => (
-                  <label key={p.id} className="flex items-center gap-3 px-3 py-2 hover:bg-accent cursor-pointer">
-                    <input type="checkbox" checked={form.pageIds.includes(p.id)} onChange={() => togglePage(p.id)} />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-medium text-foreground truncate">@{p.handle}</p>
-                      <p className="text-[11px] text-muted-foreground truncate">{p.geography} · {p.type}</p>
-                    </div>
-                  </label>
-                ))}
+
+              {/* Creators section */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                    Creators <span className="font-normal normal-case tracking-normal">— {form.creatorIds.length} of {creators.length} selected</span>
+                  </p>
+                  <input value={creatorQuery} onChange={e => setCreatorQuery(e.target.value)} placeholder="Filter creators…" className="hub-input py-1 text-xs w-48" />
+                </div>
+                <div className="border border-border rounded-lg max-h-48 overflow-y-auto divide-y divide-border">
+                  {filteredCreators.length === 0 ? (
+                    <p className="px-3 py-6 text-xs text-muted-foreground text-center">
+                      {creators.length === 0 ? 'No creators yet — add them from the Creators page.' : 'No creators match.'}
+                    </p>
+                  ) : filteredCreators.map(c => (
+                    <label key={c.id} className="flex items-center gap-3 px-3 py-2 hover:bg-accent cursor-pointer">
+                      <input type="checkbox" checked={form.creatorIds.includes(c.id)} onChange={() => toggleCreator(c.id)} />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-medium text-foreground truncate">@{c.handle}</p>
+                        <p className="text-[11px] text-muted-foreground truncate">{c.geography} · {c.type}</p>
+                      </div>
+                    </label>
+                  ))}
+                </div>
               </div>
             </>
           )}
@@ -383,7 +444,7 @@ function CreateCampaignModal({
               <div className="hub-card bg-muted text-xs space-y-1">
                 <p><strong>{form.name}</strong> · starts {form.startDate}</p>
                 <p>{form.budgetPosts} posts · {form.budgetStories} stories · {form.budgetReels} reels</p>
-                <p>{form.pageIds.length} pages · {form.variantsRaw.split(',').filter(Boolean).length} variants</p>
+                <p>{form.pageIds.length} pages · {form.creatorIds.length} creators · {form.variantsRaw.split(',').filter(Boolean).length} variants</p>
               </div>
             </>
           )}

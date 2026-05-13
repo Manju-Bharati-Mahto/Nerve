@@ -217,7 +217,7 @@ export default function OutreachAllPages() {
               }`}>
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-1.5">
-                    <Link to={`/outreach/creators/${page.id}`} className="text-xs font-medium text-foreground hover:underline">@{page.handle}</Link>
+                    <Link to={`/outreach/pages/${page.id}`} className="text-xs font-medium text-foreground hover:underline">@{page.handle}</Link>
                     {isValidInstagramHandle(page.handle) && (
                       <a href={instagramUrlForHandle(page.handle)} target="_blank" rel="noreferrer"
                         title={`Open @${page.handle} on Instagram`}

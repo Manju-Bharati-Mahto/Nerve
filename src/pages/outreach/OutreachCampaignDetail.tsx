@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Send, Calendar, Heart, Eye, FileText, Pause, Play, CheckCircle,
-  Link as LinkIcon, Trash2,
+  Link as LinkIcon, Trash2, Users,
 } from 'lucide-react'
 import AddLivePostsDialog from './AddLivePostsDialog'
 import {
@@ -22,7 +22,7 @@ const STATUS_CFG: Record<CampaignStatus, { label: string; cls: string }> = {
 
 export default function OutreachCampaignDetail() {
   const { campaignId } = useParams<{ campaignId: string }>()
-  const { campaigns, posts, pages } = useOutreachData()
+  const { campaigns, posts, pages, creators } = useOutreachData()
   const navigate = useNavigate()
   const campaign = campaigns.find(c => c.id === campaignId)
   const [showAllPages, setShowAllPages] = useState(false)
@@ -110,7 +110,10 @@ export default function OutreachCampaignDetail() {
             <div>
               <h1 className="text-xl font-serif text-foreground">{campaign.name}</h1>
               <p className="text-sm text-muted-foreground">
-                {campaign.startDate} → {campaign.endDate} · {campaign.assignedPageIds.length} pages · {campaign.creativeVariants.length} variants
+                {campaign.startDate} → {campaign.endDate}
+                {' · '}{campaign.assignedPageIds.length} pages
+                {campaign.assignedCreatorIds.length > 0 && ` · ${campaign.assignedCreatorIds.length} creators`}
+                {' · '}{campaign.creativeVariants.length} variants
               </p>
               {campaign.goal && <p className="text-xs text-muted-foreground mt-1">Goal: {campaign.goal}</p>}
             </div>
@@ -199,7 +202,7 @@ export default function OutreachCampaignDetail() {
                 {(showAllPages ? perPage : perPage.slice(0, 8)).map(({ page, delivered, views, engagement }) => page && (
                   <tr key={page.id} className="border-b border-border last:border-0 hover:bg-accent/40">
                     <td className="px-3 py-2.5">
-                      <Link to={`/outreach/creators/${page.id}`} className="text-xs font-medium text-foreground hover:underline">@{page.handle}</Link>
+                      <Link to={`/outreach/pages/${page.id}`} className="text-xs font-medium text-foreground hover:underline">@{page.handle}</Link>
                     </td>
                     <td className="px-3 py-2.5 text-xs text-muted-foreground">{page.geography}</td>
                     <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{delivered}</td>
@@ -237,6 +240,48 @@ export default function OutreachCampaignDetail() {
             ))}
           </div>
         </div>
+      </div>
+
+      {/* Assigned creators — listed separately from pages since creators are
+          a distinct entity. Sync isn't wired up for creators yet, so we show
+          profile info and Instagram links rather than per-creator post stats. */}
+      <div className="hub-card">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
+            <Users className="w-4 h-4 text-muted-foreground" /> Assigned creators
+            <span className="text-xs text-muted-foreground font-normal">({campaign.assignedCreatorIds.length})</span>
+          </h2>
+        </div>
+        {campaign.assignedCreatorIds.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-4 text-center">No creators assigned.</p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+            {campaign.assignedCreatorIds.map(cid => {
+              const creator = creators.find(c => c.id === cid)
+              if (!creator) {
+                return (
+                  <div key={cid} className="hub-card py-2 bg-muted/40">
+                    <p className="text-xs text-muted-foreground italic">Deleted creator ({cid})</p>
+                  </div>
+                )
+              }
+              return (
+                <Link key={cid} to={`/outreach/creators/${creator.id}`}
+                  className="hub-card py-2 hover:shadow-md transition-shadow flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-full bg-orange-100 flex items-center justify-center shrink-0">
+                    <span className="text-xs font-semibold text-orange-700">{creator.handle[0]?.toUpperCase()}</span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium text-foreground truncate">@{creator.handle}</p>
+                    <p className="text-[11px] text-muted-foreground truncate">
+                      {creator.geography} · <span className="uppercase">{creator.type}</span> · Tier {creator.followerTier}
+                    </p>
+                  </div>
+                </Link>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       <div className="hub-card">

@@ -3,6 +3,9 @@
  *
  * Tables:
  *  - outreach_pages       — Instagram pages we publish to, with inventory limits.
+ *  - outreach_creators    — individual creators (UGC). Same shape as pages but
+ *                           kept separate: they don't appear in the "All Pages"
+ *                           ledger and aren't synced by Apify automatically.
  *  - outreach_campaigns   — campaign metadata (manually created in the UI).
  *  - outreach_posts       — individual posts; rows are upserted by the sync job
  *                           that calls Apify's Instagram Profile Scraper.
@@ -57,6 +60,25 @@ export interface OutreachPage {
   updated_at: string;
 }
 
+// Creators share the same shape as pages — separate table so they don't show up
+// in the All Pages ledger and have their own identity.
+export interface OutreachCreator {
+  id: string;
+  handle: string;
+  geography: string;
+  state: string;
+  type: PageType;
+  follower_tier: FollowerTier;
+  content_types: PageContentType[];
+  followers: number;
+  inventory_posts: number;
+  inventory_stories: number;
+  notes: string;
+  last_synced_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface OutreachCampaign {
   id: string;
   name: string;
@@ -70,6 +92,7 @@ export interface OutreachCampaign {
   approvers: string[];
   creative_variants: string[];
   assigned_page_ids: string[];
+  assigned_creator_ids: string[];
   created_at: string;
   updated_at: string;
 }
@@ -77,7 +100,12 @@ export interface OutreachCampaign {
 export interface OutreachPost {
   id: string;
   instagram_id: string | null;
-  page_id: string;
+  // A post is owned by either a page OR a creator (never both, never neither —
+  // enforced by a CHECK constraint). `campaign_id` is optional for both, but
+  // the live-posts route still requires it for page posts to preserve the
+  // "page must belong to the campaign" check.
+  page_id: string | null;
+  creator_id: string | null;
   campaign_id: string | null;
   date: string;
   type: PostType;
@@ -135,6 +163,25 @@ export async function bootstrapOutreach() {
   await pool.query(`ALTER TABLE outreach_pages ADD COLUMN IF NOT EXISTS content_types JSONB NOT NULL DEFAULT '[]'::JSONB`);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS outreach_creators (
+      id TEXT PRIMARY KEY,
+      handle TEXT NOT NULL UNIQUE,
+      geography TEXT NOT NULL DEFAULT '',
+      state TEXT NOT NULL DEFAULT '',
+      type TEXT NOT NULL CHECK (type IN ('state', 'pu')),
+      follower_tier TEXT NOT NULL CHECK (follower_tier IN ('1', '2', '3', '4', '5')),
+      content_types JSONB NOT NULL DEFAULT '[]'::JSONB,
+      followers INTEGER NOT NULL DEFAULT 0,
+      inventory_posts INTEGER NOT NULL DEFAULT 0,
+      inventory_stories INTEGER NOT NULL DEFAULT 0,
+      notes TEXT NOT NULL DEFAULT '',
+      last_synced_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS outreach_campaigns (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -148,16 +195,21 @@ export async function bootstrapOutreach() {
       approvers JSONB NOT NULL DEFAULT '[]'::JSONB,
       creative_variants JSONB NOT NULL DEFAULT '[]'::JSONB,
       assigned_page_ids JSONB NOT NULL DEFAULT '[]'::JSONB,
+      assigned_creator_ids JSONB NOT NULL DEFAULT '[]'::JSONB,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
 
+  // Idempotent migration for installations that pre-date the creator split.
+  await pool.query(`ALTER TABLE outreach_campaigns ADD COLUMN IF NOT EXISTS assigned_creator_ids JSONB NOT NULL DEFAULT '[]'::JSONB`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS outreach_posts (
       id TEXT PRIMARY KEY,
       instagram_id TEXT UNIQUE,
-      page_id TEXT NOT NULL REFERENCES outreach_pages(id) ON DELETE CASCADE,
+      page_id TEXT REFERENCES outreach_pages(id) ON DELETE CASCADE,
+      creator_id TEXT REFERENCES outreach_creators(id) ON DELETE CASCADE,
       campaign_id TEXT REFERENCES outreach_campaigns(id) ON DELETE SET NULL,
       date DATE NOT NULL,
       type TEXT NOT NULL CHECK (type IN ('static', 'reel', 'story', 'carousel')),
@@ -171,11 +223,31 @@ export async function bootstrapOutreach() {
       shares INTEGER NOT NULL DEFAULT 0,
       media_url TEXT,
       permalink TEXT,
-      synced_at TIMESTAMPTZ
+      synced_at TIMESTAMPTZ,
+      CONSTRAINT outreach_posts_owner_check CHECK (
+        (page_id IS NOT NULL AND creator_id IS NULL)
+        OR (page_id IS NULL AND creator_id IS NOT NULL)
+      )
+    )
+  `);
+
+  // Migrations for installations that pre-date the creator-attachment feature.
+  // page_id used to be NOT NULL; relax it and add creator_id alongside.
+  await pool.query(`ALTER TABLE outreach_posts ADD COLUMN IF NOT EXISTS creator_id TEXT REFERENCES outreach_creators(id) ON DELETE CASCADE`);
+  await pool.query(`ALTER TABLE outreach_posts ALTER COLUMN page_id DROP NOT NULL`);
+  // Idempotent CHECK install — drop a prior version (if any) before re-adding,
+  // because Postgres has no ADD CONSTRAINT IF NOT EXISTS.
+  await pool.query(`ALTER TABLE outreach_posts DROP CONSTRAINT IF EXISTS outreach_posts_owner_check`);
+  await pool.query(`
+    ALTER TABLE outreach_posts
+    ADD CONSTRAINT outreach_posts_owner_check CHECK (
+      (page_id IS NOT NULL AND creator_id IS NULL)
+      OR (page_id IS NULL AND creator_id IS NOT NULL)
     )
   `);
 
   await pool.query(`CREATE INDEX IF NOT EXISTS outreach_posts_page_id_idx ON outreach_posts(page_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS outreach_posts_creator_id_idx ON outreach_posts(creator_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS outreach_posts_campaign_id_idx ON outreach_posts(campaign_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS outreach_posts_date_idx ON outreach_posts(date)`);
 
@@ -275,6 +347,85 @@ export async function deletePage(id: string): Promise<void> {
   await pool.query(`DELETE FROM outreach_pages WHERE id = $1`, [id]);
 }
 
+// ── Creator CRUD ───────────────────────────────────────────────────────────
+
+export interface CreateCreatorInput {
+  handle: string;
+  geography: string;
+  state: string;
+  type: PageType;
+  follower_tier: FollowerTier;
+  content_types?: PageContentType[];
+  followers?: number;
+  inventory_posts: number;
+  inventory_stories: number;
+  notes?: string;
+}
+
+export async function listCreators(): Promise<OutreachCreator[]> {
+  const { rows } = await pool.query<OutreachCreator>(`SELECT * FROM outreach_creators ORDER BY handle`);
+  return rows.map(mapCreatorRow);
+}
+
+export async function createCreator(input: CreateCreatorInput): Promise<OutreachCreator> {
+  const id = `creator-${slug(input.handle) || randomBytes(6).toString("hex")}`;
+  const { rows } = await pool.query<OutreachCreator>(
+    `INSERT INTO outreach_creators (id, handle, geography, state, type, follower_tier, content_types, followers, inventory_posts, inventory_stories, notes)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11)
+     RETURNING *`,
+    [
+      id, input.handle.trim(), input.geography, input.state, input.type, input.follower_tier,
+      JSON.stringify(input.content_types ?? []),
+      input.followers ?? 0, input.inventory_posts, input.inventory_stories, input.notes ?? "",
+    ],
+  );
+  return mapCreatorRow(rows[0]);
+}
+
+export async function updateCreator(id: string, patch: Partial<CreateCreatorInput> & { last_synced_at?: string }): Promise<OutreachCreator | null> {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  let i = 1;
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined) continue;
+    if (k === "content_types") {
+      fields.push(`${k} = $${i++}::jsonb`);
+      values.push(JSON.stringify(v));
+    } else {
+      fields.push(`${k} = $${i++}`);
+      values.push(v);
+    }
+  }
+  if (fields.length === 0) {
+    const { rows } = await pool.query<OutreachCreator>(`SELECT * FROM outreach_creators WHERE id = $1`, [id]);
+    return rows[0] ? mapCreatorRow(rows[0]) : null;
+  }
+  fields.push(`updated_at = NOW()`);
+  values.push(id);
+  const { rows } = await pool.query<OutreachCreator>(
+    `UPDATE outreach_creators SET ${fields.join(", ")} WHERE id = $${i} RETURNING *`,
+    values,
+  );
+  return rows[0] ? mapCreatorRow(rows[0]) : null;
+}
+
+export async function deleteCreator(id: string): Promise<void> {
+  await pool.query(`DELETE FROM outreach_creators WHERE id = $1`, [id]);
+}
+
+export async function getCreator(id: string): Promise<OutreachCreator | null> {
+  const { rows } = await pool.query<OutreachCreator>(`SELECT * FROM outreach_creators WHERE id = $1`, [id]);
+  return rows[0] ? mapCreatorRow(rows[0]) : null;
+}
+
+function mapCreatorRow(row: OutreachCreator): OutreachCreator {
+  const ct = (row as unknown as { content_types: unknown }).content_types;
+  return {
+    ...row,
+    content_types: Array.isArray(ct) ? ct as PageContentType[] : safeJson(ct, [] as PageContentType[]),
+  };
+}
+
 // ── Campaign CRUD ──────────────────────────────────────────────────────────
 
 export interface CreateCampaignInput {
@@ -289,6 +440,7 @@ export interface CreateCampaignInput {
   approvers: string[];
   creative_variants: string[];
   assigned_page_ids: string[];
+  assigned_creator_ids?: string[];
 }
 
 export async function listCampaigns(): Promise<OutreachCampaign[]> {
@@ -320,13 +472,14 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Outrea
     `INSERT INTO outreach_campaigns
        (id, name, start_date, end_date, goal, status,
         budget_posts, budget_stories, budget_reels,
-        approvers, creative_variants, assigned_page_ids)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        approvers, creative_variants, assigned_page_ids, assigned_creator_ids)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      RETURNING *`,
     [
       id, input.name.trim(), input.start_date, input.end_date, input.goal ?? "", input.status,
       input.budget_posts, input.budget_stories, input.budget_reels,
-      JSON.stringify(input.approvers), JSON.stringify(input.creative_variants), JSON.stringify(input.assigned_page_ids),
+      JSON.stringify(input.approvers), JSON.stringify(input.creative_variants),
+      JSON.stringify(input.assigned_page_ids), JSON.stringify(input.assigned_creator_ids ?? []),
     ],
   );
   return mapCampaignRow(rows[0]);
@@ -338,7 +491,7 @@ export async function updateCampaign(id: string, patch: Partial<CreateCampaignIn
   let i = 1;
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined) continue;
-    if (k === "approvers" || k === "creative_variants" || k === "assigned_page_ids") {
+    if (k === "approvers" || k === "creative_variants" || k === "assigned_page_ids" || k === "assigned_creator_ids") {
       fields.push(`${k} = $${i++}::jsonb`);
       values.push(JSON.stringify(v));
     } else {
@@ -371,6 +524,7 @@ function mapCampaignRow(row: OutreachCampaign): OutreachCampaign {
     approvers: Array.isArray(row.approvers) ? row.approvers : safeJson(row.approvers, []),
     creative_variants: Array.isArray(row.creative_variants) ? row.creative_variants : safeJson(row.creative_variants, []),
     assigned_page_ids: Array.isArray(row.assigned_page_ids) ? row.assigned_page_ids : safeJson(row.assigned_page_ids, []),
+    assigned_creator_ids: Array.isArray(row.assigned_creator_ids) ? row.assigned_creator_ids : safeJson(row.assigned_creator_ids, []),
     start_date: typeof row.start_date === "string" ? row.start_date : new Date(row.start_date).toISOString().slice(0, 10),
     end_date: typeof row.end_date === "string" ? row.end_date : new Date(row.end_date).toISOString().slice(0, 10),
   };
@@ -385,7 +539,9 @@ function safeJson<T>(v: unknown, fallback: T): T {
 
 export interface UpsertPostInput {
   instagram_id: string;
-  page_id: string;
+  // Exactly one of page_id/creator_id must be set — the DB CHECK enforces it.
+  page_id?: string | null;
+  creator_id?: string | null;
   campaign_id?: string | null;
   date: string;
   type: PostType;
@@ -401,11 +557,12 @@ export interface UpsertPostInput {
   permalink?: string | null;
 }
 
-export async function listPosts(filters: { pageId?: string; campaignId?: string } = {}): Promise<OutreachPost[]> {
+export async function listPosts(filters: { pageId?: string; creatorId?: string; campaignId?: string } = {}): Promise<OutreachPost[]> {
   const where: string[] = [];
   const values: unknown[] = [];
   let i = 1;
   if (filters.pageId)     { where.push(`page_id = $${i++}`);     values.push(filters.pageId); }
+  if (filters.creatorId)  { where.push(`creator_id = $${i++}`);  values.push(filters.creatorId); }
   if (filters.campaignId) { where.push(`campaign_id = $${i++}`); values.push(filters.campaignId); }
   const sql = `SELECT * FROM outreach_posts ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY date DESC LIMIT 2000`;
   const { rows } = await pool.query<OutreachPost>(sql, values);
@@ -413,7 +570,8 @@ export async function listPosts(filters: { pageId?: string; campaignId?: string 
 }
 
 export interface CreatePlannedPostInput {
-  page_id: string;
+  page_id?: string | null;
+  creator_id?: string | null;
   campaign_id?: string | null;
   date: string;
   type: PostType;
@@ -435,12 +593,12 @@ export async function createPostsBulk(inputs: CreatePlannedPostInput[]): Promise
     const id = newId("post");
     const { rows } = await pool.query<OutreachPost>(
       `INSERT INTO outreach_posts
-         (id, instagram_id, page_id, campaign_id, date, type, creative_variant, caption,
+         (id, instagram_id, page_id, creator_id, campaign_id, date, type, creative_variant, caption,
           status, likes, comments, views, saves, shares)
-       VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, 0, 0, 0, 0, 0)
+       VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, 0, 0, 0, 0, 0)
        RETURNING *`,
       [
-        id, input.page_id, input.campaign_id ?? null,
+        id, input.page_id ?? null, input.creator_id ?? null, input.campaign_id ?? null,
         input.date, input.type, input.creative_variant ?? null, input.caption ?? "",
         input.status,
       ],
@@ -454,11 +612,12 @@ export async function upsertPostByInstagramId(input: UpsertPostInput): Promise<O
   const id = newId("post");
   const { rows } = await pool.query<OutreachPost>(
     `INSERT INTO outreach_posts
-       (id, instagram_id, page_id, campaign_id, date, type, creative_variant, caption,
+       (id, instagram_id, page_id, creator_id, campaign_id, date, type, creative_variant, caption,
         status, likes, comments, views, saves, shares, media_url, permalink, synced_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
      ON CONFLICT (instagram_id) DO UPDATE SET
        page_id          = EXCLUDED.page_id,
+       creator_id       = EXCLUDED.creator_id,
        campaign_id      = COALESCE(EXCLUDED.campaign_id, outreach_posts.campaign_id),
        date             = EXCLUDED.date,
        type             = EXCLUDED.type,
@@ -472,7 +631,7 @@ export async function upsertPostByInstagramId(input: UpsertPostInput): Promise<O
        synced_at        = NOW()
      RETURNING *`,
     [
-      id, input.instagram_id, input.page_id, input.campaign_id ?? null,
+      id, input.instagram_id, input.page_id ?? null, input.creator_id ?? null, input.campaign_id ?? null,
       input.date, input.type, input.creative_variant ?? null, input.caption,
       input.status, input.likes, input.comments, input.views, input.saves ?? 0, input.shares ?? 0,
       input.media_url ?? null, input.permalink ?? null,

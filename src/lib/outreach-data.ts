@@ -10,7 +10,7 @@
  * once on first boot, and metrics come from the Apify sync.
  */
 import { useEffect, useSyncExternalStore } from 'react'
-import { api, type ServerOutreachPage, type ServerOutreachCampaign, type ServerOutreachPost } from './api'
+import { api, type ServerOutreachPage, type ServerOutreachCreator, type ServerOutreachCampaign, type ServerOutreachPost } from './api'
 
 // ── Types (camelCase, frontend-facing) ─────────────────────────────────────
 
@@ -47,6 +47,23 @@ export interface OutreachPage {
   lastSyncedAt: string | null
 }
 
+// Creators have the same shape as pages today but live in their own table —
+// they don't show up in the All Pages ledger and have their own list view.
+export interface OutreachCreator {
+  id: string
+  handle: string
+  geography: string
+  state: string
+  type: PageType
+  followerTier: FollowerTier
+  contentTypes: PageContentType[]
+  followers: number
+  inventoryPosts: number
+  inventoryStories: number
+  notes: string
+  lastSyncedAt: string | null
+}
+
 export interface Campaign {
   id: string
   name: string
@@ -60,12 +77,15 @@ export interface Campaign {
   approvers: string[]
   creativeVariants: string[]
   assignedPageIds: string[]
+  assignedCreatorIds: string[]
 }
 
 export interface Post {
   id: string
   date: string
-  pageId: string
+  // Exactly one of pageId / creatorId is set. Mirrors the DB CHECK constraint.
+  pageId: string | null
+  creatorId: string | null
   campaignId: string | null
   type: PostType
   creativeVariant: string | null
@@ -82,6 +102,7 @@ export interface Post {
 
 interface OutreachDB {
   pages: OutreachPage[]
+  creators: OutreachCreator[]
   campaigns: Campaign[]
   posts: Post[]
   loaded: boolean
@@ -123,6 +144,38 @@ function fromPage(p: Omit<OutreachPage, 'id' | 'lastSyncedAt'> & Partial<Pick<Ou
   }
 }
 
+function toCreator(c: ServerOutreachCreator): OutreachCreator {
+  return {
+    id: c.id,
+    handle: c.handle,
+    geography: c.geography,
+    state: c.state,
+    type: c.type,
+    followerTier: c.follower_tier,
+    contentTypes: Array.isArray(c.content_types) ? c.content_types : [],
+    followers: c.followers,
+    inventoryPosts: c.inventory_posts,
+    inventoryStories: c.inventory_stories,
+    notes: c.notes,
+    lastSyncedAt: c.last_synced_at,
+  }
+}
+
+function fromCreator(c: Omit<OutreachCreator, 'id' | 'lastSyncedAt'> & Partial<Pick<OutreachCreator, 'id' | 'lastSyncedAt'>>): Partial<ServerOutreachCreator> {
+  return {
+    handle: c.handle,
+    geography: c.geography,
+    state: c.state,
+    type: c.type,
+    follower_tier: c.followerTier,
+    content_types: c.contentTypes,
+    followers: c.followers,
+    inventory_posts: c.inventoryPosts,
+    inventory_stories: c.inventoryStories,
+    notes: c.notes,
+  }
+}
+
 function toCampaign(c: ServerOutreachCampaign): Campaign {
   return {
     id: c.id,
@@ -137,6 +190,9 @@ function toCampaign(c: ServerOutreachCampaign): Campaign {
     approvers: c.approvers,
     creativeVariants: c.creative_variants,
     assignedPageIds: c.assigned_page_ids,
+    // Pre-creator-split campaigns won't have this field; default to empty so
+    // existing rows render correctly.
+    assignedCreatorIds: Array.isArray(c.assigned_creator_ids) ? c.assigned_creator_ids : [],
   }
 }
 
@@ -153,6 +209,7 @@ function fromCampaign(c: Omit<Campaign, 'id'> & Partial<Pick<Campaign, 'id'>>): 
     approvers: c.approvers,
     creative_variants: c.creativeVariants,
     assigned_page_ids: c.assignedPageIds,
+    assigned_creator_ids: c.assignedCreatorIds,
   }
 }
 
@@ -161,6 +218,7 @@ function toPost(p: ServerOutreachPost): Post {
     id: p.id,
     date: p.date,
     pageId: p.page_id,
+    creatorId: p.creator_id,
     campaignId: p.campaign_id,
     type: p.type,
     creativeVariant: p.creative_variant,
@@ -178,7 +236,7 @@ function toPost(p: ServerOutreachPost): Post {
 
 // ── In-memory store with subscribers ───────────────────────────────────────
 
-let store: OutreachDB = { pages: [], campaigns: [], posts: [], loaded: false, loading: false, error: null }
+let store: OutreachDB = { pages: [], creators: [], campaigns: [], posts: [], loaded: false, loading: false, error: null }
 const listeners = new Set<() => void>()
 
 function setStore(patch: Partial<OutreachDB>) {
@@ -198,13 +256,15 @@ function getSnapshot(): OutreachDB {
 async function fetchAll() {
   setStore({ loading: true, error: null })
   try {
-    const [{ pages }, { campaigns }, { posts }] = await Promise.all([
+    const [{ pages }, { creators }, { campaigns }, { posts }] = await Promise.all([
       api.listOutreachPages(),
+      api.listOutreachCreators(),
       api.listOutreachCampaigns(),
       api.listOutreachPosts(),
     ])
     setStore({
       pages: pages.map(toPage),
+      creators: creators.map(toCreator),
       campaigns: campaigns.map(toCampaign),
       posts: posts.map(toPost),
       loaded: true,
@@ -299,14 +359,45 @@ export async function updateCampaign(id: string, patch: Partial<Campaign>) {
   if (patch.approvers !== undefined) serverPatch.approvers = patch.approvers
   if (patch.creativeVariants !== undefined) serverPatch.creative_variants = patch.creativeVariants
   if (patch.assignedPageIds !== undefined) serverPatch.assigned_page_ids = patch.assignedPageIds
+  if (patch.assignedCreatorIds !== undefined) serverPatch.assigned_creator_ids = patch.assignedCreatorIds
   await api.updateOutreachCampaign(id, serverPatch)
+  await fetchAll()
+}
+
+// ── Creator mutators ──────────────────────────────────────────────────────
+
+export async function addCreator(creator: Omit<OutreachCreator, 'id' | 'lastSyncedAt'>): Promise<OutreachCreator> {
+  const { creator: created } = await api.createOutreachCreator(fromCreator(creator))
+  await fetchAll()
+  return toCreator(created)
+}
+
+export async function updateCreator(id: string, patch: Partial<Omit<OutreachCreator, 'id'>>) {
+  const serverPatch: Partial<ServerOutreachCreator> = {}
+  if (patch.handle !== undefined) serverPatch.handle = patch.handle
+  if (patch.geography !== undefined) serverPatch.geography = patch.geography
+  if (patch.state !== undefined) serverPatch.state = patch.state
+  if (patch.type !== undefined) serverPatch.type = patch.type
+  if (patch.followerTier !== undefined) serverPatch.follower_tier = patch.followerTier
+  if (patch.contentTypes !== undefined) serverPatch.content_types = patch.contentTypes
+  if (patch.followers !== undefined) serverPatch.followers = patch.followers
+  if (patch.inventoryPosts !== undefined) serverPatch.inventory_posts = patch.inventoryPosts
+  if (patch.inventoryStories !== undefined) serverPatch.inventory_stories = patch.inventoryStories
+  if (patch.notes !== undefined) serverPatch.notes = patch.notes
+  await api.updateOutreachCreator(id, serverPatch)
+  await fetchAll()
+}
+
+export async function removeCreator(id: string) {
+  await api.deleteOutreachCreator(id)
   await fetchAll()
 }
 
 export async function addPostsBulk(posts: Omit<Post, 'id'>[]) {
   if (posts.length === 0) return
   const payload: Partial<ServerOutreachPost>[] = posts.map(p => ({
-    page_id: p.pageId,
+    page_id: p.pageId ?? null,
+    creator_id: p.creatorId ?? null,
     campaign_id: p.campaignId,
     date: p.date,
     type: p.type,
@@ -327,12 +418,23 @@ export async function syncNow(handles?: string[]) {
 
 /**
  * Pulls metrics for specific Instagram post/reel URLs and persists them under
- * (campaign, page). Returns the saved posts plus any URLs that were skipped
- * (bad URL, owner mismatch, Apify failure). Triggers a store refetch so
- * dashboards / analytics pick up the new rows.
+ * either a page (campaign required) or a creator (campaign optional). Returns
+ * the saved posts plus any URLs that were skipped (bad URL, owner mismatch,
+ * Apify failure). Triggers a store refetch so dashboards / analytics pick up
+ * the new rows.
  */
-export async function addLivePostsByUrl(campaignId: string, pageId: string, urls: string[]) {
-  const result = await api.fetchOutreachPostsByUrls(campaignId, pageId, urls)
+export async function addLivePostsByUrl(args: {
+  urls: string[]
+  pageId?: string
+  creatorId?: string
+  campaignId?: string
+}) {
+  const result = await api.fetchOutreachPostsByUrls({
+    urls: args.urls,
+    page_id: args.pageId,
+    creator_id: args.creatorId,
+    campaign_id: args.campaignId,
+  })
   await fetchAll()
   return {
     ok: result.ok,

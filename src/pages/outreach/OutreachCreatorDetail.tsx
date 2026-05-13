@@ -1,123 +1,153 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
-  ArrowLeft, Users, Calendar, TrendingUp, FileText, Heart, Eye, MessageSquare, Bookmark, Share2,
-  ExternalLink, Trash2,
+  ArrowLeft, Users, Calendar, TrendingUp, FileText, Heart, Eye, MessageSquare,
+  Bookmark, Share2, ExternalLink, Trash2, Link as LinkIcon,
 } from 'lucide-react'
 import {
   LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
-import { useOutreachData, pageMetrics, removePage, instagramUrlForHandle, isValidInstagramHandle, formatLocalDate } from '@/lib/outreach-data'
+import {
+  useOutreachData, removeCreator, instagramUrlForHandle, isValidInstagramHandle,
+  formatLocalDate,
+} from '@/lib/outreach-data'
+import AddLivePostsDialog from './AddLivePostsDialog'
 
-export default function OutreachPageDetail() {
-  const { pageId } = useParams<{ pageId: string }>()
-  const { pages, posts, campaigns } = useOutreachData()
+export default function OutreachCreatorDetail() {
+  const { creatorId } = useParams<{ creatorId: string }>()
+  const { creators, campaigns, posts } = useOutreachData()
   const navigate = useNavigate()
-  const page = pages.find(p => p.id === pageId)
+  const creator = creators.find(c => c.id === creatorId)
   const [deleting, setDeleting] = useState(false)
+  const [livePostsOpen, setLivePostsOpen] = useState(false)
+
+  // Posts attributed to this creator. Sorted newest first for the table.
+  const creatorPosts = useMemo(
+    () => posts.filter(p => p.creatorId === creatorId).sort((a, b) => b.date.localeCompare(a.date)),
+    [posts, creatorId],
+  )
 
   async function handleDelete() {
-    if (!page) return
-    const linked = posts.filter(p => p.pageId === page.id).length
+    if (!creator) return
+    const linked = creatorPosts.length
     const msg = linked > 0
-      ? `Delete @${page.handle}? This will also remove ${linked} post${linked === 1 ? '' : 's'} tied to this page. This cannot be undone.`
-      : `Delete @${page.handle}? This cannot be undone.`
+      ? `Delete @${creator.handle}? This will also remove ${linked} post${linked === 1 ? '' : 's'} tied to this creator. This cannot be undone.`
+      : `Delete @${creator.handle}? This cannot be undone.`
     if (!window.confirm(msg)) return
     setDeleting(true)
     try {
-      await removePage(page.id)
-      navigate('/outreach/pages')
+      await removeCreator(creator.id)
+      navigate('/outreach/creators')
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to delete page.')
+      alert(err instanceof Error ? err.message : 'Failed to delete creator.')
       setDeleting(false)
     }
   }
 
-  const pagePosts = useMemo(
-    () => posts.filter(p => p.pageId === pageId).sort((a, b) => b.date.localeCompare(a.date)),
-    [posts, pageId]
-  )
-  const m = useMemo(() => page ? pageMetrics(page, posts) : null, [page, posts])
-
+  // Engagement over the last 30 days, computed from real posts now.
   const trend = useMemo(() => {
     const days = 30
     const today = new Date()
     return Array.from({ length: days }, (_, i) => {
       const d = new Date(today)
       d.setDate(today.getDate() - (days - 1 - i))
-      // Local date — see note in formatLocalDate. Was using toISOString here,
-      // which silently lost a day's worth of posts in IST.
       const iso = formatLocalDate(d)
-      const same = pagePosts.filter(p => p.date === iso)
+      const same = creatorPosts.filter(p => p.date === iso)
       return {
         day: `${d.getDate()}/${d.getMonth() + 1}`,
         engagement: same.reduce((s, p) => s + p.likes + p.comments + p.saves + p.shares, 0),
       }
     })
-  }, [pagePosts])
+  }, [creatorPosts])
+
+  // Real KPI numbers. % consumed uses MTD posts/stories vs the creator's
+  // inventory caps — same definition as for pages.
+  const kpis = useMemo(() => {
+    const now = new Date()
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+    const mtd = creatorPosts.filter(p => new Date(p.date) >= monthStart)
+    const postsCount = mtd.filter(p => p.type !== 'story').length
+    const storyCount = mtd.filter(p => p.type === 'story').length
+    const pctPosts   = creator?.inventoryPosts   ? postsCount / creator.inventoryPosts   : 0
+    const pctStories = creator?.inventoryStories ? storyCount / creator.inventoryStories : 0
+    const pctConsumed = (pctPosts + pctStories) / 2
+    const totalEng = mtd.reduce((s, p) => s + p.likes + p.comments, 0)
+    const avgEngagement = mtd.length ? Math.round(totalEng / mtd.length) : 0
+    const totalReach = creatorPosts.reduce((s, p) => s + p.views, 0)
+    return {
+      postsDoneMTD: postsCount + storyCount,
+      pctConsumed,
+      avgEngagement,
+      totalReach,
+      lastPostDate: creatorPosts[0]?.date ?? null,
+    }
+  }, [creatorPosts, creator])
 
   const campaignHistory = useMemo(() => {
-    const grouped = new Map<string, number>()
-    for (const p of pagePosts) grouped.set(p.campaignId, (grouped.get(p.campaignId) ?? 0) + 1)
-    return Array.from(grouped.entries())
-      .map(([cid, count]) => ({ campaign: campaigns.find(c => c.id === cid), count }))
-      .filter(x => x.campaign)
-      .sort((a, b) => b.count - a.count)
-  }, [pagePosts, campaigns])
+    if (!creator) return []
+    // Campaigns where the creator is assigned OR where a creator-attributed
+    // post was attributed to a campaign (covers the standalone-then-attached
+    // edge case).
+    const ids = new Set<string>(creator ? campaigns.filter(c => c.assignedCreatorIds.includes(creator.id)).map(c => c.id) : [])
+    for (const p of creatorPosts) if (p.campaignId) ids.add(p.campaignId)
+    return Array.from(ids).map(id => campaigns.find(c => c.id === id)).filter((c): c is NonNullable<typeof c> => !!c)
+      .sort((a, b) => b.startDate.localeCompare(a.startDate))
+  }, [campaigns, creator, creatorPosts])
 
-  if (!page) {
+  if (!creator) {
     return (
       <div className="animate-fade-in space-y-4">
-        <Link to="/outreach/pages" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="w-4 h-4" /> Back to All Pages
+        <Link to="/outreach/creators" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="w-4 h-4" /> Back to Creators
         </Link>
         <div className="hub-card text-center py-12">
-          <p className="text-sm text-muted-foreground">Page not found.</p>
+          <p className="text-sm text-muted-foreground">Creator not found.</p>
         </div>
       </div>
     )
   }
 
-  const totals = pagePosts.reduce((acc, p) => ({
-    likes: acc.likes + p.likes, comments: acc.comments + p.comments,
-    views: acc.views + p.views, saves: acc.saves + p.saves, shares: acc.shares + p.shares,
-  }), { likes: 0, comments: 0, views: 0, saves: 0, shares: 0 })
-
   return (
     <div className="animate-fade-in space-y-5">
 
-      <Link to="/outreach/pages" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="w-4 h-4" /> Back to All Pages
+      <Link to="/outreach/creators" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+        <ArrowLeft className="w-4 h-4" /> Back to Creators
       </Link>
 
       <div className="hub-card">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-4">
             <div className="w-14 h-14 rounded-xl bg-orange-100 flex items-center justify-center">
-              <span className="text-xl font-semibold text-orange-700">{page.handle[0]?.toUpperCase()}</span>
+              <span className="text-xl font-semibold text-orange-700">{creator.handle[0]?.toUpperCase()}</span>
             </div>
             <div>
               <div className="flex items-center gap-2 flex-wrap">
-                <h1 className="text-xl font-serif text-foreground">@{page.handle}</h1>
-                {isValidInstagramHandle(page.handle) && (
-                  <a href={instagramUrlForHandle(page.handle)} target="_blank" rel="noreferrer"
-                    title={`Open @${page.handle} on Instagram`}
+                <h1 className="text-xl font-serif text-foreground">@{creator.handle}</h1>
+                {isValidInstagramHandle(creator.handle) && (
+                  <a href={instagramUrlForHandle(creator.handle)} target="_blank" rel="noreferrer"
+                    title={`Open @${creator.handle} on Instagram`}
                     className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80">
                     <ExternalLink className="w-3 h-3" /> Open on Instagram
                   </a>
                 )}
               </div>
               <p className="text-sm text-muted-foreground">
-                {page.geography} · {page.state} · <span className="uppercase">{page.type}</span> · Tier {page.followerTier}
+                {creator.geography} · {creator.state} · <span className="uppercase">{creator.type}</span> · Tier {creator.followerTier}
               </p>
-              {page.notes && <p className="text-xs text-muted-foreground mt-1">{page.notes}</p>}
+              {creator.notes && <p className="text-xs text-muted-foreground mt-1">{creator.notes}</p>}
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="hub-badge bg-orange-50 text-orange-700"><Users className="w-3 h-3 inline mr-1" />{fmt(page.followers)}</span>
-            <span className="hub-badge bg-blue-50 text-blue-700">Inv {page.inventoryPosts}P / {page.inventoryStories}S</span>
+            <span className="hub-badge bg-orange-50 text-orange-700"><Users className="w-3 h-3 inline mr-1" />{fmt(creator.followers)}</span>
+            <span className="hub-badge bg-blue-50 text-blue-700">Inv {creator.inventoryPosts}P / {creator.inventoryStories}S</span>
+            <button
+              onClick={() => setLivePostsOpen(true)}
+              className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1"
+            >
+              <LinkIcon className="w-3 h-3" /> Add live posts
+            </button>
             <button onClick={handleDelete} disabled={deleting}
-              title="Delete page"
+              title="Delete creator"
               className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
               <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
             </button>
@@ -127,11 +157,11 @@ export default function OutreachPageDetail() {
 
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <Kpi label="Posts MTD"   value={String(m?.postsDoneMTD ?? 0)} icon={FileText}  bg="bg-orange-50" color="text-orange-600" />
-        <Kpi label="% consumed"  value={`${Math.round((m?.pctConsumed ?? 0) * 100)}%`} icon={TrendingUp} bg="bg-blue-50" color="text-blue-600" />
-        <Kpi label="Avg eng"     value={fmt(m?.avgEngagement ?? 0)} icon={Heart}    bg="bg-rose-50" color="text-rose-600" />
-        <Kpi label="Total reach" value={fmt(totals.views)}            icon={Eye}      bg="bg-emerald-50" color="text-emerald-600" />
-        <Kpi label="Last post"   value={m?.lastPostDate ?? '—'}       icon={Calendar} bg="bg-amber-50"   color="text-amber-600" />
+        <Kpi label="Posts MTD"   value={String(kpis.postsDoneMTD)}             icon={FileText}   bg="bg-orange-50"  color="text-orange-600" />
+        <Kpi label="% consumed"  value={`${Math.round(kpis.pctConsumed * 100)}%`} icon={TrendingUp} bg="bg-blue-50"    color="text-blue-600" />
+        <Kpi label="Avg eng"     value={fmt(kpis.avgEngagement)}                  icon={Heart}      bg="bg-rose-50"    color="text-rose-600" />
+        <Kpi label="Total reach" value={fmt(kpis.totalReach)}                     icon={Eye}        bg="bg-emerald-50" color="text-emerald-600" />
+        <Kpi label="Last post"   value={kpis.lastPostDate ?? '—'}                 icon={Calendar}   bg="bg-amber-50"   color="text-amber-600" />
       </div>
 
       {/* Trend */}
@@ -151,10 +181,16 @@ export default function OutreachPageDetail() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        {/* Historical posts */}
+        {/* Historical posts — actual posts attributed to this creator. */}
         <div className="hub-card lg:col-span-2 p-0 overflow-hidden">
           <div className="flex items-center justify-between p-4 border-b border-border">
-            <h2 className="text-sm font-semibold text-foreground">Historical posts ({pagePosts.length})</h2>
+            <h2 className="text-sm font-semibold text-foreground">Historical posts ({creatorPosts.length})</h2>
+            <button
+              onClick={() => setLivePostsOpen(true)}
+              className="text-xs text-orange-600 hover:underline inline-flex items-center gap-1"
+            >
+              <LinkIcon className="w-3 h-3" /> Add live posts
+            </button>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -172,9 +208,13 @@ export default function OutreachPageDetail() {
                 </tr>
               </thead>
               <tbody>
-                {pagePosts.length === 0 ? (
-                  <tr><td colSpan={9} className="px-3 py-12 text-center text-sm text-muted-foreground">No posts yet.</td></tr>
-                ) : pagePosts.slice(0, 50).map(p => {
+                {creatorPosts.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="px-3 py-12 text-center text-sm text-muted-foreground">
+                      No posts yet. Hit <span className="font-medium text-foreground">Add live posts</span> to attach Instagram URLs and pull live metrics.
+                    </td>
+                  </tr>
+                ) : creatorPosts.slice(0, 50).map(p => {
                   const c = campaigns.find(c => c.id === p.campaignId)
                   return (
                     <tr key={p.id} className="border-b border-border last:border-0 hover:bg-accent/40">
@@ -208,23 +248,31 @@ export default function OutreachPageDetail() {
         <div className="hub-card">
           <h2 className="text-sm font-semibold text-foreground mb-3">Campaign history</h2>
           {campaignHistory.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-6 text-center">No campaigns yet.</p>
+            <p className="text-sm text-muted-foreground py-6 text-center">Not assigned to any campaigns yet.</p>
           ) : (
             <div className="space-y-1">
-              {campaignHistory.map(({ campaign, count }) => campaign && (
-                <Link key={campaign.id} to={`/outreach/campaigns/${campaign.id}`}
+              {campaignHistory.map(c => (
+                <Link key={c.id} to={`/outreach/campaigns/${c.id}`}
                   className="flex items-center justify-between gap-2 p-2 rounded-lg hover:bg-accent transition-colors">
                   <div className="min-w-0">
-                    <p className="text-xs font-medium text-foreground truncate">{campaign.name}</p>
-                    <p className="text-[11px] text-muted-foreground capitalize">{campaign.status}</p>
+                    <p className="text-xs font-medium text-foreground truncate">{c.name}</p>
+                    <p className="text-[11px] text-muted-foreground capitalize">{c.status} · {c.startDate}</p>
                   </div>
-                  <span className="hub-badge bg-orange-50 text-orange-700 shrink-0">{count} posts</span>
+                  <span className="hub-badge bg-orange-50 text-orange-700 shrink-0 capitalize">{c.status}</span>
                 </Link>
               ))}
             </div>
           )}
         </div>
       </div>
+
+      {livePostsOpen && (
+        <AddLivePostsDialog
+          mode="creator"
+          creatorId={creator.id}
+          onClose={() => setLivePostsOpen(false)}
+        />
+      )}
 
     </div>
   )

@@ -48,6 +48,7 @@ import OutreachCalendar from "@/pages/outreach/OutreachCalendar";
 import OutreachAnalytics from "@/pages/outreach/OutreachAnalytics";
 import OutreachAllPages from "@/pages/outreach/OutreachAllPages";
 import OutreachCreators from "@/pages/outreach/OutreachCreators";
+import OutreachCreatorDetail from "@/pages/outreach/OutreachCreatorDetail";
 import OutreachPageDetail from "@/pages/outreach/OutreachPageDetail";
 import OutreachAI from "@/pages/outreach/OutreachAI";
 
@@ -170,14 +171,19 @@ const App = () => (
                   <OutreachAllPages />
                 </RoleGuard>
               } />
+              <Route path="/outreach/pages/:pageId" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
+                  <OutreachPageDetail />
+                </RoleGuard>
+              } />
               <Route path="/outreach/creators" element={
                 <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
                   <OutreachCreators />
                 </RoleGuard>
               } />
-              <Route path="/outreach/creators/:pageId" element={
+              <Route path="/outreach/creators/:creatorId" element={
                 <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
-                  <OutreachPageDetail />
+                  <OutreachCreatorDetail />
                 </RoleGuard>
               } />
               <Route path="/outreach/ai" element={

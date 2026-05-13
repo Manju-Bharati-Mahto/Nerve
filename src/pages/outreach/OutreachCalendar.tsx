@@ -8,11 +8,13 @@ import {
   type PostType, type PostStatus, type Post,
 } from '@/lib/outreach-data'
 
+// Stable hash → palette (one color per campaign). With the campaign-only
+// filter on the grid every tile has a campaignId, but `colorFor` still tolerates
+// nulls so it stays safe if the filter is ever relaxed.
+const PALETTE = ['#f97316', '#3b82f6', '#10b981', '#8b5cf6', '#ec4899', '#f59e0b', '#06b6d4', '#ef4444', '#84cc16', '#a855f7', '#0ea5e9', '#facc15']
+
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
-// Stable hash → palette (one color per campaign). Unattributed posts
-// (campaignId === null) render as muted grey.
-const PALETTE = ['#f97316', '#3b82f6', '#10b981', '#8b5cf6', '#ec4899', '#f59e0b', '#06b6d4', '#ef4444', '#84cc16', '#a855f7', '#0ea5e9', '#facc15']
 const UNATTRIBUTED_COLOR = '#94a3b8'
 function colorFor(id: string | null): string {
   if (!id) return UNATTRIBUTED_COLOR
@@ -22,7 +24,7 @@ function colorFor(id: string | null): string {
 }
 
 export default function OutreachCalendar() {
-  const { posts, campaigns, pages } = useOutreachData()
+  const { posts, campaigns, pages, creators } = useOutreachData()
   const [view, setView] = useState<'month' | 'week'>('month')
   const [cursor, setCursor] = useState(() => new Date())
   const [uploadOpen, setUploadOpen] = useState(false)
@@ -57,9 +59,13 @@ export default function OutreachCalendar() {
     }
   }, [view, year, month, cursor, today])
 
+  // Calendar only surfaces posts that belong to a campaign. Standalone /
+  // unattributed posts (e.g. creator-side ad-hoc adds) stay out of view so
+  // the grid stays a campaign-planning surface.
   const postsByDate = useMemo(() => {
     const out = new Map<string, Post[]>()
     for (const p of posts) {
+      if (!p.campaignId) continue
       const arr = out.get(p.date) ?? []
       arr.push(p)
       out.set(p.date, arr)
@@ -137,27 +143,19 @@ export default function OutreachCalendar() {
                 )}
                 <div className="flex-1 overflow-y-auto space-y-0.5">
                   {events.slice(0, view === 'week' ? 12 : 4).map(p => {
-                    const camp = p.campaignId ? campaigns.find(c => c.id === p.campaignId) : null
-                    const page = pages.find(pp => pp.id === p.pageId)
+                    // Every event here has a campaignId (filtered above), and
+                    // clicking the tile always opens the campaign dashboard so
+                    // the calendar acts as a navigator into campaign details.
+                    const camp = campaigns.find(c => c.id === p.campaignId)
+                    const page = p.pageId ? pages.find(pp => pp.id === p.pageId) : null
+                    const creator = p.creatorId ? creators.find(cc => cc.id === p.creatorId) : null
+                    const subjectHandle = page?.handle ?? creator?.handle ?? null
                     const color = colorFor(p.campaignId)
-                    const label = camp?.name ?? (page ? `@${page.handle}` : 'post')
-                    const title = `${camp?.name ?? 'Unattributed'} — @${page?.handle ?? '?'} — ${p.type}`
+                    const label = camp?.name ?? (subjectHandle ? `@${subjectHandle}` : 'post')
+                    const title = `${camp?.name ?? 'Campaign'} — @${subjectHandle ?? '?'} — ${p.type}`
                     const cls = "block px-1.5 py-0.5 rounded text-[10px] truncate text-white"
-                    // If this post has a real Instagram permalink, clicking
-                    // jumps to the live post; otherwise fall back to the
-                    // internal campaign / creator view as before.
-                    if (p.permalink) {
-                      return (
-                        <a key={p.id} href={p.permalink} target="_blank" rel="noreferrer"
-                          title={`${title} — open on Instagram`}
-                          className={cls}
-                          style={{ backgroundColor: color }}>
-                          {label}
-                        </a>
-                      )
-                    }
                     return (
-                      <Link key={p.id} to={camp ? `/outreach/campaigns/${camp.id}` : page ? `/outreach/creators/${page.id}` : '#'}
+                      <Link key={p.id} to={camp ? `/outreach/campaigns/${camp.id}` : '#'}
                         title={title}
                         className={cls}
                         style={{ backgroundColor: color }}>
@@ -299,7 +297,7 @@ function ImportModal({ onClose }: { onClose: () => void }) {
       const status: PostStatus = new Date(date).getTime() < Date.now() ? 'published' : 'scheduled'
 
       created.push({
-        date, pageId: pageMatch.id, campaignId: campMatch.id, type,
+        date, pageId: pageMatch.id, creatorId: null, campaignId: campMatch.id, type,
         creativeVariant: variant, caption, status,
         likes: 0, comments: 0, views: 0, saves: 0, shares: 0,
       })

@@ -151,7 +151,7 @@ function PagesPerformance() {
             ) : rows.map(({ page, m }) => (
               <tr key={page.id} className="border-b border-border last:border-0 hover:bg-accent/40">
                 <td className="px-3 py-2.5">
-                  <Link to={`/outreach/creators/${page.id}`} className="text-xs font-medium text-foreground hover:underline">@{page.handle}</Link>
+                  <Link to={`/outreach/pages/${page.id}`} className="text-xs font-medium text-foreground hover:underline">@{page.handle}</Link>
                 </td>
                 <td className="px-3 py-2.5 text-xs text-muted-foreground">{page.geography}</td>
                 <td className="px-3 py-2.5 text-xs uppercase text-muted-foreground">{page.type}</td>
@@ -318,7 +318,7 @@ function BestPosts() {
                       </a>
                     ) : post.date}
                   </td>
-                  <td className="px-3 py-2.5 text-xs">{page ? <Link to={`/outreach/creators/${page.id}`} className="hover:underline">@{page.handle}</Link> : '—'}</td>
+                  <td className="px-3 py-2.5 text-xs">{page ? <Link to={`/outreach/pages/${page.id}`} className="hover:underline">@{page.handle}</Link> : '—'}</td>
                   <td className="px-3 py-2.5 text-xs">{camp ? <Link to={`/outreach/campaigns/${camp.id}`} className="hover:underline">{camp.name}</Link> : '—'}</td>
                   <td className="px-3 py-2.5"><span className="hub-badge bg-orange-50 text-orange-700 capitalize">{post.type}</span></td>
                   <td className="px-3 py-2.5 text-xs text-muted-foreground">{post.creativeVariant ?? '—'}</td>
@@ -445,7 +445,7 @@ function InventoryHeatmap() {
           <h3 className="text-sm font-semibold text-foreground mb-3">{geo} <span className="text-xs text-muted-foreground font-normal">({gRows.length} pages)</span></h3>
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
             {gRows.map(({ page, m }) => (
-              <Link key={page.id} to={`/outreach/creators/${page.id}`}
+              <Link key={page.id} to={`/outreach/pages/${page.id}`}
                 title={`@${page.handle} — ${m.postsDoneMTD + m.storiesDoneMTD}/${page.inventoryPosts + page.inventoryStories} = ${Math.round(m.pctConsumed * 100)}%`}
                 className={`p-3 rounded-lg ${bg(m.pctConsumed)} hover:opacity-90 transition-opacity`}>
                 <p className="text-xs font-medium truncate">@{page.handle}</p>

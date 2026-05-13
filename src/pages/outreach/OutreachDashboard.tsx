@@ -26,7 +26,7 @@ function rangeStart(range: Range): Date | null {
 
 export default function OutreachDashboard() {
   const { profile } = useAuth()
-  const { pages, campaigns, posts } = useOutreachData()
+  const { pages, creators, campaigns, posts } = useOutreachData()
   const [range, setRange] = useState<Range>('30d')
   const [syncing, setSyncing] = useState(false)
   const [syncErr, setSyncErr] = useState<string | null>(null)
@@ -93,13 +93,23 @@ export default function OutreachDashboard() {
     return { state: topPagesOfType('state'), pu: topPagesOfType('pu') }
   }, [pages, filteredPosts])
 
+  const creatorSummary = useMemo(() => {
+    const byType = { state: 0, pu: 0 }
+    const byTier: Record<string, number> = { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0 }
+    for (const c of creators) {
+      byType[c.type]++
+      byTier[c.followerTier] = (byTier[c.followerTier] ?? 0) + 1
+    }
+    return { byType, byTier, total: creators.length }
+  }, [creators])
+
   const alerts = useMemo(() => {
     const out: { id: string; severity: 'warn' | 'info' | 'critical'; text: string; link?: string }[] = []
     // Pages burning inventory
     for (const p of pages) {
       const m = pageMetrics(p, posts)
       if (m.status === 'over-used') {
-        out.push({ id: `over-${p.id}`, severity: 'critical', text: `@${p.handle} is over-used (${Math.round(m.pctConsumed * 100)}%)`, link: `/outreach/creators/${p.id}` })
+        out.push({ id: `over-${p.id}`, severity: 'critical', text: `@${p.handle} is over-used (${Math.round(m.pctConsumed * 100)}%)`, link: `/outreach/pages/${p.id}` })
       }
     }
     // Campaigns ending soon
@@ -113,7 +123,8 @@ export default function OutreachDashboard() {
       }
     }
     // Idle pages — link out with the specific IDs so the destination tab can
-    // highlight them and pre-filter to status=idle.
+    // highlight them and pre-filter to status=idle. After the creator split
+    // this points at All Pages (the creators directory no longer lists pages).
     const idlePages = pages.filter(p => pageMetrics(p, posts).status === 'idle')
     if (idlePages.length > 0) {
       const idsParam = idlePages.map(p => p.id).join(',')
@@ -121,7 +132,7 @@ export default function OutreachDashboard() {
         id: 'idle',
         severity: 'info',
         text: `${idlePages.length} pages have no posts this month`,
-        link: `/outreach/creators?filter=idle&ids=${encodeURIComponent(idsParam)}`,
+        link: `/outreach/pages?filter=idle&ids=${encodeURIComponent(idsParam)}`,
       })
     }
     return out.slice(0, 8)
@@ -147,7 +158,7 @@ export default function OutreachDashboard() {
     { label: 'Reach (views)', value: fmt(kpis.reach), sub: `${kpis.postsCount} posts`, icon: Eye, bg: 'bg-orange-50', color: 'text-orange-600' },
     { label: 'Engagement', value: fmt(kpis.eng), sub: 'likes + comments', icon: Heart, bg: 'bg-rose-50', color: 'text-rose-600' },
     { label: 'Active campaigns', value: String(kpis.active), sub: `${campaigns.length} total`, icon: Send, bg: 'bg-blue-50', color: 'text-blue-600' },
-    { label: 'Inventory used', value: `${kpis.pctInv}%`, sub: `${pages.length} pages`, icon: Layers, bg: 'bg-emerald-50', color: 'text-emerald-600' },
+    { label: 'Inventory used', value: `${kpis.pctInv}%`, sub: `${pages.length} pages · ${creators.length} creators`, icon: Layers, bg: 'bg-emerald-50', color: 'text-emerald-600' },
   ]
 
   return (
@@ -329,14 +340,14 @@ export default function OutreachDashboard() {
           <div key={t} className="hub-card">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold text-foreground">Top {t === 'pu' ? 'PU' : 'State'} pages</h2>
-              <Link to="/outreach/creators" className="text-xs text-orange-600 hover:underline">All creators</Link>
+              <Link to="/outreach/pages" className="text-xs text-orange-600 hover:underline">All pages</Link>
             </div>
             {topByType[t].length === 0 ? (
               <p className="text-sm text-muted-foreground py-6 text-center">No {t === 'pu' ? 'PU' : 'state'} pages yet.</p>
             ) : (
               <div className="space-y-1">
                 {topByType[t].map(({ page, m }) => (
-                  <Link key={page.id} to={`/outreach/creators/${page.id}`}
+                  <Link key={page.id} to={`/outreach/pages/${page.id}`}
                     className="flex items-center gap-3 p-2 rounded-lg hover:bg-accent transition-colors">
                     <div className="w-7 h-7 rounded-full bg-orange-100 flex items-center justify-center shrink-0">
                       <span className="text-[10px] font-semibold text-orange-700">
@@ -357,6 +368,50 @@ export default function OutreachDashboard() {
             )}
           </div>
         ))}
+      </div>
+
+      {/* Creators directory — separate entity from pages; shows the lay of the
+          land so the team knows what's available when assigning campaigns. */}
+      <div className="hub-card">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
+            <Users className="w-4 h-4 text-muted-foreground" /> Creators directory
+          </h2>
+          <Link to="/outreach/creators" className="text-xs text-orange-600 hover:underline">Manage creators</Link>
+        </div>
+        {creatorSummary.total === 0 ? (
+          <p className="text-sm text-muted-foreground py-6 text-center">
+            No creators added yet. <Link to="/outreach/creators" className="text-orange-600 hover:underline">Add your first creator</Link>.
+          </p>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="hub-card bg-orange-50/40 py-3">
+              <p className="text-[10px] uppercase tracking-widest text-muted-foreground">Total</p>
+              <p className="text-2xl font-serif text-foreground leading-none mt-1">{creatorSummary.total}</p>
+              <p className="text-[11px] text-muted-foreground mt-1">creators on file</p>
+            </div>
+            <div className="hub-card bg-blue-50/40 py-3">
+              <p className="text-[10px] uppercase tracking-widest text-muted-foreground">State</p>
+              <p className="text-2xl font-serif text-foreground leading-none mt-1">{creatorSummary.byType.state}</p>
+              <p className="text-[11px] text-muted-foreground mt-1">state-level reach</p>
+            </div>
+            <div className="hub-card bg-emerald-50/40 py-3">
+              <p className="text-[10px] uppercase tracking-widest text-muted-foreground">PU</p>
+              <p className="text-2xl font-serif text-foreground leading-none mt-1">{creatorSummary.byType.pu}</p>
+              <p className="text-[11px] text-muted-foreground mt-1">PU-owned</p>
+            </div>
+            <div className="hub-card bg-amber-50/40 py-3">
+              <p className="text-[10px] uppercase tracking-widest text-muted-foreground">By tier</p>
+              <div className="flex items-baseline gap-2 mt-1">
+                {(['1', '2', '3', '4', '5'] as const).map(t => (
+                  <span key={t} className="text-[11px] font-mono tabular-nums text-foreground">
+                    T{t}: <span className="font-semibold">{creatorSummary.byTier[t] ?? 0}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="hub-card">
