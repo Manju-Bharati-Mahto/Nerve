@@ -53,6 +53,10 @@ import {
   createPage as createOutreachPage,
   updatePage as updateOutreachPage,
   deletePage as deleteOutreachPage,
+  listCreators as listOutreachCreators,
+  createCreator as createOutreachCreator,
+  updateCreator as updateOutreachCreator,
+  deleteCreator as deleteOutreachCreator,
   listCampaigns as listOutreachCampaigns,
   createCampaign as createOutreachCampaign,
   updateCampaign as updateOutreachCampaign,
@@ -1288,6 +1292,10 @@ const outreachPageSchema = z.object({
   notes: z.string().optional(),
 });
 
+// Creators share the page payload shape today; defined separately so they can
+// diverge later without rippling through the page schema.
+const outreachCreatorSchema = outreachPageSchema;
+
 const outreachCampaignSchema = z.object({
   name: z.string().min(1),
   start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -1300,6 +1308,7 @@ const outreachCampaignSchema = z.object({
   approvers: z.array(z.string()),
   creative_variants: z.array(z.string()),
   assigned_page_ids: z.array(z.string()),
+  assigned_creator_ids: z.array(z.string()).optional(),
 });
 
 // Pages
@@ -1329,6 +1338,37 @@ app.patch("/api/outreach/pages/:id", asyncHandler(async (req, res) => {
 app.delete("/api/outreach/pages/:id", asyncHandler(async (req, res) => {
   if (!requireOutreach(res)) return;
   await deleteOutreachPage(getSingleParam(req.params.id));
+  res.json({ ok: true });
+}));
+
+// Creators — same shape as pages but stored separately. They don't appear in
+// the All Pages ledger and aren't auto-synced by Apify.
+
+app.get("/api/outreach/creators", asyncHandler(async (_req, res) => {
+  if (!requireOutreach(res)) return;
+  res.json({ creators: await listOutreachCreators() });
+}));
+
+app.post("/api/outreach/creators", asyncHandler(async (req, res) => {
+  if (!requireOutreach(res)) return;
+  const parsed = outreachCreatorSchema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, 400, "Invalid creator payload.");
+  const creator = await createOutreachCreator(parsed.data);
+  res.status(201).json({ creator });
+}));
+
+app.patch("/api/outreach/creators/:id", asyncHandler(async (req, res) => {
+  if (!requireOutreach(res)) return;
+  const parsed = outreachCreatorSchema.partial().safeParse(req.body);
+  if (!parsed.success) return sendError(res, 400, "Invalid patch payload.");
+  const creator = await updateOutreachCreator(getSingleParam(req.params.id), parsed.data);
+  if (!creator) return sendError(res, 404, "Creator not found.");
+  res.json({ creator });
+}));
+
+app.delete("/api/outreach/creators/:id", asyncHandler(async (req, res) => {
+  if (!requireOutreach(res)) return;
+  await deleteOutreachCreator(getSingleParam(req.params.id));
   res.json({ ok: true });
 }));
 
@@ -1367,19 +1407,24 @@ app.delete("/api/outreach/campaigns/:id", asyncHandler(async (req, res) => {
 app.get("/api/outreach/posts", asyncHandler(async (req, res) => {
   if (!requireOutreach(res)) return;
   const pageId = typeof req.query.page_id === "string" ? req.query.page_id : undefined;
+  const creatorId = typeof req.query.creator_id === "string" ? req.query.creator_id : undefined;
   const campaignId = typeof req.query.campaign_id === "string" ? req.query.campaign_id : undefined;
-  res.json({ posts: await listOutreachPosts({ pageId, campaignId }) });
+  res.json({ posts: await listOutreachPosts({ pageId, creatorId, campaignId }) });
 }));
 
 const outreachPlannedPostSchema = z.object({
-  page_id: z.string().min(1),
+  page_id: z.string().min(1).optional(),
+  creator_id: z.string().min(1).optional(),
   campaign_id: z.string().nullable().optional(),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   type: z.enum(OUTREACH_POST_TYPES),
   creative_variant: z.string().nullable().optional(),
   caption: z.string().optional(),
   status: z.enum(OUTREACH_POST_STATUSES),
-});
+}).refine(
+  d => Boolean(d.page_id) !== Boolean(d.creator_id),
+  { message: "Provide exactly one of page_id or creator_id." },
+);
 
 app.post("/api/outreach/posts", asyncHandler(async (req, res) => {
   if (!requireOutreach(res)) return;
@@ -1399,27 +1444,37 @@ app.delete("/api/outreach/posts/:id", asyncHandler(async (req, res) => {
 // posts under (campaign, page). Used by the "add live posts" dialog.
 
 const outreachLivePostsSchema = z.object({
-  campaign_id: z.string().min(1),
-  page_id: z.string().min(1),
+  campaign_id: z.string().min(1).optional(),
+  page_id: z.string().min(1).optional(),
+  creator_id: z.string().min(1).optional(),
   urls: z.array(z.string().min(1)).min(1).max(20),
-});
+}).refine(
+  d => Boolean(d.page_id) !== Boolean(d.creator_id),
+  { message: "Provide exactly one of page_id or creator_id." },
+).refine(
+  // Page-side flow still demands a campaign — keeps the existing rule that a
+  // live page post must belong to a campaign so attribution doesn't drift.
+  d => !d.page_id || !!d.campaign_id,
+  { message: "campaign_id is required when page_id is provided." },
+);
 
 app.post("/api/outreach/posts/fetch-by-urls", asyncHandler(async (req, res) => {
   if (!requireOutreach(res)) return;
   const parsed = outreachLivePostsSchema.safeParse(req.body);
-  if (!parsed.success) return sendError(res, 400, "Invalid payload.");
+  if (!parsed.success) return sendError(res, 400, parsed.error.issues[0]?.message ?? "Invalid payload.");
   try {
     const result = await addLivePosts({
       campaignId: parsed.data.campaign_id,
       pageId: parsed.data.page_id,
+      creatorId: parsed.data.creator_id,
       urls: parsed.data.urls,
     });
     res.json(result);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Failed to fetch posts.";
-    // Treat validation errors (campaign / page / membership) as 400; Apify or
-    // network errors bubble up as 502.
-    const status = /not found|not assigned/i.test(msg) ? 400 : 502;
+    // Treat validation errors (campaign / page / creator / membership) as 400;
+    // Apify or network errors bubble up as 502.
+    const status = /not found|not assigned|required|exactly one/i.test(msg) ? 400 : 502;
     return sendError(res, status, msg);
   }
 }));

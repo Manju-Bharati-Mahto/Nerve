@@ -6,38 +6,184 @@ import {
 } from '@/lib/outreach-data'
 
 /**
- * Dialog used in two places:
- *   - Auto-opens after a campaign is created (OutreachCampaigns)
- *   - Manual button on the campaign detail header (OutreachCampaignDetail)
+ * Two entry points:
+ *   - "Campaign" mode (default): opened from the campaign-create flow or the
+ *     campaign detail header. Campaign is fixed; user picks which assignee
+ *     (page or creator) to attribute the posts to.
+ *   - "Creator" mode: opened from the creator dashboard. Creator is fixed;
+ *     user optionally picks one of the creator's campaigns to attribute.
  *
- * User picks a page assigned to the campaign, pastes 1..N Instagram post/reel
- * URLs, hits "Fetch analytics" → server calls Apify, upserts each result as a
- * post under (campaign, page), and we render the metrics inline.
+ * Both ultimately POST {urls, page_id|creator_id, campaign_id?} to the
+ * server. Server validates the assignee belongs to the campaign (if a campaign
+ * is supplied) and that the scraped post's owner matches the assignee handle.
  */
-export default function AddLivePostsDialog({
-  campaign, onClose,
-}: {
-  campaign: Campaign
-  onClose: () => void
-}) {
-  const { pages } = useOutreachStore()
-  const assignedPages = useMemo(
-    () => pages.filter(p => campaign.assignedPageIds.includes(p.id)),
-    [pages, campaign.assignedPageIds],
-  )
-
-  const [pageId, setPageId] = useState<string>(assignedPages[0]?.id ?? '')
-  // If the store hadn't hydrated when the dialog mounted, pageId starts empty
-  // and the form would stay disabled even after pages arrive. Re-pick a default
-  // once the assignedPages list is available, but never clobber an explicit
-  // user choice (only fill when current pageId isn't in the list).
-  useEffect(() => {
-    if (assignedPages.length === 0) return
-    if (!assignedPages.some(p => p.id === pageId)) {
-      setPageId(assignedPages[0].id)
+type Props =
+  | {
+      mode?: 'campaign'
+      campaign: Campaign
+      onClose: () => void
     }
-  }, [assignedPages, pageId])
+  | {
+      mode: 'creator'
+      creatorId: string
+      onClose: () => void
+    }
 
+export default function AddLivePostsDialog(props: Props) {
+  if (props.mode === 'creator') return <CreatorMode creatorId={props.creatorId} onClose={props.onClose} />
+  return <CampaignMode campaign={props.campaign} onClose={props.onClose} />
+}
+
+// ── Campaign mode ──────────────────────────────────────────────────────────
+
+function CampaignMode({ campaign, onClose }: { campaign: Campaign; onClose: () => void }) {
+  const { pages, creators } = useOutreachStore()
+
+  // Assignees this campaign can attribute posts to. We list both kinds and
+  // disambiguate with a discriminator so the picker can address either.
+  type Assignee = { kind: 'page' | 'creator'; id: string; handle: string; sub: string }
+  const assignees = useMemo<Assignee[]>(() => {
+    const out: Assignee[] = []
+    for (const id of campaign.assignedPageIds) {
+      const p = pages.find(x => x.id === id)
+      if (p) out.push({ kind: 'page', id: p.id, handle: p.handle, sub: `${p.geography} · ${p.type}` })
+    }
+    for (const id of campaign.assignedCreatorIds) {
+      const c = creators.find(x => x.id === id)
+      if (c) out.push({ kind: 'creator', id: c.id, handle: c.handle, sub: `${c.geography} · ${c.type}` })
+    }
+    return out
+  }, [pages, creators, campaign.assignedPageIds, campaign.assignedCreatorIds])
+
+  const [assigneeKey, setAssigneeKey] = useState<string>(() =>
+    assignees[0] ? `${assignees[0].kind}:${assignees[0].id}` : '',
+  )
+  // Re-pick a default once the store hydrates if the current pick isn't valid.
+  useEffect(() => {
+    if (assignees.length === 0) return
+    if (!assignees.some(a => `${a.kind}:${a.id}` === assigneeKey)) {
+      setAssigneeKey(`${assignees[0].kind}:${assignees[0].id}`)
+    }
+  }, [assignees, assigneeKey])
+  const selected = assignees.find(a => `${a.kind}:${a.id}` === assigneeKey) ?? null
+
+  return (
+    <DialogShell
+      title="Add live posts"
+      subtitle={<>Pull real metrics into <span className="font-medium text-foreground">{campaign.name}</span> by URL.</>}
+      onClose={onClose}
+      empty={
+        assignees.length === 0 ? (
+          <div className="hub-card bg-amber-50 border-amber-200 text-xs text-amber-900 flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>This campaign has no pages or creators assigned. Add some first, then come back to attach live posts.</span>
+          </div>
+        ) : null
+      }
+      selectorLabel="Assignee from this campaign"
+      selector={
+        <>
+          <select className="hub-input" value={assigneeKey} onChange={e => setAssigneeKey(e.target.value)}>
+            {assignees.map(a => (
+              <option key={`${a.kind}:${a.id}`} value={`${a.kind}:${a.id}`}>
+                {a.kind === 'creator' ? 'Creator: ' : 'Page: '}@{a.handle} · {a.sub}
+              </option>
+            ))}
+          </select>
+          {selected && (
+            <p className="text-[11px] text-muted-foreground mt-1">
+              URLs you paste below must belong to @{selected.handle}.
+            </p>
+          )}
+        </>
+      }
+      submit={(urls) => addLivePostsByUrl({
+        urls,
+        campaignId: campaign.id,
+        ...(selected?.kind === 'page'    ? { pageId: selected.id }    : {}),
+        ...(selected?.kind === 'creator' ? { creatorId: selected.id } : {}),
+      })}
+      canSubmit={!!selected}
+    />
+  )
+}
+
+// ── Creator mode ───────────────────────────────────────────────────────────
+
+function CreatorMode({ creatorId, onClose }: { creatorId: string; onClose: () => void }) {
+  const { creators, campaigns } = useOutreachStore()
+  const creator = creators.find(c => c.id === creatorId)
+
+  // Campaign is optional for creators — populate the dropdown with this
+  // creator's campaigns, plus a "no campaign" sentinel.
+  const creatorCampaigns = useMemo(
+    () => campaigns.filter(c => c.assignedCreatorIds.includes(creatorId)),
+    [campaigns, creatorId],
+  )
+  const [campaignId, setCampaignId] = useState<string>('')
+
+  if (!creator) {
+    return (
+      <DialogShell title="Add live posts" subtitle="" onClose={onClose}
+        empty={
+          <div className="hub-card bg-rose-50 border-rose-200 text-xs text-rose-900 flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>Creator not found.</span>
+          </div>
+        }
+        selectorLabel="" selector={null}
+        submit={async () => ({ ok: true as const, posts: [], skipped: [] })}
+        canSubmit={false}
+      />
+    )
+  }
+
+  return (
+    <DialogShell
+      title="Add live posts"
+      subtitle={<>Pull real metrics for <span className="font-medium text-foreground">@{creator.handle}</span> by URL.</>}
+      onClose={onClose}
+      empty={null}
+      selectorLabel="Campaign (optional)"
+      selector={
+        <>
+          <select className="hub-input" value={campaignId} onChange={e => setCampaignId(e.target.value)}>
+            <option value="">— No campaign (standalone) —</option>
+            {creatorCampaigns.map(c => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+          <p className="text-[11px] text-muted-foreground mt-1">
+            URLs you paste below must belong to @{creator.handle}.
+            {creatorCampaigns.length === 0 && ' This creator isn\'t in any campaign yet.'}
+          </p>
+        </>
+      }
+      submit={(urls) => addLivePostsByUrl({
+        urls,
+        creatorId: creator.id,
+        ...(campaignId ? { campaignId } : {}),
+      })}
+      canSubmit
+    />
+  )
+}
+
+// ── Shared shell ───────────────────────────────────────────────────────────
+
+function DialogShell({
+  title, subtitle, onClose, empty, selectorLabel, selector, submit, canSubmit,
+}: {
+  title: string
+  subtitle: React.ReactNode
+  onClose: () => void
+  /** Optional warning shown in place of the form (e.g. no assignees). */
+  empty: React.ReactNode | null
+  selectorLabel: string
+  selector: React.ReactNode
+  submit: (urls: string[]) => Promise<{ ok: true; posts: Post[]; skipped: { url: string; reason: string }[] }>
+  canSubmit: boolean
+}) {
   const [urls, setUrls] = useState<string[]>([''])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -52,15 +198,16 @@ export default function AddLivePostsDialog({
   }
 
   const cleanedUrls = urls.map(u => u.trim()).filter(Boolean)
-  const canSubmit = !!pageId && cleanedUrls.length > 0 && !loading
+  const formEnabled = !empty
+  const submitEnabled = formEnabled && canSubmit && cleanedUrls.length > 0 && !loading
 
-  async function submit() {
-    if (!canSubmit) return
+  async function onSubmit() {
+    if (!submitEnabled) return
     setLoading(true)
     setError(null)
     setResults(null)
     try {
-      const res = await addLivePostsByUrl(campaign.id, pageId, cleanedUrls)
+      const res = await submit(cleanedUrls)
       setResults({ posts: res.posts, skipped: res.skipped })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch analytics.')
@@ -69,18 +216,14 @@ export default function AddLivePostsDialog({
     }
   }
 
-  const selectedPage = assignedPages.find(p => p.id === pageId)
-
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-fade-in">
       <div className="bg-card rounded-xl border border-border w-full max-w-2xl max-h-[90vh] flex flex-col">
 
         <div className="flex items-start justify-between p-4 border-b border-border">
           <div className="min-w-0">
-            <h2 className="text-base font-serif text-foreground">Add live posts</h2>
-            <p className="text-xs text-muted-foreground truncate">
-              Pull real metrics into <span className="font-medium text-foreground">{campaign.name}</span> by URL.
-            </p>
+            <h2 className="text-base font-serif text-foreground">{title}</h2>
+            {subtitle && <p className="text-xs text-muted-foreground truncate">{subtitle}</p>}
           </div>
           <button onClick={onClose} className="p-2 rounded-lg hover:bg-accent text-muted-foreground">
             <X className="w-4 h-4" />
@@ -89,31 +232,11 @@ export default function AddLivePostsDialog({
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
 
-          {assignedPages.length === 0 ? (
-            <div className="hub-card bg-amber-50 border-amber-200 text-xs text-amber-900 flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-              <span>This campaign has no pages assigned. Add pages to the campaign first, then come back to attach live posts.</span>
-            </div>
-          ) : (
+          {empty ?? (
             <>
               <div>
-                <label className="hub-label">Page from this campaign</label>
-                <select
-                  className="hub-input"
-                  value={pageId}
-                  onChange={e => setPageId(e.target.value)}
-                >
-                  {assignedPages.map(p => (
-                    <option key={p.id} value={p.id}>
-                      @{p.handle} · {p.geography} · {p.type}
-                    </option>
-                  ))}
-                </select>
-                {selectedPage && (
-                  <p className="text-[11px] text-muted-foreground mt-1">
-                    URLs you paste below must belong to @{selectedPage.handle}.
-                  </p>
-                )}
+                <label className="hub-label">{selectorLabel}</label>
+                {selector}
               </div>
 
               <div>
@@ -151,7 +274,7 @@ export default function AddLivePostsDialog({
                   ))}
                 </div>
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  Up to 20 URLs per request. Each one is scraped via Apify and saved as a published post under this campaign + page.
+                  Up to 20 URLs per request. Each one is scraped via Apify and saved as a published post.
                 </p>
               </div>
             </>
@@ -175,8 +298,8 @@ export default function AddLivePostsDialog({
             {results ? 'Done' : 'Cancel'}
           </button>
           <button
-            onClick={submit}
-            disabled={!canSubmit || assignedPages.length === 0}
+            onClick={onSubmit}
+            disabled={!submitEnabled}
             className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-2"
           >
             {loading && <Loader2 className="w-4 h-4 animate-spin" />}

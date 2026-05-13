@@ -6,14 +6,16 @@ import {
   Crown, Users, FileText, Palette, Settings, Database, Search,
   Shield, UserCheck, User, Image, FolderKanban, ClipboardCheck,
   ThumbsUp, ThumbsDown, Clock,
+  Megaphone, Send, Calendar as CalendarIcon, BarChart3, Sparkles,
 } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { CONTENT_TYPES } from '@/lib/constants'
 import { brandingApi } from '@/lib/branding-api'
 import type { BrandingPortalStats } from '@/lib/branding-types'
+import { useOutreachData, campaignMetrics } from '@/lib/outreach-data'
 
-const DASHBOARD_TABS = ['overview', 'branding', 'content'] as const
+const DASHBOARD_TABS = ['overview', 'branding', 'content', 'outreach'] as const
 
 type DashboardTab = (typeof DASHBOARD_TABS)[number]
 
@@ -302,6 +304,157 @@ function BrandingTeamContent({ allUsers }: { allUsers: AppUser[] }) {
   )
 }
 
+// ── Outreach team section ──────────────────────────────────────────────────
+
+function OutreachTeamContent({ allUsers }: { allUsers: AppUser[] }) {
+  // useOutreachData hydrates the in-memory store on mount. The same API the
+  // outreach team itself uses — super_admin is allowed through requireOutreach
+  // on the server.
+  const { pages, creators, campaigns, posts, loaded, error } = useOutreachData()
+
+  const teamUsers = allUsers.filter(u => u.role === 'outreach_manager')
+
+  const totalReach = useMemo(() => posts.reduce((s, p) => s + p.views, 0), [posts])
+  const totalEng   = useMemo(() => posts.reduce((s, p) => s + p.likes + p.comments, 0), [posts])
+  const activeCampaigns = useMemo(() => campaigns.filter(c => c.status === 'active').length, [campaigns])
+
+  // Top 5 campaigns by reach for the right-rail summary.
+  const topCampaigns = useMemo(() => {
+    return campaigns.map(c => ({ c, m: campaignMetrics(c, posts) }))
+      .sort((a, b) => b.m.totalReach - a.m.totalReach)
+      .slice(0, 5)
+  }, [campaigns, posts])
+
+  const statCards = [
+    { label: 'Managers',  value: teamUsers.length,     icon: Megaphone,  bg: 'bg-orange-50',  color: 'text-orange-600' },
+    { label: 'Pages',     value: loaded ? pages.length    : '—', icon: FileText, bg: 'bg-blue-50',   color: 'text-blue-600' },
+    { label: 'Creators',  value: loaded ? creators.length : '—', icon: Users,    bg: 'bg-amber-50',  color: 'text-amber-600' },
+    { label: 'Campaigns', value: loaded ? `${activeCampaigns}/${campaigns.length}` : '—', icon: Send, bg: 'bg-emerald-50', color: 'text-emerald-600' },
+    { label: 'Posts',     value: loaded ? posts.length    : '—', icon: ClipboardCheck, bg: 'bg-purple-50', color: 'text-purple-600' },
+    { label: 'Reach',     value: loaded ? fmt(totalReach) : '—', icon: BarChart3, bg: 'bg-pink-50', color: 'text-pink-600' },
+  ]
+
+  return (
+    <div className="space-y-5 pt-4">
+      {error && (
+        <div className="hub-card bg-rose-50 border-rose-200 text-xs text-rose-900">
+          Couldn't load outreach stats: {error}
+        </div>
+      )}
+
+      {/* Stat cards */}
+      <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+        {statCards.map(card => {
+          const Icon = card.icon
+          return (
+            <div key={card.label} className="hub-card flex items-center gap-2.5 py-3">
+              <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${card.bg} shrink-0`}>
+                <Icon className={`w-4 h-4 ${card.color}`} />
+              </div>
+              <div>
+                <div className={`text-xl font-serif leading-none ${!loaded ? 'text-muted-foreground' : 'text-foreground'}`}>
+                  {card.value}
+                </div>
+                <div className="text-[10px] text-muted-foreground mt-0.5 leading-tight">{card.label}</div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="grid grid-cols-5 gap-5">
+        {/* Outreach managers list */}
+        <div className="col-span-3 hub-card">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-foreground">Outreach Managers</h2>
+            <Link to="/super-admin/users" className="text-xs text-primary hover:underline">Manage</Link>
+          </div>
+          {teamUsers.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-6">No outreach managers assigned yet.</p>
+          ) : (
+            <div>
+              {teamUsers.map(u => (
+                <div key={u.id} className="flex items-center justify-between py-2 border-b border-border last:border-0">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-7 h-7 rounded-full bg-orange-100 flex items-center justify-center shrink-0">
+                      <span className="text-xs font-semibold text-orange-700">{(u.full_name || u.email)[0].toUpperCase()}</span>
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-foreground truncate">{u.full_name || 'Unnamed'}</p>
+                      <p className="text-xs text-muted-foreground truncate">{u.email}</p>
+                    </div>
+                  </div>
+                  <span className="hub-badge shrink-0 bg-orange-100 text-orange-700">Manager</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Right column */}
+        <div className="col-span-2 space-y-4">
+          {/* Top campaigns by reach */}
+          <div className="hub-card">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-semibold text-foreground">Top campaigns</h2>
+              <Link to="/outreach/campaigns" className="text-xs text-primary hover:underline">All</Link>
+            </div>
+            {!loaded ? (
+              <div className="space-y-2">
+                {[1,2,3].map(i => <div key={i} className="h-8 rounded-lg bg-muted animate-pulse" />)}
+              </div>
+            ) : topCampaigns.length === 0 ? (
+              <p className="text-xs text-muted-foreground text-center py-3">No campaigns yet.</p>
+            ) : (
+              <div className="space-y-1">
+                {topCampaigns.map(({ c, m }) => (
+                  <Link key={c.id} to={`/outreach/campaigns/${c.id}`}
+                    className="flex items-center justify-between gap-2 p-2 rounded-lg hover:bg-accent transition-colors">
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium text-foreground truncate">{c.name}</p>
+                      <p className="text-[10px] text-muted-foreground capitalize">{c.status} · {c.assignedPageIds.length}P / {c.assignedCreatorIds.length}C</p>
+                    </div>
+                    <span className="text-[10px] font-mono tabular-nums text-foreground shrink-0">{fmt(m.totalReach)}</span>
+                  </Link>
+                ))}
+              </div>
+            )}
+            <div className="border-t border-border mt-3 pt-2 flex items-center justify-between text-[11px]">
+              <span className="text-muted-foreground">Total engagement</span>
+              <span className="font-mono tabular-nums text-foreground">{loaded ? fmt(totalEng) : '—'}</span>
+            </div>
+          </div>
+
+          {/* Quick links — same surface area as the outreach manager dashboard. */}
+          <div className="hub-card">
+            <h2 className="text-sm font-semibold text-foreground mb-2">Outreach surfaces</h2>
+            {[
+              { to: '/outreach/dashboard', icon: Megaphone,   label: 'Outreach Dashboard' },
+              { to: '/outreach/campaigns', icon: Send,        label: 'Campaigns' },
+              { to: '/outreach/calendar',  icon: CalendarIcon, label: 'Calendar' },
+              { to: '/outreach/analytics', icon: BarChart3,   label: 'Analytics' },
+              { to: '/outreach/pages',     icon: FileText,    label: 'All Pages' },
+              { to: '/outreach/creators',  icon: Users,       label: 'Creators' },
+              { to: '/outreach/ai',        icon: Sparkles,    label: 'AI Assist' },
+            ].map(({ to, icon: Icon, label }) => (
+              <Link key={to} to={to}
+                className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-accent transition-colors text-sm text-foreground">
+                <Icon className="w-4 h-4 text-orange-500 shrink-0" />{label}
+              </Link>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function fmt(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
+}
+
 // ── Main Dashboard ─────────────────────────────────────────────────────────
 
 export default function SuperAdminDashboard() {
@@ -319,6 +472,7 @@ export default function SuperAdminDashboard() {
     totalEntries: entries.length,
     branding:     users.filter(u => u.team === 'branding').length,
     content:      users.filter(u => u.team === 'content').length,
+    outreach:     users.filter(u => u.role === 'outreach_manager').length,
   }), [users, entries])
 
   const contentEntries = useMemo(() =>
@@ -366,16 +520,20 @@ export default function SuperAdminDashboard() {
           <TabsTrigger value="content" className="flex items-center gap-1.5">
             <FileText className="w-3.5 h-3.5" /> Content Team
           </TabsTrigger>
+          <TabsTrigger value="outreach" className="flex items-center gap-1.5">
+            <Megaphone className="w-3.5 h-3.5" /> Outreach Team
+          </TabsTrigger>
         </TabsList>
 
         {/* ── Overview ── */}
         <TabsContent value="overview" className="space-y-5 pt-4">
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
             {[
-              { label: 'Total users',   value: stats.totalUsers,   icon: Users,    bg: 'bg-purple-50', color: 'text-purple-600' },
-              { label: 'Total entries', value: stats.totalEntries, icon: FileText, bg: 'bg-green-50',  color: 'text-green-600' },
-              { label: 'Branding team', value: stats.branding,     icon: Palette,  bg: 'bg-pink-50',   color: 'text-pink-600' },
-              { label: 'Content team',  value: stats.content,      icon: FileText, bg: 'bg-blue-50',   color: 'text-blue-600' },
+              { label: 'Total users',   value: stats.totalUsers,   icon: Users,     bg: 'bg-purple-50', color: 'text-purple-600' },
+              { label: 'Total entries', value: stats.totalEntries, icon: FileText,  bg: 'bg-green-50',  color: 'text-green-600' },
+              { label: 'Branding team', value: stats.branding,     icon: Palette,   bg: 'bg-pink-50',   color: 'text-pink-600' },
+              { label: 'Content team',  value: stats.content,      icon: FileText,  bg: 'bg-blue-50',   color: 'text-blue-600' },
+              { label: 'Outreach team', value: stats.outreach,     icon: Megaphone, bg: 'bg-orange-50', color: 'text-orange-600' },
             ].map(s => {
               const Icon = s.icon
               return (
@@ -397,8 +555,9 @@ export default function SuperAdminDashboard() {
               <h2 className="text-sm font-semibold text-foreground mb-4">Team overview</h2>
               <div className="space-y-5">
                 {[
-                  { team: 'branding', label: 'Branding Team', bar: 'bg-pink-500', count: stats.branding, link: '/branding/team' },
-                  { team: 'content',  label: 'Content Team',  bar: 'bg-blue-500', count: stats.content,  link: '/content/team' },
+                  { team: 'branding', label: 'Branding Team', bar: 'bg-pink-500',   count: stats.branding, link: '/branding/team' },
+                  { team: 'content',  label: 'Content Team',  bar: 'bg-blue-500',   count: stats.content,  link: '/content/team' },
+                  { team: 'outreach', label: 'Outreach Team', bar: 'bg-orange-500', count: stats.outreach, link: '/outreach/dashboard' },
                 ].map(t => (
                   <div key={t.team} className="space-y-1.5">
                     <div className="flex items-center justify-between text-xs">
@@ -420,10 +579,11 @@ export default function SuperAdminDashboard() {
             <div className="hub-card">
               <h2 className="text-sm font-semibold text-foreground mb-3">Quick actions</h2>
               {[
-                { to: '/super-admin/users',    icon: Users,    label: 'Manage all users',   desc: 'Assign roles & teams' },
-                { to: '/super-admin/settings', icon: Settings, label: 'System settings',    desc: 'Configure the platform' },
-                { to: '/browse',               icon: Search,   label: 'Browse all entries', desc: 'Full knowledge base' },
-                { to: '/admin/export',         icon: Database, label: 'Export data',         desc: 'Download CSV/JSON' },
+                { to: '/super-admin/users',    icon: Users,     label: 'Manage all users',    desc: 'Assign roles & teams' },
+                { to: '/super-admin/settings', icon: Settings,  label: 'System settings',     desc: 'Configure the platform' },
+                { to: '/outreach/dashboard',   icon: Megaphone, label: 'Outreach dashboard',  desc: 'Campaigns, pages, creators' },
+                { to: '/browse',               icon: Search,    label: 'Browse all entries',  desc: 'Full knowledge base' },
+                { to: '/admin/export',         icon: Database,  label: 'Export data',         desc: 'Download CSV/JSON' },
               ].map(({ to, icon: Icon, label, desc }) => (
                 <Link key={to} to={to}
                   className="flex items-center gap-3 p-3 rounded-lg hover:bg-accent transition-colors group">
@@ -469,6 +629,11 @@ export default function SuperAdminDashboard() {
         {/* ── Content Team ── */}
         <TabsContent value="content">
           <ContentTeamContent allUsers={users} allEntries={entries} />
+        </TabsContent>
+
+        {/* ── Outreach Team ── */}
+        <TabsContent value="outreach">
+          <OutreachTeamContent allUsers={users} />
         </TabsContent>
       </Tabs>
     </div>

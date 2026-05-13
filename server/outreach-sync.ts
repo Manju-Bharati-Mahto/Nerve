@@ -17,7 +17,9 @@ import {
   upsertPostByInstagramId,
   getCampaign,
   getPage,
+  getCreator,
   type OutreachCampaign,
+  type OutreachCreator,
   type OutreachPage,
   type OutreachPost,
 } from "./outreach-db.js";
@@ -193,8 +195,12 @@ function daysBetween(a: string, b: string): number {
 // ── Add-live-posts: per-URL fetch + upsert ────────────────────────────────
 
 export interface AddLivePostsInput {
-  campaignId: string;
-  pageId: string;
+  /** Optional. Required when pageId is set (the page must belong to the campaign).
+   *  For creators it's optional — a creator can hold standalone posts. */
+  campaignId?: string;
+  /** Provide exactly one of pageId or creatorId. */
+  pageId?: string;
+  creatorId?: string;
   urls: string[];
 }
 
@@ -207,23 +213,46 @@ export interface AddLivePostsResult {
 
 /**
  * Pulls metrics for the given Instagram URLs and persists each as a post tied
- * to (campaignId, pageId). Used by the "add live posts" dialog so a user can
- * spot-check specific posts/reels without re-scraping a whole profile.
+ * to either a page (always inside a campaign) or a creator (campaign optional).
  *
  * Validation rules:
- *   - Page must be in the campaign's assigned_page_ids
- *   - Each URL must look like an Instagram post / reel
- *   - Scraped post's ownerUsername must match the page's handle (we don't want
- *     someone pasting another page's link under page A)
+ *   - Exactly one of pageId / creatorId must be set.
+ *   - For pageId: campaignId is required, and the page must be in the campaign's
+ *     assigned_page_ids.
+ *   - For creatorId: campaignId is optional; if provided, the creator must be
+ *     in the campaign's assigned_creator_ids.
+ *   - Each URL must look like an Instagram post / reel.
+ *   - Scraped post's ownerUsername must match the subject's handle.
  */
 export async function addLivePosts(input: AddLivePostsInput): Promise<AddLivePostsResult> {
-  const campaign = await getCampaign(input.campaignId);
-  if (!campaign) throw new Error("Campaign not found.");
-  const page = await getPage(input.pageId);
-  if (!page) throw new Error("Page not found.");
-  if (!campaign.assigned_page_ids.includes(page.id)) {
-    throw new Error("This page is not assigned to the selected campaign.");
+  if (Boolean(input.pageId) === Boolean(input.creatorId)) {
+    throw new Error("Provide exactly one of pageId or creatorId.");
   }
+
+  let campaign: OutreachCampaign | null = null;
+  if (input.campaignId) {
+    campaign = await getCampaign(input.campaignId);
+    if (!campaign) throw new Error("Campaign not found.");
+  }
+
+  let page: OutreachPage | null = null;
+  let creator: OutreachCreator | null = null;
+  if (input.pageId) {
+    page = await getPage(input.pageId);
+    if (!page) throw new Error("Page not found.");
+    if (!campaign) throw new Error("A campaign is required when attaching live posts to a page.");
+    if (!campaign.assigned_page_ids.includes(page.id)) {
+      throw new Error("This page is not assigned to the selected campaign.");
+    }
+  } else {
+    creator = await getCreator(input.creatorId!);
+    if (!creator) throw new Error("Creator not found.");
+    if (campaign && !campaign.assigned_creator_ids.includes(creator.id)) {
+      throw new Error("This creator is not assigned to the selected campaign.");
+    }
+  }
+
+  const subjectHandle = (page ?? creator)!.handle.trim().toLowerCase().replace(/^@/, "");
 
   const skipped: AddLivePostsResult["skipped"] = [];
   const validUrls: string[] = [];
@@ -249,7 +278,6 @@ export async function addLivePosts(input: AddLivePostsInput): Promise<AddLivePos
   }
 
   const persisted: OutreachPost[] = [];
-  const pageHandle = page.handle.trim().toLowerCase().replace(/^@/, "");
 
   for (const url of validUrls) {
     const shortcode = extractInstagramShortcode(url)!.toLowerCase();
@@ -265,16 +293,17 @@ export async function addLivePosts(input: AddLivePostsInput): Promise<AddLivePos
     const owner = (result.ownerUsername ?? "").toLowerCase();
     if (!owner) {
       // Apify didn't tell us who owns this post — refuse the upsert rather
-      // than risk attaching a stranger's post to the picked page.
+      // than risk attaching a stranger's post to the picked subject.
       skipped.push({ url, reason: "Could not verify the post owner. Try again or use a different URL." });
       continue;
     }
-    if (owner !== pageHandle) {
-      skipped.push({ url, reason: `Post belongs to @${result.ownerUsername}, not @${page.handle}.` });
+    if (owner !== subjectHandle) {
+      const display = page?.handle ?? creator?.handle ?? subjectHandle;
+      skipped.push({ url, reason: `Post belongs to @${result.ownerUsername}, not @${display}.` });
       continue;
     }
 
-    const post = await persistLivePost(page, campaign, result);
+    const post = await persistLivePost({ page, creator, campaign, post: result });
     if (post) persisted.push(post);
     else skipped.push({ url, reason: "Apify response was missing an ID or timestamp." });
   }
@@ -282,11 +311,13 @@ export async function addLivePosts(input: AddLivePostsInput): Promise<AddLivePos
   return { ok: true, posts: persisted, skipped };
 }
 
-async function persistLivePost(
-  page: OutreachPage,
-  campaign: OutreachCampaign,
-  post: ApifyPostResult,
-): Promise<OutreachPost | null> {
+async function persistLivePost(ctx: {
+  page: OutreachPage | null;
+  creator: OutreachCreator | null;
+  campaign: OutreachCampaign | null;
+  post: ApifyPostResult;
+}): Promise<OutreachPost | null> {
+  const { page, creator, campaign, post } = ctx;
   const instagramId = post.id || post.shortCode;
   if (!instagramId) return null;
   if (!post.timestamp) return null;
@@ -302,17 +333,21 @@ async function persistLivePost(
 
   // Pick a creative_variant if the caption mentions one — same rule as the
   // bulk sync, but constrained to *this* campaign's variants (we already know
-  // the campaign here, no attribution lookup needed).
+  // the campaign here, no attribution lookup needed). Skipped when there's no
+  // campaign (creator-side standalone posts).
   let variant: string | null = null;
-  const lowerCaption = caption.toLowerCase();
-  for (const v of campaign.creative_variants) {
-    if (v && lowerCaption.includes(v.toLowerCase())) { variant = v; break; }
+  if (campaign) {
+    const lowerCaption = caption.toLowerCase();
+    for (const v of campaign.creative_variants) {
+      if (v && lowerCaption.includes(v.toLowerCase())) { variant = v; break; }
+    }
   }
 
   return upsertPostByInstagramId({
     instagram_id: instagramId,
-    page_id: page.id,
-    campaign_id: campaign.id,
+    page_id: page?.id ?? null,
+    creator_id: creator?.id ?? null,
+    campaign_id: campaign?.id ?? null,
     date,
     type,
     creative_variant: variant,

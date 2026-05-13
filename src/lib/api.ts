@@ -168,6 +168,21 @@ export const api = {
   deleteOutreachPage: (id: string) =>
     request<{ ok: boolean }>(`/outreach/pages/${id}`, { method: "DELETE" }),
 
+  // Outreach — creators (same shape as pages but a separate directory)
+  listOutreachCreators: () => request<{ creators: ServerOutreachCreator[] }>("/outreach/creators"),
+  createOutreachCreator: (input: Partial<ServerOutreachCreator>) =>
+    request<{ creator: ServerOutreachCreator }>("/outreach/creators", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateOutreachCreator: (id: string, patch: Partial<ServerOutreachCreator>) =>
+    request<{ creator: ServerOutreachCreator }>(`/outreach/creators/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+  deleteOutreachCreator: (id: string) =>
+    request<{ ok: boolean }>(`/outreach/creators/${id}`, { method: "DELETE" }),
+
   // Outreach — campaigns
   listOutreachCampaigns: () => request<{ campaigns: ServerOutreachCampaign[] }>("/outreach/campaigns"),
   createOutreachCampaign: (input: Partial<ServerOutreachCampaign>) =>
@@ -207,21 +222,43 @@ export const api = {
     }),
 
   // Outreach — fetch metrics for specific post / reel URLs and save under
-  // (campaign, page). Powers the "add live posts" dialog.
-  fetchOutreachPostsByUrls: (campaign_id: string, page_id: string, urls: string[]) =>
+  // either a page (campaign required) or a creator (campaign optional).
+  fetchOutreachPostsByUrls: (input: {
+    urls: string[];
+    page_id?: string;
+    creator_id?: string;
+    campaign_id?: string;
+  }) =>
     request<{
       ok: true;
       posts: ServerOutreachPost[];
       skipped: { url: string; reason: string }[];
     }>("/outreach/posts/fetch-by-urls", {
       method: "POST",
-      body: JSON.stringify({ campaign_id, page_id, urls }),
+      body: JSON.stringify(input),
     }),
 };
 
 // Server-side row shapes (snake_case). The outreach-data store maps these
 // to camelCase before exposing to components.
 export interface ServerOutreachPage {
+  id: string;
+  handle: string;
+  geography: string;
+  state: string;
+  type: "state" | "pu";
+  follower_tier: "1" | "2" | "3" | "4" | "5";
+  content_types: ("static" | "reel" | "carousel")[];
+  followers: number;
+  inventory_posts: number;
+  inventory_stories: number;
+  notes: string;
+  last_synced_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ServerOutreachCreator {
   id: string;
   handle: string;
   geography: string;
@@ -251,6 +288,7 @@ export interface ServerOutreachCampaign {
   approvers: string[];
   creative_variants: string[];
   assigned_page_ids: string[];
+  assigned_creator_ids: string[];
   created_at: string;
   updated_at: string;
 }
@@ -258,7 +296,9 @@ export interface ServerOutreachCampaign {
 export interface ServerOutreachPost {
   id: string;
   instagram_id: string | null;
-  page_id: string;
+  // A post belongs to exactly one of page_id or creator_id — never both.
+  page_id: string | null;
+  creator_id: string | null;
   campaign_id: string | null;
   date: string;
   type: "static" | "reel" | "story" | "carousel";
