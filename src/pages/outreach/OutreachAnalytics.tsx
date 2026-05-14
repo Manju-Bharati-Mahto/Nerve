@@ -584,19 +584,11 @@ export function AddPageModal({ onClose }: { onClose: () => void }) {
               <input className="hub-input" value={form.state} onChange={e => setForm(f => ({ ...f, state: e.target.value }))} placeholder="Gujarat" />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="hub-label">Type</label>
-              <select className="hub-input" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value as PageType }))}>
-                {PAGE_TYPES.map(t => <option key={t} value={t}>{t === 'pu' ? 'PU' : 'State'}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="hub-label">Follower tier</label>
-              <select className="hub-input" value={form.followerTier} onChange={e => setForm(f => ({ ...f, followerTier: e.target.value as FollowerTier }))}>
-                {FOLLOWER_TIERS.map(t => <option key={t} value={t}>Tier {t}</option>)}
-              </select>
-            </div>
+          <div>
+            <label className="hub-label">Follower tier</label>
+            <select className="hub-input" value={form.followerTier} onChange={e => setForm(f => ({ ...f, followerTier: e.target.value as FollowerTier }))}>
+              {FOLLOWER_TIERS.map(t => <option key={t} value={t}>Tier {t}</option>)}
+            </select>
           </div>
           <div>
             <label className="hub-label">Content type</label>

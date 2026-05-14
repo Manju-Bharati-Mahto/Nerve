@@ -498,10 +498,10 @@ export function campaignMetrics(campaign: Campaign, posts: Post[]): CampaignMetr
 }
 
 export function suggestedMonthlyUsage(page: OutreachPage, posts: Post[]): number {
-  const total = page.inventoryPosts + page.inventoryStories
-  if (total <= 0) return 0
+  // Suggestion is for posts only — stories are excluded from the pacing target.
+  if (page.inventoryPosts <= 0) return 0
   const m = pageMetrics(page, posts)
-  let pace = total / 12
+  let pace = page.inventoryPosts / 12
   if (m.avgEngagement >= 4000) pace *= 1.2
   else if (m.avgEngagement > 0 && m.avgEngagement < 500) pace *= 0.7
   return Math.max(1, Math.round(pace))
