@@ -7,11 +7,11 @@ import {
 import {
   useOutreachData, pageMetrics, suggestedMonthlyUsage, removePage,
   instagramUrlForHandle, isValidInstagramHandle,
-  PAGE_TYPES, PAGE_CONTENT_TYPES, type PageType, type PageContentType, type OutreachPage,
+  PAGE_CONTENT_TYPES, FOLLOWER_TIERS, type FollowerTier, type PageContentType, type OutreachPage,
 } from '@/lib/outreach-data'
 import { AddPageModal } from './OutreachAnalytics'
 
-type SortKey = 'handle' | 'geography' | 'type' | 'total' | 'consumed' | 'suggested' | 'status'
+type SortKey = 'handle' | 'tier' | 'geography' | 'total' | 'consumed' | 'suggested' | 'status'
 type SortDir = 'asc' | 'desc'
 
 export default function OutreachAllPages() {
@@ -25,7 +25,7 @@ export default function OutreachAllPages() {
   }, [searchParams])
 
   const [search, setSearch] = useState('')
-  const [type, setType] = useState<PageType | ''>('')
+  const [tier, setTier] = useState<FollowerTier | ''>('')
   const [contentTypeFilter, setContentTypeFilter] = useState<Set<PageContentType>>(new Set())
   const [geography, setGeography] = useState<string>('')
   const [invStatus, setInvStatus] = useState<'all' | 'over-used' | 'under-used' | 'on-track' | 'idle'>(
@@ -56,7 +56,7 @@ export default function OutreachAllPages() {
     })
     const filtered = enriched.filter(({ page, m }) => {
       if (q && !`${page.handle} ${page.geography}`.toLowerCase().includes(q)) return false
-      if (type && page.type !== type) return false
+      if (tier && page.followerTier !== tier) return false
       if (geography && page.geography !== geography) return false
       if (invStatus !== 'all' && m.status !== invStatus) return false
       // Content-type filter: page must have AT LEAST ONE of the selected types.
@@ -68,16 +68,16 @@ export default function OutreachAllPages() {
       const k = sort.key
       const av: number | string =
         k === 'handle'    ? a.page.handle :
+        k === 'tier'      ? a.page.followerTier :
         k === 'geography' ? a.page.geography :
-        k === 'type'      ? a.page.type :
         k === 'total'     ? a.total :
         k === 'consumed'  ? a.consumed :
         k === 'suggested' ? a.suggested :
         a.m.status
       const bv: number | string =
         k === 'handle'    ? b.page.handle :
+        k === 'tier'      ? b.page.followerTier :
         k === 'geography' ? b.page.geography :
-        k === 'type'      ? b.page.type :
         k === 'total'     ? b.total :
         k === 'consumed'  ? b.consumed :
         k === 'suggested' ? b.suggested :
@@ -86,7 +86,7 @@ export default function OutreachAllPages() {
       return ((av as number) - (bv as number)) * dir
     })
     return filtered
-  }, [pages, posts, search, type, contentTypeFilter, geography, invStatus, sort])
+  }, [pages, posts, search, tier, contentTypeFilter, geography, invStatus, sort])
 
   async function confirmDelete(page: OutreachPage) {
     const linked = posts.filter(p => p.pageId === page.id).length
@@ -103,9 +103,9 @@ export default function OutreachAllPages() {
   }
 
   function exportCSV() {
-    const header = ['handle', 'geography', 'state', 'type', 'total_inventory', 'consumed_inventory', 'suggested_per_month', 'status']
+    const header = ['handle', 'tier', 'geography', 'state', 'total_inventory', 'consumed_inventory', 'suggested_per_month', 'status']
     const lines = rows.map(({ page, total, consumed, suggested, m }) => [
-      page.handle, page.geography, page.state, page.type, total, consumed, suggested, m.status,
+      page.handle, page.followerTier, page.geography, page.state, total, consumed, suggested, m.status,
     ].join(','))
     const csv = [header.join(','), ...lines].join('\n')
     const blob = new Blob([csv], { type: 'text/csv' })
@@ -150,9 +150,9 @@ export default function OutreachAllPages() {
               className="hub-input pl-9 py-1.5" />
           </div>
           <FilterIcon className="w-4 h-4 text-muted-foreground" />
-          <select value={type} onChange={e => setType(e.target.value as PageType | '')} className="hub-input py-1.5 text-xs w-28">
-            <option value="">Any type</option>
-            {PAGE_TYPES.map(t => <option key={t} value={t}>{t === 'pu' ? 'PU' : 'State'}</option>)}
+          <select value={tier} onChange={e => setTier(e.target.value as FollowerTier | '')} className="hub-input py-1.5 text-xs w-28">
+            <option value="">Any tier</option>
+            {FOLLOWER_TIERS.map(t => <option key={t} value={t}>Tier {t}</option>)}
           </select>
           <select value={geography} onChange={e => setGeography(e.target.value)} className="hub-input py-1.5 text-xs w-36">
             <option value="">Any geography</option>
@@ -199,8 +199,8 @@ export default function OutreachAllPages() {
           <thead>
             <tr className="text-left text-[11px] uppercase tracking-widest text-muted-foreground border-b border-border">
               <Th label="Handle"      sk="handle"    sort={sort} onClick={toggleSort} />
+              <Th label="Tier"        sk="tier"      sort={sort} onClick={toggleSort} />
               <Th label="Geography"   sk="geography" sort={sort} onClick={toggleSort} />
-              <Th label="Type"        sk="type"      sort={sort} onClick={toggleSort} />
               <Th label="Total inv."  sk="total"     sort={sort} onClick={toggleSort} className="text-right" />
               <Th label="Consumed"    sk="consumed"  sort={sort} onClick={toggleSort} className="text-right" />
               <Th label="AI suggested / mo" sk="suggested" sort={sort} onClick={toggleSort} className="text-right" />
@@ -211,7 +211,7 @@ export default function OutreachAllPages() {
           <tbody>
             {rows.length === 0 ? (
               <tr><td colSpan={8} className="px-3 py-12 text-center text-sm text-muted-foreground">No pages match these filters.</td></tr>
-            ) : rows.map(({ page, m, total, consumed, suggested }) => (
+            ) : rows.map(({ page, m, consumed, suggested }) => (
               <tr key={page.id} className={`border-b border-border last:border-0 transition-colors ${
                 highlightIds.has(page.id) ? 'bg-orange-50 hover:bg-orange-100' : 'hover:bg-accent/40'
               }`}>
@@ -227,9 +227,15 @@ export default function OutreachAllPages() {
                     )}
                   </div>
                 </td>
+                <td className="px-3 py-2.5">
+                  <span className="hub-badge bg-orange-50 text-orange-700 text-[10px]">Tier {page.followerTier}</span>
+                </td>
                 <td className="px-3 py-2.5 text-xs text-foreground">{page.geography}</td>
-                <td className="px-3 py-2.5"><span className="hub-badge bg-orange-50 text-orange-700 uppercase text-[10px]">{page.type}</span></td>
-                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground">{total}</td>
+                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground whitespace-nowrap">
+                  {page.inventoryPosts} <span className="text-[10px] text-muted-foreground">(Posts)</span>
+                  <span className="text-muted-foreground"> & </span>
+                  {page.inventoryStories} <span className="text-[10px] text-muted-foreground">(Stories)</span>
+                </td>
                 <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground">
                   {consumed}
                   <span className="text-[10px] text-muted-foreground"> ({Math.round(m.pctConsumed * 100)}%)</span>
