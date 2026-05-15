@@ -1940,9 +1940,29 @@ function DailyReportsPage({
   }
 
   async function applyRowPatch(key: string, patch: Partial<DraftRow>) {
-    const next = rowsRef.current.map(r => r._key === key ? { ...r, ...patch } : r)
+    // Enforce single-running invariant: starting/continuing a row auto-pauses
+    // any other row that is currently running, freezing its live elapsed.
+    const startingThisRow = patch.stopwatch_status === 'running'
+    let autoPausedLabel: string | null = null
+    const next = rowsRef.current.map(r => {
+      if (r._key === key) return { ...r, ...patch }
+      if (startingThisRow && r.stopwatch_status === 'running') {
+        const since = r.stopwatch_started_at
+          ? Math.max(0, Math.floor((Date.now() - new Date(r.stopwatch_started_at).getTime()) / 1000))
+          : 0
+        autoPausedLabel = r.specific_work || r.sub_category || r.type_of_work || `row ${r.sr_no}`
+        return {
+          ...r,
+          stopwatch_status: 'paused' as const,
+          elapsed_seconds: r.elapsed_seconds + since,
+          stopwatch_started_at: null,
+        }
+      }
+      return r
+    })
     rowsRef.current = next
     setRows(next)
+    if (autoPausedLabel) toast.info(`Paused "${autoPausedLabel}" — only one timer can run at a time.`)
     if (!report || report.is_locked) return
     try {
       await brandingApi.saveRows(report.id, next.map(rowPayload))
@@ -2302,6 +2322,17 @@ function DailyReportsPage({
             </p>
           )}
           <p className="text-xs text-gray-400 mt-2 italic">Reason: {todayLeave.reason || '—'}</p>
+        </div>
+      )}
+
+      {/* 9 PM IST edit cutoff banner — only while still editable */}
+      {!isFullDayApprovedLeave && !report?.is_locked && selectedDate === today() && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 flex items-start gap-2 text-xs">
+          <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+          <p className="text-amber-800">
+            <span className="font-semibold">Editing closes at 9:00 PM IST today.</span>{' '}
+            Unsubmitted reports will be auto-submitted at the cutoff and locked. Any running stopwatch is snapshotted as paused so unfinished work carries over to tomorrow.
+          </p>
         </div>
       )}
 

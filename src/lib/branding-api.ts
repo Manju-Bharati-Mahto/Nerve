@@ -106,6 +106,11 @@ export const brandingApi = {
       method: "POST",
       body: JSON.stringify({ userId, month, year, penalty_percent, reason }),
     }),
+  setTotalPenaltyOverride: (userId: string, month: number, year: number, percent: number | null, reason: string) =>
+    req<{ score: AdminKraScore }>("/kra/admin/penalty-override", {
+      method: "POST",
+      body: JSON.stringify({ userId, month, year, percent, reason }),
+    }),
   finalPush: (userId: string, month: number, year: number) =>
     req<{ ok: boolean; score: AdminKraScore }>("/kra/admin/final-push", { method: "POST", body: JSON.stringify({ userId, month, year }) }),
   getAllPeerMarkings: (month: number, year: number) =>

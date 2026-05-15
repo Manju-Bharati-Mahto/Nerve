@@ -107,6 +107,8 @@ export interface AdminKraScore {
   updated_at: string;
   manual_penalty_percent: number;   // Admin-applied penalty (% off composite)
   manual_penalty_reason: string;
+  total_penalty_override: number | null; // When set, fully replaces auto+manual.
+  total_penalty_override_reason: string;
 }
 
 export interface KraReport {
@@ -125,7 +127,9 @@ export interface KraReport {
   penalty_percent: number;            // auto-penalty from missed reports
   manual_penalty_percent: number;     // admin-applied additional penalty
   manual_penalty_reason: string;
-  total_penalty_percent: number;      // auto + manual (capped at 100)
+  total_penalty_override: number | null; // null = none, otherwise replaces auto+manual
+  total_penalty_override_reason: string;
+  total_penalty_percent: number;      // effective: override if set, else auto+manual (capped at 100)
   composite_score_after_penalty: number | null;
   is_final_pushed: boolean;
 }
@@ -332,6 +336,11 @@ export async function bootstrapBrandingDatabase() {
   await pool.query(`ALTER TABLE admin_kra_scores ADD COLUMN IF NOT EXISTS manual_penalty_percent NUMERIC(5,2) NOT NULL DEFAULT 0`);
   await pool.query(`ALTER TABLE admin_kra_scores ADD COLUMN IF NOT EXISTS manual_penalty_reason TEXT NOT NULL DEFAULT ''`);
 
+  // ── Migration: full total-penalty override on admin_kra_scores ───────────
+  // NULL means "no override; use auto + manual". A number replaces both.
+  await pool.query(`ALTER TABLE admin_kra_scores ADD COLUMN IF NOT EXISTS total_penalty_override NUMERIC(5,2)`);
+  await pool.query(`ALTER TABLE admin_kra_scores ADD COLUMN IF NOT EXISTS total_penalty_override_reason TEXT NOT NULL DEFAULT ''`);
+
   // ── Migration: half-day + datetime range on branding_leaves ──────────────
   await pool.query(`ALTER TABLE branding_leaves ADD COLUMN IF NOT EXISTS start_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE branding_leaves ADD COLUMN IF NOT EXISTS end_at TIMESTAMPTZ`);
@@ -472,6 +481,8 @@ interface AdminKraRow {
   pushed_at: string | null; pushed_by: string | null; updated_at: string;
   manual_penalty_percent: string | number; // pg returns NUMERIC as string
   manual_penalty_reason: string;
+  total_penalty_override: string | number | null;
+  total_penalty_override_reason: string;
 }
 
 // ── Category functions ─────────────────────────────────────────────────────
@@ -662,12 +673,45 @@ export async function getDailyReport(userId: string, date: string): Promise<Dail
   return { ...res.rows[0], rows, report_date: normalizeDate(res.rows[0].report_date) };
 }
 
+// Daily edit window closes at 21:00 IST of the report_date. After that the
+// report is auto-locked (see autoSubmitOverdueReports) and any further edits
+// are rejected.
+export const REPORT_EDIT_CUTOFF_HOUR_IST = 21;
+
+function reportEditCutoffUtc(reportDate: string): Date {
+  // YYYY-MM-DD interpreted as 21:00 IST → equivalent UTC instant.
+  return new Date(`${reportDate}T${String(REPORT_EDIT_CUTOFF_HOUR_IST).padStart(2, '0')}:00:00+05:30`);
+}
+
+function isEditingClosed(reportDate: string): boolean {
+  return Date.now() >= reportEditCutoffUtc(reportDate).getTime();
+}
+
+// Compact "Hh Mm Ss" representation — mirrors src/lib/branding-types.ts
+function elapsedToTimeTakenServer(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  if (s === 0) return '0s';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const parts: string[] = [];
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0) parts.push(`${m}m`);
+  if (sec > 0 && h === 0) parts.push(`${sec}s`);
+  return parts.join(' ') || '0s';
+}
+
 export async function saveReportRows(reportId: string, userId: string, rows: SaveRowInput[]): Promise<DailyReportRow[] | null> {
   const report = await pool.query<ReportDbRow>(
     `SELECT * FROM daily_reports WHERE id = $1 AND user_id = $2`,
     [reportId, userId]
   );
   if (!report.rows[0] || report.rows[0].is_locked) return null;
+  // Reject edits past the 9 PM IST cutoff; the periodic auto-submit job will
+  // lock the row, but we also guard the write path so a manual save right at
+  // the cutoff can't bypass the rule.
+  const reportDate = normalizeDate(report.rows[0].report_date);
+  if (isEditingClosed(reportDate)) return null;
 
   await pool.query(`DELETE FROM daily_report_rows WHERE report_id = $1`, [reportId]);
   const saved: DailyReportRow[] = [];
@@ -703,6 +747,63 @@ export async function submitDailyReport(reportId: string, userId: string): Promi
   );
   const rows = await fetchReportRows(reportId);
   return { ...res.rows[0], rows, report_date: normalizeDate(res.rows[0].report_date) };
+}
+
+// Snapshot any running stopwatch row into a paused state with its accrued time
+// frozen, and derive time_taken from elapsed_seconds where missing. Mirrors
+// what the user-side submitReport() does in the browser, so auto-submitted
+// reports look identical to manually-submitted ones.
+async function finalizeReportRowsForSubmit(reportId: string): Promise<void> {
+  const res = await pool.query<ReportRowDb>(
+    `SELECT * FROM daily_report_rows WHERE report_id = $1`,
+    [reportId]
+  );
+  for (const row of res.rows) {
+    const status: StopwatchStatus = (row.stopwatch_status as StopwatchStatus | undefined) ?? 'idle';
+    let elapsed = row.elapsed_seconds ?? 0;
+    let newStatus: StopwatchStatus = status;
+    if (status === 'running' && row.stopwatch_started_at) {
+      const since = Math.max(0, Math.floor((Date.now() - new Date(row.stopwatch_started_at).getTime()) / 1000));
+      elapsed = elapsed + since;
+      newStatus = 'paused';
+    }
+    const needsTimeTakenRefresh = newStatus === 'paused' || newStatus === 'running' || !row.time_taken;
+    const newTimeTaken = needsTimeTakenRefresh ? elapsedToTimeTakenServer(elapsed) : row.time_taken;
+    if (newStatus !== status || elapsed !== (row.elapsed_seconds ?? 0) || newTimeTaken !== row.time_taken) {
+      await pool.query(
+        `UPDATE daily_report_rows
+            SET stopwatch_status = $1, elapsed_seconds = $2,
+                stopwatch_started_at = NULL, time_taken = $3
+          WHERE id = $4`,
+        [newStatus, elapsed, newTimeTaken, row.id]
+      );
+    }
+  }
+}
+
+// Find every unlocked daily report whose 21:00 IST cutoff has passed and
+// auto-submit it. Running stopwatches are snapshotted to paused so the carry-
+// over flow on the next day's report still works.
+// Returns the number of reports that were just auto-submitted.
+export async function autoSubmitOverdueReports(): Promise<number> {
+  // Compute cutoff via Asia/Kolkata so the math is correct regardless of the
+  // server's local timezone. Report-date wall-clock 21:00 IST → UTC.
+  const overdue = await pool.query<{ id: string }>(`
+    SELECT id FROM daily_reports
+     WHERE is_locked = false
+       AND ((report_date::timestamp AT TIME ZONE 'Asia/Kolkata') + INTERVAL '${REPORT_EDIT_CUTOFF_HOUR_IST} hours') <= NOW()
+  `);
+  let count = 0;
+  for (const r of overdue.rows) {
+    await finalizeReportRowsForSubmit(r.id);
+    const upd = await pool.query(
+      `UPDATE daily_reports SET is_locked = true, submitted_at = NOW()
+        WHERE id = $1 AND is_locked = false`,
+      [r.id]
+    );
+    if (upd.rowCount && upd.rowCount > 0) count++;
+  }
+  return count;
 }
 
 export async function listAllDailyReports(filters?: {
@@ -921,6 +1022,10 @@ function mapAdminScore(row: AdminKraRow): AdminKraScore {
     ...row,
     manual_penalty_percent: Number(row.manual_penalty_percent ?? 0),
     manual_penalty_reason: row.manual_penalty_reason ?? '',
+    total_penalty_override: row.total_penalty_override === null || row.total_penalty_override === undefined
+      ? null
+      : Number(row.total_penalty_override),
+    total_penalty_override_reason: row.total_penalty_override_reason ?? '',
   };
 }
 
@@ -963,6 +1068,31 @@ export async function setAdminManualPenalty(
      ON CONFLICT (user_id, month, year) DO UPDATE
        SET manual_penalty_percent = EXCLUDED.manual_penalty_percent,
            manual_penalty_reason  = EXCLUDED.manual_penalty_reason,
+           updated_at = NOW()
+     RETURNING *`,
+    [id, userId, month, year, pct, reason]
+  );
+  return mapAdminScore(res.rows[0]);
+}
+
+// Set / clear the brand-admin's full TOTAL penalty override.
+// percent = null clears the override (falls back to auto + manual).
+// When set, the override fully replaces both auto and manual penalties.
+export async function setAdminTotalPenaltyOverride(
+  userId: string, month: number, year: number,
+  percent: number | null, reason: string,
+): Promise<AdminKraScore> {
+  const pct = percent === null
+    ? null
+    : Math.max(0, Math.min(100, Number(percent) || 0));
+  const id = generateId("aks");
+  const res = await pool.query<AdminKraRow>(
+    `INSERT INTO admin_kra_scores
+       (id, user_id, month, year, scores, total_penalty_override, total_penalty_override_reason, updated_at)
+     VALUES ($1, $2, $3, $4, '{}'::jsonb, $5, $6, NOW())
+     ON CONFLICT (user_id, month, year) DO UPDATE
+       SET total_penalty_override        = EXCLUDED.total_penalty_override,
+           total_penalty_override_reason = EXCLUDED.total_penalty_override_reason,
            updated_at = NOW()
      RETURNING *`,
     [id, userId, month, year, pct, reason]
@@ -1088,7 +1218,10 @@ export async function getKraReport(userId: string, month: number, year: number):
   const composite = compositeScore(self?.scores || null, peerAvg, admin?.scores || null, params);
   const penalty  = await computeMissedReportPenalty(userId, month, year);
   const manualPct = admin?.manual_penalty_percent ?? 0;
-  const totalPct = Math.min(100, Math.round((penalty.penaltyPct + manualPct) * 10) / 10);
+  const override = admin?.total_penalty_override ?? null;
+  const totalPct = override !== null
+    ? Math.max(0, Math.min(100, Math.round(override * 10) / 10))
+    : Math.min(100, Math.round((penalty.penaltyPct + manualPct) * 10) / 10);
   const compositeAfter = composite === null
     ? null
     : Math.max(0, Math.round(composite * (1 - totalPct / 100) * 10) / 10);
@@ -1102,6 +1235,8 @@ export async function getKraReport(userId: string, month: number, year: number):
     penalty_percent: penalty.penaltyPct,
     manual_penalty_percent: manualPct,
     manual_penalty_reason: admin?.manual_penalty_reason ?? '',
+    total_penalty_override: override,
+    total_penalty_override_reason: admin?.total_penalty_override_reason ?? '',
     total_penalty_percent: totalPct,
     composite_score_after_penalty: compositeAfter,
     is_final_pushed: admin?.is_final_pushed ?? false,

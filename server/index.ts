@@ -85,6 +85,7 @@ import {
   getOrCreateDailyReport,
   saveReportRows,
   submitDailyReport,
+  autoSubmitOverdueReports,
   listAllDailyReports,
   getUserAnalytics,
   listKraParameters,
@@ -99,6 +100,7 @@ import {
   getAdminKraScore,
   setAdminKraScore,
   setAdminManualPenalty,
+  setAdminTotalPenaltyOverride,
   finalPushKra,
   getKraReport,
   getAdminKraDashboard,
@@ -848,7 +850,7 @@ app.put("/api/branding/portal/report/:reportId/rows", asyncHandler(async (req, r
   if (!parsed.success) return sendError(res, 400, "Invalid rows payload.");
   const user = res.locals.currentUser;
   const rows = await saveReportRows(getSingleParam(req.params.reportId), user.id, parsed.data.rows);
-  if (!rows) return sendError(res, 403, "Report not found or already locked.");
+  if (!rows) return sendError(res, 403, "Report not found, already submitted, or past the 9 PM IST edit window.");
   res.json({ rows });
 }));
 
@@ -1034,6 +1036,23 @@ app.post("/api/branding/portal/kra/admin/penalty", asyncHandler(async (req, res)
   const existing = await getAdminKraScore(userId, month, year);
   if (existing?.is_final_pushed) return sendError(res, 403, "KRA is already final-pushed and locked.");
   const score = await setAdminManualPenalty(userId, month, year, penalty_percent, reason);
+  res.json({ score });
+}));
+
+// Full TOTAL penalty override — replaces both auto (missed-report) and manual
+// penalties. Pass percent=null to clear the override.
+app.post("/api/branding/portal/kra/admin/penalty-override", asyncHandler(async (req, res) => {
+  if (!requireBrandingAdmin(res)) return;
+  const { userId, month, year, percent, reason } = z.object({
+    userId: z.string(),
+    month:  z.number().int().min(1).max(12),
+    year:   z.number().int().min(2020),
+    percent: z.number().min(0).max(100).nullable(),
+    reason: z.string().optional().default(''),
+  }).parse(req.body);
+  const existing = await getAdminKraScore(userId, month, year);
+  if (existing?.is_final_pushed) return sendError(res, 403, "KRA is already final-pushed and locked.");
+  const score = await setAdminTotalPenaltyOverride(userId, month, year, percent, reason);
   res.json({ score });
 }));
 
@@ -1544,7 +1563,22 @@ bootstrapDatabase()
   .then(() => bootstrapBrandingDatabase())
   .then(() => bootstrapSettingsDatabase())
   .then(() => bootstrapOutreach())
-  .then(() => {
+  .then(async () => {
+    // Catch up on any reports whose 21:00 IST cutoff already passed while the
+    // server was down, then keep an interval running so future cutoffs fire
+    // even if no user action triggers the API.
+    try {
+      const caught = await autoSubmitOverdueReports();
+      if (caught > 0) console.log(`Auto-submitted ${caught} overdue daily report(s) on startup.`);
+    } catch (e) {
+      console.error('Initial auto-submit pass failed:', e);
+    }
+    setInterval(() => {
+      autoSubmitOverdueReports()
+        .then(n => { if (n > 0) console.log(`Auto-submitted ${n} overdue daily report(s).`); })
+        .catch(e => console.error('Periodic auto-submit failed:', e));
+    }, 5 * 60 * 1000).unref();
+
     app.listen(config.apiPort, () => {
       console.log(`Nerve API listening on ${config.apiPort}`);
     });
