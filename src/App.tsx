@@ -97,6 +97,21 @@ const App = () => (
                   <BrandingAdminDashboard />
                 </RoleGuard>
               } />
+              <Route path="/branding/kra" element={
+                <RoleGuard allowed={['super_admin', 'admin']} team="branding">
+                  <BrandingAdminDashboard />
+                </RoleGuard>
+              } />
+              <Route path="/branding/leaves" element={
+                <RoleGuard allowed={['super_admin', 'admin']} team="branding">
+                  <BrandingAdminDashboard />
+                </RoleGuard>
+              } />
+              <Route path="/branding/categories" element={
+                <RoleGuard allowed={['super_admin', 'admin']} team="branding">
+                  <BrandingAdminDashboard />
+                </RoleGuard>
+              } />
               <Route path="/branding/sub-admin" element={
                 <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding">
                   <BrandingSubAdminDashboard />

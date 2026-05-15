@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
 import { brandingApi } from '@/lib/branding-api'
@@ -8,10 +9,10 @@ import type {
   AdminKraScore, PeerMarking, BrandingLeave,
 } from '@/lib/branding-types'
 import {
-  Palette, BarChart2, Award, Settings2, Plus, Trash2, Edit3,
+  Palette, Plus, Trash2, Edit3,
   ChevronDown, ChevronUp, Check, AlertTriangle, Lock,
   Download, Users, Filter, ToggleLeft, ToggleRight, X,
-  ArrowUp, ArrowDown, CalendarOff,
+  ArrowUp, ArrowDown,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -1204,10 +1205,28 @@ function LeaveManagementTab() {
 
 // ── Main Component ─────────────────────────────────────────────────────────
 
+type AdminSection = 'reports' | 'kra' | 'leaves' | 'categories'
+
+const SECTION_BY_PATH: Record<string, AdminSection> = {
+  '/branding/dashboard':  'reports',
+  '/branding/kra':        'kra',
+  '/branding/leaves':     'leaves',
+  '/branding/categories': 'categories',
+}
+
+const SECTION_META: Record<AdminSection, { title: string; subtitle: string }> = {
+  reports:    { title: 'Daily Reports',     subtitle: 'Team activity, hours and collaboration' },
+  kra:        { title: 'KRA Management',    subtitle: 'Self, peer and admin scoring with final publish' },
+  leaves:     { title: 'Leave Requests',    subtitle: 'Approve, reject and reassign team leaves' },
+  categories: { title: 'Manage Categories', subtitle: 'Work categories and sub-categories' },
+}
+
 export default function BrandingAdminDashboard() {
   const { profile } = useAuth()
   const { users } = useAppData()
-  const [activeTab, setActiveTab] = useState<'reports' | 'kra' | 'categories' | 'leaves'>('reports')
+  const location = useLocation()
+  const section: AdminSection = SECTION_BY_PATH[location.pathname] ?? 'reports'
+  const meta = SECTION_META[section]
 
   const brandingUsers = useMemo(() =>
     users.filter(u => u.team === 'branding' && u.role !== 'super_admin')
@@ -1223,40 +1242,17 @@ export default function BrandingAdminDashboard() {
           <Palette className="w-5 h-5 text-pink-600" />
         </div>
         <div>
-          <h1 className="text-2xl font-serif text-foreground">Branding Team — Admin</h1>
+          <h1 className="text-2xl font-serif text-foreground">{meta.title}</h1>
           <p className="text-sm text-muted-foreground">
-            Welcome{profile?.full_name ? `, ${profile.full_name}` : ''} · Full system access
+            {profile?.full_name ? `${profile.full_name} · ` : ''}{meta.subtitle}
           </p>
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 bg-muted/40 p-1 rounded-xl w-fit flex-wrap">
-        {[
-          { key: 'reports',    icon: BarChart2,   label: 'Daily Reports' },
-          { key: 'kra',        icon: Award,       label: 'KRA Management' },
-          { key: 'leaves',     icon: CalendarOff, label: 'Leave Requests' },
-          { key: 'categories', icon: Settings2,   label: 'Manage Categories' },
-        ].map(tab => {
-          const Icon = tab.icon
-          return (
-            <button key={tab.key} onClick={() => setActiveTab(tab.key as typeof activeTab)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                activeTab === tab.key
-                  ? 'bg-white text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'
-              }`}>
-              <Icon className="w-4 h-4" />
-              {tab.label}
-            </button>
-          )
-        })}
-      </div>
-
-      {activeTab === 'reports'    && <DailyReportsTab    brandingUsers={brandingUsers} />}
-      {activeTab === 'kra'        && <KraManagementTab   brandingUsers={brandingUsers} />}
-      {activeTab === 'leaves'     && <LeaveManagementTab />}
-      {activeTab === 'categories' && <ManageCategoriesTab />}
+      {section === 'reports'    && <DailyReportsTab    brandingUsers={brandingUsers} />}
+      {section === 'kra'        && <KraManagementTab   brandingUsers={brandingUsers} />}
+      {section === 'leaves'     && <LeaveManagementTab />}
+      {section === 'categories' && <ManageCategoriesTab />}
     </div>
   )
 }

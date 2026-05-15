@@ -6,6 +6,7 @@ import {
   LogOut, BookOpen, MessageSquare, Newspaper,
   Crown, UserCheck, User, Settings, Palette, FileText,
   Megaphone, Send, Calendar, BarChart3, Sparkles,
+  Award, CalendarOff, Settings2,
 } from 'lucide-react'
 import ProfileModal from './ProfileModal'
 
@@ -50,8 +51,11 @@ const SIDEBAR: Record<string, RoleConfig> = {
 
   'admin:branding': cfg('Branding Admin', Palette, 'text-pink-600', 'bg-pink-100', [
     { items: [
-      { path: '/branding/dashboard', label: 'Dashboard',    icon: LayoutDashboard },
-      { path: '/branding/browse',    label: 'Design Gallery', icon: Search },
+      { path: '/branding/dashboard',  label: 'Dashboard',         icon: LayoutDashboard },
+      { path: '/branding/browse',     label: 'Design Gallery',    icon: Search },
+      { path: '/branding/kra',        label: 'KRA Management',    icon: Award },
+      { path: '/branding/leaves',     label: 'Leave Requests',    icon: CalendarOff },
+      { path: '/branding/categories', label: 'Manage Categories', icon: Settings2 },
     ]},
     { heading: 'Team', items: [
       { path: '/branding/team',  label: 'Team members', icon: Users },
