@@ -12,7 +12,7 @@ import {
   Palette, Plus, Trash2, Edit3,
   ChevronDown, ChevronUp, Check, AlertTriangle, Lock,
   Download, Users, Filter, ToggleLeft, ToggleRight, X,
-  ArrowUp, ArrowDown,
+  ArrowUp, ArrowDown, CalendarOff,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -267,12 +267,25 @@ function ManageCategoriesTab() {
 
 // ── Daily Reports Tab ──────────────────────────────────────────────────────
 
+function defaultDailyReportFilters() {
+  const today = new Date()
+  const weekAgo = new Date(today)
+  weekAgo.setDate(today.getDate() - 7)
+  const fmt = (d: Date) => d.toISOString().split('T')[0]
+  return {
+    userIds: [] as string[],
+    dateFrom: fmt(weekAgo),
+    dateTo: fmt(today),
+    typeOfWork: '',
+    subCategory: '',
+    lockedOnly: false,
+  }
+}
+
 function DailyReportsTab({ brandingUsers }: { brandingUsers: { id: string; full_name: string; email: string }[] }) {
   const [reports, setReports] = useState<DailyReport[]>([])
   const [loading, setLoading] = useState(false)
-  const [filters, setFilters] = useState({
-    userIds: [] as string[], dateFrom: '', dateTo: '', typeOfWork: '', subCategory: '', lockedOnly: false,
-  })
+  const [filters, setFilters] = useState(defaultDailyReportFilters)
   const [userDropOpen, setUserDropOpen] = useState(false)
   const [categories, setCategories] = useState<WorkCategory[]>([])
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -310,6 +323,17 @@ function DailyReportsTab({ brandingUsers }: { brandingUsers: { id: string; full_
     return m
   }, [brandingUsers])
   const labelCollab = (id: string) => userNameById[id] || id
+
+  // Sort: most recent report_date first, then most recent submit (drafts last).
+  // Surfaces today's submits at the top of the list.
+  const sortedReports = useMemo(() => {
+    return [...reports].sort((a, b) => {
+      if (a.report_date !== b.report_date) return a.report_date < b.report_date ? 1 : -1
+      const aT = a.submitted_at ? Date.parse(a.submitted_at) : 0
+      const bT = b.submitted_at ? Date.parse(b.submitted_at) : 0
+      return bT - aT
+    })
+  }, [reports])
 
   // Derived aggregates for summary view
   const summaryData = useMemo(() => {
@@ -372,7 +396,7 @@ function DailyReportsTab({ brandingUsers }: { brandingUsers: { id: string; full_
           <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
             <Filter className="w-4 h-4 text-muted-foreground" /> Filters
           </h2>
-          <button onClick={() => { setFilters({ userIds: [], dateFrom: '', dateTo: '', typeOfWork: '', subCategory: '', lockedOnly: false }); setUserDropOpen(false) }}
+          <button onClick={() => { setFilters(defaultDailyReportFilters()); setUserDropOpen(false) }}
             className="text-xs text-muted-foreground hover:text-foreground">Reset all</button>
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
@@ -475,8 +499,8 @@ function DailyReportsTab({ brandingUsers }: { brandingUsers: { id: string; full_
           {/* All Reports */}
           {viewMode === 'all' && (
             <div className="space-y-3">
-              {reports.length === 0 && <p className="text-sm text-muted-foreground text-center py-8">No reports found.</p>}
-              {reports.map(r => (
+              {sortedReports.length === 0 && <p className="text-sm text-muted-foreground text-center py-8">No reports found.</p>}
+              {sortedReports.map(r => (
                 <div key={r.id} className="hub-card p-0 overflow-hidden border border-border">
                   <div className="flex items-center gap-3 px-4 py-3 bg-muted/20 border-b border-border cursor-pointer"
                     onClick={() => setExpanded(p => { const s = new Set(p); if (s.has(r.id)) s.delete(r.id); else s.add(r.id); return s })}>
@@ -647,6 +671,12 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
   const [penaltyPct, setPenaltyPct] = useState('0')
   const [penaltyReason, setPenaltyReason] = useState('')
   const [penaltySaving, setPenaltySaving] = useState(false)
+  // Total-penalty override modal state
+  const [overrideOpen, setOverrideOpen] = useState(false)
+  const [overrideEnabled, setOverrideEnabled] = useState(false)
+  const [overridePct, setOverridePct] = useState('0')
+  const [overrideReason, setOverrideReason] = useState('')
+  const [overrideSaving, setOverrideSaving] = useState(false)
 
   const load = useCallback(() => {
     setLoading(true)
@@ -726,6 +756,38 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
       toast.error(e instanceof Error ? e.message : 'Failed')
     } finally {
       setPenaltySaving(false)
+    }
+  }
+
+  function openOverrideModal() {
+    if (!selectedUser) return
+    const cur = dashboard.find(d => d.user_id === selectedUser)
+    const ov = cur?.total_penalty_override ?? null
+    setOverrideEnabled(ov !== null)
+    setOverridePct(String(ov ?? cur?.total_penalty_percent ?? 0))
+    setOverrideReason(cur?.total_penalty_override_reason ?? '')
+    setOverrideOpen(true)
+  }
+
+  async function saveTotalOverride() {
+    if (!selectedUser) return
+    const pct = overrideEnabled ? Number(overridePct) : null
+    if (overrideEnabled && (Number.isNaN(pct as number) || (pct as number) < 0 || (pct as number) > 100)) {
+      toast.error('Total penalty must be between 0 and 100.')
+      return
+    }
+    setOverrideSaving(true)
+    try {
+      await brandingApi.setTotalPenaltyOverride(selectedUser, month, year, pct, overrideReason.trim())
+      await load()
+      toast.success(pct === null
+        ? 'Total-penalty override removed. Reverted to auto + manual.'
+        : `Total penalty set to −${pct}%.`)
+      setOverrideOpen(false)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed')
+    } finally {
+      setOverrideSaving(false)
     }
   }
 
@@ -933,6 +995,11 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                       <span className="text-red-800 font-bold">
                         Total: −{selectedReport.total_penalty_percent}%
                       </span>
+                      {selectedReport.total_penalty_override !== null && (
+                        <span className="text-[10px] font-semibold uppercase tracking-wider bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded">
+                          Admin Override
+                        </span>
+                      )}
                       <span className="ml-auto text-green-800 font-bold">
                         Final: {selectedReport.composite_score_after_penalty?.toFixed(1) ?? '—'}<span className="text-[10px] font-normal opacity-60">/10</span>
                       </span>
@@ -940,6 +1007,11 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                     {selectedReport.manual_penalty_reason && (
                       <p className="text-[11px] text-amber-700 italic">
                         Manual penalty reason: {selectedReport.manual_penalty_reason}
+                      </p>
+                    )}
+                    {selectedReport.total_penalty_override !== null && selectedReport.total_penalty_override_reason && (
+                      <p className="text-[11px] text-amber-700 italic">
+                        Override reason: {selectedReport.total_penalty_override_reason}
                       </p>
                     )}
                   </div>
@@ -987,6 +1059,20 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                       {selectedReport.manual_penalty_percent > 0
                         ? `Edit Penalty (currently −${selectedReport.manual_penalty_percent}%)`
                         : 'Add Penalty'}
+                    </button>
+                    <button onClick={openOverrideModal}
+                      className="mt-2 w-full py-2 rounded-lg border border-amber-300 text-amber-700 text-sm font-medium hover:bg-amber-50 transition-colors flex items-center justify-center gap-2">
+                      <Edit3 className="w-4 h-4" />
+                      Modify Penalty
+                      {selectedReport.total_penalty_override !== null ? (
+                        <span className="text-[11px] font-normal text-muted-foreground">
+                          (override: −{selectedReport.total_penalty_override}%)
+                        </span>
+                      ) : (selectedReport.total_penalty_percent ?? 0) > 0 && (
+                        <span className="text-[11px] font-normal text-muted-foreground">
+                          (total currently −{selectedReport.total_penalty_percent}%)
+                        </span>
+                      )}
                     </button>
                   </div>
                 )}
@@ -1209,6 +1295,70 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                 {penaltySaving ? 'Saving…' : 'Apply Penalty'}
               </button>
               <button onClick={() => setPenaltyOpen(false)}
+                className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-muted">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Total-penalty override modal */}
+      {overrideOpen && selectedReport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.45)' }}
+          onClick={() => setOverrideOpen(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-semibold text-foreground flex items-center gap-2">
+                <Edit3 className="w-4 h-4 text-amber-600" /> Modify Total Penalty
+              </h3>
+              <button onClick={() => setOverrideOpen(false)} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground"><X className="w-4 h-4" /></button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Replaces the auto (late-submission) and manual penalties with a single total you choose.
+              Final score = composite × (1 − total %).
+            </p>
+
+            <div className="rounded-lg bg-muted/40 p-3 text-xs space-y-0.5">
+              <div className="flex justify-between"><span className="text-muted-foreground">Auto (late submissions)</span><span className="font-semibold text-red-700">−{selectedReport.penalty_percent}%</span></div>
+              <div className="flex justify-between"><span className="text-muted-foreground">Manual</span><span className="font-semibold text-red-700">−{selectedReport.manual_penalty_percent}%</span></div>
+              <div className="flex justify-between border-t border-border pt-1 mt-1"><span className="text-foreground font-medium">Current total</span><span className="font-bold text-red-800">−{selectedReport.total_penalty_percent}%</span></div>
+            </div>
+
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" checked={overrideEnabled}
+                onChange={e => setOverrideEnabled(e.target.checked)}
+                className="accent-amber-500 w-4 h-4" />
+              <span>Override total penalty</span>
+            </label>
+
+            <div className={overrideEnabled ? '' : 'opacity-50 pointer-events-none'}>
+              <label className="text-xs font-bold uppercase tracking-wide mb-1 block text-foreground">Total Penalty (%)</label>
+              <input type="number" min={0} max={100} step={0.5}
+                value={overridePct}
+                onChange={e => setOverridePct(e.target.value)}
+                disabled={!overrideEnabled}
+                className={INP} autoFocus />
+              <div className="mt-3">
+                <label className="text-xs font-bold uppercase tracking-wide mb-1 block text-foreground">Reason (optional)</label>
+                <textarea value={overrideReason} onChange={e => setOverrideReason(e.target.value)}
+                  rows={3} placeholder="e.g. Overriding to account for approved leave on missed days…"
+                  className={INP + ' resize-none'} />
+              </div>
+            </div>
+
+            {!overrideEnabled && selectedReport.total_penalty_override !== null && (
+              <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
+                Unchecking and saving will remove the override; auto + manual will be used again.
+              </p>
+            )}
+
+            <div className="flex gap-3 pt-1">
+              <button onClick={() => void saveTotalOverride()} disabled={overrideSaving}
+                className="flex-1 py-2 rounded-lg bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700 disabled:opacity-50">
+                {overrideSaving ? 'Saving…' : (overrideEnabled ? 'Save Override' : 'Clear Override')}
+              </button>
+              <button onClick={() => setOverrideOpen(false)}
                 className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-muted">
                 Cancel
               </button>
