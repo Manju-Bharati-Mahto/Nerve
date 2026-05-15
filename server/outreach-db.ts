@@ -155,10 +155,19 @@ export async function bootstrapOutreach() {
   await pool.query(`UPDATE outreach_pages SET follower_tier = '2' WHERE follower_tier = 'micro'`);
   await pool.query(`UPDATE outreach_pages SET follower_tier = '3' WHERE follower_tier = 'mid'`);
   await pool.query(`UPDATE outreach_pages SET follower_tier = '4' WHERE follower_tier = 'macro'`);
+  // Idempotent re-add: skip if a constraint with this name already exists
+  // (e.g. the inline CHECK from CREATE TABLE auto-names to the same identifier,
+  // and we may race with another bootstrap call during tsx-watch restarts).
   await pool.query(`
-    ALTER TABLE outreach_pages
-    ADD CONSTRAINT outreach_pages_follower_tier_check
-    CHECK (follower_tier IN ('1', '2', '3', '4', '5'))
+    DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'outreach_pages_follower_tier_check'
+      ) THEN
+        ALTER TABLE outreach_pages
+          ADD CONSTRAINT outreach_pages_follower_tier_check
+          CHECK (follower_tier IN ('1', '2', '3', '4', '5'));
+      END IF;
+    END $$;
   `);
   await pool.query(`ALTER TABLE outreach_pages ADD COLUMN IF NOT EXISTS content_types JSONB NOT NULL DEFAULT '[]'::JSONB`);
 
