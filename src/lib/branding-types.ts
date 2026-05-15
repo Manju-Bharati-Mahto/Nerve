@@ -17,6 +17,8 @@ export interface WorkCategory {
   sub_categories: WorkSubCategory[];
 }
 
+export type StopwatchStatus = 'idle' | 'running' | 'paused' | 'finished';
+
 export interface DailyReportRow {
   id: string;
   report_id: string;
@@ -27,10 +29,13 @@ export interface DailyReportRow {
   time_taken: string;
   collaborative_colleagues: string[];
   created_at: string;
+  stopwatch_status: StopwatchStatus;
+  elapsed_seconds: number;
+  stopwatch_started_at: string | null;
+  carried_over_from_row_id: string | null;
 }
 
 export interface DraftRow {
-  // Client-only draft row (no id until saved)
   _key: string;
   sr_no: number;
   type_of_work: string;
@@ -38,6 +43,10 @@ export interface DraftRow {
   specific_work: string;
   time_taken: string;
   collaborative_colleagues: string[];
+  stopwatch_status: StopwatchStatus;
+  elapsed_seconds: number;
+  stopwatch_started_at: string | null;
+  carried_over_from_row_id: string | null;
 }
 
 export interface DailyReport {
@@ -91,6 +100,8 @@ export interface AdminKraScore {
   pushed_at: string | null;
   pushed_by: string | null;
   updated_at: string;
+  manual_penalty_percent: number;
+  manual_penalty_reason: string;
 }
 
 export interface KraReport {
@@ -103,6 +114,14 @@ export interface KraReport {
   peer_count: number;
   admin_score: AdminKraScore | null;
   composite_score: number | null;
+  expected_report_days: number;
+  submitted_report_days: number;
+  missed_report_days: number;
+  penalty_percent: number;
+  manual_penalty_percent: number;
+  manual_penalty_reason: string;
+  total_penalty_percent: number;
+  composite_score_after_penalty: number | null;
   is_final_pushed: boolean;
 }
 
@@ -163,10 +182,16 @@ export interface BrandingProject {
   assigned_user_ids: string[];
 }
 
+export type HalfDayPeriod = 'first' | 'second';
+
 export interface BrandingLeave {
   id: string;
   user_id: string;
-  leave_date: string;           // YYYY-MM-DD
+  leave_date: string;           // YYYY-MM-DD (day portion of start_at)
+  start_at: string;             // ISO datetime
+  end_at: string;               // ISO datetime
+  is_half_day: boolean;
+  half_day_period: HalfDayPeriod | null;
   reason: string;
   status: 'pending' | 'approved' | 'rejected';
   transfer_date: string | null; // YYYY-MM-DD
@@ -183,9 +208,47 @@ export const TIME_OPTIONS = [
 ] as const;
 
 export function timeToHours(t: string): number {
+  if (!t) return 0;
   if (t === "30 min") return 0.5;
+  // Stopwatch composite formats: "Xh Ym Zs", "Xh Ym", "Xh", "Ym Zs", "Ym", "Zs", "0s"
+  const composite = t.match(/^(?:(\d+)h\s*)?(?:(\d+)m\s*)?(?:(\d+)s)?$/);
+  if (composite && (composite[1] || composite[2] || composite[3])) {
+    const h = composite[1] ? parseInt(composite[1], 10) : 0;
+    const m = composite[2] ? parseInt(composite[2], 10) : 0;
+    const s = composite[3] ? parseInt(composite[3], 10) : 0;
+    return h + m / 60 + s / 3600;
+  }
+  // Legacy "1.5 hr" / "2 hr" dropdown values
   const m = t.match(/^(\d+(?:\.\d+)?)/);
   return m ? parseFloat(m[1]) : 0;
+}
+
+// Format an elapsed seconds value into "Hh Mm Ss" (omits leading zero parts).
+export function formatElapsed(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m ${sec}s`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+// Compact form used as `time_taken` once a stopwatch finishes/pauses.
+// Examples: "30s", "2m 15s", "1h 5m". Always reflects what was tracked,
+// even sub-minute, so a row paused at 30s shows "30s" not "0m".
+export function elapsedToTimeTaken(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  if (s === 0) return '0s';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const parts: string[] = [];
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0) parts.push(`${m}m`);
+  // Show seconds when there are no hours (so we don't pollute "1h 5m" with seconds)
+  if (sec > 0 && h === 0) parts.push(`${sec}s`);
+  return parts.join(' ');
 }
 
 export const MONTHS = [

@@ -3,7 +3,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
 import { brandingApi } from '@/lib/branding-api'
 import { api } from '@/lib/api'
-import { TIME_OPTIONS, timeToHours, MONTHS } from '@/lib/branding-types'
+import { TIME_OPTIONS, timeToHours, MONTHS, formatElapsed, elapsedToTimeTaken } from '@/lib/branding-types'
 import type {
   WorkCategory, DailyReport, DraftRow, KraParameter, SelfAppraisal, BrandingProject, BrandingLeave,
 } from '@/lib/branding-types'
@@ -13,6 +13,7 @@ import {
   Users, TrendingUp, AlertCircle, Bell, Search, ArrowUpRight, Palette,
   Calendar, Timer, LayoutGrid, X,
   Camera, Shield, BookOpen, Keyboard, MessageCircle, Phone,
+  Play, Pause, Square, Repeat,
 } from 'lucide-react'
 import BrandingBrowse from './BrandingBrowse'
 import BrandingTeamPanel from './BrandingTeamPanel'
@@ -57,7 +58,115 @@ const PIE_COLORS = [
 type NavPage = 'dashboard' | 'daily-reports' | 'analytics' | 'self-appraisal' | 'gallery' | 'team' | 'settings' | 'help'
 
 function blankRow(sr: number): DraftRow {
-  return { _key: `${Date.now()}-${sr}`, sr_no: sr, type_of_work: '', sub_category: '', specific_work: '', time_taken: '', collaborative_colleagues: [] }
+  return {
+    _key: `${Date.now()}-${sr}`, sr_no: sr,
+    type_of_work: '', sub_category: '', specific_work: '', time_taken: '',
+    collaborative_colleagues: [],
+    stopwatch_status: 'idle', elapsed_seconds: 0,
+    stopwatch_started_at: null, carried_over_from_row_id: null,
+  }
+}
+
+// ── Stopwatch cell ─────────────────────────────────────────────────────────
+//   idle → Start → running → Pause → paused → Continue → running … → Finish → finished
+// While running we tick locally every second; the source of truth for time is
+// `elapsed_seconds + (now − stopwatch_started_at)`. Each transition is persisted
+// via onAction so teammates polling can see live status.
+function StopwatchCell({
+  row,
+  disabled,
+  canStart,
+  onAction,
+}: {
+  row: DraftRow
+  disabled?: boolean
+  canStart: boolean
+  onAction: (patch: Partial<DraftRow>) => void | Promise<void>
+}) {
+  const [, forceTick] = useState(0)
+
+  useEffect(() => {
+    if (row.stopwatch_status !== 'running') return
+    const id = setInterval(() => forceTick(t => t + 1), 1000)
+    return () => clearInterval(id)
+  }, [row.stopwatch_status])
+
+  const liveSeconds = (() => {
+    if (row.stopwatch_status === 'running' && row.stopwatch_started_at) {
+      const since = Math.max(0, Math.floor((Date.now() - new Date(row.stopwatch_started_at).getTime()) / 1000))
+      return row.elapsed_seconds + since
+    }
+    return row.elapsed_seconds
+  })()
+
+  if (disabled) {
+    return <span className="text-sm">{row.time_taken || formatElapsed(liveSeconds)}</span>
+  }
+
+  const isCarried = !!row.carried_over_from_row_id
+  const start  = () => void onAction({ stopwatch_status: 'running', stopwatch_started_at: new Date().toISOString() })
+  const pause  = () => void onAction({ stopwatch_status: 'paused', elapsed_seconds: liveSeconds, stopwatch_started_at: null })
+  const cont   = () => void onAction({ stopwatch_status: 'running', stopwatch_started_at: new Date().toISOString() })
+  const finish = () => void onAction({
+    stopwatch_status: 'finished',
+    elapsed_seconds: liveSeconds,
+    stopwatch_started_at: null,
+    time_taken: liveSeconds > 0 ? elapsedToTimeTaken(liveSeconds) : '0m',
+  })
+
+  const pillBase = 'inline-flex items-center justify-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold transition-colors'
+
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap">
+      <span
+        className={`text-xs font-mono tabular-nums px-2 py-1 rounded-md ${
+          row.stopwatch_status === 'running' ? 'bg-amber-50 text-amber-800 border border-amber-200' :
+          row.stopwatch_status === 'paused'  ? 'bg-orange-50 text-orange-700 border border-orange-200' :
+          row.stopwatch_status === 'finished' ? 'bg-green-50 text-green-700 border border-green-200' :
+          'bg-gray-50 text-gray-500 border border-gray-200'
+        }`}
+        title={isCarried ? 'Carried over from a previous day' : undefined}
+      >
+        {formatElapsed(liveSeconds)}
+        {isCarried && <Repeat className="inline-block w-3 h-3 ml-1 opacity-70" />}
+      </span>
+
+      {row.stopwatch_status === 'idle' && (
+        <button
+          type="button"
+          onClick={start}
+          disabled={!canStart}
+          title={canStart ? 'Start tracking' : 'Fill in type, sub-category and description first'}
+          className={`${pillBase} text-white ${canStart ? 'bg-green-700 hover:bg-green-800' : 'bg-gray-300 cursor-not-allowed'}`}
+        >
+          <Play className="w-3 h-3" /> Start
+        </button>
+      )}
+      {row.stopwatch_status === 'running' && (
+        <button type="button" onClick={pause}
+          className={`${pillBase} text-white bg-amber-600 hover:bg-amber-700`}>
+          <Pause className="w-3 h-3" /> Pause
+        </button>
+      )}
+      {row.stopwatch_status === 'paused' && (
+        <>
+          <button type="button" onClick={cont}
+            className={`${pillBase} text-white bg-green-700 hover:bg-green-800`}>
+            <Play className="w-3 h-3" /> Continue
+          </button>
+          <button type="button" onClick={finish}
+            className={`${pillBase} text-white bg-red-600 hover:bg-red-700`}>
+            <Square className="w-3 h-3" /> Finish
+          </button>
+        </>
+      )}
+      {row.stopwatch_status === 'finished' && (
+        <span className="inline-flex items-center gap-1 text-[11px] font-bold text-green-700">
+          <Check className="w-3 h-3" /> Done
+        </span>
+      )}
+    </div>
+  )
 }
 
 function workingDaysSoFar(): number {
@@ -634,6 +743,9 @@ function DashboardPage({
   const [collabTime, setCollabTime] = useState('')
   const [collabSaving, setCollabSaving] = useState(false)
 
+  // Show first 5 team members by default; expand on demand.
+  const [showAllMembers, setShowAllMembers] = useState(false)
+
   // Load projects
   useEffect(() => {
     brandingApi.getProjects()
@@ -648,30 +760,31 @@ function DashboardPage({
       .catch(() => {})
   }, [])
 
-  // Load monthly analytics
-  useEffect(() => {
-    const now = new Date()
-    const dateFrom = fmtDate(new Date(now.getFullYear(), now.getMonth(), 1))
-    const dateTo = fmtDate(now)
-    if (profile?.id) {
-      brandingApi.getAnalytics({ dateFrom, dateTo, userId: profile.id })
-        .then(r => setAnalytics(r.analytics))
-        .catch(() => {})
-    }
-  }, [profile?.id])
-
-  // Always load current week for collaboration card
-  useEffect(() => {
+  // Live-sync collab card: refresh own analytics + the WHOLE team's weekly
+  // reports on mount and every 30s, so a colleague's stopwatch transition or
+  // new collaboration entry shows up in everyone's profile within one tick.
+  const refreshCollabSync = useCallback(async () => {
     if (!profile?.id) return
     const now = new Date()
-    const sunday = new Date(now)
-    sunday.setDate(now.getDate() - now.getDay())
-    const saturday = new Date(sunday)
-    saturday.setDate(sunday.getDate() + 6)
-    brandingApi.getAllReports({ dateFrom: fmtDate(sunday), dateTo: fmtDate(saturday), userId: profile.id })
-      .then(r => setWeeklyReports(r.reports))
-      .catch(() => {})
+    const monthFrom = fmtDate(new Date(now.getFullYear(), now.getMonth(), 1))
+    const monthTo = fmtDate(now)
+    const sunday = new Date(now); sunday.setDate(now.getDate() - now.getDay())
+    const saturday = new Date(sunday); saturday.setDate(sunday.getDate() + 6)
+    try {
+      const [analyticsRes, reportsRes] = await Promise.all([
+        brandingApi.getAnalytics({ dateFrom: monthFrom, dateTo: monthTo, userId: profile.id }),
+        brandingApi.getAllReports({ dateFrom: fmtDate(sunday), dateTo: fmtDate(saturday), teamScope: true }),
+      ])
+      setAnalytics(analyticsRes.analytics)
+      setWeeklyReports(reportsRes.reports)
+    } catch { /* swallow — initial-load toast is enough */ }
   }, [profile?.id])
+
+  useEffect(() => {
+    void refreshCollabSync()
+    const id = setInterval(() => { void refreshCollabSync() }, 30_000)
+    return () => clearInterval(id)
+  }, [refreshCollabSync])
 
   // Chart filter — fetch and aggregate data based on selected filter
   useEffect(() => {
@@ -822,27 +935,46 @@ function DashboardPage({
     return categories.find(c => c.name === collabWorkType)?.sub_categories || []
   }, [collabWorkType, categories])
 
-  // Per-member collaboration details derived from this week's actual reports
+  // Per-member status using this week's reports across the whole team.
+  // 1. If their most recent row has a running stopwatch → in-progress (live)
+  // 2. Else if any paused row → in-progress (paused is still ongoing)
+  // 3. Else if today's report is locked → completed
+  // 4. Else fall back to "what we collaborated on with them" so the card never goes blank.
   const collabDetails = useMemo(() => {
     const todayStr = today()
-    const map: Record<string, { work: string; status: 'completed' | 'in-progress' | 'pending' }> = {}
+    const map: Record<string, { work: string; status: 'completed' | 'in-progress' | 'pending'; date?: string }> = {}
+
     weeklyReports.forEach(rep => {
+      const ownerId = rep.user_id
+      rep.rows?.forEach(row => {
+        const work = [row.type_of_work, row.specific_work].filter(Boolean).join(' — ') || 'Working'
+        let status: 'completed' | 'in-progress' | 'pending' | null = null
+        if (row.stopwatch_status === 'running') status = 'in-progress'
+        else if (row.stopwatch_status === 'paused') status = 'in-progress'
+        else if (row.stopwatch_status === 'finished' && rep.is_locked && rep.report_date === todayStr) status = 'completed'
+        if (status) {
+          const existing = map[ownerId]
+          if (!existing || (status === 'in-progress' && existing.status !== 'in-progress')
+              || (rep.report_date >= (existing.date ?? ''))) {
+            map[ownerId] = { work, status, date: rep.report_date }
+          }
+        }
+      })
+    })
+
+    weeklyReports.forEach(rep => {
+      if (rep.user_id !== profile?.id) return
       rep.rows?.forEach(row => {
         row.collaborative_colleagues.forEach(uid => {
-          const isToday = rep.report_date === todayStr
-          const submitted = rep.is_locked
+          if (map[uid]) return
           const work = [row.type_of_work, row.specific_work].filter(Boolean).join(' — ')
-          const status: 'completed' | 'in-progress' | 'pending' =
-            (isToday && submitted) ? 'completed' : submitted ? 'completed' : 'in-progress'
-          // keep the most recent (latest date wins)
-          if (!map[uid] || rep.report_date >= (map[uid] as { date?: string }).date!) {
-            map[uid] = { work: work || 'Collaborative work', status }
-          }
+          const status: 'completed' | 'in-progress' = rep.is_locked ? 'completed' : 'in-progress'
+          map[uid] = { work: work || 'Collaborative work', status, date: rep.report_date }
         })
       })
     })
     return map
-  }, [weeklyReports])
+  }, [weeklyReports, profile?.id])
 
   const handleBarClick = useCallback((date: string) => {
     const rep = chartReports.find(r => r.report_date === date)
@@ -863,6 +995,10 @@ function DashboardPage({
         sr_no: row.sr_no, type_of_work: row.type_of_work, sub_category: row.sub_category,
         specific_work: row.specific_work, time_taken: row.time_taken,
         collaborative_colleagues: row.collaborative_colleagues,
+        stopwatch_status: row.stopwatch_status,
+        elapsed_seconds: row.elapsed_seconds,
+        stopwatch_started_at: row.stopwatch_started_at,
+        carried_over_from_row_id: row.carried_over_from_row_id,
       }))
       const newRow = {
         sr_no: existingRows.length + 1,
@@ -871,6 +1007,10 @@ function DashboardPage({
         specific_work: collabNote.trim(),
         time_taken: collabTime,
         collaborative_colleagues: [collabColleague],
+        stopwatch_status: 'finished' as const,
+        elapsed_seconds: 0,
+        stopwatch_started_at: null,
+        carried_over_from_row_id: null,
       }
       await brandingApi.saveRows(rep.id, [...existingRows, newRow])
       // Refresh today's report so time tracker updates
@@ -1045,7 +1185,7 @@ function DashboardPage({
             <p className="text-sm text-gray-400 text-center py-6">No team members found.</p>
           ) : (
             <div className="space-y-1">
-              {brandingMembers.map(member => {
+              {(showAllMembers ? brandingMembers : brandingMembers.slice(0, 5)).map(member => {
                 const weekly = collabDetails[member.id]
                 const monthly = analytics?.collaboratorMap[member.full_name || ''] ??
                                 analytics?.collaboratorMap[member.email] ?? null
@@ -1089,6 +1229,18 @@ function DashboardPage({
                   </div>
                 )
               })}
+              {brandingMembers.length > 5 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllMembers(v => !v)}
+                  className="w-full mt-2 py-2 text-xs font-semibold rounded-lg hover:bg-green-50 transition-colors"
+                  style={{ color: '#1a472a' }}
+                >
+                  {showAllMembers
+                    ? 'Show less'
+                    : `Read more (${brandingMembers.length - 5} more)`}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -1643,9 +1795,13 @@ function DailyReportsPage({
   const [submitting, setSubmitting] = useState(false)
 
   // ── Leave state ────────────────────────────────────────────────────────
+  // datetime-local format: "YYYY-MM-DDTHH:mm" (no timezone)
+  const defaultStart = `${today()}T09:00`
+  const defaultEnd   = `${today()}T17:00`
   const [leaves, setLeaves] = useState<BrandingLeave[]>([])
   const [showLeaveModal, setShowLeaveModal] = useState(false)
-  const [leaveDate, setLeaveDate] = useState(today())
+  const [leaveStart, setLeaveStart] = useState(defaultStart)
+  const [leaveEnd, setLeaveEnd] = useState(defaultEnd)
   const [leaveReason, setLeaveReason] = useState('')
   const [leaveTransferDate, setLeaveTransferDate] = useState('')
   const [leaveSubmitting, setLeaveSubmitting] = useState(false)
@@ -1739,6 +1895,10 @@ function DailyReportsPage({
             _key: row.id, sr_no: row.sr_no, type_of_work: row.type_of_work,
             sub_category: row.sub_category, specific_work: row.specific_work,
             time_taken: row.time_taken, collaborative_colleagues: row.collaborative_colleagues,
+            stopwatch_status: row.stopwatch_status,
+            elapsed_seconds: row.elapsed_seconds,
+            stopwatch_started_at: row.stopwatch_started_at,
+            carried_over_from_row_id: row.carried_over_from_row_id,
           })))
         } else if (!r.report.is_locked) {
           setRows([blankRow(1)])
@@ -1761,6 +1921,36 @@ function DailyReportsPage({
     }))
   }
 
+  // Stopwatch helpers — patch a single row and persist atomically so teammates
+  // see live state. Use a ref to avoid the React-state race between setRows
+  // and the immediate save call.
+  const rowsRef = useRef<DraftRow[]>(rows)
+  useEffect(() => { rowsRef.current = rows }, [rows])
+
+  function rowPayload(r: DraftRow) {
+    return {
+      sr_no: r.sr_no, type_of_work: r.type_of_work, sub_category: r.sub_category,
+      specific_work: r.specific_work, time_taken: r.time_taken,
+      collaborative_colleagues: r.collaborative_colleagues,
+      stopwatch_status: r.stopwatch_status,
+      elapsed_seconds: r.elapsed_seconds,
+      stopwatch_started_at: r.stopwatch_started_at,
+      carried_over_from_row_id: r.carried_over_from_row_id,
+    }
+  }
+
+  async function applyRowPatch(key: string, patch: Partial<DraftRow>) {
+    const next = rowsRef.current.map(r => r._key === key ? { ...r, ...patch } : r)
+    rowsRef.current = next
+    setRows(next)
+    if (!report || report.is_locked) return
+    try {
+      await brandingApi.saveRows(report.id, next.map(rowPayload))
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to save stopwatch state')
+    }
+  }
+
   const addRow = () => setRows(prev => [...prev, blankRow(prev.length + 1)])
   const deleteRow = (key: string) =>
     setRows(prev => prev.filter(r => r._key !== key).map((r, i) => ({ ...r, sr_no: i + 1 })))
@@ -1769,10 +1959,7 @@ function DailyReportsPage({
     if (!report || report.is_locked) return
     setSaving(true)
     try {
-      await brandingApi.saveRows(report.id, rows.map(r => ({
-        sr_no: r.sr_no, type_of_work: r.type_of_work, sub_category: r.sub_category,
-        specific_work: r.specific_work, time_taken: r.time_taken, collaborative_colleagues: r.collaborative_colleagues,
-      })))
+      await brandingApi.saveRows(report.id, rows.map(rowPayload))
       toast.success('Draft saved')
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Failed to save') }
     finally { setSaving(false) }
@@ -1780,32 +1967,69 @@ function DailyReportsPage({
 
   async function submitReport() {
     if (!report || report.is_locked) return
-    const invalid = rows.filter(r => !r.type_of_work || !r.sub_category || !r.specific_work || !r.time_taken)
+    if (rows.length === 0) { toast.error('Add at least one row before submitting.'); return }
+    // Block on missing core fields, but allow unfinished stopwatches.
+    const invalid = rows.filter(r => !r.type_of_work || !r.sub_category || !r.specific_work)
     if (invalid.length > 0) {
-      toast.error('Please fill all mandatory fields before submitting.')
+      toast.error('Please fill type, sub-category, and description for every row.')
       return
     }
-    if (rows.length === 0) { toast.error('Add at least one row before submitting.'); return }
+    // At submit time:
+    //   - running rows → snapshot to PAUSED with their actual elapsed time
+    //   - paused rows  → keep paused, refresh time_taken from elapsed_seconds
+    //   - finished/idle → keep, but make sure time_taken reflects elapsed_seconds
+    // Paused rows get picked up by the server's carryOverPausedRows on tomorrow's
+    // getOrCreateDailyReport so the unfinished entry reappears in the next day's draft.
+    const now = Date.now()
+    const finalisedRows: DraftRow[] = rows.map(r => {
+      if (r.stopwatch_status === 'running' && r.stopwatch_started_at) {
+        const since = Math.max(0, Math.floor((now - new Date(r.stopwatch_started_at).getTime()) / 1000))
+        const captured = r.elapsed_seconds + since
+        return {
+          ...r,
+          stopwatch_status: 'paused',
+          elapsed_seconds: captured,
+          stopwatch_started_at: null,
+          time_taken: elapsedToTimeTaken(captured),
+        }
+      }
+      // For paused: always re-derive time_taken from elapsed_seconds so the
+      // locked report shows the exact paused-at duration (e.g. "2m 15s"), not "0m".
+      if (r.stopwatch_status === 'paused') {
+        return { ...r, time_taken: elapsedToTimeTaken(r.elapsed_seconds) }
+      }
+      // Finished rows already have their time_taken set when Finish was clicked.
+      // Idle rows fall back to their elapsed (usually 0) so the column has something.
+      if (!r.time_taken) {
+        return { ...r, time_taken: elapsedToTimeTaken(r.elapsed_seconds) }
+      }
+      return r
+    })
+    setRows(finalisedRows)
+    rowsRef.current = finalisedRows
     setSubmitting(true)
     try {
-      await brandingApi.saveRows(report.id, rows.map(r => ({
-        sr_no: r.sr_no, type_of_work: r.type_of_work, sub_category: r.sub_category,
-        specific_work: r.specific_work, time_taken: r.time_taken, collaborative_colleagues: r.collaborative_colleagues,
-      })))
+      await brandingApi.saveRows(report.id, finalisedRows.map(rowPayload))
       const res = await brandingApi.submitReport(report.id)
       setReport(res.report)
-      toast.success('Report submitted and locked!')
+      const carryCount = finalisedRows.filter(r => r.stopwatch_status === 'paused').length
+      toast.success(carryCount > 0
+        ? `Report submitted. ${carryCount} unfinished ${carryCount === 1 ? 'row will' : 'rows will'} carry over to tomorrow.`
+        : 'Report submitted and locked!')
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Failed to submit') }
     finally { setSubmitting(false) }
   }
 
   async function applyForLeave() {
-    if (!leaveDate) { toast.error('Select a leave date.'); return }
+    if (!leaveStart || !leaveEnd) { toast.error('Select both start and end date/time.'); return }
+    if (new Date(leaveEnd) <= new Date(leaveStart)) { toast.error('End must be after start.'); return }
     if (!leaveReason.trim()) { toast.error('Please provide a reason.'); return }
     setLeaveSubmitting(true)
     try {
       const res = await brandingApi.applyLeave({
-        leave_date: leaveDate, reason: leaveReason.trim(),
+        start_at: new Date(leaveStart).toISOString(),
+        end_at: new Date(leaveEnd).toISOString(),
+        reason: leaveReason.trim(),
         transfer_date: leaveTransferDate || undefined,
       })
       setLeaves(prev => {
@@ -1828,6 +2052,9 @@ function DailyReportsPage({
 
 
   const todayLeave = leaves.find(l => l.leave_date === selectedDate)
+  // Half-day approved leave still requires a report for the working half.
+  const isFullDayApprovedLeave = todayLeave?.status === 'approved' && !todayLeave.is_half_day
+  const isHalfDayApprovedLeave = todayLeave?.status === 'approved' && todayLeave.is_half_day
 
   const displayRows = report?.is_locked ? report.rows : rows
   const totalHours = useMemo(() =>
@@ -2038,7 +2265,7 @@ function DailyReportsPage({
         {/* Apply for leave button (not already on leave today) */}
         {!todayLeave && !report?.is_locked && (
           <button
-            onClick={() => { setLeaveDate(today()); setShowLeaveModal(true) }}
+            onClick={() => { setLeaveStart(`${today()}T09:00`); setLeaveEnd(`${today()}T17:00`); setShowLeaveModal(true) }}
             className="ml-auto flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition-colors hover:bg-red-50"
             style={{ border: '1.5px solid #dc2626', color: '#dc2626' }}
           >
@@ -2055,12 +2282,20 @@ function DailyReportsPage({
         )}
       </div>
 
-      {/* On Leave banner — shown instead of report form */}
+      {/* On Leave banner — shown instead of (full-day) or above (half-day) the report form */}
       {todayLeave?.status === 'approved' && (
         <div className="bg-blue-50 border border-blue-100 rounded-2xl p-6 text-center space-y-2">
           <p className="text-2xl">🏖️</p>
-          <p className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>You are on approved leave today</p>
-          <p className="text-sm font-semibold text-blue-600">No report submission required for {selectedDate}.</p>
+          <p className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>
+            {isHalfDayApprovedLeave
+              ? `You are on approved ${todayLeave.half_day_period === 'first' ? 'first-half' : 'second-half'} leave today`
+              : 'You are on approved leave today'}
+          </p>
+          <p className="text-sm font-semibold text-blue-600">
+            {isHalfDayApprovedLeave
+              ? `Submit a report for the working half. Window: ${new Date(todayLeave.start_at).toLocaleString([], { hour: 'numeric', minute: '2-digit', hour12: true })} – ${new Date(todayLeave.end_at).toLocaleString([], { hour: 'numeric', minute: '2-digit', hour12: true })}.`
+              : `No report submission required for ${selectedDate}.`}
+          </p>
           {todayLeave.transfer_date && (
             <p className="text-xs font-semibold text-gray-500 mt-1">
               Transfer day: <span className="font-bold" style={{ color: '#1a472a' }}>{todayLeave.transfer_date}</span>
@@ -2070,14 +2305,14 @@ function DailyReportsPage({
         </div>
       )}
 
-      {/* Report table */}
-      {todayLeave?.status !== 'approved' && (
+      {/* Report table — hidden only for full-day approved leaves */}
+      {!isFullDayApprovedLeave && (
       <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm border-collapse min-w-[900px]">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-100">
-                {['Sr.', 'Type of Work *', 'Sub Category *', 'Specific Work *', 'Time Taken *', 'Collaborative Work'].map(h => (
+                {['Sr.', 'Type of Work *', 'Sub Category *', 'Specific Work *', 'Time Tracker *', 'Collaborative Work'].map(h => (
                   <th key={h} className="text-left text-[11px] font-bold uppercase tracking-wider px-3 py-3 first:text-center first:w-12" style={{ color: '#1a472a' }}>{h}</th>
                 ))}
                 {!report?.is_locked && <th className="w-10" />}
@@ -2125,11 +2360,12 @@ function DailyReportsPage({
                     </td>
 
                     <td className="px-2 py-2">
-                      {isLocked ? <span>{row.time_taken}</span>
-                        : <select value={row.time_taken} onChange={e => updateRow((row as DraftRow)._key, 'time_taken', e.target.value)} className={SEL}>
-                          <option value="">Select…</option>
-                          {TIME_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}
-                        </select>}
+                      <StopwatchCell
+                        row={row as DraftRow}
+                        disabled={isLocked}
+                        canStart={!!(row.type_of_work && row.sub_category && row.specific_work)}
+                        onAction={patch => applyRowPatch((row as DraftRow)._key, patch)}
+                      />
                     </td>
 
                     <td className="px-2 py-2">
@@ -2169,10 +2405,10 @@ function DailyReportsPage({
           )}
         </div>
       </div>
-      )} {/* end todayLeave !== approved */}
+      )} {/* end !isFullDayApprovedLeave */}
 
       {/* Action buttons */}
-      {!report?.is_locked && todayLeave?.status !== 'approved' && (
+      {!report?.is_locked && !isFullDayApprovedLeave && (
         <div className="flex items-center gap-3">
           <button onClick={() => void saveDraft()} disabled={saving}
             className="px-5 py-2.5 rounded-xl border border-gray-200 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-50">
@@ -2193,7 +2429,7 @@ function DailyReportsPage({
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>My Leave Requests</h3>
           <button
-            onClick={() => { setLeaveDate(today()); setShowLeaveModal(true) }}
+            onClick={() => { setLeaveStart(`${today()}T09:00`); setLeaveEnd(`${today()}T17:00`); setShowLeaveModal(true) }}
             className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition-colors hover:bg-red-50"
             style={{ border: '1.5px solid #dc2626', color: '#dc2626' }}
           >
@@ -2210,6 +2446,11 @@ function DailyReportsPage({
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-semibold text-gray-700">{lv.leave_date}</span>
+                    {lv.is_half_day && lv.half_day_period && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">
+                        {lv.half_day_period === 'first' ? 'First half' : 'Second half'}
+                      </span>
+                    )}
                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
                       lv.status === 'approved' ? 'bg-blue-100 text-blue-700' :
                       lv.status === 'rejected' ? 'bg-red-100 text-red-600' :
@@ -2218,6 +2459,11 @@ function DailyReportsPage({
                       {lv.status.charAt(0).toUpperCase() + lv.status.slice(1)}
                     </span>
                   </div>
+                  <p className="text-[11px] text-gray-500 mt-0.5">
+                    {new Date(lv.start_at).toLocaleString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
+                    {' – '}
+                    {new Date(lv.end_at).toLocaleString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
+                  </p>
                   <p className="text-xs text-gray-500 mt-0.5">{lv.reason || '—'}</p>
                   {lv.transfer_date && (
                     <p className="text-xs mt-0.5" style={{ color: '#1a472a' }}>
@@ -2247,13 +2493,35 @@ function DailyReportsPage({
             </div>
 
             <div className="space-y-3">
-              <div>
-                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>Leave Date *</label>
-                <input type="date" value={leaveDate} min={today()}
-                  onChange={e => setLeaveDate(e.target.value)}
-                  className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-green-200" />
-                <p className="text-[10px] text-gray-400 mt-0.5">Only today or future dates allowed.</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>From *</label>
+                  <input type="datetime-local" value={leaveStart} min={`${today()}T00:00`}
+                    onChange={e => setLeaveStart(e.target.value)}
+                    className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-green-200" />
+                </div>
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>To *</label>
+                  <input type="datetime-local" value={leaveEnd} min={leaveStart || `${today()}T00:00`}
+                    onChange={e => setLeaveEnd(e.target.value)}
+                    className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-green-200" />
+                </div>
               </div>
+              {(() => {
+                // Half-day detection (client-side preview; server confirms).
+                const s = leaveStart, e = leaveEnd
+                if (!s || !e) return null
+                const sd = s.split('T')[0], ed = e.split('T')[0]
+                if (sd !== ed) return <p className="text-[11px] font-semibold text-blue-700">Multi-day leave</p>
+                if (s.endsWith('T09:00') && e.endsWith('T13:00'))
+                  return <p className="text-[11px] font-bold text-amber-700">First half (9:00 AM – 1:00 PM)</p>
+                if (s.endsWith('T14:00') && e.endsWith('T17:00'))
+                  return <p className="text-[11px] font-bold text-amber-700">Second half (2:00 PM – 5:00 PM)</p>
+                return <p className="text-[11px] font-semibold text-gray-500">Same-day leave window</p>
+              })()}
+              <p className="text-[10px] text-gray-400 mt-0.5">
+                Half-day rules: <span className="font-semibold">First half</span> = 9:00 AM – 1:00 PM, <span className="font-semibold">Second half</span> = 2:00 PM – 5:00 PM.
+              </p>
               <div>
                 <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>Reason *</label>
                 <textarea value={leaveReason} onChange={e => setLeaveReason(e.target.value)}
