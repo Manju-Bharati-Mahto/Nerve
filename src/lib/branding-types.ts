@@ -102,6 +102,8 @@ export interface AdminKraScore {
   updated_at: string;
   manual_penalty_percent: number;
   manual_penalty_reason: string;
+  total_penalty_override: number | null;
+  total_penalty_override_reason: string;
 }
 
 export interface KraReport {
@@ -120,6 +122,8 @@ export interface KraReport {
   penalty_percent: number;
   manual_penalty_percent: number;
   manual_penalty_reason: string;
+  total_penalty_override: number | null;
+  total_penalty_override_reason: string;
   total_penalty_percent: number;
   composite_score_after_penalty: number | null;
   is_final_pushed: boolean;
