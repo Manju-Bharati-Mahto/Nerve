@@ -116,6 +116,8 @@ export interface KraReport {
   peer_count: number;
   admin_score: AdminKraScore | null;
   composite_score: number | null;
+  team_joined_at: string | null;
+  kra_window_start: string;
   expected_report_days: number;
   submitted_report_days: number;
   missed_report_days: number;

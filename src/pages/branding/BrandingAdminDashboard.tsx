@@ -946,7 +946,14 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
             ) : selectedReport && (
               <div className="hub-card space-y-5">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-base font-semibold text-foreground">{selectedReport.user_name}</h3>
+                  <div>
+                    <h3 className="text-base font-semibold text-foreground">{selectedReport.user_name}</h3>
+                    {selectedReport.team_joined_at && (
+                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                        Member since {new Date(selectedReport.team_joined_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+                      </p>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2">
                     {selectedReport.is_final_pushed && (
                       <span className="flex items-center gap-1 text-xs text-green-700 bg-green-50 px-3 py-1 rounded-full">
@@ -972,7 +979,11 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                 </div>
 
                 {/* Penalty bar — auto + manual combined */}
-                {(selectedReport.expected_report_days > 0 || selectedReport.manual_penalty_percent > 0) && (
+                {(selectedReport.expected_report_days > 0 || selectedReport.manual_penalty_percent > 0) && (() => {
+                  // Window was clamped to team-join when join date is later than month-start
+                  const monthStartIso = `${selectedReport.year}-${String(selectedReport.month).padStart(2, '0')}-01`
+                  const clamped = selectedReport.kra_window_start > monthStartIso
+                  return (
                   <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 space-y-2">
                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
                       <span className="font-bold text-amber-800">Daily Report Attendance</span>
@@ -981,6 +992,11 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                         {' / '}
                         Expected <span className="font-semibold">{selectedReport.expected_report_days}</span>
                       </span>
+                      {clamped && (
+                        <span className="text-amber-700 text-[10px] italic">
+                          (from join: {new Date(selectedReport.kra_window_start).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })})
+                        </span>
+                      )}
                       <span className="text-amber-700">
                         Missed: <span className="font-semibold">{selectedReport.missed_report_days}</span> day(s)
                       </span>
@@ -1015,7 +1031,8 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                       </p>
                     )}
                   </div>
-                )}
+                  )
+                })()}
 
                 {/* Detail sub-tabs */}
                 <div className="flex gap-1 bg-muted/30 p-1 rounded-lg w-fit">
