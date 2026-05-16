@@ -67,6 +67,12 @@ function blankRow(sr: number): DraftRow {
   }
 }
 
+// Hard ceiling on a single uninterrupted "since" snapshot. Mirrors the
+// server-side MAX_STOPWATCH_SINCE_SECONDS in branding-db.ts. A timer left
+// running unattended would otherwise accrue raw wall-clock time and inflate
+// elapsed_seconds. 9h is the upper bound of a plausible working session.
+const MAX_STOPWATCH_SINCE_SECONDS = 9 * 3600
+
 // ── Stopwatch cell ─────────────────────────────────────────────────────────
 //   idle → Start → running → Pause → paused → Continue → running … → Finish → finished
 // While running we tick locally every second; the source of truth for time is
@@ -1947,9 +1953,10 @@ function DailyReportsPage({
     const next = rowsRef.current.map(r => {
       if (r._key === key) return { ...r, ...patch }
       if (startingThisRow && r.stopwatch_status === 'running') {
-        const since = r.stopwatch_started_at
+        const rawSince = r.stopwatch_started_at
           ? Math.max(0, Math.floor((Date.now() - new Date(r.stopwatch_started_at).getTime()) / 1000))
           : 0
+        const since = Math.min(rawSince, MAX_STOPWATCH_SINCE_SECONDS)
         autoPausedLabel = r.specific_work || r.sub_category || r.type_of_work || `row ${r.sr_no}`
         return {
           ...r,
@@ -2003,7 +2010,8 @@ function DailyReportsPage({
     const now = Date.now()
     const finalisedRows: DraftRow[] = rows.map(r => {
       if (r.stopwatch_status === 'running' && r.stopwatch_started_at) {
-        const since = Math.max(0, Math.floor((now - new Date(r.stopwatch_started_at).getTime()) / 1000))
+        const rawSince = Math.max(0, Math.floor((now - new Date(r.stopwatch_started_at).getTime()) / 1000))
+        const since = Math.min(rawSince, MAX_STOPWATCH_SINCE_SECONDS)
         const captured = r.elapsed_seconds + since
         return {
           ...r,

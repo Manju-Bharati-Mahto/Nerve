@@ -73,6 +73,7 @@ export interface AppUser {
   avatar_url: string | null;
   created_at: string;
   updated_at: string;
+  team_joined_at: string | null;
 }
 
 export interface UserWithPassword extends AppUser {
@@ -145,6 +146,7 @@ interface UserRow {
   avatar_url: string | null;
   created_at: string;
   updated_at: string;
+  team_joined_at: string | null;
 }
 
 interface EntryRow {
@@ -206,6 +208,7 @@ function mapUser(row: UserRow): AppUser {
     avatar_url: row.avatar_url ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    team_joined_at: row.team_joined_at ?? null,
   };
 }
 
@@ -284,6 +287,19 @@ export async function bootstrapDatabase() {
   // Add avatar_url column if it doesn't exist (safe migration)
   await pool.query(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT DEFAULT NULL
+  `);
+
+  // Track when each user joined their current team. Used to clamp the KRA
+  // expected-days window so new joiners and team-transferred members aren't
+  // penalised for days before they were on the team. Backfilled from
+  // created_at for existing rows where the user has a team set.
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS team_joined_at TIMESTAMPTZ
+  `);
+  await pool.query(`
+    UPDATE users
+       SET team_joined_at = created_at
+     WHERE team_joined_at IS NULL AND team IS NOT NULL
   `);
 
   // Widen role CHECK constraint to include outreach_manager (safe migration)
@@ -455,8 +471,8 @@ export async function listUsers() {
 export async function createUser(input: CreateUserInput) {
   const passwordHash = await hashPassword(input.password);
   const result = await pool.query<UserRow>(
-    `INSERT INTO users (id, full_name, email, department, role, team, managed_by, password_hash)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO users (id, full_name, email, department, role, team, managed_by, password_hash, team_joined_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $6::text IS NULL THEN NULL ELSE NOW() END)
      RETURNING *`,
     [
       generateId("u"),
@@ -485,6 +501,11 @@ export async function updateUser(id: string, input: UpdateUserInput) {
 
   const avatarUrl = input.avatar_url !== undefined ? input.avatar_url : current.avatar_url;
 
+  // Re-stamp team_joined_at whenever the team actually changes (including
+  // assignment from null → team, team → team', or team → null). Keep the
+  // existing value when team is unchanged so KRA windows stay stable.
+  const teamChanged = input.team !== undefined && input.team !== current.team;
+
   const result = await pool.query<UserRow>(
     `UPDATE users
      SET full_name = $2,
@@ -495,6 +516,10 @@ export async function updateUser(id: string, input: UpdateUserInput) {
          managed_by = $7,
          password_hash = $8,
          avatar_url = $9,
+         team_joined_at = CASE
+           WHEN $10::boolean THEN (CASE WHEN $6::text IS NULL THEN NULL ELSE NOW() END)
+           ELSE team_joined_at
+         END,
          updated_at = NOW()
      WHERE id = $1
      RETURNING *`,
@@ -508,6 +533,7 @@ export async function updateUser(id: string, input: UpdateUserInput) {
       managedBy,
       passwordHash,
       avatarUrl,
+      teamChanged,
     ],
   );
 

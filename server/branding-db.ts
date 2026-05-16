@@ -121,6 +121,8 @@ export interface KraReport {
   peer_count: number;
   admin_score: AdminKraScore | null;
   composite_score: number | null;
+  team_joined_at: string | null;       // when the user joined the branding team
+  kra_window_start: string;             // YYYY-MM-DD — first day counted in expected_report_days
   expected_report_days: number;
   submitted_report_days: number;
   missed_report_days: number;
@@ -749,6 +751,13 @@ export async function submitDailyReport(reportId: string, userId: string): Promi
   return { ...res.rows[0], rows, report_date: normalizeDate(res.rows[0].report_date) };
 }
 
+// Hard ceiling on a single uninterrupted "since" snapshot. A timer left
+// running unattended for hours/days would otherwise accumulate raw wall-clock
+// time and inflate elapsed_seconds wildly (we saw 100h+ rows in prod). 9h is
+// the upper bound of a plausible working session — anything beyond that is
+// almost certainly the user forgot to pause/finish.
+const MAX_STOPWATCH_SINCE_SECONDS = 9 * 3600;
+
 // Snapshot any running stopwatch row into a paused state with its accrued time
 // frozen, and derive time_taken from elapsed_seconds where missing. Mirrors
 // what the user-side submitReport() does in the browser, so auto-submitted
@@ -763,7 +772,8 @@ async function finalizeReportRowsForSubmit(reportId: string): Promise<void> {
     let elapsed = row.elapsed_seconds ?? 0;
     let newStatus: StopwatchStatus = status;
     if (status === 'running' && row.stopwatch_started_at) {
-      const since = Math.max(0, Math.floor((Date.now() - new Date(row.stopwatch_started_at).getTime()) / 1000));
+      const rawSince = Math.max(0, Math.floor((Date.now() - new Date(row.stopwatch_started_at).getTime()) / 1000));
+      const since = Math.min(rawSince, MAX_STOPWATCH_SINCE_SECONDS);
       elapsed = elapsed + since;
       newStatus = 'paused';
     }
@@ -1157,19 +1167,32 @@ function countWorkingDays(from: Date, to: Date): number {
 }
 
 // −1% per missed working day. Half-day approved leaves count as 0.5.
+// Expected-day window starts at the later of (1) month start and (2) the user's
+// team_joined_at, so new joiners and team-transferred members are not penalised
+// for days before they were on the team.
 async function computeMissedReportPenalty(
   userId: string, month: number, year: number
-): Promise<{ expected: number; submitted: number; missed: number; penaltyPct: number }> {
+): Promise<{ expected: number; submitted: number; missed: number; penaltyPct: number; effectiveStart: string }> {
   const today = new Date();
   const monthStart = new Date(year, month - 1, 1);
   const monthEnd = new Date(year, month, 0);
   const rangeEnd = today < monthEnd ? today : monthEnd;
-  if (rangeEnd < monthStart) {
-    return { expected: 0, submitted: 0, missed: 0, penaltyPct: 0 };
-  }
-  const workingDays = countWorkingDays(monthStart, rangeEnd);
 
-  const fromStr = monthStart.toISOString().split("T")[0];
+  // Clamp the window start to the team-join date when it falls inside this month.
+  const joinRes = await pool.query<{ team_joined_at: string | null }>(
+    `SELECT team_joined_at FROM users WHERE id = $1`,
+    [userId]
+  );
+  const joinedAtRaw = joinRes.rows[0]?.team_joined_at ?? null;
+  const joinedAt = joinedAtRaw ? new Date(joinedAtRaw) : null;
+  const effectiveStart = joinedAt && joinedAt > monthStart ? joinedAt : monthStart;
+
+  if (rangeEnd < effectiveStart) {
+    return { expected: 0, submitted: 0, missed: 0, penaltyPct: 0, effectiveStart: effectiveStart.toISOString().split('T')[0] };
+  }
+  const workingDays = countWorkingDays(effectiveStart, rangeEnd);
+
+  const fromStr = effectiveStart.toISOString().split("T")[0];
   const toStr = rangeEnd.toISOString().split("T")[0];
   const leaveRes = await pool.query<{ leave_date: string; is_half_day: boolean }>(
     `SELECT leave_date, is_half_day FROM branding_leaves
@@ -1202,12 +1225,13 @@ async function computeMissedReportPenalty(
     submitted,
     missed,
     penaltyPct,
+    effectiveStart: fromStr,
   };
 }
 
 export async function getKraReport(userId: string, month: number, year: number): Promise<KraReport | null> {
-  const userRes = await pool.query<{ full_name: string }>(
-    `SELECT full_name FROM users WHERE id = $1`, [userId]
+  const userRes = await pool.query<{ full_name: string; team_joined_at: string | null }>(
+    `SELECT full_name, team_joined_at FROM users WHERE id = $1`, [userId]
   );
   if (!userRes.rows[0]) return null;
   const params   = await listKraParameters();
@@ -1229,6 +1253,8 @@ export async function getKraReport(userId: string, month: number, year: number):
     user_id: userId, user_name: userRes.rows[0].full_name, month, year,
     self_appraisal: self, peer_average: peerAvg, peer_count: peers.length,
     admin_score: admin, composite_score: composite,
+    team_joined_at: userRes.rows[0].team_joined_at ?? null,
+    kra_window_start: penalty.effectiveStart,
     expected_report_days: penalty.expected,
     submitted_report_days: penalty.submitted,
     missed_report_days: penalty.missed,
