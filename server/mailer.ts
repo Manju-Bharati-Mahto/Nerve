@@ -22,17 +22,25 @@ interface MailOptions {
 
 export async function sendMail(opts: MailOptions): Promise<void> {
   const transport = createTransport();
-  if (!transport) {
-    // Dev fallback: print to console
-    console.log(`\n📧 [MAIL — no SMTP configured]\nTo: ${opts.to}\nSubject: ${opts.subject}\n${opts.html.replace(/<[^>]+>/g, "")}\n`);
+  if (transport) {
+    await transport.sendMail({
+      from: `"Parul University" <${config.smtp.from}>`,
+      to: opts.to,
+      subject: opts.subject,
+      html: opts.html,
+    });
     return;
   }
-  await transport.sendMail({
-    from: `"Parul University" <${config.smtp.from}>`,
-    to: opts.to,
-    subject: opts.subject,
-    html: opts.html,
-  });
+  // No SMTP configured — fall back to TradAI when its API key is set.
+  // Keeps a single sendMail() call site for all auth flows (password OTP,
+  // password reset link, change-password OTP) regardless of which transport
+  // the deployment has wired up.
+  if (TRADAI_API_KEY) {
+    await sendTradAiMail({ to: opts.to, subject: opts.subject, html: opts.html });
+    return;
+  }
+  // Dev fallback: print to console
+  console.log(`\n📧 [MAIL — no SMTP or TradAI configured]\nTo: ${opts.to}\nSubject: ${opts.subject}\n${opts.html.replace(/<[^>]+>/g, "")}\n`);
 }
 
 export function passwordOtpEmail(name: string, otp: string): string {
