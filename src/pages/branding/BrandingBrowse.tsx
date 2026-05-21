@@ -164,7 +164,7 @@ function UploadDialog({ categories, onUploaded, onClose }: UploadDialogProps) {
         <form onSubmit={handleSubmit} className="p-5 space-y-4">
           <div
             onClick={() => fileRef.current?.click()}
-            className="relative border-2 border-dashed border-border rounded-xl overflow-hidden cursor-pointer hover:border-pink-400 transition-colors bg-muted/30"
+            className="relative border-2 border-dashed border-border rounded-xl overflow-hidden cursor-pointer hover:border-green-500 transition-colors bg-muted/30"
             style={{ minHeight: 180 }}
           >
             {preview
@@ -215,7 +215,7 @@ function UploadDialog({ categories, onUploaded, onClose }: UploadDialogProps) {
             <button type="button" onClick={onClose}
               className="px-4 py-2 text-sm rounded-lg border border-border text-muted-foreground hover:bg-accent">Cancel</button>
             <button type="submit" disabled={uploading}
-              className="px-4 py-2 text-sm rounded-lg bg-pink-600 text-white hover:bg-pink-700 disabled:opacity-50 flex items-center gap-2">
+              className="px-4 py-2 text-sm rounded-lg bg-green-800 text-white hover:bg-green-900 disabled:opacity-50 flex items-center gap-2">
               <Upload className="w-3.5 h-3.5" />{uploading ? 'Uploading…' : 'Upload'}
             </button>
           </div>
@@ -316,8 +316,8 @@ function Lightbox({ designs, index, canDelete, isAdminLevel, canSeeVoters, onDel
 
             {/* Owner */}
             <div className="flex items-center gap-2.5 py-2.5 border-t border-border">
-              <div className="w-8 h-8 rounded-full bg-pink-100 flex items-center justify-center shrink-0">
-                <span className="text-xs font-bold text-pink-600">{(d.uploader_name || 'U')[0].toUpperCase()}</span>
+              <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center shrink-0">
+                <span className="text-xs font-bold text-green-800">{(d.uploader_name || 'U')[0].toUpperCase()}</span>
               </div>
               <div>
                 <p className="text-sm font-medium text-foreground">{d.uploader_name}</p>
@@ -343,7 +343,7 @@ function Lightbox({ designs, index, canDelete, isAdminLevel, canSeeVoters, onDel
             {d.tags.length > 0 && (
               <div className="flex flex-wrap gap-1.5 border-t border-border pt-2">
                 {d.tags.map(tag => (
-                  <span key={tag} className="flex items-center gap-1 text-xs bg-pink-50 text-pink-700 px-2 py-0.5 rounded-full">
+                  <span key={tag} className="flex items-center gap-1 text-xs bg-green-50 text-green-800 px-2 py-0.5 rounded-full">
                     <Tag className="w-2.5 h-2.5" />{tag}
                   </span>
                 ))}
@@ -357,7 +357,7 @@ function Lightbox({ designs, index, canDelete, isAdminLevel, canSeeVoters, onDel
                   <button
                     onClick={loadVoters}
                     disabled={votersLoading}
-                    className="text-xs text-pink-600 hover:underline disabled:opacity-50"
+                    className="text-xs text-green-800 hover:underline disabled:opacity-50"
                   >
                     {votersLoading ? 'Loading…' : `View voters (${d.upvotes + d.downvotes})`}
                   </button>
@@ -480,7 +480,7 @@ function DesignCard({
           <div className="min-w-0">
             <p className="text-white text-xs font-semibold line-clamp-1 drop-shadow">{design.title}</p>
             <div className="flex items-center gap-1 mt-0.5">
-              <div className="w-4 h-4 rounded-full bg-pink-500 flex items-center justify-center shrink-0">
+              <div className="w-4 h-4 rounded-full bg-green-500 flex items-center justify-center shrink-0">
                 <span className="text-[8px] font-bold text-white">{(design.uploader_name || 'U')[0].toUpperCase()}</span>
               </div>
               <span className="text-white/80 text-[10px] truncate">{design.uploader_name}</span>
@@ -595,12 +595,15 @@ export default function BrandingBrowse() {
       {/* Header */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-2xl font-serif text-foreground">Design Gallery</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">{designs.length} designs</p>
+          <h1 className="text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Design Gallery</h1>
+          <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>
+            {designs.length} design{designs.length === 1 ? '' : 's'} from the branding team
+          </p>
         </div>
         <button
           onClick={() => setShowUpload(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-pink-600 text-white rounded-xl text-sm hover:bg-pink-700 transition-colors shadow-sm"
+          className="flex items-center gap-2 px-4 py-2 text-white rounded-xl text-sm hover:opacity-90 transition-opacity shadow-sm"
+          style={{ background: '#1a472a' }}
         >
           <Upload className="w-4 h-4" />Upload Design
         </button>
@@ -621,14 +624,14 @@ export default function BrandingBrowse() {
           onClick={() => setFiltersOpen(o => !o)}
           className={`flex items-center gap-2 px-4 py-2.5 text-sm rounded-xl border transition-colors ${
             filtersOpen || activeFilterCount > 0
-              ? 'border-pink-500 text-pink-600 bg-pink-50'
+              ? 'border-green-700 text-green-800 bg-green-50'
               : 'border-border text-muted-foreground hover:bg-accent'
           }`}
         >
           <Filter className="w-4 h-4" />
           Filters
           {activeFilterCount > 0 && (
-            <span className="ml-0.5 w-4 h-4 rounded-full bg-pink-600 text-white text-[10px] flex items-center justify-center font-bold">
+            <span className="ml-0.5 w-4 h-4 rounded-full bg-green-800 text-white text-[10px] flex items-center justify-center font-bold">
               {activeFilterCount}
             </span>
           )}
@@ -673,7 +676,7 @@ export default function BrandingBrowse() {
           {activeFilterCount > 0 && (
             <button
               onClick={() => { setFilterCategory(''); setFilterUploader(''); setFilterDateFrom(''); setFilterDateTo('') }}
-              className="mt-3 text-xs text-pink-600 hover:underline"
+              className="mt-3 text-xs text-green-800 hover:underline"
             >
               Clear all filters
             </button>

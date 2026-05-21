@@ -30,6 +30,7 @@ import AINewsletterPage from "@/pages/AINewsletter";
 
 // Branding team
 import BrandingAdminDashboard from "@/pages/branding/BrandingAdminDashboard";
+import { MaybeBrandingAdminShell } from "@/pages/branding/BrandingAdminShell";
 import BrandingSubAdminDashboard from "@/pages/branding/BrandingSubAdminDashboard";
 import BrandingUserDashboard from "@/pages/branding/BrandingUserDashboard";
 import BrandingTeamPanel from "@/pages/branding/BrandingTeamPanel";
@@ -124,12 +125,16 @@ const App = () => (
               } />
               <Route path="/branding/team" element={
                 <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding">
-                  <BrandingTeamPanel />
+                  <MaybeBrandingAdminShell>
+                    <BrandingTeamPanel />
+                  </MaybeBrandingAdminShell>
                 </RoleGuard>
               } />
               <Route path="/branding/browse" element={
                 <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']} team="branding">
-                  <BrandingBrowse />
+                  <MaybeBrandingAdminShell>
+                    <BrandingBrowse />
+                  </MaybeBrandingAdminShell>
                 </RoleGuard>
               } />
 
@@ -210,7 +215,9 @@ const App = () => (
               {/* ── Shared admin tools ── */}
               <Route path="/admin/export" element={
                 <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']}>
-                  <AdminExportPage />
+                  <MaybeBrandingAdminShell>
+                    <AdminExportPage />
+                  </MaybeBrandingAdminShell>
                 </RoleGuard>
               } />
               <Route path="/ai/query" element={
