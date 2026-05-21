@@ -20,6 +20,11 @@ import { toast } from 'sonner'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
+// Roles whose members manage the team rather than submit daily reports.
+// Used to filter the admin dashboard's user surfaces so admins don't
+// appear in cards, KRA cubes, top contributors, etc.
+const NON_SUBMITTING_ROLES = new Set(['super_admin', 'admin', 'branding_reports_admin'])
+
 const INP = 'w-full text-sm px-3 py-2 rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-green-300 transition-all'
 const SEL = 'text-sm px-3 py-2 rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-green-300 transition-all cursor-pointer'
 
@@ -446,6 +451,13 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
 
   const selectedReport = dashboard.find(r => r.user_id === selectedUser)
 
+  // Filter out KRA entries for non-submitting roles (admins / reports
+  // admins) so only graded employees appear in the cube grid.
+  const kraMembers = useMemo(() => {
+    const ids = new Set(brandingUsers.map(b => b.id))
+    return dashboard.filter(r => ids.has(r.user_id))
+  }, [dashboard, brandingUsers])
+
   function downloadKraCsv() {
     const rows: string[][] = [['User', 'Self Score', 'Peer Score', 'Admin Score', 'Composite', 'Missed Days', 'Auto Penalty %', 'Manual Penalty %', 'Total Penalty %', 'Final Score', 'Status']]
     for (const r of dashboard) {
@@ -535,9 +547,12 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
               the scoring panel on the right. */}
           <div>
             <h3 className="text-base font-extrabold font-serif mb-3" style={{ color: '#1a472a' }}>Team Members</h3>
-            {dashboard.length === 0 && <p className="text-sm text-gray-400 py-4">No team members found.</p>}
+            {/* Restrict KRA cubes to people in `brandingUsers` so the
+                team-admin / reports-admin entries the API may return
+                don't get scored — they aren't graded employees. */}
+            {kraMembers.length === 0 && <p className="text-sm text-gray-400 py-4">No team members found.</p>}
             <div className="grid grid-cols-3 gap-3">
-              {dashboard.map(r => {
+              {kraMembers.map(r => {
                 const composite = r.composite_score
                 const final = r.composite_score_after_penalty
                 const u = brandingUsers.find(b => b.id === r.user_id)
@@ -1250,8 +1265,12 @@ export default function BrandingAdminDashboard() {
   const section: AdminSection = SECTION_BY_PATH[location.pathname] ?? 'reports'
   const meta = SECTION_META[section]
 
+  // Only people who actually submit daily reports belong in the admin
+  // dashboard's user surfaces (cards, KRA cubes, Team Summary, top-4,
+  // collaboration map). Roles like `admin` and `branding_reports_admin`
+  // exist to manage the team, not to log work, so they're excluded.
   const brandingUsers = useMemo(() =>
-    users.filter(u => u.team === 'branding' && u.role !== 'super_admin')
+    users.filter(u => u.team === 'branding' && !NON_SUBMITTING_ROLES.has(u.role))
       .map(u => ({ id: u.id, full_name: u.full_name, email: u.email, avatar_url: u.avatar_url ?? null })),
     [users]
   )
