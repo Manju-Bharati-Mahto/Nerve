@@ -4,7 +4,7 @@ import type { TeamRecord, AppUser } from '@/lib/app-types'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
 import { getErrorMessage } from '@/lib/error-utils'
-import { Crown, Shield, UserCheck, User, Search, RefreshCw, Plus, Trash2, Layers, Megaphone } from 'lucide-react'
+import { Crown, Shield, UserCheck, User, Search, RefreshCw, Plus, Trash2, Layers, Megaphone, ClipboardList } from 'lucide-react'
 import type { AppRole } from '@/lib/constants'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -16,6 +16,7 @@ const ROLE_CFG: Record<AppRole, { label: string; icon: React.ElementType; color:
   sub_admin: { label: 'Team Lead', icon: UserCheck, color: 'text-teal-600', bg: 'bg-teal-100' },
   user: { label: 'Member', icon: User, color: 'text-green-600', bg: 'bg-green-100' },
   outreach_manager: { label: 'Outreach Manager', icon: Megaphone, color: 'text-orange-600', bg: 'bg-orange-100' },
+  branding_reports_admin: { label: 'Reports Admin', icon: ClipboardList, color: 'text-pink-600', bg: 'bg-pink-100' },
 }
 
 const BLANK_USER = { full_name: '', email: '', password: '', department: '' }
@@ -32,6 +33,7 @@ const CUSTOM_COLORS = [
 
 const ROLE_LABEL: Record<AppRole, string> = {
   super_admin: 'Super Admin', admin: 'Admin', sub_admin: 'Team Lead', user: 'Member', outreach_manager: 'Outreach Manager',
+  branding_reports_admin: 'Reports Admin',
 }
 
 function UserRow({
@@ -78,6 +80,7 @@ function UserRow({
             <option value="sub_admin">Team Lead</option>
             <option value="admin">Admin</option>
             <option value="outreach_manager">Outreach Manager</option>
+            <option value="branding_reports_admin">Reports Admin</option>
           </select>
           <select
             className="hub-input text-xs py-1 w-32"
@@ -215,8 +218,12 @@ export default function SuperAdminUsers() {
     return out
   }, [users])
 
-  const roleGroups: { role: AppRole; label: string; addLabel: string }[] = [
+  // `onlyTeam` restricts the group's "Add X" button + section to one team.
+  // Branding-reports-admin only makes sense on the branding team (server RBAC
+  // hard-checks team === 'branding'), so we hide the group elsewhere.
+  const roleGroups: { role: AppRole; label: string; addLabel: string; onlyTeam?: string }[] = [
     { role: 'admin', label: 'Admins', addLabel: 'Add Admin' },
+    { role: 'branding_reports_admin', label: 'Reports Admins', addLabel: 'Add Reports Admin', onlyTeam: 'branding' },
     { role: 'outreach_manager', label: 'Outreach Managers', addLabel: 'Add Outreach Manager' },
     { role: 'sub_admin', label: 'Team Leads', addLabel: 'Add Team Lead' },
     { role: 'user', label: 'Members', addLabel: 'Add Member' },
@@ -309,7 +316,7 @@ export default function SuperAdminUsers() {
             </div>
 
             <div className="p-5 space-y-5">
-              {roleGroups.map(({ role, label: groupLabel, addLabel }) => {
+              {roleGroups.filter(g => !g.onlyTeam || g.onlyTeam === t.id).map(({ role, label: groupLabel, addLabel }) => {
                 const groupUsers = visible.filter(u => u.team === t.id && u.role === role)
                 return (
                   <div key={role}>

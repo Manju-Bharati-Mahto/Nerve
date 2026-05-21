@@ -1,4 +1,4 @@
-export type SeedRole = "super_admin" | "admin" | "sub_admin" | "user" | "outreach_manager";
+export type SeedRole = "super_admin" | "admin" | "sub_admin" | "user" | "outreach_manager" | "branding_reports_admin";
 
 export interface SeedTeam {
   id: string;

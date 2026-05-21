@@ -93,7 +93,7 @@ const App = () => (
 
               {/* ── Branding team routes ── */}
               <Route path="/branding/dashboard" element={
-                <RoleGuard allowed={['super_admin', 'admin']} team="branding">
+                <RoleGuard allowed={['super_admin', 'admin', 'branding_reports_admin']} team="branding">
                   <BrandingAdminDashboard />
                 </RoleGuard>
               } />
@@ -108,7 +108,7 @@ const App = () => (
                 </RoleGuard>
               } />
               <Route path="/branding/categories" element={
-                <RoleGuard allowed={['super_admin', 'admin']} team="branding">
+                <RoleGuard allowed={['super_admin', 'admin', 'branding_reports_admin']} team="branding">
                   <BrandingAdminDashboard />
                 </RoleGuard>
               } />
