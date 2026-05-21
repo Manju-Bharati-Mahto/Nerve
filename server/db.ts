@@ -275,7 +275,7 @@ export async function bootstrapDatabase() {
       full_name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
       department TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager')),
+      role TEXT NOT NULL CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager', 'branding_reports_admin')),
       team TEXT REFERENCES teams(id) ON DELETE SET NULL,
       managed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
       password_hash TEXT NOT NULL,
@@ -302,13 +302,15 @@ export async function bootstrapDatabase() {
      WHERE team_joined_at IS NULL AND team IS NOT NULL
   `);
 
-  // Widen role CHECK constraint to include outreach_manager (safe migration)
+  // Widen role CHECK constraint to include all current roles (safe migration).
+  // branding_reports_admin: branding-team admin restricted to Daily Reports +
+  // Manage Categories. Doesn't get KRA or Leave Requests.
   await pool.query(`
     DO $$
     BEGIN
       ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
       ALTER TABLE users ADD CONSTRAINT users_role_check
-        CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager'));
+        CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager', 'branding_reports_admin'));
     END $$;
   `);
 

@@ -737,6 +737,13 @@ function isBrandingTeamMember(role: AppRole, team: string | null) {
 function isBrandingAdminOrSuper(role: AppRole, team: string | null) {
   return role === "super_admin" || (team === "branding" && role === "admin");
 }
+// Daily-reports + category management can be delegated to the
+// `branding_reports_admin` role. KRA, leaves, peer-marking etc. stay
+// admin-only.
+function isBrandingReportsAdminOrAdminOrSuper(role: AppRole, team: string | null) {
+  return isBrandingAdminOrSuper(role, team)
+    || (team === "branding" && role === "branding_reports_admin");
+}
 
 function requireBranding(res: express.Response): boolean {
   const u = res.locals.currentUser;
@@ -750,6 +757,15 @@ function requireBrandingAdmin(res: express.Response): boolean {
   const u = res.locals.currentUser;
   if (!isBrandingAdminOrSuper(u.role, u.team)) {
     sendError(res, 403, "Branding admin access only.");
+    return false;
+  }
+  return true;
+}
+// For Daily Reports + Category endpoints — accepts branding_reports_admin too.
+function requireBrandingReportsAdmin(res: express.Response): boolean {
+  const u = res.locals.currentUser;
+  if (!isBrandingReportsAdminOrAdminOrSuper(u.role, u.team)) {
+    sendError(res, 403, "Branding admin or reports-admin access only.");
     return false;
   }
   return true;
@@ -770,14 +786,14 @@ app.get("/api/branding/portal/categories", asyncHandler(async (_req, res) => {
 }));
 
 app.post("/api/branding/portal/categories", asyncHandler(async (req, res) => {
-  if (!requireBrandingAdmin(res)) return;
+  if (!requireBrandingReportsAdmin(res)) return;
   const { name } = z.object({ name: z.string().min(1) }).parse(req.body);
   const category = await createWorkCategory(name);
   res.status(201).json({ category });
 }));
 
 app.patch("/api/branding/portal/categories/:id", asyncHandler(async (req, res) => {
-  if (!requireBrandingAdmin(res)) return;
+  if (!requireBrandingReportsAdmin(res)) return;
   const { name } = z.object({ name: z.string().min(1) }).parse(req.body);
   const ok = await updateWorkCategory(getSingleParam(req.params.id), name);
   if (!ok) return sendError(res, 404, "Category not found.");
@@ -785,27 +801,27 @@ app.patch("/api/branding/portal/categories/:id", asyncHandler(async (req, res) =
 }));
 
 app.delete("/api/branding/portal/categories/:id", asyncHandler(async (req, res) => {
-  if (!requireBrandingAdmin(res)) return;
+  if (!requireBrandingReportsAdmin(res)) return;
   const result = await deleteWorkCategory(getSingleParam(req.params.id));
   res.json({ ok: true, usageCount: result.usageCount });
 }));
 
 app.post("/api/branding/portal/categories/reorder", asyncHandler(async (req, res) => {
-  if (!requireBrandingAdmin(res)) return;
+  if (!requireBrandingReportsAdmin(res)) return;
   const { orderedIds } = z.object({ orderedIds: z.array(z.string()) }).parse(req.body);
   await reorderWorkCategories(orderedIds);
   res.json({ ok: true });
 }));
 
 app.post("/api/branding/portal/categories/:id/sub", asyncHandler(async (req, res) => {
-  if (!requireBrandingAdmin(res)) return;
+  if (!requireBrandingReportsAdmin(res)) return;
   const { name } = z.object({ name: z.string().min(1) }).parse(req.body);
   const sub = await createWorkSubCategory(getSingleParam(req.params.id), name);
   res.status(201).json({ sub });
 }));
 
 app.patch("/api/branding/portal/sub-categories/:id", asyncHandler(async (req, res) => {
-  if (!requireBrandingAdmin(res)) return;
+  if (!requireBrandingReportsAdmin(res)) return;
   const { name } = z.object({ name: z.string().min(1) }).parse(req.body);
   const ok = await updateWorkSubCategory(getSingleParam(req.params.id), name);
   if (!ok) return sendError(res, 404, "Sub-category not found or is a protected 'Others' entry.");
@@ -813,7 +829,7 @@ app.patch("/api/branding/portal/sub-categories/:id", asyncHandler(async (req, re
 }));
 
 app.delete("/api/branding/portal/sub-categories/:id", asyncHandler(async (req, res) => {
-  if (!requireBrandingAdmin(res)) return;
+  if (!requireBrandingReportsAdmin(res)) return;
   const result = await deleteWorkSubCategory(getSingleParam(req.params.id));
   res.json({ ok: true, usageCount: result.usageCount });
 }));
@@ -866,7 +882,10 @@ app.get("/api/branding/portal/reports", asyncHandler(async (req, res) => {
   if (!requireBranding(res)) return;
   const q = req.query as Record<string, string | string[]>;
   const user = res.locals.currentUser;
-  const isAdmin = isBrandingAdminOrSuper(user.role, user.team);
+  // Treat branding_reports_admin like an admin for the purposes of fetching
+  // all team reports — that role's whole point is read-access to everyone's
+  // daily submissions.
+  const isAdmin = isBrandingReportsAdminOrAdminOrSuper(user.role, user.team);
   const teamScope = q["scope"] === "team"; // non-admin members may opt-in for live-collab UI
 
   // Parse userIds: supports ?userId=id1&userId=id2 (array) or ?userId=id1 (single)
@@ -1509,14 +1528,11 @@ const outreachLivePostsSchema = z.object({
   page_id: z.string().min(1).optional(),
   creator_id: z.string().min(1).optional(),
   urls: z.array(z.string().min(1)).min(1).max(20),
+  /** Optional set/creative variant — must be one of the campaign's variants when set. */
+  creative_variant: z.string().min(1).optional(),
 }).refine(
   d => Boolean(d.page_id) !== Boolean(d.creator_id),
   { message: "Provide exactly one of page_id or creator_id." },
-).refine(
-  // Page-side flow still demands a campaign — keeps the existing rule that a
-  // live page post must belong to a campaign so attribution doesn't drift.
-  d => !d.page_id || !!d.campaign_id,
-  { message: "campaign_id is required when page_id is provided." },
 );
 
 app.post("/api/outreach/posts/fetch-by-urls", asyncHandler(async (req, res) => {
@@ -1529,6 +1545,7 @@ app.post("/api/outreach/posts/fetch-by-urls", asyncHandler(async (req, res) => {
       pageId: parsed.data.page_id,
       creatorId: parsed.data.creator_id,
       urls: parsed.data.urls,
+      creativeVariant: parsed.data.creative_variant,
     });
     res.json(result);
   } catch (err) {

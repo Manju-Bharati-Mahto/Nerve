@@ -33,6 +33,7 @@ export interface DailyReportRow {
   elapsed_seconds: number;
   stopwatch_started_at: string | null;
   carried_over_from_row_id: string | null;
+  last_paused_at: string | null;
 }
 
 export interface DraftRow {
@@ -47,6 +48,7 @@ export interface DraftRow {
   elapsed_seconds: number;
   stopwatch_started_at: string | null;
   carried_over_from_row_id: string | null;
+  last_paused_at: string | null;
 }
 
 export interface DailyReport {

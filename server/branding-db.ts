@@ -52,6 +52,10 @@ export interface DailyReportRow {
   elapsed_seconds: number;
   stopwatch_started_at: string | null;
   carried_over_from_row_id: string | null;
+  /** Set by the client when the row transitions to paused or finished.
+   *  Null while running/idle, and reset to null when a row is carried over
+   *  to the next day (it's freshly active for that day). */
+  last_paused_at: string | null;
 }
 
 export interface SaveRowInput {
@@ -65,6 +69,7 @@ export interface SaveRowInput {
   elapsed_seconds?: number;
   stopwatch_started_at?: string | null;
   carried_over_from_row_id?: string | null;
+  last_paused_at?: string | null;
 }
 
 export interface KraParameter {
@@ -333,6 +338,11 @@ export async function bootstrapBrandingDatabase() {
   await pool.query(`ALTER TABLE daily_report_rows ADD COLUMN IF NOT EXISTS elapsed_seconds INTEGER NOT NULL DEFAULT 0`);
   await pool.query(`ALTER TABLE daily_report_rows ADD COLUMN IF NOT EXISTS stopwatch_started_at TIMESTAMPTZ`);
   await pool.query(`ALTER TABLE daily_report_rows ADD COLUMN IF NOT EXISTS carried_over_from_row_id TEXT`);
+  // Wall-clock timestamp of the most recent transition into paused/finished.
+  // Drives the per-day status caption in the chart popup. Reset to NULL on
+  // carry-over so each new day starts fresh; the client supplies it on every
+  // pause/finish save.
+  await pool.query(`ALTER TABLE daily_report_rows ADD COLUMN IF NOT EXISTS last_paused_at TIMESTAMPTZ`);
 
   // ── Migration: manual penalty on admin_kra_scores ────────────────────────
   await pool.query(`ALTER TABLE admin_kra_scores ADD COLUMN IF NOT EXISTS manual_penalty_percent NUMERIC(5,2) NOT NULL DEFAULT 0`);
@@ -464,6 +474,7 @@ interface ReportRowDb {
   elapsed_seconds: number;
   stopwatch_started_at: string | null;
   carried_over_from_row_id: string | null;
+  last_paused_at: string | null;
 }
 interface KraParamRow {
   id: string; name: string; description: string; max_score: number; sort_order: number;
@@ -586,7 +597,18 @@ async function fetchReportRows(reportId: string): Promise<DailyReportRow[]> {
 }
 
 function normalizeDate(d: string | Date | unknown): string {
-  if (d instanceof Date) return d.toISOString().split("T")[0];
+  if (d instanceof Date) {
+    // node-postgres returns a DATE column as a JS Date at local-midnight
+    // (e.g. 2026-05-21 → Date('2026-05-21T00:00:00+05:30') = 2026-05-20T18:30Z).
+    // Calling toISOString() then split('T')[0] would silently drop the date
+    // by one day in any non-UTC timezone, which breaks the 9 PM IST cutoff
+    // check for the entire calendar day. Use local components so the YYYY-MM-DD
+    // we return matches the report_date the user actually picked.
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
   if (typeof d === "string" && d.includes("T")) return d.split("T")[0];
   return String(d);
 }
@@ -719,18 +741,42 @@ export async function saveReportRows(reportId: string, userId: string, rows: Sav
   const saved: DailyReportRow[] = [];
   for (const row of rows) {
     const id = generateId("drr");
-    const status: StopwatchStatus = row.stopwatch_status ?? 'idle';
+    let status: StopwatchStatus = row.stopwatch_status ?? 'idle';
     const elapsed = row.elapsed_seconds ?? 0;
-    const startedAt = status === 'running' ? (row.stopwatch_started_at ?? new Date().toISOString()) : null;
+    let startedAt: string | null = row.stopwatch_started_at ?? null;
+    let lastPausedAt: string | null = row.last_paused_at ?? null;
+    // Only running rows carry a started_at; everything else is null. Crucially,
+    // if a row arrives as "running" without an explicit started_at, do NOT
+    // re-stamp NOW() — that silently restarts the clock and inflates elapsed
+    // on the next read. Treat it as paused: the user must hit Start/Continue
+    // to begin a new tracked interval.
+    if (status === 'running') {
+      if (!startedAt) {
+        status = 'paused';
+        // Promote to paused → record the pause moment if the client didn't.
+        if (!lastPausedAt) lastPausedAt = new Date().toISOString();
+      } else {
+        // Genuinely running — clear any stale pause stamp.
+        lastPausedAt = null;
+      }
+    } else {
+      startedAt = null;
+      // For paused/finished rows, fall back to NOW() when the client omitted
+      // the timestamp (e.g. legacy clients). Idle rows get null.
+      if ((status === 'paused' || status === 'finished') && !lastPausedAt) {
+        lastPausedAt = new Date().toISOString();
+      }
+      if (status === 'idle') lastPausedAt = null;
+    }
     const res = await pool.query<ReportRowDb>(
       `INSERT INTO daily_report_rows
          (id, report_id, sr_no, type_of_work, sub_category, specific_work, time_taken,
           collaborative_colleagues, stopwatch_status, elapsed_seconds, stopwatch_started_at,
-          carried_over_from_row_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+          carried_over_from_row_id, last_paused_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
       [id, reportId, row.sr_no, row.type_of_work, row.sub_category,
        row.specific_work, row.time_taken, row.collaborative_colleagues,
-       status, elapsed, startedAt, row.carried_over_from_row_id ?? null]
+       status, elapsed, startedAt, row.carried_over_from_row_id ?? null, lastPausedAt]
     );
     saved.push(res.rows[0]);
   }
@@ -1153,14 +1199,14 @@ function compositeScore(
   return count ? Math.round((total / count) * 10) / 10 : null;
 }
 
-// Working days (Mon-Fri) from `from` through `to` inclusive.
+// Working days (Mon-Sat) from `from` through `to` inclusive. Only Sunday is
+// off — Saturday is a working day for the branding team.
 function countWorkingDays(from: Date, to: Date): number {
   let count = 0;
   const d = new Date(from.getFullYear(), from.getMonth(), from.getDate());
   const last = new Date(to.getFullYear(), to.getMonth(), to.getDate());
   while (d <= last) {
-    const dow = d.getDay();
-    if (dow !== 0 && dow !== 6) count++;
+    if (d.getDay() !== 0) count++;
     d.setDate(d.getDate() + 1);
   }
   return count;
@@ -1203,8 +1249,9 @@ async function computeMissedReportPenalty(
   let leaveOffset = 0;
   for (const r of leaveRes.rows) {
     const d = new Date(r.leave_date);
-    const dow = d.getDay();
-    if (dow === 0 || dow === 6) continue;
+    // Sunday is the only off-day — Saturday counts as a working day, so a
+    // Saturday leave is real.
+    if (d.getDay() === 0) continue;
     leaveOffset += r.is_half_day ? 0.5 : 1;
   }
   const expected = Math.max(0, workingDays - leaveOffset);

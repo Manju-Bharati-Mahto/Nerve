@@ -64,6 +64,7 @@ function blankRow(sr: number): DraftRow {
     collaborative_colleagues: [],
     stopwatch_status: 'idle', elapsed_seconds: 0,
     stopwatch_started_at: null, carried_over_from_row_id: null,
+    last_paused_at: null,
   }
 }
 
@@ -72,6 +73,43 @@ function blankRow(sr: number): DraftRow {
 // running unattended would otherwise accrue raw wall-clock time and inflate
 // elapsed_seconds. 9h is the upper bound of a plausible working session.
 const MAX_STOPWATCH_SINCE_SECONDS = 9 * 3600
+
+// Per-day elapsed for a row whose work may span multiple days via carry-over.
+// `elapsed_seconds` is cumulative across the chain; this returns just what was
+// tracked on the day of `row`. If we can't locate the prior-day source row in
+// the loaded reports, we conservatively fall back to the cumulative value.
+function perDayElapsedSeconds(
+  row: { elapsed_seconds: number; carried_over_from_row_id: string | null },
+  allReports: { rows?: { id: string; elapsed_seconds: number }[] }[],
+): number {
+  if (!row.carried_over_from_row_id) return row.elapsed_seconds
+  for (const rep of allReports) {
+    const src = rep.rows?.find(r => r.id === row.carried_over_from_row_id)
+    if (src) return Math.max(0, row.elapsed_seconds - src.elapsed_seconds)
+  }
+  return row.elapsed_seconds
+}
+
+function StatusBadge({ status, lastPausedAt }: { status: 'idle' | 'running' | 'paused' | 'finished'; lastPausedAt: string | null }) {
+  const cfg = {
+    idle:     { label: 'Not started', cls: 'bg-gray-100 text-gray-600' },
+    running:  { label: 'Running',     cls: 'bg-amber-100 text-amber-700' },
+    paused:   { label: 'Paused',      cls: 'bg-orange-100 text-orange-700' },
+    finished: { label: 'Finished',    cls: 'bg-green-100 text-green-700' },
+  }[status]
+  return (
+    <div className="inline-flex flex-col items-start">
+      <span className={`text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${cfg.cls}`}>
+        {cfg.label}
+      </span>
+      {lastPausedAt && (status === 'paused' || status === 'finished') && (
+        <span className="text-[10px] text-gray-500 mt-0.5">
+          at {new Date(lastPausedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
+        </span>
+      )}
+    </div>
+  )
+}
 
 // ── Stopwatch cell ─────────────────────────────────────────────────────────
 //   idle → Start → running → Pause → paused → Continue → running … → Finish → finished
@@ -110,13 +148,14 @@ function StopwatchCell({
   }
 
   const isCarried = !!row.carried_over_from_row_id
-  const start  = () => void onAction({ stopwatch_status: 'running', stopwatch_started_at: new Date().toISOString() })
-  const pause  = () => void onAction({ stopwatch_status: 'paused', elapsed_seconds: liveSeconds, stopwatch_started_at: null })
-  const cont   = () => void onAction({ stopwatch_status: 'running', stopwatch_started_at: new Date().toISOString() })
+  const start  = () => void onAction({ stopwatch_status: 'running', stopwatch_started_at: new Date().toISOString(), last_paused_at: null })
+  const pause  = () => void onAction({ stopwatch_status: 'paused', elapsed_seconds: liveSeconds, stopwatch_started_at: null, last_paused_at: new Date().toISOString() })
+  const cont   = () => void onAction({ stopwatch_status: 'running', stopwatch_started_at: new Date().toISOString(), last_paused_at: null })
   const finish = () => void onAction({
     stopwatch_status: 'finished',
     elapsed_seconds: liveSeconds,
     stopwatch_started_at: null,
+    last_paused_at: new Date().toISOString(),
     time_taken: liveSeconds > 0 ? elapsedToTimeTaken(liveSeconds) : '0m',
   })
 
@@ -179,8 +218,9 @@ function workingDaysSoFar(): number {
   const now = new Date()
   let count = 0
   for (let d = 1; d <= now.getDate(); d++) {
+    // Sunday (0) is the only off-day. Saturday counts.
     const day = new Date(now.getFullYear(), now.getMonth(), d).getDay()
-    if (day !== 0 && day !== 6) count++
+    if (day !== 0) count++
   }
   return count
 }
@@ -1464,15 +1504,37 @@ function DashboardPage({
                 <h2 className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>
                   Report — {new Date(reportPopup.report_date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
                 </h2>
-                <p className="text-xs font-semibold mt-0.5 flex items-center gap-1.5" style={{ color: '#52b788' }}>
+                <p className="text-xs font-semibold mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: '#52b788' }}>
                   {reportPopup.is_locked
                     ? <><Lock className="w-3 h-3 text-green-600" /><span className="text-green-600 font-medium">Submitted</span></>
                     : <><AlertCircle className="w-3 h-3 text-amber-500" /><span className="text-amber-600 font-medium">Draft</span></>
                   }
-                  <span className="text-gray-300">·</span>
-                  Total: <span className="font-semibold text-gray-700">
-                    {Math.round((reportPopup.rows?.reduce((s, r) => s + timeToHours(r.time_taken), 0) ?? 0) * 10) / 10} hrs
-                  </span>
+                  {reportPopup.is_locked && reportPopup.submitted_at && (
+                    <>
+                      <span className="text-gray-300">·</span>
+                      <span className="font-normal text-gray-500">
+                        on {new Date(reportPopup.submitted_at).toLocaleString('en-GB', {
+                          day: 'numeric', month: 'short', year: 'numeric',
+                          hour: 'numeric', minute: '2-digit', hour12: true,
+                        })}
+                      </span>
+                    </>
+                  )}
+                  {(() => {
+                    // Per-day total: sum of per-row deltas (today's work only,
+                    // not cumulative across the carry-over chain).
+                    const totalSecs = (reportPopup.rows ?? []).reduce(
+                      (s, r) => s + perDayElapsedSeconds(r, chartReports), 0,
+                    )
+                    return (
+                      <>
+                        <span className="text-gray-300">·</span>
+                        Today: <span className="font-semibold text-gray-700">
+                          {Math.round((totalSecs / 3600) * 10) / 10} hrs
+                        </span>
+                      </>
+                    )
+                  })()}
                 </p>
               </div>
               <button onClick={() => setReportPopup(null)} className="text-gray-400 hover:text-gray-600 transition-colors p-1">
@@ -1490,21 +1552,41 @@ function DashboardPage({
                       <th className="text-left pb-2 font-bold w-8 pr-3">#</th>
                       <th className="text-left pb-2 font-bold pr-3">Type of Work</th>
                       <th className="text-left pb-2 font-bold pr-3">Specific Work</th>
-                      <th className="text-left pb-2 font-bold whitespace-nowrap">Time</th>
+                      <th className="text-left pb-2 font-bold pr-3 whitespace-nowrap">Status</th>
+                      <th className="text-left pb-2 font-bold whitespace-nowrap">Today</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {reportPopup.rows.map(row => (
-                      <tr key={row.id} className="border-b border-gray-50 last:border-0">
-                        <td className="py-2.5 text-gray-400 pr-3">{row.sr_no}</td>
-                        <td className="py-2.5 pr-3">
-                          <span className="text-gray-700">{row.type_of_work}</span>
-                          {row.sub_category && <span className="text-xs text-gray-400 block">{row.sub_category}</span>}
-                        </td>
-                        <td className="py-2.5 text-gray-600 pr-3">{row.specific_work}</td>
-                        <td className="py-2.5 text-gray-700 font-medium whitespace-nowrap">{row.time_taken}</td>
-                      </tr>
-                    ))}
+                    {reportPopup.rows.map(row => {
+                      const perDaySecs = perDayElapsedSeconds(row, chartReports)
+                      const isCarried = !!row.carried_over_from_row_id
+                      return (
+                        <tr key={row.id} className="border-b border-gray-50 last:border-0">
+                          <td className="py-2.5 text-gray-400 pr-3 align-top">{row.sr_no}</td>
+                          <td className="py-2.5 pr-3 align-top">
+                            <span className="text-gray-700">{row.type_of_work}</span>
+                            {row.sub_category && <span className="text-xs text-gray-400 block">{row.sub_category}</span>}
+                          </td>
+                          <td className="py-2.5 text-gray-600 pr-3 align-top">{row.specific_work}</td>
+                          <td className="py-2.5 pr-3 align-top">
+                            <StatusBadge status={row.stopwatch_status} lastPausedAt={row.last_paused_at} />
+                            {isCarried && (
+                              <div className="text-[10px] text-gray-400 mt-0.5">
+                                Continued from a previous day
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-2.5 text-gray-700 font-medium whitespace-nowrap align-top">
+                            {elapsedToTimeTaken(perDaySecs)}
+                            {row.elapsed_seconds !== perDaySecs && (
+                              <span className="block text-[10px] text-gray-400 font-normal">
+                                cumulative {elapsedToTimeTaken(row.elapsed_seconds)}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               )}
@@ -1905,6 +1987,7 @@ function DailyReportsPage({
             elapsed_seconds: row.elapsed_seconds,
             stopwatch_started_at: row.stopwatch_started_at,
             carried_over_from_row_id: row.carried_over_from_row_id,
+            last_paused_at: row.last_paused_at,
           })))
         } else if (!r.report.is_locked) {
           setRows([blankRow(1)])
@@ -1942,6 +2025,7 @@ function DailyReportsPage({
       elapsed_seconds: r.elapsed_seconds,
       stopwatch_started_at: r.stopwatch_started_at,
       carried_over_from_row_id: r.carried_over_from_row_id,
+      last_paused_at: r.last_paused_at,
     }
   }
 
@@ -1963,6 +2047,7 @@ function DailyReportsPage({
           stopwatch_status: 'paused' as const,
           elapsed_seconds: r.elapsed_seconds + since,
           stopwatch_started_at: null,
+          last_paused_at: new Date().toISOString(),
         }
       }
       return r
@@ -2008,6 +2093,7 @@ function DailyReportsPage({
     // Paused rows get picked up by the server's carryOverPausedRows on tomorrow's
     // getOrCreateDailyReport so the unfinished entry reappears in the next day's draft.
     const now = Date.now()
+    const nowIso = new Date(now).toISOString()
     const finalisedRows: DraftRow[] = rows.map(r => {
       if (r.stopwatch_status === 'running' && r.stopwatch_started_at) {
         const rawSince = Math.max(0, Math.floor((now - new Date(r.stopwatch_started_at).getTime()) / 1000))
@@ -2018,6 +2104,7 @@ function DailyReportsPage({
           stopwatch_status: 'paused',
           elapsed_seconds: captured,
           stopwatch_started_at: null,
+          last_paused_at: nowIso,
           time_taken: elapsedToTimeTaken(captured),
         }
       }

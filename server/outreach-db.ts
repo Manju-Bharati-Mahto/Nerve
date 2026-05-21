@@ -120,6 +120,10 @@ export interface OutreachPost {
   media_url: string | null;
   permalink: string | null;
   synced_at: string | null;
+  // True when this row was explicitly added by an admin via AddLivePostsDialog
+  // (server: addLivePosts). False for posts pulled by the Apify auto-sync.
+  // Page/inventory analytics only count rows where this is true.
+  added_as_live: boolean;
 }
 
 // ── Bootstrap ──────────────────────────────────────────────────────────────
@@ -259,6 +263,11 @@ export async function bootstrapOutreach() {
   await pool.query(`CREATE INDEX IF NOT EXISTS outreach_posts_creator_id_idx ON outreach_posts(creator_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS outreach_posts_campaign_id_idx ON outreach_posts(campaign_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS outreach_posts_date_idx ON outreach_posts(date)`);
+
+  // Live-added flag: distinguishes posts explicitly added by an admin from
+  // Apify-auto-synced ones, so page analytics/inventory only count live posts.
+  // Default false → all pre-existing rows are treated as auto-synced.
+  await pool.query(`ALTER TABLE outreach_posts ADD COLUMN IF NOT EXISTS added_as_live BOOLEAN NOT NULL DEFAULT false`);
 
   // Page directory seeding is opt-in. Set OUTREACH_SEED_HANDLES=true to import
   // the original BR_POST_2026 handle list on an empty table. Otherwise the
@@ -564,6 +573,7 @@ export interface UpsertPostInput {
   shares?: number;
   media_url?: string | null;
   permalink?: string | null;
+  added_as_live?: boolean;
 }
 
 export async function listPosts(filters: { pageId?: string; creatorId?: string; campaignId?: string } = {}): Promise<OutreachPost[]> {
@@ -622,8 +632,8 @@ export async function upsertPostByInstagramId(input: UpsertPostInput): Promise<O
   const { rows } = await pool.query<OutreachPost>(
     `INSERT INTO outreach_posts
        (id, instagram_id, page_id, creator_id, campaign_id, date, type, creative_variant, caption,
-        status, likes, comments, views, saves, shares, media_url, permalink, synced_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
+        status, likes, comments, views, saves, shares, media_url, permalink, synced_at, added_as_live)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), $18)
      ON CONFLICT (instagram_id) DO UPDATE SET
        page_id          = EXCLUDED.page_id,
        creator_id       = EXCLUDED.creator_id,
@@ -637,13 +647,14 @@ export async function upsertPostByInstagramId(input: UpsertPostInput): Promise<O
        views            = EXCLUDED.views,
        media_url        = EXCLUDED.media_url,
        permalink        = EXCLUDED.permalink,
-       synced_at        = NOW()
+       synced_at        = NOW(),
+       added_as_live    = outreach_posts.added_as_live OR EXCLUDED.added_as_live
      RETURNING *`,
     [
       id, input.instagram_id, input.page_id ?? null, input.creator_id ?? null, input.campaign_id ?? null,
       input.date, input.type, input.creative_variant ?? null, input.caption,
       input.status, input.likes, input.comments, input.views, input.saves ?? 0, input.shares ?? 0,
-      input.media_url ?? null, input.permalink ?? null,
+      input.media_url ?? null, input.permalink ?? null, input.added_as_live ?? false,
     ],
   );
   return mapPostRow(rows[0]);

@@ -10,7 +10,9 @@ import {
 } from 'lucide-react'
 import ProfileModal from './ProfileModal'
 
-type NavItem = { path: string; label: string; icon: React.ElementType }
+type NavItem =
+  | { path: string; label: string; icon: React.ElementType }
+  | { action: 'open-profile'; label: string; icon: React.ElementType }
 type SectionConfig = { heading?: string; items: NavItem[] }
 type RoleConfig = {
   label: string
@@ -60,6 +62,18 @@ const SIDEBAR: Record<string, RoleConfig> = {
     { heading: 'Team', items: [
       { path: '/branding/team',  label: 'Team members', icon: Users },
       { path: '/admin/export',   label: 'Export data',  icon: Download },
+    ]},
+  ]),
+
+  // Reports-admin: read all daily reports + manage work categories. No KRA,
+  // no leaves. Same look as the full admin but a stripped-down nav.
+  'branding_reports_admin:branding': cfg('Branding Reports Admin', Palette, 'text-pink-600', 'bg-pink-100', [
+    { items: [
+      { path: '/branding/dashboard',  label: 'Daily Reports',     icon: LayoutDashboard },
+      { path: '/branding/categories', label: 'Manage Categories', icon: Settings2 },
+    ]},
+    { heading: 'Account', items: [
+      { action: 'open-profile', label: 'My Profile',  icon: User },
     ]},
   ]),
 
@@ -194,20 +208,37 @@ export default function AppSidebar() {
                 </span>
               </div>
             )}
-            {section.items.map(item => (
-              <Link
-                key={item.path}
-                to={item.path}
-                className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                  isActive(item.path)
-                    ? 'bg-accent text-accent-foreground font-medium'
-                    : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
-                }`}
-              >
-                <item.icon className="w-4 h-4 shrink-0" />
-                {item.label}
-              </Link>
-            ))}
+            {section.items.map((item, ii) => {
+              if ('action' in item) {
+                // Action items (e.g. "My Profile") trigger UI affordances
+                // instead of navigating to a route.
+                return (
+                  <button
+                    key={`action-${si}-${ii}`}
+                    type="button"
+                    onClick={() => { if (item.action === 'open-profile') setProfileOpen(true) }}
+                    className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors text-left"
+                  >
+                    <item.icon className="w-4 h-4 shrink-0" />
+                    {item.label}
+                  </button>
+                )
+              }
+              return (
+                <Link
+                  key={item.path}
+                  to={item.path}
+                  className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+                    isActive(item.path)
+                      ? 'bg-accent text-accent-foreground font-medium'
+                      : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+                  }`}
+                >
+                  <item.icon className="w-4 h-4 shrink-0" />
+                  {item.label}
+                </Link>
+              )
+            })}
           </div>
         ))}
       </nav>

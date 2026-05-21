@@ -98,6 +98,9 @@ export interface Post {
   shares: number
   mediaUrl?: string | null
   permalink?: string | null
+  // True when explicitly added via AddLivePostsDialog. Page analytics +
+  // inventory only count these — auto-synced posts are excluded.
+  addedAsLive: boolean
 }
 
 interface OutreachDB {
@@ -231,6 +234,7 @@ function toPost(p: ServerOutreachPost): Post {
     shares: p.shares,
     mediaUrl: p.media_url,
     permalink: p.permalink,
+    addedAsLive: (p as ServerOutreachPost & { added_as_live?: boolean }).added_as_live ?? false,
   }
 }
 
@@ -428,12 +432,14 @@ export async function addLivePostsByUrl(args: {
   pageId?: string
   creatorId?: string
   campaignId?: string
+  creativeVariant?: string
 }) {
   const result = await api.fetchOutreachPostsByUrls({
     urls: args.urls,
     page_id: args.pageId,
     creator_id: args.creatorId,
     campaign_id: args.campaignId,
+    creative_variant: args.creativeVariant,
   })
   await fetchAll()
   return {
@@ -456,7 +462,10 @@ export interface PageMetrics {
 
 export function pageMetrics(page: OutreachPage, posts: Post[], referenceDate = new Date()): PageMetrics {
   const monthStart = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), 1)
-  const pagePosts = posts.filter(p => p.pageId === page.id)
+  // Analytics + inventory only count posts explicitly added via AddLivePostsDialog
+  // (server: addLivePosts). Auto-synced Apify posts are excluded so the figures
+  // reflect what the team has actually placed, not what the page ran on IG.
+  const pagePosts = posts.filter(p => p.pageId === page.id && p.addedAsLive)
   const mtd = pagePosts.filter(p => new Date(p.date) >= monthStart)
   const postsCount = mtd.filter(p => p.type !== 'story').length
   const storyCount = mtd.filter(p => p.type === 'story').length

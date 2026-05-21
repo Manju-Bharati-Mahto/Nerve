@@ -228,6 +228,7 @@ export const api = {
     page_id?: string;
     creator_id?: string;
     campaign_id?: string;
+    creative_variant?: string;
   }) =>
     request<{
       ok: true;
@@ -313,4 +314,5 @@ export interface ServerOutreachPost {
   media_url: string | null;
   permalink: string | null;
   synced_at: string | null;
+  added_as_live: boolean;
 }

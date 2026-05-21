@@ -2,12 +2,13 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Users, Calendar, TrendingUp, FileText, Heart, Eye, MessageSquare, Bookmark, Share2,
-  ExternalLink, Trash2,
+  ExternalLink, Trash2, Link as LinkIcon,
 } from 'lucide-react'
 import {
   LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
 import { useOutreachData, pageMetrics, removePage, instagramUrlForHandle, isValidInstagramHandle, formatLocalDate } from '@/lib/outreach-data'
+import AddLivePostsDialog from './AddLivePostsDialog'
 
 export default function OutreachPageDetail() {
   const { pageId } = useParams<{ pageId: string }>()
@@ -15,9 +16,12 @@ export default function OutreachPageDetail() {
   const navigate = useNavigate()
   const page = pages.find(p => p.id === pageId)
   const [deleting, setDeleting] = useState(false)
+  const [addingLivePosts, setAddingLivePosts] = useState(false)
 
   async function handleDelete() {
     if (!page) return
+    // Counts ALL posts that would CASCADE-delete with the page — auto-synced
+    // rows are excluded from analytics but still get removed from the DB.
     const linked = posts.filter(p => p.pageId === page.id).length
     const msg = linked > 0
       ? `Delete @${page.handle}? This will also remove ${linked} post${linked === 1 ? '' : 's'} tied to this page. This cannot be undone.`
@@ -33,8 +37,14 @@ export default function OutreachPageDetail() {
     }
   }
 
+  // Only live-added posts feed this page's analytics, totals, trend,
+  // historical table, and campaign history. Auto-synced rows are excluded
+  // so the page reflects what the team has actually placed, not random posts
+  // scraped from the IG profile.
   const pagePosts = useMemo(
-    () => posts.filter(p => p.pageId === pageId).sort((a, b) => b.date.localeCompare(a.date)),
+    () => posts
+      .filter(p => p.pageId === pageId && p.addedAsLive)
+      .sort((a, b) => b.date.localeCompare(a.date)),
     [posts, pageId]
   )
   const m = useMemo(() => page ? pageMetrics(page, posts) : null, [page, posts])
@@ -116,6 +126,11 @@ export default function OutreachPageDetail() {
           <div className="flex items-center gap-2 flex-wrap">
             <span className="hub-badge bg-orange-50 text-orange-700"><Users className="w-3 h-3 inline mr-1" />{fmt(page.followers)}</span>
             <span className="hub-badge bg-blue-50 text-blue-700">Inv {page.inventoryPosts}P / {page.inventoryStories}S</span>
+            <button onClick={() => setAddingLivePosts(true)}
+              title="Add live posts (analytics + inventory feed off these)"
+              className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1">
+              <LinkIcon className="w-3 h-3" /> Add live posts
+            </button>
             <button onClick={handleDelete} disabled={deleting}
               title="Delete page"
               className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
@@ -225,6 +240,14 @@ export default function OutreachPageDetail() {
           )}
         </div>
       </div>
+
+      {addingLivePosts && (
+        <AddLivePostsDialog
+          mode="page"
+          pageId={page.id}
+          onClose={() => setAddingLivePosts(false)}
+        />
+      )}
 
     </div>
   )
