@@ -202,6 +202,10 @@ export interface AddLivePostsInput {
   pageId?: string;
   creatorId?: string;
   urls: string[];
+  /** Explicit "set" (creative variant) to tag all of these live posts with.
+   *  When omitted, the per-post auto-match from caption is used (legacy
+   *  behaviour). Must be one of `campaign.creative_variants` when set. */
+  creativeVariant?: string;
 }
 
 export interface AddLivePostsResult {
@@ -235,13 +239,24 @@ export async function addLivePosts(input: AddLivePostsInput): Promise<AddLivePos
     if (!campaign) throw new Error("Campaign not found.");
   }
 
+  // If the caller picked an explicit creative_variant, validate it belongs to
+  // the campaign's known set list. Reject early rather than silently fall back.
+  if (input.creativeVariant !== undefined && input.creativeVariant !== null && input.creativeVariant !== '') {
+    if (!campaign) throw new Error("creativeVariant requires a campaign.");
+    if (!campaign.creative_variants.includes(input.creativeVariant)) {
+      throw new Error(`creativeVariant "${input.creativeVariant}" is not in this campaign.`);
+    }
+  }
+
   let page: OutreachPage | null = null;
   let creator: OutreachCreator | null = null;
   if (input.pageId) {
     page = await getPage(input.pageId);
     if (!page) throw new Error("Page not found.");
-    if (!campaign) throw new Error("A campaign is required when attaching live posts to a page.");
-    if (!campaign.assigned_page_ids.includes(page.id)) {
+    // Campaign is now optional for page-side live posts (admin can add live
+    // posts directly from the All Pages tab). When a campaign IS provided,
+    // the page must still belong to it.
+    if (campaign && !campaign.assigned_page_ids.includes(page.id)) {
       throw new Error("This page is not assigned to the selected campaign.");
     }
   } else {
@@ -303,7 +318,7 @@ export async function addLivePosts(input: AddLivePostsInput): Promise<AddLivePos
       continue;
     }
 
-    const post = await persistLivePost({ page, creator, campaign, post: result });
+    const post = await persistLivePost({ page, creator, campaign, post: result, forceVariant: input.creativeVariant });
     if (post) persisted.push(post);
     else skipped.push({ url, reason: "Apify response was missing an ID or timestamp." });
   }
@@ -316,8 +331,10 @@ async function persistLivePost(ctx: {
   creator: OutreachCreator | null;
   campaign: OutreachCampaign | null;
   post: ApifyPostResult;
+  /** When provided, this variant is used verbatim instead of caption auto-match. */
+  forceVariant?: string;
 }): Promise<OutreachPost | null> {
-  const { page, creator, campaign, post } = ctx;
+  const { page, creator, campaign, post, forceVariant } = ctx;
   const instagramId = post.id || post.shortCode;
   if (!instagramId) return null;
   if (!post.timestamp) return null;
@@ -331,12 +348,13 @@ async function persistLivePost(ctx: {
   // Prefer plays so our totals match what users see on the post page.
   const views = post.videoPlayCount ?? post.videoViewCount ?? 0;
 
-  // Pick a creative_variant if the caption mentions one — same rule as the
-  // bulk sync, but constrained to *this* campaign's variants (we already know
-  // the campaign here, no attribution lookup needed). Skipped when there's no
-  // campaign (creator-side standalone posts).
+  // Pick a creative_variant. Priority: explicit forceVariant from caller,
+  // otherwise auto-match from caption against this campaign's variants
+  // (skipped when there's no campaign — creator-side standalone posts).
   let variant: string | null = null;
-  if (campaign) {
+  if (forceVariant && campaign?.creative_variants.includes(forceVariant)) {
+    variant = forceVariant;
+  } else if (campaign) {
     const lowerCaption = caption.toLowerCase();
     for (const v of campaign.creative_variants) {
       if (v && lowerCaption.includes(v.toLowerCase())) { variant = v; break; }
@@ -360,5 +378,6 @@ async function persistLivePost(ctx: {
     shares: 0,
     media_url: post.displayUrl ?? null,
     permalink: post.url ?? null,
+    added_as_live: true,
   });
 }

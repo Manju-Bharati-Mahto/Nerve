@@ -1509,14 +1509,11 @@ const outreachLivePostsSchema = z.object({
   page_id: z.string().min(1).optional(),
   creator_id: z.string().min(1).optional(),
   urls: z.array(z.string().min(1)).min(1).max(20),
+  /** Optional set/creative variant — must be one of the campaign's variants when set. */
+  creative_variant: z.string().min(1).optional(),
 }).refine(
   d => Boolean(d.page_id) !== Boolean(d.creator_id),
   { message: "Provide exactly one of page_id or creator_id." },
-).refine(
-  // Page-side flow still demands a campaign — keeps the existing rule that a
-  // live page post must belong to a campaign so attribution doesn't drift.
-  d => !d.page_id || !!d.campaign_id,
-  { message: "campaign_id is required when page_id is provided." },
 );
 
 app.post("/api/outreach/posts/fetch-by-urls", asyncHandler(async (req, res) => {
@@ -1529,6 +1526,7 @@ app.post("/api/outreach/posts/fetch-by-urls", asyncHandler(async (req, res) => {
       pageId: parsed.data.page_id,
       creatorId: parsed.data.creator_id,
       urls: parsed.data.urls,
+      creativeVariant: parsed.data.creative_variant,
     });
     res.json(result);
   } catch (err) {

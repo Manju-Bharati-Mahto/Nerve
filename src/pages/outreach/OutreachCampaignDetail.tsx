@@ -196,6 +196,7 @@ export default function OutreachCampaignDetail() {
                   <th className="px-3 py-2 text-right">Delivered</th>
                   <th className="px-3 py-2 text-right">Reach</th>
                   <th className="px-3 py-2 text-right">Engagement</th>
+                  <th className="px-3 py-2 w-8"></th>
                 </tr>
               </thead>
               <tbody>
@@ -208,6 +209,21 @@ export default function OutreachCampaignDetail() {
                     <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{delivered}</td>
                     <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{fmt(views)}</td>
                     <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{fmt(engagement)}</td>
+                    <td className="px-3 py-2.5 text-right">
+                      <button
+                        onClick={async () => {
+                          if (!campaign) return
+                          if (!confirm(`Remove @${page.handle} from this campaign? The page itself stays — only the assignment is cleared.`)) return
+                          await updateCampaign(campaign.id, {
+                            assignedPageIds: campaign.assignedPageIds.filter(id => id !== page.id),
+                          })
+                        }}
+                        title="Remove page from campaign"
+                        className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

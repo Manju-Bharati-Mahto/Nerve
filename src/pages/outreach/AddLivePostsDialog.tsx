@@ -6,16 +6,19 @@ import {
 } from '@/lib/outreach-data'
 
 /**
- * Two entry points:
+ * Three entry points:
  *   - "Campaign" mode (default): opened from the campaign-create flow or the
  *     campaign detail header. Campaign is fixed; user picks which assignee
- *     (page or creator) to attribute the posts to.
+ *     (page or creator) to attribute the posts to, and optionally a set
+ *     (creative variant) to tag them with.
  *   - "Creator" mode: opened from the creator dashboard. Creator is fixed;
  *     user optionally picks one of the creator's campaigns to attribute.
+ *   - "Page" mode: opened from the All Pages tab. Page is fixed; no campaign
+ *     needed — these live posts feed only the page's own analytics/inventory.
  *
- * Both ultimately POST {urls, page_id|creator_id, campaign_id?} to the
- * server. Server validates the assignee belongs to the campaign (if a campaign
- * is supplied) and that the scraped post's owner matches the assignee handle.
+ * All three ultimately POST {urls, page_id|creator_id, campaign_id?, creative_variant?}
+ * to the server. Server validates the assignee/owner and persists with
+ * added_as_live = true so analytics pick them up.
  */
 type Props =
   | {
@@ -28,9 +31,15 @@ type Props =
       creatorId: string
       onClose: () => void
     }
+  | {
+      mode: 'page'
+      pageId: string
+      onClose: () => void
+    }
 
 export default function AddLivePostsDialog(props: Props) {
   if (props.mode === 'creator') return <CreatorMode creatorId={props.creatorId} onClose={props.onClose} />
+  if (props.mode === 'page')    return <PageMode    pageId={props.pageId}       onClose={props.onClose} />
   return <CampaignMode campaign={props.campaign} onClose={props.onClose} />
 }
 
@@ -67,6 +76,12 @@ function CampaignMode({ campaign, onClose }: { campaign: Campaign; onClose: () =
   }, [assignees, assigneeKey])
   const selected = assignees.find(a => `${a.kind}:${a.id}` === assigneeKey) ?? null
 
+  // Set / creative variant — optional, but if the campaign declared variants
+  // the user can pick one to tag all of these live posts with. Empty string
+  // means "auto-match from caption (legacy behaviour)".
+  const variants = campaign.creativeVariants ?? []
+  const [variant, setVariant] = useState<string>('')
+
   return (
     <DialogShell
       title="Add live posts"
@@ -95,6 +110,20 @@ function CampaignMode({ campaign, onClose }: { campaign: Campaign; onClose: () =
               URLs you paste below must belong to @{selected.handle}.
             </p>
           )}
+          {variants.length > 0 && (
+            <div className="mt-3">
+              <label className="hub-label">Set (creative variant) <span className="text-muted-foreground font-normal">— optional</span></label>
+              <select className="hub-input" value={variant} onChange={e => setVariant(e.target.value)}>
+                <option value="">— Auto-match from caption —</option>
+                {variants.map(v => <option key={v} value={v}>{v}</option>)}
+              </select>
+              <p className="text-[11px] text-muted-foreground mt-1">
+                {variant
+                  ? `All URLs you add will be tagged with set "${variant}".`
+                  : 'Without a set, the server tries to match each post’s caption against this campaign’s variants.'}
+              </p>
+            </div>
+          )}
         </>
       }
       submit={(urls) => addLivePostsByUrl({
@@ -102,8 +131,49 @@ function CampaignMode({ campaign, onClose }: { campaign: Campaign; onClose: () =
         campaignId: campaign.id,
         ...(selected?.kind === 'page'    ? { pageId: selected.id }    : {}),
         ...(selected?.kind === 'creator' ? { creatorId: selected.id } : {}),
+        ...(variant ? { creativeVariant: variant } : {}),
       })}
       canSubmit={!!selected}
+    />
+  )
+}
+
+// ── Page mode ──────────────────────────────────────────────────────────────
+
+function PageMode({ pageId, onClose }: { pageId: string; onClose: () => void }) {
+  const { pages } = useOutreachStore()
+  const page = pages.find(p => p.id === pageId)
+
+  if (!page) {
+    return (
+      <DialogShell title="Add live posts" subtitle="" onClose={onClose}
+        empty={
+          <div className="hub-card bg-rose-50 border-rose-200 text-xs text-rose-900 flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>Page not found.</span>
+          </div>
+        }
+        selectorLabel="" selector={null}
+        submit={async () => ({ ok: true as const, posts: [], skipped: [] })}
+        canSubmit={false}
+      />
+    )
+  }
+
+  return (
+    <DialogShell
+      title="Add live posts"
+      subtitle={<>Pull real metrics for <span className="font-medium text-foreground">@{page.handle}</span> by URL.</>}
+      onClose={onClose}
+      empty={null}
+      selectorLabel=""
+      selector={
+        <p className="text-[11px] text-muted-foreground">
+          URLs you paste below must belong to @{page.handle}. These posts feed only this page’s analytics + inventory — they’re not attached to any campaign.
+        </p>
+      }
+      submit={(urls) => addLivePostsByUrl({ urls, pageId: page.id })}
+      canSubmit
     />
   )
 }

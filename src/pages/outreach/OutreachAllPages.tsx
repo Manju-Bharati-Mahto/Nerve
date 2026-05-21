@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   FileText, Search, Filter as FilterIcon, Download, Plus,
-  ArrowUpDown, ArrowUp, ArrowDown, Sparkles, ExternalLink, Trash2,
+  ArrowUpDown, ArrowUp, ArrowDown, Sparkles, ExternalLink, Trash2, LinkIcon,
 } from 'lucide-react'
 import {
   useOutreachData, pageMetrics, suggestedMonthlyUsage, removePage,
@@ -10,6 +10,7 @@ import {
   PAGE_CONTENT_TYPES, FOLLOWER_TIERS, type FollowerTier, type PageContentType, type OutreachPage,
 } from '@/lib/outreach-data'
 import { AddPageModal } from './OutreachAnalytics'
+import AddLivePostsDialog from './AddLivePostsDialog'
 
 type SortKey = 'handle' | 'tier' | 'geography' | 'total' | 'consumed' | 'suggested' | 'status'
 type SortDir = 'asc' | 'desc'
@@ -35,6 +36,8 @@ export default function OutreachAllPages() {
   )
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: 'consumed', dir: 'desc' })
   const [creating, setCreating] = useState(false)
+  // Which page is currently the target of the "Add live posts" dialog (null = closed).
+  const [livePostsPageId, setLivePostsPageId] = useState<string | null>(null)
 
   const geographies = useMemo(() => Array.from(new Set(pages.map(p => p.geography))).sort(), [pages])
 
@@ -247,11 +250,18 @@ export default function OutreachAllPages() {
                 </td>
                 <td className="px-3 py-2.5"><StatusBadge status={m.status} /></td>
                 <td className="px-3 py-2.5">
-                  <button onClick={() => confirmDelete(page)}
-                    title="Delete page"
-                    className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => setLivePostsPageId(page.id)}
+                      title="Add live posts to this page"
+                      className="p-1 rounded-md text-muted-foreground hover:bg-orange-50 hover:text-orange-600">
+                      <LinkIcon className="w-3.5 h-3.5" />
+                    </button>
+                    <button onClick={() => confirmDelete(page)}
+                      title="Delete page"
+                      className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -260,6 +270,13 @@ export default function OutreachAllPages() {
       </div>
 
       {creating && <AddPageModal onClose={() => setCreating(false)} />}
+      {livePostsPageId && (
+        <AddLivePostsDialog
+          mode="page"
+          pageId={livePostsPageId}
+          onClose={() => setLivePostsPageId(null)}
+        />
+      )}
     </div>
   )
 }
