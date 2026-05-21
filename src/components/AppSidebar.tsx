@@ -162,7 +162,11 @@ export default function AppSidebar() {
   const [profileOpen, setProfileOpen] = useState(false)
 
   // Branding users and leads have their own full internal sidebar — hide the global one
-  if (team === 'branding' && (role === 'user' || role === 'sub_admin')) return null
+  // Branding-team pages own their own custom green-themed sidebar
+  // (BrandingAdminShell wraps /branding/browse, /team and /admin/export via
+  // MaybeBrandingAdminShell). Hide the global one for everyone on the
+  // branding team so we never stack two sidebars.
+  if (team === 'branding' && (role === 'user' || role === 'sub_admin' || role === 'admin' || role === 'branding_reports_admin')) return null
 
   const key = `${role ?? ''}:${team ?? ''}`
   const config = SIDEBAR[key] ?? FALLBACK

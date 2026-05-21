@@ -3,27 +3,25 @@ import { useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
 import { brandingApi } from '@/lib/branding-api'
-import { MONTHS, timeToHours } from '@/lib/branding-types'
+import { MONTHS } from '@/lib/branding-types'
 import type {
-  WorkCategory, DailyReport, KraParameter, KraReport,
+  WorkCategory, KraParameter, KraReport,
   AdminKraScore, PeerMarking, BrandingLeave,
 } from '@/lib/branding-types'
 import {
-  Palette, Plus, Trash2, Edit3,
+  Plus, Trash2, Edit3,
   ChevronDown, ChevronUp, Check, AlertTriangle, Lock,
   Download, Users, Filter, ToggleLeft, ToggleRight, X,
   ArrowUp, ArrowDown, CalendarOff,
 } from 'lucide-react'
-import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  CartesianGrid, Legend,
-} from 'recharts'
+import BrandingAdminOverview from './BrandingAdminOverview'
+import BrandingAdminShell from './BrandingAdminShell'
 import { toast } from 'sonner'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-const INP = 'w-full text-sm px-3 py-2 rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-pink-300 transition-all'
-const SEL = 'text-sm px-3 py-2 rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-pink-300 transition-all cursor-pointer'
+const INP = 'w-full text-sm px-3 py-2 rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-green-300 transition-all'
+const SEL = 'text-sm px-3 py-2 rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-green-300 transition-all cursor-pointer'
 
 function scoreAvg(scores: Record<string, number> | null | undefined, params: KraParameter[]): number | null {
   if (!scores || params.length === 0) return null
@@ -126,14 +124,16 @@ function ManageCategoriesTab() {
 
   return (
     <div className="space-y-5">
-      <div className="hub-card">
-        <h2 className="text-sm font-semibold text-foreground mb-4">Add New Category</h2>
+      {/* Add-new-category panel — same as before, kept as a wide bar above
+          the grid so it's discoverable. */}
+      <div className="rounded-2xl border-2 border-green-700 bg-gradient-to-br from-white to-green-50/40 p-5">
+        <h2 className="text-sm font-extrabold font-serif mb-3" style={{ color: '#1a472a' }}>Add New Category</h2>
         <div className="flex gap-2">
           <input value={newCatName} onChange={e => setNewCatName(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') void addCategory() }}
             placeholder="Category name…" className={INP + ' flex-1'} />
           <button onClick={() => void addCategory()}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-pink-600 text-white text-sm font-medium hover:bg-pink-700 transition-colors">
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#1a472a] text-white text-sm font-medium hover:bg-[#143620] transition-colors">
             <Plus className="w-4 h-4" /> Add
           </button>
         </div>
@@ -142,506 +142,139 @@ function ManageCategoriesTab() {
         </p>
       </div>
 
-      <div className="space-y-3">
-        {categories.length === 0 && (
-          <p className="text-sm text-muted-foreground text-center py-6">No categories yet.</p>
-        )}
-        {categories.map((cat, catIdx) => (
-          <div key={cat.id} className="hub-card p-0 overflow-hidden border border-border">
-            {/* Category header */}
-            <div className="flex items-center gap-3 px-4 py-3 bg-pink-50/40 border-b border-border">
-              <div className="flex items-center gap-1">
-                <button onClick={() => void moveCategory(cat.id, 'up')} disabled={catIdx === 0}
-                  className="p-1 rounded hover:bg-pink-100 disabled:opacity-30 transition-colors">
-                  <ArrowUp className="w-3.5 h-3.5 text-muted-foreground" />
-                </button>
-                <button onClick={() => void moveCategory(cat.id, 'down')} disabled={catIdx === categories.length - 1}
-                  className="p-1 rounded hover:bg-pink-100 disabled:opacity-30 transition-colors">
-                  <ArrowDown className="w-3.5 h-3.5 text-muted-foreground" />
-                </button>
-              </div>
-
-              {editingCat?.id === cat.id ? (
-                <div className="flex items-center gap-2 flex-1">
-                  <input value={editingCat.name}
-                    onChange={e => setEditingCat(p => p ? { ...p, name: e.target.value } : p)}
-                    onKeyDown={e => { if (e.key === 'Enter') void saveCategory(cat.id, editingCat.name) }}
-                    className={INP + ' flex-1 py-1'} autoFocus />
-                  <button onClick={() => void saveCategory(cat.id, editingCat.name)}
-                    className="p-1.5 rounded-lg bg-green-100 text-green-700 hover:bg-green-200">
-                    <Check className="w-3.5 h-3.5" />
-                  </button>
-                  <button onClick={() => setEditingCat(null)}
-                    className="p-1.5 rounded-lg bg-muted text-muted-foreground hover:bg-accent">
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ) : (
-                <span className="text-sm font-semibold text-foreground flex-1">{cat.name}</span>
-              )}
-
-              <div className="flex items-center gap-1 shrink-0">
-                <button onClick={() => setExpanded(p => { const s = new Set(p); if (s.has(cat.id)) s.delete(cat.id); else s.add(cat.id); return s })}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
-                  {cat.sub_categories.length} subs
-                  {expanded.has(cat.id) ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                </button>
-                {editingCat?.id !== cat.id && (
-                  <button onClick={() => setEditingCat({ id: cat.id, name: cat.name })}
-                    className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
-                    <Edit3 className="w-3.5 h-3.5" />
-                  </button>
-                )}
-                <button onClick={() => void deleteCategory(cat.id, cat.name)}
-                  className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-red-50 transition-colors">
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Sub-categories */}
-            {expanded.has(cat.id) && (
-              <div className="p-3 space-y-1">
-                {cat.sub_categories.map(sub => (
-                  <div key={sub.id} className="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-muted/30 group">
-                    {editingSub?.id === sub.id ? (
-                      <div className="flex items-center gap-2 flex-1">
-                        <input value={editingSub.name}
-                          onChange={e => setEditingSub(p => p ? { ...p, name: e.target.value } : p)}
-                          onKeyDown={e => { if (e.key === 'Enter') void saveSubCategory(sub.id, editingSub.name) }}
-                          className={INP + ' flex-1 py-1 text-xs'} autoFocus />
-                        <button onClick={() => void saveSubCategory(sub.id, editingSub.name)}
-                          className="p-1 rounded bg-green-100 text-green-700">
-                          <Check className="w-3 h-3" />
+      {/* Card grid — each category gets its own tile with reorder, rename,
+          delete, and an expandable sub-category list with inline add/edit. */}
+      {categories.length === 0 ? (
+        <p className="text-sm text-muted-foreground text-center py-10">No categories yet.</p>
+      ) : (
+        // `items-start` keeps each card sized to its own content so
+        // expanding one card's sub-categories doesn't visually stretch
+        // the other cards in the same row.
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
+          {categories.map((cat, catIdx) => {
+            const isExpanded = expanded.has(cat.id)
+            const isEditing = editingCat?.id === cat.id
+            return (
+              <div key={cat.id}
+                className="group relative rounded-2xl border-2 border-green-700 bg-white hover:border-green-800 hover:shadow-md transition-all flex flex-col self-start">
+                {/* Card header — colour-banded so it reads as a tile. The
+                    rounded-t-2xl matches the parent corners now that the
+                    card no longer clips its overflow (so the dropdown can
+                    float free of the row). */}
+                <div className={`px-4 pt-3 pb-2 bg-gradient-to-br from-green-50 to-white rounded-t-2xl ${isExpanded ? '' : 'rounded-b-2xl'}`}>
+                  <div className="flex items-start gap-2">
+                    <div className="flex flex-col gap-0.5 shrink-0 pt-0.5">
+                      <button onClick={() => void moveCategory(cat.id, 'up')} disabled={catIdx === 0}
+                        className="p-0.5 rounded hover:bg-green-100 disabled:opacity-25 transition-colors" title="Move up">
+                        <ArrowUp className="w-3 h-3 text-green-800" />
+                      </button>
+                      <button onClick={() => void moveCategory(cat.id, 'down')} disabled={catIdx === categories.length - 1}
+                        className="p-0.5 rounded hover:bg-green-100 disabled:opacity-25 transition-colors" title="Move down">
+                        <ArrowDown className="w-3 h-3 text-green-800" />
+                      </button>
+                    </div>
+                    {isEditing ? (
+                      <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                        <input value={editingCat!.name}
+                          onChange={e => setEditingCat(p => p ? { ...p, name: e.target.value } : p)}
+                          onKeyDown={e => { if (e.key === 'Enter') void saveCategory(cat.id, editingCat!.name) }}
+                          className={INP + ' flex-1 py-1 font-bold'} autoFocus />
+                        <button onClick={() => void saveCategory(cat.id, editingCat!.name)}
+                          className="p-1.5 rounded-lg bg-green-700 text-white hover:bg-green-800" title="Save">
+                          <Check className="w-3.5 h-3.5" />
                         </button>
-                        <button onClick={() => setEditingSub(null)}
-                          className="p-1 rounded bg-muted text-muted-foreground">
-                          <X className="w-3 h-3" />
+                        <button onClick={() => setEditingCat(null)}
+                          className="p-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-gray-200" title="Cancel">
+                          <X className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     ) : (
                       <>
-                        <span className="text-sm text-foreground flex-1">{sub.name}</span>
-                        {sub.is_others ? (
-                          <span className="text-[10px] text-muted-foreground bg-muted px-2 py-0.5 rounded-full">default · protected</span>
-                        ) : (
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <button onClick={() => setEditingSub({ id: sub.id, name: sub.name })}
-                              className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent">
-                              <Edit3 className="w-3 h-3" />
-                            </button>
-                            <button onClick={() => void deleteSubCategory(sub.id, sub.name)}
-                              className="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-red-50">
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                          </div>
-                        )}
+                        <h3 className="text-base font-extrabold font-serif flex-1 truncate" style={{ color: '#1a472a' }}>{cat.name}</h3>
+                        <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button onClick={() => setEditingCat({ id: cat.id, name: cat.name })}
+                            className="p-1.5 rounded-lg text-green-700 hover:bg-green-100" title="Rename">
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          <button onClick={() => void deleteCategory(cat.id, cat.name)}
+                            className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50" title="Delete">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </>
                     )}
                   </div>
-                ))}
+                  <button onClick={() => setExpanded(p => { const s = new Set(p); if (s.has(cat.id)) s.delete(cat.id); else s.add(cat.id); return s })}
+                    className="mt-2 ml-5 flex items-center gap-1 text-[11px] font-semibold hover:underline" style={{ color: '#52b788' }}>
+                    {cat.sub_categories.length} sub-categor{cat.sub_categories.length === 1 ? 'y' : 'ies'}
+                    {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                  </button>
+                </div>
 
-                {/* Add sub-category */}
-                {cat.name !== 'Others' && (
-                  <div className="flex gap-2 mt-2 pt-2 border-t border-border/50">
-                    <input
-                      value={newSubName[cat.id] || ''}
-                      onChange={e => setNewSubName(p => ({ ...p, [cat.id]: e.target.value }))}
-                      onKeyDown={e => { if (e.key === 'Enter') void addSubCategory(cat.id) }}
-                      placeholder="New sub-category name…"
-                      className={INP + ' flex-1 py-1 text-xs'} />
-                    <button onClick={() => void addSubCategory(cat.id)}
-                      className="flex items-center gap-1 px-3 py-1 rounded-lg bg-pink-50 text-pink-700 text-xs font-medium hover:bg-pink-100">
-                      <Plus className="w-3.5 h-3.5" /> Add
-                    </button>
+                {/* Sub-categories body — floats below the header as a
+                    dropdown so expanding it does NOT grow the card or
+                    push the surrounding grid row. */}
+                {isExpanded && (
+                  <div className="absolute top-full left-0 right-0 mt-1 p-3 space-y-1 bg-white border-2 border-green-700 rounded-2xl shadow-xl z-30 max-h-72 overflow-y-auto">
+                    {cat.sub_categories.map(sub => (
+                      <div key={sub.id} className="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-green-50/40 group/sub">
+                        {editingSub?.id === sub.id ? (
+                          <div className="flex items-center gap-1.5 flex-1">
+                            <input value={editingSub.name}
+                              onChange={e => setEditingSub(p => p ? { ...p, name: e.target.value } : p)}
+                              onKeyDown={e => { if (e.key === 'Enter') void saveSubCategory(sub.id, editingSub.name) }}
+                              className={INP + ' flex-1 py-1 text-xs'} autoFocus />
+                            <button onClick={() => void saveSubCategory(sub.id, editingSub.name)}
+                              className="p-1 rounded bg-green-700 text-white">
+                              <Check className="w-3 h-3" />
+                            </button>
+                            <button onClick={() => setEditingSub(null)}
+                              className="p-1 rounded bg-gray-100 text-gray-500">
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <span className="text-sm flex-1 truncate" style={{ color: '#1a472a' }}>{sub.name}</span>
+                            {sub.is_others ? (
+                              <span className="text-[10px] text-muted-foreground bg-muted px-2 py-0.5 rounded-full shrink-0">default</span>
+                            ) : (
+                              <div className="flex items-center gap-0.5 opacity-0 group-hover/sub:opacity-100 transition-opacity">
+                                <button onClick={() => setEditingSub({ id: sub.id, name: sub.name })}
+                                  className="p-1 rounded text-green-700 hover:bg-green-100">
+                                  <Edit3 className="w-3 h-3" />
+                                </button>
+                                <button onClick={() => void deleteSubCategory(sub.id, sub.name)}
+                                  className="p-1 rounded text-rose-600 hover:bg-rose-50">
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    ))}
+
+                    {cat.name !== 'Others' && (
+                      <div className="flex gap-2 mt-2 pt-2 border-t-2 border-green-700/30">
+                        <input
+                          value={newSubName[cat.id] || ''}
+                          onChange={e => setNewSubName(p => ({ ...p, [cat.id]: e.target.value }))}
+                          onKeyDown={e => { if (e.key === 'Enter') void addSubCategory(cat.id) }}
+                          placeholder="Add sub-category…"
+                          className={INP + ' flex-1 py-1 text-xs'} />
+                        <button onClick={() => void addSubCategory(cat.id)}
+                          className="flex items-center gap-1 px-3 py-1 rounded-lg bg-green-700 text-white text-xs font-semibold hover:bg-green-800">
+                          <Plus className="w-3.5 h-3.5" /> Add
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ── Daily Reports Tab ──────────────────────────────────────────────────────
-
-function defaultDailyReportFilters() {
-  const today = new Date()
-  const weekAgo = new Date(today)
-  weekAgo.setDate(today.getDate() - 7)
-  const fmt = (d: Date) => d.toISOString().split('T')[0]
-  return {
-    userIds: [] as string[],
-    dateFrom: fmt(weekAgo),
-    dateTo: fmt(today),
-    typeOfWork: '',
-    subCategory: '',
-    lockedOnly: false,
-  }
-}
-
-function DailyReportsTab({ brandingUsers }: { brandingUsers: { id: string; full_name: string; email: string }[] }) {
-  const [reports, setReports] = useState<DailyReport[]>([])
-  const [loading, setLoading] = useState(false)
-  const [filters, setFilters] = useState(defaultDailyReportFilters)
-  const [userDropOpen, setUserDropOpen] = useState(false)
-  const [categories, setCategories] = useState<WorkCategory[]>([])
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const [viewMode, setViewMode] = useState<'all' | 'user' | 'category' | 'summary' | 'collab'>('all')
-
-  useEffect(() => {
-    brandingApi.getCategories().then(r => setCategories(r.categories)).catch(() => {})
-  }, [])
-
-  const toggleUser = (id: string) =>
-    setFilters(p => ({ ...p, userIds: p.userIds.includes(id) ? p.userIds.filter(u => u !== id) : [...p.userIds, id] }))
-
-  const loadReports = useCallback(() => {
-    setLoading(true)
-    brandingApi.getAllReports({
-      userIds:     filters.userIds.length > 0 ? filters.userIds : undefined,
-      dateFrom:    filters.dateFrom    || undefined,
-      dateTo:      filters.dateTo      || undefined,
-      typeOfWork:  filters.typeOfWork  || undefined,
-      subCategory: filters.subCategory || undefined,
-      lockedOnly:  filters.lockedOnly  || undefined,
-    })
-      .then(r => setReports(r.reports))
-      .catch(() => toast.error('Failed to load reports'))
-      .finally(() => setLoading(false))
-  }, [filters])
-
-  useEffect(() => { loadReports() }, [loadReports])
-
-  // ID → display name map for collaborator chips. Falls back to the raw id if
-  // the user is no longer in the branding list (e.g. moved teams or deleted).
-  const userNameById = useMemo(() => {
-    const m: Record<string, string> = {}
-    for (const u of brandingUsers) m[u.id] = u.full_name || u.email || u.id
-    return m
-  }, [brandingUsers])
-  const labelCollab = (id: string) => userNameById[id] || id
-
-  // Sort: most recent report_date first, then most recent submit (drafts last).
-  // Surfaces today's submits at the top of the list.
-  const sortedReports = useMemo(() => {
-    return [...reports].sort((a, b) => {
-      if (a.report_date !== b.report_date) return a.report_date < b.report_date ? 1 : -1
-      const aT = a.submitted_at ? Date.parse(a.submitted_at) : 0
-      const bT = b.submitted_at ? Date.parse(b.submitted_at) : 0
-      return bT - aT
-    })
-  }, [reports])
-
-  // Derived aggregates for summary view
-  const summaryData = useMemo(() => {
-    const map: Record<string, { name: string; hours: number; rows: number }> = {}
-    for (const r of reports) {
-      const uid = r.user_id
-      if (!map[uid]) map[uid] = { name: r.user_name || uid, hours: 0, rows: 0 }
-      for (const row of r.rows) {
-        map[uid].hours += timeToHours(row.time_taken)
-        map[uid].rows += 1
-      }
-    }
-    return Object.values(map).sort((a, b) => b.hours - a.hours)
-  }, [reports])
-
-  const categoryData = useMemo(() => {
-    const map: Record<string, number> = {}
-    for (const r of reports)
-      for (const row of r.rows)
-        map[row.type_of_work] = (map[row.type_of_work] || 0) + timeToHours(row.time_taken)
-    return Object.entries(map).map(([name, hours]) => ({ name, hours: Math.round(hours * 10) / 10 }))
-      .sort((a, b) => b.hours - a.hours)
-  }, [reports])
-
-  const collabMatrix = useMemo(() => {
-    const map: Record<string, Record<string, number>> = {}
-    for (const r of reports) {
-      const name = r.user_name || r.user_id
-      for (const row of r.rows) {
-        for (const c of row.collaborative_colleagues) {
-          if (!map[name]) map[name] = {}
-          const collabName = userNameById[c] || c
-          map[name][collabName] = (map[name][collabName] || 0) + 1
-        }
-      }
-    }
-    return map
-  }, [reports, userNameById])
-
-  function exportCSV() {
-    const rows: string[][] = [['Date', 'User', 'Sr', 'Type of Work', 'Sub Category', 'Specific Work', 'Time Taken', 'Collaborators']]
-    for (const r of reports)
-      for (const row of r.rows)
-        rows.push([r.report_date, r.user_name || '', String(row.sr_no), row.type_of_work, row.sub_category, row.specific_work, row.time_taken, row.collaborative_colleagues.map(labelCollab).join('; ')])
-    const csv = rows.map(r => r.map(c => `"${c.replace(/"/g, '""')}"`).join(',')).join('\n')
-    const a = document.createElement('a')
-    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv)
-    a.download = `branding-reports-${new Date().toISOString().split('T')[0]}.csv`
-    a.click()
-    toast.success('CSV downloaded')
-  }
-
-  const subCatOptions = categories.find(c => c.name === filters.typeOfWork)?.sub_categories || []
-
-  return (
-    <div className="space-y-5">
-      {/* Filters */}
-      <div className="hub-card space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
-            <Filter className="w-4 h-4 text-muted-foreground" /> Filters
-          </h2>
-          <button onClick={() => { setFilters(defaultDailyReportFilters()); setUserDropOpen(false) }}
-            className="text-xs text-muted-foreground hover:text-foreground">Reset all</button>
+            )
+          })}
         </div>
-        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-          {/* Multi-select user/designer */}
-          <div className="relative">
-            <label className="text-xs text-muted-foreground block mb-1">User / Designer</label>
-            <button type="button" onClick={() => setUserDropOpen(o => !o)}
-              className={SEL + ' w-full flex items-center justify-between gap-2'}>
-              <span className="truncate text-sm">
-                {filters.userIds.length === 0
-                  ? 'All users'
-                  : filters.userIds.length === 1
-                    ? (brandingUsers.find(u => u.id === filters.userIds[0])?.full_name || 'Unknown')
-                    : `${filters.userIds.length} selected`}
-              </span>
-              <ChevronDown className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
-            </button>
-            {userDropOpen && (
-              <div className="absolute z-50 top-full mt-1 left-0 w-full min-w-[200px] bg-background border border-border rounded-lg shadow-lg py-1 max-h-52 overflow-y-auto">
-                <label className="flex items-center gap-2 px-3 py-1.5 hover:bg-muted/40 cursor-pointer">
-                  <input type="checkbox" checked={filters.userIds.length === 0}
-                    onChange={() => setFilters(p => ({ ...p, userIds: [] }))}
-                    className="w-3.5 h-3.5 accent-pink-500" />
-                  <span className="text-sm">All users</span>
-                </label>
-                <div className="border-t border-border my-1" />
-                {brandingUsers.map(u => (
-                  <label key={u.id} className="flex items-center gap-2 px-3 py-1.5 hover:bg-muted/40 cursor-pointer">
-                    <input type="checkbox" checked={filters.userIds.includes(u.id)}
-                      onChange={() => toggleUser(u.id)}
-                      className="w-3.5 h-3.5 accent-pink-500" />
-                    <span className="text-sm truncate">{u.full_name || u.email}</span>
-                  </label>
-                ))}
-                <div className="border-t border-border mt-1 pt-1 px-2 pb-1">
-                  <button type="button" onClick={() => setUserDropOpen(false)}
-                    className="w-full text-xs text-center text-muted-foreground hover:text-foreground py-0.5">Done</button>
-                </div>
-              </div>
-            )}
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground block mb-1">Date From</label>
-            <input type="date" value={filters.dateFrom} onChange={e => setFilters(p => ({ ...p, dateFrom: e.target.value }))} className={INP} />
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground block mb-1">Date To</label>
-            <input type="date" value={filters.dateTo} onChange={e => setFilters(p => ({ ...p, dateTo: e.target.value }))} className={INP} />
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground block mb-1">Type of Work</label>
-            <select value={filters.typeOfWork} onChange={e => setFilters(p => ({ ...p, typeOfWork: e.target.value, subCategory: '' }))} className={SEL + ' w-full'}>
-              <option value="">All types</option>
-              {categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-            </select>
-          </div>
-          {filters.typeOfWork && (
-            <div>
-              <label className="text-xs text-muted-foreground block mb-1">Sub Category</label>
-              <select value={filters.subCategory} onChange={e => setFilters(p => ({ ...p, subCategory: e.target.value }))} className={SEL + ' w-full'}>
-                <option value="">All sub-categories</option>
-                {subCatOptions.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
-              </select>
-            </div>
-          )}
-          <div className="flex items-center gap-2 mt-4">
-            <input type="checkbox" id="lockedOnly" checked={filters.lockedOnly}
-              onChange={e => setFilters(p => ({ ...p, lockedOnly: e.target.checked }))}
-              className="accent-pink-500 w-4 h-4" />
-            <label htmlFor="lockedOnly" className="text-sm text-muted-foreground cursor-pointer">Submitted only</label>
-          </div>
-        </div>
-      </div>
-
-      {/* View mode + export */}
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div className="flex gap-1 bg-muted/40 p-1 rounded-xl">
-          {[
-            { key: 'all', label: 'All Reports' },
-            { key: 'summary', label: 'Team Summary' },
-            { key: 'category', label: 'By Category' },
-            { key: 'collab', label: 'Collaboration' },
-          ].map(v => (
-            <button key={v.key} onClick={() => setViewMode(v.key as typeof viewMode)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${viewMode === v.key ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
-              {v.label}
-            </button>
-          ))}
-        </div>
-        <button onClick={exportCSV}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-muted text-muted-foreground text-xs font-medium hover:bg-accent transition-colors">
-          <Download className="w-3.5 h-3.5" /> Export CSV
-        </button>
-      </div>
-
-      {loading && <p className="text-sm text-muted-foreground text-center py-10 animate-pulse">Loading…</p>}
-
-      {!loading && (
-        <>
-          {/* All Reports */}
-          {viewMode === 'all' && (
-            <div className="space-y-3">
-              {sortedReports.length === 0 && <p className="text-sm text-muted-foreground text-center py-8">No reports found.</p>}
-              {sortedReports.map(r => (
-                <div key={r.id} className="hub-card p-0 overflow-hidden border border-border">
-                  <div className="flex items-center gap-3 px-4 py-3 bg-muted/20 border-b border-border cursor-pointer"
-                    onClick={() => setExpanded(p => { const s = new Set(p); if (s.has(r.id)) s.delete(r.id); else s.add(r.id); return s })}>
-                    <div className="w-8 h-8 rounded-full bg-pink-100 flex items-center justify-center shrink-0">
-                      <span className="text-xs font-semibold text-pink-700">
-                        {(r.user_name || '?')[0].toUpperCase()}
-                      </span>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold text-foreground">{r.user_name || r.user_email || r.user_id}</p>
-                      <p className="text-xs text-muted-foreground">{r.report_date} · {r.rows.length} row{r.rows.length !== 1 ? 's' : ''} · {Math.round(r.rows.reduce((s, rw) => s + timeToHours(rw.time_taken), 0) * 10) / 10}h total</p>
-                    </div>
-                    {r.is_locked
-                      ? <span className="text-[10px] bg-green-50 text-green-700 font-medium px-2 py-0.5 rounded-full shrink-0">Submitted</span>
-                      : <span className="text-[10px] bg-amber-50 text-amber-700 font-medium px-2 py-0.5 rounded-full shrink-0">Draft</span>}
-                    {expanded.has(r.id) ? <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" /> : <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />}
-                  </div>
-                  {expanded.has(r.id) && (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-xs border-collapse min-w-[700px]">
-                        <thead>
-                          <tr className="bg-muted/10 border-b border-border">
-                            {['Sr', 'Type of Work', 'Sub Category', 'Specific Work', 'Time Taken', 'Collaborators'].map(h => (
-                              <th key={h} className="text-left text-[11px] font-semibold uppercase tracking-wider text-muted-foreground px-3 py-2">{h}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {r.rows.map(row => (
-                            <tr key={row.id} className="border-b border-border/50 last:border-0 hover:bg-muted/10">
-                              <td className="px-3 py-1.5 text-muted-foreground text-center">{row.sr_no}</td>
-                              <td className="px-3 py-1.5">{row.type_of_work}</td>
-                              <td className="px-3 py-1.5 text-muted-foreground">{row.sub_category || '—'}</td>
-                              <td className="px-3 py-1.5">{row.specific_work}</td>
-                              <td className="px-3 py-1.5 text-pink-600 font-medium">{row.time_taken}</td>
-                              <td className="px-3 py-1.5 text-muted-foreground">{row.collaborative_colleagues.map(labelCollab).join(', ') || '—'}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Team Summary */}
-          {viewMode === 'summary' && (
-            <div className="space-y-4">
-              <div className="hub-card overflow-x-auto">
-                <h3 className="text-sm font-semibold text-foreground mb-3">Team Output Summary</h3>
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-border">
-                      <th className="text-left pb-2 pr-4 text-xs font-semibold text-muted-foreground">Team Member</th>
-                      <th className="text-right pb-2 pr-4 text-xs font-semibold text-muted-foreground">Total Hours</th>
-                      <th className="text-right pb-2 text-xs font-semibold text-muted-foreground">Total Rows</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {summaryData.map(d => (
-                      <tr key={d.name} className="border-b border-border/50 last:border-0">
-                        <td className="py-2 pr-4 font-medium">{d.name}</td>
-                        <td className="py-2 pr-4 text-right text-pink-600 font-medium">{Math.round(d.hours * 10) / 10}h</td>
-                        <td className="py-2 text-right text-muted-foreground">{d.rows}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="hub-card">
-                <h3 className="text-sm font-semibold text-foreground mb-3">Hours by Member</h3>
-                <ResponsiveContainer width="100%" height={220}>
-                  <BarChart data={summaryData.slice(0, 10)} margin={{ top: 4, right: 0, left: -20, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                    <XAxis dataKey="name" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
-                    <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
-                    <Tooltip />
-                    <Bar dataKey="hours" fill="#ec4899" radius={[4, 4, 0, 0]} maxBarSize={40} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-          )}
-
-          {/* Category */}
-          {viewMode === 'category' && (
-            <div className="hub-card">
-              <h3 className="text-sm font-semibold text-foreground mb-3">Hours by Work Category</h3>
-              {categoryData.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-6">No data.</p>
-              ) : (
-                <>
-                  <ResponsiveContainer width="100%" height={240}>
-                    <BarChart data={categoryData} layout="vertical" margin={{ top: 4, right: 20, left: 120, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
-                      <XAxis type="number" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
-                      <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} width={115} />
-                      <Tooltip formatter={(v: number) => [`${v} hrs`, 'Hours']} />
-                      <Bar dataKey="hours" fill="#8b5cf6" radius={[0, 4, 4, 0]} maxBarSize={24} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* Collaboration Matrix */}
-          {viewMode === 'collab' && (
-            <div className="hub-card overflow-x-auto">
-              <h3 className="text-sm font-semibold text-foreground mb-3">Collaboration Map</h3>
-              {Object.keys(collabMatrix).length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-6">No collaboration data.</p>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-border">
-                      <th className="text-left pb-2 pr-4 text-xs font-semibold text-muted-foreground">Member</th>
-                      <th className="text-left pb-2 text-xs font-semibold text-muted-foreground">Collaborated With</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(collabMatrix).map(([name, collabs]) => (
-                      <tr key={name} className="border-b border-border/50 last:border-0">
-                        <td className="py-2 pr-4 font-medium align-top">{name}</td>
-                        <td className="py-2">
-                          <div className="flex flex-wrap gap-1.5">
-                            {Object.entries(collabs).sort((a, b) => b[1] - a[1]).map(([c, cnt]) => (
-                              <span key={c} className="text-xs bg-pink-50 text-pink-700 px-2 py-0.5 rounded-full">{c} ×{cnt}</span>
-                            ))}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          )}
-        </>
       )}
     </div>
   )
@@ -649,7 +282,7 @@ function DailyReportsTab({ brandingUsers }: { brandingUsers: { id: string; full_
 
 // ── KRA Management Tab ─────────────────────────────────────────────────────
 
-function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full_name: string; email: string }[] }) {
+function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full_name: string; email: string; avatar_url: string | null }[] }) {
   const { profile } = useAuth()
   const [month, setMonth] = useState(new Date().getMonth() + 1)
   const [year, setYear]   = useState(new Date().getFullYear())
@@ -875,7 +508,7 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">Peer Marking:</span>
+            <span className="text-sm font-bold font-serif" style={{ color: '#1a472a' }}>Peer Marking:</span>
             <button onClick={() => void togglePeer(!peerEnabled)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${peerEnabled ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-muted text-muted-foreground hover:bg-accent'}`}>
               {peerEnabled ? <ToggleRight className="w-4 h-4" /> : <ToggleLeft className="w-4 h-4" />}
@@ -896,63 +529,97 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
       {loading && <p className="text-sm text-muted-foreground text-center py-10 animate-pulse">Loading KRA data…</p>}
 
       {!loading && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-          {/* User list */}
-          <div className="lg:col-span-1 space-y-2">
-            <h3 className="text-sm font-semibold text-foreground">Team Members</h3>
-            {dashboard.length === 0 && <p className="text-sm text-muted-foreground py-4">No team members found.</p>}
-            {dashboard.map(r => {
-              const composite = r.composite_score
-              const final = r.composite_score_after_penalty
-              return (
-                <button key={r.user_id}
-                  onClick={() => { setSelectedUser(r.user_id); setFinalPushState('idle'); setDetailTab('admin') }}
-                  className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${selectedUser === r.user_id ? 'border-pink-400 bg-pink-50/40' : 'border-border hover:border-pink-200 hover:bg-muted/20'}`}>
-                  <div className="w-8 h-8 rounded-full bg-pink-100 flex items-center justify-center shrink-0">
-                    <span className="text-xs font-semibold text-pink-700">{r.user_name[0]?.toUpperCase()}</span>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">{r.user_name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {r.self_appraisal ? '✓ Self' : '○ Self'} · {r.peer_count > 0 ? `✓ ${r.peer_count} peers` : '○ Peers'}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          {/* Team Members — cube grid, three per row, pinned to the left
+              column. Selected cube has a strong ring; clicking populates
+              the scoring panel on the right. */}
+          <div>
+            <h3 className="text-base font-extrabold font-serif mb-3" style={{ color: '#1a472a' }}>Team Members</h3>
+            {dashboard.length === 0 && <p className="text-sm text-gray-400 py-4">No team members found.</p>}
+            <div className="grid grid-cols-3 gap-3">
+              {dashboard.map(r => {
+                const composite = r.composite_score
+                const final = r.composite_score_after_penalty
+                const u = brandingUsers.find(b => b.id === r.user_id)
+                const isSelected = selectedUser === r.user_id
+                return (
+                  <button key={r.user_id}
+                    onClick={() => { setSelectedUser(r.user_id); setFinalPushState('idle'); setDetailTab('admin') }}
+                    className={`relative aspect-square flex flex-col items-center justify-center gap-2 p-3 rounded-2xl border-2 text-center transition-all ${isSelected
+                      ? 'border-green-700 bg-gradient-to-br from-green-50 to-green-100 shadow-md ring-2 ring-green-700/40'
+                      : 'border-green-100 bg-white hover:border-green-400 hover:bg-green-50/60 hover:shadow-sm'}`}>
+                    {/* status pill in the top-right corner */}
+                    <span className={`absolute top-2 right-2 text-[9px] font-bold px-1.5 py-0.5 rounded-full ${r.is_final_pushed
+                      ? 'bg-green-700 text-white' : 'bg-amber-100 text-amber-700'}`}>
+                      {r.is_final_pushed ? 'Published' : 'Pending'}
+                    </span>
+                    {u?.avatar_url ? (
+                      <img src={u.avatar_url} alt={r.user_name}
+                        className={`w-12 h-12 rounded-full object-cover shrink-0 ring-2 ${isSelected ? 'ring-green-600' : 'ring-green-200'}`} />
+                    ) : (
+                      <div className={`w-12 h-12 rounded-full flex items-center justify-center shrink-0 ring-2 ${isSelected ? 'bg-green-200 ring-green-600' : 'bg-green-100 ring-green-200'}`}>
+                        <span className="text-sm font-bold text-green-800">{r.user_name[0]?.toUpperCase()}</span>
+                      </div>
+                    )}
+                    <p className="text-xs font-bold font-serif leading-tight line-clamp-2" style={{ color: '#1a472a' }}>{r.user_name}</p>
+                    <div className="flex items-baseline gap-1">
+                      {composite !== null ? (
+                        <>
+                          {final !== null && final !== composite ? (
+                            <>
+                              <span className="line-through text-gray-400 text-[10px]">{composite}</span>
+                              <span className="text-base font-extrabold" style={{ color: '#1a472a' }}>{final}</span>
+                            </>
+                          ) : (
+                            <span className="text-base font-extrabold" style={{ color: '#1a472a' }}>{composite}</span>
+                          )}
+                          <span className="text-[10px] text-gray-400 font-semibold">/10</span>
+                        </>
+                      ) : (
+                        <span className="text-[10px] text-gray-400 italic">No score</span>
+                      )}
+                    </div>
+                    <p className="text-[10px] font-semibold" style={{ color: '#52b788' }}>
+                      {r.self_appraisal ? '✓' : '○'} Self · {r.peer_count > 0 ? `✓ ${r.peer_count}` : '○'} Peers
                       {(r.total_penalty_percent ?? 0) > 0 && (
-                        <span className="ml-1 text-red-600 font-semibold">· −{r.total_penalty_percent}%</span>
+                        <span className="ml-1 text-red-600">· −{r.total_penalty_percent}%</span>
                       )}
                     </p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    {composite !== null && (
-                      <p className="text-sm font-semibold text-pink-600">
-                        {final !== null && final !== composite
-                          ? <><span className="line-through text-gray-400 text-[11px] mr-1">{composite}</span>{final}</>
-                          : composite}
-                      </p>
-                    )}
-                    {r.is_final_pushed
-                      ? <p className="text-[10px] text-green-600 font-medium">Published</p>
-                      : <p className="text-[10px] text-amber-600 font-medium">Pending</p>}
-                  </div>
-                </button>
-              )
-            })}
+                  </button>
+                )
+              })}
+            </div>
           </div>
 
-          {/* KRA Detail Panel */}
-          <div className="lg:col-span-2">
+          {/* KRA Scoring Panel — sits to the right of the cube grid */}
+          <div>
             {!selectedUser ? (
-              <div className="hub-card flex items-center justify-center h-full min-h-[300px] text-sm text-muted-foreground">
+              <div className="hub-card flex items-center justify-center h-full min-h-[300px] text-sm font-semibold" style={{ color: '#52b788' }}>
                 Select a team member to view and edit their KRA
               </div>
             ) : selectedReport && (
               <div className="hub-card space-y-5">
                 <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="text-base font-semibold text-foreground">{selectedReport.user_name}</h3>
-                    {selectedReport.team_joined_at && (
-                      <p className="text-[11px] text-muted-foreground mt-0.5">
-                        Member since {new Date(selectedReport.team_joined_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
-                      </p>
-                    )}
+                  <div className="flex items-center gap-3">
+                    {(() => {
+                      const su = brandingUsers.find(b => b.id === selectedReport.user_id)
+                      return su?.avatar_url ? (
+                        <img src={su.avatar_url} alt={selectedReport.user_name}
+                          className="w-12 h-12 rounded-full object-cover shrink-0 ring-2 ring-green-200" />
+                      ) : (
+                        <div className="w-12 h-12 rounded-full bg-green-100 ring-2 ring-green-200 flex items-center justify-center shrink-0">
+                          <span className="text-base font-bold text-green-800">{selectedReport.user_name[0]?.toUpperCase()}</span>
+                        </div>
+                      )
+                    })()}
+                    <div>
+                      <h3 className="text-xl font-extrabold font-serif" style={{ color: '#1a472a' }}>{selectedReport.user_name}</h3>
+                      {selectedReport.team_joined_at && (
+                        <p className="text-[11px] font-semibold mt-0.5" style={{ color: '#52b788' }}>
+                          Member since {new Date(selectedReport.team_joined_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+                        </p>
+                      )}
+                    </div>
                   </div>
                   <div className="flex items-center gap-2">
                     {selectedReport.is_final_pushed && (
@@ -966,7 +633,7 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                 {/* Score overview cards */}
                 <div className="grid grid-cols-4 gap-2">
                   {[
-                    { label: 'Self Score',   value: scoreAvg(selectedReport.self_appraisal?.scores || null, params)?.toFixed(1) ?? '—', bg: 'bg-pink-50 text-pink-700' },
+                    { label: 'Self Score',   value: scoreAvg(selectedReport.self_appraisal?.scores || null, params)?.toFixed(1) ?? '—', bg: 'bg-green-50 text-green-800' },
                     { label: 'Peer Score',   value: scoreAvg(selectedReport.peer_average, params)?.toFixed(1) ?? '—', bg: 'bg-blue-50 text-blue-700' },
                     { label: 'Admin Score',  value: scoreAvg(adminScores, params)?.toFixed(1) ?? '—', bg: 'bg-purple-50 text-purple-700' },
                     { label: 'Composite',    value: selectedReport.composite_score?.toFixed(1) ?? '—', bg: 'bg-green-50 text-green-700' },
@@ -1035,14 +702,19 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                 })()}
 
                 {/* Detail sub-tabs */}
-                <div className="flex gap-1 bg-muted/30 p-1 rounded-lg w-fit">
+                <div className="flex gap-1 bg-gray-50 p-1 rounded-lg w-fit">
                   {([
                     { key: 'admin', label: 'Admin Score' },
                     { key: 'self',  label: 'Self Score' },
                     { key: 'peer',  label: `Peer Scores (${userPeerMarkings.length})` },
                   ] as const).map(t => (
                     <button key={t.key} onClick={() => setDetailTab(t.key)}
-                      className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${detailTab === t.key ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
+                      className={`px-3 py-1.5 rounded-md text-xs font-bold font-serif transition-all ${
+                        detailTab === t.key ? 'bg-white shadow-sm' : 'hover:text-gray-700'
+                      }`}
+                      style={detailTab === t.key
+                        ? { color: '#1a472a' }
+                        : { color: '#52b788' }}>
                       {t.label}
                     </button>
                   ))}
@@ -1113,10 +785,10 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                                 {p.description && <p className="text-[10px] text-muted-foreground">{p.description}</p>}
                               </div>
                               <div className="w-32 h-2 bg-muted rounded-full shrink-0">
-                                <div className="h-full bg-pink-500 rounded-full transition-all"
+                                <div className="h-full bg-green-500 rounded-full transition-all"
                                   style={{ width: score !== null ? `${(score / (p.max_score || 5)) * 100}%` : '0%' }} />
                               </div>
-                              <span className="text-sm font-semibold text-pink-600 w-10 text-right shrink-0">
+                              <span className="text-sm font-semibold text-green-800 w-10 text-right shrink-0">
                                 {score ?? '—'}<span className="text-xs text-muted-foreground font-normal">/{p.max_score}</span>
                               </span>
                             </div>
@@ -1243,7 +915,7 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
           <div className="bg-card border border-border rounded-2xl shadow-xl max-w-2xl w-full max-h-[80vh] flex flex-col">
             <div className="flex items-center justify-between p-4 border-b border-border">
-              <h3 className="text-base font-semibold text-foreground">Peer Markings — {MONTHS[month - 1]} {year}</h3>
+              <h3 className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>Peer Markings — {MONTHS[month - 1]} {year}</h3>
               <button onClick={() => setShowPeerMarkings(false)} className="p-1 rounded-lg hover:bg-accent">
                 <X className="w-4 h-4" />
               </button>
@@ -1265,7 +937,7 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                       <tr key={m.id} className="border-b border-border/50 last:border-0">
                         <td className="py-2 pr-4">{m.reviewer_name || m.reviewer_id}</td>
                         <td className="py-2 pr-4">{m.reviewee_name || m.reviewee_id}</td>
-                        <td className="py-2 text-right font-medium text-pink-600">
+                        <td className="py-2 text-right font-medium text-green-800">
                           {(Object.values(m.scores).reduce((a, b) => a + b, 0) / Math.max(Object.keys(m.scores).length, 1)).toFixed(1)}
                         </td>
                       </tr>
@@ -1427,104 +1099,127 @@ function LeaveManagementTab() {
 
   const today = new Date().toISOString().split('T')[0]
 
+  const statusBadgeCls = (s: BrandingLeave['status']) =>
+    s === 'approved' ? 'bg-green-100 text-green-800'
+    : s === 'rejected' ? 'bg-red-50 text-red-600'
+    : 'bg-amber-100 text-amber-700'
+
   return (
     <div className="space-y-5">
       {/* Filter bar */}
-      <div className="hub-card flex items-center gap-3 flex-wrap">
-        <span className="text-sm font-semibold text-foreground flex items-center gap-2">
-          <CalendarOff className="w-4 h-4 text-muted-foreground" /> Leave Requests
+      <div className="bg-white rounded-2xl border border-gray-100 p-4 flex items-center gap-3 flex-wrap">
+        <span className="text-sm font-extrabold font-serif flex items-center gap-2" style={{ color: '#1a472a' }}>
+          <CalendarOff className="w-4 h-4" /> Leave Requests
         </span>
-        <div className="flex gap-1 bg-muted/40 p-1 rounded-xl ml-auto">
+        <div className="flex gap-1 bg-gray-50 p-1 rounded-xl ml-auto">
           {(['pending', 'approved', 'rejected', 'all'] as const).map(s => (
             <button key={s} onClick={() => setStatusFilter(s)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${statusFilter === s ? 'bg-white text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold capitalize transition-all ${
+                statusFilter === s ? 'text-white shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              }`}
+              style={statusFilter === s ? { background: '#1a472a' } : {}}>
               {s === 'all' ? 'All' : s}
             </button>
           ))}
         </div>
       </div>
 
-      {loading && <p className="text-sm text-muted-foreground text-center py-10 animate-pulse">Loading…</p>}
+      {loading && <p className="text-sm text-gray-400 text-center py-10 animate-pulse">Loading…</p>}
 
       {!loading && leaves.length === 0 && (
-        <p className="text-sm text-muted-foreground text-center py-10">
+        <p className="text-sm text-gray-400 text-center py-10">
           No {statusFilter === 'all' ? '' : statusFilter} leave requests.
         </p>
       )}
 
       {!loading && leaves.length > 0 && (
-        <div className="space-y-3">
-          {leaves.map(lv => (
-            <div key={lv.id} className="hub-card p-4 flex items-start gap-4 border border-border">
-              {/* Avatar */}
-              <div className="w-9 h-9 rounded-full bg-pink-100 flex items-center justify-center shrink-0">
-                <span className="text-xs font-semibold text-pink-700">
-                  {(lv.user_name || lv.user_email || '?')[0].toUpperCase()}
-                </span>
-              </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {leaves.map(lv => {
+            const name = lv.user_name || lv.user_email || lv.user_id
+            const initials = name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+            return (
+              <div key={lv.id} className="rounded-2xl border border-gray-100 bg-white p-5 flex flex-col gap-3 relative overflow-hidden">
+                {/* Subtle top stripe colored by status */}
+                <div className="absolute top-0 left-0 right-0 h-1" style={{
+                  background: lv.status === 'approved' ? '#1a472a'
+                    : lv.status === 'rejected' ? '#dc2626' : '#f59e0b'
+                }} />
 
-              <div className="flex-1 min-w-0 space-y-1">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-sm font-semibold text-foreground">{lv.user_name || lv.user_email || lv.user_id}</span>
-                  <span className="text-sm text-muted-foreground">{lv.leave_date}</span>
-                  {lv.is_half_day && lv.half_day_period && (
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">
-                      {lv.half_day_period === 'first' ? 'First half' : 'Second half'}
-                    </span>
-                  )}
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                    lv.status === 'approved' ? 'bg-green-50 text-green-700' :
-                    lv.status === 'rejected' ? 'bg-red-50 text-red-600' :
-                    'bg-amber-50 text-amber-700'
-                  }`}>
+                {/* Header: avatar + name + status pill */}
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center text-sm font-bold text-green-800 shrink-0">
+                    {initials}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-bold font-serif truncate" style={{ color: '#1a472a' }}>{name}</p>
+                    <p className="text-[11px] text-gray-400 truncate">{lv.user_email}</p>
+                  </div>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${statusBadgeCls(lv.status)}`}>
                     {lv.status.charAt(0).toUpperCase() + lv.status.slice(1)}
                   </span>
                 </div>
-                <p className="text-[11px] text-muted-foreground">
-                  {new Date(lv.start_at).toLocaleString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
-                  {' – '}
-                  {new Date(lv.end_at).toLocaleString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
-                </p>
-                <p className="text-xs text-muted-foreground">{lv.reason || '—'}</p>
 
-                {/* Transfer date — admin editable */}
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="text-xs text-muted-foreground">Transfer day:</span>
+                {/* Date + half-day */}
+                <div className="text-xs font-semibold flex items-center gap-1.5 flex-wrap" style={{ color: '#52b788' }}>
+                  <span className="font-bold" style={{ color: '#1a472a' }}>{lv.leave_date}</span>
+                  {lv.is_half_day && lv.half_day_period && (
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700">
+                      {lv.half_day_period === 'first' ? 'First half' : 'Second half'}
+                    </span>
+                  )}
+                  <span className="text-gray-300">·</span>
+                  <span className="text-gray-500 font-normal">
+                    {new Date(lv.start_at).toLocaleString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
+                    {' – '}
+                    {new Date(lv.end_at).toLocaleString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
+                  </span>
+                </div>
+
+                {/* Reason */}
+                <div className="rounded-xl bg-gray-50 p-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: '#52b788' }}>Reason</p>
+                  <p className="text-xs text-gray-700">{lv.reason || '—'}</p>
+                </div>
+
+                {/* Transfer day */}
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="font-bold" style={{ color: '#52b788' }}>Transfer day:</span>
                   {transferEdit === lv.id ? (
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-1">
                       <input type="date" value={transferVal} min={today}
                         onChange={e => setTransferVal(e.target.value)}
-                        className={SEL + ' py-0.5 px-2 text-xs'} />
+                        className="flex-1 text-xs px-2 py-1 rounded-lg border border-gray-200 focus:outline-none focus:border-green-700" />
                       <button onClick={() => void handleTransferSave(lv.id)}
                         className="text-xs font-bold text-green-700 hover:text-green-900">Save</button>
                       <button onClick={() => setTransferEdit(null)}
-                        className="text-xs text-muted-foreground hover:text-foreground">Cancel</button>
+                        className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
                     </div>
                   ) : (
-                    <span className="text-xs font-medium text-foreground">
-                      {lv.transfer_date || 'Not set'}
+                    <span className="text-xs font-bold flex-1" style={{ color: '#1a472a' }}>
+                      {lv.transfer_date || <span className="text-gray-400 font-normal">Not set</span>}
                       <button onClick={() => { setTransferEdit(lv.id); setTransferVal(lv.transfer_date || '') }}
-                        className="ml-2 text-[10px] text-muted-foreground underline hover:text-foreground">edit</button>
+                        className="ml-2 text-[10px] text-gray-400 underline hover:text-gray-600 font-normal">edit</button>
                     </span>
                   )}
                 </div>
-              </div>
 
-              {/* Approve / Reject — only for pending */}
-              {lv.status === 'pending' && (
-                <div className="flex gap-2 shrink-0">
-                  <button onClick={() => void handleReview(lv.id, 'approved')}
-                    className="px-3 py-1.5 text-xs font-bold text-white rounded-lg bg-green-700 hover:bg-green-800 transition-colors">
-                    Approve
-                  </button>
-                  <button onClick={() => void handleReview(lv.id, 'rejected')}
-                    className="px-3 py-1.5 text-xs font-bold text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors">
-                    Reject
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
+                {/* Approve / Reject — only for pending */}
+                {lv.status === 'pending' && (
+                  <div className="flex gap-2 mt-auto pt-2 border-t border-gray-50">
+                    <button onClick={() => void handleReview(lv.id, 'approved')}
+                      className="flex-1 px-3 py-2 text-xs font-bold text-white rounded-lg transition-colors hover:opacity-90"
+                      style={{ background: '#1a472a' }}>
+                      Approve
+                    </button>
+                    <button onClick={() => void handleReview(lv.id, 'rejected')}
+                      className="flex-1 px-3 py-2 text-xs font-bold text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors">
+                      Reject
+                    </button>
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
       )}
     </div>
@@ -1550,7 +1245,6 @@ const SECTION_META: Record<AdminSection, { title: string; subtitle: string }> = 
 }
 
 export default function BrandingAdminDashboard() {
-  const { profile } = useAuth()
   const { users } = useAppData()
   const location = useLocation()
   const section: AdminSection = SECTION_BY_PATH[location.pathname] ?? 'reports'
@@ -1558,29 +1252,20 @@ export default function BrandingAdminDashboard() {
 
   const brandingUsers = useMemo(() =>
     users.filter(u => u.team === 'branding' && u.role !== 'super_admin')
-      .map(u => ({ id: u.id, full_name: u.full_name, email: u.email })),
+      .map(u => ({ id: u.id, full_name: u.full_name, email: u.email, avatar_url: u.avatar_url ?? null })),
     [users]
   )
 
   return (
-    <div className="animate-fade-in space-y-5">
-      {/* Header */}
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-pink-100 flex items-center justify-center shrink-0">
-          <Palette className="w-5 h-5 text-pink-600" />
-        </div>
-        <div>
-          <h1 className="text-2xl font-serif text-foreground">{meta.title}</h1>
-          <p className="text-sm text-muted-foreground">
-            {profile?.full_name ? `${profile.full_name} · ` : ''}{meta.subtitle}
-          </p>
-        </div>
+    <BrandingAdminShell>
+      <div>
+        <h1 className="text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>{meta.title}</h1>
+        <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>{meta.subtitle}</p>
       </div>
-
-      {section === 'reports'    && <DailyReportsTab    brandingUsers={brandingUsers} />}
+      {section === 'reports'    && <BrandingAdminOverview brandingUsers={brandingUsers} />}
       {section === 'kra'        && <KraManagementTab   brandingUsers={brandingUsers} />}
       {section === 'leaves'     && <LeaveManagementTab />}
       {section === 'categories' && <ManageCategoriesTab />}
-    </div>
+    </BrandingAdminShell>
   )
 }

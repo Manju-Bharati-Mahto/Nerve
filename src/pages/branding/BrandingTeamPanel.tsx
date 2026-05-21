@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
 import { brandingApi } from '@/lib/branding-api'
@@ -341,7 +342,26 @@ export default function BrandingTeamPanel() {
         : u.id !== user?.id)
   )
 
-  const [tab, setTab] = useState<'members' | 'projects'>('members')
+  // Allow ?tab=projects in the URL to land directly on the Projects tab —
+  // used by the Total Projects card on the admin dashboard.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const initialTab = searchParams.get('tab') === 'projects' ? 'projects' : 'members'
+  const [tab, setTab] = useState<'members' | 'projects'>(initialTab)
+
+  // Keep the URL in sync so reloads / back-button preserve the chosen tab,
+  // and strip the param when switching back to "members" to keep URLs clean.
+  useEffect(() => {
+    const current = searchParams.get('tab')
+    if (tab === 'projects' && current !== 'projects') {
+      const next = new URLSearchParams(searchParams)
+      next.set('tab', 'projects')
+      setSearchParams(next, { replace: true })
+    } else if (tab === 'members' && current === 'projects') {
+      const next = new URLSearchParams(searchParams)
+      next.delete('tab')
+      setSearchParams(next, { replace: true })
+    }
+  }, [tab, searchParams, setSearchParams])
 
   // ── Report statuses — date-filtered ──────────────────────────────────
   const [filterDate, setFilterDate] = useState(todayIso)
