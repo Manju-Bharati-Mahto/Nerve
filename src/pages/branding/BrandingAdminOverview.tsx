@@ -23,7 +23,7 @@ import {
 } from 'recharts'
 import { toast } from 'sonner'
 import { brandingApi } from '@/lib/branding-api'
-import { MONTHS, timeToHours } from '@/lib/branding-types'
+import { MONTHS, timeToHours, elapsedToTimeTaken, perDayElapsedSeconds } from '@/lib/branding-types'
 import type {
   DailyReport, BrandingProject, BrandingLeave, WorkCategory,
 } from '@/lib/branding-types'
@@ -40,6 +40,19 @@ const today = () => fmtDate(new Date())
 const parseDateLocal = (s: string) => {
   const [y, mo, d] = s.split('-').map(Number)
   return new Date(y, mo - 1, d)
+}
+
+// Hours actually tracked on the day of `row`. Stopwatch rows use the
+// per-day delta (so a row carried from yesterday only counts what was
+// added today); manual entries fall back to the typed time_taken string.
+// Pass the same report set the caller is iterating so carry-over chains
+// can be resolved.
+function rowHours(
+  row: { elapsed_seconds: number; carried_over_from_row_id: string | null; time_taken: string },
+  allReports: DailyReport[],
+): number {
+  if (!row.elapsed_seconds) return timeToHours(row.time_taken)
+  return perDayElapsedSeconds(row, allReports) / 3600
 }
 
 // ── Color tokens (match user dashboard) ──────────────────────────────────
@@ -595,13 +608,21 @@ export default function BrandingAdminOverview({ brandingUsers }: { brandingUsers
     return set.size
   }, [monthReports])
 
+  // Reports keyed to the people who actually submit (excludes admin /
+  // reports-admin / super-admin entries). Drives every aggregation
+  // below so admin rows can't pollute team totals.
+  const submitterReports = useMemo(() => {
+    const ids = new Set(brandingUsers.map(u => u.id))
+    return monthReports.filter(r => ids.has(r.user_id))
+  }, [monthReports, brandingUsers])
+
   const totalHoursMTD = useMemo(() => {
     let s = 0
-    for (const rep of monthReports) {
-      for (const row of rep.rows) s += timeToHours(row.time_taken)
+    for (const rep of submitterReports) {
+      for (const row of rep.rows) s += rowHours(row, submitterReports)
     }
     return Math.round(s * 10) / 10
-  }, [monthReports])
+  }, [submitterReports])
 
   // Per-user totals for the month — drives the Team Summary chart and
   // the "Read more" team list. (The dashboard top-4 strip uses
@@ -611,14 +632,14 @@ export default function BrandingAdminOverview({ brandingUsers }: { brandingUsers
     for (const u of brandingUsers) {
       map.set(u.id, { id: u.id, name: u.full_name || u.email, email: u.email, avatar_url: u.avatar_url, hours: 0, reports: 0 })
     }
-    for (const rep of monthReports) {
+    for (const rep of submitterReports) {
       const entry = map.get(rep.user_id)
       if (!entry) continue
       entry.reports += 1
-      for (const row of rep.rows) entry.hours += timeToHours(row.time_taken)
+      for (const row of rep.rows) entry.hours += rowHours(row, submitterReports)
     }
     return Array.from(map.values()).sort((a, b) => b.hours - a.hours)
-  }, [monthReports, brandingUsers])
+  }, [submitterReports, brandingUsers])
 
   // Top contributors for TODAY only — drives the four cards on the
   // dashboard so the strip rolls over every day instead of staying
@@ -629,17 +650,17 @@ export default function BrandingAdminOverview({ brandingUsers }: { brandingUsers
     for (const u of brandingUsers) {
       map.set(u.id, { id: u.id, name: u.full_name || u.email, email: u.email, avatar_url: u.avatar_url, hours: 0, reports: 0 })
     }
-    for (const rep of monthReports) {
+    for (const rep of submitterReports) {
       if (rep.report_date !== t) continue
       const entry = map.get(rep.user_id)
       if (!entry) continue
       entry.reports += 1
-      for (const row of rep.rows) entry.hours += timeToHours(row.time_taken)
+      for (const row of rep.rows) entry.hours += rowHours(row, submitterReports)
     }
     return Array.from(map.values())
       .filter(u => u.hours > 0)
       .sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name))
-  }, [monthReports, brandingUsers])
+  }, [submitterReports, brandingUsers])
 
   // Team Summary chart data (current month).
   // `cap` is the chart's y-axis cap — we render every user against the
@@ -659,29 +680,34 @@ export default function BrandingAdminOverview({ brandingUsers }: { brandingUsers
   // Hours by Category (pie data)
   const categoryHours = useMemo(() => {
     const m = new Map<string, number>()
-    for (const rep of monthReports) {
+    for (const rep of submitterReports) {
       for (const row of rep.rows) {
         const k = row.type_of_work || 'Uncategorized'
-        m.set(k, (m.get(k) ?? 0) + timeToHours(row.time_taken))
+        m.set(k, (m.get(k) ?? 0) + rowHours(row, submitterReports))
       }
     }
     return Array.from(m.entries())
       .map(([name, value]) => ({ name, value: Math.round(value * 10) / 10 }))
       .filter(d => d.value > 0)
       .sort((a, b) => b.value - a.value)
-  }, [monthReports])
+  }, [submitterReports])
 
   // Collaboration map — by user pair. For each report row, every
   // (author, collaborator) tuple adds the row's hours to the pair's bucket.
   // Pair key is the two ids sorted so (A,B) and (B,A) merge into one entry.
   const collabByPair = useMemo(() => {
+    const submitterIds = new Set(brandingUsers.map(u => u.id))
     const map = new Map<string, { a: string; b: string; hours: number; sessions: number; projects: Set<string> }>()
-    for (const rep of monthReports) {
+    for (const rep of submitterReports) {
       for (const row of rep.rows) {
-        const hours = timeToHours(row.time_taken)
+        const hours = rowHours(row, submitterReports)
         if (!row.collaborative_colleagues || row.collaborative_colleagues.length === 0) continue
         for (const partnerId of row.collaborative_colleagues) {
+          // Skip self, missing ids, and any collaborator that isn't a
+          // submitter (e.g. an admin who got tagged) — admins never
+          // appear in the dashboard's people surfaces.
           if (!partnerId || partnerId === rep.user_id) continue
+          if (!submitterIds.has(partnerId)) continue
           const [a, b] = [rep.user_id, partnerId].sort()
           const key = `${a}::${b}`
           const entry = map.get(key) ?? { a, b, hours: 0, sessions: 0, projects: new Set<string>() }
@@ -695,7 +721,7 @@ export default function BrandingAdminOverview({ brandingUsers }: { brandingUsers
     return Array.from(map.values())
       .filter(e => e.hours > 0)
       .sort((a, b) => b.hours - a.hours)
-  }, [monthReports])
+  }, [submitterReports, brandingUsers])
 
   // ── Drill-down: who submitted on a given day ──────────────────────────
   const userById = useMemo(() => new Map(brandingUsers.map(u => [u.id, u])), [brandingUsers])
@@ -704,7 +730,7 @@ export default function BrandingAdminOverview({ brandingUsers }: { brandingUsers
     if (!drillDate) return []
     const reportsForDay = chartReports.filter(r => r.report_date === drillDate && r.is_locked)
     return reportsForDay.map(rep => {
-      const hours = rep.rows.reduce((s, row) => s + timeToHours(row.time_taken), 0)
+      const hours = rep.rows.reduce((s, row) => s + rowHours(row, chartReports), 0)
       const u = userById.get(rep.user_id)
       return {
         id: rep.user_id,
@@ -1235,7 +1261,7 @@ function ProjectsOverviewDialog({ projects, monthReports, brandingUsers, onClose
         if (!key) continue
         const bucket = byName.get(key)
         if (!bucket) continue
-        const h = timeToHours(row.time_taken)
+        const h = rowHours(row, monthReports)
         bucket.hours.set(rep.user_id, (bucket.hours.get(rep.user_id) ?? 0) + h)
         const prev = bucket.lastLogged.get(rep.user_id)
         if (!prev || rep.report_date > prev) bucket.lastLogged.set(rep.user_id, rep.report_date)
@@ -1413,7 +1439,7 @@ function AllReportsDialog({ brandingUsers, categories, onClose }: AllReportsDial
       const entry = map.get(rep.user_id)
       if (!entry) continue
       entry.reports += 1
-      for (const row of rep.rows) entry.hours += timeToHours(row.time_taken)
+      for (const row of rep.rows) entry.hours += rowHours(row, reports)
     }
     return Array.from(map.values())
       .sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name))
@@ -1554,6 +1580,7 @@ function AllReportsDialog({ brandingUsers, categories, onClose }: AllReportsDial
           <UserReportsDetailModal
             user={userCards.find(u => u.id === detailUserId) ?? null}
             reports={sortedReports.filter(r => r.user_id === detailUserId)}
+            brandingUsers={brandingUsers}
             onClose={() => setDetailUserId(null)}
           />
         )}
@@ -1564,24 +1591,49 @@ function AllReportsDialog({ brandingUsers, categories, onClose }: AllReportsDial
 
 // ── Per-user drill popup inside All Reports ──────────────────────────────
 
-function UserReportsDetailModal({ user, reports, onClose }: {
+// Tiny status badge — mirrors the one on the user dashboard so the
+// admin sees exactly the same paused/finished/running pill the user
+// submitted on the row.
+function RowStatusBadge({ status }: { status: 'idle' | 'running' | 'paused' | 'finished' }) {
+  const cfg = {
+    idle:     { label: 'Not started', cls: 'bg-gray-100 text-gray-600' },
+    running:  { label: 'Running',     cls: 'bg-amber-100 text-amber-700' },
+    paused:   { label: 'Paused',      cls: 'bg-orange-100 text-orange-700' },
+    finished: { label: 'Finished',    cls: 'bg-green-100 text-green-700' },
+  }[status]
+  return (
+    <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full ${cfg.cls}`}>
+      {cfg.label}
+    </span>
+  )
+}
+
+function UserReportsDetailModal({ user, reports, brandingUsers, onClose }: {
   user: { id: string; name: string; email: string; avatar_url: string | null; hours: number; reports: number } | null
   reports: DailyReport[]
+  brandingUsers: User[]
   onClose: () => void
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  // Lookup table so collaborator user-ids render as human names.
+  const nameById = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const u of brandingUsers) m.set(u.id, u.full_name || u.email || u.id)
+    return m
+  }, [brandingUsers])
+
   if (!user) return null
-  const totalHrs = Math.round(reports.reduce((s, r) => s + r.rows.reduce((ss, rw) => ss + timeToHours(rw.time_taken), 0), 0) * 10) / 10
+  const totalHrs = Math.round(reports.reduce((s, r) => s + r.rows.reduce((ss, rw) => ss + rowHours(rw, reports), 0), 0) * 10) / 10
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <div className="flex items-center gap-3 min-w-0">
             <Avatar url={user.avatar_url} name={user.name} email={user.email} sizeClass="w-12 h-12" textClass="text-sm" />
             <div className="min-w-0">
               <h2 className="text-lg font-extrabold font-serif truncate" style={{ color: GREEN_DARK }}>{user.name}</h2>
               <p className="text-xs font-semibold mt-0.5" style={{ color: GREEN_MID }}>
-                {reports.length} report{reports.length === 1 ? '' : 's'} · {totalHrs}h total · {user.email}
+                {reports.length} report{reports.length === 1 ? '' : 's'} · {totalHrs}h on-day · {user.email}
               </p>
             </div>
           </div>
@@ -1591,16 +1643,19 @@ function UserReportsDetailModal({ user, reports, onClose }: {
           {reports.length === 0 ? (
             <p className="text-sm text-gray-400 text-center py-10">No reports for this user under the current filters.</p>
           ) : reports.map(r => {
-            const hours = Math.round(r.rows.reduce((s, rw) => s + timeToHours(rw.time_taken), 0) * 10) / 10
+            const dayHours = Math.round(r.rows.reduce((s, rw) => s + rowHours(rw, reports), 0) * 10) / 10
             const isOpen = expanded.has(r.id)
             return (
               <div key={r.id} className="rounded-xl border border-gray-100 overflow-hidden">
                 <button onClick={() => setExpanded(p => { const s = new Set(p); if (s.has(r.id)) s.delete(r.id); else s.add(r.id); return s })}
                   className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-green-50/30 transition-colors">
                   <div className="flex-1 min-w-0 text-left">
-                    <p className="text-sm font-semibold text-gray-800">{r.report_date}</p>
+                    <p className="text-sm font-semibold text-gray-800">
+                      {new Date(r.report_date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
+                    </p>
                     <p className="text-xs text-gray-500">
-                      {r.rows.length} row{r.rows.length === 1 ? '' : 's'} · {hours}h total
+                      {r.rows.length} row{r.rows.length === 1 ? '' : 's'} · {dayHours}h on this day
+                      {r.submitted_at && ` · submitted ${new Date(r.submitted_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}`}
                     </p>
                   </div>
                   {r.is_locked
@@ -1613,22 +1668,66 @@ function UserReportsDetailModal({ user, reports, onClose }: {
                     <table className="w-full text-xs">
                       <thead>
                         <tr className="bg-gray-50 border-b border-gray-100">
-                          {['Sr', 'Type', 'Sub', 'Description', 'Time', 'Collaborators'].map(h => (
+                          {['Sr', 'Type', 'Sub', 'Project', 'Status', 'Time today', 'Collaborators'].map(h => (
                             <th key={h} className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 px-3 py-2">{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {r.rows.map(row => (
-                          <tr key={row.id} className="border-b border-gray-50 last:border-0">
-                            <td className="px-3 py-1.5 text-gray-400">{row.sr_no}</td>
-                            <td className="px-3 py-1.5">{row.type_of_work}</td>
-                            <td className="px-3 py-1.5 text-gray-500">{row.sub_category || '—'}</td>
-                            <td className="px-3 py-1.5">{row.specific_work}</td>
-                            <td className="px-3 py-1.5 font-medium" style={{ color: GREEN_DARK }}>{row.time_taken}</td>
-                            <td className="px-3 py-1.5 text-gray-500">{row.collaborative_colleagues.join(', ') || '—'}</td>
-                          </tr>
-                        ))}
+                        {r.rows.map(row => {
+                          const isCarried = !!row.carried_over_from_row_id
+                          const hasStopwatch = row.elapsed_seconds > 0 || row.stopwatch_status !== 'idle'
+                          const perDaySecs = hasStopwatch ? perDayElapsedSeconds(row, reports) : 0
+                          return (
+                            <tr key={row.id} className="border-b border-gray-50 last:border-0">
+                              <td className="px-3 py-2 text-gray-400 align-top">{row.sr_no}</td>
+                              <td className="px-3 py-2 align-top">{row.type_of_work}</td>
+                              <td className="px-3 py-2 text-gray-500 align-top">{row.sub_category || '—'}</td>
+                              <td className="px-3 py-2 align-top">
+                                <span className="text-gray-800">{row.specific_work}</span>
+                                {isCarried && (
+                                  <span className="block text-[10px] text-gray-400 mt-0.5">Continued from a previous day</span>
+                                )}
+                              </td>
+                              <td className="px-3 py-2 align-top">
+                                <RowStatusBadge status={row.stopwatch_status} />
+                                {row.stopwatch_status === 'paused' && row.last_paused_at && (
+                                  <div className="text-[10px] text-gray-400 mt-0.5">
+                                    paused {new Date(row.last_paused_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
+                                  </div>
+                                )}
+                              </td>
+                              <td className="px-3 py-2 font-medium whitespace-nowrap align-top" style={{ color: GREEN_DARK }}>
+                                {!hasStopwatch ? (
+                                  // Manual time entry — show what the user typed.
+                                  <>{row.time_taken}</>
+                                ) : perDaySecs === 0 && isCarried ? (
+                                  <>
+                                    <span className="text-gray-400">—</span>
+                                    <span className="block text-[10px] text-gray-400 font-normal">no new work today</span>
+                                    <span className="block text-[10px] text-gray-400 font-normal">
+                                      cumulative {elapsedToTimeTaken(row.elapsed_seconds)}
+                                    </span>
+                                  </>
+                                ) : (
+                                  <>
+                                    {elapsedToTimeTaken(perDaySecs)}
+                                    {row.elapsed_seconds !== perDaySecs && (
+                                      <span className="block text-[10px] text-gray-400 font-normal">
+                                        cumulative {elapsedToTimeTaken(row.elapsed_seconds)}
+                                      </span>
+                                    )}
+                                  </>
+                                )}
+                              </td>
+                              <td className="px-3 py-2 text-gray-500 align-top">
+                                {row.collaborative_colleagues.length === 0
+                                  ? '—'
+                                  : row.collaborative_colleagues.map(id => nameById.get(id) || id).join(', ')}
+                              </td>
+                            </tr>
+                          )
+                        })}
                       </tbody>
                     </table>
                   </div>

@@ -245,6 +245,24 @@ export function formatElapsed(seconds: number): string {
 // Compact form used as `time_taken` once a stopwatch finishes/pauses.
 // Examples: "30s", "2m 15s", "1h 5m". Always reflects what was tracked,
 // even sub-minute, so a row paused at 30s shows "30s" not "0m".
+// Per-day elapsed for a stopwatch row whose work may span multiple days
+// via the carry-over chain. `elapsed_seconds` is cumulative — this
+// subtracts the source row's cumulative so the caller gets just the
+// portion tracked on the day of `row`. If the source row isn't in the
+// supplied report set (filter window doesn't include the prior day),
+// falls back to the cumulative value.
+export function perDayElapsedSeconds(
+  row: { elapsed_seconds: number; carried_over_from_row_id: string | null },
+  allReports: { rows?: { id: string; elapsed_seconds: number }[] }[],
+): number {
+  if (!row.carried_over_from_row_id) return row.elapsed_seconds;
+  for (const rep of allReports) {
+    const src = rep.rows?.find(r => r.id === row.carried_over_from_row_id);
+    if (src) return Math.max(0, row.elapsed_seconds - src.elapsed_seconds);
+  }
+  return row.elapsed_seconds;
+}
+
 export function elapsedToTimeTaken(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
   if (s === 0) return '0s';
