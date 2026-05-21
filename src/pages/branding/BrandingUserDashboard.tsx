@@ -1577,11 +1577,28 @@ function DashboardPage({
                             )}
                           </td>
                           <td className="py-2.5 text-gray-700 font-medium whitespace-nowrap align-top">
-                            {elapsedToTimeTaken(perDaySecs)}
-                            {row.elapsed_seconds !== perDaySecs && (
-                              <span className="block text-[10px] text-gray-400 font-normal">
-                                cumulative {elapsedToTimeTaken(row.elapsed_seconds)}
-                              </span>
+                            {perDaySecs === 0 && isCarried ? (
+                              // Carried-over row with no new work today (or
+                              // a historical row whose elapsed was reset by
+                              // the wall-clock cap, so source == current).
+                              <>
+                                <span className="text-gray-400">—</span>
+                                <span className="block text-[10px] text-gray-400 font-normal">
+                                  no new work today
+                                </span>
+                                <span className="block text-[10px] text-gray-400 font-normal">
+                                  cumulative {elapsedToTimeTaken(row.elapsed_seconds)}
+                                </span>
+                              </>
+                            ) : (
+                              <>
+                                {elapsedToTimeTaken(perDaySecs)}
+                                {row.elapsed_seconds !== perDaySecs && (
+                                  <span className="block text-[10px] text-gray-400 font-normal">
+                                    cumulative {elapsedToTimeTaken(row.elapsed_seconds)}
+                                  </span>
+                                )}
+                              </>
                             )}
                           </td>
                         </tr>
