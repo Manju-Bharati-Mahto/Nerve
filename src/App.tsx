@@ -10,8 +10,10 @@ import RoleGuard from "@/components/RoleGuard";
 
 // Public
 import LoginPage from "@/pages/Login";
+import LandingPage from "@/pages/LandingPage";
 import ResetPasswordPage from "@/pages/ResetPassword";
 import VerifyEmailPage from "@/pages/VerifyEmail";
+import { useAuth, getRoleDashboard } from "@/hooks/useAuth";
 
 // Shared
 import BrowsePage from "@/pages/Browse";
@@ -70,7 +72,7 @@ const App = () => (
             <Route path="/login" element={<LoginPage />} />
             <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route path="/verify-email" element={<VerifyEmailPage />} />
-            <Route path="/" element={<Navigate to="/login" replace />} />
+            <Route path="/" element={<RootRoute />} />
 
             {/* All authenticated routes */}
             <Route element={<AppLayout />}>
@@ -263,5 +265,15 @@ const App = () => (
     </AuthProvider>
   </QueryClientProvider>
 );
+
+// Root route — logged-in users go straight to their role dashboard;
+// logged-out visitors see the landing page (scroll-driven neuron
+// animation + embedded login form at the end of scroll).
+function RootRoute() {
+  const { user, role, team, loading } = useAuth()
+  if (loading) return null
+  if (user && role) return <Navigate to={getRoleDashboard(role, team)} replace />
+  return <LandingPage />
+}
 
 export default App;
