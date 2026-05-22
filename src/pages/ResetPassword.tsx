@@ -1,7 +1,13 @@
+/**
+ * /reset-password — landing point after a user clicks the password-reset
+ * link from their email. Token comes in via ?token=<jwt>. Themed to match
+ * the landing page's pearl-pink AuthShell.
+ */
 import { useState } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { api } from '@/lib/api'
-import { BookOpen, Eye, EyeOff, CheckCircle2 } from 'lucide-react'
+import { Eye, EyeOff, CheckCircle2 } from 'lucide-react'
+import AuthShell from '@/components/AuthShell'
 
 export default function ResetPasswordPage() {
   const [params] = useSearchParams()
@@ -30,80 +36,77 @@ export default function ResetPasswordPage() {
     setLoading(false)
   }
 
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-background px-4">
-      <div className="w-full max-w-sm animate-fade-in">
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-14 h-14 bg-primary rounded-2xl mb-4 shadow-lg">
-            <BookOpen className="w-7 h-7 text-primary-foreground" />
-          </div>
-          <h1 className="text-2xl font-serif text-foreground">Parul University</h1>
-          <p className="text-sm text-muted-foreground mt-1">Knowledge Hub</p>
-        </div>
+  // ── Dark pearl-pink form tokens (mirror LoginForm's `dark` variant) ────
+  const cardCls   = 'rounded-2xl p-6 bg-[#ffe4f2]/[0.16] backdrop-blur-xl border-2 border-[#ffe4f2] ring-2 ring-[#ffe4f2]/35 space-y-4'
+  const labelCls  = 'text-xs font-bold text-[#ffe4f2] uppercase tracking-wider'
+  const inputCls  = 'w-full px-3 py-2.5 rounded-lg bg-white/[0.08] border-2 border-[#ffe4f2]/55 text-white placeholder-white/45 focus:outline-none focus:ring-2 focus:ring-[#ffe4f2] focus:border-[#ffe4f2] transition-all'
+  const buttonCls = 'w-full py-2.5 rounded-lg bg-gradient-to-br from-white via-[#ffe4f2] to-[#f5b8d5] text-[#5a2b3e] text-sm font-bold tracking-wide shadow-[0_8px_30px_rgba(255,228,242,0.65),inset_0_1px_0_rgba(255,255,255,0.85)] hover:from-[#fff7fb] hover:via-white hover:to-[#ffe4f2] active:translate-y-px transition-all disabled:opacity-50'
+  const errorCls  = 'text-xs text-rose-200 bg-rose-500/15 border border-rose-400/40 px-3 py-2 rounded-lg'
+  const linkCls   = 'text-xs text-[#ffe4f2] hover:text-white font-bold'
 
-        {!token ? (
-          <div className="hub-card text-center space-y-3">
-            <p className="text-sm text-muted-foreground">Invalid or missing reset link.</p>
-            <Link to="/login" className="text-xs text-primary hover:underline">Back to sign in</Link>
+  let heading = 'Set new password'
+  let sub: string | undefined = 'Choose a new password for your account'
+  if (!token) { heading = 'Reset link invalid'; sub = 'Request a new one from the sign-in page' }
+  else if (done) { heading = 'Password updated'; sub = 'Redirecting you to sign in…' }
+
+  return (
+    <AuthShell heading={heading} subheading={sub}>
+      {!token ? (
+        <div className={`${cardCls} text-center`}>
+          <p className="text-sm text-[#ffe4f2]/80">This reset link is invalid or missing a token.</p>
+          <Link to="/login" className={linkCls}>Back to sign in</Link>
+        </div>
+      ) : done ? (
+        <div className={`${cardCls} text-center`}>
+          <div className="w-12 h-12 rounded-full bg-[#ffe4f2]/20 flex items-center justify-center mx-auto">
+            <CheckCircle2 className="w-6 h-6 text-[#ffe4f2]" />
           </div>
-        ) : done ? (
-          <div className="hub-card text-center space-y-4">
-            <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center mx-auto">
-              <CheckCircle2 className="w-6 h-6 text-green-600" />
-            </div>
-            <div>
-              <h2 className="text-sm font-semibold text-foreground">Password updated!</h2>
-              <p className="text-xs text-muted-foreground mt-1">Redirecting you to sign in…</p>
-            </div>
-          </div>
-        ) : (
-          <form onSubmit={handleSubmit} className="hub-card space-y-4">
-            <div>
-              <h2 className="text-sm font-semibold text-foreground mb-3">Set new password</h2>
-            </div>
-            <div>
-              <label className="hub-label">New password</label>
-              <div className="relative">
-                <input
-                  className="hub-input pr-10"
-                  type={showPw ? 'text' : 'password'}
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  required
-                  autoFocus
-                  placeholder="Min 6 characters"
-                />
-                <button type="button" onClick={() => setShowPw(v => !v)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  tabIndex={-1}>
-                  {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-            <div>
-              <label className="hub-label">Confirm password</label>
+          <p className="text-xs font-semibold text-[#ffe4f2]/85">Your password has been updated.</p>
+        </div>
+      ) : (
+        <form onSubmit={handleSubmit} className={cardCls}>
+          <div>
+            <label className={labelCls}>New password</label>
+            <div className="relative">
               <input
-                className="hub-input"
+                className={`${inputCls} pr-10`}
                 type={showPw ? 'text' : 'password'}
-                value={confirm}
-                onChange={e => setConfirm(e.target.value)}
+                value={password}
+                onChange={e => setPassword(e.target.value)}
                 required
-                placeholder="Repeat password"
+                autoFocus
+                placeholder="Min 6 characters"
               />
+              <button
+                type="button"
+                tabIndex={-1}
+                onClick={() => setShowPw(v => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-white/55 hover:text-white"
+              >
+                {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
             </div>
-            {error && (
-              <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-lg">{error}</p>
-            )}
-            <button type="submit" disabled={loading}
-              className="w-full py-2.5 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:bg-brand-dark transition-colors disabled:opacity-50">
-              {loading ? 'Saving…' : 'Update password'}
-            </button>
-            <p className="text-center">
-              <Link to="/login" className="text-xs text-muted-foreground hover:text-primary">Back to sign in</Link>
-            </p>
-          </form>
-        )}
-      </div>
-    </div>
+          </div>
+          <div>
+            <label className={labelCls}>Confirm password</label>
+            <input
+              className={inputCls}
+              type={showPw ? 'text' : 'password'}
+              value={confirm}
+              onChange={e => setConfirm(e.target.value)}
+              required
+              placeholder="Repeat password"
+            />
+          </div>
+          {error && <p className={errorCls}>{error}</p>}
+          <button type="submit" disabled={loading} className={buttonCls}>
+            {loading ? 'Saving…' : 'Update password'}
+          </button>
+          <p className="text-center">
+            <Link to="/login" className={linkCls}>Back to sign in</Link>
+          </p>
+        </form>
+      )}
+    </AuthShell>
   )
 }
