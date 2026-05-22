@@ -281,6 +281,23 @@ export default function LandingPage() {
     [],
   )
 
+  // Browsers restore the previous scroll position on refresh / back-nav by
+  // default — but with a 6×viewport-tall page that means a refresh from
+  // anywhere past the first section dumps the visitor straight onto the
+  // login form and skips the animation. Force every visit to start at
+  // the top, and opt this document out of future auto-restoration. The
+  // previous restoration mode is restored on unmount so other routes
+  // (which might rely on it) aren't affected.
+  useEffect(() => {
+    if (reducedMotion) return
+    const prev = window.history.scrollRestoration
+    window.history.scrollRestoration = 'manual'
+    window.scrollTo(0, 0)
+    return () => {
+      window.history.scrollRestoration = prev
+    }
+  }, [reducedMotion])
+
   // Pre-compute all target buffers once — large, stable.
   const targets = useMemo(() => {
     const cluster = buildClusterTargets()
