@@ -86,6 +86,7 @@ import {
   saveReportRows,
   submitDailyReport,
   autoSubmitOverdueReports,
+  autoPauseRunningStopwatches,
   listAllDailyReports,
   getUserAnalytics,
   listKraParameters,
@@ -108,6 +109,11 @@ import {
   createBrandingProject,
   updateBrandingProject,
   deleteBrandingProject,
+  listRowComments,
+  createRowComment,
+  updateRowComment,
+  deleteRowComment,
+  getRowOwner,
   getTeamReportStatus,
   getBrandingPortalStats,
   listBrandingDesigns,
@@ -1225,48 +1231,130 @@ app.get("/api/branding/portal/projects", asyncHandler(async (_req, res) => {
   res.json({ projects: await listBrandingProjects() });
 }));
 
+// When a lead (sub_admin) creates/updates a project, they can only assign it
+// to members they manage. Admin/super_admin can assign to anyone.
+async function scopeAssignmentsForActor(
+  actor: { id: string; role: string; team: string | null },
+  ids: string[],
+): Promise<string[]> {
+  const isAdmin = actor.role === "super_admin" ||
+    (actor.team === "branding" && actor.role === "admin");
+  if (isAdmin) return ids;
+  // sub_admin: filter to managed users (also allow self).
+  const filtered: string[] = [];
+  for (const id of ids) {
+    const u = await getUserById(id);
+    if (u && (u.managed_by === actor.id || u.id === actor.id)) filtered.push(id);
+  }
+  return filtered;
+}
+
 app.post("/api/branding/portal/projects", asyncHandler(async (req, res) => {
-  if (!requireBrandingAdmin(res)) return;
+  if (!requireBrandingLead(res)) return;
   const { name, description, deadline, assigned_user_ids } = req.body as {
     name: string; description?: string; deadline?: string; assigned_user_ids?: string[];
   };
   if (!name?.trim()) return sendError(res, 400, "Project name is required.");
+  const actor = res.locals.currentUser;
+  const scoped = await scopeAssignmentsForActor(actor, assigned_user_ids ?? []);
   const project = await createBrandingProject(
     name.trim(),
     description?.trim() ?? "",
     deadline || null,
-    res.locals.currentUser.id,
-    assigned_user_ids ?? []
+    actor.id,
+    scoped,
   );
   res.status(201).json({ project });
 }));
 
 app.put("/api/branding/portal/projects/:id", asyncHandler(async (req, res) => {
-  if (!requireBrandingAdmin(res)) return;
+  if (!requireBrandingLead(res)) return;
   const id = getSingleParam(req.params.id);
   const { name, description, deadline, status, assigned_user_ids } = req.body as {
     name: string; description?: string; deadline?: string;
     status?: "active" | "completed" | "on_hold"; assigned_user_ids?: string[];
   };
   if (!name?.trim()) return sendError(res, 400, "Project name is required.");
+  const actor = res.locals.currentUser;
+  const scoped = await scopeAssignmentsForActor(actor, assigned_user_ids ?? []);
   const project = await updateBrandingProject(
     id,
     name.trim(),
     description?.trim() ?? "",
     deadline || null,
     status ?? "active",
-    assigned_user_ids ?? [],
-    res.locals.currentUser.id
+    scoped,
+    actor.id,
   );
   if (!project) return sendError(res, 404, "Project not found.");
   res.json({ project });
 }));
 
 app.delete("/api/branding/portal/projects/:id", asyncHandler(async (req, res) => {
-  if (!requireBrandingAdmin(res)) return;
+  if (!requireBrandingLead(res)) return;
   const id = getSingleParam(req.params.id);
   const ok = await deleteBrandingProject(id);
   if (!ok) return sendError(res, 404, "Project not found.");
+  res.json({ ok: true });
+}));
+
+// ── Report row comments ────────────────────────────────────────────────────
+// Leads/admins post per-row feedback on a managed member's daily report; the
+// member sees the thread on their own dashboard.
+
+// Read: any branding member can fetch comments for rows they're allowed to see.
+// We trust the row-id allowlist: the client only sends rows they already have
+// access to via /reports (their own) or as a lead/admin viewing managed reports.
+app.get("/api/branding/portal/report-row-comments", asyncHandler(async (req, res) => {
+  if (!requireBranding(res)) return;
+  const raw = req.query["row_ids"];
+  const rowIds = typeof raw === "string"
+    ? raw.split(",").filter(Boolean)
+    : Array.isArray(raw)
+      ? raw.flatMap(v => String(v).split(",")).filter(Boolean)
+      : [];
+  if (rowIds.length === 0) return res.json({ comments: [] });
+  const comments = await listRowComments(rowIds);
+  res.json({ comments });
+}));
+
+// Write: lead managing the row's owner, or admin/super_admin.
+app.post("/api/branding/portal/report-row-comments", asyncHandler(async (req, res) => {
+  if (!requireBrandingLead(res)) return;
+  const { row_id, body } = req.body as { row_id?: string; body?: string };
+  if (!row_id || !body?.trim()) return sendError(res, 400, "row_id and body are required.");
+  const owner = await getRowOwner(row_id);
+  if (!owner) return sendError(res, 404, "Row not found.");
+  const actor = res.locals.currentUser;
+  const isAdmin = actor.role === "super_admin" ||
+    (actor.team === "branding" && actor.role === "admin");
+  if (!isAdmin) {
+    // sub_admin: only on managed members' rows (or their own).
+    const target = await getUserById(owner.ownerUserId);
+    if (!target || (target.managed_by !== actor.id && target.id !== actor.id)) {
+      return sendError(res, 403, "You can only comment on rows of members you manage.");
+    }
+  }
+  const comment = await createRowComment(row_id, actor.id, body.trim());
+  res.status(201).json({ comment });
+}));
+
+// Edit/delete: author only.
+app.patch("/api/branding/portal/report-row-comments/:id", asyncHandler(async (req, res) => {
+  if (!requireBrandingLead(res)) return;
+  const id = getSingleParam(req.params.id);
+  const { body } = req.body as { body?: string };
+  if (!body?.trim()) return sendError(res, 400, "body is required.");
+  const comment = await updateRowComment(id, res.locals.currentUser.id, body.trim());
+  if (!comment) return sendError(res, 404, "Comment not found or not yours to edit.");
+  res.json({ comment });
+}));
+
+app.delete("/api/branding/portal/report-row-comments/:id", asyncHandler(async (req, res) => {
+  if (!requireBrandingLead(res)) return;
+  const id = getSingleParam(req.params.id);
+  const ok = await deleteRowComment(id, res.locals.currentUser.id);
+  if (!ok) return sendError(res, 404, "Comment not found or not yours to delete.");
   res.json({ ok: true });
 }));
 
@@ -1581,19 +1669,29 @@ bootstrapDatabase()
   .then(() => bootstrapSettingsDatabase())
   .then(() => bootstrapOutreach())
   .then(async () => {
-    // Catch up on any reports whose 21:00 IST cutoff already passed while the
-    // server was down, then keep an interval running so future cutoffs fire
-    // even if no user action triggers the API.
+    // Catch up on any reports whose 21:00 IST submit cutoff or 17:00 IST
+    // auto-pause cutoff already passed while the server was down, then keep an
+    // interval running so future cutoffs fire even if no user action triggers
+    // the API.
     try {
       const caught = await autoSubmitOverdueReports();
       if (caught > 0) console.log(`Auto-submitted ${caught} overdue daily report(s) on startup.`);
     } catch (e) {
       console.error('Initial auto-submit pass failed:', e);
     }
+    try {
+      const paused = await autoPauseRunningStopwatches();
+      if (paused > 0) console.log(`Auto-paused ${paused} overdue running stopwatch(es) on startup.`);
+    } catch (e) {
+      console.error('Initial auto-pause pass failed:', e);
+    }
     setInterval(() => {
       autoSubmitOverdueReports()
         .then(n => { if (n > 0) console.log(`Auto-submitted ${n} overdue daily report(s).`); })
         .catch(e => console.error('Periodic auto-submit failed:', e));
+      autoPauseRunningStopwatches()
+        .then(n => { if (n > 0) console.log(`Auto-paused ${n} overdue running stopwatch(es).`); })
+        .catch(e => console.error('Periodic auto-pause failed:', e));
     }, 5 * 60 * 1000).unref();
 
     app.listen(config.apiPort, () => {
