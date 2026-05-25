@@ -2,7 +2,7 @@ import type {
   WorkCategory, WorkSubCategory, DailyReport, DailyReportRow,
   KraParameter, SelfAppraisal, PeerMarking, AdminKraScore, KraReport,
   BrandingProject, MemberReportStatus, BrandingDesign, DesignVoter,
-  BrandingPortalStats, BrandingLeave,
+  BrandingPortalStats, BrandingLeave, ReportRowComment,
 } from "./branding-types";
 
 const BASE = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
@@ -183,4 +183,21 @@ export const brandingApi = {
     req<{ project: BrandingProject }>(`/projects/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteProject: (id: string) =>
     req<{ ok: boolean }>(`/projects/${id}`, { method: "DELETE" }),
+
+  // ── Report row comments (lead → member feedback) ───────────────────────
+  getRowComments: (rowIds: string[]) => {
+    if (rowIds.length === 0) return Promise.resolve({ comments: [] as ReportRowComment[] });
+    const qs = `row_ids=${encodeURIComponent(rowIds.join(","))}`;
+    return req<{ comments: ReportRowComment[] }>(`/report-row-comments?${qs}`);
+  },
+  createRowComment: (row_id: string, body: string) =>
+    req<{ comment: ReportRowComment }>(`/report-row-comments`, {
+      method: "POST", body: JSON.stringify({ row_id, body }),
+    }),
+  updateRowComment: (id: string, body: string) =>
+    req<{ comment: ReportRowComment }>(`/report-row-comments/${id}`, {
+      method: "PATCH", body: JSON.stringify({ body }),
+    }),
+  deleteRowComment: (id: string) =>
+    req<{ ok: boolean }>(`/report-row-comments/${id}`, { method: "DELETE" }),
 };

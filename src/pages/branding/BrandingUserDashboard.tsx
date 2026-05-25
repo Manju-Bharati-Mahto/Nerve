@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
 import { brandingApi } from '@/lib/branding-api'
@@ -6,6 +6,7 @@ import { api } from '@/lib/api'
 import { TIME_OPTIONS, timeToHours, MONTHS, formatElapsed, elapsedToTimeTaken } from '@/lib/branding-types'
 import type {
   WorkCategory, DailyReport, DraftRow, KraParameter, SelfAppraisal, BrandingProject, BrandingLeave,
+  ReportRowComment,
 } from '@/lib/branding-types'
 import {
   LayoutDashboard, ClipboardList, BarChart2, Award, Settings, HelpCircle,
@@ -1899,6 +1900,10 @@ function DailyReportsPage({
   const [saving, setSaving] = useState(false)
   const [submitting, setSubmitting] = useState(false)
 
+  // Lead-authored feedback on individual rows; polled so comments left by the
+  // lead appear without a full page reload.
+  const [commentsByRow, setCommentsByRow] = useState<Record<string, ReportRowComment[]>>({})
+
   // ── Leave state ────────────────────────────────────────────────────────
   // datetime-local format: "YYYY-MM-DDTHH:mm" (no timezone)
   const defaultStart = `${today()}T09:00`
@@ -2012,6 +2017,32 @@ function DailyReportsPage({
       })
       .catch(() => toast.error('Failed to load report'))
   }, [selectedDate])
+
+  // Poll comments left by the lead on this report's rows. We track the saved
+  // row IDs (from `report.rows`), not the in-progress drafts, since comments
+  // only exist on persisted rows.
+  const persistedRowIds = useMemo(
+    () => (report?.rows ?? []).map(r => r.id).join(','),
+    [report?.rows],
+  )
+  useEffect(() => {
+    const ids = persistedRowIds ? persistedRowIds.split(',').filter(Boolean) : []
+    if (ids.length === 0) { setCommentsByRow({}); return }
+    let cancelled = false
+    const load = () => {
+      brandingApi.getRowComments(ids)
+        .then(({ comments }) => {
+          if (cancelled) return
+          const grouped: Record<string, ReportRowComment[]> = {}
+          for (const c of comments) (grouped[c.row_id] ??= []).push(c)
+          setCommentsByRow(grouped)
+        })
+        .catch(() => {})
+    }
+    load()
+    const timer = setInterval(load, 30_000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [persistedRowIds])
 
   const subCatOptions = useCallback((typeOfWork: string) => {
     if (!typeOfWork) return []
@@ -2437,13 +2468,13 @@ function DailyReportsPage({
         </div>
       )}
 
-      {/* 9 PM IST edit cutoff banner — only while still editable */}
+      {/* 5 PM auto-pause + 9 PM IST edit cutoff banner — only while still editable */}
       {!isFullDayApprovedLeave && !report?.is_locked && selectedDate === today() && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 flex items-start gap-2 text-xs">
           <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
           <p className="text-amber-800">
-            <span className="font-semibold">Editing closes at 9:00 PM IST today.</span>{' '}
-            Unsubmitted reports will be auto-submitted at the cutoff and locked. Any running stopwatch is snapshotted as paused so unfinished work carries over to tomorrow.
+            <span className="font-semibold">Running stopwatches auto-pause at 5:00 PM IST; editing closes at 9:00 PM IST.</span>{' '}
+            If you're still working past 5 PM, hit Continue to resume — this prevents over-counting time when someone forgets to pause. Unsubmitted reports are auto-submitted and locked at 9 PM, with any running stopwatch snapshotted as paused so unfinished work carries over to tomorrow.
           </p>
         </div>
       )}
@@ -2475,9 +2506,15 @@ function DailyReportsPage({
                 const subs = subCatOptions(row.type_of_work)
                 const showSubText = row.type_of_work === 'Others' ||
                   (subs.length > 0 && subs.find(s => s.name === row.sub_category)?.is_others)
+                // Comments only attach to persisted rows. `_key` for draft rows
+                // is the persisted id once saved; for brand-new local rows it's
+                // a temporary id that won't match anything in commentsByRow.
+                const rowComments = commentsByRow[key] ?? []
+                const colCount = isLocked ? 6 : 7
 
                 return (
-                  <tr key={key} className={`border-b border-gray-50 last:border-0 group hover:bg-green-50/30 ${i % 2 === 1 ? 'bg-gray-50/30' : ''}`}>
+                  <Fragment key={key}>
+                  <tr className={`border-b border-gray-50 last:border-0 group hover:bg-green-50/30 ${i % 2 === 1 ? 'bg-gray-50/30' : ''}`}>
                     <td className="px-3 py-2 text-xs text-gray-400 font-medium text-center">{row.sr_no}</td>
 
                     <td className="px-2 py-2">
@@ -2530,6 +2567,29 @@ function DailyReportsPage({
                       </td>
                     )}
                   </tr>
+                  {rowComments.length > 0 && (
+                    <tr className={`border-b border-gray-50 ${i % 2 === 1 ? 'bg-gray-50/30' : ''}`}>
+                      <td colSpan={colCount} className="px-3 pb-3 pt-0">
+                        <div className="flex items-start gap-2 ml-9">
+                          <MessageCircle className="w-3.5 h-3.5 mt-1 shrink-0" style={{ color: '#52b788' }} />
+                          <ul className="flex-1 space-y-1.5">
+                            {rowComments.map(c => (
+                              <li key={c.id} className="rounded-lg px-3 py-1.5" style={{ background: 'rgba(82,183,136,0.10)' }}>
+                                <p className="text-[11px] font-semibold" style={{ color: '#1a472a' }}>
+                                  {c.author_name}
+                                  <span className="text-gray-400 font-normal ml-1.5">
+                                    {new Date(c.created_at).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}
+                                  </span>
+                                </p>
+                                <p className="text-xs text-gray-700 whitespace-pre-wrap break-words">{c.body}</p>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 )
               })}
             </tbody>

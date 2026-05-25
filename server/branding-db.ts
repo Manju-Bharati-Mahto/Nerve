@@ -294,6 +294,18 @@ export async function bootstrapBrandingDatabase() {
   `);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS branding_report_row_comments (
+      id TEXT PRIMARY KEY,
+      row_id TEXT NOT NULL REFERENCES daily_report_rows(id) ON DELETE CASCADE,
+      author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      body TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_brrc_row_id ON branding_report_row_comments(row_id)`);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS branding_designs (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
@@ -702,6 +714,10 @@ export async function getDailyReport(userId: string, date: string): Promise<Dail
 // are rejected.
 export const REPORT_EDIT_CUTOFF_HOUR_IST = 21;
 
+// Any stopwatch still running at this hour IST is auto-paused (but the report
+// stays editable until REPORT_EDIT_CUTOFF_HOUR_IST). See autoPauseRunningStopwatches.
+export const AUTO_PAUSE_HOUR_IST = 17;
+
 function reportEditCutoffUtc(reportDate: string): Date {
   // YYYY-MM-DD interpreted as 21:00 IST → equivalent UTC instant.
   return new Date(`${reportDate}T${String(REPORT_EDIT_CUTOFF_HOUR_IST).padStart(2, '0')}:00:00+05:30`);
@@ -856,6 +872,48 @@ export async function autoSubmitOverdueReports(): Promise<number> {
       `UPDATE daily_reports SET is_locked = true, submitted_at = NOW()
         WHERE id = $1 AND is_locked = false`,
       [r.id]
+    );
+    if (upd.rowCount && upd.rowCount > 0) count++;
+  }
+  return count;
+}
+
+// At AUTO_PAUSE_HOUR_IST (17:00 IST), any row still running is snapshotted to
+// paused so we don't credit time the user forgot to stop. The report is left
+// editable — the user can hit Continue and accumulate more time until the 21:00
+// IST submit cutoff. Self-idempotent: a paused row has stopwatch_started_at = NULL
+// and a row resumed after 17:00 has stopwatch_started_at >= cutoff, so neither
+// is re-paused on subsequent passes.
+// Returns the number of rows auto-paused on this pass.
+export async function autoPauseRunningStopwatches(): Promise<number> {
+  const overdue = await pool.query<{
+    id: string;
+    stopwatch_started_at: string;
+    elapsed_seconds: number;
+  }>(`
+    SELECT drr.id, drr.stopwatch_started_at, drr.elapsed_seconds
+      FROM daily_report_rows drr
+      JOIN daily_reports dr ON dr.id = drr.report_id
+     WHERE drr.stopwatch_status = 'running'
+       AND dr.is_locked = false
+       AND drr.stopwatch_started_at IS NOT NULL
+       AND drr.stopwatch_started_at < ((dr.report_date::timestamp AT TIME ZONE 'Asia/Kolkata') + INTERVAL '${AUTO_PAUSE_HOUR_IST} hours')
+       AND NOW() >= ((dr.report_date::timestamp AT TIME ZONE 'Asia/Kolkata') + INTERVAL '${AUTO_PAUSE_HOUR_IST} hours')
+  `);
+  let count = 0;
+  for (const r of overdue.rows) {
+    const rawSince = Math.max(0, Math.floor((Date.now() - new Date(r.stopwatch_started_at).getTime()) / 1000));
+    const since = Math.min(rawSince, MAX_STOPWATCH_SINCE_SECONDS);
+    const newElapsed = (r.elapsed_seconds ?? 0) + since;
+    const upd = await pool.query(
+      `UPDATE daily_report_rows
+          SET stopwatch_status = 'paused',
+              elapsed_seconds = $1,
+              stopwatch_started_at = NULL,
+              last_paused_at = NOW(),
+              time_taken = $2
+        WHERE id = $3 AND stopwatch_status = 'running'`,
+      [newElapsed, elapsedToTimeTakenServer(newElapsed), r.id]
     );
     if (upd.rowCount && upd.rowCount > 0) count++;
   }
@@ -1670,6 +1728,111 @@ export async function updateBrandingProject(
 export async function deleteBrandingProject(id: string): Promise<boolean> {
   const res = await pool.query(
     `DELETE FROM branding_projects WHERE id = $1`, [id]
+  );
+  return (res.rowCount ?? 0) > 0;
+}
+
+// ── Report row comments ────────────────────────────────────────────────────
+// Leads leave per-row feedback on a managed member's daily report. The member
+// sees the thread inline on their own dashboard. Authorization is enforced at
+// the route layer (lead must manage the row's owner, or be an admin).
+
+export interface ReportRowComment {
+  id: string;
+  row_id: string;
+  author_id: string;
+  author_name: string;
+  body: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface RowCommentDbRow {
+  id: string;
+  row_id: string;
+  author_id: string;
+  body: string;
+  created_at: string;
+  updated_at: string;
+  author_name: string;
+}
+
+export async function listRowComments(rowIds: string[]): Promise<ReportRowComment[]> {
+  if (rowIds.length === 0) return [];
+  const res = await pool.query<RowCommentDbRow>(
+    `SELECT c.*, u.full_name AS author_name
+       FROM branding_report_row_comments c
+       JOIN users u ON u.id = c.author_id
+      WHERE c.row_id = ANY($1::text[])
+      ORDER BY c.created_at ASC`,
+    [rowIds]
+  );
+  return res.rows;
+}
+
+// Returns { ownerUserId, reportDate, isLocked } for a row so the route can
+// authorize the operation without re-querying.
+export async function getRowOwner(rowId: string): Promise<{
+  ownerUserId: string;
+  reportDate: string;
+  isLocked: boolean;
+} | null> {
+  const res = await pool.query<{ user_id: string; report_date: string; is_locked: boolean }>(
+    `SELECT dr.user_id, dr.report_date, dr.is_locked
+       FROM daily_report_rows drr
+       JOIN daily_reports dr ON dr.id = drr.report_id
+      WHERE drr.id = $1`,
+    [rowId]
+  );
+  if (!res.rows[0]) return null;
+  return {
+    ownerUserId: res.rows[0].user_id,
+    reportDate: normalizeDate(res.rows[0].report_date),
+    isLocked: res.rows[0].is_locked,
+  };
+}
+
+export async function createRowComment(
+  rowId: string,
+  authorId: string,
+  body: string,
+): Promise<ReportRowComment> {
+  const id = generateId("rrc");
+  await pool.query(
+    `INSERT INTO branding_report_row_comments (id, row_id, author_id, body)
+     VALUES ($1, $2, $3, $4)`,
+    [id, rowId, authorId, body]
+  );
+  const res = await pool.query<RowCommentDbRow>(
+    `SELECT c.*, u.full_name AS author_name
+       FROM branding_report_row_comments c
+       JOIN users u ON u.id = c.author_id
+      WHERE c.id = $1`,
+    [id]
+  );
+  return res.rows[0];
+}
+
+export async function updateRowComment(
+  id: string,
+  authorId: string,
+  body: string,
+): Promise<ReportRowComment | null> {
+  const res = await pool.query<RowCommentDbRow>(
+    `UPDATE branding_report_row_comments
+        SET body = $1, updated_at = NOW()
+      WHERE id = $2 AND author_id = $3
+      RETURNING id, row_id, author_id, body, created_at, updated_at,
+                (SELECT full_name FROM users WHERE id = $3) AS author_name`,
+    [body, id, authorId]
+  );
+  return res.rows[0] ?? null;
+}
+
+export async function deleteRowComment(id: string, authorId: string): Promise<boolean> {
+  const res = await pool.query(
+    `DELETE FROM branding_report_row_comments WHERE id = $1 AND author_id = $2`,
+    [id, authorId]
   );
   return (res.rowCount ?? 0) > 0;
 }

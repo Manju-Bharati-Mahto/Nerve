@@ -190,6 +190,17 @@ export interface BrandingProject {
   assigned_user_ids: string[];
 }
 
+// Lead-authored per-row feedback on a member's daily report.
+export interface ReportRowComment {
+  id: string;
+  row_id: string;
+  author_id: string;
+  author_name: string;
+  body: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export type HalfDayPeriod = 'first' | 'second';
 
 export interface BrandingLeave {
