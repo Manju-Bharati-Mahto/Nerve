@@ -269,6 +269,150 @@ export async function bootstrapOutreach() {
   // Default false → all pre-existing rows are treated as auto-synced.
   await pool.query(`ALTER TABLE outreach_posts ADD COLUMN IF NOT EXISTS added_as_live BOOLEAN NOT NULL DEFAULT false`);
 
+  // ── Audit trail / soft-deletion via archive tables ──────────────────────────
+  // Every DELETE on outreach_posts / outreach_campaigns / outreach_pages copies
+  // the row into a matching *_archive table first. This catches direct deletes,
+  // cascade deletes, and accidental wipes — nothing leaves the database
+  // permanently. To restore, INSERT a row from the archive table back into the
+  // live table, then DELETE the archive row (or leave it as a trail).
+  //
+  // The trigger reads two optional session variables when archiving:
+  //   - app.user_id   (who initiated the delete)
+  //   - app.archive_reason (free-text reason, e.g. "user requested removal")
+  // Set them via `SET LOCAL app.user_id = '...'` inside a transaction before
+  // performing destructive operations. Defaults are NULL if unset.
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS outreach_posts_archive (
+      archive_id BIGSERIAL PRIMARY KEY,
+      archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      archived_by TEXT,
+      archived_reason TEXT,
+      id TEXT, instagram_id TEXT, page_id TEXT, creator_id TEXT, campaign_id TEXT,
+      date DATE, type TEXT, creative_variant TEXT, caption TEXT, status TEXT,
+      likes INTEGER, comments INTEGER, views INTEGER, saves INTEGER, shares INTEGER,
+      media_url TEXT, permalink TEXT, synced_at TIMESTAMPTZ, added_as_live BOOLEAN
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS outreach_posts_archive_id_idx ON outreach_posts_archive(id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS outreach_posts_archive_page_id_idx ON outreach_posts_archive(page_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS outreach_posts_archive_campaign_id_idx ON outreach_posts_archive(campaign_id)`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS outreach_campaigns_archive (
+      archive_id BIGSERIAL PRIMARY KEY,
+      archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      archived_by TEXT,
+      archived_reason TEXT,
+      id TEXT, name TEXT, start_date DATE, end_date DATE, goal TEXT, status TEXT,
+      budget_posts INTEGER, budget_stories INTEGER, budget_reels INTEGER,
+      approvers JSONB, creative_variants JSONB,
+      assigned_page_ids JSONB, assigned_creator_ids JSONB,
+      created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS outreach_campaigns_archive_id_idx ON outreach_campaigns_archive(id)`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS outreach_pages_archive (
+      archive_id BIGSERIAL PRIMARY KEY,
+      archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      archived_by TEXT,
+      archived_reason TEXT,
+      id TEXT, handle TEXT, geography TEXT, state TEXT, type TEXT,
+      follower_tier TEXT, content_types JSONB,
+      followers INTEGER, inventory_posts INTEGER, inventory_stories INTEGER,
+      notes TEXT, last_synced_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS outreach_pages_archive_id_idx ON outreach_pages_archive(id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS outreach_pages_archive_handle_idx ON outreach_pages_archive(handle)`);
+
+  // Trigger functions — CREATE OR REPLACE so re-running bootstrap is idempotent.
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION archive_outreach_post() RETURNS TRIGGER AS $$
+    BEGIN
+      INSERT INTO outreach_posts_archive (
+        archived_by, archived_reason,
+        id, instagram_id, page_id, creator_id, campaign_id,
+        date, type, creative_variant, caption, status,
+        likes, comments, views, saves, shares,
+        media_url, permalink, synced_at, added_as_live
+      ) VALUES (
+        NULLIF(current_setting('app.user_id', true), ''),
+        NULLIF(current_setting('app.archive_reason', true), ''),
+        OLD.id, OLD.instagram_id, OLD.page_id, OLD.creator_id, OLD.campaign_id,
+        OLD.date, OLD.type, OLD.creative_variant, OLD.caption, OLD.status,
+        OLD.likes, OLD.comments, OLD.views, OLD.saves, OLD.shares,
+        OLD.media_url, OLD.permalink, OLD.synced_at, OLD.added_as_live
+      );
+      RETURN OLD;
+    END;
+    $$ LANGUAGE plpgsql;
+  `);
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION archive_outreach_campaign() RETURNS TRIGGER AS $$
+    BEGIN
+      INSERT INTO outreach_campaigns_archive (
+        archived_by, archived_reason,
+        id, name, start_date, end_date, goal, status,
+        budget_posts, budget_stories, budget_reels,
+        approvers, creative_variants, assigned_page_ids, assigned_creator_ids,
+        created_at, updated_at
+      ) VALUES (
+        NULLIF(current_setting('app.user_id', true), ''),
+        NULLIF(current_setting('app.archive_reason', true), ''),
+        OLD.id, OLD.name, OLD.start_date, OLD.end_date, OLD.goal, OLD.status,
+        OLD.budget_posts, OLD.budget_stories, OLD.budget_reels,
+        OLD.approvers, OLD.creative_variants, OLD.assigned_page_ids, OLD.assigned_creator_ids,
+        OLD.created_at, OLD.updated_at
+      );
+      RETURN OLD;
+    END;
+    $$ LANGUAGE plpgsql;
+  `);
+  await pool.query(`
+    CREATE OR REPLACE FUNCTION archive_outreach_page() RETURNS TRIGGER AS $$
+    BEGIN
+      INSERT INTO outreach_pages_archive (
+        archived_by, archived_reason,
+        id, handle, geography, state, type, follower_tier, content_types,
+        followers, inventory_posts, inventory_stories, notes, last_synced_at,
+        created_at, updated_at
+      ) VALUES (
+        NULLIF(current_setting('app.user_id', true), ''),
+        NULLIF(current_setting('app.archive_reason', true), ''),
+        OLD.id, OLD.handle, OLD.geography, OLD.state, OLD.type, OLD.follower_tier, OLD.content_types,
+        OLD.followers, OLD.inventory_posts, OLD.inventory_stories, OLD.notes, OLD.last_synced_at,
+        OLD.created_at, OLD.updated_at
+      );
+      RETURN OLD;
+    END;
+    $$ LANGUAGE plpgsql;
+  `);
+
+  // Triggers — drop-then-create so we can update the function body across
+  // deploys without leaving stale wiring behind.
+  await pool.query(`DROP TRIGGER IF EXISTS trace_delete_outreach_posts ON outreach_posts`);
+  await pool.query(`
+    CREATE TRIGGER trace_delete_outreach_posts
+      BEFORE DELETE ON outreach_posts
+      FOR EACH ROW EXECUTE FUNCTION archive_outreach_post()
+  `);
+  await pool.query(`DROP TRIGGER IF EXISTS trace_delete_outreach_campaigns ON outreach_campaigns`);
+  await pool.query(`
+    CREATE TRIGGER trace_delete_outreach_campaigns
+      BEFORE DELETE ON outreach_campaigns
+      FOR EACH ROW EXECUTE FUNCTION archive_outreach_campaign()
+  `);
+  await pool.query(`DROP TRIGGER IF EXISTS trace_delete_outreach_pages ON outreach_pages`);
+  await pool.query(`
+    CREATE TRIGGER trace_delete_outreach_pages
+      BEFORE DELETE ON outreach_pages
+      FOR EACH ROW EXECUTE FUNCTION archive_outreach_page()
+  `);
+
   // Page directory seeding is opt-in. Set OUTREACH_SEED_HANDLES=true to import
   // the original BR_POST_2026 handle list on an empty table. Otherwise the
   // team adds pages manually through the UI.
