@@ -53,10 +53,16 @@ export default function OutreachDashboard() {
     }
   }
 
+  // Dashboard KPIs reflect work the team explicitly executed — live posts the
+  // operator added via AddLivePostsDialog, not the entire Apify-synced backlog
+  // of historical Instagram posts on each page. Filtering at the source keeps
+  // every downstream calculation honest without per-call gymnastics.
+  const livePosts = useMemo(() => posts.filter(p => p.addedAsLive), [posts])
+
   const filteredPosts = useMemo(() => {
     const start = rangeStart(range)
-    return start ? posts.filter(p => new Date(p.date) >= start) : posts
-  }, [posts, range])
+    return start ? livePosts.filter(p => new Date(p.date) >= start) : livePosts
+  }, [livePosts, range])
 
   const kpis = useMemo(() => {
     const reach = filteredPosts.reduce((s, p) => s + p.views, 0)
@@ -145,18 +151,18 @@ export default function OutreachDashboard() {
       const d = new Date(today)
       d.setDate(today.getDate() - (days - 1 - i))
       const iso = d.toISOString().slice(0, 10)
-      const same = posts.filter(p => p.date === iso)
+      const same = livePosts.filter(p => p.date === iso)
       return {
         day: `${d.getDate()}/${d.getMonth() + 1}`,
         posts: same.length,
         reach: same.reduce((s, p) => s + p.views, 0),
       }
     })
-  }, [posts])
+  }, [livePosts])
 
   const kpiCards = [
-    { label: 'Reach (views)', value: fmt(kpis.reach), sub: `${kpis.postsCount} posts`, icon: Eye, bg: 'bg-orange-50', color: 'text-orange-600' },
-    { label: 'Engagement', value: fmt(kpis.eng), sub: 'likes + comments', icon: Heart, bg: 'bg-rose-50', color: 'text-rose-600' },
+    { label: 'Reach (views)', value: fmt(kpis.reach), sub: `${kpis.postsCount} live post${kpis.postsCount === 1 ? '' : 's'}`, icon: Eye, bg: 'bg-orange-50', color: 'text-orange-600' },
+    { label: 'Engagement', value: fmt(kpis.eng), sub: 'likes + comments on live posts', icon: Heart, bg: 'bg-rose-50', color: 'text-rose-600' },
     { label: 'Active campaigns', value: String(kpis.active), sub: `${campaigns.length} total`, icon: Send, bg: 'bg-blue-50', color: 'text-blue-600' },
     { label: 'Inventory used', value: `${kpis.pctInv}%`, sub: `${pages.length} pages · ${creators.length} creators`, icon: Layers, bg: 'bg-emerald-50', color: 'text-emerald-600' },
   ]
