@@ -14,7 +14,7 @@ import {
   LayoutDashboard, ClipboardList, BarChart2, Award, Settings, HelpCircle,
   LogOut, Plus, Trash2, Send, Lock, ChevronDown, Check, Info, Download,
   Users, TrendingUp, AlertCircle, Bell, Search, ArrowUpRight, Palette,
-  Calendar, Timer, LayoutGrid, X,
+  Calendar, Timer, LayoutGrid, X, Menu,
   Camera, Shield, BookOpen, Keyboard, MessageCircle, Phone,
   Play, Pause, Square, Repeat,
 } from 'lucide-react'
@@ -720,7 +720,7 @@ function StatCard({ title, value, sub, badge, dark, onClick }: {
   return (
     <div
       onClick={onClick}
-      className={`rounded-2xl p-5 flex flex-col justify-between min-h-[130px] relative overflow-hidden ${onClick ? 'cursor-pointer' : ''}`}
+      className={`rounded-2xl p-4 sm:p-5 flex flex-col justify-between min-h-[110px] sm:min-h-[130px] relative overflow-hidden ${onClick ? 'cursor-pointer' : ''}`}
       style={dark ? {
         background: 'linear-gradient(135deg, #1a472a 0%, #2d6a4f 45%, #40916c 100%)',
         color: 'white',
@@ -738,7 +738,7 @@ function StatCard({ title, value, sub, badge, dark, onClick }: {
         </div>
       </div>
       <div className="relative">
-        <p className={`text-4xl font-bold leading-none ${dark ? 'text-white' : 'text-gray-800'}`}>{value}</p>
+        <p className={`text-3xl sm:text-4xl font-bold leading-none ${dark ? 'text-white' : 'text-gray-800'}`}>{value}</p>
         {badge !== undefined && (
           <div className="flex items-center gap-2 mt-2.5">
             <span className={`flex items-center gap-0.5 text-[11px] font-semibold px-1.5 py-0.5 rounded ${dark ? 'bg-white/15 text-green-100' : 'bg-green-100 text-green-700'}`}>
@@ -1081,7 +1081,7 @@ function DashboardPage({
       {/* Page heading */}
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Dashboard</h1>
+          <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Dashboard</h1>
           <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>Plan, prioritize, and accomplish your tasks with ease.</p>
         </div>
         <div className="flex items-center gap-2">
@@ -1695,7 +1695,7 @@ function AnalyticsPage({ userId, users }: { userId: string; users: ReturnType<ty
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Analytics</h1>
+        <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Analytics</h1>
         <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>Track your work hours and collaboration patterns.</p>
       </div>
 
@@ -2259,7 +2259,7 @@ function DailyReportsPage({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Daily Reports</h1>
+        <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Daily Reports</h1>
         <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>Log your daily work and track collaboration.</p>
       </div>
 
@@ -2952,7 +2952,7 @@ function SettingsPage({ profile }: { profile: ReturnType<typeof useAuth>['profil
   return (
     <div className="max-w-2xl space-y-6">
       <div>
-        <h1 className="text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Settings</h1>
+        <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Settings</h1>
         <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>Manage your profile and account preferences.</p>
       </div>
 
@@ -3164,7 +3164,7 @@ function HelpPage({ onNavigate }: { onNavigate: (p: NavPage) => void }) {
   return (
     <div className="max-w-2xl space-y-6">
       <div>
-        <h1 className="text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Help & Support</h1>
+        <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Help & Support</h1>
         <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>Learn how to use the Branding Portal and find answers fast.</p>
       </div>
 
@@ -3357,7 +3357,7 @@ function SelfAppraisalPage({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Self Appraisal</h1>
+        <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Self Appraisal</h1>
         <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>Submit your monthly KRA self-evaluation. One submission per month.</p>
       </div>
 
@@ -3567,6 +3567,11 @@ export default function BrandingUserDashboard() {
   const { users } = useAppData()
   const [activePage, setActivePage] = useState<NavPage>('dashboard')
 
+  // Sidebar is hidden by default on phones (slides in as a drawer); always
+  // visible on md+ screens. Tap a nav item to auto-close on mobile.
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  function gotoPage(p: NavPage) { setActivePage(p); setSidebarOpen(false) }
+
   // ── Search state ─────────────────────────────────────────────────────────
   const [searchOpen, setSearchOpen]   = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -3648,16 +3653,42 @@ export default function BrandingUserDashboard() {
 
   return (
     <div className="-mx-6 -mt-8 -mb-8 flex bg-[#f4f7f4] h-screen overflow-hidden">
+      {/* Mobile backdrop — only rendered when the drawer is open on phones */}
+      {sidebarOpen && (
+        <div
+          className="md:hidden fixed inset-0 bg-black/40 z-40 transition-opacity"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
       {/* ── Left Sidebar ──────────────────────────────────────────────────── */}
-      <aside className="w-52 bg-white border-r border-gray-100 flex flex-col shrink-0 h-full overflow-y-auto">
+      {/* Mobile: fixed-position slide-in drawer.
+          Desktop (md+): static column in the layout, always visible. */}
+      <aside
+        className={`
+          w-52 bg-white border-r border-gray-100 flex flex-col h-full overflow-y-auto
+          fixed inset-y-0 left-0 z-50 transform transition-transform duration-200 ease-out
+          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+          md:static md:translate-x-0 md:shrink-0
+        `}
+      >
         {/* Logo */}
-        <div className="px-5 pt-6 pb-4 border-b border-gray-50">
+        <div className="px-5 pt-6 pb-4 border-b border-gray-50 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: '#1a472a' }}>
               <Palette className="w-4 h-4 text-white" />
             </div>
             <span className="font-bold text-[16px] text-gray-800 tracking-tight">Nerve</span>
           </div>
+          {/* Close button — mobile only */}
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(false)}
+            className="md:hidden p-1 rounded-lg text-gray-400 hover:bg-gray-100"
+            aria-label="Close menu"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
 
         {/* Nav */}
@@ -3667,7 +3698,7 @@ export default function BrandingUserDashboard() {
             const Icon = item.icon
             const active = activePage === item.key
             return (
-              <button key={item.key} onClick={() => setActivePage(item.key)}
+              <button key={item.key} onClick={() => gotoPage(item.key)}
                 className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all text-left relative ${
                   active ? 'text-[#1a472a]' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'
                 }`}
@@ -3715,7 +3746,7 @@ export default function BrandingUserDashboard() {
               const label = key === 'settings' ? 'Settings' : 'Help'
               return (
                 <button key={key}
-                  onClick={() => setActivePage(key)}
+                  onClick={() => gotoPage(key)}
                   className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all text-left mb-0.5 ${
                     active ? 'text-[#1a472a]' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'
                   }`}
@@ -3748,15 +3779,25 @@ export default function BrandingUserDashboard() {
       {/* ── Main Area ─────────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
         {/* Top Header */}
-        <header className="bg-white border-b border-gray-100 px-6 py-3.5 flex items-center gap-4 sticky top-0 z-20 shrink-0">
+        <header className="bg-white border-b border-gray-100 px-3 sm:px-6 py-3 sm:py-3.5 flex items-center gap-2 sm:gap-4 sticky top-0 z-20 shrink-0">
+          {/* Hamburger — mobile only */}
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(true)}
+            className="md:hidden p-2 rounded-lg text-gray-500 hover:bg-gray-100 -ml-1"
+            aria-label="Open menu"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
           {/* Search trigger */}
           <button
             onClick={() => setSearchOpen(true)}
             className="flex-1 max-w-xs flex items-center gap-2 bg-gray-50 border border-gray-100 rounded-xl px-3 py-2 text-sm text-gray-400 hover:border-green-300 transition-colors text-left"
           >
             <Search className="w-3.5 h-3.5 shrink-0" />
-            <span>Search reports, projects…</span>
-            <span className="ml-auto text-[10px] text-gray-300 bg-white border border-gray-100 rounded px-1 py-0.5">⌘F</span>
+            <span className="hidden sm:inline">Search reports, projects…</span>
+            <span className="sm:hidden">Search…</span>
+            <span className="ml-auto text-[10px] text-gray-300 bg-white border border-gray-100 rounded px-1 py-0.5 hidden sm:inline">⌘F</span>
           </button>
 
           <div className="ml-auto flex items-center gap-3">
@@ -3827,7 +3868,7 @@ export default function BrandingUserDashboard() {
         </header>
 
         {/* Scrollable page content */}
-        <main className="flex-1 overflow-y-auto p-6">
+        <main className="flex-1 overflow-y-auto p-3 sm:p-6">
           {activePage === 'dashboard' && (
             <DashboardPage profile={profile} users={users} onNavigate={setActivePage} />
           )}
