@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
+import { CAPABILITY_META, type CapabilityKey } from '@/lib/capabilities'
 import { useAppData } from '@/hooks/useAppData'
 import { brandingApi } from '@/lib/branding-api'
 import { api } from '@/lib/api'
@@ -3669,6 +3671,29 @@ export default function BrandingUserDashboard() {
               </button>
             )
           })}
+
+          {/* Capability-granted entries: routes to the admin shell where the
+             user can use the specific admin feature they were granted. */}
+          {(profile?.capabilities ?? []).length > 0 && (
+            <div className="pt-4">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2">Granted Access</p>
+              {(profile?.capabilities ?? []).map(rawKey => {
+                const key = rawKey as CapabilityKey
+                const meta = CAPABILITY_META[key]
+                if (!meta) return null
+                return (
+                  <Link
+                    key={key}
+                    to={meta.route}
+                    className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition-colors"
+                  >
+                    <Settings className="w-4 h-4 shrink-0" />
+                    {meta.sidebarLabel}
+                  </Link>
+                )
+              })}
+            </div>
+          )}
 
           <div className="pt-4">
             <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2">General</p>

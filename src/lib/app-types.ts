@@ -55,6 +55,10 @@ export interface AppUser {
   team: AppTeam | null;
   managed_by: string | null;
   avatar_url?: string | null;
+  // Per-user capability grants on top of role (e.g. "branding:manage_categories").
+  // Populated by /api/auth/me and /api/users. Optional so existing call sites that
+  // don't need it stay quiet — missing means "treat as empty".
+  capabilities?: string[];
   created_at: string;
   updated_at: string;
 }

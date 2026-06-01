@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
 import { brandingApi } from '@/lib/branding-api'
+import { api } from '@/lib/api'
 import type {
   BrandingProject, MemberReportStatus, DailyReport, DailyReportRow,
   ReportRowComment,
@@ -11,6 +12,7 @@ import {
   perDayElapsedSeconds, elapsedToTimeTaken,
 } from '@/lib/branding-types'
 import type { AppUser } from '@/lib/app-types'
+import { CAPABILITIES, CAPABILITY_META } from '@/lib/capabilities'
 import {
   Users, FolderKanban, Plus, Pencil, Trash2, X, Check,
   CalendarDays, UserPlus, ChevronDown, ChevronUp,
@@ -40,25 +42,36 @@ interface MemberFormState {
   password: string
   department: string
   role: 'user' | 'sub_admin'
+  capabilities: string[]
 }
 
 function emptyMember(): MemberFormState {
-  return { full_name: '', email: '', password: '', department: '', role: 'user' }
+  return { full_name: '', email: '', password: '', department: '', role: 'user', capabilities: [] }
 }
 
 interface MemberDialogProps {
   mode: 'add' | 'edit'
   initial?: MemberFormState & { id: string }
+  canManageCapabilities: boolean
   onSave: (data: MemberFormState) => Promise<void>
   onClose: () => void
 }
 
-function MemberDialog({ mode, initial, onSave, onClose }: MemberDialogProps) {
+function MemberDialog({ mode, initial, canManageCapabilities, onSave, onClose }: MemberDialogProps) {
   const [form, setForm] = useState<MemberFormState>(
     initial ? { ...initial } : emptyMember()
   )
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
+
+  function toggleCapability(key: string) {
+    setForm(f => ({
+      ...f,
+      capabilities: f.capabilities.includes(key)
+        ? f.capabilities.filter(k => k !== key)
+        : [...f.capabilities, key],
+    }))
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -142,6 +155,36 @@ function MemberDialog({ mode, initial, onSave, onClose }: MemberDialogProps) {
               <option value="sub_admin">Team Lead</option>
             </select>
           </div>
+          {canManageCapabilities && (
+            <div>
+              <label className="text-xs font-medium text-muted-foreground block mb-1">
+                Extra capabilities
+              </label>
+              <p className="text-[11px] text-muted-foreground mb-2">
+                Grant access to specific admin features without promoting the member to admin. Each grant adds a sidebar entry on the user's dashboard.
+              </p>
+              <div className="space-y-1.5">
+                {CAPABILITIES.map(key => {
+                  const meta = CAPABILITY_META[key]
+                  const checked = form.capabilities.includes(key)
+                  return (
+                    <label key={key} className="flex items-start gap-2 px-2.5 py-2 rounded-lg border border-border cursor-pointer hover:bg-accent/40">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={checked}
+                        onChange={() => toggleCapability(key)}
+                      />
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-foreground">{meta.label}</p>
+                        <p className="text-[11px] text-muted-foreground">{meta.description}</p>
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
+          )}
           {err && <p className="text-xs text-red-500">{err}</p>}
           <div className="flex gap-2 justify-end pt-1">
             <button type="button" onClick={onClose}
@@ -333,7 +376,7 @@ function todayIso() {
 
 export default function BrandingTeamPanel() {
   const { role, user } = useAuth()
-  const { users: allUsers, addUser, updateUser, deleteUser } = useAppData()
+  const { users: allUsers, addUser, updateUser, deleteUser, refreshAll } = useAppData()
   const isAdmin = role === 'admin' || role === 'super_admin'
   const isLead = role === 'sub_admin'
 
@@ -414,7 +457,7 @@ export default function BrandingTeamPanel() {
   // ── Member handlers ───────────────────────────────────────────────────
 
   async function handleAddMember(data: MemberFormState) {
-    await addUser({
+    const created = await addUser({
       full_name: data.full_name,
       email: data.email,
       password: data.password,
@@ -423,6 +466,12 @@ export default function BrandingTeamPanel() {
       team: 'branding',
       managed_by: user?.id ?? null,
     })
+    // Capability grants are admin-only; non-admins won't send a non-empty
+    // array because the picker stays hidden for them.
+    if (isAdmin && data.capabilities.length > 0) {
+      await api.setUserCapabilities(created.id, data.capabilities)
+      await refreshAll()
+    }
   }
 
   async function handleEditMember(data: MemberFormState & { id?: string }, memberId: string) {
@@ -434,6 +483,12 @@ export default function BrandingTeamPanel() {
     }
     if (data.password) patch.password = data.password
     await updateUser(memberId, patch as Parameters<typeof updateUser>[1])
+    // Sync capabilities whenever the admin had the picker — even an empty
+    // array is meaningful (it revokes any existing grants).
+    if (isAdmin) {
+      await api.setUserCapabilities(memberId, data.capabilities)
+      await refreshAll()
+    }
   }
 
   async function handleDeleteMember() {
@@ -644,11 +699,17 @@ export default function BrandingTeamPanel() {
 
       {/* ── Member Dialog ── */}
       {memberDialog === 'add' && (
-        <MemberDialog mode="add" onSave={handleAddMember} onClose={() => setMemberDialog(null)} />
+        <MemberDialog
+          mode="add"
+          canManageCapabilities={isAdmin}
+          onSave={handleAddMember}
+          onClose={() => setMemberDialog(null)}
+        />
       )}
       {memberDialog !== null && memberDialog !== 'add' && memberDialog.mode === 'edit' && (
         <MemberDialog
           mode="edit"
+          canManageCapabilities={isAdmin}
           initial={{
             id: memberDialog.member.id,
             full_name: memberDialog.member.full_name,
@@ -656,6 +717,7 @@ export default function BrandingTeamPanel() {
             password: '',
             department: memberDialog.member.department,
             role: memberDialog.member.role === 'sub_admin' ? 'sub_admin' : 'user',
+            capabilities: memberDialog.member.capabilities ?? [],
           }}
           onSave={data => handleEditMember(data, memberDialog.member.id)}
           onClose={() => setMemberDialog(null)}
