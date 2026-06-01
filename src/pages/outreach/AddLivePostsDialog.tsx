@@ -382,8 +382,27 @@ function DialogShell({
 }
 
 function ResultsBlock({ results }: { results: { posts: Post[]; skipped: { url: string; reason: string }[] } }) {
+  // When every URL was rejected, the amber "skipped" panel alone is easy to
+  // miss — the user thinks they added live posts when in reality nothing was
+  // saved. Surface a red banner up top so it's unmistakable.
+  const nothingSaved = results.posts.length === 0 && results.skipped.length > 0
+
   return (
     <div className="space-y-3">
+      {nothingSaved && (
+        <div className="rounded-xl border border-red-300 bg-red-50 px-3 py-2.5 flex items-start gap-2">
+          <AlertCircle className="w-4 h-4 text-red-700 mt-0.5 shrink-0" />
+          <div className="text-xs">
+            <p className="font-semibold text-red-900">
+              No posts were saved. {results.skipped.length} URL{results.skipped.length === 1 ? '' : 's'} rejected — see below for the reason on each.
+            </p>
+            <p className="text-red-800 mt-0.5">
+              Fix the URLs (or the page/handle they're attached to) and try again. Nothing was added to the database.
+            </p>
+          </div>
+        </div>
+      )}
+
       {results.posts.length > 0 && (
         <div className="hub-card p-0 overflow-hidden">
           <div className="px-3 py-2 border-b border-border bg-emerald-50/50 flex items-center gap-2">
