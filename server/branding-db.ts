@@ -941,7 +941,7 @@ export async function listAllDailyReports(filters?: {
 
   // When specific userId(s) are given, filter directly; otherwise scope to branding team.
   if (filters?.userIds && filters.userIds.length > 0) {
-    query += ` AND dr.user_id = ANY($${idx++}::uuid[])`;
+    query += ` AND dr.user_id = ANY($${idx++}::text[])`;
     params.push(filters.userIds);
   } else if (filters?.userId) {
     query += ` AND dr.user_id = $${idx++}`;
@@ -1621,7 +1621,7 @@ export async function getTeamReportStatus(date: string, managedBy: string | null
        ON dr.user_id = u.id AND dr.report_date = $1::date
      WHERE u.team = 'branding'
        AND u.role IN ('user', 'sub_admin')
-       AND ($2::uuid IS NULL OR u.managed_by = $2::uuid OR u.id = $2::uuid)
+       AND ($2::text IS NULL OR u.managed_by = $2::text OR u.id = $2::text)
      ORDER BY u.role DESC, u.full_name ASC`,
     [date, managedBy]
   );
