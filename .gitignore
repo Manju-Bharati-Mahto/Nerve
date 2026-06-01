@@ -3,6 +3,55 @@
 !.env.example
 !.env.local.example
 
+# Credentials, API keys, cert material
+*.pem
+*.cer
+*.der
+*.crt
+*.p12
+*.pfx
+*.jks
+*.keystore
+# Private keys (the *.key glob is intentionally narrow — keynote files would
+# need a .keynote ext anyway; in this repo a .key file = a private key).
+*.key
+
+# SSH keys
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+id_ecdsa
+id_ecdsa.*
+id_dsa
+id_dsa.*
+*.ppk
+known_hosts
+
+# Cloud / service account credentials
+service-account*.json
+serviceaccount*.json
+gcp-key*.json
+firebase-adminsdk*.json
+*-credentials.json
+credentials.json
+aws-credentials*
+.aws/
+.gcp/
+.azure/
+
+# Terraform (state + tfvars routinely hold secrets)
+*.tfvars
+!*.tfvars.example
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Editor / OS backup files (catches accidental .env.bak, etc.)
+*.bak
+*.backup
+*~
+
 # Logs
 logs
 *.log
