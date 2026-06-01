@@ -1629,6 +1629,8 @@ function AnalyticsPage({ userId, users }: { userId: string; users: ReturnType<ty
   const [analytics, setAnalytics] = useState<{
     typeHours: Record<string, number>
     subCatHours: Record<string, Record<string, number>>
+    typeProjects: Record<string, number>
+    subCatProjects: Record<string, Record<string, number>>
     collaboratorMap: Record<string, { hours: number; count: number }>
     totalReports: number
   } | null>(null)
@@ -1798,18 +1800,28 @@ function AnalyticsPage({ userId, users }: { userId: string; users: ReturnType<ty
                     <tr className="border-b border-gray-100 text-left">
                       <th className="pb-2 pr-4 text-xs font-bold" style={{ color: '#1a472a' }}>Category</th>
                       <th className="pb-2 pr-4 text-xs font-bold" style={{ color: '#1a472a' }}>Sub Category</th>
-                      <th className="pb-2 text-xs font-bold text-right" style={{ color: '#1a472a' }}>Hours</th>
+                      <th className="pb-2 pr-4 text-xs font-bold text-right" style={{ color: '#1a472a' }}>Hours</th>
+                      <th className="pb-2 text-xs font-bold text-right" style={{ color: '#1a472a' }}>Projects</th>
                     </tr>
                   </thead>
                   <tbody>
                     {Object.entries(analytics.subCatHours).flatMap(([cat, subs]) =>
-                      Object.entries(subs).map(([sub, hrs], si) => (
-                        <tr key={`${cat}-${sub}`} className="border-b border-gray-50 last:border-0">
-                          <td className="py-2 pr-4 text-gray-800">{si === 0 ? cat : ''}</td>
-                          <td className="py-2 pr-4 text-gray-500">{sub || '—'}</td>
-                          <td className="py-2 text-right font-semibold text-green-800">{Math.round(hrs * 10) / 10}h</td>
-                        </tr>
-                      ))
+                      Object.entries(subs).map(([sub, hrs], si) => {
+                        // One project = one stopwatch row marked `finished` in
+                        // the window. A multi-day task counts exactly once,
+                        // logged on the day it was finished.
+                        const projCount = analytics.subCatProjects?.[cat]?.[sub] ?? 0
+                        return (
+                          <tr key={`${cat}-${sub}`} className="border-b border-gray-50 last:border-0">
+                            <td className="py-2 pr-4 text-gray-800">{si === 0 ? cat : ''}</td>
+                            <td className="py-2 pr-4 text-gray-500">{sub || '—'}</td>
+                            <td className="py-2 pr-4 text-right font-semibold text-green-800">{Math.round(hrs * 10) / 10}h</td>
+                            <td className="py-2 text-right font-semibold" style={{ color: '#1a472a' }}>
+                              {projCount}
+                            </td>
+                          </tr>
+                        )
+                      })
                     )}
                   </tbody>
                 </table>

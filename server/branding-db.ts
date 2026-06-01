@@ -972,6 +972,13 @@ export async function getUserAnalytics(userId: string, dateFrom: string, dateTo:
   const reports = await listAllDailyReports({ userId, dateFrom, dateTo });
   const typeHours: Record<string, number> = {};
   const subCatHours: Record<string, Record<string, number>> = {};
+  // Project completion counts per category / sub-category. A "project" is one
+  // unit of finished work — counted exactly once at the moment its row is
+  // marked `finished`. Carry-over chain rows for the same project are in
+  // `paused` state, so counting only `finished` rows naturally gives unique
+  // project counts even when a project spans many days.
+  const typeProjects: Record<string, number> = {};
+  const subCatProjects: Record<string, Record<string, number>> = {};
   const collaboratorMap: Record<string, { hours: number; count: number }> = {};
 
   const toHours = (t: string, elapsedSeconds?: number) => {
@@ -998,6 +1005,14 @@ export async function getUserAnalytics(userId: string, dateFrom: string, dateTo:
       if (!subCatHours[row.type_of_work]) subCatHours[row.type_of_work] = {};
       subCatHours[row.type_of_work][row.sub_category] =
         (subCatHours[row.type_of_work][row.sub_category] || 0) + h;
+      // Count one project per `finished` row. Multi-day carry-overs end in
+      // exactly one finished row, so this is unique-project semantics.
+      if (row.stopwatch_status === 'finished') {
+        typeProjects[row.type_of_work] = (typeProjects[row.type_of_work] || 0) + 1;
+        if (!subCatProjects[row.type_of_work]) subCatProjects[row.type_of_work] = {};
+        subCatProjects[row.type_of_work][row.sub_category] =
+          (subCatProjects[row.type_of_work][row.sub_category] || 0) + 1;
+      }
       for (const c of row.collaborative_colleagues) {
         if (!collaboratorMap[c]) collaboratorMap[c] = { hours: 0, count: 0 };
         collaboratorMap[c].hours += h;
@@ -1022,7 +1037,14 @@ export async function getUserAnalytics(userId: string, dateFrom: string, dateTo:
     }
   }
 
-  return { typeHours, subCatHours, collaboratorMap: namedMap, totalReports: reports.length };
+  return {
+    typeHours,
+    subCatHours,
+    typeProjects,
+    subCatProjects,
+    collaboratorMap: namedMap,
+    totalReports: reports.length,
+  };
 }
 
 // ── KRA functions ──────────────────────────────────────────────────────────

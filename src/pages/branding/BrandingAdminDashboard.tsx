@@ -588,7 +588,7 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                           ) : (
                             <span className="text-base font-extrabold" style={{ color: '#1a472a' }}>{composite}</span>
                           )}
-                          <span className="text-[10px] text-gray-400 font-semibold">/10</span>
+                          <span className="text-[10px] text-gray-400 font-semibold">/5</span>
                         </>
                       ) : (
                         <span className="text-[10px] text-gray-400 italic">No score</span>
@@ -655,7 +655,7 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                   ].map(s => (
                     <div key={s.label} className={`p-3 rounded-xl text-center ${s.bg}`}>
                       <p className="text-xs font-medium opacity-70">{s.label}</p>
-                      <p className="text-2xl font-serif mt-0.5">{s.value}<span className="text-xs font-normal opacity-60">/10</span></p>
+                      <p className="text-2xl font-serif mt-0.5">{s.value}<span className="text-xs font-normal opacity-60">/5</span></p>
                     </div>
                   ))}
                 </div>
@@ -699,7 +699,7 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                         </span>
                       )}
                       <span className="ml-auto text-green-800 font-bold">
-                        Final: {selectedReport.composite_score_after_penalty?.toFixed(1) ?? '—'}<span className="text-[10px] font-normal opacity-60">/10</span>
+                        Final: {selectedReport.composite_score_after_penalty?.toFixed(1) ?? '—'}<span className="text-[10px] font-normal opacity-60">/5</span>
                       </span>
                     </div>
                     {selectedReport.manual_penalty_reason && (
