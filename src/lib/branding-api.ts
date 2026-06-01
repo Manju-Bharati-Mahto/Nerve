@@ -75,7 +75,14 @@ export const brandingApi = {
     if (opts?.dateTo)   params.set("dateTo",   opts.dateTo);
     if (opts?.userId)   params.set("userId",   opts.userId);
     const qs = params.toString();
-    return req<{ analytics: { typeHours: Record<string, number>; subCatHours: Record<string, Record<string, number>>; collaboratorMap: Record<string, { hours: number; count: number }>; totalReports: number } }>(`/analytics${qs ? `?${qs}` : ""}`);
+    return req<{ analytics: {
+      typeHours: Record<string, number>;
+      subCatHours: Record<string, Record<string, number>>;
+      typeProjects: Record<string, number>;
+      subCatProjects: Record<string, Record<string, number>>;
+      collaboratorMap: Record<string, { hours: number; count: number }>;
+      totalReports: number;
+    } }>(`/analytics${qs ? `?${qs}` : ""}`);
   },
 
   // ── KRA ─────────────────────────────────────────────────────────────────

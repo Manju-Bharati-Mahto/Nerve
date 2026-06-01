@@ -9,20 +9,33 @@ import { useState, useEffect, useMemo } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import {
   Palette, BarChart2, Award, CalendarOff, Settings2,
-  Search, Users, Download, LogOut, User as UserIcon, Bell, X,
+  Search, Users, Download, LogOut, User as UserIcon, Bell, X, ArrowLeft,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { brandingApi } from '@/lib/branding-api'
 import { MONTHS } from '@/lib/branding-types'
 import ProfileModal from '@/components/ProfileModal'
 
-type NavLink = { path: string; label: string; icon: React.ElementType; adminOnly?: boolean }
+type NavLink = {
+  path: string
+  label: string
+  icon: React.ElementType
+  // `adminOnly` items are hidden from `branding_reports_admin` (which has a
+  // narrower scope than full admin).
+  adminOnly?: boolean
+  // `requiresCapability` items are hidden unless the user has at least one of
+  // the listed capabilities OR is a full admin / reports admin / super admin.
+  // Used so non-admin users (role 'user' / 'sub_admin') who land in this
+  // shell after being granted a specific capability still see only the tabs
+  // their grant unlocks — not the rest of the admin chrome.
+  requiresCapability?: string[]
+}
 
 const MENU: NavLink[] = [
-  { path: '/branding/dashboard',  label: 'Daily Reports',     icon: BarChart2 },
-  { path: '/branding/kra',        label: 'KRA Management',    icon: Award,       adminOnly: true },
-  { path: '/branding/leaves',     label: 'Leave Requests',    icon: CalendarOff, adminOnly: true },
-  { path: '/branding/categories', label: 'Manage Categories', icon: Settings2 },
+  { path: '/branding/dashboard',  label: 'Daily Reports',     icon: BarChart2,    requiresCapability: ['branding:view_team_dashboard'] },
+  { path: '/branding/kra',        label: 'KRA Management',    icon: Award,        adminOnly: true },
+  { path: '/branding/leaves',     label: 'Leave Requests',    icon: CalendarOff,  adminOnly: true },
+  { path: '/branding/categories', label: 'Manage Categories', icon: Settings2,    requiresCapability: ['branding:manage_categories'] },
 ]
 
 const WORKSPACE: NavLink[] = [
@@ -36,10 +49,25 @@ export default function BrandingAdminShell({ children }: { children: React.React
   const location = useLocation()
   const [profileOpen, setProfileOpen] = useState(false)
 
+  const isFullAdmin = role === 'super_admin' || role === 'admin' || role === 'branding_reports_admin'
   const isReportsAdmin = role === 'branding_reports_admin'
-  const roleLabel = isReportsAdmin ? 'Reports Admin' : 'Admin'
-  const visibleMenu = MENU.filter(n => !n.adminOnly || !isReportsAdmin)
-  const visibleWorkspace = WORKSPACE.filter(n => !n.adminOnly || !isReportsAdmin)
+  // Capability-only access: a regular user (or sub_admin) granted access to
+  // a specific admin feature. The shell renders, but the sidebar is filtered
+  // to only the tabs they can actually use.
+  const userCaps = profile?.capabilities ?? []
+  const canSee = (item: NavLink): boolean => {
+    if (isFullAdmin) {
+      // Full admins see everything except the items reserved for higher-tier
+      // admin (currently `adminOnly` excludes reports-admin).
+      return !item.adminOnly || !isReportsAdmin
+    }
+    // Non-admin: only show items unlocked by an explicit capability grant.
+    return !!item.requiresCapability?.some(c => userCaps.includes(c))
+  }
+
+  const roleLabel = isReportsAdmin ? 'Reports Admin' : isFullAdmin ? 'Admin' : 'Granted access'
+  const visibleMenu = MENU.filter(canSee)
+  const visibleWorkspace = WORKSPACE.filter(canSee)
   const isActive = (p: string) => location.pathname === p
 
   return (
@@ -57,6 +85,16 @@ export default function BrandingAdminShell({ children }: { children: React.React
         </div>
 
         <nav className="flex-1 px-3 py-4 space-y-0.5">
+          {/* For capability-only users (not full admins) surface a back-link
+             so they can return to their own dashboard without typing a URL. */}
+          {!isFullAdmin && (
+            <Link
+              to="/branding/user"
+              className="w-full flex items-center gap-2.5 px-3 py-2 mb-3 rounded-xl text-[12px] font-semibold text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition-colors"
+            >
+              <ArrowLeft className="w-3.5 h-3.5 shrink-0" /> Back to my dashboard
+            </Link>
+          )}
           <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2">Menu</p>
           {visibleMenu.map(item => (
             <NavLinkButton key={item.path} item={item} active={isActive(item.path)} />

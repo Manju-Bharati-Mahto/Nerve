@@ -11,6 +11,8 @@ export interface Profile {
   department: string
   email: string
   avatar_url?: string | null
+  // Per-user capability grants — drives capability-gated routes / sidebar entries.
+  capabilities?: string[]
 }
 
 interface AuthContextType {
@@ -35,7 +37,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   function applyRecord(record: AppUser | null) {
     if (!record) return
-    setUser({ id: record.id, full_name: record.full_name, email: record.email, department: record.department, avatar_url: record.avatar_url })
+    setUser({
+      id: record.id,
+      full_name: record.full_name,
+      email: record.email,
+      department: record.department,
+      avatar_url: record.avatar_url,
+      capabilities: record.capabilities ?? [],
+    })
     setRole(record.role)
     setTeam(record.team)
   }

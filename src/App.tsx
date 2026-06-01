@@ -96,7 +96,11 @@ const App = () => (
 
               {/* ── Branding team routes ── */}
               <Route path="/branding/dashboard" element={
-                <RoleGuard allowed={['super_admin', 'admin', 'branding_reports_admin']} team="branding">
+                <RoleGuard
+                  allowed={['super_admin', 'admin', 'branding_reports_admin']}
+                  team="branding"
+                  anyCapability={['branding:view_team_dashboard']}
+                >
                   <BrandingAdminDashboard />
                 </RoleGuard>
               } />
@@ -111,7 +115,11 @@ const App = () => (
                 </RoleGuard>
               } />
               <Route path="/branding/categories" element={
-                <RoleGuard allowed={['super_admin', 'admin', 'branding_reports_admin']} team="branding">
+                <RoleGuard
+                  allowed={['super_admin', 'admin', 'branding_reports_admin']}
+                  team="branding"
+                  anyCapability={['branding:manage_categories']}
+                >
                   <BrandingAdminDashboard />
                 </RoleGuard>
               } />

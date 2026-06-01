@@ -67,6 +67,13 @@ export const api = {
     }),
   deleteUser: (id: string) =>
     request<{ ok: boolean }>(`/users/${id}`, { method: "DELETE" }),
+  getUserCapabilities: (id: string) =>
+    request<{ capabilities: string[] }>(`/users/${id}/capabilities`),
+  setUserCapabilities: (id: string, capabilities: string[]) =>
+    request<{ capabilities: string[] }>(`/users/${id}/capabilities`, {
+      method: "PUT",
+      body: JSON.stringify({ capabilities }),
+    }),
   listTeams: () => request<{ teams: TeamRecord[] }>("/teams"),
   createTeam: (team: CreateTeamInput) =>
     request<{ team: TeamRecord }>("/teams", {

@@ -349,6 +349,22 @@ export async function bootstrapDatabase() {
     )
   `);
 
+  // Per-user capability grants. Layered on top of roles: a user with role
+  // 'user' or 'sub_admin' can be granted specific admin-only features (e.g.
+  // 'branding:manage_categories') by an admin. Admin / super_admin / role-
+  // owned features are NOT stored here — the role itself grants them.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_capabilities (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      capability_key TEXT NOT NULL,
+      granted_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id, capability_key)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS user_capabilities_user_id_idx ON user_capabilities(user_id)`);
+
   await seedDefaults();
 }
 
@@ -545,6 +561,79 @@ export async function updateUser(id: string, input: UpdateUserInput) {
 export async function deleteUser(id: string) {
   await pool.query(`UPDATE users SET managed_by = NULL, updated_at = NOW() WHERE managed_by = $1`, [id]);
   await pool.query(`DELETE FROM users WHERE id = $1`, [id]);
+}
+
+// ── Per-user capability grants ─────────────────────────────────────────────
+// Layered on top of roles: a user with role 'user' or 'sub_admin' may have
+// specific admin-only features explicitly granted (e.g. branding:manage_categories).
+// Capability keys are free-form strings prefixed by domain — see
+// shared/capabilities.ts for the source of truth on which keys are valid.
+
+export interface UserCapability {
+  capability_key: string;
+  granted_by: string | null;
+  granted_at: string;
+}
+
+export async function listUserCapabilities(userId: string): Promise<string[]> {
+  const result = await pool.query<{ capability_key: string }>(
+    `SELECT capability_key FROM user_capabilities WHERE user_id = $1`,
+    [userId],
+  );
+  return result.rows.map(r => r.capability_key);
+}
+
+// Bulk lookup: returns a map userId -> capability[] for hydrating user lists
+// without N+1 queries.
+export async function listCapabilitiesByUserIds(
+  userIds: string[],
+): Promise<Map<string, string[]>> {
+  const map = new Map<string, string[]>();
+  if (userIds.length === 0) return map;
+  const result = await pool.query<{ user_id: string; capability_key: string }>(
+    `SELECT user_id, capability_key FROM user_capabilities WHERE user_id = ANY($1::text[])`,
+    [userIds],
+  );
+  for (const row of result.rows) {
+    const existing = map.get(row.user_id) ?? [];
+    existing.push(row.capability_key);
+    map.set(row.user_id, existing);
+  }
+  return map;
+}
+
+// Replace the user's full capability set in a single transaction.
+// `keys` is the desired final state — rows not in the set are removed.
+export async function setUserCapabilities(
+  userId: string,
+  keys: string[],
+  grantedBy: string,
+): Promise<string[]> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `DELETE FROM user_capabilities WHERE user_id = $1 AND capability_key <> ALL($2::text[])`,
+      [userId, keys],
+    );
+    for (const key of keys) {
+      // Generate IDs deterministically off the (user, capability) so a
+      // repeated call doesn't accumulate duplicate rows with new IDs.
+      await client.query(
+        `INSERT INTO user_capabilities (id, user_id, capability_key, granted_by)
+           VALUES ($1, $2, $3, $4)
+         ON CONFLICT (user_id, capability_key) DO NOTHING`,
+        [`uc_${userId}_${key}`.slice(0, 64), userId, key, grantedBy],
+      );
+    }
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+  return listUserCapabilities(userId);
 }
 
 export async function listEntries() {

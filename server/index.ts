@@ -45,8 +45,12 @@ import {
   pool,
   updateBrandingRow,
   updateUser,
+  listUserCapabilities,
+  listCapabilitiesByUserIds,
+  setUserCapabilities,
   type AppRole,
 } from "./db.js";
+import { isValidCapability } from "./capabilities.js";
 import {
   bootstrapOutreach,
   listPages as listOutreachPages,
@@ -333,7 +337,9 @@ app.get("/api/health", (_req, res) => {
 
 app.get("/api/auth/me", asyncHandler(async (req, res) => {
   const user = await getSessionUser(req as SessionRequest);
-  res.json({ user: user ? { ...user, password_hash: undefined } : null });
+  if (!user) return res.json({ user: null });
+  const capabilities = await listUserCapabilities(user.id);
+  res.json({ user: { ...user, password_hash: undefined, capabilities } });
 }));
 
 app.post("/api/auth/login", loginLimiter, asyncHandler(async (req, res) => {
@@ -537,7 +543,56 @@ app.delete("/api/entries/:id", asyncHandler(async (req, res) => {
 }));
 
 app.get("/api/users", asyncHandler(async (_req, res) => {
-  res.json({ users: await listUsers() });
+  const users = await listUsers();
+  // Bulk-hydrate capabilities so the admin UI can show what each user has
+  // been granted without an N+1 query per row.
+  const capsByUser = await listCapabilitiesByUserIds(users.map(u => u.id));
+  const hydrated = users.map(u => ({ ...u, capabilities: capsByUser.get(u.id) ?? [] }));
+  res.json({ users: hydrated });
+}));
+
+// ── Per-user capability grants ─────────────────────────────────────────────
+// Admin / super_admin only. Branding admin may only manage capabilities for
+// members of their own team.
+
+app.get("/api/users/:id/capabilities", asyncHandler(async (req, res) => {
+  const currentUser = res.locals.currentUser;
+  const isSuperAdmin = currentUser.role === "super_admin";
+  const isBrandingAdmin = currentUser.role === "admin" && currentUser.team === "branding";
+  if (!isSuperAdmin && !isBrandingAdmin) return sendError(res, 403, "Admin access required.");
+
+  const userId = getSingleParam(req.params.id);
+  const target = await getUserById(userId);
+  if (!target) return sendError(res, 404, "User not found.");
+  if (isBrandingAdmin && target.team !== "branding") {
+    return sendError(res, 403, "You can only inspect members of your own team.");
+  }
+  res.json({ capabilities: await listUserCapabilities(userId) });
+}));
+
+app.put("/api/users/:id/capabilities", asyncHandler(async (req, res) => {
+  const currentUser = res.locals.currentUser;
+  const isSuperAdmin = currentUser.role === "super_admin";
+  const isBrandingAdmin = currentUser.role === "admin" && currentUser.team === "branding";
+  if (!isSuperAdmin && !isBrandingAdmin) return sendError(res, 403, "Admin access required.");
+
+  const userId = getSingleParam(req.params.id);
+  const target = await getUserById(userId);
+  if (!target) return sendError(res, 404, "User not found.");
+  if (isBrandingAdmin && target.team !== "branding") {
+    return sendError(res, 403, "You can only modify members of your own team.");
+  }
+
+  const schema = z.object({ capabilities: z.array(z.string()).max(50) });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, 400, "Invalid capabilities payload.");
+
+  // Validate every key against the server-side catalog. Anything unknown is
+  // dropped so the picker UI can evolve independently of the backend.
+  const valid = parsed.data.capabilities.filter(isValidCapability);
+
+  const finalSet = await setUserCapabilities(userId, valid, currentUser.id);
+  res.json({ capabilities: finalSet });
 }));
 
 app.post("/api/users", asyncHandler(async (req, res) => {
@@ -767,7 +822,10 @@ function requireBrandingAdmin(res: express.Response): boolean {
   }
   return true;
 }
-// For Daily Reports + Category endpoints — accepts branding_reports_admin too.
+// For Daily Reports + Category endpoints — accepts branding_reports_admin too,
+// plus any user with the `branding:manage_categories` capability grant. The
+// capability check lets an admin delegate category management to a regular
+// user without promoting them to admin.
 function requireBrandingReportsAdmin(res: express.Response): boolean {
   const u = res.locals.currentUser;
   if (!isBrandingReportsAdminOrAdminOrSuper(u.role, u.team)) {
@@ -775,6 +833,17 @@ function requireBrandingReportsAdmin(res: express.Response): boolean {
     return false;
   }
   return true;
+}
+async function requireBrandingCategoryManager(res: express.Response): Promise<boolean> {
+  const u = res.locals.currentUser;
+  if (isBrandingReportsAdminOrAdminOrSuper(u.role, u.team)) return true;
+  // Fallback: explicit capability grant on a branding-team member.
+  if (u.team === "branding") {
+    const caps = await listUserCapabilities(u.id);
+    if (caps.includes("branding:manage_categories")) return true;
+  }
+  sendError(res, 403, "You need the 'Manage Categories' capability to do that.");
+  return false;
 }
 function requireBrandingLead(res: express.Response): boolean {
   const u = res.locals.currentUser;
@@ -792,14 +861,14 @@ app.get("/api/branding/portal/categories", asyncHandler(async (_req, res) => {
 }));
 
 app.post("/api/branding/portal/categories", asyncHandler(async (req, res) => {
-  if (!requireBrandingReportsAdmin(res)) return;
+  if (!(await requireBrandingCategoryManager(res))) return;
   const { name } = z.object({ name: z.string().min(1) }).parse(req.body);
   const category = await createWorkCategory(name);
   res.status(201).json({ category });
 }));
 
 app.patch("/api/branding/portal/categories/:id", asyncHandler(async (req, res) => {
-  if (!requireBrandingReportsAdmin(res)) return;
+  if (!(await requireBrandingCategoryManager(res))) return;
   const { name } = z.object({ name: z.string().min(1) }).parse(req.body);
   const ok = await updateWorkCategory(getSingleParam(req.params.id), name);
   if (!ok) return sendError(res, 404, "Category not found.");
@@ -807,27 +876,27 @@ app.patch("/api/branding/portal/categories/:id", asyncHandler(async (req, res) =
 }));
 
 app.delete("/api/branding/portal/categories/:id", asyncHandler(async (req, res) => {
-  if (!requireBrandingReportsAdmin(res)) return;
+  if (!(await requireBrandingCategoryManager(res))) return;
   const result = await deleteWorkCategory(getSingleParam(req.params.id));
   res.json({ ok: true, usageCount: result.usageCount });
 }));
 
 app.post("/api/branding/portal/categories/reorder", asyncHandler(async (req, res) => {
-  if (!requireBrandingReportsAdmin(res)) return;
+  if (!(await requireBrandingCategoryManager(res))) return;
   const { orderedIds } = z.object({ orderedIds: z.array(z.string()) }).parse(req.body);
   await reorderWorkCategories(orderedIds);
   res.json({ ok: true });
 }));
 
 app.post("/api/branding/portal/categories/:id/sub", asyncHandler(async (req, res) => {
-  if (!requireBrandingReportsAdmin(res)) return;
+  if (!(await requireBrandingCategoryManager(res))) return;
   const { name } = z.object({ name: z.string().min(1) }).parse(req.body);
   const sub = await createWorkSubCategory(getSingleParam(req.params.id), name);
   res.status(201).json({ sub });
 }));
 
 app.patch("/api/branding/portal/sub-categories/:id", asyncHandler(async (req, res) => {
-  if (!requireBrandingReportsAdmin(res)) return;
+  if (!(await requireBrandingCategoryManager(res))) return;
   const { name } = z.object({ name: z.string().min(1) }).parse(req.body);
   const ok = await updateWorkSubCategory(getSingleParam(req.params.id), name);
   if (!ok) return sendError(res, 404, "Sub-category not found or is a protected 'Others' entry.");
@@ -835,7 +904,7 @@ app.patch("/api/branding/portal/sub-categories/:id", asyncHandler(async (req, re
 }));
 
 app.delete("/api/branding/portal/sub-categories/:id", asyncHandler(async (req, res) => {
-  if (!requireBrandingReportsAdmin(res)) return;
+  if (!(await requireBrandingCategoryManager(res))) return;
   const result = await deleteWorkSubCategory(getSingleParam(req.params.id));
   res.json({ ok: true, usageCount: result.usageCount });
 }));
@@ -890,8 +959,13 @@ app.get("/api/branding/portal/reports", asyncHandler(async (req, res) => {
   const user = res.locals.currentUser;
   // Treat branding_reports_admin like an admin for the purposes of fetching
   // all team reports — that role's whole point is read-access to everyone's
-  // daily submissions.
-  const isAdmin = isBrandingReportsAdminOrAdminOrSuper(user.role, user.team);
+  // daily submissions. A user explicitly granted `branding:view_team_dashboard`
+  // gets the same broad read access without role escalation.
+  let isAdmin = isBrandingReportsAdminOrAdminOrSuper(user.role, user.team);
+  if (!isAdmin && user.team === "branding") {
+    const caps = await listUserCapabilities(user.id);
+    if (caps.includes("branding:view_team_dashboard")) isAdmin = true;
+  }
   const teamScope = q["scope"] === "team"; // non-admin members may opt-in for live-collab UI
 
   // Parse userIds: supports ?userId=id1&userId=id2 (array) or ?userId=id1 (single)

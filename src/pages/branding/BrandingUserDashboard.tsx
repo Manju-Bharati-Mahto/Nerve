@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
+import { CAPABILITY_META, type CapabilityKey } from '@/lib/capabilities'
 import { useAppData } from '@/hooks/useAppData'
 import { brandingApi } from '@/lib/branding-api'
 import { api } from '@/lib/api'
@@ -1627,6 +1629,8 @@ function AnalyticsPage({ userId, users }: { userId: string; users: ReturnType<ty
   const [analytics, setAnalytics] = useState<{
     typeHours: Record<string, number>
     subCatHours: Record<string, Record<string, number>>
+    typeProjects: Record<string, number>
+    subCatProjects: Record<string, Record<string, number>>
     collaboratorMap: Record<string, { hours: number; count: number }>
     totalReports: number
   } | null>(null)
@@ -1796,18 +1800,28 @@ function AnalyticsPage({ userId, users }: { userId: string; users: ReturnType<ty
                     <tr className="border-b border-gray-100 text-left">
                       <th className="pb-2 pr-4 text-xs font-bold" style={{ color: '#1a472a' }}>Category</th>
                       <th className="pb-2 pr-4 text-xs font-bold" style={{ color: '#1a472a' }}>Sub Category</th>
-                      <th className="pb-2 text-xs font-bold text-right" style={{ color: '#1a472a' }}>Hours</th>
+                      <th className="pb-2 pr-4 text-xs font-bold text-right" style={{ color: '#1a472a' }}>Hours</th>
+                      <th className="pb-2 text-xs font-bold text-right" style={{ color: '#1a472a' }}>Projects</th>
                     </tr>
                   </thead>
                   <tbody>
                     {Object.entries(analytics.subCatHours).flatMap(([cat, subs]) =>
-                      Object.entries(subs).map(([sub, hrs], si) => (
-                        <tr key={`${cat}-${sub}`} className="border-b border-gray-50 last:border-0">
-                          <td className="py-2 pr-4 text-gray-800">{si === 0 ? cat : ''}</td>
-                          <td className="py-2 pr-4 text-gray-500">{sub || '—'}</td>
-                          <td className="py-2 text-right font-semibold text-green-800">{Math.round(hrs * 10) / 10}h</td>
-                        </tr>
-                      ))
+                      Object.entries(subs).map(([sub, hrs], si) => {
+                        // One project = one stopwatch row marked `finished` in
+                        // the window. A multi-day task counts exactly once,
+                        // logged on the day it was finished.
+                        const projCount = analytics.subCatProjects?.[cat]?.[sub] ?? 0
+                        return (
+                          <tr key={`${cat}-${sub}`} className="border-b border-gray-50 last:border-0">
+                            <td className="py-2 pr-4 text-gray-800">{si === 0 ? cat : ''}</td>
+                            <td className="py-2 pr-4 text-gray-500">{sub || '—'}</td>
+                            <td className="py-2 pr-4 text-right font-semibold text-green-800">{Math.round(hrs * 10) / 10}h</td>
+                            <td className="py-2 text-right font-semibold" style={{ color: '#1a472a' }}>
+                              {projCount}
+                            </td>
+                          </tr>
+                        )
+                      })
                     )}
                   </tbody>
                 </table>
@@ -3669,6 +3683,29 @@ export default function BrandingUserDashboard() {
               </button>
             )
           })}
+
+          {/* Capability-granted entries: routes to the admin shell where the
+             user can use the specific admin feature they were granted. */}
+          {(profile?.capabilities ?? []).length > 0 && (
+            <div className="pt-4">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2">Granted Access</p>
+              {(profile?.capabilities ?? []).map(rawKey => {
+                const key = rawKey as CapabilityKey
+                const meta = CAPABILITY_META[key]
+                if (!meta) return null
+                return (
+                  <Link
+                    key={key}
+                    to={meta.route}
+                    className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition-colors"
+                  >
+                    <Settings className="w-4 h-4 shrink-0" />
+                    {meta.sidebarLabel}
+                  </Link>
+                )
+              })}
+            </div>
+          )}
 
           <div className="pt-4">
             <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2">General</p>
