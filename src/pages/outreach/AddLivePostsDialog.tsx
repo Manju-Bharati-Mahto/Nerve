@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { X, Plus, Trash2, Loader2, Link as LinkIcon, ExternalLink, AlertCircle, CheckCircle2 } from 'lucide-react'
 import {
-  addLivePostsByUrl, useOutreachStore,
+  addLivePostsByUrl, refreshOutreach, useOutreachStore,
   type Campaign, type Post,
 } from '@/lib/outreach-data'
 
@@ -279,6 +279,13 @@ function DialogShell({
     try {
       const res = await submit(cleanedUrls)
       setResults({ posts: res.posts, skipped: res.skipped })
+      // Refresh the shared outreach store so the new live posts appear on the
+      // page detail / campaign detail views without requiring a full page
+      // reload. Only refresh when at least one post actually persisted —
+      // otherwise we'd hit the API for nothing.
+      if (res.posts.length > 0) {
+        await refreshOutreach()
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch analytics.')
     } finally {

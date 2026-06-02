@@ -52,7 +52,10 @@ export default function OutreachCampaignDetail() {
     if (!campaign) return []
     return campaign.assignedPageIds.map(pid => {
       const page = pages.find(p => p.id === pid)
-      const pp = posts.filter(p => p.pageId === pid && p.campaignId === campaign.id)
+      // Only count posts explicitly added via Add Live Posts — Apify-synced
+      // backlog posts (the page's lifetime Instagram feed) get attributed by
+      // accident otherwise and inflate every campaign's "delivered" count.
+      const pp = posts.filter(p => p.pageId === pid && p.campaignId === campaign.id && p.addedAsLive)
       return {
         page,
         delivered: pp.length,
@@ -67,7 +70,7 @@ export default function OutreachCampaignDetail() {
   const variantStats = useMemo(() => {
     if (!campaign) return []
     return campaign.creativeVariants.map(v => {
-      const vp = posts.filter(p => p.campaignId === campaign.id && p.creativeVariant === v)
+      const vp = posts.filter(p => p.campaignId === campaign.id && p.creativeVariant === v && p.addedAsLive)
       return {
         variant: v,
         posts: vp.length,
