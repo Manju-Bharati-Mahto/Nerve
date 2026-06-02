@@ -7,7 +7,8 @@ import {
 import {
   LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
-import { useOutreachData, pageMetrics, removePage, instagramUrlForHandle, isValidInstagramHandle, formatLocalDate } from '@/lib/outreach-data'
+import { useOutreachData, pageMetrics, removePage, instagramUrlForHandle, isValidInstagramHandle, formatLocalDate, refreshOutreach } from '@/lib/outreach-data'
+import { api } from '@/lib/api'
 import AddLivePostsDialog from './AddLivePostsDialog'
 
 export default function OutreachPageDetail() {
@@ -17,6 +18,22 @@ export default function OutreachPageDetail() {
   const page = pages.find(p => p.id === pageId)
   const [deleting, setDeleting] = useState(false)
   const [addingLivePosts, setAddingLivePosts] = useState(false)
+  // Tracks which post row is currently being removed so we can disable its
+  // button + show feedback without blocking the rest of the table.
+  const [deletingPostId, setDeletingPostId] = useState<string | null>(null)
+
+  async function handleDeletePost(postId: string) {
+    if (!confirm('Remove this live post? This will reduce the page\'s analytics by its metrics.')) return
+    setDeletingPostId(postId)
+    try {
+      await api.deleteOutreachPost(postId)
+      await refreshOutreach()
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Failed to remove post.')
+    } finally {
+      setDeletingPostId(null)
+    }
+  }
 
   async function handleDelete() {
     if (!page) return
@@ -184,13 +201,15 @@ export default function OutreachPageDetail() {
                   <th className="px-3 py-2 text-right"><Eye className="w-3 h-3 inline" /></th>
                   <th className="px-3 py-2 text-right"><Bookmark className="w-3 h-3 inline" /></th>
                   <th className="px-3 py-2 text-right"><Share2 className="w-3 h-3 inline" /></th>
+                  <th className="px-3 py-2 w-8" aria-label="Actions"></th>
                 </tr>
               </thead>
               <tbody>
                 {pagePosts.length === 0 ? (
-                  <tr><td colSpan={9} className="px-3 py-12 text-center text-sm text-muted-foreground">No posts yet.</td></tr>
+                  <tr><td colSpan={10} className="px-3 py-12 text-center text-sm text-muted-foreground">No posts yet.</td></tr>
                 ) : pagePosts.slice(0, 50).map(p => {
                   const c = campaigns.find(c => c.id === p.campaignId)
+                  const isRowDeleting = deletingPostId === p.id
                   return (
                     <tr key={p.id} className="border-b border-border last:border-0 hover:bg-accent/40">
                       <td className="px-3 py-2 text-xs text-foreground">
@@ -211,6 +230,18 @@ export default function OutreachPageDetail() {
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.views)}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.saves)}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.shares)}</td>
+                      <td className="px-3 py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={() => void handleDeletePost(p.id)}
+                          disabled={isRowDeleting}
+                          aria-label="Remove this live post"
+                          title="Remove this live post"
+                          className="p-1 rounded-md text-muted-foreground hover:bg-red-50 hover:text-red-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
                     </tr>
                   )
                 })}
