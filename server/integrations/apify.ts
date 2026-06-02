@@ -188,9 +188,21 @@ export async function fetchInstagramPostsByUrls(urls: string[]): Promise<ApifyPo
 /**
  * Extracts the canonical Instagram post/reel shortcode from a URL.
  * Returns null if the URL doesn't look like a post / reel.
+ *
+ * Handles both URL shapes Instagram emits:
+ *   - Legacy:   instagram.com/p/<code>/ , instagram.com/reel/<code>/ ,
+ *               instagram.com/reels/<code>/ , instagram.com/tv/<code>/
+ *   - Newer:    instagram.com/<username>/reel/<code>/ and
+ *               instagram.com/<username>/p/<code>/  (username injected in path)
+ *
+ * Usernames are 1–30 chars: letters, digits, dot, underscore. We intentionally
+ * NOT use a generic `[A-Za-z0-9_.]+/` so we don't accidentally match other
+ * path segments (e.g. `/explore/`, `/stories/`) — the alternation with the
+ * known type tokens ensures the right segment is captured.
  */
 export function extractInstagramShortcode(url: string): string | null {
-  // Matches /p/<code>, /reel/<code>, /reels/<code>, /tv/<code> with optional trailing slash/query.
-  const m = url.match(/instagram\.com\/(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/i);
+  const m = url.match(
+    /instagram\.com\/(?:[A-Za-z0-9_.]{1,30}\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/i,
+  );
   return m ? m[1] : null;
 }
