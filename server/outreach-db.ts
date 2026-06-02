@@ -727,7 +727,27 @@ export async function listPosts(filters: { pageId?: string; creatorId?: string; 
   if (filters.pageId)     { where.push(`page_id = $${i++}`);     values.push(filters.pageId); }
   if (filters.creatorId)  { where.push(`creator_id = $${i++}`);  values.push(filters.creatorId); }
   if (filters.campaignId) { where.push(`campaign_id = $${i++}`); values.push(filters.campaignId); }
-  const sql = `SELECT * FROM outreach_posts ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY date DESC LIMIT 2000`;
+  // The 2000-row LIMIT keeps the unfiltered /outreach/posts response from
+  // ballooning over thousands of Apify-synced rows. But `date` here is the
+  // Instagram post's PUBLISH date, not the row's creation date — so a
+  // freshly added live post can have a years-old publish date, fall below
+  // the cutoff, and become invisible to the page detail view.
+  //
+  // Always return every added_as_live row (operator-curated, small in
+  // count). Cap only the Apify-synced backlog.
+  const filterClause = where.length ? where.join(" AND ") + " AND " : "";
+  const sql = `
+    SELECT * FROM (
+      SELECT * FROM outreach_posts WHERE ${filterClause}added_as_live = true
+      UNION ALL
+      SELECT * FROM (
+        SELECT * FROM outreach_posts WHERE ${filterClause}added_as_live = false
+        ORDER BY date DESC
+        LIMIT 2000
+      ) recent
+    ) combined
+    ORDER BY date DESC
+  `;
   const { rows } = await pool.query<OutreachPost>(sql, values);
   return rows.map(mapPostRow);
 }
