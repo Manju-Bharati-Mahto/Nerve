@@ -223,7 +223,7 @@ export async function bootstrapOutreach() {
       instagram_id TEXT UNIQUE,
       page_id TEXT REFERENCES outreach_pages(id) ON DELETE CASCADE,
       creator_id TEXT REFERENCES outreach_creators(id) ON DELETE CASCADE,
-      campaign_id TEXT REFERENCES outreach_campaigns(id) ON DELETE SET NULL,
+      campaign_id TEXT REFERENCES outreach_campaigns(id) ON DELETE CASCADE,
       date DATE NOT NULL,
       type TEXT NOT NULL CHECK (type IN ('static', 'reel', 'story', 'carousel')),
       creative_variant TEXT,
@@ -263,6 +263,38 @@ export async function bootstrapOutreach() {
   await pool.query(`CREATE INDEX IF NOT EXISTS outreach_posts_creator_id_idx ON outreach_posts(creator_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS outreach_posts_campaign_id_idx ON outreach_posts(campaign_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS outreach_posts_date_idx ON outreach_posts(date)`);
+
+  // Migration: campaign_id FK was originally `ON DELETE SET NULL` so deleting
+  // a campaign just orphaned its posts (they kept showing on each page's
+  // historical list with no campaign attribution). New behaviour: deleting
+  // a campaign cascades the deletion through to every post that was attached
+  // to it. Pages are NOT touched — they reference outreach_pages via a
+  // separate FK that's already ON DELETE CASCADE.
+  //
+  // We re-issue the constraint only if its current behaviour is something
+  // other than CASCADE. Postgres encodes `confdeltype` as 'a' (NO ACTION),
+  // 'r' (RESTRICT), 'c' (CASCADE), 'n' (SET NULL), 'd' (SET DEFAULT).
+  // 'c' means CASCADE — anything else means we need to swap.
+  await pool.query(`
+    DO $$
+    DECLARE
+      current_action CHAR(1);
+      fk_name TEXT;
+    BEGIN
+      SELECT conname, confdeltype INTO fk_name, current_action
+        FROM pg_constraint
+       WHERE conrelid = 'outreach_posts'::regclass
+         AND contype  = 'f'
+         AND pg_get_constraintdef(oid) LIKE '%outreach_campaigns%'
+       LIMIT 1;
+      IF fk_name IS NOT NULL AND current_action <> 'c' THEN
+        EXECUTE 'ALTER TABLE outreach_posts DROP CONSTRAINT ' || quote_ident(fk_name);
+        ALTER TABLE outreach_posts
+          ADD CONSTRAINT outreach_posts_campaign_id_fkey
+          FOREIGN KEY (campaign_id) REFERENCES outreach_campaigns(id) ON DELETE CASCADE;
+      END IF;
+    END $$;
+  `);
 
   // Live-added flag: distinguishes posts explicitly added by an admin from
   // Apify-auto-synced ones, so page analytics/inventory only count live posts.
