@@ -1,14 +1,16 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   FileText, Search, Filter as FilterIcon, Download, Plus,
   ArrowUpDown, ArrowUp, ArrowDown, Sparkles, ExternalLink, Trash2, LinkIcon,
+  Upload, X, CheckCircle, AlertCircle,
 } from 'lucide-react'
 import {
   useOutreachData, pageMetrics, suggestedMonthlyUsage, removePage,
-  instagramUrlForHandle, isValidInstagramHandle,
+  instagramUrlForHandle, isValidInstagramHandle, assignedPageIdSet, addPage, parseInstagramHandle,
   PAGE_CONTENT_TYPES, FOLLOWER_TIERS, type FollowerTier, type PageContentType, type OutreachPage,
 } from '@/lib/outreach-data'
+import { parseSpreadsheet, pick } from '@/lib/outreach-import'
 import { AddPageModal } from './OutreachAnalytics'
 import AddLivePostsDialog from './AddLivePostsDialog'
 
@@ -16,7 +18,8 @@ type SortKey = 'handle' | 'tier' | 'geography' | 'total' | 'consumed' | 'suggest
 type SortDir = 'asc' | 'desc'
 
 export default function OutreachAllPages() {
-  const { pages, posts } = useOutreachData()
+  const { pages, posts, campaigns } = useOutreachData()
+  const assigned = useMemo(() => assignedPageIdSet(campaigns), [campaigns])
   const [searchParams] = useSearchParams()
   // Pages to highlight, sourced from ?ids=ID1,ID2 (e.g. coming from the
   // dashboard's "X pages have not posted this month" alert).
@@ -34,8 +37,10 @@ export default function OutreachAllPages() {
     // user sees the relevant set right away.
     searchParams.get('filter') === 'idle' ? 'idle' : 'all',
   )
+  const [inventoryFilter, setInventoryFilter] = useState<'all' | 'assigned' | 'available'>('all')
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: 'consumed', dir: 'desc' })
   const [creating, setCreating] = useState(false)
+  const [importing, setImporting] = useState(false)
   // Which page is currently the target of the "Add live posts" dialog (null = closed).
   const [livePostsPageId, setLivePostsPageId] = useState<string | null>(null)
 
@@ -62,6 +67,8 @@ export default function OutreachAllPages() {
       if (tier && page.followerTier !== tier) return false
       if (geography && page.geography !== geography) return false
       if (invStatus !== 'all' && m.status !== invStatus) return false
+      if (inventoryFilter === 'assigned' && !assigned.has(page.id)) return false
+      if (inventoryFilter === 'available' && assigned.has(page.id)) return false
       // Content-type filter: page must have AT LEAST ONE of the selected types.
       if (contentTypeFilter.size > 0 && !page.contentTypes.some(t => contentTypeFilter.has(t))) return false
       return true
@@ -89,7 +96,7 @@ export default function OutreachAllPages() {
       return ((av as number) - (bv as number)) * dir
     })
     return filtered
-  }, [pages, posts, search, tier, contentTypeFilter, geography, invStatus, sort])
+  }, [pages, posts, search, tier, contentTypeFilter, geography, invStatus, inventoryFilter, assigned, sort])
 
   async function confirmDelete(page: OutreachPage) {
     const linked = posts.filter(p => p.pageId === page.id).length
@@ -106,9 +113,10 @@ export default function OutreachAllPages() {
   }
 
   function exportCSV() {
-    const header = ['handle', 'tier', 'geography', 'state', 'total_inventory', 'consumed_inventory', 'suggested_per_month', 'status']
+    const header = ['handle', 'tier', 'geography', 'state', 'total_inventory', 'consumed_inventory', 'suggested_per_month', 'status', 'inventory_status']
     const lines = rows.map(({ page, total, consumed, suggested, m }) => [
       page.handle, page.followerTier, page.geography, page.state, total, consumed, suggested, m.status,
+      assigned.has(page.id) ? 'assigned' : 'available',
     ].join(','))
     const csv = [header.join(','), ...lines].join('\n')
     const blob = new Blob([csv], { type: 'text/csv' })
@@ -136,6 +144,9 @@ export default function OutreachAllPages() {
         <div className="flex items-center gap-2">
           <button onClick={() => setCreating(true)} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-orange-600 text-white hover:opacity-90">
             <Plus className="w-4 h-4" /> Add page
+          </button>
+          <button onClick={() => setImporting(true)} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border border-border hover:bg-accent">
+            <Upload className="w-4 h-4" /> Import Excel
           </button>
           <button onClick={exportCSV} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border border-border hover:bg-accent">
             <Download className="w-4 h-4" /> Export CSV
@@ -167,6 +178,11 @@ export default function OutreachAllPages() {
             <option value="on-track">On-track</option>
             <option value="under-used">Under-used</option>
             <option value="idle">Idle</option>
+          </select>
+          <select value={inventoryFilter} onChange={e => setInventoryFilter(e.target.value as typeof inventoryFilter)} className="hub-input py-1.5 text-xs w-36">
+            <option value="all">All inventory</option>
+            <option value="assigned">Assigned</option>
+            <option value="available">Available</option>
           </select>
           <span className="text-xs text-muted-foreground ml-auto">{rows.length} pages</span>
         </div>
@@ -208,12 +224,13 @@ export default function OutreachAllPages() {
               <Th label="Consumed"    sk="consumed"  sort={sort} onClick={toggleSort} className="text-right" />
               <Th label="AI suggested / mo" sk="suggested" sort={sort} onClick={toggleSort} className="text-right" />
               <Th label="Status"      sk="status"    sort={sort} onClick={toggleSort} />
+              <th className="px-3 py-2">Inventory</th>
               <th className="px-3 py-2 w-8"></th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
-              <tr><td colSpan={8} className="px-3 py-12 text-center text-sm text-muted-foreground">No pages match these filters.</td></tr>
+              <tr><td colSpan={9} className="px-3 py-12 text-center text-sm text-muted-foreground">No pages match these filters.</td></tr>
             ) : rows.map(({ page, m, consumed, suggested }) => (
               <tr key={page.id} className={`border-b border-border last:border-0 transition-colors ${
                 highlightIds.has(page.id) ? 'bg-orange-50 hover:bg-orange-100' : 'hover:bg-accent/40'
@@ -250,6 +267,11 @@ export default function OutreachAllPages() {
                 </td>
                 <td className="px-3 py-2.5"><StatusBadge status={m.status} /></td>
                 <td className="px-3 py-2.5">
+                  {assigned.has(page.id)
+                    ? <span className="hub-badge bg-blue-100 text-blue-700">Assigned</span>
+                    : <span className="hub-badge bg-emerald-100 text-emerald-700">Available</span>}
+                </td>
+                <td className="px-3 py-2.5">
                   <div className="flex items-center gap-1">
                     <button onClick={() => setLivePostsPageId(page.id)}
                       title="Add live posts to this page"
@@ -270,6 +292,7 @@ export default function OutreachAllPages() {
       </div>
 
       {creating && <AddPageModal onClose={() => setCreating(false)} />}
+      {importing && <ImportPagesModal onClose={() => setImporting(false)} />}
       {livePostsPageId && (
         <AddLivePostsDialog
           mode="page"
@@ -277,6 +300,122 @@ export default function OutreachAllPages() {
           onClose={() => setLivePostsPageId(null)}
         />
       )}
+    </div>
+  )
+}
+
+function ImportPagesModal({ onClose }: { onClose: () => void }) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [step, setStep] = useState<'file' | 'done'>('file')
+  const [busy, setBusy] = useState(false)
+  const [createdCount, setCreatedCount] = useState(0)
+  const [skipped, setSkipped] = useState<string[]>([])
+
+  function digits(s: string): string {
+    return (s.match(/\d+/g) || []).join('')
+  }
+
+  async function onFile(file: File) {
+    setBusy(true)
+    let created = 0
+    const skip: string[] = []
+    try {
+      const { headers, rows } = await parseSpreadsheet(file)
+      for (const row of rows) {
+        const handleRaw = pick(row, headers, [/handle/, /instagram/, /username/, /url/, /account/, /page/, /name/])
+        const handle = parseInstagramHandle(handleRaw)
+        if (!handle) {
+          skip.push(`empty handle: ${Object.values(row).slice(0, 3).join(' | ')}`)
+          continue
+        }
+
+        const state = pick(row, headers, [/state/])
+        const geoRaw = pick(row, headers, [/geograph/, /city/, /region/, /area/, /location/])
+        const geography = geoRaw || state
+        const type: 'state' | 'pu' =
+          pick(row, headers, [/type/]).toLowerCase() === 'pu' ? 'pu' : 'state'
+
+        const tierDigit = digits(pick(row, headers, [/tier/])).charAt(0)
+        const followerTier = (['1', '2', '3', '4', '5'].includes(tierDigit) ? tierDigit : '1') as FollowerTier
+
+        const followers = parseInt(digits(pick(row, headers, [/follower/])) || '0', 10) || 0
+        const inventoryPosts = parseInt(
+          digits(pick(row, headers, [/inventory.*post|post.*inventory|^posts?$|inv.*post/])) || '0', 10,
+        ) || 0
+        const inventoryStories = parseInt(digits(pick(row, headers, [/stor/])) || '0', 10) || 0
+        const notes = pick(row, headers, [/note/, /remark/])
+
+        try {
+          await addPage({
+            handle, geography, state, type, followerTier,
+            contentTypes: [], followers, inventoryPosts, inventoryStories, notes,
+          })
+          created++
+        } catch (err) {
+          skip.push(`@${handle}: ${err instanceof Error ? err.message : 'failed to add'}`)
+        }
+      }
+    } catch (err) {
+      skip.push(`could not read file: ${err instanceof Error ? err.message : 'parse error'}`)
+    } finally {
+      setCreatedCount(created)
+      setSkipped(skip)
+      setStep('done')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-fade-in">
+      <div className="bg-card rounded-xl border border-border w-full max-w-2xl max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <div>
+            <h2 className="text-base font-serif text-foreground">Import Pages via Excel</h2>
+            <p className="text-xs text-muted-foreground">Upload a spreadsheet — pages are automatically detected and separated by state from the data.</p>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-lg hover:bg-accent text-muted-foreground"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4">
+          {step === 'file' && (
+            <div className="text-center py-8">
+              <Upload className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
+              <p className="text-sm text-foreground mb-1">Choose an Excel or CSV file to upload</p>
+              <p className="text-xs text-muted-foreground mb-4">Columns like handle, state, geography, type, tier, followers, inventory and notes are detected automatically.</p>
+              <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) onFile(f) }} />
+              <button onClick={() => fileRef.current?.click()} disabled={busy}
+                className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-60">
+                {busy ? 'Importing…' : 'Select file'}
+              </button>
+            </div>
+          )}
+
+          {step === 'done' && (
+            <div className="space-y-3">
+              <div className="hub-card bg-emerald-50 border-emerald-200 text-sm text-emerald-900 flex items-center gap-2">
+                <CheckCircle className="w-4 h-4" /> Imported {createdCount} pages.
+              </div>
+              {skipped.length > 0 && (
+                <div className="hub-card bg-amber-50 border-amber-200 text-xs text-amber-900">
+                  <p className="flex items-center gap-1.5 font-semibold mb-2"><AlertCircle className="w-4 h-4" /> Skipped {skipped.length} rows</p>
+                  <ul className="space-y-0.5 max-h-40 overflow-y-auto font-mono">
+                    {skipped.slice(0, 30).map((s, i) => <li key={i}>· {s}</li>)}
+                    {skipped.length > 30 && <li className="text-amber-700">…and {skipped.length - 30} more</li>}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end p-4 border-t border-border">
+          <button onClick={onClose} disabled={busy}
+            className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent disabled:opacity-60">
+            {step === 'done' ? 'Close' : 'Cancel'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

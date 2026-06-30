@@ -1,10 +1,12 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Send, Plus, Search, X, ChevronRight, Filter as FilterIcon, Trash2 } from 'lucide-react'
+import { Send, Plus, Search, X, ChevronRight, Filter as FilterIcon, Trash2, Upload, CheckCircle, AlertCircle } from 'lucide-react'
 import {
   useOutreachData, addCampaign, removeCampaign, campaignMetrics,
+  INDIAN_STATES,
   type Campaign, type CampaignStatus,
 } from '@/lib/outreach-data'
+import { parseSpreadsheet, pick } from '@/lib/outreach-import'
 import AddLivePostsDialog from './AddLivePostsDialog'
 
 const STATUS_CFG: Record<CampaignStatus, { label: string; cls: string }> = {
@@ -21,6 +23,7 @@ export default function OutreachCampaigns() {
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<CampaignStatus | ''>('')
   const [creating, setCreating] = useState(false)
+  const [importing, setImporting] = useState(false)
   // Campaign whose "add live posts" dialog is currently open. Set when the
   // CreateCampaignModal finishes (auto-open flow) or could be wired to a
   // campaign-row action in the future.
@@ -69,6 +72,10 @@ export default function OutreachCampaigns() {
               </button>
             ))}
           </div>
+          <button onClick={() => setImporting(true)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border border-border hover:bg-accent transition-colors">
+            <Upload className="w-4 h-4" /> Import Excel
+          </button>
           <button onClick={() => setCreating(true)}
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-orange-600 text-white hover:opacity-90 transition-opacity">
             <Plus className="w-4 h-4" /> New campaign
@@ -110,7 +117,7 @@ export default function OutreachCampaigns() {
               <div className="flex items-start justify-between gap-2 mb-2">
                 <div className="min-w-0 flex-1">
                   <h3 className="text-sm font-semibold text-foreground truncate">{c.name}</h3>
-                  <p className="text-[11px] text-muted-foreground">{c.startDate} → {c.endDate}</p>
+                  <p className="text-[11px] text-muted-foreground">{c.startDate} → {c.endDate}{c.state && ` · ${c.state}`}</p>
                 </div>
                 <span className={`hub-badge ${STATUS_CFG[c.status].cls} shrink-0`}>{STATUS_CFG[c.status].label}</span>
               </div>
@@ -162,6 +169,7 @@ export default function OutreachCampaigns() {
               <tr className="text-left text-[11px] uppercase tracking-widest text-muted-foreground border-b border-border">
                 <th className="px-3 py-2">Name</th>
                 <th className="px-3 py-2">Dates</th>
+                <th className="px-3 py-2">State</th>
                 <th className="px-3 py-2 text-right">Budget (P/S/R)</th>
                 <th className="px-3 py-2 text-right">Pages + Creators</th>
                 <th className="px-3 py-2 text-right">Delivered</th>
@@ -177,6 +185,7 @@ export default function OutreachCampaigns() {
                     <Link to={`/outreach/campaigns/${c.id}`} className="text-xs font-medium text-foreground hover:underline">{c.name}</Link>
                   </td>
                   <td className="px-3 py-2.5 text-xs text-muted-foreground">{c.startDate} → {c.endDate}</td>
+                  <td className="px-3 py-2.5 text-xs text-muted-foreground">{c.state || '—'}</td>
                   <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{c.budgetPosts}/{c.budgetStories}/{c.budgetReels}</td>
                   <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{c.assignedPageIds.length} / {c.assignedCreatorIds.length}</td>
                   <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{m.postsDelivered + m.storiesDelivered + m.reelsDelivered}</td>
@@ -225,6 +234,8 @@ export default function OutreachCampaigns() {
         />
       )}
 
+      {importing && <ImportCampaignsModal onClose={() => setImporting(false)} />}
+
     </div>
   )
 }
@@ -243,13 +254,19 @@ function CreateCampaignModal({
 }) {
   const [step, setStep] = useState(1)
   const [form, setForm] = useState({
-    name: '', startDate: '', goal: '',
+    name: '', startDate: '', endDate: '', state: '', goal: '',
     budgetPosts: 0, budgetStories: 0, budgetReels: 0,
     variantsRaw: 'set_1, set_2',
     pageIds: [] as string[],
     creatorIds: [] as string[],
     approversRaw: 'Outreach Manager',
   })
+  // State options: canonical list ∪ states already on pages, so a state the
+  // team has used before is always selectable.
+  const stateOptions = useMemo(
+    () => Array.from(new Set([...INDIAN_STATES, ...pages.map(p => p.state).filter(Boolean)])).sort(),
+    [pages],
+  )
   const [pageQuery, setPageQuery] = useState('')
   const [creatorQuery, setCreatorQuery] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -281,9 +298,10 @@ function CreateCampaignModal({
       const created = await addCampaign({
         name: form.name.trim(),
         startDate: form.startDate,
-        // End date intentionally mirrors start date — campaigns are now open-ended
-        // until manually marked completed. Kept on the Campaign type for back-compat.
-        endDate: form.startDate,
+        // End date is optional in the form; fall back to the start date so a
+        // single-day campaign still has a valid (non-empty) range.
+        endDate: form.endDate || form.startDate,
+        state: form.state.trim(),
         goal: form.goal.trim(),
         status: 'planning',
         budgetPosts: form.budgetPosts,
@@ -336,14 +354,28 @@ function CreateCampaignModal({
                 <input className="hub-input" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                   placeholder="e.g. Tech Expo April" />
               </div>
-              <div>
-                <label className="hub-label">Start date *</label>
-                <input type="date" className="hub-input" value={form.startDate} onChange={e => setForm(f => ({ ...f, startDate: e.target.value }))} />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="hub-label">Start date *</label>
+                  <input type="date" className="hub-input" value={form.startDate} onChange={e => setForm(f => ({ ...f, startDate: e.target.value }))} />
+                </div>
+                <div>
+                  <label className="hub-label">End date</label>
+                  <input type="date" className="hub-input" value={form.endDate} min={form.startDate || undefined}
+                    onChange={e => setForm(f => ({ ...f, endDate: e.target.value }))} />
+                </div>
               </div>
               <div>
-                <label className="hub-label">Goal / KPI</label>
+                <label className="hub-label">State</label>
+                <select className="hub-input" value={form.state} onChange={e => setForm(f => ({ ...f, state: e.target.value }))}>
+                  <option value="">Select a state (which state this campaign targets)</option>
+                  {stateOptions.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="hub-label">Description</label>
                 <textarea className="hub-input resize-none" rows={3} value={form.goal} onChange={e => setForm(f => ({ ...f, goal: e.target.value }))}
-                  placeholder="e.g. 500k reach, 2% engagement rate" />
+                  placeholder="Optional — e.g. 500k reach, 2% engagement rate" />
               </div>
             </>
           )}
@@ -442,7 +474,7 @@ function CreateCampaignModal({
                   placeholder="Outreach Manager, Brand Lead" />
               </div>
               <div className="hub-card bg-muted text-xs space-y-1">
-                <p><strong>{form.name}</strong> · starts {form.startDate}</p>
+                <p><strong>{form.name}</strong> · {form.startDate}{form.endDate && ` → ${form.endDate}`}{form.state && ` · ${form.state}`}</p>
                 <p>{form.budgetPosts} posts · {form.budgetStories} stories · {form.budgetReels} reels</p>
                 <p>{form.pageIds.length} pages · {form.creatorIds.length} creators · {form.variantsRaw.split(',').filter(Boolean).length} variants</p>
               </div>
@@ -472,6 +504,117 @@ function CreateCampaignModal({
               {submitting ? 'Creating…' : 'Create campaign'}
             </button>
           )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Import Campaigns via Excel ─────────────────────────────────────────────
+
+// Accept "DD/MM/YYYY", "DD-MM-YYYY", "YYYY-MM-DD" (and Excel serials) →
+// normalise to ISO YYYY-MM-DD. Returns '' when unparseable.
+function normalizeDate(raw: string): string {
+  const s = raw.trim()
+  if (!s) return ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
+  // Excel sometimes hands us a serial date number when cells are date-typed.
+  if (/^\d{4,6}$/.test(s)) {
+    const serial = parseInt(s, 10)
+    const ms = (serial - 25569) * 86400_000 // 25569 = days between 1899-12-30 and epoch
+    const d = new Date(ms)
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10)
+  }
+  const m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/)
+  if (!m) return ''
+  const [, d, mo, y] = m
+  const yyyy = y.length === 2 ? `20${y}` : y
+  return `${yyyy}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`
+}
+
+function ImportCampaignsModal({ onClose }: { onClose: () => void }) {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState<{ created: number; skipped: string[] } | null>(null)
+
+  async function onFile(file: File) {
+    setBusy(true)
+    try {
+      const { headers, rows } = await parseSpreadsheet(file)
+      let created = 0
+      const skipped: string[] = []
+      for (const row of rows) {
+        const name = pick(row, headers, [/campaign.*name|name.*campaign/, /^name$/, /campaign/, /title/])
+        if (!name) { skipped.push(`(row missing a campaign name)`); continue }
+        const startRaw = pick(row, headers, [/start/, /from/, /^date$/, /launch/])
+        const endRaw = pick(row, headers, [/end/, /finish/, /to\b/, /till/, /until/])
+        const startDate = normalizeDate(startRaw) || new Date().toISOString().slice(0, 10)
+        const endDate = normalizeDate(endRaw) || startDate
+        const state = pick(row, headers, [/state/])
+        const goal = pick(row, headers, [/description|desc\b/, /goal/, /brief/, /note/, /kpi/])
+        try {
+          await addCampaign({
+            name: name.trim(), startDate, endDate, state: state.trim(), goal: goal.trim(),
+            status: 'planning', budgetPosts: 0, budgetStories: 0, budgetReels: 0,
+            approvers: [], creativeVariants: [], assignedPageIds: [], assignedCreatorIds: [],
+          })
+          created++
+        } catch (err) {
+          skipped.push(`"${name}" — ${err instanceof Error ? err.message : 'failed'}`)
+        }
+      }
+      setDone({ created, skipped })
+    } catch (err) {
+      setDone({ created: 0, skipped: [err instanceof Error ? err.message : 'Could not read the file.'] })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-fade-in" onClick={onClose}>
+      <div className="bg-card rounded-xl border border-border w-full max-w-lg" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <div>
+            <h2 className="text-base font-serif text-foreground">Import campaigns from Excel</h2>
+            <p className="text-xs text-muted-foreground">Bulk-create campaigns from an .xlsx / .csv. Columns are matched automatically.</p>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-lg hover:bg-accent text-muted-foreground"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-4 space-y-3">
+          {!done ? (
+            <div className="text-center py-6">
+              <Upload className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
+              <p className="text-sm text-foreground mb-1">Choose a spreadsheet to upload</p>
+              <p className="text-xs text-muted-foreground mb-4">Recognised columns: name, start date, end date, state, description.</p>
+              <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) onFile(f) }} />
+              <button onClick={() => fileRef.current?.click()} disabled={busy}
+                className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
+                {busy ? 'Importing…' : 'Select file'}
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="hub-card bg-emerald-50 border-emerald-200 text-sm text-emerald-900 flex items-center gap-2">
+                <CheckCircle className="w-4 h-4" /> Imported {done.created} campaign{done.created === 1 ? '' : 's'}.
+              </div>
+              {done.skipped.length > 0 && (
+                <div className="hub-card bg-amber-50 border-amber-200 text-xs text-amber-900">
+                  <p className="flex items-center gap-1.5 font-semibold mb-2"><AlertCircle className="w-4 h-4" /> Skipped {done.skipped.length}</p>
+                  <ul className="space-y-0.5 max-h-40 overflow-y-auto">
+                    {done.skipped.slice(0, 30).map((s, i) => <li key={i}>· {s}</li>)}
+                    {done.skipped.length > 30 && <li className="text-amber-700">…and {done.skipped.length - 30} more</li>}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center justify-end gap-2 p-4 border-t border-border">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent">
+            {done ? 'Done' : 'Cancel'}
+          </button>
         </div>
       </div>
     </div>

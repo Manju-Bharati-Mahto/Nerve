@@ -288,6 +288,7 @@ export interface ServerOutreachCampaign {
   name: string;
   start_date: string;
   end_date: string;
+  state: string;
   goal: string;
   status: "planning" | "active" | "completed" | "paused";
   budget_posts: number;

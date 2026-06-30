@@ -117,6 +117,66 @@ export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> 
   };
 }
 
+// ── Scheduled auto-sync (9:30 AM & 4:30 PM IST) ────────────────────────────
+//
+// The product spec requires metrics to auto-refresh twice a day. We don't pull
+// in a cron dependency — instead `maybeRunScheduledSync()` is called from the
+// existing 5-minute server interval (see server/index.ts) and self-gates:
+//   - It only fires inside a short window after each slot's wall-clock time
+//     (so a process restart at, say, 14:00 does NOT trigger a stale 9:30 run —
+//     important during tsx-watch dev restarts since Apify is paid).
+//   - Each (IST-date, slot) pair runs at most once, tracked in-memory.
+// The manual "Sync now" button is unaffected and always available.
+const SYNC_SLOTS_IST = [
+  { label: "09:30", minutes: 9 * 60 + 30 },
+  { label: "16:30", minutes: 16 * 60 + 30 },
+] as const;
+// How long after a slot's time we'll still fire it. With a 5-minute tick a
+// 20-minute window is comfortably wide enough to catch the slot at least once.
+const SYNC_WINDOW_MINUTES = 20;
+const completedSyncSlots = new Set<string>();
+
+/** Current wall-clock in Asia/Kolkata as a date string + minutes-since-midnight. */
+function istNow(): { date: string; minutes: number } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(new Date());
+  const get = (t: string) => parts.find(p => p.type === t)?.value ?? "00";
+  let hour = parseInt(get("hour"), 10);
+  if (hour === 24) hour = 0; // some ICU builds emit "24" for midnight
+  return {
+    date: `${get("year")}-${get("month")}-${get("day")}`,
+    minutes: hour * 60 + parseInt(get("minute"), 10),
+  };
+}
+
+/**
+ * Runs a full Apify sync if we've entered a scheduled slot's window and it
+ * hasn't already run today. Returns the slot label when a sync was triggered,
+ * or null otherwise. Errors propagate to the caller (the interval logs them);
+ * the slot stays marked done so a hard failure doesn't retry-spam Apify.
+ */
+export async function maybeRunScheduledSync(): Promise<{ slot: string; result: SyncResult } | null> {
+  if (process.env.OUTREACH_AUTO_SYNC === "false") return null;
+  const { date, minutes } = istNow();
+  // Drop yesterday's keys so the set never grows unbounded.
+  for (const key of completedSyncSlots) {
+    if (!key.startsWith(date)) completedSyncSlots.delete(key);
+  }
+  for (const slot of SYNC_SLOTS_IST) {
+    const key = `${date}:${slot.label}`;
+    const inWindow = minutes >= slot.minutes && minutes < slot.minutes + SYNC_WINDOW_MINUTES;
+    if (inWindow && !completedSyncSlots.has(key)) {
+      completedSyncSlots.add(key); // mark before awaiting to prevent a double-fire
+      const result = await syncOutreach({});
+      return { slot: slot.label, result };
+    }
+  }
+  return null;
+}
+
 async function persistPost(
   page: OutreachPage,
   post: ApifyLatestPost,

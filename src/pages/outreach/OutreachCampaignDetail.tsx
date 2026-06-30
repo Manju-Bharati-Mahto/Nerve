@@ -2,9 +2,10 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Send, Calendar, Heart, Eye, FileText, Pause, Play, CheckCircle,
-  Link as LinkIcon, Trash2, Users,
+  Link as LinkIcon, Trash2, Users, Download,
 } from 'lucide-react'
 import AddLivePostsDialog from './AddLivePostsDialog'
+import { buildCampaignReport, exportCampaignReportPdf, exportCampaignReportDocx } from '@/lib/outreach-export'
 import {
   BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
@@ -114,6 +115,7 @@ export default function OutreachCampaignDetail() {
               <h1 className="text-xl font-serif text-foreground">{campaign.name}</h1>
               <p className="text-sm text-muted-foreground">
                 {campaign.startDate} → {campaign.endDate}
+                {campaign.state && ` · ${campaign.state}`}
                 {' · '}{campaign.assignedPageIds.length} pages
                 {campaign.assignedCreatorIds.length > 0 && ` · ${campaign.assignedCreatorIds.length} creators`}
                 {' · '}{campaign.creativeVariants.length} variants
@@ -128,6 +130,18 @@ export default function OutreachCampaignDetail() {
               className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1"
             >
               <LinkIcon className="w-3 h-3" /> Add live posts
+            </button>
+            <button
+              onClick={() => exportCampaignReportPdf(buildCampaignReport(campaign, pages, creators, posts))}
+              className="text-xs px-2.5 py-1.5 rounded-lg bg-blue-100 text-blue-700 hover:opacity-80 inline-flex items-center gap-1"
+            >
+              <Download className="w-3 h-3" /> Export PDF
+            </button>
+            <button
+              onClick={async () => { await exportCampaignReportDocx(buildCampaignReport(campaign, pages, creators, posts)) }}
+              className="text-xs px-2.5 py-1.5 rounded-lg bg-indigo-100 text-indigo-700 hover:opacity-80 inline-flex items-center gap-1"
+            >
+              <Download className="w-3 h-3" /> Export Word
             </button>
             {campaign.status === 'planning' && (
               <button onClick={() => setStatus('active')} className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 hover:opacity-80 inline-flex items-center gap-1">

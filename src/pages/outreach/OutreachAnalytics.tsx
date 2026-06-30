@@ -12,7 +12,7 @@ import {
   useOutreachData, pageMetrics, campaignMetrics, addPage, updatePage,
   parseInstagramHandle, instagramUrlForHandle,
   PAGE_TYPES, FOLLOWER_TIERS, PAGE_CONTENT_TYPES,
-  type PageType, type FollowerTier, type PageContentType, type OutreachPage,
+  type PageType, type FollowerTier, type PageContentType, type OutreachPage, type Post,
 } from '@/lib/outreach-data'
 
 type Tab = 'pages' | 'campaigns' | 'posts' | 'trend' | 'inventory'
@@ -73,11 +73,29 @@ export default function OutreachAnalytics() {
 
 // ── Tab: Pages Performance ─────────────────────────────────────────────────
 
+// Range-scoped per-page metrics over LIVE (operator-added) posts only,
+// mirroring pageMetrics. With empty from/to this covers all-time live posts.
+function rangeMetrics(pageId: string, posts: Post[], from: string, to: string) {
+  const pp = posts.filter(p => p.pageId === pageId && p.addedAsLive
+    && (!from || p.date >= from) && (!to || p.date <= to))
+  const reach = pp.reduce((s, p) => s + p.views, 0)
+  const likes = pp.reduce((s, p) => s + p.likes, 0)
+  const comments = pp.reduce((s, p) => s + p.comments, 0)
+  const eng = likes + comments
+  const engRate = reach ? (eng / reach) * 100 : 0
+  return { posts: pp.length, reach, views: reach, likes, comments, eng, engRate }
+}
+
 function PagesPerformance() {
   const { pages, posts, campaigns } = useOutreachData()
   const [statusFilter, setStatusFilter] = useState<'all' | 'over-used' | 'on-track' | 'under-used' | 'idle'>('all')
   const [campaignFilter, setCampaignFilter] = useState<string>('')
+  const [stateFilter, setStateFilter] = useState('')
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
   const [creating, setCreating] = useState(false)
+
+  const states = useMemo(() => Array.from(new Set(pages.map(p => p.state).filter(Boolean))).sort(), [pages])
 
   const pagesByCampaign = useMemo(() => {
     if (!campaignFilter) return null
@@ -85,23 +103,31 @@ function PagesPerformance() {
     return c ? new Set(c.assignedPageIds) : new Set<string>()
   }, [campaigns, campaignFilter])
 
+  const rangeActive = !!(from || to)
+
   const rows = useMemo(() => {
-    const enriched = pages.map(p => ({ page: p, m: pageMetrics(p, posts) }))
+    const enriched = pages.map(p => ({
+      page: p,
+      m: pageMetrics(p, posts),
+      range: from || to
+        ? rangeMetrics(p.id, posts, from, to)
+        : rangeMetrics(p.id, posts, '', ''),
+    }))
     return enriched
       .filter(({ page, m }) => {
         if (statusFilter !== 'all' && m.status !== statusFilter) return false
         if (pagesByCampaign && !pagesByCampaign.has(page.id)) return false
+        if (stateFilter && page.state !== stateFilter) return false
         return true
       })
-      .sort((a, b) => b.m.avgEngagement - a.m.avgEngagement)
-  }, [pages, posts, statusFilter, pagesByCampaign])
+      .sort((a, b) => b.range.reach - a.range.reach)
+  }, [pages, posts, statusFilter, pagesByCampaign, stateFilter, from, to])
 
   function exportCSV() {
-    const header = ['handle', 'geography', 'state', 'type', 'inventory_posts', 'inventory_stories', 'posts_mtd', 'pct_consumed', 'avg_engagement', 'last_post', 'status']
-    const lines = rows.map(({ page, m }) => [
-      page.handle, page.geography, page.state, page.type, page.inventoryPosts, page.inventoryStories,
-      m.postsDoneMTD + m.storiesDoneMTD, (m.pctConsumed * 100).toFixed(0) + '%', m.avgEngagement,
-      m.lastPostDate ?? '', m.status,
+    const header = ['handle', 'geography', 'state', 'type', 'posts', 'reach', 'likes', 'comments', 'eng_rate_pct', 'status']
+    const lines = rows.map(({ page, m, range }) => [
+      page.handle, page.geography, page.state, page.type,
+      range.posts, range.reach, range.likes, range.comments, range.engRate.toFixed(1), m.status,
     ].join(','))
     const csv = [header.join(','), ...lines].join('\n')
     download(csv, `outreach-pages-${new Date().toISOString().slice(0, 10)}.csv`)
@@ -118,11 +144,30 @@ function PagesPerformance() {
           <option value="under-used">Under-used</option>
           <option value="idle">Idle</option>
         </select>
+        <select value={stateFilter} onChange={e => setStateFilter(e.target.value)} className="hub-input py-1.5 text-xs w-36">
+          <option value="">Any state</option>
+          {states.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
         <select value={campaignFilter} onChange={e => setCampaignFilter(e.target.value)} className="hub-input py-1.5 text-xs w-48">
           <option value="">Any campaign</option>
           {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
+        <label className="text-[11px] text-muted-foreground inline-flex items-center gap-1">
+          From <input type="date" value={from} onChange={e => setFrom(e.target.value)} className="hub-input py-1 text-xs w-36" />
+        </label>
+        <label className="text-[11px] text-muted-foreground inline-flex items-center gap-1">
+          To <input type="date" value={to} onChange={e => setTo(e.target.value)} className="hub-input py-1 text-xs w-36" />
+        </label>
+        {rangeActive && (
+          <button onClick={() => { setFrom(''); setTo('') }}
+            className="text-xs px-2 py-1 rounded-lg border border-border hover:bg-accent">
+            Clear
+          </button>
+        )}
         <span className="text-xs text-muted-foreground">{rows.length} pages</span>
+        {rangeActive && (
+          <span className="text-[11px] text-muted-foreground">Showing {from || '…'} → {to || '…'}</span>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <button onClick={() => setCreating(true)} className="text-xs px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:opacity-90 inline-flex items-center gap-1.5">
             <Plus className="w-3.5 h-3.5" /> Add page
@@ -138,26 +183,30 @@ function PagesPerformance() {
             <tr className="text-left text-[11px] uppercase tracking-widest text-muted-foreground border-b border-border">
               <th className="px-3 py-2">Page</th>
               <th className="px-3 py-2">Geography</th>
-              <th className="px-3 py-2">Type</th>
-              <th className="px-3 py-2 text-right">Posts MTD</th>
-              <th className="px-3 py-2 text-right">% consumed</th>
-              <th className="px-3 py-2 text-right">Avg eng</th>
+              <th className="px-3 py-2">State</th>
+              <th className="px-3 py-2 text-right">Posts</th>
+              <th className="px-3 py-2 text-right">Reach</th>
+              <th className="px-3 py-2 text-right">Likes</th>
+              <th className="px-3 py-2 text-right">Comments</th>
+              <th className="px-3 py-2 text-right">Eng. rate</th>
               <th className="px-3 py-2">Status</th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
-              <tr><td colSpan={7} className="px-3 py-12 text-center text-sm text-muted-foreground">No pages match these filters.</td></tr>
-            ) : rows.map(({ page, m }) => (
+              <tr><td colSpan={9} className="px-3 py-12 text-center text-sm text-muted-foreground">No pages match these filters.</td></tr>
+            ) : rows.map(({ page, m, range }) => (
               <tr key={page.id} className="border-b border-border last:border-0 hover:bg-accent/40">
                 <td className="px-3 py-2.5">
                   <Link to={`/outreach/pages/${page.id}`} className="text-xs font-medium text-foreground hover:underline">@{page.handle}</Link>
                 </td>
                 <td className="px-3 py-2.5 text-xs text-muted-foreground">{page.geography}</td>
-                <td className="px-3 py-2.5 text-xs uppercase text-muted-foreground">{page.type}</td>
-                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{m.postsDoneMTD + m.storiesDoneMTD}</td>
-                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{Math.round(m.pctConsumed * 100)}%</td>
-                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{fmt(m.avgEngagement)}</td>
+                <td className="px-3 py-2.5 text-xs text-muted-foreground">{page.state}</td>
+                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{range.posts}</td>
+                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{fmt(range.reach)}</td>
+                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{fmt(range.likes)}</td>
+                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{fmt(range.comments)}</td>
+                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{range.engRate.toFixed(1)}%</td>
                 <td className="px-3 py-2.5"><StatusChip s={m.status} /></td>
               </tr>
             ))}
