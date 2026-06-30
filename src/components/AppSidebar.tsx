@@ -6,12 +6,13 @@ import {
   LogOut, BookOpen, MessageSquare, Newspaper,
   Crown, UserCheck, User, Settings, Palette, FileText,
   Megaphone, Send, Calendar, BarChart3, Sparkles,
-  Award, CalendarOff, Settings2,
+  Award, CalendarOff, Settings2, AlertTriangle,
 } from 'lucide-react'
 import ProfileModal from './ProfileModal'
+import { useOutreachData, computeOutreachAlerts } from '@/lib/outreach-data'
 
 type NavItem =
-  | { path: string; label: string; icon: React.ElementType }
+  | { path: string; label: string; icon: React.ElementType; badge?: 'outreach-alerts' }
   | { action: 'open-profile'; label: string; icon: React.ElementType }
 type SectionConfig = { heading?: string; items: NavItem[] }
 type RoleConfig = {
@@ -140,6 +141,7 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/outreach/campaigns', label: 'Campaigns',  icon: Send },
       { path: '/outreach/calendar',  label: 'Calendar',   icon: Calendar },
       { path: '/outreach/analytics', label: 'Analytics',  icon: BarChart3 },
+      { path: '/outreach/alerts',    label: 'Alerts',     icon: AlertTriangle, badge: 'outreach-alerts' },
     ]},
     { heading: 'Content', items: [
       { path: '/outreach/pages',    label: 'All Pages', icon: FileText },
@@ -239,7 +241,8 @@ export default function AppSidebar() {
                   }`}
                 >
                   <item.icon className="w-4 h-4 shrink-0" />
-                  {item.label}
+                  <span className="flex-1 truncate">{item.label}</span>
+                  {'badge' in item && item.badge === 'outreach-alerts' && <OutreachAlertsBadge />}
                 </Link>
               )
             })}
@@ -279,5 +282,20 @@ export default function AppSidebar() {
 
       <ProfileModal open={profileOpen} onClose={() => setProfileOpen(false)} />
     </aside>
+  )
+}
+
+// Live count of pending outreach alerts, shown as a red pill on the Alerts nav
+// item (spec 1.4: a badge so the user sees pending alerts without opening the
+// section). Only mounts inside the outreach sidebar config, so useOutreachData
+// (which hits /api/outreach/*) never fires for non-outreach roles.
+function OutreachAlertsBadge() {
+  const { campaigns, pages, creators, posts } = useOutreachData()
+  const count = computeOutreachAlerts(campaigns, pages, creators, posts).length
+  if (count === 0) return null
+  return (
+    <span className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-semibold inline-flex items-center justify-center">
+      {count > 99 ? '99+' : count}
+    </span>
   )
 }

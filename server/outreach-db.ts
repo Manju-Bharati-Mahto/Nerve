@@ -84,6 +84,9 @@ export interface OutreachCampaign {
   name: string;
   start_date: string;
   end_date: string;
+  // State this campaign targets (e.g. "Gujarat"). Drives the state-wise
+  // dashboard / analytics filters. Empty string = unscoped / all states.
+  state: string;
   goal: string;
   status: CampaignStatus;
   budget_posts: number;
@@ -200,6 +203,7 @@ export async function bootstrapOutreach() {
       name TEXT NOT NULL,
       start_date DATE NOT NULL,
       end_date DATE NOT NULL,
+      state TEXT NOT NULL DEFAULT '',
       goal TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL CHECK (status IN ('planning', 'active', 'completed', 'paused')),
       budget_posts INTEGER NOT NULL DEFAULT 0,
@@ -216,6 +220,8 @@ export async function bootstrapOutreach() {
 
   // Idempotent migration for installations that pre-date the creator split.
   await pool.query(`ALTER TABLE outreach_campaigns ADD COLUMN IF NOT EXISTS assigned_creator_ids JSONB NOT NULL DEFAULT '[]'::JSONB`);
+  // Idempotent migration for installations that pre-date the state-wise filter.
+  await pool.query(`ALTER TABLE outreach_campaigns ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT ''`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS outreach_posts (
@@ -336,13 +342,15 @@ export async function bootstrapOutreach() {
       archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       archived_by TEXT,
       archived_reason TEXT,
-      id TEXT, name TEXT, start_date DATE, end_date DATE, goal TEXT, status TEXT,
+      id TEXT, name TEXT, start_date DATE, end_date DATE, state TEXT, goal TEXT, status TEXT,
       budget_posts INTEGER, budget_stories INTEGER, budget_reels INTEGER,
       approvers JSONB, creative_variants JSONB,
       assigned_page_ids JSONB, assigned_creator_ids JSONB,
       created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ
     )
   `);
+  // Back-fill the archive schema for installations created before the state column.
+  await pool.query(`ALTER TABLE outreach_campaigns_archive ADD COLUMN IF NOT EXISTS state TEXT`);
   await pool.query(`CREATE INDEX IF NOT EXISTS outreach_campaigns_archive_id_idx ON outreach_campaigns_archive(id)`);
 
   await pool.query(`
@@ -388,14 +396,14 @@ export async function bootstrapOutreach() {
     BEGIN
       INSERT INTO outreach_campaigns_archive (
         archived_by, archived_reason,
-        id, name, start_date, end_date, goal, status,
+        id, name, start_date, end_date, state, goal, status,
         budget_posts, budget_stories, budget_reels,
         approvers, creative_variants, assigned_page_ids, assigned_creator_ids,
         created_at, updated_at
       ) VALUES (
         NULLIF(current_setting('app.user_id', true), ''),
         NULLIF(current_setting('app.archive_reason', true), ''),
-        OLD.id, OLD.name, OLD.start_date, OLD.end_date, OLD.goal, OLD.status,
+        OLD.id, OLD.name, OLD.start_date, OLD.end_date, OLD.state, OLD.goal, OLD.status,
         OLD.budget_posts, OLD.budget_stories, OLD.budget_reels,
         OLD.approvers, OLD.creative_variants, OLD.assigned_page_ids, OLD.assigned_creator_ids,
         OLD.created_at, OLD.updated_at
@@ -626,6 +634,7 @@ export interface CreateCampaignInput {
   name: string;
   start_date: string;
   end_date: string;
+  state?: string;
   goal?: string;
   status: CampaignStatus;
   budget_posts: number;
@@ -664,13 +673,13 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Outrea
   const id = slug(input.name) || newId("c");
   const { rows } = await pool.query<OutreachCampaign>(
     `INSERT INTO outreach_campaigns
-       (id, name, start_date, end_date, goal, status,
+       (id, name, start_date, end_date, state, goal, status,
         budget_posts, budget_stories, budget_reels,
         approvers, creative_variants, assigned_page_ids, assigned_creator_ids)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING *`,
     [
-      id, input.name.trim(), input.start_date, input.end_date, input.goal ?? "", input.status,
+      id, input.name.trim(), input.start_date, input.end_date, input.state ?? "", input.goal ?? "", input.status,
       input.budget_posts, input.budget_stories, input.budget_reels,
       JSON.stringify(input.approvers), JSON.stringify(input.creative_variants),
       JSON.stringify(input.assigned_page_ids), JSON.stringify(input.assigned_creator_ids ?? []),

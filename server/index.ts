@@ -74,7 +74,7 @@ import {
   POST_TYPES as OUTREACH_POST_TYPES,
   POST_STATUSES as OUTREACH_POST_STATUSES,
 } from "./outreach-db.js";
-import { syncOutreach, addLivePosts } from "./outreach-sync.js";
+import { syncOutreach, addLivePosts, maybeRunScheduledSync } from "./outreach-sync.js";
 import { verifyPassword } from "./password.js";
 import {
   bootstrapBrandingDatabase,
@@ -1542,6 +1542,7 @@ const outreachCampaignSchema = z.object({
   name: z.string().min(1),
   start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  state: z.string().optional(),
   goal: z.string().optional(),
   status: z.enum(OUTREACH_CAMPAIGN_STATUSES),
   budget_posts: z.number().int().nonnegative(),
@@ -1766,6 +1767,12 @@ bootstrapDatabase()
       autoPauseRunningStopwatches()
         .then(n => { if (n > 0) console.log(`Auto-paused ${n} overdue running stopwatch(es).`); })
         .catch(e => console.error('Periodic auto-pause failed:', e));
+      // Outreach metrics auto-refresh at 9:30 AM and 4:30 PM IST. Self-gated so
+      // it fires at most once per slot per day; the manual "Sync now" button is
+      // unaffected. (Spec: Data & Sync Behaviour → Automatic Data Refresh.)
+      maybeRunScheduledSync()
+        .then(r => { if (r) console.log(`Outreach auto-sync (${r.slot} IST): ${r.result.synced_pages} pages, ${r.result.upserted_posts} posts.`); })
+        .catch(e => console.error('Outreach auto-sync failed:', e));
     }, 5 * 60 * 1000).unref();
 
     app.listen(config.apiPort, () => {

@@ -2,8 +2,8 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Megaphone, Send, Calendar as CalendarIcon, BarChart3, FileText, Users, Sparkles,
-  TrendingUp, Heart, Eye, AlertTriangle, AlertCircle, Activity, Layers, RefreshCw,
-  ExternalLink,
+  TrendingUp, Heart, Eye, MessageCircle, Share2, AlertTriangle, Activity, Layers, RefreshCw,
+  ExternalLink, MapPin,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -12,6 +12,8 @@ import {
 import { useAuth } from '@/hooks/useAuth'
 import {
   useOutreachData, pageMetrics, campaignMetrics, syncNow,
+  aggregateTotals, outreachStates, buildPostStateLookup, assignedPageIdSet,
+  computeOutreachAlerts,
 } from '@/lib/outreach-data'
 
 type Range = '7d' | '30d' | 'mtd' | 'all'
@@ -28,8 +30,16 @@ export default function OutreachDashboard() {
   const { profile } = useAuth()
   const { pages, creators, campaigns, posts } = useOutreachData()
   const [range, setRange] = useState<Range>('30d')
+  const [stateFilter, setStateFilter] = useState('')
   const [syncing, setSyncing] = useState(false)
   const [syncErr, setSyncErr] = useState<string | null>(null)
+
+  // State-wise filter (spec 1.1): when a state is selected every number on the
+  // dashboard narrows to data from pages/campaigns in that state.
+  const states = useMemo(() => outreachStates(pages, campaigns), [pages, campaigns])
+  const stateOf = useMemo(() => buildPostStateLookup(pages, creators), [pages, creators])
+  const statePages = useMemo(() => stateFilter ? pages.filter(p => p.state === stateFilter) : pages, [pages, stateFilter])
+  const stateCampaigns = useMemo(() => stateFilter ? campaigns.filter(c => c.state === stateFilter) : campaigns, [campaigns, stateFilter])
 
   const mostRecentSync = useMemo(() => {
     const ts = pages
@@ -57,22 +67,28 @@ export default function OutreachDashboard() {
   // operator added via AddLivePostsDialog, not the entire Apify-synced backlog
   // of historical Instagram posts on each page. Filtering at the source keeps
   // every downstream calculation honest without per-call gymnastics.
-  const livePosts = useMemo(() => posts.filter(p => p.addedAsLive), [posts])
+  const livePosts = useMemo(() => {
+    const live = posts.filter(p => p.addedAsLive)
+    return stateFilter ? live.filter(p => stateOf(p) === stateFilter) : live
+  }, [posts, stateFilter, stateOf])
 
   const filteredPosts = useMemo(() => {
     const start = rangeStart(range)
     return start ? livePosts.filter(p => new Date(p.date) >= start) : livePosts
   }, [livePosts, range])
 
-  const kpis = useMemo(() => {
-    const reach = filteredPosts.reduce((s, p) => s + p.views, 0)
-    const eng = filteredPosts.reduce((s, p) => s + p.likes + p.comments, 0)
-    const active = campaigns.filter(c => c.status === 'active').length
-    const totalInv = pages.reduce((s, p) => s + p.inventoryPosts + p.inventoryStories, 0)
-    const used = filteredPosts.length
-    const pctInv = totalInv ? Math.min(100, Math.round((used / totalInv) * 100)) : 0
-    return { reach, eng, active, pctInv, postsCount: filteredPosts.length }
-  }, [filteredPosts, campaigns, pages])
+  // Five headline totals (spec 1.1 summary cards). Reach is proxied by post
+  // views and shares are 0 unless recorded — see aggregateTotals.
+  const totals = useMemo(() => aggregateTotals(filteredPosts), [filteredPosts])
+
+  // Side-by-side panels (spec 1.1): engagement %, active campaigns, inventory.
+  const engagementPct = totals.reach ? (totals.engagement / totals.reach) * 100 : 0
+  const activeCampaigns = useMemo(() => stateCampaigns.filter(c => c.status === 'active'), [stateCampaigns])
+  const inventory = useMemo(() => {
+    const assigned = assignedPageIdSet(campaigns)
+    const used = statePages.filter(p => assigned.has(p.id)).length
+    return { used, total: statePages.length, pct: statePages.length ? Math.round((used / statePages.length) * 100) : 0 }
+  }, [campaigns, statePages])
 
   const topPosts = useMemo(() => {
     return [...filteredPosts]
@@ -82,22 +98,22 @@ export default function OutreachDashboard() {
   }, [filteredPosts])
 
   const topCampaigns = useMemo(() => {
-    return campaigns
+    return stateCampaigns
       .map(c => ({ c, m: campaignMetrics(c, filteredPosts) }))
       .filter(x => x.m.totalReach > 0 || x.c.status === 'active')
       .sort((a, b) => b.m.totalReach - a.m.totalReach)
       .slice(0, 5)
-  }, [campaigns, filteredPosts])
+  }, [stateCampaigns, filteredPosts])
 
   const topByType = useMemo(() => {
     function topPagesOfType(type: 'state' | 'pu') {
-      return pages.filter(p => p.type === type)
+      return statePages.filter(p => p.type === type)
         .map(p => ({ page: p, m: pageMetrics(p, filteredPosts) }))
         .sort((a, b) => b.m.avgEngagement - a.m.avgEngagement)
         .slice(0, 5)
     }
     return { state: topPagesOfType('state'), pu: topPagesOfType('pu') }
-  }, [pages, filteredPosts])
+  }, [statePages, filteredPosts])
 
   const creatorSummary = useMemo(() => {
     const byType = { state: 0, pu: 0 }
@@ -109,40 +125,16 @@ export default function OutreachDashboard() {
     return { byType, byTier, total: creators.length }
   }, [creators])
 
+  // Standing alerts (spec 1.4): pages/creators assigned to a campaign that
+  // haven't posted within 24h of the campaign start. Scoped to the selected
+  // state via the campaign's state.
   const alerts = useMemo(() => {
-    const out: { id: string; severity: 'warn' | 'info' | 'critical'; text: string; link?: string }[] = []
-    // Pages burning inventory
-    for (const p of pages) {
-      const m = pageMetrics(p, posts)
-      if (m.status === 'over-used') {
-        out.push({ id: `over-${p.id}`, severity: 'critical', text: `@${p.handle} is over-used (${Math.round(m.pctConsumed * 100)}%)`, link: `/outreach/pages/${p.id}` })
-      }
-    }
-    // Campaigns ending soon
-    const now = Date.now()
-    for (const c of campaigns) {
-      if (c.status !== 'active') continue
-      const end = new Date(c.endDate).getTime()
-      const days = Math.ceil((end - now) / 86400_000)
-      if (days >= 0 && days <= 5) {
-        out.push({ id: `end-${c.id}`, severity: 'warn', text: `${c.name} ends in ${days}d`, link: `/outreach/campaigns/${c.id}` })
-      }
-    }
-    // Idle pages — link out with the specific IDs so the destination tab can
-    // highlight them and pre-filter to status=idle. After the creator split
-    // this points at All Pages (the creators directory no longer lists pages).
-    const idlePages = pages.filter(p => pageMetrics(p, posts).status === 'idle')
-    if (idlePages.length > 0) {
-      const idsParam = idlePages.map(p => p.id).join(',')
-      out.push({
-        id: 'idle',
-        severity: 'info',
-        text: `${idlePages.length} pages have no posts this month`,
-        link: `/outreach/pages?filter=idle&ids=${encodeURIComponent(idsParam)}`,
-      })
-    }
-    return out.slice(0, 8)
-  }, [pages, campaigns, posts])
+    const all = computeOutreachAlerts(campaigns, pages, creators, posts)
+    return stateFilter ? all.filter(a => {
+      const c = campaigns.find(cc => cc.id === a.campaignId)
+      return c?.state === stateFilter
+    }) : all
+  }, [campaigns, pages, creators, posts, stateFilter])
 
   const trendData = useMemo(() => {
     const days = 14
@@ -161,10 +153,11 @@ export default function OutreachDashboard() {
   }, [livePosts])
 
   const kpiCards = [
-    { label: 'Reach (views)', value: fmt(kpis.reach), sub: `${kpis.postsCount} live post${kpis.postsCount === 1 ? '' : 's'}`, icon: Eye, bg: 'bg-orange-50', color: 'text-orange-600' },
-    { label: 'Engagement', value: fmt(kpis.eng), sub: 'likes + comments on live posts', icon: Heart, bg: 'bg-rose-50', color: 'text-rose-600' },
-    { label: 'Active campaigns', value: String(kpis.active), sub: `${campaigns.length} total`, icon: Send, bg: 'bg-blue-50', color: 'text-blue-600' },
-    { label: 'Inventory used', value: `${kpis.pctInv}%`, sub: `${pages.length} pages · ${creators.length} creators`, icon: Layers, bg: 'bg-emerald-50', color: 'text-emerald-600' },
+    { label: 'Total Reach', value: fmt(totals.reach), sub: 'post views (reach proxy)', icon: Eye, bg: 'bg-orange-50', color: 'text-orange-600' },
+    { label: 'Total Views', value: fmt(totals.views), sub: `${totals.posts} live post${totals.posts === 1 ? '' : 's'}`, icon: Activity, bg: 'bg-blue-50', color: 'text-blue-600' },
+    { label: 'Total Likes', value: fmt(totals.likes), sub: 'across live posts', icon: Heart, bg: 'bg-rose-50', color: 'text-rose-600' },
+    { label: 'Total Comments', value: fmt(totals.comments), sub: 'across live posts', icon: MessageCircle, bg: 'bg-violet-50', color: 'text-violet-600' },
+    { label: 'Total Shares', value: fmt(totals.shares), sub: 'where recorded', icon: Share2, bg: 'bg-emerald-50', color: 'text-emerald-600' },
   ]
 
   return (
@@ -183,6 +176,14 @@ export default function OutreachDashboard() {
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative">
+            <MapPin className="w-3.5 h-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <select value={stateFilter} onChange={e => setStateFilter(e.target.value)}
+              className="hub-input py-1.5 pl-7 text-xs w-40" title="Filter all dashboard data by state">
+              <option value="">All states</option>
+              {states.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
           <div className="inline-flex bg-card border border-border rounded-lg overflow-hidden text-xs">
             {(['7d', '30d', 'mtd', 'all'] as Range[]).map(r => (
               <button key={r} onClick={() => setRange(r)}
@@ -206,7 +207,7 @@ export default function OutreachDashboard() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
         {kpiCards.map(k => {
           const Icon = k.icon
           return (
@@ -222,6 +223,50 @@ export default function OutreachDashboard() {
             </div>
           )
         })}
+      </div>
+
+      {/* Side-by-side panels (spec 1.1): engagement %, active campaigns, inventory used */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="hub-card py-4">
+          <div className="flex items-center gap-2 mb-1">
+            <Heart className="w-4 h-4 text-rose-500" />
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Engagement overview</h2>
+          </div>
+          <p className="text-3xl font-serif text-foreground leading-none">{engagementPct.toFixed(2)}%</p>
+          <p className="text-[11px] text-muted-foreground mt-1.5">{fmt(totals.engagement)} engagements over {fmt(totals.reach)} reach</p>
+        </div>
+
+        <div className="hub-card py-4">
+          <div className="flex items-center gap-2 mb-1">
+            <Send className="w-4 h-4 text-blue-500" />
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Active campaigns</h2>
+          </div>
+          <p className="text-3xl font-serif text-foreground leading-none">{activeCampaigns.length}</p>
+          {activeCampaigns.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground mt-1.5">None running right now.</p>
+          ) : (
+            <div className="mt-2 space-y-0.5 max-h-20 overflow-y-auto">
+              {activeCampaigns.slice(0, 4).map(c => (
+                <Link key={c.id} to={`/outreach/campaigns/${c.id}`} className="block text-[11px] text-foreground hover:text-orange-600 truncate">· {c.name}</Link>
+              ))}
+              {activeCampaigns.length > 4 && <p className="text-[11px] text-muted-foreground">+{activeCampaigns.length - 4} more</p>}
+            </div>
+          )}
+        </div>
+
+        <div className="hub-card py-4">
+          <div className="flex items-center gap-2 mb-1">
+            <Layers className="w-4 h-4 text-emerald-500" />
+            <h2 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Page inventory used</h2>
+          </div>
+          <p className="text-3xl font-serif text-foreground leading-none">
+            {inventory.used} <span className="text-base text-muted-foreground">of {inventory.total} pages</span>
+          </p>
+          <div className="h-1.5 rounded-full bg-muted overflow-hidden mt-2">
+            <div className="h-full bg-emerald-500" style={{ width: `${inventory.pct}%` }} />
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-1.5">{inventory.pct}% of pages assigned to a campaign</p>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -245,32 +290,33 @@ export default function OutreachDashboard() {
           </ResponsiveContainer>
         </div>
 
-        {/* Alerts */}
+        {/* Alerts — pages overdue on their 24h post deadline (spec 1.4) */}
         <div className="hub-card">
-          <h2 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
-            <AlertCircle className="w-4 h-4 text-muted-foreground" /> Alerts
-          </h2>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <AlertTriangle className={`w-4 h-4 ${alerts.length ? 'text-rose-500' : 'text-muted-foreground'}`} /> Alerts
+              {alerts.length > 0 && <span className="hub-badge bg-rose-100 text-rose-700">{alerts.length}</span>}
+            </h2>
+            <Link to="/outreach/alerts" className="text-xs text-orange-600 hover:underline">View all</Link>
+          </div>
           {alerts.length === 0 ? (
-            <p className="text-sm text-muted-foreground py-6 text-center">All clear.</p>
+            <p className="text-sm text-muted-foreground py-6 text-center">All clear — every assigned page has posted.</p>
           ) : (
             <div className="space-y-2">
-              {alerts.map(a => {
-                const Icon = a.severity === 'critical' ? AlertTriangle : a.severity === 'warn' ? AlertCircle : Activity
-                const color = a.severity === 'critical' ? 'text-rose-600 bg-rose-50' : a.severity === 'warn' ? 'text-amber-600 bg-amber-50' : 'text-blue-600 bg-blue-50'
-                const body = (
-                  <>
-                    <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${color}`}>
-                      <Icon className="w-3.5 h-3.5" />
-                    </div>
-                    <span className="text-xs text-foreground">{a.text}</span>
-                  </>
-                )
-                return a.link ? (
-                  <Link key={a.id} to={a.link} className="flex items-center gap-2 p-2 rounded-lg hover:bg-accent transition-colors">{body}</Link>
-                ) : (
-                  <div key={a.id} className="flex items-center gap-2 p-2 rounded-lg">{body}</div>
-                )
-              })}
+              {alerts.slice(0, 6).map(a => (
+                <Link key={a.id}
+                  to={a.subjectKind === 'page' ? `/outreach/pages/${a.subjectId}` : `/outreach/creators/${a.subjectId}`}
+                  className="flex items-start gap-2 p-2 rounded-lg bg-rose-50/60 hover:bg-rose-50 transition-colors">
+                  <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-rose-600 bg-rose-100">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs text-foreground truncate"><span className="font-medium">@{a.handle}</span> hasn't posted for <span className="font-medium">{a.campaignName}</span></p>
+                    <p className="text-[11px] text-rose-600">{a.hoursOverdue}h past the 24h deadline</p>
+                  </div>
+                </Link>
+              ))}
+              {alerts.length > 6 && <p className="text-[11px] text-muted-foreground px-2">+{alerts.length - 6} more — see Alerts</p>}
             </div>
           )}
         </div>
