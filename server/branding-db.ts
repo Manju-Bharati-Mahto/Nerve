@@ -281,6 +281,12 @@ export async function bootstrapBrandingDatabase() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  // Work-classification fields on a project (mirrors the daily-report columns),
+  // so a created / assigned project carries its type of work, sub-category and
+  // specific-work text. Idempotent migration for pre-existing installs.
+  await pool.query(`ALTER TABLE branding_projects ADD COLUMN IF NOT EXISTS type_of_work TEXT NOT NULL DEFAULT ''`);
+  await pool.query(`ALTER TABLE branding_projects ADD COLUMN IF NOT EXISTS sub_category TEXT NOT NULL DEFAULT ''`);
+  await pool.query(`ALTER TABLE branding_projects ADD COLUMN IF NOT EXISTS specific_work TEXT NOT NULL DEFAULT ''`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS branding_project_assignments (
@@ -1664,6 +1670,9 @@ export interface BrandingProject {
   description: string;
   deadline: string | null;
   status: "active" | "completed" | "on_hold";
+  type_of_work: string;
+  sub_category: string;
+  specific_work: string;
   created_by: string;
   created_at: string;
   assigned_user_ids: string[];
@@ -1675,6 +1684,9 @@ interface ProjectRow {
   description: string;
   deadline: string | null;
   status: string;
+  type_of_work: string;
+  sub_category: string;
+  specific_work: string;
   created_by: string;
   created_at: string;
 }
@@ -1700,13 +1712,14 @@ export async function createBrandingProject(
   description: string,
   deadline: string | null,
   createdBy: string,
-  assignedUserIds: string[]
+  assignedUserIds: string[],
+  work: { typeOfWork?: string; subCategory?: string; specificWork?: string } = {}
 ): Promise<BrandingProject> {
   const id = generateId("proj");
   await pool.query(
-    `INSERT INTO branding_projects (id, name, description, deadline, created_by)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [id, name, description, deadline || null, createdBy]
+    `INSERT INTO branding_projects (id, name, description, deadline, created_by, type_of_work, sub_category, specific_work)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [id, name, description, deadline || null, createdBy, work.typeOfWork ?? "", work.subCategory ?? "", work.specificWork ?? ""]
   );
   for (const userId of assignedUserIds) {
     await pool.query(
@@ -1726,12 +1739,18 @@ export async function updateBrandingProject(
   deadline: string | null,
   status: BrandingProject["status"],
   assignedUserIds: string[],
-  adminId: string
+  adminId: string,
+  work: { typeOfWork?: string; subCategory?: string; specificWork?: string } = {}
 ): Promise<BrandingProject | null> {
+  // COALESCE keeps existing values when a field isn't supplied by the caller.
   const res = await pool.query<ProjectRow>(
-    `UPDATE branding_projects SET name=$2, description=$3, deadline=$4, status=$5
+    `UPDATE branding_projects SET name=$2, description=$3, deadline=$4, status=$5,
+       type_of_work=COALESCE($6, type_of_work),
+       sub_category=COALESCE($7, sub_category),
+       specific_work=COALESCE($8, specific_work)
      WHERE id=$1 RETURNING *`,
-    [id, name, description, deadline || null, status]
+    [id, name, description, deadline || null, status,
+     work.typeOfWork ?? null, work.subCategory ?? null, work.specificWork ?? null]
   );
   if (!res.rows[0]) return null;
   // Replace all assignments
@@ -1752,6 +1771,41 @@ export async function deleteBrandingProject(id: string): Promise<boolean> {
     `DELETE FROM branding_projects WHERE id = $1`, [id]
   );
   return (res.rowCount ?? 0) > 0;
+}
+
+/**
+ * Seeds a row into a designer's daily report for `workDate`, representing an
+ * assigned project task. Called when a lead assigns a project to a designer so
+ * the work surfaces in that designer's report (idle stopwatch — the designer
+ * logs their own time). Skips creation when an identical row (same type /
+ * sub-category / specific-work) already exists on that day's report, so
+ * re-assigning the same project doesn't duplicate the task.
+ */
+export async function createAssignedReportRow(opts: {
+  designerId: string;
+  workDate: string; // YYYY-MM-DD
+  typeOfWork: string;
+  subCategory: string;
+  specificWork: string;
+}): Promise<void> {
+  const report = await getOrCreateDailyReport(opts.designerId, opts.workDate);
+  const dup = await pool.query(
+    `SELECT 1 FROM daily_report_rows
+      WHERE report_id=$1 AND type_of_work=$2 AND sub_category=$3 AND specific_work=$4`,
+    [report.id, opts.typeOfWork, opts.subCategory, opts.specificWork]
+  );
+  if ((dup.rowCount ?? 0) > 0) return;
+  const next = await pool.query<{ n: number }>(
+    `SELECT COALESCE(MAX(sr_no),0)+1 AS n FROM daily_report_rows WHERE report_id=$1`,
+    [report.id]
+  );
+  await pool.query(
+    `INSERT INTO daily_report_rows
+       (id, report_id, sr_no, type_of_work, sub_category, specific_work,
+        time_taken, collaborative_colleagues, stopwatch_status, elapsed_seconds)
+     VALUES ($1, $2, $3, $4, $5, $6, '', ARRAY[]::TEXT[], 'idle', 0)`,
+    [generateId("drr"), report.id, next.rows[0].n, opts.typeOfWork, opts.subCategory, opts.specificWork]
+  );
 }
 
 // ── Report row comments ────────────────────────────────────────────────────

@@ -4,6 +4,7 @@
 export const CAPABILITIES = [
   "branding:manage_categories",
   "branding:view_team_dashboard",
+  "branding:assign_projects",
 ] as const;
 
 export type CapabilityKey = (typeof CAPABILITIES)[number];
@@ -29,6 +30,12 @@ export const CAPABILITY_META: Record<CapabilityKey, {
     description: "View the full team daily-reports dashboard with charts, work analytics, and top contributors.",
     route: "/branding/dashboard",
     sidebarLabel: "Team Dashboard",
+  },
+  "branding:assign_projects": {
+    label: "Assign projects",
+    description: "Create projects and assign work to designers; each assignment adds a row to the designer's daily report.",
+    route: "/branding/projects",
+    sidebarLabel: "Assign Projects",
   },
 };
 

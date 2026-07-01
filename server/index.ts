@@ -113,6 +113,7 @@ import {
   createBrandingProject,
   updateBrandingProject,
   deleteBrandingProject,
+  createAssignedReportRow,
   listRowComments,
   createRowComment,
   updateRowComment,
@@ -845,6 +846,18 @@ async function requireBrandingCategoryManager(res: express.Response): Promise<bo
   sendError(res, 403, "You need the 'Manage Categories' capability to do that.");
   return false;
 }
+// Project assignment: full branding admins always, plus any branding-team
+// member the head has granted the 'assign_projects' capability to.
+async function requireBrandingProjectAssigner(res: express.Response): Promise<boolean> {
+  const u = res.locals.currentUser;
+  if (isBrandingAdminOrSuper(u.role, u.team)) return true;
+  if (u.team === "branding") {
+    const caps = await listUserCapabilities(u.id);
+    if (caps.includes("branding:assign_projects")) return true;
+  }
+  sendError(res, 403, "You need the 'Assign Projects' capability to do that.");
+  return false;
+}
 function requireBrandingLead(res: express.Response): boolean {
   const u = res.locals.currentUser;
   const ok = u.role === "super_admin" ||
@@ -1325,8 +1338,9 @@ async function scopeAssignmentsForActor(
 
 app.post("/api/branding/portal/projects", asyncHandler(async (req, res) => {
   if (!requireBrandingLead(res)) return;
-  const { name, description, deadline, assigned_user_ids } = req.body as {
+  const { name, description, deadline, assigned_user_ids, type_of_work, sub_category, specific_work } = req.body as {
     name: string; description?: string; deadline?: string; assigned_user_ids?: string[];
+    type_of_work?: string; sub_category?: string; specific_work?: string;
   };
   if (!name?.trim()) return sendError(res, 400, "Project name is required.");
   const actor = res.locals.currentUser;
@@ -1337,6 +1351,11 @@ app.post("/api/branding/portal/projects", asyncHandler(async (req, res) => {
     deadline || null,
     actor.id,
     scoped,
+    {
+      typeOfWork: type_of_work?.trim() ?? "",
+      subCategory: sub_category?.trim() ?? "",
+      specificWork: specific_work?.trim() ?? "",
+    },
   );
   res.status(201).json({ project });
 }));
@@ -1344,9 +1363,10 @@ app.post("/api/branding/portal/projects", asyncHandler(async (req, res) => {
 app.put("/api/branding/portal/projects/:id", asyncHandler(async (req, res) => {
   if (!requireBrandingLead(res)) return;
   const id = getSingleParam(req.params.id);
-  const { name, description, deadline, status, assigned_user_ids } = req.body as {
+  const { name, description, deadline, status, assigned_user_ids, type_of_work, sub_category, specific_work } = req.body as {
     name: string; description?: string; deadline?: string;
     status?: "active" | "completed" | "on_hold"; assigned_user_ids?: string[];
+    type_of_work?: string; sub_category?: string; specific_work?: string;
   };
   if (!name?.trim()) return sendError(res, 400, "Project name is required.");
   const actor = res.locals.currentUser;
@@ -1359,9 +1379,52 @@ app.put("/api/branding/portal/projects/:id", asyncHandler(async (req, res) => {
     status ?? "active",
     scoped,
     actor.id,
+    {
+      typeOfWork: type_of_work?.trim(),
+      subCategory: sub_category?.trim(),
+      specificWork: specific_work?.trim(),
+    },
   );
   if (!project) return sendError(res, 404, "Project not found.");
   res.json({ project });
+}));
+
+// Assign a project to designers (capability-gated). Creates the project with
+// its work classification, assigns the chosen designers, and seeds a row into
+// each designer's daily report for the given work date. (Spec: leads granted
+// the 'Assign Projects' capability assign work that lands in the designer's
+// daily report.)
+app.post("/api/branding/portal/projects/assign", asyncHandler(async (req, res) => {
+  if (!(await requireBrandingProjectAssigner(res))) return;
+  const { name, description, deadline, type_of_work, sub_category, specific_work, assigned_user_ids, work_date } = req.body as {
+    name: string; description?: string; deadline?: string;
+    type_of_work?: string; sub_category?: string; specific_work?: string;
+    assigned_user_ids?: string[]; work_date?: string;
+  };
+  if (!name?.trim()) return sendError(res, 400, "Project name is required.");
+  const typeOfWork = type_of_work?.trim() ?? "";
+  const subCategory = sub_category?.trim() ?? "";
+  const specificWork = specific_work?.trim() ?? "";
+  if (!typeOfWork || !subCategory || !specificWork) {
+    return sendError(res, 400, "Type of work, sub-category and specific work are required.");
+  }
+  if (!work_date || !/^\d{4}-\d{2}-\d{2}$/.test(work_date)) {
+    return sendError(res, 400, "A valid work date (YYYY-MM-DD) is required.");
+  }
+  const actor = res.locals.currentUser;
+  const scoped = await scopeAssignmentsForActor(actor, assigned_user_ids ?? []);
+  if (scoped.length === 0) {
+    return sendError(res, 400, "Assign the project to at least one designer you manage.");
+  }
+  const project = await createBrandingProject(
+    name.trim(), description?.trim() ?? "", deadline || null, actor.id, scoped,
+    { typeOfWork, subCategory, specificWork },
+  );
+  // Seed each assigned designer's daily report for the chosen work date.
+  for (const designerId of scoped) {
+    await createAssignedReportRow({ designerId, workDate: work_date, typeOfWork, subCategory, specificWork });
+  }
+  res.status(201).json({ project });
 }));
 
 app.delete("/api/branding/portal/projects/:id", asyncHandler(async (req, res) => {

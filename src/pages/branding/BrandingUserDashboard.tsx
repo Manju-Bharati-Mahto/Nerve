@@ -1942,6 +1942,9 @@ function DailyReportsPage({
   const [projName, setProjName] = useState('')
   const [projDesc, setProjDesc] = useState('')
   const [projDeadline, setProjDeadline] = useState('')
+  const [projType, setProjType] = useState('')
+  const [projSubCat, setProjSubCat] = useState('')
+  const [projSpecific, setProjSpecific] = useState('')
   const [projSaving, setProjSaving] = useState(false)
 
   const colleagueOptions = useMemo(() =>
@@ -1967,17 +1970,28 @@ function DailyReportsPage({
       .catch(() => {})
   }, [])
 
+  function resetProjectForm() {
+    setProjName(''); setProjDesc(''); setProjDeadline('')
+    setProjType(''); setProjSubCat(''); setProjSpecific('')
+  }
+
   async function addProject() {
     if (!projName.trim()) { toast.error('Project name is required.'); return }
+    if (!projType) { toast.error('Type of work is required.'); return }
+    if (!projSubCat) { toast.error('Sub-category is required.'); return }
+    if (!projSpecific.trim()) { toast.error('Specific work is required.'); return }
     setProjSaving(true)
     try {
       const res = await brandingApi.createProject({
         name: projName.trim(),
         description: projDesc.trim() || undefined,
         deadline: projDeadline || undefined,
+        type_of_work: projType,
+        sub_category: projSubCat,
+        specific_work: projSpecific.trim(),
       })
       setProjects(prev => [res.project, ...prev])
-      setProjName(''); setProjDesc(''); setProjDeadline('')
+      resetProjectForm()
       setShowAddProject(false)
       toast.success('Project created!')
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Failed to create project') }
@@ -2348,13 +2362,13 @@ function DailyReportsPage({
             <div className="flex items-center justify-between">
               <h3 className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>New Project</h3>
               <button
-                onClick={() => { setShowAddProject(false); setProjName(''); setProjDesc(''); setProjDeadline('') }}
+                onClick={() => { setShowAddProject(false); resetProjectForm() }}
                 className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 transition-colors"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="space-y-3">
+            <div className="space-y-3 max-h-[70vh] overflow-y-auto">
               <div>
                 <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>Project Name *</label>
                 <input
@@ -2363,6 +2377,40 @@ function DailyReportsPage({
                   onChange={e => setProjName(e.target.value)}
                   className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-green-200"
                   autoFocus
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>Type of Work *</label>
+                <select
+                  value={projType}
+                  onChange={e => { setProjType(e.target.value); setProjSubCat('') }}
+                  className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-green-200"
+                >
+                  <option value="">Select type of work…</option>
+                  {categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>Sub-category *</label>
+                <select
+                  value={projSubCat}
+                  onChange={e => setProjSubCat(e.target.value)}
+                  disabled={!projType}
+                  className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-green-200 disabled:bg-gray-50 disabled:text-gray-400"
+                >
+                  <option value="">{projType ? 'Select sub-category…' : 'Pick a type of work first'}</option>
+                  {(categories.find(c => c.name === projType)?.sub_categories ?? []).map(s => (
+                    <option key={s.id} value={s.name}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>Specific Work *</label>
+                <input
+                  placeholder="e.g. Poster design for launch event"
+                  value={projSpecific}
+                  onChange={e => setProjSpecific(e.target.value)}
+                  className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-green-200"
                 />
               </div>
               <div>
@@ -2395,7 +2443,7 @@ function DailyReportsPage({
                 {projSaving ? 'Creating…' : 'Create Project'}
               </button>
               <button
-                onClick={() => { setShowAddProject(false); setProjName(''); setProjDesc(''); setProjDeadline('') }}
+                onClick={() => { setShowAddProject(false); resetProjectForm() }}
                 className="flex-1 py-2.5 rounded-xl text-sm border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
               >
                 Cancel
