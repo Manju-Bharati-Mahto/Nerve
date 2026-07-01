@@ -185,6 +185,9 @@ export interface BrandingProject {
   description: string;
   deadline: string | null;
   status: "active" | "completed" | "on_hold";
+  type_of_work: string;
+  sub_category: string;
+  specific_work: string;
   created_by: string;
   created_at: string;
   assigned_user_ids: string[];

@@ -32,7 +32,8 @@ import AINewsletterPage from "@/pages/AINewsletter";
 
 // Branding team
 import BrandingAdminDashboard from "@/pages/branding/BrandingAdminDashboard";
-import { MaybeBrandingAdminShell } from "@/pages/branding/BrandingAdminShell";
+import BrandingAdminShell, { MaybeBrandingAdminShell } from "@/pages/branding/BrandingAdminShell";
+import BrandingProjectsAssign from "@/pages/branding/BrandingProjectsAssign";
 import BrandingSubAdminDashboard from "@/pages/branding/BrandingSubAdminDashboard";
 import BrandingUserDashboard from "@/pages/branding/BrandingUserDashboard";
 import BrandingTeamPanel from "@/pages/branding/BrandingTeamPanel";
@@ -122,6 +123,17 @@ const App = () => (
                   anyCapability={['branding:manage_categories']}
                 >
                   <BrandingAdminDashboard />
+                </RoleGuard>
+              } />
+              <Route path="/branding/projects" element={
+                <RoleGuard
+                  allowed={['super_admin', 'admin']}
+                  team="branding"
+                  anyCapability={['branding:assign_projects']}
+                >
+                  <BrandingAdminShell>
+                    <BrandingProjectsAssign />
+                  </BrandingAdminShell>
                 </RoleGuard>
               } />
               <Route path="/branding/sub-admin" element={
