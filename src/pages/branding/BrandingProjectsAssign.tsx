@@ -37,17 +37,24 @@ export default function BrandingProjectsAssign() {
   const [deadline, setDeadline] = useState('')
   const [workDate, setWorkDate] = useState(todayLocal())
   const [assignees, setAssignees] = useState<string[]>([])
+  const [assignLead, setAssignLead] = useState('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => { brandingApi.getCategories().then(r => setCategories(r.categories)).catch(() => {}) }, [])
   useEffect(() => { brandingApi.getProjects().then(r => setProjects(r.projects)).catch(() => {}) }, [])
 
-  // Designers this actor can assign to: branding team members they manage
-  // (admins can assign to anyone). Excludes self + super admins.
+  // "Assign to designers" now lists both Designer and Lead profiles (req 4) —
+  // scoped to the members this actor manages (admins can assign to anyone).
   const designers = useMemo(() => users.filter(u =>
-    u.team === 'branding' && u.role !== 'super_admin' && u.id !== user?.id &&
-    (isAdmin || u.managed_by === user?.id)
+    u.team === 'branding' && (u.role === 'user' || u.role === 'sub_admin' || u.role === 'task_owner') &&
+    u.id !== user?.id && (isAdmin || u.managed_by === user?.id)
   ), [users, user?.id, isAdmin])
+
+  // "Assign Lead" dropdown: only Lead-role profiles (supervisory, optional, and
+  // does NOT get a daily-report row). Not scoped — a supervising lead link.
+  const leads = useMemo(() => users.filter(u =>
+    u.team === 'branding' && (u.role === 'sub_admin' || u.role === 'task_owner')
+  ), [users])
 
   const subCategories = useMemo(
     () => categories.find(c => c.name === type)?.sub_categories ?? [],
@@ -60,7 +67,7 @@ export default function BrandingProjectsAssign() {
   }
 
   function reset() {
-    setName(''); setType(''); setSubCat(''); setSpecific(''); setDeadline(''); setWorkDate(todayLocal()); setAssignees([])
+    setName(''); setType(''); setSubCat(''); setSpecific(''); setDeadline(''); setWorkDate(todayLocal()); setAssignees([]); setAssignLead('')
   }
 
   async function submit() {
@@ -80,11 +87,12 @@ export default function BrandingProjectsAssign() {
         sub_category: subCat,
         specific_work: specific.trim(),
         assigned_user_ids: assignees,
+        assign_lead_id: assignLead || undefined,
         work_date: workDate,
       })
       setProjects(prev => [project, ...prev])
       reset()
-      toast.success(`Assigned to ${project.assigned_user_ids.length} designer${project.assigned_user_ids.length === 1 ? '' : 's'} — added to their daily report.`)
+      toast.success(`Assigned to ${project.assigned_user_ids.length} member${project.assigned_user_ids.length === 1 ? '' : 's'} — added to their daily report.`)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to assign project.')
     } finally { setSaving(false) }
@@ -149,15 +157,16 @@ export default function BrandingProjectsAssign() {
           </div>
 
           <div>
-            <label className={labelCls} style={{ color: GREEN }}>Assign to designers *</label>
+            <label className={labelCls} style={{ color: GREEN }}>Assign to designers / leads *</label>
             {designers.length === 0 ? (
               <p className="text-xs text-gray-400 border border-gray-100 rounded-xl px-3 py-3">
-                No designers to assign. {isAdmin ? 'Add branding team members first.' : 'You have no team members assigned to you yet.'}
+                No members to assign. {isAdmin ? 'Add branding team members first.' : 'You have no team members assigned to you yet.'}
               </p>
             ) : (
               <div className="border border-gray-100 rounded-xl divide-y divide-gray-50 max-h-52 overflow-y-auto">
                 {designers.map(d => {
                   const checked = assignees.includes(d.id)
+                  const roleLabel = d.role === 'sub_admin' ? 'Lead' : d.role === 'task_owner' ? 'Task Owner' : 'Designer'
                   return (
                     <label key={d.id} className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-gray-50">
                       <span className={`w-4 h-4 rounded flex items-center justify-center border ${checked ? 'text-white' : 'border-gray-300'}`}
@@ -166,12 +175,21 @@ export default function BrandingProjectsAssign() {
                       </span>
                       <input type="checkbox" className="hidden" checked={checked} onChange={() => toggleAssignee(d.id)} />
                       <span className="text-sm text-gray-700 truncate">{d.full_name || d.email}</span>
-                      <span className="ml-auto text-[10px] uppercase tracking-wide text-gray-400">{d.role === 'sub_admin' ? 'Lead' : 'Designer'}</span>
+                      <span className="ml-auto text-[10px] uppercase tracking-wide text-gray-400">{roleLabel}</span>
                     </label>
                   )
                 })}
               </div>
             )}
+            <p className="text-[10px] text-gray-400 mt-1">Each selected member gets a row in their daily report on the work date.</p>
+          </div>
+
+          <div>
+            <label className={labelCls} style={{ color: GREEN }}>Assign Lead <span className="normal-case font-normal text-gray-400">(optional — supervisory, no report row)</span></label>
+            <select className={inputCls} value={assignLead} onChange={e => setAssignLead(e.target.value)}>
+              <option value="">No supervising lead</option>
+              {leads.map(l => <option key={l.id} value={l.id}>{l.full_name || l.email}{l.role === 'task_owner' ? ' (Task Owner)' : ''}</option>)}
+            </select>
           </div>
 
           <button onClick={() => void submit()} disabled={saving}
@@ -208,10 +226,20 @@ export default function BrandingProjectsAssign() {
                     <span className="inline-flex items-center gap-1"><Users className="w-3 h-3" /> {p.assigned_user_ids.length} assigned</span>
                     <span className="inline-flex items-center gap-1"><Clock className="w-3 h-3" /> {new Date(p.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
                   </div>
-                  {p.assigned_user_ids.length > 0 && (
-                    <p className="text-[11px] text-gray-500 mt-1 truncate">
-                      {p.assigned_user_ids.map(id => nameById.get(id) ?? 'Unknown').join(', ')}
-                    </p>
+                  {/* Per-member status (req 6): who's finished vs pending. */}
+                  {p.assignments.length > 0 && (
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {p.assignments.map(a => (
+                        <span key={a.user_id} className="text-[10px] px-1.5 py-0.5 rounded-full inline-flex items-center gap-1"
+                          style={a.status === 'completed' ? { background: '#e6f4ea', color: GREEN } : { background: '#f3f4f6', color: '#6b7280' }}>
+                          {a.status === 'completed' && <Check className="w-2.5 h-2.5" />}
+                          {nameById.get(a.user_id) ?? 'Unknown'}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {p.assigned_lead_id && (
+                    <p className="text-[11px] text-gray-500 mt-1">Lead: {nameById.get(p.assigned_lead_id) ?? 'Unknown'}</p>
                   )}
                 </div>
               ))}

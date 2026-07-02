@@ -14,7 +14,7 @@ import {
   LayoutDashboard, ClipboardList, BarChart2, Award, Settings, HelpCircle,
   LogOut, Plus, Trash2, Send, Lock, ChevronDown, Check, Info, Download,
   Users, TrendingUp, AlertCircle, Bell, Search, ArrowUpRight, Palette,
-  Calendar, Timer, LayoutGrid, X, Menu,
+  Calendar, Timer, LayoutGrid, X, Menu, FolderPlus,
   Camera, Shield, BookOpen, Keyboard, MessageCircle, Phone,
   Play, Pause, Square, Repeat,
 } from 'lucide-react'
@@ -1998,6 +1998,30 @@ function DailyReportsPage({
     finally { setProjSaving(false) }
   }
 
+  // The assignee marks their own copy of a project complete (req 6). Updates
+  // the project in place with the returned per-assignment statuses.
+  async function markProjectComplete(projectId: string) {
+    try {
+      const { project } = await brandingApi.completeProject(projectId)
+      setProjects(prev => prev.map(p => p.id === project.id ? project : p))
+      toast.success('Marked as completed!')
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Failed to update project') }
+  }
+
+  // id → display name for showing assigned designers / lead on project cards.
+  const projectUserName = (id: string | null) =>
+    id ? (users.find(u => u.id === id)?.full_name || users.find(u => u.id === id)?.email || 'Unknown') : ''
+
+  // Split the user's projects into Pending / Completed by THEIR own assignment
+  // status (falling back to the project status when they have no assignment).
+  const myProjectStatus = (p: BrandingProject): 'completed' | 'pending' => {
+    const mine = p.assignments.find(a => a.user_id === profile?.id)
+    if (mine) return mine.status === 'completed' ? 'completed' : 'pending'
+    return p.status === 'completed' ? 'completed' : 'pending'
+  }
+  const pendingProjects = projects.filter(p => myProjectStatus(p) === 'pending')
+  const completedProjects = projects.filter(p => myProjectStatus(p) === 'completed')
+
   // Load collaboration stats for the graph — filter-aware
   useEffect(() => {
     if (!profile?.id) return
@@ -2297,21 +2321,55 @@ function DailyReportsPage({
               <p className="text-sm text-gray-400 text-center">No projects yet.<br/>Click <strong>+ New</strong> to create one.</p>
             </div>
           ) : (
-            <div className="space-y-3 overflow-y-auto max-h-72 pr-1">
-              {projects.map((p, i) => (
-                <div key={p.id} className="flex items-center gap-3 p-2 rounded-xl hover:bg-gray-50 transition-colors">
-                  <ProjectIcon index={i} />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold font-serif truncate" style={{ color: '#1a472a' }}>{p.name}</p>
-                    <p className="text-xs font-semibold" style={{ color: '#52b788' }}>
-                      {p.deadline
-                        ? `Due date: ${new Date(p.deadline).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
-                        : 'No deadline set'}
-                    </p>
-                  </div>
-                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${statusColor(p.status)}`}>
-                    {statusLabel(p.status)}
-                  </span>
+            <div className="space-y-4 overflow-y-auto max-h-96 pr-1">
+              {/* Two columns per req 6: Pending vs Completed (by my own status). */}
+              {([
+                { label: 'Pending', list: pendingProjects, empty: 'Nothing pending.' },
+                { label: 'Completed', list: completedProjects, empty: 'Nothing completed yet.' },
+              ] as const).map(section => (
+                <div key={section.label}>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">{section.label} ({section.list.length})</p>
+                  {section.list.length === 0 ? (
+                    <p className="text-xs text-gray-300 px-2 py-1">{section.empty}</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {section.list.map((p, i) => {
+                        const mine = p.assignments.find(a => a.user_id === profile?.id)
+                        const designerNames = p.assigned_user_ids.map(projectUserName).filter(Boolean)
+                        return (
+                          <div key={p.id} className="flex items-start gap-3 p-2 rounded-xl hover:bg-gray-50 transition-colors">
+                            <ProjectIcon index={i} />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-bold font-serif truncate" style={{ color: '#1a472a' }}>{p.name}</p>
+                              <p className="text-xs font-semibold" style={{ color: '#52b788' }}>
+                                {p.deadline
+                                  ? `Due date: ${new Date(p.deadline).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+                                  : 'No deadline set'}
+                              </p>
+                              {designerNames.length > 0 && (
+                                <p className="text-[11px] text-gray-500 truncate">Designer: {designerNames.join(', ')}</p>
+                              )}
+                              {p.assigned_lead_id && (
+                                <p className="text-[11px] text-gray-500 truncate">Lead: {projectUserName(p.assigned_lead_id)}</p>
+                              )}
+                            </div>
+                            <div className="flex flex-col items-end gap-1 shrink-0">
+                              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${section.label === 'Completed' ? 'bg-green-100 text-green-700' : statusColor(p.status)}`}>
+                                {section.label === 'Completed' ? 'Completed' : statusLabel(p.status)}
+                              </span>
+                              {section.label === 'Pending' && mine && (
+                                <button onClick={() => void markProjectComplete(p.id)}
+                                  className="text-[10px] font-semibold px-2 py-1 rounded-lg text-white hover:opacity-90"
+                                  style={{ background: '#1a472a' }}>
+                                  Mark complete
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -3696,7 +3754,7 @@ export default function BrandingUserDashboard() {
     { key: 'analytics', icon: BarChart2, label: 'Analytics' },
     { key: 'self-appraisal', icon: Award, label: 'Self Appraisal' },
     { key: 'gallery', icon: LayoutGrid, label: 'Design Gallery' },
-    ...(role === 'sub_admin' ? [{ key: 'team' as NavPage, icon: Users, label: 'My Team' }] : []),
+    ...(role === 'sub_admin' || role === 'task_owner' ? [{ key: 'team' as NavPage, icon: Users, label: 'My Team' }] : []),
   ]
 
   return (
@@ -3762,6 +3820,21 @@ export default function BrandingUserDashboard() {
               </button>
             )
           })}
+
+          {/* Task owners have built-in project-assign rights (a lead variant),
+             so surface the Assign Projects tab without an explicit capability. */}
+          {role === 'task_owner' && (
+            <div className="pt-4">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2">Task Owner</p>
+              <Link
+                to="/branding/projects"
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition-colors"
+              >
+                <FolderPlus className="w-4 h-4 shrink-0" />
+                Assign Projects
+              </Link>
+            </div>
+          )}
 
           {/* Capability-granted entries: routes to the admin shell where the
              user can use the specific admin feature they were granted. */}

@@ -275,7 +275,7 @@ export async function bootstrapDatabase() {
       full_name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
       department TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager', 'branding_reports_admin')),
+      role TEXT NOT NULL CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager', 'branding_reports_admin', 'task_owner')),
       team TEXT REFERENCES teams(id) ON DELETE SET NULL,
       managed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
       password_hash TEXT NOT NULL,
@@ -310,7 +310,7 @@ export async function bootstrapDatabase() {
     BEGIN
       ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
       ALTER TABLE users ADD CONSTRAINT users_role_check
-        CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager', 'branding_reports_admin'));
+        CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager', 'branding_reports_admin', 'task_owner'));
     END $$;
   `);
 

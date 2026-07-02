@@ -168,7 +168,7 @@ export default function AppSidebar() {
   // (BrandingAdminShell wraps /branding/browse, /team and /admin/export via
   // MaybeBrandingAdminShell). Hide the global one for everyone on the
   // branding team so we never stack two sidebars.
-  if (team === 'branding' && (role === 'user' || role === 'sub_admin' || role === 'admin' || role === 'branding_reports_admin')) return null
+  if (team === 'branding' && (role === 'user' || role === 'sub_admin' || role === 'admin' || role === 'branding_reports_admin' || role === 'task_owner')) return null
 
   const key = `${role ?? ''}:${team ?? ''}`
   const config = SIDEBAR[key] ?? FALLBACK

@@ -10,7 +10,7 @@ import type {
 } from '@/lib/branding-types'
 import {
   Plus, Trash2, Edit3,
-  ChevronDown, ChevronUp, Check, AlertTriangle, Lock,
+  ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Check, AlertTriangle, Lock,
   Download, Users, Filter, ToggleLeft, ToggleRight, X,
   ArrowUp, ArrowDown, CalendarOff,
 } from 'lucide-react'
@@ -1243,20 +1243,22 @@ function LeaveManagementTab() {
 
 // ── Main Component ─────────────────────────────────────────────────────────
 
-type AdminSection = 'reports' | 'kra' | 'leaves' | 'categories'
+type AdminSection = 'reports' | 'kra' | 'leaves' | 'categories' | 'leave-calendar'
 
 const SECTION_BY_PATH: Record<string, AdminSection> = {
-  '/branding/dashboard':  'reports',
-  '/branding/kra':        'kra',
-  '/branding/leaves':     'leaves',
-  '/branding/categories': 'categories',
+  '/branding/dashboard':      'reports',
+  '/branding/kra':            'kra',
+  '/branding/leaves':         'leaves',
+  '/branding/categories':     'categories',
+  '/branding/leave-calendar': 'leave-calendar',
 }
 
 const SECTION_META: Record<AdminSection, { title: string; subtitle: string }> = {
-  reports:    { title: 'Daily Reports',     subtitle: 'Team activity, hours and collaboration' },
-  kra:        { title: 'KRA Management',    subtitle: 'Self, peer and admin scoring with final publish' },
-  leaves:     { title: 'Leave Requests',    subtitle: 'Approve, reject and reassign team leaves' },
-  categories: { title: 'Manage Categories', subtitle: 'Work categories and sub-categories' },
+  reports:          { title: 'Daily Reports',     subtitle: 'Team activity, hours and collaboration' },
+  kra:              { title: 'KRA Management',    subtitle: 'Self, peer and admin scoring with final publish' },
+  leaves:           { title: 'Leave Requests',    subtitle: 'Approve, reject and reassign team leaves' },
+  categories:       { title: 'Manage Categories', subtitle: 'Work categories and sub-categories' },
+  'leave-calendar': { title: 'Leave Calendar',    subtitle: 'All leave requests by day — submitted and approved' },
 }
 
 export default function BrandingAdminDashboard() {
@@ -1285,6 +1287,152 @@ export default function BrandingAdminDashboard() {
       {section === 'kra'        && <KraManagementTab   brandingUsers={brandingUsers} />}
       {section === 'leaves'     && <LeaveManagementTab />}
       {section === 'categories' && <ManageCategoriesTab />}
+      {section === 'leave-calendar' && <LeaveCalendarTab />}
     </BrandingAdminShell>
+  )
+}
+
+// ── Leave Calendar (req 1) ──────────────────────────────────────────────────
+// Month grid of every leave request, with per-day submitted + approved counts.
+// Click a day to see that day's requests.
+
+const LC_WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+function lcLocalDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function LeaveCalendarTab() {
+  const [leaves, setLeaves] = useState<BrandingLeave[]>([])
+  const [cursor, setCursor] = useState(() => new Date())
+  const [selectedDay, setSelectedDay] = useState<string | null>(null)
+
+  useEffect(() => { brandingApi.getLeaves().then(r => setLeaves(r.leaves)).catch(() => {}) }, [])
+
+  const month = cursor.getMonth()
+  const year = cursor.getFullYear()
+  const today = lcLocalDate(new Date())
+
+  const byDate = useMemo(() => {
+    const m = new Map<string, { submitted: number; approved: number; items: BrandingLeave[] }>()
+    for (const l of leaves) {
+      const cur = m.get(l.leave_date) ?? { submitted: 0, approved: 0, items: [] }
+      cur.submitted++
+      if (l.status === 'approved') cur.approved++
+      cur.items.push(l)
+      m.set(l.leave_date, cur)
+    }
+    return m
+  }, [leaves])
+
+  const cells = useMemo(() => {
+    const firstDay = new Date(year, month, 1).getDay()
+    const daysInMonth = new Date(year, month + 1, 0).getDate()
+    const out: { date: string | null; isToday: boolean }[] = []
+    for (let i = 0; i < firstDay; i++) out.push({ date: null, isToday: false })
+    for (let d = 1; d <= daysInMonth; d++) {
+      const iso = lcLocalDate(new Date(year, month, d))
+      out.push({ date: iso, isToday: iso === today })
+    }
+    while (out.length % 7 !== 0) out.push({ date: null, isToday: false })
+    return out
+  }, [year, month, today])
+
+  const monthLabel = cursor.toLocaleString('en-US', { month: 'long', year: 'numeric' })
+  const monthTotals = useMemo(() => {
+    let submitted = 0, approved = 0
+    for (const c of cells) {
+      if (!c.date) continue
+      const e = byDate.get(c.date)
+      if (e) { submitted += e.submitted; approved += e.approved }
+    }
+    return { submitted, approved }
+  }, [cells, byDate])
+
+  function shift(dir: -1 | 1) {
+    const d = new Date(cursor); d.setMonth(d.getMonth() + dir); setCursor(d); setSelectedDay(null)
+  }
+
+  const selected = selectedDay ? byDate.get(selectedDay) : undefined
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <h2 className="text-sm font-bold" style={{ color: '#1a472a' }}>{monthLabel}</h2>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 text-[11px] text-gray-500">
+              <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ background: '#1a472a' }} /> {monthTotals.submitted} submitted</span>
+              <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ background: '#52b788' }} /> {monthTotals.approved} approved</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button onClick={() => shift(-1)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500"><ChevronLeft className="w-4 h-4" /></button>
+              <button onClick={() => { setCursor(new Date()); setSelectedDay(null) }} className="text-xs px-2 py-1 rounded-lg hover:bg-gray-100 text-gray-500">Today</button>
+              <button onClick={() => shift(1)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500"><ChevronRight className="w-4 h-4" /></button>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-7 gap-1 mb-1">
+          {LC_WEEKDAYS.map(d => (
+            <div key={d} className="text-[10px] font-bold uppercase tracking-widest text-gray-400 text-center py-1">{d}</div>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-7 gap-1 auto-rows-[84px]">
+          {cells.map((c, i) => {
+            const e = c.date ? byDate.get(c.date) : undefined
+            const isSel = c.date && c.date === selectedDay
+            return (
+              <button key={i} type="button" disabled={!c.date}
+                onClick={() => c.date && setSelectedDay(c.date === selectedDay ? null : c.date)}
+                className={`rounded-lg border p-1.5 text-left flex flex-col transition-colors ${
+                  c.date === null ? 'border-transparent'
+                    : isSel ? 'border-[#1a472a] bg-green-50'
+                    : c.isToday ? 'border-green-300 bg-green-50/40'
+                    : 'border-gray-100 hover:bg-gray-50'
+                }`}>
+                {c.date && <span className="text-[11px] font-medium text-gray-600">{parseInt(c.date.slice(8, 10), 10)}</span>}
+                {e && (
+                  <div className="mt-auto space-y-0.5">
+                    <span className="block text-[10px] font-semibold text-white rounded px-1 py-0.5" style={{ background: '#1a472a' }}>{e.submitted} leave{e.submitted === 1 ? '' : 's'}</span>
+                    {e.approved > 0 && <span className="block text-[10px] font-semibold rounded px-1 py-0.5" style={{ background: '#e6f4ea', color: '#1a472a' }}>{e.approved} approved</span>}
+                  </div>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {selectedDay && (
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+          <h3 className="text-sm font-bold mb-3" style={{ color: '#1a472a' }}>
+            {new Date(selectedDay + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+            {' · '}{selected?.submitted ?? 0} submitted, {selected?.approved ?? 0} approved
+          </h3>
+          {!selected || selected.items.length === 0 ? (
+            <p className="text-sm text-gray-400">No leave requests on this day.</p>
+          ) : (
+            <div className="space-y-2">
+              {selected.items.map(l => (
+                <div key={l.id} className="flex items-center gap-3 border border-gray-100 rounded-xl px-3 py-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-gray-800 truncate">{l.user_name || l.user_id}</p>
+                    <p className="text-[11px] text-gray-500 truncate">{l.is_half_day ? 'Half day' : 'Full day'}{l.reason ? ` — ${l.reason}` : ''}</p>
+                  </div>
+                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0"
+                    style={l.status === 'approved' ? { background: '#e6f4ea', color: '#1a472a' }
+                      : l.status === 'rejected' ? { background: '#fde8e8', color: '#b91c1c' }
+                      : { background: '#fef3c7', color: '#92400e' }}>
+                    {l.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }

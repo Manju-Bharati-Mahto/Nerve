@@ -103,6 +103,9 @@ export function getRoleDashboard(role: AppRole | null, team: AppTeam | null): st
   if (role === 'branding_reports_admin') return '/branding/dashboard'
   if (role === 'admin')                 return team === 'content' ? '/content/dashboard'   : '/branding/dashboard'
   if (role === 'sub_admin')             return team === 'content' ? '/content/sub-admin'   : '/branding/sub-admin'
+  // Task Owner: a branding lead variant with project-assign rights. Lands on
+  // the shared branding dashboard (projects / reports / team / assign).
+  if (role === 'task_owner')            return '/branding/user'
   if (role === 'user')                  return team === 'content' ? '/content/user'        : '/branding/user'
   return '/login'
 }
