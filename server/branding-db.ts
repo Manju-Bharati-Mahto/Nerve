@@ -287,6 +287,9 @@ export async function bootstrapBrandingDatabase() {
   await pool.query(`ALTER TABLE branding_projects ADD COLUMN IF NOT EXISTS type_of_work TEXT NOT NULL DEFAULT ''`);
   await pool.query(`ALTER TABLE branding_projects ADD COLUMN IF NOT EXISTS sub_category TEXT NOT NULL DEFAULT ''`);
   await pool.query(`ALTER TABLE branding_projects ADD COLUMN IF NOT EXISTS specific_work TEXT NOT NULL DEFAULT ''`);
+  // Optional supervising lead ("Assign Lead" dropdown). Does NOT get a daily
+  // report row — purely a supervisory link shown on the project.
+  await pool.query(`ALTER TABLE branding_projects ADD COLUMN IF NOT EXISTS assigned_lead_id TEXT REFERENCES users(id) ON DELETE SET NULL`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS branding_project_assignments (
@@ -298,6 +301,10 @@ export async function bootstrapBrandingDatabase() {
       UNIQUE(project_id, user_id)
     )
   `);
+  // Per-assignment completion (req 6): each assigned designer/lead marks their
+  // own copy complete. Pending until they do. Idempotent migration.
+  await pool.query(`ALTER TABLE branding_project_assignments ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'`);
+  await pool.query(`ALTER TABLE branding_project_assignments ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS branding_report_row_comments (
@@ -692,14 +699,19 @@ async function carryOverPausedRows(
   for (const src of pausedRows.rows) {
     if (alreadyCarried.has(src.id)) continue;
     const id = generateId("drr");
+    // Daily reset (req 2): the continued task starts today's timer at 0. Prior
+    // days' time already lives on their own rows and is summed for the monthly
+    // total, so we do NOT copy elapsed_seconds/time_taken forward — that would
+    // both inflate today's timer and double-count in the month. The
+    // carried_over_from_row_id link is kept to mark it as a continuation.
     await pool.query(
       `INSERT INTO daily_report_rows
          (id, report_id, sr_no, type_of_work, sub_category, specific_work, time_taken,
           collaborative_colleagues, stopwatch_status, elapsed_seconds, stopwatch_started_at,
           carried_over_from_row_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'paused', $9, NULL, $10)`,
+       VALUES ($1, $2, $3, $4, $5, $6, '', $7, 'paused', 0, NULL, $8)`,
       [id, todayReportId, nextSrNo, src.type_of_work, src.sub_category, src.specific_work,
-       src.time_taken, src.collaborative_colleagues, src.elapsed_seconds, src.id]
+       src.collaborative_colleagues, src.id]
     );
     nextSrNo += 1;
   }
@@ -1664,6 +1676,12 @@ export async function getTeamReportStatus(date: string, managedBy: string | null
 
 // ── Projects ───────────────────────────────────────────────────────────────
 
+export interface ProjectAssignment {
+  user_id: string;
+  status: "pending" | "completed";
+  completed_at: string | null;
+}
+
 export interface BrandingProject {
   id: string;
   name: string;
@@ -1673,9 +1691,13 @@ export interface BrandingProject {
   type_of_work: string;
   sub_category: string;
   specific_work: string;
+  assigned_lead_id: string | null;
   created_by: string;
   created_at: string;
   assigned_user_ids: string[];
+  // Per-assignee completion state (req 6). assigned_user_ids is kept as the
+  // id list for back-compat; `assignments` carries the status per designer.
+  assignments: ProjectAssignment[];
 }
 
 interface ProjectRow {
@@ -1687,24 +1709,42 @@ interface ProjectRow {
   type_of_work: string;
   sub_category: string;
   specific_work: string;
+  assigned_lead_id: string | null;
   created_by: string;
   created_at: string;
 }
 
-export async function listBrandingProjects(): Promise<BrandingProject[]> {
+/**
+ * Lists projects. When `forUserId` is provided (non-admin viewers), only
+ * projects that user is involved in are returned — assigned as a designer,
+ * set as the supervising lead, or the creator (req 5 access restriction).
+ */
+export async function listBrandingProjects(forUserId?: string): Promise<BrandingProject[]> {
   const projects = await pool.query<ProjectRow>(
     `SELECT * FROM branding_projects ORDER BY created_at DESC`
   );
-  const assignments = await pool.query<{ project_id: string; user_id: string }>(
-    `SELECT project_id, user_id FROM branding_project_assignments`
+  const assignments = await pool.query<{ project_id: string; user_id: string; status: string; completed_at: string | null }>(
+    `SELECT project_id, user_id, status, completed_at FROM branding_project_assignments`
   );
-  return projects.rows.map(p => ({
-    ...p,
-    status: p.status as BrandingProject["status"],
-    assigned_user_ids: assignments.rows
-      .filter(a => a.project_id === p.id)
-      .map(a => a.user_id),
-  }));
+  const mapped = projects.rows.map(p => {
+    const mine = assignments.rows.filter(a => a.project_id === p.id);
+    return {
+      ...p,
+      status: p.status as BrandingProject["status"],
+      assigned_user_ids: mine.map(a => a.user_id),
+      assignments: mine.map(a => ({
+        user_id: a.user_id,
+        status: (a.status === "completed" ? "completed" : "pending") as ProjectAssignment["status"],
+        completed_at: a.completed_at,
+      })),
+    };
+  });
+  if (!forUserId) return mapped;
+  return mapped.filter(p =>
+    p.created_by === forUserId ||
+    p.assigned_lead_id === forUserId ||
+    p.assigned_user_ids.includes(forUserId)
+  );
 }
 
 export async function createBrandingProject(
@@ -1713,13 +1753,13 @@ export async function createBrandingProject(
   deadline: string | null,
   createdBy: string,
   assignedUserIds: string[],
-  work: { typeOfWork?: string; subCategory?: string; specificWork?: string } = {}
+  work: { typeOfWork?: string; subCategory?: string; specificWork?: string; assignedLeadId?: string | null } = {}
 ): Promise<BrandingProject> {
   const id = generateId("proj");
   await pool.query(
-    `INSERT INTO branding_projects (id, name, description, deadline, created_by, type_of_work, sub_category, specific_work)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-    [id, name, description, deadline || null, createdBy, work.typeOfWork ?? "", work.subCategory ?? "", work.specificWork ?? ""]
+    `INSERT INTO branding_projects (id, name, description, deadline, created_by, type_of_work, sub_category, specific_work, assigned_lead_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [id, name, description, deadline || null, createdBy, work.typeOfWork ?? "", work.subCategory ?? "", work.specificWork ?? "", work.assignedLeadId ?? null]
   );
   for (const userId of assignedUserIds) {
     await pool.query(
@@ -1730,6 +1770,29 @@ export async function createBrandingProject(
   }
   const all = await listBrandingProjects();
   return all.find(p => p.id === id)!;
+}
+
+/**
+ * Marks one assignee's copy of a project complete (req 6). Returns the updated
+ * project, or null if the user has no assignment on it. If every assignment is
+ * then complete, the project's own status is flipped to 'completed' too.
+ */
+export async function completeProjectAssignment(projectId: string, userId: string): Promise<BrandingProject | null> {
+  const upd = await pool.query(
+    `UPDATE branding_project_assignments SET status = 'completed', completed_at = NOW()
+      WHERE project_id = $1 AND user_id = $2`,
+    [projectId, userId]
+  );
+  if ((upd.rowCount ?? 0) === 0) return null;
+  const remaining = await pool.query<{ n: string }>(
+    `SELECT COUNT(*) AS n FROM branding_project_assignments WHERE project_id = $1 AND status <> 'completed'`,
+    [projectId]
+  );
+  if (Number(remaining.rows[0].n) === 0) {
+    await pool.query(`UPDATE branding_projects SET status = 'completed' WHERE id = $1`, [projectId]);
+  }
+  const all = await listBrandingProjects();
+  return all.find(p => p.id === projectId) ?? null;
 }
 
 export async function updateBrandingProject(

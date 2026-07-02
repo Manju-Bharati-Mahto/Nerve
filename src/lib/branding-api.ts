@@ -190,10 +190,14 @@ export const brandingApi = {
     req<{ project: BrandingProject }>(`/projects/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   deleteProject: (id: string) =>
     req<{ ok: boolean }>(`/projects/${id}`, { method: "DELETE" }),
-  // Capability-gated: create + assign a project to designers; seeds a daily-report
-  // row for each on the given work date.
-  assignProject: (data: { name: string; description?: string; deadline?: string; type_of_work: string; sub_category: string; specific_work: string; assigned_user_ids: string[]; work_date: string }) =>
+  // Capability-gated: create + assign a project to designers/leads; seeds a
+  // daily-report row for each "assign to designers" assignee on the work date.
+  // `assign_lead_id` is an optional supervisory lead that gets NO report row.
+  assignProject: (data: { name: string; description?: string; deadline?: string; type_of_work: string; sub_category: string; specific_work: string; assigned_user_ids: string[]; assign_lead_id?: string | null; work_date: string }) =>
     req<{ project: BrandingProject }>("/projects/assign", { method: "POST", body: JSON.stringify(data) }),
+  // The current user marks their assignment on a project complete (req 6).
+  completeProject: (id: string) =>
+    req<{ project: BrandingProject }>(`/projects/${id}/complete`, { method: "POST" }),
 
   // ── Report row comments (lead → member feedback) ───────────────────────
   getRowComments: (rowIds: string[]) => {

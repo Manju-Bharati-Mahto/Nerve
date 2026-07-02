@@ -116,6 +116,11 @@ const App = () => (
                   <BrandingAdminDashboard />
                 </RoleGuard>
               } />
+              <Route path="/branding/leave-calendar" element={
+                <RoleGuard allowed={['super_admin', 'admin']} team="branding">
+                  <BrandingAdminDashboard />
+                </RoleGuard>
+              } />
               <Route path="/branding/categories" element={
                 <RoleGuard
                   allowed={['super_admin', 'admin', 'branding_reports_admin']}
@@ -127,7 +132,7 @@ const App = () => (
               } />
               <Route path="/branding/projects" element={
                 <RoleGuard
-                  allowed={['super_admin', 'admin']}
+                  allowed={['super_admin', 'admin', 'task_owner']}
                   team="branding"
                   anyCapability={['branding:assign_projects']}
                 >
@@ -137,24 +142,24 @@ const App = () => (
                 </RoleGuard>
               } />
               <Route path="/branding/sub-admin" element={
-                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding">
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'task_owner']} team="branding">
                   <BrandingSubAdminDashboard />
                 </RoleGuard>
               } />
               <Route path="/branding/user" element={
-                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']} team="branding">
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user', 'task_owner']} team="branding">
                   <BrandingUserDashboard />
                 </RoleGuard>
               } />
               <Route path="/branding/team" element={
-                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding">
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'task_owner']} team="branding">
                   <MaybeBrandingAdminShell>
                     <BrandingTeamPanel />
                   </MaybeBrandingAdminShell>
                 </RoleGuard>
               } />
               <Route path="/branding/browse" element={
-                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']} team="branding">
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user', 'task_owner']} team="branding">
                   <MaybeBrandingAdminShell>
                     <BrandingBrowse />
                   </MaybeBrandingAdminShell>

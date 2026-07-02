@@ -179,6 +179,12 @@ export interface MemberReportStatus {
   has_submitted: boolean;
 }
 
+export interface ProjectAssignment {
+  user_id: string;
+  status: "pending" | "completed";
+  completed_at: string | null;
+}
+
 export interface BrandingProject {
   id: string;
   name: string;
@@ -188,9 +194,11 @@ export interface BrandingProject {
   type_of_work: string;
   sub_category: string;
   specific_work: string;
+  assigned_lead_id: string | null;
   created_by: string;
   created_at: string;
   assigned_user_ids: string[];
+  assignments: ProjectAssignment[];
 }
 
 // Lead-authored per-row feedback on a member's daily report.
@@ -259,21 +267,15 @@ export function formatElapsed(seconds: number): string {
 // Compact form used as `time_taken` once a stopwatch finishes/pauses.
 // Examples: "30s", "2m 15s", "1h 5m". Always reflects what was tracked,
 // even sub-minute, so a row paused at 30s shows "30s" not "0m".
-// Per-day elapsed for a stopwatch row whose work may span multiple days
-// via the carry-over chain. `elapsed_seconds` is cumulative — this
-// subtracts the source row's cumulative so the caller gets just the
-// portion tracked on the day of `row`. If the source row isn't in the
-// supplied report set (filter window doesn't include the prior day),
-// falls back to the cumulative value.
+// Per-day elapsed for a stopwatch row. `elapsed_seconds` is now stored
+// per-day (a carried-over continuation resets to 0 at the start of each new
+// day — see carryOverPausedRows), so a row's elapsed_seconds already IS its
+// day's time. Kept as a helper so call sites read clearly; the second arg is
+// unused now but retained for signature compatibility.
 export function perDayElapsedSeconds(
   row: { elapsed_seconds: number; carried_over_from_row_id: string | null },
-  allReports: { rows?: { id: string; elapsed_seconds: number }[] }[],
+  _allReports?: { rows?: { id: string; elapsed_seconds: number }[] }[],
 ): number {
-  if (!row.carried_over_from_row_id) return row.elapsed_seconds;
-  for (const rep of allReports) {
-    const src = rep.rows?.find(r => r.id === row.carried_over_from_row_id);
-    if (src) return Math.max(0, row.elapsed_seconds - src.elapsed_seconds);
-  }
   return row.elapsed_seconds;
 }
 

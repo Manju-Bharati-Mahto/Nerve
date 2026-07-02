@@ -114,6 +114,7 @@ import {
   updateBrandingProject,
   deleteBrandingProject,
   createAssignedReportRow,
+  completeProjectAssignment,
   listRowComments,
   createRowComment,
   updateRowComment,
@@ -211,7 +212,7 @@ type SessionRequest = express.Request & {
   session: express.Request["session"] & { userId?: string };
 };
 
-const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "branding_reports_admin"] as const;
+const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "branding_reports_admin", "task_owner"] as const;
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -319,7 +320,7 @@ async function getSessionUser(req: SessionRequest) {
 }
 
 function isBrandingManager(role: AppRole, team: string | null) {
-  return role === "super_admin" || (team === "branding" && (role === "admin" || role === "sub_admin" || role === "user"));
+  return role === "super_admin" || (team === "branding" && (role === "admin" || role === "sub_admin" || role === "user" || role === "task_owner"));
 }
 
 function canCreateManagedUser(
@@ -329,7 +330,7 @@ function canCreateManagedUser(
   if (!actor) return false;
   if (actor.role === "super_admin") return true;
   if (actor.role !== "admin") return false;
-  return actor.team !== null && payload.team === actor.team && ["sub_admin", "user"].includes(payload.role);
+  return actor.team !== null && payload.team === actor.team && ["sub_admin", "user", "task_owner"].includes(payload.role);
 }
 
 app.get("/api/health", (_req, res) => {
@@ -656,8 +657,8 @@ app.patch("/api/users/:id", asyncHandler(async (req, res) => {
     if (!target || target.team !== "branding") {
       return sendError(res, 403, "You can only modify members of your own team.");
     }
-    if (parsed.data.role && !["user", "sub_admin"].includes(parsed.data.role)) {
-      return sendError(res, 403, "You can only assign the user or team_lead role.");
+    if (parsed.data.role && !["user", "sub_admin", "task_owner"].includes(parsed.data.role)) {
+      return sendError(res, 403, "You can only assign the designer, lead or task-owner role.");
     }
     if (parsed.data.team && parsed.data.team !== "branding") {
       return sendError(res, 403, "You cannot move users out of the branding team.");
@@ -851,6 +852,8 @@ async function requireBrandingCategoryManager(res: express.Response): Promise<bo
 async function requireBrandingProjectAssigner(res: express.Response): Promise<boolean> {
   const u = res.locals.currentUser;
   if (isBrandingAdminOrSuper(u.role, u.team)) return true;
+  // Task owners are leads with built-in assign rights.
+  if (u.team === "branding" && u.role === "task_owner") return true;
   if (u.team === "branding") {
     const caps = await listUserCapabilities(u.id);
     if (caps.includes("branding:assign_projects")) return true;
@@ -858,10 +861,16 @@ async function requireBrandingProjectAssigner(res: express.Response): Promise<bo
   sendError(res, 403, "You need the 'Assign Projects' capability to do that.");
   return false;
 }
+// Branding "lead" roles: team leads (sub_admin) and task owners (a lead variant
+// with built-in project-assign rights). Used wherever lead-level access applies.
+function isBrandingLeadRole(role: AppRole, team: string | null): boolean {
+  return team === "branding" && (role === "sub_admin" || role === "task_owner");
+}
 function requireBrandingLead(res: express.Response): boolean {
   const u = res.locals.currentUser;
   const ok = u.role === "super_admin" ||
-    (u.team === "branding" && (u.role === "admin" || u.role === "sub_admin"));
+    (u.team === "branding" && u.role === "admin") ||
+    isBrandingLeadRole(u.role, u.team);
   if (!ok) { sendError(res, 403, "Branding lead or admin access only."); return false; }
   return true;
 }
@@ -1315,7 +1324,11 @@ app.delete("/api/branding/portal/designs/:id", asyncHandler(async (req, res) => 
 
 app.get("/api/branding/portal/projects", asyncHandler(async (_req, res) => {
   if (!requireBranding(res)) return;
-  res.json({ projects: await listBrandingProjects() });
+  // Access restriction (req 5): admins/head see all projects; designers, leads
+  // and task owners see only projects they're assigned to, supervise, or created.
+  const u = res.locals.currentUser;
+  const seesAll = isBrandingReportsAdminOrAdminOrSuper(u.role, u.team);
+  res.json({ projects: await listBrandingProjects(seesAll ? undefined : u.id) });
 }));
 
 // When a lead (sub_admin) creates/updates a project, they can only assign it
@@ -1396,10 +1409,10 @@ app.put("/api/branding/portal/projects/:id", asyncHandler(async (req, res) => {
 // daily report.)
 app.post("/api/branding/portal/projects/assign", asyncHandler(async (req, res) => {
   if (!(await requireBrandingProjectAssigner(res))) return;
-  const { name, description, deadline, type_of_work, sub_category, specific_work, assigned_user_ids, work_date } = req.body as {
+  const { name, description, deadline, type_of_work, sub_category, specific_work, assigned_user_ids, assign_lead_id, work_date } = req.body as {
     name: string; description?: string; deadline?: string;
     type_of_work?: string; sub_category?: string; specific_work?: string;
-    assigned_user_ids?: string[]; work_date?: string;
+    assigned_user_ids?: string[]; assign_lead_id?: string | null; work_date?: string;
   };
   if (!name?.trim()) return sendError(res, 400, "Project name is required.");
   const typeOfWork = type_of_work?.trim() ?? "";
@@ -1412,19 +1425,39 @@ app.post("/api/branding/portal/projects/assign", asyncHandler(async (req, res) =
     return sendError(res, 400, "A valid work date (YYYY-MM-DD) is required.");
   }
   const actor = res.locals.currentUser;
+  // "Assign to designers" now accepts designers AND leads; each gets a report row.
   const scoped = await scopeAssignmentsForActor(actor, assigned_user_ids ?? []);
   if (scoped.length === 0) {
-    return sendError(res, 400, "Assign the project to at least one designer you manage.");
+    return sendError(res, 400, "Assign the project to at least one designer or lead you manage.");
+  }
+  // "Assign Lead" (optional, supervisory) — must be a lead-role branding member
+  // and does NOT get a daily-report row (req 4).
+  let leadId: string | null = null;
+  if (assign_lead_id) {
+    const lead = await getUserById(assign_lead_id);
+    if (lead && lead.team === "branding" && (lead.role === "sub_admin" || lead.role === "task_owner")) {
+      leadId = lead.id;
+    }
   }
   const project = await createBrandingProject(
     name.trim(), description?.trim() ?? "", deadline || null, actor.id, scoped,
-    { typeOfWork, subCategory, specificWork },
+    { typeOfWork, subCategory, specificWork, assignedLeadId: leadId },
   );
-  // Seed each assigned designer's daily report for the chosen work date.
+  // Seed a daily-report row for each "assign to designers" assignee (designers
+  // and leads picked there) — but NOT for the supervisory Assign-Lead.
   for (const designerId of scoped) {
     await createAssignedReportRow({ designerId, workDate: work_date, typeOfWork, subCategory, specificWork });
   }
   res.status(201).json({ project });
+}));
+
+// Mark the current user's assignment on a project complete (req 6).
+app.post("/api/branding/portal/projects/:id/complete", asyncHandler(async (req, res) => {
+  if (!requireBranding(res)) return;
+  const id = getSingleParam(req.params.id);
+  const project = await completeProjectAssignment(id, res.locals.currentUser.id);
+  if (!project) return sendError(res, 404, "You have no assignment on this project.");
+  res.json({ project });
 }));
 
 app.delete("/api/branding/portal/projects/:id", asyncHandler(async (req, res) => {

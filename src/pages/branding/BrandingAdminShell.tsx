@@ -8,7 +8,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import {
-  Palette, BarChart2, Award, CalendarOff, Settings2, FolderPlus,
+  Palette, BarChart2, Award, CalendarOff, CalendarDays, Settings2, FolderPlus,
   Search, Users, Download, LogOut, User as UserIcon, Bell, X, ArrowLeft,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
@@ -35,6 +35,7 @@ const MENU: NavLink[] = [
   { path: '/branding/dashboard',  label: 'Daily Reports',     icon: BarChart2,    requiresCapability: ['branding:view_team_dashboard'] },
   { path: '/branding/kra',        label: 'KRA Management',    icon: Award,        adminOnly: true },
   { path: '/branding/leaves',     label: 'Leave Requests',    icon: CalendarOff,  adminOnly: true },
+  { path: '/branding/leave-calendar', label: 'Leave Calendar', icon: CalendarDays, adminOnly: true },
   { path: '/branding/categories', label: 'Manage Categories', icon: Settings2,    requiresCapability: ['branding:manage_categories'] },
   { path: '/branding/projects',   label: 'Assign Projects',   icon: FolderPlus,   requiresCapability: ['branding:assign_projects'] },
 ]
@@ -56,12 +57,16 @@ export default function BrandingAdminShell({ children }: { children: React.React
   // a specific admin feature. The shell renders, but the sidebar is filtered
   // to only the tabs they can actually use.
   const userCaps = profile?.capabilities ?? []
+  // Task owners are leads with built-in project-assign rights — they always see
+  // the Assign Projects tab even without an explicit capability grant.
+  const isTaskOwner = role === 'task_owner'
   const canSee = (item: NavLink): boolean => {
     if (isFullAdmin) {
       // Full admins see everything except the items reserved for higher-tier
       // admin (currently `adminOnly` excludes reports-admin).
       return !item.adminOnly || !isReportsAdmin
     }
+    if (isTaskOwner && item.requiresCapability?.includes('branding:assign_projects')) return true
     // Non-admin: only show items unlocked by an explicit capability grant.
     return !!item.requiresCapability?.some(c => userCaps.includes(c))
   }
