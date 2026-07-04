@@ -182,6 +182,19 @@ export async function fetchInstagramPostsByUrls(urls: string[]): Promise<ApifyPo
   if (!Array.isArray(data)) {
     throw new Error("Apify returned an unexpected payload shape.");
   }
+  // Diagnostic: set OUTREACH_SYNC_DEBUG=true to log every numeric field the
+  // actor returns per post. Used to identify which key holds Instagram's
+  // unified "Views" when the displayed count looks too low.
+  if (process.env.OUTREACH_SYNC_DEBUG === "true") {
+    for (const item of data as Record<string, unknown>[]) {
+      const nums = Object.fromEntries(
+        Object.entries(item).filter(([, v]) => typeof v === "number"),
+      );
+      console.log(
+        `[apify-debug] post ${String(item.shortCode ?? item.url ?? "?")} numeric fields: ${JSON.stringify(nums)}`,
+      );
+    }
+  }
   return data as ApifyPostResult[];
 }
 

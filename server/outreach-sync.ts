@@ -49,24 +49,50 @@ export interface SyncOptions {
   handles?: string[];
   /** How many recent posts to fetch per profile. Apify is paid; default 30. */
   resultsLimit?: number;
+  /**
+   * When true, also re-scrape every tracked live post by permalink (extra paid
+   * Apify Post Scraper runs). Only the scheduled 9AM/5PM runs set this — manual
+   * "Sync now" leaves it off to keep interactive syncs cheap (profile data only).
+   */
+  refreshLivePosts?: boolean;
 }
 
 const BATCH_SIZE = 20;
 
 /**
- * The true public "views" for a post. Instagram exposes up to two view-ish
- * fields, and either can be zero or absent depending on post type and actor
- * version:
- *   videoPlayCount  → the big number IG now shows publicly as "views" (reels)
- *   videoViewCount  → an older, usually-smaller count (often missing)
- * We take the LARGER of the two rather than a `??` chain: a present-but-zero
- * videoPlayCount would otherwise shadow a real videoViewCount and report 0
- * views. Returns null only when NEITHER field is present, so callers can keep
- * an existing value instead of zeroing it out.
+ * The true public "views" for a post. Instagram's reel "Views" (the big number
+ * shown on the app) is reported by Apify under different keys across post types
+ * and actor versions — videoPlayCount, videoViewCount, igPlayCount, playCount,
+ * viewCount, and sometimes a bare `views` — and any given field can be zero,
+ * absent, or an older/smaller count that doesn't match the unified "Views".
+ *
+ * Rather than a fixed `??` chain (which a present-but-zero field would shadow,
+ * and which misses whatever key the actor actually populated), we scan every
+ * top-level numeric field whose name looks like a view/play/impression count
+ * and take the LARGEST — that's the public "Views" number. Returns null only
+ * when no such field is present, so callers can keep an existing value instead
+ * of zeroing it out.
  */
-function bestViewCount(post: { videoPlayCount?: number; videoViewCount?: number }): number | null {
-  if (post.videoPlayCount == null && post.videoViewCount == null) return null;
-  return Math.max(post.videoPlayCount ?? 0, post.videoViewCount ?? 0);
+function isViewCountKey(key: string): boolean {
+  const k = key.toLowerCase();
+  return (
+    k.includes("playcount") ||
+    k.includes("viewcount") ||
+    k.includes("impressioncount") ||
+    k === "views" || k === "plays" || k === "impressions" ||
+    k === "viewscount" || k === "playscount" || k === "viewcount" || k === "playcount"
+  );
+}
+
+function bestViewCount(post: unknown): number | null {
+  if (!post || typeof post !== "object") return null;
+  let best: number | null = null;
+  for (const [key, value] of Object.entries(post as Record<string, unknown>)) {
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0 && isViewCountKey(key)) {
+      if (best === null || value > best) best = value;
+    }
+  }
+  return best;
 }
 
 export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> {
@@ -130,10 +156,15 @@ export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> 
 
   // The profile scrape above only sees each account's most-recent posts, so a
   // tracked live post that has since scrolled past that window would never get
-  // fresh numbers. Re-scrape the operator-curated live posts by permalink so
-  // the dashboard's reach/views KPIs actually move on every sync.
-  const pageIds = opts.handles && opts.handles.length > 0 ? targetPages.map(p => p.id) : undefined;
-  const { refreshed } = await refreshLivePostMetrics(pageIds);
+  // fresh numbers. Re-scrape the operator-curated live posts by permalink to
+  // move the dashboard's reach/views KPIs — but ONLY on the scheduled runs
+  // (opts.refreshLivePosts): those extra Post Scraper calls are the expensive
+  // part, so manual "Sync now" skips them and just re-pulls profile data.
+  let refreshed = 0;
+  if (opts.refreshLivePosts) {
+    const pageIds = opts.handles && opts.handles.length > 0 ? targetPages.map(p => p.id) : undefined;
+    ({ refreshed } = await refreshLivePostMetrics(pageIds));
+  }
 
   return {
     ok: true,
@@ -252,7 +283,9 @@ export async function maybeRunScheduledSync(): Promise<{ slot: string; result: S
     const inWindow = minutes >= slot.minutes && minutes < slot.minutes + SYNC_WINDOW_MINUTES;
     if (inWindow && !completedSyncSlots.has(key)) {
       completedSyncSlots.add(key); // mark before awaiting to prevent a double-fire
-      const result = await syncOutreach({});
+      // Scheduled runs do the full refresh, including the paid per-post
+      // re-scrape that keeps live-post reach/views current.
+      const result = await syncOutreach({ refreshLivePosts: true });
       return { slot: slot.label, result };
     }
   }
