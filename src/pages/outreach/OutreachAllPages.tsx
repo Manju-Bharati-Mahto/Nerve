@@ -37,7 +37,6 @@ export default function OutreachAllPages() {
     // user sees the relevant set right away.
     searchParams.get('filter') === 'idle' ? 'idle' : 'all',
   )
-  const [inventoryFilter, setInventoryFilter] = useState<'all' | 'assigned' | 'available'>('all')
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: 'consumed', dir: 'desc' })
   const [creating, setCreating] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -67,8 +66,6 @@ export default function OutreachAllPages() {
       if (tier && page.followerTier !== tier) return false
       if (geography && page.geography !== geography) return false
       if (invStatus !== 'all' && m.status !== invStatus) return false
-      if (inventoryFilter === 'assigned' && !assigned.has(page.id)) return false
-      if (inventoryFilter === 'available' && assigned.has(page.id)) return false
       // Content-type filter: page must have AT LEAST ONE of the selected types.
       if (contentTypeFilter.size > 0 && !page.contentTypes.some(t => contentTypeFilter.has(t))) return false
       return true
@@ -96,7 +93,7 @@ export default function OutreachAllPages() {
       return ((av as number) - (bv as number)) * dir
     })
     return filtered
-  }, [pages, posts, search, tier, contentTypeFilter, geography, invStatus, inventoryFilter, assigned, sort])
+  }, [pages, posts, search, tier, contentTypeFilter, geography, invStatus, sort])
 
   async function confirmDelete(page: OutreachPage) {
     const linked = posts.filter(p => p.pageId === page.id).length
@@ -179,11 +176,6 @@ export default function OutreachAllPages() {
             <option value="under-used">Under-used</option>
             <option value="idle">Idle</option>
           </select>
-          <select value={inventoryFilter} onChange={e => setInventoryFilter(e.target.value as typeof inventoryFilter)} className="hub-input py-1.5 text-xs w-36">
-            <option value="all">All inventory</option>
-            <option value="assigned">Assigned</option>
-            <option value="available">Available</option>
-          </select>
           <span className="text-xs text-muted-foreground ml-auto">{rows.length} pages</span>
         </div>
         {/* Content-type chips — multi-select. Page matches if it has at least
@@ -217,24 +209,32 @@ export default function OutreachAllPages() {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-[11px] uppercase tracking-widest text-muted-foreground border-b border-border">
-              <Th label="Handle"      sk="handle"    sort={sort} onClick={toggleSort} />
-              <Th label="Tier"        sk="tier"      sort={sort} onClick={toggleSort} />
-              <Th label="Geography"   sk="geography" sort={sort} onClick={toggleSort} />
-              <Th label="Total inv."  sk="total"     sort={sort} onClick={toggleSort} className="text-right" />
-              <Th label="Consumed"    sk="consumed"  sort={sort} onClick={toggleSort} className="text-right" />
-              <Th label="AI suggested / mo" sk="suggested" sort={sort} onClick={toggleSort} className="text-right" />
-              <Th label="Status"      sk="status"    sort={sort} onClick={toggleSort} />
-              <th className="px-3 py-2">Inventory</th>
+              <Th label="Total Inventory"    sk="total"     sort={sort} onClick={toggleSort} className="text-right" />
+              <Th label="Consumed Inventory" sk="consumed"  sort={sort} onClick={toggleSort} className="text-right" />
+              <Th label="Page Name"          sk="handle"    sort={sort} onClick={toggleSort} />
+              <Th label="Tier"               sk="tier"      sort={sort} onClick={toggleSort} />
+              <Th label="Geography"          sk="geography" sort={sort} onClick={toggleSort} />
+              <Th label="AI Suggestion"      sk="suggested" sort={sort} onClick={toggleSort} className="text-right" />
+              <Th label="Status"             sk="status"    sort={sort} onClick={toggleSort} />
               <th className="px-3 py-2 w-8"></th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
-              <tr><td colSpan={9} className="px-3 py-12 text-center text-sm text-muted-foreground">No pages match these filters.</td></tr>
+              <tr><td colSpan={8} className="px-3 py-12 text-center text-sm text-muted-foreground">No pages match these filters.</td></tr>
             ) : rows.map(({ page, m, consumed, suggested }) => (
               <tr key={page.id} className={`border-b border-border last:border-0 transition-colors ${
                 highlightIds.has(page.id) ? 'bg-orange-50 hover:bg-orange-100' : 'hover:bg-accent/40'
               }`}>
+                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground whitespace-nowrap">
+                  {page.inventoryPosts} <span className="text-[10px] text-muted-foreground">(Posts)</span>
+                  <span className="text-muted-foreground"> & </span>
+                  {page.inventoryStories} <span className="text-[10px] text-muted-foreground">(Stories)</span>
+                </td>
+                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground">
+                  {consumed}
+                  <span className="text-[10px] text-muted-foreground"> ({Math.round(m.pctConsumed * 100)}%)</span>
+                </td>
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-1.5">
                     <Link to={`/outreach/pages/${page.id}`} className="text-xs font-medium text-foreground hover:underline">@{page.handle}</Link>
@@ -251,26 +251,12 @@ export default function OutreachAllPages() {
                   <span className="hub-badge bg-orange-50 text-orange-700 text-[10px]">Tier {page.followerTier}</span>
                 </td>
                 <td className="px-3 py-2.5 text-xs text-foreground">{page.geography}</td>
-                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground whitespace-nowrap">
-                  {page.inventoryPosts} <span className="text-[10px] text-muted-foreground">(Posts)</span>
-                  <span className="text-muted-foreground"> & </span>
-                  {page.inventoryStories} <span className="text-[10px] text-muted-foreground">(Stories)</span>
-                </td>
-                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground">
-                  {consumed}
-                  <span className="text-[10px] text-muted-foreground"> ({Math.round(m.pctConsumed * 100)}%)</span>
-                </td>
                 <td className="px-3 py-2.5 text-right">
                   <span className="inline-flex items-center gap-1 text-xs font-mono tabular-nums text-foreground">
                     <Sparkles className="w-3 h-3 text-amber-500" /> {suggested}
                   </span>
                 </td>
                 <td className="px-3 py-2.5"><StatusBadge status={m.status} /></td>
-                <td className="px-3 py-2.5">
-                  {assigned.has(page.id)
-                    ? <span className="hub-badge bg-blue-100 text-blue-700">Assigned</span>
-                    : <span className="hub-badge bg-emerald-100 text-emerald-700">Available</span>}
-                </td>
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-1">
                     <button onClick={() => setLivePostsPageId(page.id)}

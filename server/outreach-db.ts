@@ -865,6 +865,46 @@ export async function upsertPostByInstagramId(input: UpsertPostInput): Promise<O
   return mapPostRow(rows[0]);
 }
 
+/**
+ * Live (operator-curated) posts that still carry a permalink we can re-scrape.
+ * These are what the dashboard's reach/views KPIs are built from, so a "Sync
+ * now" needs to refresh exactly these rows. Optionally scoped to a set of page
+ * ids (used when a sync targets a subset of handles).
+ */
+export async function listLivePostsWithPermalink(pageIds?: string[]): Promise<OutreachPost[]> {
+  const scoped = pageIds && pageIds.length > 0;
+  const { rows } = await pool.query<OutreachPost>(
+    `SELECT * FROM outreach_posts
+       WHERE added_as_live = true
+         AND permalink IS NOT NULL AND permalink <> ''
+         ${scoped ? "AND page_id = ANY($1)" : ""}
+       ORDER BY date DESC`,
+    scoped ? [pageIds] : [],
+  );
+  return rows.map(mapPostRow);
+}
+
+/**
+ * Updates only the live metrics of an existing post (keyed by primary id), and
+ * bumps synced_at. Deliberately never touches page/creator/campaign/variant
+ * associations or added_as_live — used to refresh reach without re-attributing.
+ */
+export async function updatePostMetrics(
+  id: string,
+  metrics: { likes: number; comments: number; views: number; media_url?: string | null },
+): Promise<OutreachPost | null> {
+  const { rows } = await pool.query<OutreachPost>(
+    `UPDATE outreach_posts
+        SET likes = $2, comments = $3, views = $4,
+            media_url = COALESCE($5, media_url),
+            synced_at = NOW()
+      WHERE id = $1
+      RETURNING *`,
+    [id, metrics.likes, metrics.comments, metrics.views, metrics.media_url ?? null],
+  );
+  return rows[0] ? mapPostRow(rows[0]) : null;
+}
+
 export async function deletePost(id: string): Promise<void> {
   await pool.query(`DELETE FROM outreach_posts WHERE id = $1`, [id]);
 }

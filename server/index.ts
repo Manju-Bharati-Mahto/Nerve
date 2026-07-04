@@ -1863,11 +1863,11 @@ bootstrapDatabase()
       autoPauseRunningStopwatches()
         .then(n => { if (n > 0) console.log(`Auto-paused ${n} overdue running stopwatch(es).`); })
         .catch(e => console.error('Periodic auto-pause failed:', e));
-      // Outreach metrics auto-refresh at 9:30 AM and 4:30 PM IST. Self-gated so
+      // Outreach metrics auto-refresh at 9:00 AM and 5:00 PM IST. Self-gated so
       // it fires at most once per slot per day; the manual "Sync now" button is
       // unaffected. (Spec: Data & Sync Behaviour → Automatic Data Refresh.)
       maybeRunScheduledSync()
-        .then(r => { if (r) console.log(`Outreach auto-sync (${r.slot} IST): ${r.result.synced_pages} pages, ${r.result.upserted_posts} posts.`); })
+        .then(r => { if (r) console.log(`Outreach auto-sync (${r.slot} IST): ${r.result.synced_pages} pages, ${r.result.upserted_posts} posts, ${r.result.refreshed_live_posts} live posts refreshed.`); })
         .catch(e => console.error('Outreach auto-sync failed:', e));
     }, 5 * 60 * 1000).unref();
 
