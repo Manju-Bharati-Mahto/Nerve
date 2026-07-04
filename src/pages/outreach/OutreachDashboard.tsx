@@ -33,6 +33,7 @@ export default function OutreachDashboard() {
   const [stateFilter, setStateFilter] = useState('')
   const [syncing, setSyncing] = useState(false)
   const [syncErr, setSyncErr] = useState<string | null>(null)
+  const [syncMsg, setSyncMsg] = useState<string | null>(null)
 
   // State-wise filter (spec 1.1): when a state is selected every number on the
   // dashboard narrows to data from pages/campaigns in that state.
@@ -54,8 +55,11 @@ export default function OutreachDashboard() {
     if (syncing) return
     setSyncing(true)
     setSyncErr(null)
+    setSyncMsg(null)
     try {
-      await syncNow()
+      const result = await syncNow()
+      const n = result.refreshed_live_posts
+      setSyncMsg(`${n} live post${n === 1 ? '' : 's'} refreshed`)
     } catch (err) {
       setSyncErr(err instanceof Error ? err.message : 'Sync failed.')
     } finally {
@@ -203,6 +207,8 @@ export default function OutreachDashboard() {
               : mostRecentSync
                 ? `Last synced ${formatRelative(mostRecentSync)}`
                 : 'Not synced yet'}
+            {syncMsg && !syncErr && <span className="text-emerald-600"> · {syncMsg}</span>}
+            <span className="hidden sm:inline"> · auto-syncs 9 AM & 5 PM IST</span>
           </span>
         </div>
       </div>

@@ -15,6 +15,8 @@ import {
   listCampaigns,
   updatePage,
   upsertPostByInstagramId,
+  listLivePostsWithPermalink,
+  updatePostMetrics,
   getCampaign,
   getPage,
   getCreator,
@@ -38,6 +40,8 @@ export interface SyncResult {
   upserted_posts: number;
   skipped: { handle: string; reason: string }[];
   attribution: { matched: number; unmatched: number };
+  /** Tracked live posts whose metrics (reach/likes/comments) were refreshed. */
+  refreshed_live_posts: number;
 }
 
 export interface SyncOptions {
@@ -48,6 +52,22 @@ export interface SyncOptions {
 }
 
 const BATCH_SIZE = 20;
+
+/**
+ * The true public "views" for a post. Instagram exposes up to two view-ish
+ * fields, and either can be zero or absent depending on post type and actor
+ * version:
+ *   videoPlayCount  → the big number IG now shows publicly as "views" (reels)
+ *   videoViewCount  → an older, usually-smaller count (often missing)
+ * We take the LARGER of the two rather than a `??` chain: a present-but-zero
+ * videoPlayCount would otherwise shadow a real videoViewCount and report 0
+ * views. Returns null only when NEITHER field is present, so callers can keep
+ * an existing value instead of zeroing it out.
+ */
+function bestViewCount(post: { videoPlayCount?: number; videoViewCount?: number }): number | null {
+  if (post.videoPlayCount == null && post.videoViewCount == null) return null;
+  return Math.max(post.videoPlayCount ?? 0, post.videoViewCount ?? 0);
+}
 
 export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> {
   const allPages = await listPages();
@@ -61,7 +81,7 @@ export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> 
     : allPages;
 
   if (targetPages.length === 0) {
-    return { ok: true, synced_pages: 0, upserted_posts: 0, skipped: [], attribution: { matched: 0, unmatched: 0 } };
+    return { ok: true, synced_pages: 0, upserted_posts: 0, skipped: [], attribution: { matched: 0, unmatched: 0 }, refreshed_live_posts: 0 };
   }
 
   const skipped: SyncResult["skipped"] = [];
@@ -108,28 +128,90 @@ export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> 
     }
   }
 
+  // The profile scrape above only sees each account's most-recent posts, so a
+  // tracked live post that has since scrolled past that window would never get
+  // fresh numbers. Re-scrape the operator-curated live posts by permalink so
+  // the dashboard's reach/views KPIs actually move on every sync.
+  const pageIds = opts.handles && opts.handles.length > 0 ? targetPages.map(p => p.id) : undefined;
+  const { refreshed } = await refreshLivePostMetrics(pageIds);
+
   return {
     ok: true,
     synced_pages: targetPages.length - skipped.length,
     upserted_posts: upsertedPosts,
     skipped,
     attribution: { matched, unmatched },
+    refreshed_live_posts: refreshed,
   };
 }
 
-// ── Scheduled auto-sync (9:30 AM & 4:30 PM IST) ────────────────────────────
+// How many live-post permalinks to send to the Post Scraper per actor run.
+const LIVE_REFRESH_BATCH = 50;
+
+/**
+ * Refreshes the metrics of every operator-added live post that has a permalink,
+ * using the same by-URL Post Scraper the "Add live posts" dialog uses. This is
+ * what makes the dashboard's Total Reach / Views update in real time on "Sync
+ * now" — the profile scrape alone can't, since it's capped to recent posts.
+ *
+ * Matches each scraped result back to its stored row by Instagram shortcode and
+ * updates metrics in place (never re-attributes campaign/page/creator). Rows
+ * that Apify can't return (deleted post, transient error) keep their last-known
+ * numbers rather than being zeroed.
+ */
+export async function refreshLivePostMetrics(
+  pageIds?: string[],
+): Promise<{ refreshed: number; failed: number }> {
+  const livePosts = await listLivePostsWithPermalink(pageIds);
+  if (livePosts.length === 0) return { refreshed: 0, failed: 0 };
+
+  let refreshed = 0;
+  let failed = 0;
+
+  for (let i = 0; i < livePosts.length; i += LIVE_REFRESH_BATCH) {
+    const batch = livePosts.slice(i, i + LIVE_REFRESH_BATCH);
+    const urls = batch.map(p => p.permalink!).filter(Boolean);
+    const results = await fetchInstagramPostsByUrls(urls);
+
+    // Index scraped results by lowercased shortcode so we can match them back
+    // to the rows we asked for (order isn't guaranteed by the actor).
+    const byShortcode = new Map<string, ApifyPostResult>();
+    for (const r of results) {
+      const key = (r.shortCode ?? "").toLowerCase();
+      if (key) byShortcode.set(key, r);
+    }
+
+    for (const post of batch) {
+      const shortcode = extractInstagramShortcode(post.permalink!)?.toLowerCase();
+      const r = shortcode ? byShortcode.get(shortcode) : undefined;
+      if (!r || r.error) { failed++; continue; }
+      const views = bestViewCount(r) ?? post.views;
+      await updatePostMetrics(post.id, {
+        likes: r.likesCount ?? post.likes,
+        comments: r.commentsCount ?? post.comments,
+        views,
+        media_url: r.displayUrl ?? post.media_url,
+      });
+      refreshed++;
+    }
+  }
+
+  return { refreshed, failed };
+}
+
+// ── Scheduled auto-sync (9:00 AM & 5:00 PM IST) ────────────────────────────
 //
 // The product spec requires metrics to auto-refresh twice a day. We don't pull
 // in a cron dependency — instead `maybeRunScheduledSync()` is called from the
 // existing 5-minute server interval (see server/index.ts) and self-gates:
 //   - It only fires inside a short window after each slot's wall-clock time
-//     (so a process restart at, say, 14:00 does NOT trigger a stale 9:30 run —
+//     (so a process restart at, say, 14:00 does NOT trigger a stale 9:00 run —
 //     important during tsx-watch dev restarts since Apify is paid).
 //   - Each (IST-date, slot) pair runs at most once, tracked in-memory.
 // The manual "Sync now" button is unaffected and always available.
 const SYNC_SLOTS_IST = [
-  { label: "09:30", minutes: 9 * 60 + 30 },
-  { label: "16:30", minutes: 16 * 60 + 30 },
+  { label: "09:00", minutes: 9 * 60 },
+  { label: "17:00", minutes: 17 * 60 },
 ] as const;
 // How long after a slot's time we'll still fire it. With a 5-minute tick a
 // 20-minute window is comfortably wide enough to catch the slot at least once.
@@ -189,11 +271,7 @@ async function persistPost(
   const date = post.timestamp.slice(0, 10);
   const caption = post.caption ?? "";
   const type = inferPostType(post);
-  // For reels Apify returns two view-ish fields:
-  //   videoPlayCount  → the big number Instagram now shows publicly as "views"
-  //   videoViewCount  → an older, smaller count (often missing)
-  // Prefer plays so our totals match what users see on the post page.
-  const views = post.videoPlayCount ?? post.videoViewCount ?? 0;
+  const views = bestViewCount(post) ?? 0;
 
   const attribution = attributePostToCampaign(page.id, date, caption, campaigns);
 
@@ -402,11 +480,7 @@ async function persistLivePost(ctx: {
   const date = post.timestamp.slice(0, 10);
   const caption = post.caption ?? "";
   const type = inferPostType(post);
-  // For reels Apify returns two view-ish fields:
-  //   videoPlayCount  → the big number Instagram now shows publicly as "views"
-  //   videoViewCount  → an older, smaller count (often missing)
-  // Prefer plays so our totals match what users see on the post page.
-  const views = post.videoPlayCount ?? post.videoViewCount ?? 0;
+  const views = bestViewCount(post) ?? 0;
 
   // Pick a creative_variant. Priority: explicit forceVariant from caller,
   // otherwise auto-match from caption against this campaign's variants

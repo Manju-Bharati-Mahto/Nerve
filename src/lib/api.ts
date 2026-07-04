@@ -223,6 +223,7 @@ export const api = {
       upserted_posts: number;
       skipped: { handle: string; reason: string }[];
       attribution: { matched: number; unmatched: number };
+      refreshed_live_posts: number;
     }>("/outreach/sync", {
       method: "POST",
       body: JSON.stringify(handles ? { handles } : {}),

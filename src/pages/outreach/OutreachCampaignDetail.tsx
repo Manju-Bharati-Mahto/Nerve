@@ -224,7 +224,9 @@ export default function OutreachCampaignDetail() {
                     </td>
                     <td className="px-3 py-2.5 text-xs text-muted-foreground">{page.geography}</td>
                     <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{delivered}</td>
-                    <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{fmt(views)}</td>
+                    {/* Reach = total views for this page in the campaign; show the
+                        exact number rather than an abbreviation. */}
+                    <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums" title={`${views.toLocaleString('en-US')} views`}>{views.toLocaleString('en-US')}</td>
                     <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{fmt(engagement)}</td>
                     <td className="px-3 py-2.5 text-right">
                       <button

@@ -227,7 +227,9 @@ export default function OutreachPageDetail() {
                       <td className="px-3 py-2 text-xs text-muted-foreground">{p.creativeVariant ?? '—'}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.likes)}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.comments)}</td>
-                      <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.views)}</td>
+                      {/* Views: show the exact total (not abbreviated) so the real
+                          per-post reach is auditable. */}
+                      <td className="px-3 py-2 text-right text-xs font-mono tabular-nums" title={`${p.views.toLocaleString('en-US')} views`}>{p.views.toLocaleString('en-US')}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.saves)}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.shares)}</td>
                       <td className="px-3 py-2 text-right">
