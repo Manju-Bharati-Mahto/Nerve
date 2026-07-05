@@ -159,7 +159,7 @@ export default function OutreachPageDetail() {
 
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <Kpi label="Posts MTD"   value={String(m?.postsDoneMTD ?? 0)} icon={FileText}  bg="bg-orange-50" color="text-orange-600" />
+        <Kpi label="Posts done"  value={String((m?.postsDone ?? 0) + (m?.storiesDone ?? 0))} icon={FileText}  bg="bg-orange-50" color="text-orange-600" />
         <Kpi label="% consumed"  value={`${Math.round((m?.pctConsumed ?? 0) * 100)}%`} icon={TrendingUp} bg="bg-blue-50" color="text-blue-600" />
         <Kpi label="Avg eng"     value={fmt(m?.avgEngagement ?? 0)} icon={Heart}    bg="bg-rose-50" color="text-rose-600" />
         <Kpi label="Total reach" value={fmt(totals.views)}            icon={Eye}      bg="bg-emerald-50" color="text-emerald-600" />

@@ -188,22 +188,20 @@ function docxCell(text: string, opts: { bold?: boolean; fill?: string; align?: (
 }
 
 export async function exportCampaignReportDocx(report: CampaignReport) {
-  const { campaign, rows, totals } = report
+  const { campaign, rows } = report
   const ORANGE = 'EA580C'
 
+  // Per request: the DOC report is just two adjacent columns — page handle and
+  // its post link. One row per live post; assigned pages with no post yet show
+  // a dash in the link column.
   const headerRow = new TableRow({
     tableHeader: true,
-    children: ['Page / Creator', 'Post link', 'Reach', 'Views', 'Likes', 'Comments']
-      .map(h => docxCell(h, { bold: true, fill: ORANGE })),
+    children: ['Page handle', 'Post link'].map(h => docxCell(h, { bold: true, fill: ORANGE })),
   })
   const bodyRows = rows.map(r => new TableRow({
     children: [
       docxCell(r.subject),
-      docxCell(r.pending ? 'Pending — no post added' : (r.link || '—')),
-      docxCell(r.pending ? '—' : fmtNum(r.reach), { align: AlignmentType.RIGHT }),
-      docxCell(r.pending ? '—' : fmtNum(r.views), { align: AlignmentType.RIGHT }),
-      docxCell(r.pending ? '—' : fmtNum(r.likes), { align: AlignmentType.RIGHT }),
-      docxCell(r.pending ? '—' : fmtNum(r.comments), { align: AlignmentType.RIGHT }),
+      docxCell(r.pending || !r.link ? '—' : r.link),
     ],
   }))
 
@@ -212,29 +210,12 @@ export async function exportCampaignReportDocx(report: CampaignReport) {
     rows: [headerRow, ...bodyRows],
   })
 
-  const metaLine = (label: string, value: string) =>
-    new Paragraph({ children: [new TextRun({ text: `${label}: `, bold: true, size: 20 }), new TextRun({ text: value, size: 20 })] })
-
   const doc = new Document({
     sections: [{
       children: [
         new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun({ text: campaign.name, color: ORANGE })] }),
-        metaLine('Dates', `${campaign.startDate || '—'} to ${campaign.endDate || '—'}`),
-        metaLine('State', campaign.state || 'All states'),
-        metaLine('Status', campaign.status),
-        metaLine('Pages assigned', String(campaign.assignedPageIds.length)),
-        ...(campaign.assignedCreatorIds.length ? [metaLine('Creators assigned', String(campaign.assignedCreatorIds.length))] : []),
-        ...(campaign.goal ? [metaLine('Goal', campaign.goal)] : []),
         new Paragraph({ text: '' }),
-        new Paragraph({ heading: HeadingLevel.HEADING_2, text: 'Assigned pages & post performance' }),
         table,
-        new Paragraph({ text: '' }),
-        new Paragraph({ heading: HeadingLevel.HEADING_2, text: 'Total summary' }),
-        metaLine('Live posts', fmtNum(totals.posts)),
-        metaLine('Total reach', fmtNum(totals.reach)),
-        metaLine('Total views', fmtNum(totals.views)),
-        metaLine('Total likes', fmtNum(totals.likes)),
-        metaLine('Total comments', fmtNum(totals.comments)),
       ],
     }],
   })

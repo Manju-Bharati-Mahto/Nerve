@@ -495,11 +495,11 @@ function InventoryHeatmap() {
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
             {gRows.map(({ page, m }) => (
               <Link key={page.id} to={`/outreach/pages/${page.id}`}
-                title={`@${page.handle} — ${m.postsDoneMTD + m.storiesDoneMTD}/${page.inventoryPosts + page.inventoryStories} = ${Math.round(m.pctConsumed * 100)}%`}
+                title={`@${page.handle} — ${m.postsDone + m.storiesDone}/${page.inventoryPosts + page.inventoryStories} = ${Math.round(m.pctConsumed * 100)}%`}
                 className={`p-3 rounded-lg ${bg(m.pctConsumed)} hover:opacity-90 transition-opacity`}>
                 <p className="text-xs font-medium truncate">@{page.handle}</p>
                 <p className="text-lg font-mono tabular-nums leading-none mt-1">{Math.round(m.pctConsumed * 100)}%</p>
-                <p className="text-[10px] opacity-80 mt-1">{m.postsDoneMTD + m.storiesDoneMTD} of {page.inventoryPosts + page.inventoryStories}</p>
+                <p className="text-[10px] opacity-80 mt-1">{m.postsDone + m.storiesDone} of {page.inventoryPosts + page.inventoryStories}</p>
               </Link>
             ))}
           </div>

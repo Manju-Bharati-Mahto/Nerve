@@ -229,6 +229,14 @@ export const api = {
       body: JSON.stringify(handles ? { handles } : {}),
     }),
 
+  // Outreach — re-scrape every tracked live post's metrics (reach/views) across
+  // all pages. On-demand; does not run the profile scrape.
+  refreshOutreachReach: () =>
+    request<{ ok: true; refreshed: number; failed: number }>("/outreach/refresh-reach", {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+
   // Outreach — fetch metrics for specific post / reel URLs and save under
   // either a page (campaign required) or a creator (campaign optional).
   fetchOutreachPostsByUrls: (input: {

@@ -426,6 +426,39 @@ export async function syncNow(handles?: string[]) {
 }
 
 /**
+ * Re-scrapes the reach/views of every tracked live post across all pages
+ * (on-demand; no profile scrape). Refetches the store so dashboards/tables
+ * pick up the fresh numbers.
+ */
+export async function refreshReachNow() {
+  const result = await api.refreshOutreachReach()
+  await fetchAll()
+  return result
+}
+
+// ── Dismissed alerts (client-only, persisted per browser) ──────────────────
+// Alerts are derived (recomputed each render), so "dismiss" is a local
+// acknowledgement stored in localStorage keyed by the alert's stable id
+// (`${campaignId}:${subjectId}`). Adding the missing post still auto-clears the
+// alert regardless of dismissal, since it drops out of computeOutreachAlerts.
+const DISMISSED_ALERTS_KEY = 'outreach.dismissedAlerts'
+
+export function getDismissedAlertIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DISMISSED_ALERTS_KEY)
+    return new Set(raw ? (JSON.parse(raw) as string[]) : [])
+  } catch { return new Set() }
+}
+
+/** Marks an alert dismissed and returns the updated set (for React state). */
+export function dismissAlert(id: string): Set<string> {
+  const ids = getDismissedAlertIds()
+  ids.add(id)
+  try { localStorage.setItem(DISMISSED_ALERTS_KEY, JSON.stringify([...ids])) } catch { /* storage unavailable */ }
+  return ids
+}
+
+/**
  * Pulls metrics for specific Instagram post/reel URLs and persists them under
  * either a page (campaign required) or a creator (campaign optional). Returns
  * the saved posts plus any URLs that were skipped (bad URL, owner mismatch,
@@ -457,35 +490,40 @@ export async function addLivePostsByUrl(args: {
 // ── Pure helpers — used by analytics widgets, no store state ───────────────
 
 export interface PageMetrics {
-  postsDoneMTD: number
-  storiesDoneMTD: number
+  /** All-time count of posts (non-story) the team has placed on this page. */
+  postsDone: number
+  /** All-time count of stories placed on this page. */
+  storiesDone: number
   pctConsumed: number
   avgEngagement: number
   lastPostDate: string | null
   status: 'over-used' | 'under-used' | 'on-track' | 'idle'
 }
 
-export function pageMetrics(page: OutreachPage, posts: Post[], referenceDate = new Date()): PageMetrics {
-  const monthStart = new Date(referenceDate.getFullYear(), referenceDate.getMonth(), 1)
+export function pageMetrics(page: OutreachPage, posts: Post[]): PageMetrics {
   // Analytics + inventory only count posts explicitly added via AddLivePostsDialog
   // (server: addLivePosts). Auto-synced Apify posts are excluded so the figures
   // reflect what the team has actually placed, not what the page ran on IG.
+  //
+  // "Consumed" is LIFETIME, not month-to-date: inventory is a fixed capacity the
+  // team draws down as it places posts, so every added live post counts toward
+  // consumption regardless of its publish month. (A post added for a campaign
+  // that ran last month must still show as consumed.)
   const pagePosts = posts.filter(p => p.pageId === page.id && p.addedAsLive)
-  const mtd = pagePosts.filter(p => new Date(p.date) >= monthStart)
-  const postsCount = mtd.filter(p => p.type !== 'story').length
-  const storyCount = mtd.filter(p => p.type === 'story').length
+  const postsCount = pagePosts.filter(p => p.type !== 'story').length
+  const storyCount = pagePosts.filter(p => p.type === 'story').length
   const pctPosts = page.inventoryPosts ? postsCount / page.inventoryPosts : 0
   const pctStories = page.inventoryStories ? storyCount / page.inventoryStories : 0
   const pctConsumed = (pctPosts + pctStories) / 2
   // Apify can't read saves/shares, so engagement here is likes + comments only.
-  const totalEng = mtd.reduce((s, p) => s + p.likes + p.comments, 0)
-  const avgEngagement = mtd.length ? Math.round(totalEng / mtd.length) : 0
-  const last = pagePosts.sort((a, b) => b.date.localeCompare(a.date))[0]
+  const totalEng = pagePosts.reduce((s, p) => s + p.likes + p.comments, 0)
+  const avgEngagement = pagePosts.length ? Math.round(totalEng / pagePosts.length) : 0
+  const last = [...pagePosts].sort((a, b) => b.date.localeCompare(a.date))[0]
   let status: PageMetrics['status'] = 'on-track'
-  if (mtd.length === 0) status = 'idle'
+  if (pagePosts.length === 0) status = 'idle'
   else if (pctConsumed >= 0.9) status = 'over-used'
   else if (pctConsumed < 0.3) status = 'under-used'
-  return { postsDoneMTD: postsCount, storiesDoneMTD: storyCount, pctConsumed, avgEngagement, lastPostDate: last?.date ?? null, status }
+  return { postsDone: postsCount, storiesDone: storyCount, pctConsumed, avgEngagement, lastPostDate: last?.date ?? null, status }
 }
 
 export interface CampaignMetrics {

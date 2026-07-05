@@ -58,7 +58,7 @@ export default function OutreachAllPages() {
     const enriched = pages.map(p => {
       const m = pageMetrics(p, posts)
       const total = p.inventoryPosts + p.inventoryStories
-      const consumed = m.postsDoneMTD + m.storiesDoneMTD
+      const consumed = m.postsDone + m.storiesDone
       return { page: p, m, total, consumed, suggested: suggestedMonthlyUsage(p, posts) }
     })
     const filtered = enriched.filter(({ page, m }) => {
