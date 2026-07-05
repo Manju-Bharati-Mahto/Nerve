@@ -58,8 +58,9 @@ export default function OutreachDashboard() {
     setSyncMsg(null)
     try {
       const result = await syncNow()
-      const n = result.refreshed_live_posts
-      setSyncMsg(`${n} live post${n === 1 ? '' : 's'} refreshed`)
+      // Manual sync re-pulls profile data (followers + recent posts). The paid
+      // per-post live-post re-scrape runs only on the 9AM/5PM scheduled syncs.
+      setSyncMsg(`Synced ${result.synced_pages} page${result.synced_pages === 1 ? '' : 's'}`)
     } catch (err) {
       setSyncErr(err instanceof Error ? err.message : 'Sync failed.')
     } finally {
