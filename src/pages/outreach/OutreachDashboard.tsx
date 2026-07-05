@@ -2,8 +2,8 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Megaphone, Send, Calendar as CalendarIcon, BarChart3, FileText, Users, Sparkles,
-  TrendingUp, Heart, Eye, MessageCircle, Share2, AlertTriangle, Activity, Layers, RefreshCw,
-  ExternalLink, MapPin,
+  TrendingUp, Heart, Eye, MessageCircle, Share2, AlertTriangle, Activity, RefreshCw,
+  ExternalLink, MapPin, X, Gauge,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -11,9 +11,9 @@ import {
 } from 'recharts'
 import { useAuth } from '@/hooks/useAuth'
 import {
-  useOutreachData, pageMetrics, campaignMetrics, syncNow,
-  aggregateTotals, outreachStates, buildPostStateLookup, assignedPageIdSet,
-  computeOutreachAlerts,
+  useOutreachData, pageMetrics, campaignMetrics, syncNow, refreshReachNow,
+  aggregateTotals, outreachStates, buildPostStateLookup,
+  computeOutreachAlerts, getDismissedAlertIds, dismissAlert,
 } from '@/lib/outreach-data'
 
 type Range = '7d' | '30d' | 'mtd' | 'all'
@@ -32,8 +32,10 @@ export default function OutreachDashboard() {
   const [range, setRange] = useState<Range>('30d')
   const [stateFilter, setStateFilter] = useState('')
   const [syncing, setSyncing] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [syncErr, setSyncErr] = useState<string | null>(null)
   const [syncMsg, setSyncMsg] = useState<string | null>(null)
+  const [dismissed, setDismissed] = useState<Set<string>>(() => getDismissedAlertIds())
 
   // State-wise filter (spec 1.1): when a state is selected every number on the
   // dashboard narrows to data from pages/campaigns in that state.
@@ -68,6 +70,27 @@ export default function OutreachDashboard() {
     }
   }
 
+  // On-demand reach refresh: re-scrapes every tracked live post (all pages) so
+  // reach/views update immediately without waiting for the 9AM/5PM run.
+  async function onRefreshReach() {
+    if (refreshing) return
+    setRefreshing(true)
+    setSyncErr(null)
+    setSyncMsg(null)
+    try {
+      const result = await refreshReachNow()
+      setSyncMsg(`Reach refreshed for ${result.refreshed} post${result.refreshed === 1 ? '' : 's'}`)
+    } catch (err) {
+      setSyncErr(err instanceof Error ? err.message : 'Reach refresh failed.')
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  function onDismissAlert(id: string) {
+    setDismissed(dismissAlert(id))
+  }
+
   // Dashboard KPIs reflect work the team explicitly executed — live posts the
   // operator added via AddLivePostsDialog, not the entire Apify-synced backlog
   // of historical Instagram posts on each page. Filtering at the source keeps
@@ -86,14 +109,9 @@ export default function OutreachDashboard() {
   // views and shares are 0 unless recorded — see aggregateTotals.
   const totals = useMemo(() => aggregateTotals(filteredPosts), [filteredPosts])
 
-  // Side-by-side panels (spec 1.1): engagement %, active campaigns, inventory.
+  // Side-by-side panels (spec 1.1): engagement %, active campaigns.
   const engagementPct = totals.reach ? (totals.engagement / totals.reach) * 100 : 0
   const activeCampaigns = useMemo(() => stateCampaigns.filter(c => c.status === 'active'), [stateCampaigns])
-  const inventory = useMemo(() => {
-    const assigned = assignedPageIdSet(campaigns)
-    const used = statePages.filter(p => assigned.has(p.id)).length
-    return { used, total: statePages.length, pct: statePages.length ? Math.round((used / statePages.length) * 100) : 0 }
-  }, [campaigns, statePages])
 
   const topPosts = useMemo(() => {
     return [...filteredPosts]
@@ -140,6 +158,9 @@ export default function OutreachDashboard() {
       return c?.state === stateFilter
     }) : all
   }, [campaigns, pages, creators, posts, stateFilter])
+
+  // Hide alerts the user has dismissed (localStorage-backed, per browser).
+  const visibleAlerts = useMemo(() => alerts.filter(a => !dismissed.has(a.id)), [alerts, dismissed])
 
   const trendData = useMemo(() => {
     const days = 14
@@ -197,10 +218,16 @@ export default function OutreachDashboard() {
               </button>
             ))}
           </div>
-          <button onClick={onSyncNow} disabled={syncing}
+          <button onClick={onSyncNow} disabled={syncing || refreshing}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-orange-600 text-white hover:opacity-90 disabled:opacity-50">
             <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
             {syncing ? 'Syncing…' : 'Sync now'}
+          </button>
+          <button onClick={onRefreshReach} disabled={refreshing || syncing}
+            title="Re-pull the latest views/reach for every tracked live post across all pages"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-border hover:bg-accent disabled:opacity-50">
+            <Gauge className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+            {refreshing ? 'Refreshing…' : 'Refresh reach'}
           </button>
           <span className="text-[11px] text-muted-foreground">
             {syncErr
@@ -232,8 +259,8 @@ export default function OutreachDashboard() {
         })}
       </div>
 
-      {/* Side-by-side panels (spec 1.1): engagement %, active campaigns, inventory used */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      {/* Side-by-side panels (spec 1.1): engagement %, active campaigns */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div className="hub-card py-4">
           <div className="flex items-center gap-2 mb-1">
             <Heart className="w-4 h-4 text-rose-500" />
@@ -259,20 +286,6 @@ export default function OutreachDashboard() {
               {activeCampaigns.length > 4 && <p className="text-[11px] text-muted-foreground">+{activeCampaigns.length - 4} more</p>}
             </div>
           )}
-        </div>
-
-        <div className="hub-card py-4">
-          <div className="flex items-center gap-2 mb-1">
-            <Layers className="w-4 h-4 text-emerald-500" />
-            <h2 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Page inventory used</h2>
-          </div>
-          <p className="text-3xl font-serif text-foreground leading-none">
-            {inventory.used} <span className="text-base text-muted-foreground">of {inventory.total} pages</span>
-          </p>
-          <div className="h-1.5 rounded-full bg-muted overflow-hidden mt-2">
-            <div className="h-full bg-emerald-500" style={{ width: `${inventory.pct}%` }} />
-          </div>
-          <p className="text-[11px] text-muted-foreground mt-1.5">{inventory.pct}% of pages assigned to a campaign</p>
         </div>
       </div>
 
@@ -301,29 +314,38 @@ export default function OutreachDashboard() {
         <div className="hub-card">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold text-foreground flex items-center gap-2">
-              <AlertTriangle className={`w-4 h-4 ${alerts.length ? 'text-rose-500' : 'text-muted-foreground'}`} /> Alerts
-              {alerts.length > 0 && <span className="hub-badge bg-rose-100 text-rose-700">{alerts.length}</span>}
+              <AlertTriangle className={`w-4 h-4 ${visibleAlerts.length ? 'text-rose-500' : 'text-muted-foreground'}`} /> Alerts
+              {visibleAlerts.length > 0 && <span className="hub-badge bg-rose-100 text-rose-700">{visibleAlerts.length}</span>}
             </h2>
             <Link to="/outreach/alerts" className="text-xs text-orange-600 hover:underline">View all</Link>
           </div>
-          {alerts.length === 0 ? (
+          {visibleAlerts.length === 0 ? (
             <p className="text-sm text-muted-foreground py-6 text-center">All clear — every assigned page has posted.</p>
           ) : (
             <div className="space-y-2">
-              {alerts.slice(0, 6).map(a => (
-                <Link key={a.id}
-                  to={a.subjectKind === 'page' ? `/outreach/pages/${a.subjectId}` : `/outreach/creators/${a.subjectId}`}
-                  className="flex items-start gap-2 p-2 rounded-lg bg-rose-50/60 hover:bg-rose-50 transition-colors">
-                  <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-rose-600 bg-rose-100">
-                    <AlertTriangle className="w-3.5 h-3.5" />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-xs text-foreground truncate"><span className="font-medium">@{a.handle}</span> hasn't posted for <span className="font-medium">{a.campaignName}</span></p>
-                    <p className="text-[11px] text-rose-600">{a.hoursOverdue}h past the 24h deadline</p>
-                  </div>
-                </Link>
+              {visibleAlerts.slice(0, 6).map(a => (
+                <div key={a.id} className="group relative">
+                  <Link
+                    to={a.subjectKind === 'page' ? `/outreach/pages/${a.subjectId}` : `/outreach/creators/${a.subjectId}`}
+                    className="flex items-start gap-2 p-2 pr-8 rounded-lg bg-rose-50/60 hover:bg-rose-50 transition-colors">
+                    <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-rose-600 bg-rose-100">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs text-foreground truncate"><span className="font-medium">@{a.handle}</span> hasn't posted for <span className="font-medium">{a.campaignName}</span></p>
+                      <p className="text-[11px] text-rose-600">{a.hoursOverdue}h past the 24h deadline</p>
+                    </div>
+                  </Link>
+                  <button
+                    onClick={() => onDismissAlert(a.id)}
+                    title="Dismiss this alert"
+                    aria-label="Dismiss alert"
+                    className="absolute top-1.5 right-1.5 p-1 rounded-md text-muted-foreground opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-rose-100 hover:text-rose-600 transition-opacity">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               ))}
-              {alerts.length > 6 && <p className="text-[11px] text-muted-foreground px-2">+{alerts.length - 6} more — see Alerts</p>}
+              {visibleAlerts.length > 6 && <p className="text-[11px] text-muted-foreground px-2">+{visibleAlerts.length - 6} more — see Alerts</p>}
             </div>
           )}
         </div>

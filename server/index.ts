@@ -74,7 +74,7 @@ import {
   POST_TYPES as OUTREACH_POST_TYPES,
   POST_STATUSES as OUTREACH_POST_STATUSES,
 } from "./outreach-db.js";
-import { syncOutreach, addLivePosts, maybeRunScheduledSync } from "./outreach-sync.js";
+import { syncOutreach, addLivePosts, maybeRunScheduledSync, refreshLivePostMetrics } from "./outreach-sync.js";
 import { verifyPassword } from "./password.js";
 import {
   bootstrapBrandingDatabase,
@@ -1829,6 +1829,20 @@ app.post("/api/outreach/sync", asyncHandler(async (req, res) => {
     res.json(result);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Sync failed.";
+    return sendError(res, 502, msg);
+  }
+}));
+
+// Refresh reach — re-scrapes every tracked live post (across all pages) by
+// permalink and updates its metrics. This is the on-demand equivalent of what
+// the scheduled 9AM/5PM runs do, without the profile scrape. Paid Apify calls.
+app.post("/api/outreach/refresh-reach", asyncHandler(async (req, res) => {
+  if (!requireOutreach(res)) return;
+  try {
+    const result = await refreshLivePostMetrics();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Refresh failed.";
     return sendError(res, 502, msg);
   }
 }));
