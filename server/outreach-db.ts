@@ -849,7 +849,11 @@ export async function upsertPostByInstagramId(input: UpsertPostInput): Promise<O
        caption          = EXCLUDED.caption,
        likes            = EXCLUDED.likes,
        comments         = EXCLUDED.comments,
-       views            = EXCLUDED.views,
+       -- Views on Instagram are monotonically increasing, but the scrapers are
+       -- not equally reliable: the profile scraper (and occasionally the post
+       -- scraper) can omit videoPlayCount and report only the much smaller
+       -- videoViewCount. Never let a weaker scrape downgrade a known count.
+       views            = GREATEST(outreach_posts.views, EXCLUDED.views),
        media_url        = EXCLUDED.media_url,
        permalink        = EXCLUDED.permalink,
        synced_at        = NOW(),
@@ -895,7 +899,10 @@ export async function updatePostMetrics(
 ): Promise<OutreachPost | null> {
   const { rows } = await pool.query<OutreachPost>(
     `UPDATE outreach_posts
-        SET likes = $2, comments = $3, views = $4,
+        SET likes = $2, comments = $3,
+            -- Monotonic clamp: a scrape missing videoPlayCount reports a much
+            -- smaller count — never downgrade a previously captured views value.
+            views = GREATEST(views, $4),
             media_url = COALESCE($5, media_url),
             synced_at = NOW()
       WHERE id = $1
