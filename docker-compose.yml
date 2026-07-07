@@ -42,6 +42,10 @@ services:
       TRADAI_API_KEY: ${TRADAI_API_KEY}
       APIFY_TOKEN: ${APIFY_TOKEN:-}
       APIFY_PROFILE_ACTOR: ${APIFY_PROFILE_ACTOR:-apify~instagram-profile-scraper}
+      APIFY_POST_ACTOR: ${APIFY_POST_ACTOR:-apify~instagram-post-scraper}
+      APIFY_IG_SESSION_COOKIE: ${APIFY_IG_SESSION_COOKIE:-}
+      OUTREACH_AUTO_SYNC: ${OUTREACH_AUTO_SYNC:-true}
+      OUTREACH_SYNC_DEBUG: ${OUTREACH_SYNC_DEBUG:-false}
     volumes:
       - ${UPLOADS_DIR:-/srv/nerve/data/uploads}:/app/uploads
     ports:
