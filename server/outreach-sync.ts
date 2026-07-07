@@ -237,11 +237,14 @@ export async function refreshLivePostMetrics(
         media_url: r.displayUrl ?? post.media_url,
       });
       refreshed++;
-      // It's a video (has a view count or is typed as a reel) but the batch
-      // result carried no plays count — queue for an individual re-scrape.
+      // Queue videos with untrustworthy plays data for an individual re-scrape.
+      // Plays are structurally >= unique views on Instagram, so a missing plays
+      // count — or one that doesn't exceed the view count — means the batch
+      // returned degraded data for this post.
       const isVideo = (r.videoViewCount ?? 0) > 0 || inferPostType(r) === "reel";
-      const hasPlays = typeof r.videoPlayCount === "number" && r.videoPlayCount > 0;
-      if (isVideo && !hasPlays) missingPlays.push(post);
+      const plays = typeof r.videoPlayCount === "number" ? r.videoPlayCount : 0;
+      const playsTrustworthy = plays > (r.videoViewCount ?? 0);
+      if (isVideo && !playsTrustworthy) missingPlays.push(post);
     }
   }
 
