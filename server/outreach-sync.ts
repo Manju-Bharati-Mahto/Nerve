@@ -198,6 +198,12 @@ export async function refreshLivePostMetrics(
 
   let refreshed = 0;
   let failed = 0;
+  // Video posts whose batch result was missing videoPlayCount (Instagram's
+  // real public "views"). The actor drops that field intermittently on batched
+  // runs while single-URL runs reliably include it, so these get a targeted
+  // second pass below. Without it a reel can sit at the far smaller
+  // videoViewCount (e.g. 4.9k shown vs 23.9k actual plays).
+  const missingPlays: OutreachPost[] = [];
 
   for (let i = 0; i < livePosts.length; i += LIVE_REFRESH_BATCH) {
     const batch = livePosts.slice(i, i + LIVE_REFRESH_BATCH);
@@ -231,6 +237,37 @@ export async function refreshLivePostMetrics(
         media_url: r.displayUrl ?? post.media_url,
       });
       refreshed++;
+      // It's a video (has a view count or is typed as a reel) but the batch
+      // result carried no plays count — queue for an individual re-scrape.
+      const isVideo = (r.videoViewCount ?? 0) > 0 || inferPostType(r) === "reel";
+      const hasPlays = typeof r.videoPlayCount === "number" && r.videoPlayCount > 0;
+      if (isVideo && !hasPlays) missingPlays.push(post);
+    }
+  }
+
+  // Second pass: individually re-scrape videos whose plays count was missing.
+  // Each is its own (paid) actor run, so cap the pass; stragglers get another
+  // chance on the next scheduled sync, and the monotonic views clamp means a
+  // recovered plays count sticks forever after.
+  const RETRY_CAP = 15;
+  if (missingPlays.length > RETRY_CAP) {
+    console.warn(`[refresh-reach] ${missingPlays.length} video post(s) missing plays count; retrying first ${RETRY_CAP} this run.`);
+  }
+  for (const post of missingPlays.slice(0, RETRY_CAP)) {
+    try {
+      const [r] = await fetchInstagramPostsByUrls([post.permalink!]);
+      if (!r || r.error) continue;
+      const views = bestViewCount(r);
+      if (views == null) continue;
+      await updatePostMetrics(post.id, {
+        likes: r.likesCount ?? post.likes,
+        comments: r.commentsCount ?? post.comments,
+        views,
+        media_url: r.displayUrl ?? post.media_url,
+      });
+      console.log(`[refresh-reach] recovered plays count for ${post.permalink}: ${views}`);
+    } catch (err) {
+      console.warn(`[refresh-reach] individual re-scrape failed for ${post.permalink}:`, err instanceof Error ? err.message : err);
     }
   }
 
