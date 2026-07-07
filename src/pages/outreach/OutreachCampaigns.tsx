@@ -126,7 +126,7 @@ export default function OutreachCampaigns() {
               {/* Progress */}
               <div className="mb-2">
                 <div className="flex items-center justify-between mb-1">
-                  <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Budget consumed</span>
+                  <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Post completion</span>
                   <span className="text-xs font-mono tabular-nums text-foreground">{Math.round(m.pctConsumed * 100)}%</span>
                 </div>
                 <div className="h-1.5 rounded-full bg-muted overflow-hidden">
