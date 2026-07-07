@@ -215,7 +215,14 @@ export async function refreshLivePostMetrics(
     for (const post of batch) {
       const shortcode = extractInstagramShortcode(post.permalink!)?.toLowerCase();
       const r = shortcode ? byShortcode.get(shortcode) : undefined;
-      if (!r || r.error) { failed++; continue; }
+      if (!r || r.error) {
+        failed++;
+        // A failed post silently keeps its last-known numbers, which looks the
+        // same as "Apify returned the old value" — log why so stale metrics
+        // are diagnosable from the server log.
+        console.warn(`[refresh-reach] kept last-known metrics for ${post.permalink}: ${!r ? "no result returned by actor" : r.error}`);
+        continue;
+      }
       const views = bestViewCount(r) ?? post.views;
       await updatePostMetrics(post.id, {
         likes: r.likesCount ?? post.likes,
