@@ -117,6 +117,170 @@ function cleanPageName(s: string): string {
     .trim()
 }
 
+// ── Campaign sheet parser (campaign + pages + live posts in one upload) ─────
+//
+// Layout: one row per page-assignment, grouped by campaign name. Campaign-level
+// cells (dates, state, budgets, variants…) are read from the first row of the
+// group where they're non-empty, so merged-cell sheets — where the campaign
+// name appears once and continuation rows leave it blank — parse naturally
+// (blank names carry forward from the row above).
+//
+//   Campaign  | Start    | End      | State | Posts | Stories | Reels | Variant      | Page          | Post links
+//   Lakshya   | 01/07/26 | 15/07/26 | Jammu | 10    | 5       | 6     | set_1, set_2 | @rajourinews  | url1 url2
+//             |          |          |       |       |         |       | set_2        | @poonch_live  | url3
+//
+// The Variant column does double duty: every token it contains joins the
+// campaign's creative-variant list, and when a row has exactly ONE token, that
+// row's post links are tagged with it (multiple/empty → links auto-match by
+// caption, the same behaviour as the Add Live Posts dialog).
+
+/** Accept "DD/MM/YYYY", "DD-MM-YYYY", "YYYY-MM-DD" (and Excel serials) →
+ *  ISO YYYY-MM-DD. Returns '' when unparseable. */
+export function normalizeDate(raw: string): string {
+  const s = raw.trim()
+  if (!s) return ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
+  // Excel sometimes hands us a serial date number when cells are date-typed.
+  if (/^\d{4,6}$/.test(s)) {
+    const serial = parseInt(s, 10)
+    const ms = (serial - 25569) * 86400_000 // 25569 = days between 1899-12-30 and epoch
+    const d = new Date(ms)
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10)
+  }
+  const m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/)
+  if (!m) return ''
+  const [, d, mo, y] = m
+  const yyyy = y.length === 2 ? `20${y}` : y
+  return `${yyyy}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`
+}
+
+export interface ParsedCampaignPageRow {
+  /** Canonical handle, no @. */
+  handle: string
+  /** Creative variant to tag this row's links with; '' = auto-match by caption. */
+  variant: string
+  /** Instagram post / reel URLs found in the row. */
+  links: string[]
+}
+
+export interface ParsedCampaignGroup {
+  name: string
+  startDate: string
+  endDate: string
+  state: string
+  goal: string
+  budgetPosts: number
+  budgetStories: number
+  budgetReels: number
+  /** Union of the variants column tokens across the group's rows. */
+  variants: string[]
+  pages: ParsedCampaignPageRow[]
+}
+
+export interface ParsedCampaignSheet {
+  campaigns: ParsedCampaignGroup[]
+  warnings: string[]
+}
+
+function toCount(s: string): number {
+  const n = parseInt(s.replace(/[^\d]/g, ''), 10)
+  return Number.isFinite(n) && n >= 0 ? n : 0
+}
+
+/** Splits a cell that may hold several Instagram URLs (newlines/commas/spaces). */
+function extractLinks(cell: string): string[] {
+  return cell.split(/[\s,;]+/).map(s => s.trim()).filter(s => /instagram\.com\//i.test(s))
+}
+
+function splitVariants(cell: string): string[] {
+  return cell.split(/[,;/]+/).map(s => s.trim()).filter(Boolean)
+}
+
+export async function parseCampaignSheet(file: File): Promise<ParsedCampaignSheet> {
+  const { headers, rows } = await parseSpreadsheet(file)
+  const warnings: string[] = []
+  const groups = new Map<string, ParsedCampaignGroup>()
+
+  // Column patterns. Order matters: `pick` tries patterns first-to-last, and
+  // the budget columns must not swallow the "post links" column (or vice
+  // versa), hence the anchored/negative-ish shapes.
+  const PAT = {
+    name: [/campaign.*name|name.*campaign/, /^campaign$/, /^name$/, /title/],
+    start: [/start/, /^from$/, /launch/],
+    end: [/end/, /finish/, /till|until/],
+    state: [/^state$/, /state/],
+    goal: [/description|desc\b/, /goal/, /brief/, /kpi/],
+    budgetPosts: [/(no|num|number|#).*post/, /^posts?$/, /post.*(count|budget|target)/],
+    budgetStories: [/(no|num|number|#).*stor/, /^stor(y|ies)$/, /stor(y|ies).*(count|budget|target)/, /stor/],
+    budgetReels: [/(no|num|number|#).*reel/, /^reels?$/, /reel.*(count|budget|target)/, /reel/],
+    variant: [/variant|creative|^sets?$/],
+    page: [/page.*(name|handle)/, /^pages?$/, /handle/, /account/, /^insta/],
+    links: [/link|url|live.*post/],
+  }
+
+  let carriedName = ''
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]
+    const rawName = pick(row, headers, PAT.name)
+    const name = (rawName || carriedName).trim()
+    if (!name) {
+      // A row with page/link data but no campaign to attach to.
+      if (pick(row, headers, PAT.page) || pick(row, headers, PAT.links)) {
+        warnings.push(`Row ${i + 2}: no campaign name (and none above to carry from) — skipped.`)
+      }
+      continue
+    }
+    carriedName = name
+
+    const key = name.toLowerCase()
+    let g = groups.get(key)
+    if (!g) {
+      g = {
+        name, startDate: '', endDate: '', state: '', goal: '',
+        budgetPosts: 0, budgetStories: 0, budgetReels: 0,
+        variants: [], pages: [],
+      }
+      groups.set(key, g)
+    }
+
+    // Campaign-level fields: first non-empty value in the group wins.
+    if (!g.startDate) g.startDate = normalizeDate(pick(row, headers, PAT.start))
+    if (!g.endDate) g.endDate = normalizeDate(pick(row, headers, PAT.end))
+    if (!g.state) g.state = pick(row, headers, PAT.state)
+    if (!g.goal) g.goal = pick(row, headers, PAT.goal)
+    if (!g.budgetPosts) g.budgetPosts = toCount(pick(row, headers, PAT.budgetPosts))
+    if (!g.budgetStories) g.budgetStories = toCount(pick(row, headers, PAT.budgetStories))
+    if (!g.budgetReels) g.budgetReels = toCount(pick(row, headers, PAT.budgetReels))
+
+    const variantTokens = splitVariants(pick(row, headers, PAT.variant))
+    for (const v of variantTokens) if (!g.variants.includes(v)) g.variants.push(v)
+
+    const pageCell = pick(row, headers, PAT.page)
+    const links = extractLinks(pick(row, headers, PAT.links))
+    if (!pageCell) {
+      if (links.length > 0) warnings.push(`Row ${i + 2} ("${name}"): post links given without a page — skipped.`)
+      continue
+    }
+    const handle = parseInstagramHandle(pageCell)
+    if (!handle) {
+      warnings.push(`Row ${i + 2} ("${name}"): could not read a page handle from "${pageCell}" — skipped.`)
+      continue
+    }
+
+    // Merge rows for the same page within a campaign (links accumulate).
+    const rowVariant = variantTokens.length === 1 ? variantTokens[0] : ''
+    const existing = g.pages.find(p => p.handle === handle)
+    if (existing) {
+      for (const l of links) if (!existing.links.includes(l)) existing.links.push(l)
+      if (!existing.variant && rowVariant) existing.variant = rowVariant
+    } else {
+      g.pages.push({ handle, variant: rowVariant, links })
+    }
+  }
+
+  return { campaigns: Array.from(groups.values()), warnings }
+}
+
 export async function parseInventorySheet(file: File): Promise<ParsedInventorySheet> {
   const buf = await file.arrayBuffer()
   const wb = XLSX.read(buf, { type: 'array' })
