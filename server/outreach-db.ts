@@ -222,6 +222,8 @@ export async function bootstrapOutreach() {
   await pool.query(`ALTER TABLE outreach_campaigns ADD COLUMN IF NOT EXISTS assigned_creator_ids JSONB NOT NULL DEFAULT '[]'::JSONB`);
   // Idempotent migration for installations that pre-date the state-wise filter.
   await pool.query(`ALTER TABLE outreach_campaigns ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT ''`);
+  // Campaigns are open-ended: end_date became optional (empty = no end date).
+  await pool.query(`ALTER TABLE outreach_campaigns ALTER COLUMN end_date DROP NOT NULL`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS outreach_posts (
@@ -633,7 +635,8 @@ function mapCreatorRow(row: OutreachCreator): OutreachCreator {
 export interface CreateCampaignInput {
   name: string;
   start_date: string;
-  end_date: string;
+  /** Optional — campaigns are open-ended; empty/absent means no end date. */
+  end_date?: string | null;
   state?: string;
   goal?: string;
   status: CampaignStatus;
@@ -679,7 +682,7 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Outrea
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING *`,
     [
-      id, input.name.trim(), input.start_date, input.end_date, input.state ?? "", input.goal ?? "", input.status,
+      id, input.name.trim(), input.start_date, input.end_date || null, input.state ?? "", input.goal ?? "", input.status,
       input.budget_posts, input.budget_stories, input.budget_reels,
       JSON.stringify(input.approvers), JSON.stringify(input.creative_variants),
       JSON.stringify(input.assigned_page_ids), JSON.stringify(input.assigned_creator_ids ?? []),
@@ -697,6 +700,10 @@ export async function updateCampaign(id: string, patch: Partial<CreateCampaignIn
     if (k === "approvers" || k === "creative_variants" || k === "assigned_page_ids" || k === "assigned_creator_ids") {
       fields.push(`${k} = $${i++}::jsonb`);
       values.push(JSON.stringify(v));
+    } else if (k === "end_date") {
+      // Empty string means "clear the end date" — the DATE column wants NULL.
+      fields.push(`${k} = $${i++}`);
+      values.push(v || null);
     } else {
       fields.push(`${k} = $${i++}`);
       values.push(v);
@@ -729,7 +736,8 @@ function mapCampaignRow(row: OutreachCampaign): OutreachCampaign {
     assigned_page_ids: Array.isArray(row.assigned_page_ids) ? row.assigned_page_ids : safeJson(row.assigned_page_ids, []),
     assigned_creator_ids: Array.isArray(row.assigned_creator_ids) ? row.assigned_creator_ids : safeJson(row.assigned_creator_ids, []),
     start_date: typeof row.start_date === "string" ? row.start_date : new Date(row.start_date).toISOString().slice(0, 10),
-    end_date: typeof row.end_date === "string" ? row.end_date : new Date(row.end_date).toISOString().slice(0, 10),
+    // NULL end_date (open-ended campaign) maps to '' for the client.
+    end_date: row.end_date == null ? "" : typeof row.end_date === "string" ? row.end_date : new Date(row.end_date).toISOString().slice(0, 10),
   };
 }
 

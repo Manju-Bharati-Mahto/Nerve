@@ -2,11 +2,12 @@ import { useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Send, Plus, Search, X, ChevronRight, Filter as FilterIcon, Trash2, Upload, CheckCircle, AlertCircle } from 'lucide-react'
 import {
-  useOutreachData, addCampaign, removeCampaign, campaignMetrics,
+  useOutreachData, addCampaign, updateCampaign, removeCampaign, campaignMetrics,
+  addPage, addLivePostsByUrl, slug,
   INDIAN_STATES,
   type Campaign, type CampaignStatus,
 } from '@/lib/outreach-data'
-import { parseSpreadsheet, pick } from '@/lib/outreach-import'
+import { parseCampaignSheet } from '@/lib/outreach-import'
 import AddLivePostsDialog from './AddLivePostsDialog'
 
 const STATUS_CFG: Record<CampaignStatus, { label: string; cls: string }> = {
@@ -117,7 +118,7 @@ export default function OutreachCampaigns() {
               <div className="flex items-start justify-between gap-2 mb-2">
                 <div className="min-w-0 flex-1">
                   <h3 className="text-sm font-semibold text-foreground truncate">{c.name}</h3>
-                  <p className="text-[11px] text-muted-foreground">{c.startDate} → {c.endDate}{c.state && ` · ${c.state}`}</p>
+                  <p className="text-[11px] text-muted-foreground">{c.startDate}{c.endDate && ` → ${c.endDate}`}{c.state && ` · ${c.state}`}</p>
                 </div>
                 <span className={`hub-badge ${STATUS_CFG[c.status].cls} shrink-0`}>{STATUS_CFG[c.status].label}</span>
               </div>
@@ -184,7 +185,7 @@ export default function OutreachCampaigns() {
                   <td className="px-3 py-2.5">
                     <Link to={`/outreach/campaigns/${c.id}`} className="text-xs font-medium text-foreground hover:underline">{c.name}</Link>
                   </td>
-                  <td className="px-3 py-2.5 text-xs text-muted-foreground">{c.startDate} → {c.endDate}</td>
+                  <td className="px-3 py-2.5 text-xs text-muted-foreground">{c.startDate}{c.endDate && ` → ${c.endDate}`}</td>
                   <td className="px-3 py-2.5 text-xs text-muted-foreground">{c.state || '—'}</td>
                   <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{c.budgetPosts}/{c.budgetStories}/{c.budgetReels}</td>
                   <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{c.assignedPageIds.length} / {c.assignedCreatorIds.length}</td>
@@ -254,7 +255,7 @@ function CreateCampaignModal({
 }) {
   const [step, setStep] = useState(1)
   const [form, setForm] = useState({
-    name: '', startDate: '', endDate: '', state: '', goal: '',
+    name: '', startDate: '', state: '', goal: '',
     budgetPosts: 0, budgetStories: 0, budgetReels: 0,
     variantsRaw: 'set_1, set_2',
     pageIds: [] as string[],
@@ -298,9 +299,8 @@ function CreateCampaignModal({
       const created = await addCampaign({
         name: form.name.trim(),
         startDate: form.startDate,
-        // End date is optional in the form; fall back to the start date so a
-        // single-day campaign still has a valid (non-empty) range.
-        endDate: form.endDate || form.startDate,
+        // Campaigns are open-ended — no end date.
+        endDate: '',
         state: form.state.trim(),
         goal: form.goal.trim(),
         status: 'planning',
@@ -354,16 +354,9 @@ function CreateCampaignModal({
                 <input className="hub-input" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                   placeholder="e.g. Tech Expo April" />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="hub-label">Start date *</label>
-                  <input type="date" className="hub-input" value={form.startDate} onChange={e => setForm(f => ({ ...f, startDate: e.target.value }))} />
-                </div>
-                <div>
-                  <label className="hub-label">End date</label>
-                  <input type="date" className="hub-input" value={form.endDate} min={form.startDate || undefined}
-                    onChange={e => setForm(f => ({ ...f, endDate: e.target.value }))} />
-                </div>
+              <div>
+                <label className="hub-label">Start date *</label>
+                <input type="date" className="hub-input" value={form.startDate} onChange={e => setForm(f => ({ ...f, startDate: e.target.value }))} />
               </div>
               <div>
                 <label className="hub-label">State</label>
@@ -474,7 +467,7 @@ function CreateCampaignModal({
                   placeholder="Outreach Manager, Brand Lead" />
               </div>
               <div className="hub-card bg-muted text-xs space-y-1">
-                <p><strong>{form.name}</strong> · {form.startDate}{form.endDate && ` → ${form.endDate}`}{form.state && ` · ${form.state}`}</p>
+                <p><strong>{form.name}</strong> · {form.startDate}{form.state && ` · ${form.state}`}</p>
                 <p>{form.budgetPosts} posts · {form.budgetStories} stories · {form.budgetReels} reels</p>
                 <p>{form.pageIds.length} pages · {form.creatorIds.length} creators · {form.variantsRaw.split(',').filter(Boolean).length} variants</p>
               </div>
@@ -511,82 +504,166 @@ function CreateCampaignModal({
 }
 
 // ── Import Campaigns via Excel ─────────────────────────────────────────────
+//
+// One sheet creates (or updates) everything: the campaign card, its
+// post/story/reel budgets, creative variants, page assignments — creating any
+// page the DB doesn't know yet — and the live posts under each page, fetched
+// per row via Apify (paid; runs sequentially with a progress line).
 
-// Accept "DD/MM/YYYY", "DD-MM-YYYY", "YYYY-MM-DD" (and Excel serials) →
-// normalise to ISO YYYY-MM-DD. Returns '' when unparseable.
-function normalizeDate(raw: string): string {
-  const s = raw.trim()
-  if (!s) return ''
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
-  // Excel sometimes hands us a serial date number when cells are date-typed.
-  if (/^\d{4,6}$/.test(s)) {
-    const serial = parseInt(s, 10)
-    const ms = (serial - 25569) * 86400_000 // 25569 = days between 1899-12-30 and epoch
-    const d = new Date(ms)
-    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10)
-  }
-  const m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/)
-  if (!m) return ''
-  const [, d, mo, y] = m
-  const yyyy = y.length === 2 ? `20${y}` : y
-  return `${yyyy}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`
+interface ImportOutcome {
+  campaignsCreated: number
+  campaignsUpdated: number
+  pagesAssigned: number
+  pagesCreated: number
+  postsAdded: number
+  skipped: string[]
 }
 
 function ImportCampaignsModal({ onClose }: { onClose: () => void }) {
+  const { campaigns, pages } = useOutreachData()
   const fileRef = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
-  const [done, setDone] = useState<{ created: number; skipped: string[] } | null>(null)
+  const [progress, setProgress] = useState('')
+  const [done, setDone] = useState<ImportOutcome | null>(null)
 
   async function onFile(file: File) {
     setBusy(true)
+    const outcome: ImportOutcome = {
+      campaignsCreated: 0, campaignsUpdated: 0, pagesAssigned: 0, pagesCreated: 0, postsAdded: 0, skipped: [],
+    }
     try {
-      const { headers, rows } = await parseSpreadsheet(file)
-      let created = 0
-      const skipped: string[] = []
-      for (const row of rows) {
-        const name = pick(row, headers, [/campaign.*name|name.*campaign/, /^name$/, /campaign/, /title/])
-        if (!name) { skipped.push(`(row missing a campaign name)`); continue }
-        const startRaw = pick(row, headers, [/start/, /from/, /^date$/, /launch/])
-        const endRaw = pick(row, headers, [/end/, /finish/, /to\b/, /till/, /until/])
-        const startDate = normalizeDate(startRaw) || new Date().toISOString().slice(0, 10)
-        const endDate = normalizeDate(endRaw) || startDate
-        const state = pick(row, headers, [/state/])
-        const goal = pick(row, headers, [/description|desc\b/, /goal/, /brief/, /note/, /kpi/])
+      setProgress('Reading sheet…')
+      const { campaigns: groups, warnings } = await parseCampaignSheet(file)
+      outcome.skipped.push(...warnings)
+      if (groups.length === 0) {
+        outcome.skipped.push('No campaigns found — the sheet needs at least a campaign-name column.')
+        setDone(outcome)
+        return
+      }
+
+      // Local indexes, updated as we create things so later groups see them.
+      const campaignByName = new Map(campaigns.map(c => [c.name.trim().toLowerCase(), c]))
+      const pageIdByHandle = new Map(pages.map(p => [p.handle.trim().toLowerCase().replace(/^@/, ''), p.id]))
+
+      for (const g of groups) {
         try {
-          await addCampaign({
-            name: name.trim(), startDate, endDate, state: state.trim(), goal: goal.trim(),
-            status: 'planning', budgetPosts: 0, budgetStories: 0, budgetReels: 0,
-            approvers: [], creativeVariants: [], assignedPageIds: [], assignedCreatorIds: [],
-          })
-          created++
+          // 1) Resolve this group's pages, creating any the DB doesn't have.
+          //    Created ids are deterministic (slug of the handle — the same
+          //    derivation the server uses), so no refetch round-trip is needed.
+          const rows: { pageId: string; handle: string; variant: string; links: string[] }[] = []
+          for (const row of g.pages) {
+            const key = row.handle.toLowerCase()
+            let pid = pageIdByHandle.get(key)
+            if (!pid) {
+              setProgress(`"${g.name}" — creating page @${row.handle}…`)
+              await addPage({
+                handle: row.handle, geography: g.state, state: g.state,
+                type: 'state', followerTier: '3', contentTypes: [],
+                followers: 0, inventoryPosts: 0, inventoryStories: 0,
+                notes: `Created by campaign import (${g.name})`,
+              })
+              pid = slug(row.handle)
+              pageIdByHandle.set(key, pid)
+              outcome.pagesCreated++
+            }
+            rows.push({ pageId: pid, handle: row.handle, variant: row.variant, links: row.links })
+          }
+
+          // 2) Create the campaign — or update it when the name already
+          //    exists (pages/variants merge in; non-empty sheet values win).
+          setProgress(`"${g.name}" — saving campaign…`)
+          const existing = campaignByName.get(g.name.trim().toLowerCase())
+          let campaign: Campaign
+          if (existing) {
+            const patch: Partial<Campaign> = {
+              assignedPageIds: Array.from(new Set([...existing.assignedPageIds, ...rows.map(r => r.pageId)])),
+              creativeVariants: Array.from(new Set([...existing.creativeVariants, ...g.variants])),
+            }
+            if (g.startDate) patch.startDate = g.startDate
+            if (g.state) patch.state = g.state
+            if (g.goal) patch.goal = g.goal
+            if (g.budgetPosts) patch.budgetPosts = g.budgetPosts
+            if (g.budgetStories) patch.budgetStories = g.budgetStories
+            if (g.budgetReels) patch.budgetReels = g.budgetReels
+            await updateCampaign(existing.id, patch)
+            campaign = { ...existing, ...patch }
+            outcome.campaignsUpdated++
+          } else {
+            const startDate = g.startDate || new Date().toISOString().slice(0, 10)
+            campaign = await addCampaign({
+              name: g.name, startDate, endDate: '',
+              state: g.state, goal: g.goal, status: 'planning',
+              budgetPosts: g.budgetPosts, budgetStories: g.budgetStories, budgetReels: g.budgetReels,
+              approvers: ['Outreach Manager'], creativeVariants: g.variants,
+              assignedPageIds: rows.map(r => r.pageId), assignedCreatorIds: [],
+            })
+            outcome.campaignsCreated++
+          }
+          campaignByName.set(g.name.trim().toLowerCase(), campaign)
+          outcome.pagesAssigned += rows.length
+
+          // 3) Live posts — one Apify fetch per page row (paid; sequential so
+          //    the progress line stays truthful and failures stay attributable).
+          for (const row of rows) {
+            if (row.links.length === 0) continue
+            setProgress(`"${g.name}" — fetching ${row.links.length} post link${row.links.length === 1 ? '' : 's'} for @${row.handle}…`)
+            try {
+              const res = await addLivePostsByUrl({
+                urls: row.links, pageId: row.pageId, campaignId: campaign.id,
+                creativeVariant: row.variant || undefined,
+              })
+              outcome.postsAdded += res.posts.length
+              for (const s of res.skipped) outcome.skipped.push(`@${row.handle}: ${s.url} — ${s.reason}`)
+            } catch (err) {
+              outcome.skipped.push(`@${row.handle} (${row.links.length} link${row.links.length === 1 ? '' : 's'}) — ${err instanceof Error ? err.message : 'failed'}`)
+            }
+          }
         } catch (err) {
-          skipped.push(`"${name}" — ${err instanceof Error ? err.message : 'failed'}`)
+          outcome.skipped.push(`"${g.name}" — ${err instanceof Error ? err.message : 'failed'}`)
         }
       }
-      setDone({ created, skipped })
+      setDone(outcome)
     } catch (err) {
-      setDone({ created: 0, skipped: [err instanceof Error ? err.message : 'Could not read the file.'] })
+      outcome.skipped.push(err instanceof Error ? err.message : 'Could not read the file.')
+      setDone(outcome)
     } finally {
       setBusy(false)
+      setProgress('')
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-fade-in" onClick={onClose}>
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-fade-in" onClick={() => { if (!busy) onClose() }}>
       <div className="bg-card rounded-xl border border-border w-full max-w-lg" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between p-4 border-b border-border">
           <div>
             <h2 className="text-base font-serif text-foreground">Import campaigns from Excel</h2>
-            <p className="text-xs text-muted-foreground">Bulk-create campaigns from an .xlsx / .csv. Columns are matched automatically.</p>
+            <p className="text-xs text-muted-foreground">Campaign details, budgets, variants, pages and their live post links — all from one .xlsx / .csv.</p>
           </div>
-          <button onClick={onClose} className="p-2 rounded-lg hover:bg-accent text-muted-foreground"><X className="w-4 h-4" /></button>
+          <button onClick={onClose} disabled={busy} className="p-2 rounded-lg hover:bg-accent text-muted-foreground disabled:opacity-40"><X className="w-4 h-4" /></button>
         </div>
         <div className="p-4 space-y-3">
           {!done ? (
             <div className="text-center py-6">
-              <Upload className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
-              <p className="text-sm text-foreground mb-1">Choose a spreadsheet to upload</p>
-              <p className="text-xs text-muted-foreground mb-4">Recognised columns: name, start date, end date, state, description.</p>
+              <Upload className={`w-10 h-10 text-muted-foreground mx-auto mb-3 ${busy ? 'animate-pulse' : ''}`} />
+              {busy ? (
+                <>
+                  <p className="text-sm text-foreground mb-1">Importing…</p>
+                  <p className="text-xs text-muted-foreground mb-4">{progress || 'Working…'}</p>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-foreground mb-1">Choose a spreadsheet to upload</p>
+                  <p className="text-xs text-muted-foreground mb-1">
+                    Recognised columns: campaign, start, state, description, posts, stories, reels, variant, page, post links.
+                  </p>
+                  <p className="text-[11px] text-muted-foreground mb-4">
+                    One row per page — leave the campaign cells blank on continuation rows (merged cells work).
+                    Post links are fetched via Apify and added as live posts under each page.
+                    Re-uploading a sheet with an existing campaign name updates that campaign instead of duplicating it.
+                  </p>
+                </>
+              )}
               <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden"
                 onChange={e => { const f = e.target.files?.[0]; if (f) onFile(f) }} />
               <button onClick={() => fileRef.current?.click()} disabled={busy}
@@ -596,8 +673,13 @@ function ImportCampaignsModal({ onClose }: { onClose: () => void }) {
             </div>
           ) : (
             <div className="space-y-3">
-              <div className="hub-card bg-emerald-50 border-emerald-200 text-sm text-emerald-900 flex items-center gap-2">
-                <CheckCircle className="w-4 h-4" /> Imported {done.created} campaign{done.created === 1 ? '' : 's'}.
+              <div className="hub-card bg-emerald-50 border-emerald-200 text-sm text-emerald-900">
+                <p className="flex items-center gap-2 font-semibold"><CheckCircle className="w-4 h-4" /> Import finished</p>
+                <ul className="text-xs mt-2 space-y-0.5">
+                  <li>· {done.campaignsCreated} campaign{done.campaignsCreated === 1 ? '' : 's'} created{done.campaignsUpdated > 0 && `, ${done.campaignsUpdated} updated`}</li>
+                  <li>· {done.pagesAssigned} page assignment{done.pagesAssigned === 1 ? '' : 's'}{done.pagesCreated > 0 && ` (${done.pagesCreated} new page${done.pagesCreated === 1 ? '' : 's'} created)`}</li>
+                  <li>· {done.postsAdded} live post{done.postsAdded === 1 ? '' : 's'} added</li>
+                </ul>
               </div>
               {done.skipped.length > 0 && (
                 <div className="hub-card bg-amber-50 border-amber-200 text-xs text-amber-900">
@@ -612,8 +694,9 @@ function ImportCampaignsModal({ onClose }: { onClose: () => void }) {
           )}
         </div>
         <div className="flex items-center justify-end gap-2 p-4 border-t border-border">
-          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent">
-            {done ? 'Done' : 'Cancel'}
+          <button onClick={onClose} disabled={busy}
+            className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent disabled:opacity-40">
+            {done ? 'Done' : busy ? 'Importing…' : 'Cancel'}
           </button>
         </div>
       </div>

@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Send, Calendar, Heart, Eye, FileText, Pause, Play, CheckCircle,
-  Link as LinkIcon, Trash2, Users, Download,
+  Link as LinkIcon, Trash2, Users, Download, Pencil, X,
 } from 'lucide-react'
 import AddLivePostsDialog from './AddLivePostsDialog'
 import { buildCampaignReport, exportCampaignReportPdf, exportCampaignReportDocx } from '@/lib/outreach-export'
@@ -11,7 +11,7 @@ import {
 } from 'recharts'
 import {
   useOutreachData, updateCampaign, removeCampaign, campaignMetrics,
-  type CampaignStatus,
+  type Campaign, type CampaignStatus, type OutreachPage,
 } from '@/lib/outreach-data'
 
 const STATUS_CFG: Record<CampaignStatus, { label: string; cls: string }> = {
@@ -28,6 +28,7 @@ export default function OutreachCampaignDetail() {
   const campaign = campaigns.find(c => c.id === campaignId)
   const [showAllPages, setShowAllPages] = useState(false)
   const [livePostsOpen, setLivePostsOpen] = useState(false)
+  const [editing, setEditing] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
   async function handleDelete() {
@@ -114,7 +115,7 @@ export default function OutreachCampaignDetail() {
             <div>
               <h1 className="text-xl font-serif text-foreground">{campaign.name}</h1>
               <p className="text-sm text-muted-foreground">
-                {campaign.startDate} → {campaign.endDate}
+                {campaign.startDate}{campaign.endDate && ` → ${campaign.endDate}`}
                 {campaign.state && ` · ${campaign.state}`}
                 {' · '}{campaign.assignedPageIds.length} pages
                 {campaign.assignedCreatorIds.length > 0 && ` · ${campaign.assignedCreatorIds.length} creators`}
@@ -125,6 +126,13 @@ export default function OutreachCampaignDetail() {
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <span className={`hub-badge ${STATUS_CFG[campaign.status].cls}`}>{STATUS_CFG[campaign.status].label}</span>
+            <button
+              onClick={() => setEditing(true)}
+              title="Edit pages, budgets and variants"
+              className="text-xs px-2.5 py-1.5 rounded-lg bg-violet-100 text-violet-700 hover:opacity-80 inline-flex items-center gap-1"
+            >
+              <Pencil className="w-3 h-3" /> Edit
+            </button>
             <button
               onClick={() => setLivePostsOpen(true)}
               className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1"
@@ -335,7 +343,139 @@ export default function OutreachCampaignDetail() {
       {livePostsOpen && (
         <AddLivePostsDialog campaign={campaign} onClose={() => setLivePostsOpen(false)} />
       )}
+      {editing && (
+        <EditCampaignModal campaign={campaign} pages={pages} onClose={() => setEditing(false)} />
+      )}
 
+    </div>
+  )
+}
+
+// ── Edit campaign: pages + post/story/reel budgets + variants ──────────────
+//
+// Post-creation editing the wizard doesn't cover: assign more pages (or
+// unassign), retune the posts/stories/reels budget, and adjust the creative
+// variant list. Saves via a single updateCampaign patch.
+function EditCampaignModal({ campaign, pages, onClose }: {
+  campaign: Campaign
+  pages: OutreachPage[]
+  onClose: () => void
+}) {
+  const [budgetPosts, setBudgetPosts] = useState(campaign.budgetPosts)
+  const [budgetStories, setBudgetStories] = useState(campaign.budgetStories)
+  const [budgetReels, setBudgetReels] = useState(campaign.budgetReels)
+  const [variantsRaw, setVariantsRaw] = useState(campaign.creativeVariants.join(', '))
+  const [pageIds, setPageIds] = useState<string[]>(campaign.assignedPageIds)
+  const [query, setQuery] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const list = pages.filter(p => !q || p.handle.toLowerCase().includes(q) || p.geography.toLowerCase().includes(q))
+    // Assigned pages float to the top so unassigning doesn't require scrolling.
+    return [...list].sort((a, b) => Number(pageIds.includes(b.id)) - Number(pageIds.includes(a.id)) || a.handle.localeCompare(b.handle))
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally NOT resorting on pageIds so rows don't jump while ticking
+  }, [pages, query])
+
+  function toggle(id: string) {
+    setPageIds(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id])
+  }
+
+  async function save() {
+    if (saving) return
+    setSaving(true)
+    setError(null)
+    try {
+      await updateCampaign(campaign.id, {
+        budgetPosts, budgetStories, budgetReels,
+        creativeVariants: variantsRaw.split(',').map(s => s.trim()).filter(Boolean),
+        assignedPageIds: pageIds,
+      })
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save changes.')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-fade-in" onClick={() => { if (!saving) onClose() }}>
+      <div className="bg-card rounded-xl border border-border w-full max-w-2xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <div>
+            <h2 className="text-base font-serif text-foreground">Edit “{campaign.name}”</h2>
+            <p className="text-xs text-muted-foreground">Pages, post/story/reel budgets and creative variants.</p>
+          </div>
+          <button onClick={onClose} disabled={saving} className="p-2 rounded-lg hover:bg-accent text-muted-foreground disabled:opacity-40"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* Budgets */}
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-2">Budget (inventory units)</p>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="hub-label">Posts</label>
+                <input type="number" min={0} className="hub-input" value={budgetPosts}
+                  onChange={e => setBudgetPosts(Number(e.target.value) || 0)} />
+              </div>
+              <div>
+                <label className="hub-label">Stories</label>
+                <input type="number" min={0} className="hub-input" value={budgetStories}
+                  onChange={e => setBudgetStories(Number(e.target.value) || 0)} />
+              </div>
+              <div>
+                <label className="hub-label">Reels</label>
+                <input type="number" min={0} className="hub-input" value={budgetReels}
+                  onChange={e => setBudgetReels(Number(e.target.value) || 0)} />
+              </div>
+            </div>
+          </div>
+
+          {/* Variants */}
+          <div>
+            <label className="hub-label">Creative variants (comma-separated)</label>
+            <input className="hub-input" value={variantsRaw} onChange={e => setVariantsRaw(e.target.value)}
+              placeholder="set_1, set_2, garud, drone" />
+            <p className="text-[11px] text-muted-foreground mt-1">Removing a variant doesn't touch posts already tagged with it.</p>
+          </div>
+
+          {/* Pages */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                Pages <span className="font-normal normal-case tracking-normal">— {pageIds.length} assigned</span>
+              </p>
+              <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Filter pages…" className="hub-input py-1 text-xs w-48" />
+            </div>
+            <div className="border border-border rounded-lg max-h-56 overflow-y-auto divide-y divide-border">
+              {filtered.length === 0 ? (
+                <p className="px-3 py-6 text-xs text-muted-foreground text-center">No pages match.</p>
+              ) : filtered.map(p => (
+                <label key={p.id} className="flex items-center gap-3 px-3 py-2 hover:bg-accent cursor-pointer">
+                  <input type="checkbox" checked={pageIds.includes(p.id)} onChange={() => toggle(p.id)} />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium text-foreground truncate">@{p.handle}</p>
+                    <p className="text-[11px] text-muted-foreground truncate">{p.geography} · {p.type}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-1">Unassigning a page keeps its posts attributed to the campaign; it just leaves the delivery table.</p>
+          </div>
+        </div>
+
+        {error && <div className="px-4 py-2 text-xs text-rose-700 bg-rose-50 border-t border-rose-200">{error}</div>}
+        <div className="flex items-center justify-end gap-2 p-4 border-t border-border">
+          <button onClick={onClose} disabled={saving}
+            className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent disabled:opacity-40">Cancel</button>
+          <button onClick={save} disabled={saving}
+            className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-50">
+            {saving ? 'Saving…' : 'Save changes'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
