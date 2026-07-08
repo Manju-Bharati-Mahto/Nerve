@@ -118,7 +118,7 @@ export default function OutreachCampaigns() {
               <div className="flex items-start justify-between gap-2 mb-2">
                 <div className="min-w-0 flex-1">
                   <h3 className="text-sm font-semibold text-foreground truncate">{c.name}</h3>
-                  <p className="text-[11px] text-muted-foreground">{c.startDate} → {c.endDate}{c.state && ` · ${c.state}`}</p>
+                  <p className="text-[11px] text-muted-foreground">{c.startDate}{c.endDate && ` → ${c.endDate}`}{c.state && ` · ${c.state}`}</p>
                 </div>
                 <span className={`hub-badge ${STATUS_CFG[c.status].cls} shrink-0`}>{STATUS_CFG[c.status].label}</span>
               </div>
@@ -185,7 +185,7 @@ export default function OutreachCampaigns() {
                   <td className="px-3 py-2.5">
                     <Link to={`/outreach/campaigns/${c.id}`} className="text-xs font-medium text-foreground hover:underline">{c.name}</Link>
                   </td>
-                  <td className="px-3 py-2.5 text-xs text-muted-foreground">{c.startDate} → {c.endDate}</td>
+                  <td className="px-3 py-2.5 text-xs text-muted-foreground">{c.startDate}{c.endDate && ` → ${c.endDate}`}</td>
                   <td className="px-3 py-2.5 text-xs text-muted-foreground">{c.state || '—'}</td>
                   <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{c.budgetPosts}/{c.budgetStories}/{c.budgetReels}</td>
                   <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{c.assignedPageIds.length} / {c.assignedCreatorIds.length}</td>
@@ -255,7 +255,7 @@ function CreateCampaignModal({
 }) {
   const [step, setStep] = useState(1)
   const [form, setForm] = useState({
-    name: '', startDate: '', endDate: '', state: '', goal: '',
+    name: '', startDate: '', state: '', goal: '',
     budgetPosts: 0, budgetStories: 0, budgetReels: 0,
     variantsRaw: 'set_1, set_2',
     pageIds: [] as string[],
@@ -299,9 +299,8 @@ function CreateCampaignModal({
       const created = await addCampaign({
         name: form.name.trim(),
         startDate: form.startDate,
-        // End date is optional in the form; fall back to the start date so a
-        // single-day campaign still has a valid (non-empty) range.
-        endDate: form.endDate || form.startDate,
+        // Campaigns are open-ended — no end date.
+        endDate: '',
         state: form.state.trim(),
         goal: form.goal.trim(),
         status: 'planning',
@@ -355,16 +354,9 @@ function CreateCampaignModal({
                 <input className="hub-input" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                   placeholder="e.g. Tech Expo April" />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="hub-label">Start date *</label>
-                  <input type="date" className="hub-input" value={form.startDate} onChange={e => setForm(f => ({ ...f, startDate: e.target.value }))} />
-                </div>
-                <div>
-                  <label className="hub-label">End date</label>
-                  <input type="date" className="hub-input" value={form.endDate} min={form.startDate || undefined}
-                    onChange={e => setForm(f => ({ ...f, endDate: e.target.value }))} />
-                </div>
+              <div>
+                <label className="hub-label">Start date *</label>
+                <input type="date" className="hub-input" value={form.startDate} onChange={e => setForm(f => ({ ...f, startDate: e.target.value }))} />
               </div>
               <div>
                 <label className="hub-label">State</label>
@@ -475,7 +467,7 @@ function CreateCampaignModal({
                   placeholder="Outreach Manager, Brand Lead" />
               </div>
               <div className="hub-card bg-muted text-xs space-y-1">
-                <p><strong>{form.name}</strong> · {form.startDate}{form.endDate && ` → ${form.endDate}`}{form.state && ` · ${form.state}`}</p>
+                <p><strong>{form.name}</strong> · {form.startDate}{form.state && ` · ${form.state}`}</p>
                 <p>{form.budgetPosts} posts · {form.budgetStories} stories · {form.budgetReels} reels</p>
                 <p>{form.pageIds.length} pages · {form.creatorIds.length} creators · {form.variantsRaw.split(',').filter(Boolean).length} variants</p>
               </div>
@@ -588,7 +580,6 @@ function ImportCampaignsModal({ onClose }: { onClose: () => void }) {
               creativeVariants: Array.from(new Set([...existing.creativeVariants, ...g.variants])),
             }
             if (g.startDate) patch.startDate = g.startDate
-            if (g.endDate) patch.endDate = g.endDate
             if (g.state) patch.state = g.state
             if (g.goal) patch.goal = g.goal
             if (g.budgetPosts) patch.budgetPosts = g.budgetPosts
@@ -600,7 +591,7 @@ function ImportCampaignsModal({ onClose }: { onClose: () => void }) {
           } else {
             const startDate = g.startDate || new Date().toISOString().slice(0, 10)
             campaign = await addCampaign({
-              name: g.name, startDate, endDate: g.endDate || startDate,
+              name: g.name, startDate, endDate: '',
               state: g.state, goal: g.goal, status: 'planning',
               budgetPosts: g.budgetPosts, budgetStories: g.budgetStories, budgetReels: g.budgetReels,
               approvers: ['Outreach Manager'], creativeVariants: g.variants,
@@ -664,7 +655,7 @@ function ImportCampaignsModal({ onClose }: { onClose: () => void }) {
                 <>
                   <p className="text-sm text-foreground mb-1">Choose a spreadsheet to upload</p>
                   <p className="text-xs text-muted-foreground mb-1">
-                    Recognised columns: campaign, start, end, state, description, posts, stories, reels, variant, page, post links.
+                    Recognised columns: campaign, start, state, description, posts, stories, reels, variant, page, post links.
                   </p>
                   <p className="text-[11px] text-muted-foreground mb-4">
                     One row per page — leave the campaign cells blank on continuation rows (merged cells work).

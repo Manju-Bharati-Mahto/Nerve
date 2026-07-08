@@ -116,7 +116,7 @@ export function exportCampaignReportPdf(report: CampaignReport) {
   doc.setFontSize(10)
   doc.setTextColor(80)
   const meta = [
-    `Dates: ${campaign.startDate || '—'}  to  ${campaign.endDate || '—'}`,
+    `Dates: ${campaign.startDate || '—'}${campaign.endDate ? `  to  ${campaign.endDate}` : '  onwards'}`,
     `State: ${campaign.state || 'All states'}`,
     `Status: ${campaign.status}`,
     `Pages assigned: ${campaign.assignedPageIds.length}` +

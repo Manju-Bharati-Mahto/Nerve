@@ -118,7 +118,7 @@ export default function ImportPagesDialog({ onClose }: { onClose: () => void }) 
             await updateCampaign(existing.id, { assignedPageIds: merged })
           } else {
             await addCampaign({
-              name, startDate: today, endDate: today, state: '', goal: '', status: 'planning',
+              name, startDate: today, endDate: '', state: '', goal: '', status: 'planning',
               budgetPosts: 0, budgetStories: 0, budgetReels: 0,
               approvers: [], creativeVariants: [], assignedPageIds: ids, assignedCreatorIds: [],
             })

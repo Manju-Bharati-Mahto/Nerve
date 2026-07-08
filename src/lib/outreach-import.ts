@@ -125,9 +125,9 @@ function cleanPageName(s: string): string {
 // name appears once and continuation rows leave it blank — parse naturally
 // (blank names carry forward from the row above).
 //
-//   Campaign  | Start    | End      | State | Posts | Stories | Reels | Variant      | Page          | Post links
-//   Lakshya   | 01/07/26 | 15/07/26 | Jammu | 10    | 5       | 6     | set_1, set_2 | @rajourinews  | url1 url2
-//             |          |          |       |       |         |       | set_2        | @poonch_live  | url3
+//   Campaign  | Start    | State | Posts | Stories | Reels | Variant      | Page          | Post links
+//   Lakshya   | 01/07/26 | Jammu | 10    | 5       | 6     | set_1, set_2 | @rajourinews  | url1 url2
+//             |          |       |       |         |       | set_2        | @poonch_live  | url3
 //
 // The Variant column does double duty: every token it contains joins the
 // campaign's creative-variant list, and when a row has exactly ONE token, that
@@ -166,7 +166,6 @@ export interface ParsedCampaignPageRow {
 export interface ParsedCampaignGroup {
   name: string
   startDate: string
-  endDate: string
   state: string
   goal: string
   budgetPosts: number
@@ -207,7 +206,6 @@ export async function parseCampaignSheet(file: File): Promise<ParsedCampaignShee
   const PAT = {
     name: [/campaign.*name|name.*campaign/, /^campaign$/, /^name$/, /title/],
     start: [/start/, /^from$/, /launch/],
-    end: [/end/, /finish/, /till|until/],
     state: [/^state$/, /state/],
     goal: [/description|desc\b/, /goal/, /brief/, /kpi/],
     budgetPosts: [/(no|num|number|#).*post/, /^posts?$/, /post.*(count|budget|target)/],
@@ -236,7 +234,7 @@ export async function parseCampaignSheet(file: File): Promise<ParsedCampaignShee
     let g = groups.get(key)
     if (!g) {
       g = {
-        name, startDate: '', endDate: '', state: '', goal: '',
+        name, startDate: '', state: '', goal: '',
         budgetPosts: 0, budgetStories: 0, budgetReels: 0,
         variants: [], pages: [],
       }
@@ -245,7 +243,6 @@ export async function parseCampaignSheet(file: File): Promise<ParsedCampaignShee
 
     // Campaign-level fields: first non-empty value in the group wins.
     if (!g.startDate) g.startDate = normalizeDate(pick(row, headers, PAT.start))
-    if (!g.endDate) g.endDate = normalizeDate(pick(row, headers, PAT.end))
     if (!g.state) g.state = pick(row, headers, PAT.state)
     if (!g.goal) g.goal = pick(row, headers, PAT.goal)
     if (!g.budgetPosts) g.budgetPosts = toCount(pick(row, headers, PAT.budgetPosts))

@@ -6,6 +6,7 @@
  * of the following hold:
  *   - The page is in the campaign's assigned_page_ids
  *   - The post's date falls inside [campaign.start_date, campaign.end_date]
+ *     (campaigns without an end_date are open-ended — start onwards)
  *   - The caption contains one of the campaign's creative_variants (case-
  *     insensitive substring)
  * If multiple campaigns match, the one with the closest start_date wins.
@@ -388,7 +389,9 @@ function attributePostToCampaign(
 
   for (const c of campaigns) {
     if (!c.assigned_page_ids.includes(pageId)) continue;
-    if (date < c.start_date || date > c.end_date) continue;
+    if (date < c.start_date) continue;
+    // Open-ended campaigns (no end date) accept any post from the start onwards.
+    if (c.end_date && date > c.end_date) continue;
     for (const variant of c.creative_variants) {
       if (!variant) continue;
       if (lowerCaption.includes(variant.toLowerCase())) {

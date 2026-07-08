@@ -115,7 +115,7 @@ export default function OutreachCampaignDetail() {
             <div>
               <h1 className="text-xl font-serif text-foreground">{campaign.name}</h1>
               <p className="text-sm text-muted-foreground">
-                {campaign.startDate} → {campaign.endDate}
+                {campaign.startDate}{campaign.endDate && ` → ${campaign.endDate}`}
                 {campaign.state && ` · ${campaign.state}`}
                 {' · '}{campaign.assignedPageIds.length} pages
                 {campaign.assignedCreatorIds.length > 0 && ` · ${campaign.assignedCreatorIds.length} creators`}

@@ -1637,7 +1637,8 @@ const outreachCreatorSchema = outreachPageSchema;
 const outreachCampaignSchema = z.object({
   name: z.string().min(1),
   start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  // Optional — campaigns are open-ended; '' or absent means no end date.
+  end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).or(z.literal("")).optional(),
   state: z.string().optional(),
   goal: z.string().optional(),
   status: z.enum(OUTREACH_CAMPAIGN_STATUSES),
