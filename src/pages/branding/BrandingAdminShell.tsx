@@ -35,7 +35,7 @@ const MENU: NavLink[] = [
   { path: '/branding/dashboard',  label: 'Daily Reports',     icon: BarChart2,    requiresCapability: ['branding:view_team_dashboard'] },
   { path: '/branding/kra',        label: 'KRA Management',    icon: Award,        adminOnly: true },
   { path: '/branding/leaves',     label: 'Leave Requests',    icon: CalendarOff,  adminOnly: true },
-  { path: '/branding/leave-calendar', label: 'Leave Calendar', icon: CalendarDays, adminOnly: true },
+  { path: '/branding/leave-calendar', label: 'Leave Calendar', icon: CalendarDays, adminOnly: true, requiresCapability: ['branding:leave_calendar'] },
   { path: '/branding/categories', label: 'Manage Categories', icon: Settings2,    requiresCapability: ['branding:manage_categories'] },
   { path: '/branding/projects',   label: 'Assign Projects',   icon: FolderPlus,   requiresCapability: ['branding:assign_projects'] },
 ]

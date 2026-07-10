@@ -1437,7 +1437,7 @@ app.post("/api/branding/portal/projects/assign", asyncHandler(async (req, res) =
   let leadId: string | null = null;
   if (assign_lead_id) {
     const lead = await getUserById(assign_lead_id);
-    if (lead && lead.team === "branding" && (lead.role === "sub_admin" || lead.role === "task_owner" || lead.role === "task_manager")) {
+    if (lead && lead.team === "branding" && (lead.role === "admin" || lead.role === "sub_admin" || lead.role === "task_owner" || lead.role === "task_manager")) {
       leadId = lead.id;
     }
   }
@@ -1559,11 +1559,17 @@ app.post("/api/branding/portal/leave", asyncHandler(async (req, res) => {
   }
 }));
 
-// Get leaves — user sees own; admin sees all (optionally filtered by status)
+// Get leaves — user sees own; admins (or holders of the leave-calendar
+// capability) see the whole team's.
 app.get("/api/branding/portal/leaves", asyncHandler(async (req, res) => {
   if (!requireBranding(res)) return;
   const user = res.locals.currentUser;
-  if (isBrandingAdminOrSuper(user.role, user.team)) {
+  let canViewAll = isBrandingAdminOrSuper(user.role, user.team);
+  if (!canViewAll && user.team === "branding") {
+    const caps = await listUserCapabilities(user.id);
+    canViewAll = caps.includes("branding:leave_calendar");
+  }
+  if (canViewAll) {
     const status = typeof req.query["status"] === "string" ? req.query["status"] : undefined;
     res.json({ leaves: await getAllLeaves(status) });
   } else {

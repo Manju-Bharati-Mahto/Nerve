@@ -8,6 +8,7 @@ export const CAPABILITIES = [
   "branding:manage_categories",
   "branding:view_team_dashboard",
   "branding:assign_projects",
+  "branding:leave_calendar",
 ] as const;
 
 export type CapabilityKey = (typeof CAPABILITIES)[number];

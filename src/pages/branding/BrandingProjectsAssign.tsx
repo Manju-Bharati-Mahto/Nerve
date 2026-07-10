@@ -50,10 +50,11 @@ export default function BrandingProjectsAssign() {
     u.id !== user?.id && (isAdmin || u.managed_by === user?.id)
   ), [users, user?.id, isAdmin])
 
-  // "Assign Lead" dropdown: only Lead-role profiles (supervisory, optional, and
-  // does NOT get a daily-report row). Not scoped — a supervising lead link.
+  // "Assign Lead" dropdown: supervisory profiles — the branding head (admin),
+  // leads, task owners and task managers. Optional, and does NOT get a
+  // daily-report row. Not scoped — a supervising link.
   const leads = useMemo(() => users.filter(u =>
-    u.team === 'branding' && (u.role === 'sub_admin' || u.role === 'task_owner' || u.role === 'task_manager')
+    u.team === 'branding' && (u.role === 'admin' || u.role === 'sub_admin' || u.role === 'task_owner' || u.role === 'task_manager')
   ), [users])
 
   const subCategories = useMemo(
@@ -188,7 +189,7 @@ export default function BrandingProjectsAssign() {
             <label className={labelCls} style={{ color: GREEN }}>Assign Lead <span className="normal-case font-normal text-gray-400">(optional — supervisory, no report row)</span></label>
             <select className={inputCls} value={assignLead} onChange={e => setAssignLead(e.target.value)}>
               <option value="">No supervising lead</option>
-              {leads.map(l => <option key={l.id} value={l.id}>{l.full_name || l.email}{l.role === 'task_owner' ? ' (Task Owner)' : l.role === 'task_manager' ? ' (Task Manager)' : ''}</option>)}
+              {leads.map(l => <option key={l.id} value={l.id}>{l.full_name || l.email}{l.role === 'admin' ? ' (Head)' : l.role === 'task_owner' ? ' (Task Owner)' : l.role === 'task_manager' ? ' (Task Manager)' : ''}</option>)}
             </select>
           </div>
 

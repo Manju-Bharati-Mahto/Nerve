@@ -117,7 +117,11 @@ const App = () => (
                 </RoleGuard>
               } />
               <Route path="/branding/leave-calendar" element={
-                <RoleGuard allowed={['super_admin', 'admin']} team="branding">
+                <RoleGuard
+                  allowed={['super_admin', 'admin']}
+                  team="branding"
+                  anyCapability={['branding:leave_calendar']}
+                >
                   <BrandingAdminDashboard />
                 </RoleGuard>
               } />

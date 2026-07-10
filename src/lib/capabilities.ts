@@ -5,6 +5,7 @@ export const CAPABILITIES = [
   "branding:manage_categories",
   "branding:view_team_dashboard",
   "branding:assign_projects",
+  "branding:leave_calendar",
 ] as const;
 
 export type CapabilityKey = (typeof CAPABILITIES)[number];
@@ -36,6 +37,12 @@ export const CAPABILITY_META: Record<CapabilityKey, {
     description: "Create projects and assign work to designers; each assignment adds a row to the designer's daily report.",
     route: "/branding/projects",
     sidebarLabel: "Assign Projects",
+  },
+  "branding:leave_calendar": {
+    label: "Leave calendar",
+    description: "View the team-wide leave calendar showing everyone's submitted and approved leaves.",
+    route: "/branding/leave-calendar",
+    sidebarLabel: "Leave Calendar",
   },
 };
 
