@@ -3754,7 +3754,7 @@ export default function BrandingUserDashboard() {
     { key: 'analytics', icon: BarChart2, label: 'Analytics' },
     { key: 'self-appraisal', icon: Award, label: 'Self Appraisal' },
     { key: 'gallery', icon: LayoutGrid, label: 'Design Gallery' },
-    ...(role === 'sub_admin' || role === 'task_owner' ? [{ key: 'team' as NavPage, icon: Users, label: 'My Team' }] : []),
+    ...(role === 'sub_admin' || role === 'task_owner' || role === 'task_manager' ? [{ key: 'team' as NavPage, icon: Users, label: 'My Team' }] : []),
   ]
 
   return (
@@ -3823,7 +3823,7 @@ export default function BrandingUserDashboard() {
 
           {/* Task owners have built-in project-assign rights (a lead variant),
              so surface the Assign Projects tab without an explicit capability. */}
-          {role === 'task_owner' && (
+          {(role === 'task_owner' || role === 'task_manager') && (
             <div className="pt-4">
               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2">Task Owner</p>
               <Link

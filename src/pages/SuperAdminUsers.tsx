@@ -18,6 +18,7 @@ const ROLE_CFG: Record<AppRole, { label: string; icon: React.ElementType; color:
   outreach_manager: { label: 'Outreach Manager', icon: Megaphone, color: 'text-orange-600', bg: 'bg-orange-100' },
   branding_reports_admin: { label: 'Reports Admin', icon: ClipboardList, color: 'text-pink-600', bg: 'bg-pink-100' },
   task_owner: { label: 'Task Owner', icon: UserCheck, color: 'text-indigo-600', bg: 'bg-indigo-100' },
+  task_manager: { label: 'Task Manager', icon: UserCheck, color: 'text-cyan-600', bg: 'bg-cyan-100' },
 }
 
 const BLANK_USER = { full_name: '', email: '', password: '', department: '' }
@@ -34,7 +35,7 @@ const CUSTOM_COLORS = [
 
 const ROLE_LABEL: Record<AppRole, string> = {
   super_admin: 'Super Admin', admin: 'Admin', sub_admin: 'Team Lead', user: 'Member', outreach_manager: 'Outreach Manager',
-  branding_reports_admin: 'Reports Admin', task_owner: 'Task Owner',
+  branding_reports_admin: 'Reports Admin', task_owner: 'Task Owner', task_manager: 'Task Manager',
 }
 
 function UserRow({

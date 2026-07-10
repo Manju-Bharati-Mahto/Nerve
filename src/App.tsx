@@ -132,7 +132,7 @@ const App = () => (
               } />
               <Route path="/branding/projects" element={
                 <RoleGuard
-                  allowed={['super_admin', 'admin', 'task_owner']}
+                  allowed={['super_admin', 'admin', 'task_owner', 'task_manager']}
                   team="branding"
                   anyCapability={['branding:assign_projects']}
                 >
@@ -142,24 +142,24 @@ const App = () => (
                 </RoleGuard>
               } />
               <Route path="/branding/sub-admin" element={
-                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'task_owner']} team="branding">
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'task_owner', 'task_manager']} team="branding">
                   <BrandingSubAdminDashboard />
                 </RoleGuard>
               } />
               <Route path="/branding/user" element={
-                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user', 'task_owner']} team="branding">
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user', 'task_owner', 'task_manager']} team="branding">
                   <BrandingUserDashboard />
                 </RoleGuard>
               } />
               <Route path="/branding/team" element={
-                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'task_owner']} team="branding">
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'task_owner', 'task_manager']} team="branding">
                   <MaybeBrandingAdminShell>
                     <BrandingTeamPanel />
                   </MaybeBrandingAdminShell>
                 </RoleGuard>
               } />
               <Route path="/branding/browse" element={
-                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user', 'task_owner']} team="branding">
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user', 'task_owner', 'task_manager']} team="branding">
                   <MaybeBrandingAdminShell>
                     <BrandingBrowse />
                   </MaybeBrandingAdminShell>

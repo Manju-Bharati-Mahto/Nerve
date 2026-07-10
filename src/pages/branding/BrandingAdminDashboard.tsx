@@ -1315,12 +1315,36 @@ function LeaveCalendarTab() {
 
   const byDate = useMemo(() => {
     const m = new Map<string, { submitted: number; approved: number; items: BrandingLeave[] }>()
-    for (const l of leaves) {
-      const cur = m.get(l.leave_date) ?? { submitted: 0, approved: 0, items: [] }
+    const add = (day: string, l: BrandingLeave) => {
+      const cur = m.get(day) ?? { submitted: 0, approved: 0, items: [] }
       cur.submitted++
       if (l.status === 'approved') cur.approved++
       cur.items.push(l)
-      m.set(l.leave_date, cur)
+      m.set(day, cur)
+    }
+    for (const l of leaves) {
+      // A leave spans [start_at, end_at]: highlight EVERY day in the range,
+      // not just the recorded leave_date (which is only the start day). Day
+      // strings use the same UTC-slice convention the server uses when it
+      // derives leave_date from start_at.
+      const startDay = l.leave_date
+      let endDay = startDay
+      if (l.end_at) {
+        const e = new Date(l.end_at)
+        if (!Number.isNaN(e.getTime())) {
+          const iso = e.toISOString().slice(0, 10)
+          if (iso > startDay) endDay = iso
+        }
+      }
+      if (endDay === startDay) { add(startDay, l); continue }
+      const d = new Date(`${startDay}T00:00:00Z`)
+      // Hard cap guards against a bad end_at (e.g. year-long span) flooding the map.
+      for (let i = 0; i < 62; i++) {
+        const day = d.toISOString().slice(0, 10)
+        add(day, l)
+        if (day >= endDay) break
+        d.setUTCDate(d.getUTCDate() + 1)
+      }
     }
     return m
   }, [leaves])
@@ -1340,13 +1364,19 @@ function LeaveCalendarTab() {
 
   const monthLabel = cursor.toLocaleString('en-US', { month: 'long', year: 'numeric' })
   const monthTotals = useMemo(() => {
-    let submitted = 0, approved = 0
+    // Count distinct leaves (not leave-days) — a 3-day leave expanded across
+    // three cells still counts once in the header totals.
+    const submitted = new Set<string>(), approved = new Set<string>()
     for (const c of cells) {
       if (!c.date) continue
       const e = byDate.get(c.date)
-      if (e) { submitted += e.submitted; approved += e.approved }
+      if (!e) continue
+      for (const l of e.items) {
+        submitted.add(l.id)
+        if (l.status === 'approved') approved.add(l.id)
+      }
     }
-    return { submitted, approved }
+    return { submitted: submitted.size, approved: approved.size }
   }, [cells, byDate])
 
   function shift(dir: -1 | 1) {
