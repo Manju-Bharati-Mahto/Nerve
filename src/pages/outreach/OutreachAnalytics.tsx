@@ -287,7 +287,10 @@ function BestPosts() {
   const [pageFilter, setPageFilter] = useState<string>('')
   const [dir, setDir] = useState<'desc' | 'asc'>('desc')
 
-  const scored = useMemo(() => posts.map(p => {
+  // Only operator-added live posts rank here — the Apify-synced backlog (a
+  // page's lifetime feed) would otherwise flood the board with posts the team
+  // never placed.
+  const scored = useMemo(() => posts.filter(p => p.addedAsLive).map(p => {
     // Apify can't read saves/shares (Instagram only exposes those to the
     // post owner), so engagement here is likes + comments only.
     const eng = p.likes + p.comments
@@ -391,6 +394,8 @@ function CampaignTrend() {
   const data = useMemo(() => {
     const byDay = new Map<string, { posts: number; reach: number; eng: number }>()
     for (const p of posts) {
+      // Trend counts only operator-added live posts, not the synced backlog.
+      if (!p.addedAsLive) continue
       const cur = byDay.get(p.date) ?? { posts: 0, reach: 0, eng: 0 }
       cur.posts++
       cur.reach += p.views
