@@ -537,7 +537,10 @@ export interface CampaignMetrics {
 }
 
 export function campaignMetrics(campaign: Campaign, posts: Post[]): CampaignMetrics {
-  const cp = posts.filter(p => p.campaignId === campaign.id)
+  // Only operator-added live posts count toward a campaign's delivery/reach —
+  // the profile sync auto-attributes backlog posts by caption match, and those
+  // must not inflate "post completion" or analytics.
+  const cp = posts.filter(p => p.campaignId === campaign.id && p.addedAsLive)
   const postsDelivered = cp.filter(p => p.type === 'static' || p.type === 'carousel').length
   const storiesDelivered = cp.filter(p => p.type === 'story').length
   const reelsDelivered = cp.filter(p => p.type === 'reel').length
