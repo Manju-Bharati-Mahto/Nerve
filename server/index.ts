@@ -1342,11 +1342,16 @@ async function scopeAssignmentsForActor(
   const isAdmin = actor.role === "super_admin" ||
     (actor.team === "branding" && actor.role === "admin");
   if (isAdmin) return ids;
-  // sub_admin: filter to managed users (also allow self).
+  // Non-admin assigners (leads / task managers / capability grantees) can
+  // assign to ANY branding-team member with an assignable role — the picker
+  // shows the whole roster for everyone, so the filter must match. Self stays
+  // allowed (a lead can assign work to themselves).
+  const ASSIGNABLE_ROLES = ["user", "sub_admin", "task_owner", "task_manager"];
   const filtered: string[] = [];
   for (const id of ids) {
     const u = await getUserById(id);
-    if (u && (u.managed_by === actor.id || u.id === actor.id)) filtered.push(id);
+    if (!u) continue;
+    if (u.id === actor.id || (u.team === "branding" && ASSIGNABLE_ROLES.includes(u.role))) filtered.push(id);
   }
   return filtered;
 }
@@ -1430,7 +1435,7 @@ app.post("/api/branding/portal/projects/assign", asyncHandler(async (req, res) =
   // "Assign to designers" now accepts designers AND leads; each gets a report row.
   const scoped = await scopeAssignmentsForActor(actor, assigned_user_ids ?? []);
   if (scoped.length === 0) {
-    return sendError(res, 400, "Assign the project to at least one designer or lead you manage.");
+    return sendError(res, 400, "Assign the project to at least one branding team member.");
   }
   // "Assign Lead" (optional, supervisory) — must be a lead-role branding member
   // and does NOT get a daily-report row (req 4).

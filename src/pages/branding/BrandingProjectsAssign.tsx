@@ -43,12 +43,13 @@ export default function BrandingProjectsAssign() {
   useEffect(() => { brandingApi.getCategories().then(r => setCategories(r.categories)).catch(() => {}) }, [])
   useEffect(() => { brandingApi.getProjects().then(r => setProjects(r.projects)).catch(() => {}) }, [])
 
-  // "Assign to designers" now lists both Designer and Lead profiles (req 4) —
-  // scoped to the members this actor manages (admins can assign to anyone).
+  // "Assign to designers" lists the WHOLE branding team — designers, leads and
+  // task managers — for every actor (no managed-by scoping), so anyone using
+  // this page sees the same roster the head sees. Self is excluded.
   const designers = useMemo(() => users.filter(u =>
     u.team === 'branding' && (u.role === 'user' || u.role === 'sub_admin' || u.role === 'task_owner' || u.role === 'task_manager') &&
-    u.id !== user?.id && (isAdmin || u.managed_by === user?.id)
-  ), [users, user?.id, isAdmin])
+    u.id !== user?.id
+  ), [users, user?.id])
 
   // "Assign Lead" dropdown: supervisory profiles — the branding head (admin),
   // leads, task owners and task managers. Optional, and does NOT get a
@@ -161,7 +162,7 @@ export default function BrandingProjectsAssign() {
             <label className={labelCls} style={{ color: GREEN }}>Assign to designers / leads *</label>
             {designers.length === 0 ? (
               <p className="text-xs text-gray-400 border border-gray-100 rounded-xl px-3 py-3">
-                No members to assign. {isAdmin ? 'Add branding team members first.' : 'You have no team members assigned to you yet.'}
+                No members to assign. {isAdmin ? 'Add branding team members first.' : 'No branding team members found yet.'}
               </p>
             ) : (
               <div className="border border-gray-100 rounded-xl divide-y divide-gray-50 max-h-52 overflow-y-auto">
