@@ -59,7 +59,7 @@ export default function BrandingAdminShell({ children }: { children: React.React
   const userCaps = profile?.capabilities ?? []
   // Task owners are leads with built-in project-assign rights — they always see
   // the Assign Projects tab even without an explicit capability grant.
-  const isTaskOwner = role === 'task_owner'
+  const isTaskOwner = role === 'task_owner' || role === 'task_manager'
   const canSee = (item: NavLink): boolean => {
     if (isFullAdmin) {
       // Full admins see everything except the items reserved for higher-tier

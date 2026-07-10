@@ -41,7 +41,7 @@ interface MemberFormState {
   email: string
   password: string
   department: string
-  role: 'user' | 'sub_admin' | 'task_owner'
+  role: 'user' | 'sub_admin' | 'task_owner' | 'task_manager'
   capabilities: string[]
 }
 
@@ -149,11 +149,12 @@ function MemberDialog({ mode, initial, canManageCapabilities, onSave, onClose }:
             <select
               className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
               value={form.role}
-              onChange={e => setForm(f => ({ ...f, role: e.target.value as 'user' | 'sub_admin' | 'task_owner' }))}
+              onChange={e => setForm(f => ({ ...f, role: e.target.value as 'user' | 'sub_admin' | 'task_owner' | 'task_manager' }))}
             >
               <option value="user">Designer</option>
               <option value="sub_admin">Team Lead</option>
               <option value="task_owner">Task Owner</option>
+              <option value="task_manager">Task Manager</option>
             </select>
           </div>
           {canManageCapabilities && (
@@ -345,7 +346,7 @@ function ProjectDialog({ mode, initial, members, onSave, onClose }: ProjectDialo
                     />
                     <span className="text-sm text-foreground">{m.full_name || m.email}</span>
                     <span className="ml-auto text-[11px] text-muted-foreground">
-                      {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : 'Member'}
+                      {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : m.role === 'task_manager' ? 'Task Manager' : 'Member'}
                     </span>
                   </label>
                 ))}
@@ -379,7 +380,7 @@ export default function BrandingTeamPanel() {
   const { role, user } = useAuth()
   const { users: allUsers, addUser, updateUser, deleteUser, refreshAll } = useAppData()
   const isAdmin = role === 'admin' || role === 'super_admin'
-  const isLead = role === 'sub_admin' || role === 'task_owner'
+  const isLead = role === 'sub_admin' || role === 'task_owner' || role === 'task_manager'
 
   // Branding members only
   // - admin/super_admin: all branding members
@@ -535,7 +536,7 @@ export default function BrandingTeamPanel() {
 
   // ── Render ─────────────────────────────────────────────────────────────
 
-  const teamLeads = members.filter(m => m.role === 'sub_admin' || m.role === 'task_owner')
+  const teamLeads = members.filter(m => m.role === 'sub_admin' || m.role === 'task_owner' || m.role === 'task_manager')
   const teamMembers = members.filter(m => m.role === 'user')
 
   return (
@@ -717,7 +718,7 @@ export default function BrandingTeamPanel() {
             email: memberDialog.member.email,
             password: '',
             department: memberDialog.member.department,
-            role: memberDialog.member.role === 'sub_admin' ? 'sub_admin' : memberDialog.member.role === 'task_owner' ? 'task_owner' : 'user',
+            role: memberDialog.member.role === 'sub_admin' ? 'sub_admin' : memberDialog.member.role === 'task_owner' ? 'task_owner' : memberDialog.member.role === 'task_manager' ? 'task_manager' : 'user',
             capabilities: memberDialog.member.capabilities ?? [],
           }}
           onSave={data => handleEditMember(data, memberDialog.member.id)}
@@ -1009,7 +1010,7 @@ function ProjectCard({
                   <Check className="w-3 h-3" style={{ color: '#1a472a' }} />
                   <span className="text-xs font-medium" style={{ color: '#1a472a' }}>{m.full_name || m.email}</span>
                   <span className="text-[10px]" style={{ color: '#52b788' }}>
-                    {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : 'Member'}
+                    {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : m.role === 'task_manager' ? 'Task Manager' : 'Member'}
                   </span>
                 </div>
               ))}

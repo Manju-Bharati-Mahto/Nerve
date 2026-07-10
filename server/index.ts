@@ -212,7 +212,9 @@ type SessionRequest = express.Request & {
   session: express.Request["session"] & { userId?: string };
 };
 
-const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "branding_reports_admin", "task_owner"] as const;
+// task_manager mirrors task_owner exactly (same dashboard + lead powers); it
+// exists so the branding head can hand out the role under a distinct title.
+const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "branding_reports_admin", "task_owner", "task_manager"] as const;
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -320,7 +322,7 @@ async function getSessionUser(req: SessionRequest) {
 }
 
 function isBrandingManager(role: AppRole, team: string | null) {
-  return role === "super_admin" || (team === "branding" && (role === "admin" || role === "sub_admin" || role === "user" || role === "task_owner"));
+  return role === "super_admin" || (team === "branding" && (role === "admin" || role === "sub_admin" || role === "user" || role === "task_owner" || role === "task_manager"));
 }
 
 function canCreateManagedUser(
@@ -330,7 +332,7 @@ function canCreateManagedUser(
   if (!actor) return false;
   if (actor.role === "super_admin") return true;
   if (actor.role !== "admin") return false;
-  return actor.team !== null && payload.team === actor.team && ["sub_admin", "user", "task_owner"].includes(payload.role);
+  return actor.team !== null && payload.team === actor.team && ["sub_admin", "user", "task_owner", "task_manager"].includes(payload.role);
 }
 
 app.get("/api/health", (_req, res) => {
@@ -657,8 +659,8 @@ app.patch("/api/users/:id", asyncHandler(async (req, res) => {
     if (!target || target.team !== "branding") {
       return sendError(res, 403, "You can only modify members of your own team.");
     }
-    if (parsed.data.role && !["user", "sub_admin", "task_owner"].includes(parsed.data.role)) {
-      return sendError(res, 403, "You can only assign the designer, lead or task-owner role.");
+    if (parsed.data.role && !["user", "sub_admin", "task_owner", "task_manager"].includes(parsed.data.role)) {
+      return sendError(res, 403, "You can only assign the designer, lead, task-owner or task-manager role.");
     }
     if (parsed.data.team && parsed.data.team !== "branding") {
       return sendError(res, 403, "You cannot move users out of the branding team.");
@@ -853,7 +855,7 @@ async function requireBrandingProjectAssigner(res: express.Response): Promise<bo
   const u = res.locals.currentUser;
   if (isBrandingAdminOrSuper(u.role, u.team)) return true;
   // Task owners are leads with built-in assign rights.
-  if (u.team === "branding" && u.role === "task_owner") return true;
+  if (u.team === "branding" && (u.role === "task_owner" || u.role === "task_manager")) return true;
   if (u.team === "branding") {
     const caps = await listUserCapabilities(u.id);
     if (caps.includes("branding:assign_projects")) return true;
@@ -864,7 +866,7 @@ async function requireBrandingProjectAssigner(res: express.Response): Promise<bo
 // Branding "lead" roles: team leads (sub_admin) and task owners (a lead variant
 // with built-in project-assign rights). Used wherever lead-level access applies.
 function isBrandingLeadRole(role: AppRole, team: string | null): boolean {
-  return team === "branding" && (role === "sub_admin" || role === "task_owner");
+  return team === "branding" && (role === "sub_admin" || role === "task_owner" || role === "task_manager");
 }
 function requireBrandingLead(res: express.Response): boolean {
   const u = res.locals.currentUser;
@@ -1435,7 +1437,7 @@ app.post("/api/branding/portal/projects/assign", asyncHandler(async (req, res) =
   let leadId: string | null = null;
   if (assign_lead_id) {
     const lead = await getUserById(assign_lead_id);
-    if (lead && lead.team === "branding" && (lead.role === "sub_admin" || lead.role === "task_owner")) {
+    if (lead && lead.team === "branding" && (lead.role === "sub_admin" || lead.role === "task_owner" || lead.role === "task_manager")) {
       leadId = lead.id;
     }
   }
