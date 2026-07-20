@@ -19,6 +19,7 @@ const ROLE_CFG: Record<AppRole, { label: string; icon: React.ElementType; color:
   branding_reports_admin: { label: 'Reports Admin', icon: ClipboardList, color: 'text-pink-600', bg: 'bg-pink-100' },
   task_owner: { label: 'Task Owner', icon: UserCheck, color: 'text-indigo-600', bg: 'bg-indigo-100' },
   task_manager: { label: 'Task Manager', icon: UserCheck, color: 'text-cyan-600', bg: 'bg-cyan-100' },
+  social_media: { label: 'Social Media', icon: UserCheck, color: 'text-fuchsia-600', bg: 'bg-fuchsia-100' },
 }
 
 const BLANK_USER = { full_name: '', email: '', password: '', department: '' }
@@ -35,7 +36,7 @@ const CUSTOM_COLORS = [
 
 const ROLE_LABEL: Record<AppRole, string> = {
   super_admin: 'Super Admin', admin: 'Admin', sub_admin: 'Team Lead', user: 'Member', outreach_manager: 'Outreach Manager',
-  branding_reports_admin: 'Reports Admin', task_owner: 'Task Owner', task_manager: 'Task Manager',
+  branding_reports_admin: 'Reports Admin', task_owner: 'Task Owner', task_manager: 'Task Manager', social_media: 'Social Media',
 }
 
 function UserRow({
@@ -83,6 +84,7 @@ function UserRow({
             <option value="admin">Admin</option>
             <option value="outreach_manager">Outreach Manager</option>
             <option value="branding_reports_admin">Reports Admin</option>
+            <option value="social_media">Social Media</option>
           </select>
           <select
             className="hub-input text-xs py-1 w-32"
@@ -229,6 +231,7 @@ export default function SuperAdminUsers() {
     { role: 'outreach_manager', label: 'Outreach Managers', addLabel: 'Add Outreach Manager' },
     { role: 'sub_admin', label: 'Team Leads', addLabel: 'Add Team Lead' },
     { role: 'user', label: 'Members', addLabel: 'Add Member' },
+    { role: 'social_media', label: 'Social Media', addLabel: 'Add Social Media', onlyTeam: 'media' },
   ]
 
   const userDialogTeamName = userDialog.team

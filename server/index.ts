@@ -75,6 +75,16 @@ import {
   POST_STATUSES as OUTREACH_POST_STATUSES,
 } from "./outreach-db.js";
 import { syncOutreach, addLivePosts, maybeRunScheduledSync, refreshLivePostMetrics } from "./outreach-sync.js";
+import {
+  bootstrapMediaDatabase,
+  listMediaMasters, createMediaMaster, updateMediaMaster, type MediaMasterKind,
+  listMediaProjects, getMediaProject, createMediaProject, updateMediaProject, deleteMediaProject,
+  addMediaDeliverable, getMediaDeliverable, updateMediaDeliverable, deleteMediaDeliverable,
+  addMediaSocialPost, updateMediaSocialPost, deleteMediaSocialPost,
+  getMediaReport, listMediaReportsByDate, upsertMediaReport, submitMediaReport, reviewMediaReport,
+  MEDIA_PROJECT_CATEGORIES, MEDIA_PROJECT_STATUSES,
+  type MediaProjectCategory, type MediaProjectStatus, type MediaTaskInput,
+} from "./media-db.js";
 import { verifyPassword } from "./password.js";
 import {
   bootstrapBrandingDatabase,
@@ -214,7 +224,7 @@ type SessionRequest = express.Request & {
 
 // task_manager mirrors task_owner exactly (same dashboard + lead powers); it
 // exists so the branding head can hand out the role under a distinct title.
-const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "branding_reports_admin", "task_owner", "task_manager"] as const;
+const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "branding_reports_admin", "task_owner", "task_manager", "social_media"] as const;
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -332,7 +342,7 @@ function canCreateManagedUser(
   if (!actor) return false;
   if (actor.role === "super_admin") return true;
   if (actor.role !== "admin") return false;
-  return actor.team !== null && payload.team === actor.team && ["sub_admin", "user", "task_owner", "task_manager"].includes(payload.role);
+  return actor.team !== null && payload.team === actor.team && ["sub_admin", "user", "task_owner", "task_manager", "social_media"].includes(payload.role);
 }
 
 app.get("/api/health", (_req, res) => {
@@ -1861,12 +1871,272 @@ app.post("/api/outreach/refresh-reach", asyncHandler(async (req, res) => {
   }
 }));
 
+// ── PU MediaOps (Media Crew department) ────────────────────────────────────
+//
+// Phase-1 endpoints: masters, production tracker (projects + deliverables +
+// social posting flags) and daily reports with multi-task cards. Roles per
+// the PRD permission matrix: admin = department head, sub_admin = Team Lead,
+// user = Member, social_media = Member + posting rights.
+
+function isMediaTeam(role: AppRole, team: string | null) {
+  return role === "super_admin" || team === "media";
+}
+function isMediaLead(role: AppRole, team: string | null) {
+  return role === "super_admin" || (team === "media" && (role === "admin" || role === "sub_admin"));
+}
+function requireMedia(res: express.Response): boolean {
+  const u = res.locals.currentUser;
+  if (!isMediaTeam(u.role, u.team)) {
+    sendError(res, 403, "Media Crew access only.");
+    return false;
+  }
+  return true;
+}
+function requireMediaLead(res: express.Response): boolean {
+  const u = res.locals.currentUser;
+  if (!isMediaLead(u.role, u.team)) {
+    sendError(res, 403, "Media Crew lead or admin access only.");
+    return false;
+  }
+  return true;
+}
+function requireMediaAdmin(res: express.Response): boolean {
+  const u = res.locals.currentUser;
+  if (!(u.role === "super_admin" || (u.team === "media" && u.role === "admin"))) {
+    sendError(res, 403, "Media Crew admin access only.");
+    return false;
+  }
+  return true;
+}
+const isValidDay = (s: unknown): s is string => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+
+// Masters
+
+app.get("/api/media/masters", asyncHandler(async (_req, res) => {
+  if (!requireMedia(res)) return;
+  res.json(await listMediaMasters());
+}));
+
+app.post("/api/media/masters/:kind", asyncHandler(async (req, res) => {
+  if (!requireMediaAdmin(res)) return;
+  const kind = getSingleParam(req.params.kind);
+  if (kind !== "task_category" && kind !== "deliverable_type") return sendError(res, 400, "Unknown master kind.");
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  if (!name) return sendError(res, 400, "Name is required.");
+  res.status(201).json({ master: await createMediaMaster(kind as MediaMasterKind, name) });
+}));
+
+app.patch("/api/media/masters/:kind/:id", asyncHandler(async (req, res) => {
+  if (!requireMediaAdmin(res)) return;
+  const kind = getSingleParam(req.params.kind);
+  if (kind !== "task_category" && kind !== "deliverable_type") return sendError(res, 400, "Unknown master kind.");
+  const master = await updateMediaMaster(kind as MediaMasterKind, getSingleParam(req.params.id), {
+    name: typeof req.body?.name === "string" ? req.body.name : undefined,
+    is_active: typeof req.body?.is_active === "boolean" ? req.body.is_active : undefined,
+  });
+  if (!master) return sendError(res, 404, "Master not found.");
+  res.json({ master });
+}));
+
+// Team roster (for pickers, assignments and the team report grid)
+
+app.get("/api/media/team", asyncHandler(async (_req, res) => {
+  if (!requireMedia(res)) return;
+  const { rows } = await pool.query(
+    `SELECT id, full_name, email, role, avatar_url FROM users
+      WHERE team = 'media' ORDER BY CASE role WHEN 'admin' THEN 0 WHEN 'sub_admin' THEN 1 ELSE 2 END, full_name`,
+  );
+  res.json({ members: rows });
+}));
+
+// Production tracker — projects
+
+app.get("/api/media/projects", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const categoryRaw = typeof req.query["category"] === "string" ? req.query["category"] : undefined;
+  if (categoryRaw && !(MEDIA_PROJECT_CATEGORIES as readonly string[]).includes(categoryRaw)) {
+    return sendError(res, 400, "Unknown category.");
+  }
+  res.json({ projects: await listMediaProjects(categoryRaw as MediaProjectCategory | undefined) });
+}));
+
+app.get("/api/media/projects/:id", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const project = await getMediaProject(getSingleParam(req.params.id));
+  if (!project) return sendError(res, 404, "Project not found.");
+  res.json({ project });
+}));
+
+app.post("/api/media/projects", asyncHandler(async (req, res) => {
+  if (!requireMediaLead(res)) return;
+  const b = req.body ?? {};
+  if (!(MEDIA_PROJECT_CATEGORIES as readonly string[]).includes(b.category)) return sendError(res, 400, "Unknown category.");
+  if (typeof b.name !== "string" || !b.name.trim()) return sendError(res, 400, "Project name is required.");
+  if (b.status !== undefined && !(MEDIA_PROJECT_STATUSES as readonly string[]).includes(b.status)) {
+    return sendError(res, 400, "Unknown status.");
+  }
+  const project = await createMediaProject(b, res.locals.currentUser.id);
+  res.status(201).json({ project });
+}));
+
+app.patch("/api/media/projects/:id", asyncHandler(async (req, res) => {
+  if (!requireMediaLead(res)) return;
+  const b = req.body ?? {};
+  if (b.status !== undefined && !(MEDIA_PROJECT_STATUSES as readonly string[]).includes(b.status)) {
+    return sendError(res, 400, "Unknown status.");
+  }
+  const project = await updateMediaProject(getSingleParam(req.params.id), {
+    ...b,
+    status: b.status as MediaProjectStatus | undefined,
+    category: undefined, // category is locked after creation (Appendix A.2)
+  });
+  if (!project) return sendError(res, 404, "Project not found.");
+  res.json({ project });
+}));
+
+app.delete("/api/media/projects/:id", asyncHandler(async (req, res) => {
+  if (!requireMediaAdmin(res)) return;
+  await deleteMediaProject(getSingleParam(req.params.id));
+  res.json({ ok: true });
+}));
+
+// Deliverables — leads/admin always; members only on rows assigned to them.
+
+app.post("/api/media/projects/:id/deliverables", asyncHandler(async (req, res) => {
+  if (!requireMediaLead(res)) return;
+  const typeId = typeof req.body?.type_id === "string" ? req.body.type_id : "";
+  if (!typeId) return sendError(res, 400, "type_id is required.");
+  const deliverable = await addMediaDeliverable(getSingleParam(req.params.id), typeId);
+  if (!deliverable) return sendError(res, 404, "Project not found.");
+  res.status(201).json({ deliverable });
+}));
+
+app.patch("/api/media/deliverables/:id", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const u = res.locals.currentUser;
+  const id = getSingleParam(req.params.id);
+  if (!isMediaLead(u.role, u.team)) {
+    const existing = await getMediaDeliverable(id);
+    if (!existing) return sendError(res, 404, "Deliverable not found.");
+    if (!existing.assigned_user_ids.includes(u.id)) {
+      return sendError(res, 403, "You can only update deliverables assigned to you.");
+    }
+    // Members update status/link/quantity on their own rows, not assignment.
+    delete (req.body ?? {}).assigned_user_ids;
+  }
+  const b = req.body ?? {};
+  if (b.status !== undefined && !["pending", "in_progress", "done"].includes(b.status)) {
+    return sendError(res, 400, "Unknown status.");
+  }
+  const deliverable = await updateMediaDeliverable(id, b);
+  if (!deliverable) return sendError(res, 404, "Deliverable not found.");
+  res.json({ deliverable });
+}));
+
+app.delete("/api/media/deliverables/:id", asyncHandler(async (req, res) => {
+  if (!requireMediaLead(res)) return;
+  await deleteMediaDeliverable(getSingleParam(req.params.id));
+  res.json({ ok: true });
+}));
+
+// Social posting — admin, leads and the social_media role (PRD 5.2).
+
+function canFlipSocial(res: express.Response): boolean {
+  const u = res.locals.currentUser;
+  if (isMediaLead(u.role, u.team) || (u.team === "media" && u.role === "social_media")) return true;
+  sendError(res, 403, "Only the social media desk, leads or admins can update posting status.");
+  return false;
+}
+
+app.post("/api/media/projects/:id/social", asyncHandler(async (req, res) => {
+  if (!canFlipSocial(res)) return;
+  const platform = typeof req.body?.platform === "string" ? req.body.platform.trim() : "";
+  if (!platform) return sendError(res, 400, "Platform / output is required.");
+  res.status(201).json({ social: await addMediaSocialPost(getSingleParam(req.params.id), platform) });
+}));
+
+app.patch("/api/media/social/:id", asyncHandler(async (req, res) => {
+  if (!canFlipSocial(res)) return;
+  const social = await updateMediaSocialPost(getSingleParam(req.params.id), req.body ?? {}, res.locals.currentUser.id);
+  if (!social) return sendError(res, 404, "Social post row not found.");
+  res.json({ social });
+}));
+
+app.delete("/api/media/social/:id", asyncHandler(async (req, res) => {
+  if (!requireMediaLead(res)) return;
+  await deleteMediaSocialPost(getSingleParam(req.params.id));
+  res.json({ ok: true });
+}));
+
+// Daily reports — one per user per day, multi-task cards (FR-DR-01..06).
+
+app.get("/api/media/reports/mine", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const date = req.query["date"];
+  if (!isValidDay(date)) return sendError(res, 400, "A valid date (YYYY-MM-DD) is required.");
+  res.json({ report: await getMediaReport(res.locals.currentUser.id, date) });
+}));
+
+app.put("/api/media/reports/mine", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const b = req.body ?? {};
+  if (!isValidDay(b.date)) return sendError(res, 400, "A valid date (YYYY-MM-DD) is required.");
+  const tasks: MediaTaskInput[] = Array.isArray(b.tasks) ? b.tasks : [];
+  for (const t of tasks) {
+    if (typeof t?.task_category_id !== "string" || !t.task_category_id) {
+      return sendError(res, 400, "Every task card needs a task category.");
+    }
+    if (typeof t?.description !== "string" || !t.description.trim()) {
+      return sendError(res, 400, "Every task card needs a description.");
+    }
+  }
+  try {
+    const report = await upsertMediaReport(res.locals.currentUser.id, b.date, {
+      summary: typeof b.summary === "string" ? b.summary : "",
+      blockers: typeof b.blockers === "string" ? b.blockers : "",
+      tomorrow_priority: typeof b.tomorrow_priority === "string" ? b.tomorrow_priority : "",
+      tasks,
+    });
+    res.json({ report });
+  } catch (err) {
+    return sendError(res, 409, err instanceof Error ? err.message : "Could not save the report.");
+  }
+}));
+
+app.post("/api/media/reports/mine/submit", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const date = req.body?.date;
+  if (!isValidDay(date)) return sendError(res, 400, "A valid date (YYYY-MM-DD) is required.");
+  const report = await submitMediaReport(res.locals.currentUser.id, date);
+  if (!report) return sendError(res, 404, "No editable report found for that date.");
+  res.json({ report });
+}));
+
+app.get("/api/media/reports", asyncHandler(async (req, res) => {
+  if (!requireMediaLead(res)) return;
+  const date = req.query["date"];
+  if (!isValidDay(date)) return sendError(res, 400, "A valid date (YYYY-MM-DD) is required.");
+  res.json({ reports: await listMediaReportsByDate(date) });
+}));
+
+app.post("/api/media/reports/:id/review", asyncHandler(async (req, res) => {
+  if (!requireMediaLead(res)) return;
+  const action = req.body?.action;
+  if (action !== "approve" && action !== "send_back") return sendError(res, 400, "action must be approve or send_back.");
+  const comment = typeof req.body?.comment === "string" ? req.body.comment.trim() : "";
+  if (action === "send_back" && !comment) return sendError(res, 400, "A one-line comment is required when sending back.");
+  const report = await reviewMediaReport(getSingleParam(req.params.id), res.locals.currentUser.id, action, comment);
+  if (!report) return sendError(res, 404, "Report not found or not awaiting review.");
+  res.json({ report });
+}));
+
 // ── Start server ───────────────────────────────────────────────────────────
 
 bootstrapDatabase()
   .then(() => bootstrapBrandingDatabase())
   .then(() => bootstrapSettingsDatabase())
   .then(() => bootstrapOutreach())
+  .then(() => bootstrapMediaDatabase())
   .then(async () => {
     // Catch up on any reports whose 21:00 IST submit cutoff or 17:00 IST
     // auto-pause cutoff already passed while the server was down, then keep an

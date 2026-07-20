@@ -41,6 +41,11 @@ import BrandingBrowse from "@/pages/branding/BrandingBrowse";
 
 // Content team
 import ContentAdminDashboard from "@/pages/content/ContentAdminDashboard";
+import MediaShell from "@/pages/media/MediaShell";
+import MediaDashboard from "@/pages/media/MediaDashboard";
+import MediaDailyReport from "@/pages/media/MediaDailyReport";
+import MediaTeamReports from "@/pages/media/MediaTeamReports";
+import MediaProductionTracker from "@/pages/media/MediaProductionTracker";
 import ContentSubAdminDashboard from "@/pages/content/ContentSubAdminDashboard";
 import ContentUserDashboard from "@/pages/content/ContentUserDashboard";
 
@@ -171,6 +176,26 @@ const App = () => (
               } />
 
               {/* ── Content team routes ── */}
+              <Route path="/media/dashboard" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user', 'social_media']} team="media">
+                  <MediaShell><MediaDashboard /></MediaShell>
+                </RoleGuard>
+              } />
+              <Route path="/media/report" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user', 'social_media']} team="media">
+                  <MediaShell><MediaDailyReport /></MediaShell>
+                </RoleGuard>
+              } />
+              <Route path="/media/team-reports" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="media">
+                  <MediaShell><MediaTeamReports /></MediaShell>
+                </RoleGuard>
+              } />
+              <Route path="/media/projects" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user', 'social_media']} team="media">
+                  <MediaShell><MediaProductionTracker /></MediaShell>
+                </RoleGuard>
+              } />
               <Route path="/content/dashboard" element={
                 <RoleGuard allowed={['super_admin', 'admin']} team="content">
                   <ContentAdminDashboard />
