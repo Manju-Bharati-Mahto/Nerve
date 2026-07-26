@@ -169,6 +169,8 @@ export default function AppSidebar() {
   // MaybeBrandingAdminShell). Hide the global one for everyone on the
   // branding team so we never stack two sidebars.
   if (team === 'branding' && (role === 'user' || role === 'sub_admin' || role === 'admin' || role === 'branding_reports_admin' || role === 'task_owner' || role === 'task_manager')) return null
+  // Media Crew pages render inside MediaShell — no global sidebar.
+  if (team === 'media') return null
 
   const key = `${role ?? ''}:${team ?? ''}`
   const config = SIDEBAR[key] ?? FALLBACK

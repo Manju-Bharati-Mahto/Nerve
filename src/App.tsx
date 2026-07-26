@@ -39,6 +39,16 @@ import BrandingUserDashboard from "@/pages/branding/BrandingUserDashboard";
 import BrandingTeamPanel from "@/pages/branding/BrandingTeamPanel";
 import BrandingBrowse from "@/pages/branding/BrandingBrowse";
 
+// Media Crew (Media Ops)
+import MediaShell from "@/pages/media/MediaShell";
+import MediaHome from "@/pages/media/MediaHome";
+import MediaMyDay from "@/pages/media/MediaMyDay";
+import MediaProjects from "@/pages/media/MediaProjects";
+import MediaProjectDetail from "@/pages/media/MediaProjectDetail";
+import MediaPipeline from "@/pages/media/MediaPipeline";
+import MediaReports from "@/pages/media/MediaReports";
+import MediaAdmin from "@/pages/media/MediaAdmin";
+
 // Content team
 import ContentAdminDashboard from "@/pages/content/ContentAdminDashboard";
 import ContentSubAdminDashboard from "@/pages/content/ContentSubAdminDashboard";
@@ -167,6 +177,43 @@ const App = () => (
                   <MaybeBrandingAdminShell>
                     <BrandingBrowse />
                   </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+
+              {/* ── Media Crew (Media Ops) routes ── */}
+              <Route path="/media/home" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']} team="media">
+                  <MediaShell><MediaHome /></MediaShell>
+                </RoleGuard>
+              } />
+              <Route path="/media/my-day" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']} team="media">
+                  <MediaShell><MediaMyDay /></MediaShell>
+                </RoleGuard>
+              } />
+              <Route path="/media/projects" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']} team="media">
+                  <MediaShell><MediaProjects /></MediaShell>
+                </RoleGuard>
+              } />
+              <Route path="/media/projects/:projectId" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']} team="media">
+                  <MediaShell><MediaProjectDetail /></MediaShell>
+                </RoleGuard>
+              } />
+              <Route path="/media/pipeline" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']} team="media">
+                  <MediaShell><MediaPipeline /></MediaShell>
+                </RoleGuard>
+              } />
+              <Route path="/media/reports" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']} team="media">
+                  <MediaShell><MediaReports /></MediaShell>
+                </RoleGuard>
+              } />
+              <Route path="/media/admin" element={
+                <RoleGuard allowed={['super_admin', 'admin']} team="media">
+                  <MediaShell><MediaAdmin /></MediaShell>
                 </RoleGuard>
               } />
 

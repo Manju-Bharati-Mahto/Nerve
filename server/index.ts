@@ -75,6 +75,20 @@ import {
   POST_STATUSES as OUTREACH_POST_STATUSES,
 } from "./outreach-db.js";
 import { syncOutreach, addLivePosts, maybeRunScheduledSync, refreshLivePostMetrics } from "./outreach-sync.js";
+import {
+  bootstrapMediaDatabase, runMediaAutomations, mediaAudit,
+  listMediaLookups, createMediaLookup, updateMediaLookup, isMediaLookupType,
+  listTemplateDeliverables, setTemplateDeliverables,
+  listMediaProjects, getMediaProject, createMediaProject, updateMediaProject, setProjectStatus,
+  projectTransitionAllowed, addProjectAssignment, removeProjectAssignment, isProjectManagerOrOwner,
+  listDeliverables, getDeliverable, createDeliverable, updateDeliverable,
+  addDeliverableVersion, reviewDeliverableVersion, addDriveLink,
+  getReport, getReportById, addReportTask, updateReportTask, deleteReportTask,
+  submitReport, reviewReport, listReportsForDate, listMyReports, listReviewQueue,
+  listMediaTeamUsers, getMediaDashboard, listNotifications, markNotificationsRead, notify,
+  listAuditLogs,
+  MEDIA_PROJECT_STATUSES, type MediaProjectStatus,
+} from "./media-db.js";
 import { verifyPassword } from "./password.js";
 import {
   bootstrapBrandingDatabase,
@@ -1861,12 +1875,529 @@ app.post("/api/outreach/refresh-reach", asyncHandler(async (req, res) => {
   }
 }));
 
+// ── Media Ops (PRD/SRS v1.0 — Phase 0/1) ───────────────────────────────────
+//
+// D4: exactly three media roles, mapped from Nerve identity — no new global
+// role. super_admin acts as media admin everywhere; otherwise membership in
+// team 'media' is required.
+type MediaRole = "admin" | "team_lead" | "employee";
+
+function mediaRoleOf(u: { role: string; team: string | null }): MediaRole | null {
+  if (u.role === "super_admin") return "admin";
+  if (u.team !== "media") return null;
+  if (u.role === "admin") return "admin";
+  if (u.role === "sub_admin") return "team_lead";
+  if (u.role === "user") return "employee";
+  return null;
+}
+
+function requireMedia(res: express.Response): MediaRole | null {
+  const mr = mediaRoleOf(res.locals.currentUser);
+  if (!mr) sendError(res, 403, "Media Crew access only.");
+  return mr;
+}
+
+function requireMediaLead(res: express.Response): MediaRole | null {
+  const mr = mediaRoleOf(res.locals.currentUser);
+  if (!mr || mr === "employee") {
+    sendError(res, 403, "Media team lead or admin access required.");
+    return null;
+  }
+  return mr;
+}
+
+function requireMediaAdmin(res: express.Response): boolean {
+  if (mediaRoleOf(res.locals.currentUser) !== "admin") {
+    sendError(res, 403, "Media admin access required.");
+    return false;
+  }
+  return true;
+}
+
+const GOOGLE_LINK_RE = /^https:\/\/(drive|docs)\.google\.com\//i; // VR-4
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** §16: employee may edit a project only as its owner/PM; leads and admins always. */
+async function canManageProject(res: express.Response, projectId: string): Promise<boolean> {
+  const mr = mediaRoleOf(res.locals.currentUser);
+  if (mr === "admin" || mr === "team_lead") return true;
+  if (mr === "employee") return isProjectManagerOrOwner(projectId, res.locals.currentUser.id);
+  return false;
+}
+
+app.get("/api/v1/media/bootstrap", asyncHandler(async (_req, res) => {
+  const mr = requireMedia(res);
+  if (!mr) return;
+  res.json({
+    media_role: mr,
+    lookups: await listMediaLookups(),
+    team: await listMediaTeamUsers(),
+  });
+}));
+
+app.get("/api/v1/media/dashboard", asyncHandler(async (_req, res) => {
+  const mr = requireMedia(res);
+  if (!mr) return;
+  // FR-1.x role-adaptive scope: employees see self; leads/admin see the department.
+  const scope = mr === "employee" ? res.locals.currentUser.id : null;
+  res.json({ dashboard: await getMediaDashboard(scope), media_role: mr });
+}));
+
+// ── Projects ───────────────────────────────────────────────────────────────
+
+app.get("/api/v1/media/projects", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const { status, type, year, q } = req.query as Record<string, string | undefined>;
+  res.json({
+    projects: await listMediaProjects({
+      status: status || undefined, projectTypeId: type || undefined,
+      academicYearId: year || undefined, q: q || undefined,
+    }),
+  });
+}));
+
+app.post("/api/v1/media/projects", asyncHandler(async (req, res) => {
+  const mr = requireMedia(res);
+  if (!mr) return;
+  const b = req.body as Record<string, unknown>;
+  const name = typeof b.name === "string" ? b.name.trim() : "";
+  if (name.length < 3 || name.length > 120) return sendError(res, 400, "Project name must be 3–120 characters."); // VR-6
+  if (typeof b.project_type_id !== "string" || !b.project_type_id) return sendError(res, 400, "Project type is required.");
+  if (typeof b.academic_year_id !== "string" || !b.academic_year_id) return sendError(res, 400, "Academic year is required.");
+  const startDate = typeof b.start_date === "string" && DATE_RE.test(b.start_date) ? b.start_date : null;
+  const endDate = typeof b.end_date === "string" && DATE_RE.test(b.end_date) ? b.end_date : null;
+  if (startDate && endDate && endDate < startDate) return sendError(res, 400, "End date must be on or after the start date.");
+  // VR-6: hard-block exact duplicate (same name + year + type).
+  const dupes = await listMediaProjects({ projectTypeId: b.project_type_id, academicYearId: b.academic_year_id, q: name });
+  if (dupes.some(p => p.name.trim().toLowerCase() === name.toLowerCase())) {
+    return sendError(res, 409, "A project with this exact name, type and academic year already exists.");
+  }
+  const u = res.locals.currentUser;
+  const project = await createMediaProject({
+    name,
+    description: typeof b.description === "string" ? b.description : "",
+    projectTypeId: b.project_type_id,
+    academicYearId: b.academic_year_id,
+    facultyServed: typeof b.faculty_served === "string" ? b.faculty_served : "",
+    priority: typeof b.priority === "string" && ["urgent", "high", "normal", "low"].includes(b.priority) ? b.priority : "normal",
+    startDate, endDate,
+    ownerId: u.id, // BR-2: owner defaults to creator
+    createdBy: u.id,
+    // FR-3.6 / BR-11: employee-created projects need approval before being reportable.
+    initialStatus: mr === "employee" ? "proposed" : "planning",
+  });
+  await mediaAudit({ actorId: u.id, actorRole: mr, action: "project.created", entityType: "project", entityId: project.id, projectId: project.id, after: { name, status: project.status } });
+  if (mr === "employee") {
+    for (const lead of (await listMediaTeamUsers()).filter(t => t.role === "admin" || t.role === "sub_admin")) {
+      await notify(lead.id, "project_proposed", "Project proposal awaiting approval", `${u.full_name} proposed “${name}”.`, { type: "project", id: project.id });
+    }
+  }
+  res.status(201).json({ project });
+}));
+
+app.get("/api/v1/media/projects/:id", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const detail = await getMediaProject(getSingleParam(req.params.id));
+  if (!detail) return sendError(res, 404, "Project not found.");
+  res.json(detail);
+}));
+
+app.patch("/api/v1/media/projects/:id", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const id = getSingleParam(req.params.id);
+  if (!(await canManageProject(res, id))) return sendError(res, 403, "Only the project owner/PM or a lead can edit this project.");
+  const b = req.body as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  for (const k of ["name", "description", "faculty_served", "priority", "owner_id", "project_type_id"]) {
+    if (typeof b[k] === "string") patch[k] = b[k];
+  }
+  for (const k of ["start_date", "end_date"]) {
+    if (b[k] === null || (typeof b[k] === "string" && DATE_RE.test(b[k] as string))) patch[k] = b[k];
+  }
+  const project = await updateMediaProject(id, patch);
+  if (!project) return sendError(res, 404, "Project not found.");
+  await mediaAudit({ actorId: res.locals.currentUser.id, action: "project.updated", entityType: "project", entityId: id, projectId: id, after: patch });
+  res.json({ project });
+}));
+
+app.post("/api/v1/media/projects/:id/status", asyncHandler(async (req, res) => {
+  const mr = requireMedia(res);
+  if (!mr) return;
+  const id = getSingleParam(req.params.id);
+  const to = (req.body as { status?: string }).status ?? "";
+  if (!(MEDIA_PROJECT_STATUSES as readonly string[]).includes(to)) return sendError(res, 400, "Unknown status.");
+  const detail = await getMediaProject(id);
+  if (!detail) return sendError(res, 404, "Project not found.");
+  const from = detail.project.status;
+  if (!(await canManageProject(res, id))) return sendError(res, 403, "Only the project owner/PM or a lead can change status.");
+  if (!projectTransitionAllowed(from, to)) return sendError(res, 400, `Cannot move a project from ${from.replace(/_/g, " ")} to ${to.replace(/_/g, " ")}.`); // BR-1
+  if (from === "proposed" && to === "approved" && mr === "employee") return sendError(res, 403, "Proposals are approved by a team lead or admin.");
+  if (from === "archived" && !requireMediaAdmin(res)) return; // BR-12: only Admin un-archives
+  const project = await setProjectStatus(id, to as MediaProjectStatus);
+  await mediaAudit({ actorId: res.locals.currentUser.id, actorRole: mr, action: "project.status_changed", entityType: "project", entityId: id, projectId: id, before: { status: from }, after: { status: to } });
+  res.json({ project });
+}));
+
+app.post("/api/v1/media/projects/:id/assignments", asyncHandler(async (req, res) => {
+  if (!requireMediaLead(res)) return; // §16: assignment is TL/Admin
+  const id = getSingleParam(req.params.id);
+  const b = req.body as { user_id?: string; capacity_role_id?: string | null; is_project_manager?: boolean };
+  if (!b.user_id) return sendError(res, 400, "user_id is required.");
+  const target = await getUserById(b.user_id);
+  if (!target || mediaRoleOf(target) === null) return sendError(res, 400, "Assignee must be a Media Crew member.");
+  const assignment = await addProjectAssignment({
+    projectId: id, userId: b.user_id, capacityRoleId: b.capacity_role_id ?? null,
+    isProjectManager: !!b.is_project_manager, assignedBy: res.locals.currentUser.id,
+  });
+  await mediaAudit({ actorId: res.locals.currentUser.id, action: "project.assigned", entityType: "project", entityId: id, projectId: id, after: { user_id: b.user_id, pm: !!b.is_project_manager } });
+  await notify(b.user_id, "assigned", "Added to a project", `You were assigned to a Media Ops project.`, { type: "project", id });
+  res.status(201).json({ assignment });
+}));
+
+app.delete("/api/v1/media/projects/:id/assignments/:userId", asyncHandler(async (req, res) => {
+  if (!requireMediaLead(res)) return;
+  const id = getSingleParam(req.params.id);
+  await removeProjectAssignment(id, getSingleParam(req.params.userId));
+  await mediaAudit({ actorId: res.locals.currentUser.id, action: "project.unassigned", entityType: "project", entityId: id, projectId: id });
+  res.json({ ok: true });
+}));
+
+app.post("/api/v1/media/projects/:id/links", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const id = getSingleParam(req.params.id);
+  const b = req.body as { label?: string; url?: string };
+  if (!b.url || !GOOGLE_LINK_RE.test(b.url)) return sendError(res, 400, "Link must be a Google Drive / Docs URL."); // VR-4
+  const link = await addDriveLink({ entityType: "project", entityId: id, label: b.label ?? "", url: b.url, addedBy: res.locals.currentUser.id });
+  await mediaAudit({ actorId: res.locals.currentUser.id, action: "link.added", entityType: "project", entityId: id, projectId: id });
+  res.status(201).json({ link });
+}));
+
+// ── Deliverables ───────────────────────────────────────────────────────────
+
+app.get("/api/v1/media/deliverables", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const { status, owner, type, project } = req.query as Record<string, string | undefined>;
+  res.json({
+    deliverables: await listDeliverables({
+      status: status || undefined, ownerId: owner || undefined,
+      deliverableTypeId: type || undefined, projectId: project || undefined,
+    }),
+  });
+}));
+
+app.get("/api/v1/media/deliverables/:id", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const deliverable = await getDeliverable(getSingleParam(req.params.id));
+  if (!deliverable) return sendError(res, 404, "Deliverable not found.");
+  res.json({ deliverable });
+}));
+
+app.post("/api/v1/media/projects/:id/deliverables", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const projectId = getSingleParam(req.params.id);
+  if (!(await canManageProject(res, projectId))) return sendError(res, 403, "Only the project owner/PM or a lead can add deliverables.");
+  const b = req.body as Record<string, unknown>;
+  if (typeof b.deliverable_type_id !== "string" || !b.deliverable_type_id) return sendError(res, 400, "Deliverable type is required.");
+  const title = typeof b.title === "string" ? b.title.trim() : "";
+  if (!title) return sendError(res, 400, "Title is required.");
+  const deliverable = await createDeliverable({
+    projectId, deliverableTypeId: b.deliverable_type_id, title,
+    ownerId: typeof b.owner_id === "string" ? b.owner_id : null,
+    dueDate: typeof b.due_date === "string" && DATE_RE.test(b.due_date) ? b.due_date : null,
+    quantityTarget: typeof b.quantity_target === "number" ? b.quantity_target : null,
+    unit: typeof b.unit === "string" ? b.unit : null,
+    specNotes: typeof b.spec_notes === "string" ? b.spec_notes : "",
+  });
+  await mediaAudit({ actorId: res.locals.currentUser.id, action: "deliverable.created", entityType: "deliverable", entityId: deliverable.id, projectId, after: { title } });
+  res.status(201).json({ deliverable });
+}));
+
+app.patch("/api/v1/media/deliverables/:id", asyncHandler(async (req, res) => {
+  const mr = requireMedia(res);
+  if (!mr) return;
+  const id = getSingleParam(req.params.id);
+  const existing = await getDeliverable(id);
+  if (!existing) return sendError(res, 404, "Deliverable not found.");
+  const isOwner = existing.owner_id === res.locals.currentUser.id;
+  const canManage = (await canManageProject(res, existing.project_id)) || isOwner;
+  if (!canManage) return sendError(res, 403, "Only the deliverable owner, project owner/PM, or a lead can edit this.");
+  const b = req.body as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  for (const k of ["title", "spec_notes", "unit", "social_post_url"]) if (typeof b[k] === "string") patch[k] = b[k];
+  for (const k of ["owner_id", "due_date"]) if (b[k] === null || typeof b[k] === "string") patch[k] = b[k];
+  for (const k of ["quantity_target", "quantity_delivered", "weight"]) if (typeof b[k] === "number") patch[k] = b[k];
+  if (typeof b.social_status === "string" && ["na", "scheduled", "posted"].includes(b.social_status)) patch.social_status = b.social_status; // FR-4.5
+  if (typeof b.mail_status === "string" && ["na", "pending", "sent"].includes(b.mail_status)) patch.mail_status = b.mail_status;
+  if (typeof b.status === "string") {
+    // Review-machine states move only through version submit/review/deliver
+    // endpoints; the rest are direct (pipeline board moves).
+    const direct = ["not_started", "in_progress", "not_required", "cancelled"];
+    if (!direct.includes(b.status)) return sendError(res, 400, "Use the review workflow for review/approval/delivery states.");
+    patch.status = b.status;
+  }
+  const deliverable = await updateDeliverable(id, patch);
+  await mediaAudit({ actorId: res.locals.currentUser.id, action: "deliverable.updated", entityType: "deliverable", entityId: id, projectId: existing.project_id, after: patch });
+  res.json({ deliverable });
+}));
+
+app.post("/api/v1/media/deliverables/:id/versions", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const id = getSingleParam(req.params.id);
+  const existing = await getDeliverable(id);
+  if (!existing) return sendError(res, 404, "Deliverable not found.");
+  const b = req.body as { drive_url?: string; note?: string };
+  if (!b.drive_url || !GOOGLE_LINK_RE.test(b.drive_url)) return sendError(res, 400, "The version link must be a Google Drive / Docs URL."); // VR-4
+  const version = await addDeliverableVersion({ deliverableId: id, driveUrl: b.drive_url, note: b.note ?? "", submittedBy: res.locals.currentUser.id });
+  await mediaAudit({ actorId: res.locals.currentUser.id, action: "deliverable.version_submitted", entityType: "deliverable", entityId: id, projectId: existing.project_id, after: { version: version.version_no } });
+  // FR-4.4: reviewer = project PM or TL — notify the project owner as review entry point.
+  const detail = await getMediaProject(existing.project_id);
+  if (detail && detail.project.owner_id !== res.locals.currentUser.id) {
+    await notify(detail.project.owner_id, "review_requested", "Deliverable version awaiting review", `${existing.title} v${version.version_no} was submitted for review.`, { type: "deliverable", id });
+  }
+  res.status(201).json({ version });
+}));
+
+app.post("/api/v1/media/versions/:id/review", asyncHandler(async (req, res) => {
+  const mr = requireMedia(res);
+  if (!mr) return;
+  const versionId = getSingleParam(req.params.id);
+  const b = req.body as { outcome?: string; comment?: string };
+  if (b.outcome !== "approved" && b.outcome !== "changes_requested") return sendError(res, 400, "Outcome must be approved or changes_requested.");
+  const { rows } = await pool.query<{ deliverable_id: string; submitted_by: string; project_id: string; title: string }>(
+    `SELECT v.deliverable_id, v.submitted_by, d.project_id, d.title FROM media_deliverable_versions v JOIN media_deliverables d ON d.id = v.deliverable_id WHERE v.id = $1`,
+    [versionId],
+  );
+  if (!rows[0]) return sendError(res, 404, "Version not found.");
+  // BR-5: submitter can never approve; reviewer must be PM/owner, TL, or Admin.
+  if (rows[0].submitted_by === res.locals.currentUser.id) return sendError(res, 403, "You cannot review your own submission.");
+  const isReviewer = mr !== "employee" || (await isProjectManagerOrOwner(rows[0].project_id, res.locals.currentUser.id));
+  if (!isReviewer) return sendError(res, 403, "Only the project PM, a team lead, or an admin can review versions.");
+  const version = await reviewDeliverableVersion(versionId, { outcome: b.outcome, reviewedBy: res.locals.currentUser.id, comment: b.comment });
+  if (!version) return sendError(res, 409, "This version was already reviewed.");
+  await mediaAudit({ actorId: res.locals.currentUser.id, actorRole: mr, action: `deliverable.version_${b.outcome}`, entityType: "deliverable", entityId: rows[0].deliverable_id, projectId: rows[0].project_id, after: { version: version.version_no, comment: b.comment ?? null } });
+  await notify(rows[0].submitted_by, "review_done", b.outcome === "approved" ? "Version approved" : "Changes requested", `${rows[0].title} v${version.version_no}: ${b.outcome === "approved" ? "approved" : b.comment || "changes requested"}.`, { type: "deliverable", id: rows[0].deliverable_id });
+  res.json({ version });
+}));
+
+app.post("/api/v1/media/deliverables/:id/deliver", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const id = getSingleParam(req.params.id);
+  const existing = await getDeliverable(id);
+  if (!existing) return sendError(res, 404, "Deliverable not found.");
+  const isOwner = existing.owner_id === res.locals.currentUser.id;
+  if (!isOwner && !(await canManageProject(res, existing.project_id))) return sendError(res, 403, "Only the owner or project PM/lead can mark this delivered.");
+  // BR-6: requires an Approved latest version unless the type is review-exempt.
+  const { rows: exempt } = await pool.query<{ slug: string }>(`SELECT slug FROM media_deliverable_types WHERE id = $1`, [existing.deliverable_type_id]);
+  const reviewExempt = ["raw-archive", "photos-raw", "video-raw", "continuous-recording"].includes(exempt[0]?.slug ?? "");
+  if (!reviewExempt && existing.status !== "approved") {
+    return sendError(res, 400, "Deliverable needs an approved version before it can be marked delivered.");
+  }
+  const deliverable = await updateDeliverable(id, { status: "delivered" });
+  await mediaAudit({ actorId: res.locals.currentUser.id, action: "deliverable.delivered", entityType: "deliverable", entityId: id, projectId: existing.project_id });
+  res.json({ deliverable });
+}));
+
+// ── Daily reporting ────────────────────────────────────────────────────────
+
+app.get("/api/v1/media/reports/mine", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const date = typeof req.query.date === "string" && DATE_RE.test(req.query.date) ? req.query.date : new Date().toISOString().slice(0, 10);
+  res.json({ report: await getReport(res.locals.currentUser.id, date), date });
+}));
+
+app.get("/api/v1/media/reports/mine/history", asyncHandler(async (_req, res) => {
+  if (!requireMedia(res)) return;
+  res.json({ reports: await listMyReports(res.locals.currentUser.id) });
+}));
+
+app.post("/api/v1/media/reports/:date/tasks", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const date = getSingleParam(req.params.date);
+  if (!DATE_RE.test(date)) return sendError(res, 400, "Invalid date.");
+  // FR-2.7 backfill window: today or yesterday only; older needs a lead unlock (return).
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86400_000).toISOString().slice(0, 10);
+  if (date > today) return sendError(res, 400, "Cannot log tasks for a future date.");
+  if (date < yesterday) {
+    const existing = await getReport(res.locals.currentUser.id, date);
+    if (!existing || existing.status !== "returned") {
+      return sendError(res, 403, "Older days are locked — ask a lead to return the report for editing.");
+    }
+  }
+  const b = req.body as Record<string, unknown>;
+  if (typeof b.project_id !== "string" || !b.project_id) return sendError(res, 400, "Project is required.");
+  if (typeof b.task_category_id !== "string" || !b.task_category_id) return sendError(res, 400, "Task category is required.");
+  const desc = typeof b.description === "string" ? b.description.trim() : "";
+  if (!desc) return sendError(res, 400, "Description is required.");
+  // BR-11: proposed projects are non-reportable.
+  const { rows: proj } = await pool.query<{ status: string }>(`SELECT status FROM media_projects WHERE id = $1`, [b.project_id]);
+  if (!proj[0]) return sendError(res, 400, "Project not found.");
+  if (["proposed", "cancelled", "archived"].includes(proj[0].status)) return sendError(res, 400, "This project is not accepting task logs (pending approval or closed).");
+  const result = await addReportTask(res.locals.currentUser.id, date, {
+    projectId: b.project_id, taskCategoryId: b.task_category_id,
+    deliverableId: typeof b.deliverable_id === "string" ? b.deliverable_id : null,
+    description: desc,
+    startTime: typeof b.start_time === "string" ? b.start_time : null,
+    endTime: typeof b.end_time === "string" ? b.end_time : null,
+    durationMinutes: typeof b.duration_minutes === "number" ? b.duration_minutes : null,
+    quantity: typeof b.quantity === "number" ? b.quantity : null,
+    unit: typeof b.unit === "string" ? b.unit : null,
+    status: typeof b.status === "string" && ["done", "in_progress", "blocked"].includes(b.status) ? b.status : "done",
+    blockerNote: typeof b.blocker_note === "string" ? b.blocker_note : null,
+    evidenceUrl: typeof b.evidence_url === "string" ? b.evidence_url : null,
+  });
+  if ("error" in result) return sendError(res, 400, result.error);
+  res.status(201).json(result);
+}));
+
+app.patch("/api/v1/media/report-tasks/:id", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const b = req.body as Record<string, unknown>;
+  const patch: Record<string, unknown> = {};
+  for (const k of ["description", "unit", "blocker_note", "evidence_url", "project_id", "task_category_id"]) if (typeof b[k] === "string") patch[k] = b[k];
+  for (const k of ["start_time", "end_time", "deliverable_id"]) if (b[k] === null || typeof b[k] === "string") patch[k] = b[k];
+  for (const k of ["minutes", "quantity"]) if (typeof b[k] === "number" || b[k] === null) patch[k] = b[k];
+  if (typeof b.status === "string" && ["done", "in_progress", "blocked"].includes(b.status)) patch.status = b.status;
+  const result = await updateReportTask(getSingleParam(req.params.id), res.locals.currentUser.id, patch);
+  if ("error" in result) return sendError(res, 400, result.error);
+  res.json({ report: result });
+}));
+
+app.delete("/api/v1/media/report-tasks/:id", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const result = await deleteReportTask(getSingleParam(req.params.id), res.locals.currentUser.id);
+  if ("error" in result) return sendError(res, 400, result.error);
+  res.json({ report: result });
+}));
+
+app.post("/api/v1/media/reports/:date/submit", asyncHandler(async (req, res) => {
+  const mr = requireMedia(res);
+  if (!mr) return;
+  const date = getSingleParam(req.params.date);
+  if (!DATE_RE.test(date)) return sendError(res, 400, "Invalid date.");
+  const result = await submitReport(res.locals.currentUser.id, date, (req.body as { note?: string }).note);
+  if ("error" in result) return sendError(res, 409, result.error); // AC-2: second submit → 409
+  await mediaAudit({ actorId: res.locals.currentUser.id, actorRole: mr, action: "report.submitted", entityType: "daily_report", entityId: result.id, after: { status: result.status, flagged_reason: result.flagged_reason } });
+  if (result.status === "flagged") {
+    for (const lead of (await listMediaTeamUsers()).filter(t => t.role === "admin" || t.role === "sub_admin")) {
+      if (lead.id === res.locals.currentUser.id) continue;
+      await notify(lead.id, "report_flagged", "Report flagged for review", `${res.locals.currentUser.full_name}'s ${date} report: ${result.flagged_reason}`, { type: "daily_report", id: result.id });
+    }
+  }
+  res.json({ report: result });
+}));
+
+app.get("/api/v1/media/reports/queue", asyncHandler(async (_req, res) => {
+  if (!requireMediaLead(res)) return;
+  res.json({ queue: await listReviewQueue() });
+}));
+
+app.get("/api/v1/media/reports", asyncHandler(async (req, res) => {
+  if (!requireMediaLead(res)) return;
+  const date = typeof req.query.date === "string" && DATE_RE.test(req.query.date) ? req.query.date : new Date().toISOString().slice(0, 10);
+  res.json({ reports: await listReportsForDate(date), date });
+}));
+
+app.get("/api/v1/media/reports/:id", asyncHandler(async (req, res) => {
+  const mr = requireMedia(res);
+  if (!mr) return;
+  const report = await getReportById(getSingleParam(req.params.id));
+  if (!report) return sendError(res, 404, "Report not found.");
+  if (mr === "employee" && report.user_id !== res.locals.currentUser.id) return sendError(res, 403, "You can only view your own reports."); // AC-10
+  res.json({ report });
+}));
+
+app.post("/api/v1/media/reports/:id/review", asyncHandler(async (req, res) => {
+  if (!requireMediaLead(res)) return;
+  const id = getSingleParam(req.params.id);
+  const b = req.body as { action?: string; comment?: string };
+  if (b.action !== "approve" && b.action !== "return" && b.action !== "flag") return sendError(res, 400, "Action must be approve, return, or flag.");
+  const existing = await getReportById(id);
+  if (!existing) return sendError(res, 404, "Report not found.");
+  if (existing.user_id === res.locals.currentUser.id) return sendError(res, 403, "You cannot review your own report.");
+  const report = await reviewReport(id, { action: b.action, reviewedBy: res.locals.currentUser.id, comment: b.comment });
+  if (!report) return sendError(res, 409, "This report is not in a reviewable state.");
+  await mediaAudit({ actorId: res.locals.currentUser.id, action: `report.${b.action}`, entityType: "daily_report", entityId: id, after: { comment: b.comment ?? null } });
+  await notify(report.user_id, "report_reviewed",
+    b.action === "approve" ? "Daily report approved" : b.action === "return" ? "Daily report returned" : "Daily report flagged",
+    b.comment || "", { type: "daily_report", id });
+  res.json({ report });
+}));
+
+// ── Notifications ──────────────────────────────────────────────────────────
+
+app.get("/api/v1/media/notifications", asyncHandler(async (_req, res) => {
+  if (!requireMedia(res)) return;
+  res.json({ notifications: await listNotifications(res.locals.currentUser.id) });
+}));
+
+app.post("/api/v1/media/notifications/read", asyncHandler(async (req, res) => {
+  if (!requireMedia(res)) return;
+  const ids = Array.isArray((req.body as { ids?: unknown }).ids) ? ((req.body as { ids: unknown[] }).ids.filter((x): x is string => typeof x === "string")) : [];
+  await markNotificationsRead(res.locals.currentUser.id, ids);
+  res.json({ ok: true });
+}));
+
+// ── Admin: lookups, templates, audit ───────────────────────────────────────
+
+app.get("/api/v1/media/admin/lookups", asyncHandler(async (_req, res) => {
+  if (!requireMediaAdmin(res)) return;
+  res.json({ lookups: await listMediaLookups() });
+}));
+
+app.post("/api/v1/media/admin/lookups/:type", asyncHandler(async (req, res) => {
+  if (!requireMediaAdmin(res)) return;
+  const type = getSingleParam(req.params.type);
+  if (!isMediaLookupType(type)) return sendError(res, 400, "Unknown lookup type.");
+  const name = (req.body as { name?: string }).name?.trim();
+  if (!name) return sendError(res, 400, "Name is required.");
+  const item = await createMediaLookup(type, name);
+  await mediaAudit({ actorId: res.locals.currentUser.id, action: "lookup.created", entityType: type, entityId: item.id, after: { name } });
+  res.status(201).json({ item });
+}));
+
+app.patch("/api/v1/media/admin/lookups/:type/:id", asyncHandler(async (req, res) => {
+  if (!requireMediaAdmin(res)) return;
+  const type = getSingleParam(req.params.type);
+  if (!isMediaLookupType(type)) return sendError(res, 400, "Unknown lookup type.");
+  const b = req.body as { name?: string; is_active?: boolean };
+  const item = await updateMediaLookup(type, getSingleParam(req.params.id), { name: b.name?.trim(), is_active: b.is_active });
+  if (!item) return sendError(res, 404, "Lookup not found.");
+  await mediaAudit({ actorId: res.locals.currentUser.id, action: "lookup.updated", entityType: type, entityId: item.id, after: b });
+  res.json({ item });
+}));
+
+app.get("/api/v1/media/admin/templates", asyncHandler(async (req, res) => {
+  if (!requireMediaAdmin(res)) return;
+  const projectTypeId = typeof req.query.project_type_id === "string" ? req.query.project_type_id : undefined;
+  res.json({ templates: await listTemplateDeliverables(projectTypeId) });
+}));
+
+app.put("/api/v1/media/admin/templates/:projectTypeId", asyncHandler(async (req, res) => {
+  if (!requireMediaAdmin(res)) return;
+  const projectTypeId = getSingleParam(req.params.projectTypeId);
+  const entries = Array.isArray((req.body as { entries?: unknown }).entries) ? (req.body as { entries: Array<{ deliverable_type_id: string; default_weight?: number; days_offset_due?: number | null }> }).entries : [];
+  await setTemplateDeliverables(projectTypeId, entries.map(e => ({
+    deliverable_type_id: e.deliverable_type_id,
+    default_weight: typeof e.default_weight === "number" ? e.default_weight : 1,
+    days_offset_due: typeof e.days_offset_due === "number" ? e.days_offset_due : null,
+  })));
+  await mediaAudit({ actorId: res.locals.currentUser.id, action: "template.updated", entityType: "project_type", entityId: projectTypeId, after: { entries: entries.length } });
+  res.json({ templates: await listTemplateDeliverables(projectTypeId) });
+}));
+
+app.get("/api/v1/media/admin/audit", asyncHandler(async (_req, res) => {
+  if (!requireMediaAdmin(res)) return;
+  res.json({ logs: await listAuditLogs() });
+}));
+
 // ── Start server ───────────────────────────────────────────────────────────
 
 bootstrapDatabase()
   .then(() => bootstrapBrandingDatabase())
   .then(() => bootstrapSettingsDatabase())
   .then(() => bootstrapOutreach())
+  .then(() => bootstrapMediaDatabase())
   .then(async () => {
     // Catch up on any reports whose 21:00 IST submit cutoff or 17:00 IST
     // auto-pause cutoff already passed while the server was down, then keep an
@@ -1894,6 +2425,9 @@ bootstrapDatabase()
       // Outreach metrics auto-refresh at 9:00 AM and 5:00 PM IST. Self-gated so
       // it fires at most once per slot per day; the manual "Sync now" button is
       // unaffected. (Spec: Data & Sync Behaviour → Automatic Data Refresh.)
+      runMediaAutomations()
+        .then(r => { if (r.autoApproved > 0 || r.nudged > 0) console.log(`Media automations: ${r.autoApproved} auto-approved, ${r.nudged} nudged.`); })
+        .catch(e => console.error('Media automations failed:', e));
       maybeRunScheduledSync()
         .then(r => { if (r) console.log(`Outreach auto-sync (${r.slot} IST): ${r.result.synced_pages} pages, ${r.result.upserted_posts} posts, ${r.result.refreshed_live_posts} live posts refreshed.`); })
         .catch(e => console.error('Outreach auto-sync failed:', e));
