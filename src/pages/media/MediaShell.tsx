@@ -160,12 +160,12 @@ export default function MediaShell({ children }: { children: React.ReactNode }) 
       {/* Main */}
       <main className="flex-1 ml-60 px-4 py-4 lg:px-6 lg:py-5">
         {!boot ? (
-          <div className="max-w-6xl mx-auto space-y-4">
+          <div className="space-y-4">
             {[1, 2, 3].map(i => <div key={i} className="bg-white rounded-2xl border border-gray-100 h-28 animate-pulse" />)}
           </div>
         ) : (
           <Ctx.Provider value={{ ...boot, refresh: load }}>
-            <div className="max-w-6xl mx-auto">{children}</div>
+            {children}
           </Ctx.Provider>
         )}
       </main>

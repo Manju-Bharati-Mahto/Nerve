@@ -43,8 +43,15 @@ export default function MediaMyDay() {
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Failed to delete task.') }
   }
 
+  const perProject = Object.entries(
+    tasks.reduce<Record<string, number>>((m, t) => {
+      m[t.project_name] = (m[t.project_name] ?? 0) + t.minutes
+      return m
+    }, {}),
+  ).sort((a, b) => b[1] - a[1])
+
   return (
-    <div className="space-y-5 max-w-3xl">
+    <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-lg font-extrabold font-serif" style={{ color: MEDIA_GREEN }}>My Day</h1>
@@ -71,6 +78,8 @@ export default function MediaMyDay() {
         </div>
       )}
 
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+      <div className="lg:col-span-2 space-y-4">
       {/* Task list */}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
         <div className="flex items-center justify-between mb-3">
@@ -131,6 +140,31 @@ export default function MediaMyDay() {
           Submitted {report.submitted_at ? new Date(report.submitted_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : ''} — {statusMeta.label}
         </div>
       )}
+      </div>
+
+      {/* Day summary rail (FR-2.9: totals + per-project subtotals) */}
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+        <h2 className="text-sm font-bold mb-3" style={{ color: MEDIA_GREEN }}>Day summary</h2>
+        {tasks.length === 0 ? (
+          <p className="text-sm text-gray-400 py-4 text-center">Log a task to see totals.</p>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex items-baseline gap-2">
+              <p className="text-2xl font-extrabold tabular-nums" style={{ color: MEDIA_GREEN }}>{fmtMinutes(report?.total_minutes ?? 0)}</p>
+              <p className="text-[11px] text-gray-400">across {tasks.length} task{tasks.length === 1 ? '' : 's'}</p>
+            </div>
+            <div className="space-y-1.5 border-t border-gray-50 pt-2.5">
+              {perProject.map(([name, mins]) => (
+                <div key={name} className="flex items-center justify-between gap-2">
+                  <p className="text-xs text-gray-600 truncate">{name}</p>
+                  <p className="text-[11px] font-mono text-gray-400 shrink-0">{fmtMinutes(mins)}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+      </div>
 
       {logOpen && (
         <LogTaskSheet
