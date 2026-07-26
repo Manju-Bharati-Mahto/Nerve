@@ -66,7 +66,7 @@ export default function MediaPipeline() {
             <KanbanSquare className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h1 className="text-xl font-extrabold font-serif" style={{ color: MEDIA_GREEN }}>Production Pipeline</h1>
+            <h1 className="text-lg font-extrabold font-serif" style={{ color: MEDIA_GREEN }}>Production Pipeline</h1>
             <p className="text-sm text-gray-500">Every deliverable in the department, by status.</p>
           </div>
         </div>

@@ -39,7 +39,7 @@ export default function MediaProjects() {
             <FolderKanban className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h1 className="text-xl font-extrabold font-serif" style={{ color: MEDIA_GREEN }}>Projects</h1>
+            <h1 className="text-lg font-extrabold font-serif" style={{ color: MEDIA_GREEN }}>Projects</h1>
             <p className="text-sm text-gray-500">Every event, tour, and campaign — one pipeline.</p>
           </div>
         </div>

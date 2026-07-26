@@ -104,7 +104,7 @@ export default function MediaShell({ children }: { children: React.ReactNode }) 
             const Icon = n.icon
             return (
               <Link key={n.path} to={n.path}
-                className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-colors ${
+                className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#1a472a]/40 ${
                   active ? 'text-white' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'
                 }`}
                 style={active ? { background: MEDIA_GREEN } : undefined}>
@@ -158,7 +158,7 @@ export default function MediaShell({ children }: { children: React.ReactNode }) 
       )}
 
       {/* Main */}
-      <main className="flex-1 ml-60 p-6">
+      <main className="flex-1 ml-60 px-4 py-4 lg:px-6 lg:py-5">
         {!boot ? (
           <div className="max-w-6xl mx-auto space-y-4">
             {[1, 2, 3].map(i => <div key={i} className="bg-white rounded-2xl border border-gray-100 h-28 animate-pulse" />)}

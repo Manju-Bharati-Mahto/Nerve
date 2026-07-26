@@ -47,7 +47,7 @@ export default function MediaMyDay() {
     <div className="space-y-5 max-w-3xl">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-xl font-extrabold font-serif" style={{ color: MEDIA_GREEN }}>My Day</h1>
+          <h1 className="text-lg font-extrabold font-serif" style={{ color: MEDIA_GREEN }}>My Day</h1>
           <p className="text-sm text-gray-500">Log tasks as you work — your daily report assembles itself.</p>
         </div>
         <div className="flex items-center gap-2">
@@ -72,7 +72,7 @@ export default function MediaMyDay() {
       )}
 
       {/* Task list */}
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-bold" style={{ color: MEDIA_GREEN }}>
             Task log {report && <span className="text-gray-400 font-normal">· {fmtMinutes(report.total_minutes)} total</span>}

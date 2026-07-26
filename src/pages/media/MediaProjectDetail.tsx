@@ -67,11 +67,11 @@ export default function MediaProjectDetail() {
       </Link>
 
       {/* Header (W4) */}
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-xl font-extrabold font-serif" style={{ color: MEDIA_GREEN }}>{p.name}</h1>
+              <h1 className="text-lg font-extrabold font-serif" style={{ color: MEDIA_GREEN }}>{p.name}</h1>
               <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full" style={{ background: `${t?.color ?? '#6b7280'}18`, color: t?.color ?? '#6b7280' }}>{t?.name}</span>
               <span className={`text-[10px] font-bold uppercase ${p.priority === 'urgent' ? 'text-rose-600' : p.priority === 'high' ? 'text-amber-600' : 'text-gray-400'}`}>{p.priority}</span>
             </div>
@@ -113,7 +113,7 @@ export default function MediaProjectDetail() {
 
       {tab === 'overview' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
             <h2 className="text-sm font-bold mb-3" style={{ color: MEDIA_GREEN }}>Deliverable status</h2>
             {detail.deliverables.length === 0 ? <p className="text-sm text-gray-400 py-4 text-center">None yet.</p> : (
               <div className="space-y-2">
@@ -129,7 +129,7 @@ export default function MediaProjectDetail() {
               </div>
             )}
           </div>
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
             <h2 className="text-sm font-bold mb-3" style={{ color: MEDIA_GREEN }}>Logged hours by member</h2>
             {detail.memberHours.length === 0 ? <p className="text-sm text-gray-400 py-4 text-center">No task logs yet.</p> : (
               <div className="space-y-2">
@@ -164,7 +164,7 @@ export default function MediaProjectDetail() {
       )}
 
       {tab === 'team' && (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-3">
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-bold" style={{ color: MEDIA_GREEN }}>Assigned crew</h2>
             {isLead && (
@@ -193,7 +193,7 @@ export default function MediaProjectDetail() {
       )}
 
       {tab === 'files' && (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-3">
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-bold" style={{ color: MEDIA_GREEN }}>Drive links</h2>
             <button onClick={() => setAddingLink(true)} className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-white" style={{ background: MEDIA_GREEN }}>
@@ -217,7 +217,7 @@ export default function MediaProjectDetail() {
       )}
 
       {tab === 'activity' && (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
           <h2 className="text-sm font-bold mb-3" style={{ color: MEDIA_GREEN }}>Activity</h2>
           {detail.activity.length === 0 ? <p className="text-sm text-gray-400 py-6 text-center">No activity yet.</p> : (
             <div className="space-y-2">
