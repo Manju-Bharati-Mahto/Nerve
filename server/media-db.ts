@@ -594,7 +594,8 @@ export async function setTemplateDeliverables(projectTypeId: string, entries: Ar
 async function nextProjectCode(academicYearId: string): Promise<string> {
   const { rows } = await pool.query<{ label: string }>(`SELECT label FROM media_academic_years WHERE id = $1`, [academicYearId]);
   const label = rows[0]?.label ?? "0000-00";
-  const compact = label.replace(/[^0-9]/g, "").slice(0, 2) + label.slice(-2); // '2026-27' → '2627'
+  const digits = label.replace(/[^0-9]/g, "");
+  const compact = digits.slice(2, 4) + label.slice(-2); // '2026-27' → '2627' (PRD: MC-2627-0142)
   const { rows: c } = await pool.query<{ count: number }>(
     `SELECT COUNT(*)::int AS count FROM media_projects WHERE academic_year_id = $1`, [academicYearId],
   );
@@ -626,7 +627,7 @@ export async function listMediaProjects(filters: {
     values.push(filters.forUserId); i++;
   }
   const { rows } = await pool.query(
-    `SELECT p.*, ${PROGRESS_SQL} AS progress,
+    `SELECT p.*, p.start_date::text AS start_date, p.end_date::text AS end_date, ${PROGRESS_SQL} AS progress,
             (SELECT COALESCE(SUM(t.minutes), 0)::int FROM media_report_tasks t WHERE t.project_id = p.id) AS logged_minutes,
             (SELECT COUNT(*)::int FROM media_deliverables d WHERE d.project_id = p.id AND d.status NOT IN ('not_required','cancelled')) AS deliverable_total,
             (SELECT COUNT(*)::int FROM media_deliverables d WHERE d.project_id = p.id AND d.status = 'delivered') AS deliverable_done
@@ -639,7 +640,7 @@ export async function listMediaProjects(filters: {
 
 export async function getMediaProject(id: string) {
   const { rows } = await pool.query(
-    `SELECT p.*, ${PROGRESS_SQL} AS progress,
+    `SELECT p.*, p.start_date::text AS start_date, p.end_date::text AS end_date, ${PROGRESS_SQL} AS progress,
             (SELECT COALESCE(SUM(t.minutes), 0)::int FROM media_report_tasks t WHERE t.project_id = p.id) AS logged_minutes
        FROM media_projects p WHERE p.id = $1`,
     [id],
@@ -791,7 +792,7 @@ export async function listDeliverables(filters: {
   if (filters.ownerId) { where.push(`d.owner_id = $${i++}`); values.push(filters.ownerId); }
   if (filters.deliverableTypeId) { where.push(`d.deliverable_type_id = $${i++}`); values.push(filters.deliverableTypeId); }
   const { rows } = await pool.query(
-    `SELECT d.*, p.code AS project_code, p.name AS project_name,
+    `SELECT d.*, d.due_date::text AS due_date, p.code AS project_code, p.name AS project_name,
             (SELECT COUNT(*)::int FROM media_deliverable_versions v WHERE v.deliverable_id = d.id) AS version_count
        FROM media_deliverables d JOIN media_projects p ON p.id = d.project_id
       WHERE ${where.join(" AND ")}
@@ -803,7 +804,7 @@ export async function listDeliverables(filters: {
 
 export async function getDeliverable(id: string): Promise<(MediaDeliverable & { versions: MediaDeliverableVersion[] }) | null> {
   const { rows } = await pool.query(
-    `SELECT d.*, p.code AS project_code, p.name AS project_name
+    `SELECT d.*, d.due_date::text AS due_date, p.code AS project_code, p.name AS project_name
        FROM media_deliverables d JOIN media_projects p ON p.id = d.project_id WHERE d.id = $1`,
     [id],
   );
@@ -914,7 +915,7 @@ async function ensureDraftReport(userId: string, reportDate: string): Promise<Me
 
 export async function getReport(userId: string, reportDate: string): Promise<MediaDailyReport | null> {
   const { rows } = await pool.query<MediaDailyReport>(
-    `SELECT * FROM media_daily_reports WHERE user_id = $1 AND report_date = $2`,
+    `SELECT r.*, r.report_date::text AS report_date FROM media_daily_reports r WHERE r.user_id = $1 AND r.report_date = $2`,
     [userId, reportDate],
   );
   if (!rows[0]) return null;
@@ -922,7 +923,7 @@ export async function getReport(userId: string, reportDate: string): Promise<Med
 }
 
 export async function getReportById(id: string): Promise<MediaDailyReport | null> {
-  const { rows } = await pool.query<MediaDailyReport>(`SELECT * FROM media_daily_reports WHERE id = $1`, [id]);
+  const { rows } = await pool.query<MediaDailyReport>(`SELECT r.*, r.report_date::text AS report_date FROM media_daily_reports r WHERE r.id = $1`, [id]);
   if (!rows[0]) return null;
   return { ...rows[0], tasks: await listReportTasks(id) };
 }
@@ -1092,7 +1093,7 @@ export async function reviewReport(reportId: string, input: {
 
 export async function listReportsForDate(reportDate: string): Promise<Array<MediaDailyReport & { user_name: string }>> {
   const { rows } = await pool.query(
-    `SELECT r.*, u.full_name AS user_name FROM media_daily_reports r JOIN users u ON u.id = r.user_id
+    `SELECT r.*, r.report_date::text AS report_date, u.full_name AS user_name FROM media_daily_reports r JOIN users u ON u.id = r.user_id
       WHERE r.report_date = $1 ORDER BY r.submitted_at NULLS LAST`,
     [reportDate],
   );
@@ -1101,7 +1102,7 @@ export async function listReportsForDate(reportDate: string): Promise<Array<Medi
 
 export async function listMyReports(userId: string, limit = 30): Promise<MediaDailyReport[]> {
   const { rows } = await pool.query<MediaDailyReport>(
-    `SELECT * FROM media_daily_reports WHERE user_id = $1 ORDER BY report_date DESC LIMIT $2`,
+    `SELECT r.*, r.report_date::text AS report_date FROM media_daily_reports r WHERE r.user_id = $1 ORDER BY r.report_date DESC LIMIT $2`,
     [userId, limit],
   );
   return rows;
@@ -1110,7 +1111,7 @@ export async function listMyReports(userId: string, limit = 30): Promise<MediaDa
 /** Review queue (J4): flagged + submitted, flagged first, oldest first. */
 export async function listReviewQueue(): Promise<Array<MediaDailyReport & { user_name: string }>> {
   const { rows } = await pool.query(
-    `SELECT r.*, u.full_name AS user_name FROM media_daily_reports r JOIN users u ON u.id = r.user_id
+    `SELECT r.*, r.report_date::text AS report_date, u.full_name AS user_name FROM media_daily_reports r JOIN users u ON u.id = r.user_id
       WHERE r.status IN ('flagged','submitted')
       ORDER BY (r.status = 'flagged') DESC, r.submitted_at ASC LIMIT 100`,
   );
@@ -1137,7 +1138,7 @@ export async function getMediaDashboard(scopeUserId: string | null) {
     .map(u => ({ id: u.id, full_name: u.full_name }));
 
   const { rows: dueSoon } = await pool.query(
-    `SELECT d.id, d.title, d.due_date, d.status, d.owner_id, u.full_name AS owner_name, p.code AS project_code, p.name AS project_name, p.id AS project_id,
+    `SELECT d.id, d.title, d.due_date::text AS due_date, d.status, d.owner_id, u.full_name AS owner_name, p.code AS project_code, p.name AS project_name, p.id AS project_id,
             (d.due_date < CURRENT_DATE) AS overdue
        FROM media_deliverables d
        JOIN media_projects p ON p.id = d.project_id
