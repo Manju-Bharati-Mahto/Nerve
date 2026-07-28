@@ -7795,7 +7795,9 @@ const MO_API = {
   patch(p,b){return this.req('PATCH',p,b);}, del(p){return this.req('DELETE',p);}
 };
 async function hydrateFromServer(){
-  const keys=['projects','project_assignments','deliverables','deliverable_versions','drive_links','daily_reports','report_tasks'];
+  const keys=['projects','project_assignments','deliverables','deliverable_versions','drive_links','daily_reports','report_tasks',
+    'vendors','equipment_categories','equipment_items','equipment_kits','kit_items','equipment_bookings','equipment_transactions',
+    'maintenance_records','shoots','shoot_crew','leave_types','leave_requests','leave_replacements','holidays'];
   const st=await MO_API.get('/state');
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
   window.__MO_LIVE__=true;

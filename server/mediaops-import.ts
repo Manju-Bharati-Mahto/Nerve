@@ -26,6 +26,7 @@ const USER_REF = new Set([
   "owner_id", "created_by", "user_id", "assigned_by", "submitted_by", "reviewed_by",
   "added_by", "actor_id", "holder_id", "checked_out_by", "requested_by", "approved_by",
   "lead_user_id", "manager_id", "head_user_id", "custodian_id", "replaced_by",
+  "recorded_by", "reported_by", "decided_by", "replacement_user_id", "replaced_user_id",
 ]);
 // prototype DB key → mo_ table, in FK-safe order. Lookups first, then transactional.
 const PLAN: [string, string][] = [
@@ -38,6 +39,14 @@ const PLAN: [string, string][] = [
   ["projects", "mo_projects"], ["project_assignments", "mo_project_assignments"],
   ["deliverables", "mo_deliverables"], ["deliverable_versions", "mo_deliverable_versions"],
   ["drive_links", "mo_drive_links"], ["daily_reports", "mo_daily_reports"], ["report_tasks", "mo_report_tasks"],
+  // ── Phase 2: equipment, shoots, leave (FK-safe: shoots before bookings) ──
+  ["vendors", "mo_vendors"], ["equipment_categories", "mo_equipment_categories"],
+  ["leave_types", "mo_leave_types"], ["holidays", "mo_holidays"],
+  ["equipment_items", "mo_equipment_items"], ["equipment_kits", "mo_equipment_kits"],
+  ["kit_items", "mo_kit_items"], ["shoots", "mo_shoots"], ["shoot_crew", "mo_shoot_crew"],
+  ["equipment_bookings", "mo_equipment_bookings"], ["equipment_transactions", "mo_equipment_transactions"],
+  ["maintenance_records", "mo_maintenance_records"], ["leave_requests", "mo_leave_requests"],
+  ["leave_replacements", "mo_leave_replacements"],
 ];
 const ROLE_MAP: Record<string, string> = { admin: "admin", team_lead: "sub_admin", employee: "user" };
 

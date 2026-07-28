@@ -97,6 +97,21 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["drive_links", "mo_drive_links", null, ["added_by"]],
     ["daily_reports", "mo_daily_reports", null, ["user_id", "reviewed_by"]],
     ["report_tasks", "mo_report_tasks", null, []],
+    // Phase 2 — equipment, shoots, leave
+    ["vendors", "mo_vendors", null, []],
+    ["equipment_categories", "mo_equipment_categories", null, []],
+    ["equipment_items", "mo_equipment_items", "deleted_at IS NULL", []],
+    ["equipment_kits", "mo_equipment_kits", null, []],
+    ["kit_items", "mo_kit_items", null, []],
+    ["equipment_bookings", "mo_equipment_bookings", null, ["user_id", "created_by"]],
+    ["equipment_transactions", "mo_equipment_transactions", null, ["holder_id", "recorded_by"]],
+    ["maintenance_records", "mo_maintenance_records", null, ["reported_by"]],
+    ["shoots", "mo_shoots", null, []],
+    ["shoot_crew", "mo_shoot_crew", null, ["user_id", "replaced_user_id"]],
+    ["leave_types", "mo_leave_types", null, []],
+    ["leave_requests", "mo_leave_requests", null, ["user_id", "decided_by"]],
+    ["leave_replacements", "mo_leave_replacements", null, ["replacement_user_id"]],
+    ["holidays", "mo_holidays", null, []],
   ];
   app.get(`${P}/state`, asyncHandler(async (_req, res) => {
     if (!requireMedia(res)) return;
