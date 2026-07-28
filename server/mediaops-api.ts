@@ -82,6 +82,36 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     });
   }));
 
+  // ── Bulk state (Part B hydration) ─────────────────────────────────────────
+  // Returns the Phase-1 transactional dataset in the prototype's exact shape so
+  // the client can overlay it onto its seed on boot. User-ref columns are emitted
+  // as the prototype's INTEGER ids (media crew live in the shared users table as
+  // 'mo-uN'); to_jsonb keeps DATE/timestamp columns as clean strings (no tz drift).
+  const uidToInt = (v: unknown) =>
+    typeof v === "string" && v.startsWith("mo-u") ? parseInt(v.slice(4), 10) : v;
+  const STATE: [string, string, string | null, string[]][] = [
+    ["projects", "mo_projects", "deleted_at IS NULL", ["owner_id", "created_by"]],
+    ["project_assignments", "mo_project_assignments", "removed_at IS NULL", ["user_id", "assigned_by"]],
+    ["deliverables", "mo_deliverables", "deleted_at IS NULL", ["owner_id"]],
+    ["deliverable_versions", "mo_deliverable_versions", null, ["submitted_by", "reviewed_by"]],
+    ["drive_links", "mo_drive_links", null, ["added_by"]],
+    ["daily_reports", "mo_daily_reports", null, ["user_id", "reviewed_by"]],
+    ["report_tasks", "mo_report_tasks", null, []],
+  ];
+  app.get(`${P}/state`, asyncHandler(async (_req, res) => {
+    if (!requireMedia(res)) return;
+    const out: Record<string, unknown[]> = {};
+    for (const [key, table, where, refs] of STATE) {
+      const { rows } = await pool.query(`SELECT to_jsonb(t) AS row FROM ${table} t${where ? " WHERE " + where : ""}`);
+      out[key] = rows.map((r) => {
+        const o = r.row as Record<string, unknown>;
+        for (const f of refs) o[f] = uidToInt(o[f]);
+        return o;
+      });
+    }
+    res.json(out);
+  }));
+
   // ═════════════════════════ PROJECTS (§7.3) ══════════════════════════════
   const PROJ_TRANSITIONS: Record<string, string[]> = {
     proposed: ["approved", "cancelled"], approved: ["planning", "in_production", "on_hold", "cancelled"],

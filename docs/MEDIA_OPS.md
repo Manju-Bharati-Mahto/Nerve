@@ -145,7 +145,7 @@ Business/validation rules (BR-1…16, VR-1…12) and the automation engine (AUTO
 | Phase | Scope | Status |
 |-------|-------|--------|
 | **0 — Foundations** | Full §11 schema + lookups, media team + users, `/media` mount serving the prototype, README | ✅ **done** |
-| **1 — Kill WhatsApp & Excel** | Projects, Deliverables (+versions/approvals), Daily Reporting (+review queue, AUTO-13), Dashboard, lookups — REST API on the real schema | 🟡 **backend live** (`server/mediaops-api.ts`); frontend wiring pending the prototype install |
+| **1 — Kill WhatsApp & Excel** | Projects, Deliverables (+versions/approvals), Daily Reporting (+review queue, AUTO-13), Dashboard, lookups — REST API + prototype wired to it | 🟡 **backend + read-path live**: API (`server/mediaops-api.ts`), full seed imported (`server/mediaops-import.ts`), prototype hydrates `DB` from `/state` on boot with seed fallback. Remaining: write-through so UI mutations persist |
 | **2 — Physical world** | Equipment + QR + kiosk, Shoots, unified Calendar, Leave (production-aware) | ⏳ |
 | **3 — Insight** | Media Library + search + exports, Analytics + snapshots + month-close, KRA auto-metrics, Management Kanban | ⏳ |
 | **4 — Intelligence & polish** | AI-1/2/3, PWA offline, Drive validation/provisioning, Gallery, ICS | ⏳ |
@@ -172,6 +172,18 @@ npm run dev          # Vite (8080/8081)
 
 ## 7. Change log
 
+- **Phase 1 wiring — Part B (read path):** the prototype now loads from the backend.
+  New `GET /api/v1/media/state` returns the Phase-1 transactional dataset (projects,
+  assignments, deliverables, versions, drive links, daily reports, task logs) in the
+  prototype's exact shape — user-ref columns emitted as the seed's integer ids
+  (media crew are `mo-uN` in the shared `users` table) and dates as clean strings via
+  `to_jsonb`. On boot the prototype's `boot()` is now async: it overlays `/state`
+  onto the in-memory `DB`, **guarded** so a missing session or down backend silently
+  falls back to the seed (the UI always runs). Verified in-browser: with a Nerve
+  session it hydrates 28 projects + 368 reports and the Projects/My Day/Reports views
+  render live server data with 0 console errors; without a session it keeps the seed.
+  Remaining Phase-1 slice: write-through (create/log/submit/review actions POST to the
+  API so mutations persist) + binding `S.me` to the real session identity.
 - **Phase 1 wiring — Part A (seed import):** `server/mediaops-import.ts` +
   `server/mediaops-seed.json` load the prototype's full demo dataset into the real
   `mo_*` schema so the backend holds the data the UI was designed around. The

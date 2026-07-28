@@ -7753,14 +7753,36 @@ function wireDnD(){
 /* ==========================================================================
    BOOT
    ========================================================================== */
-(function boot(){
+/* ── Backend wiring (Phase 1 · Part B): hydrate DB from /api/v1/media/state ──
+   Overlays the live server dataset onto the in-memory seed. GUARDED: a failed
+   fetch (e.g. no session, backend down) silently keeps the seed so the UI always
+   runs. The server emits rows in the seed's exact shape — integer user-ids and
+   string dates — so views render unchanged, now backed by Postgres. */
+const MO_API = {
+  base:'/api/v1/media',
+  async get(p){ const r=await fetch(this.base+p,{credentials:'same-origin',headers:{Accept:'application/json'}});
+    if(!r.ok) throw new Error(p+' → HTTP '+r.status); return r.json(); }
+};
+async function hydrateFromServer(){
+  const keys=['projects','project_assignments','deliverables','deliverable_versions','drive_links','daily_reports','report_tasks'];
+  const st=await MO_API.get('/state');
+  keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
+  window.__MO_LIVE__=true;
+  return {projects:(st.projects||[]).length, reports:(st.daily_reports||[]).length};
+}
+(async function boot(){
   if(!location.hash)location.hash='#/media/home';
+  let live=null;
+  try{ live=await hydrateFromServer(); }
+  catch(e){ console.warn('[Media Ops] server hydration failed — running on seed data:', e.message); }
   render();
   /* Live counters refresh — FR-1.1 requires ≤ 60 s */
   setInterval(()=>{if(S.route==='#/media/home'&&!$('#modal-layer').classList.contains('on')&&
     !$('#drawer').classList.contains('on')&&!$('#palette').classList.contains('on')){/* silent no-op re-render guard */}},60000);
   setTimeout(()=>{
-    toast('Prototype loaded as Rahul Joshi (Admin). Press ⌘K, or switch identity top-right to see §16 scoping change the UI.','ok');
+    toast(live
+      ? `Live · ${live.projects} projects and ${live.reports} daily reports loaded from the server. Press ⌘K to explore.`
+      : 'Running on seed data — sign in to Nerve to load live data.', live?'ok':'warn');
   },700);
 })();
 </script>
