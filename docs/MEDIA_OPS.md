@@ -163,10 +163,8 @@ npm run dev:server   # API :3001, runs bootstrapMediaOpsDatabase()
 npm run dev          # Vite (8080/8081)
 ```
 
-- Open the app → log in as a **media-team** user → you land on `/media`.
-- Until the prototype file is dropped in, `/media` shows an install card; save the
-  attached `nerve-media-ops.html` as `public/media-ops/index.html` to serve the real
-  UI.
+- Open the app → log in as a **media-team** user → you land on `/media`, which serves
+  the real prototype (`public/media-ops/index.html`) full-screen.
 - Demo media logins (fresh-seed DBs): `media-admin@parul.ac.in / media123`,
   `media-lead@parul.ac.in / medialead123`, `media-user@parul.ac.in / mediauser123`.
 
@@ -174,6 +172,13 @@ npm run dev          # Vite (8080/8081)
 
 ## 7. Change log
 
+- **Prototype installed + My Day full-width:** the real ~590 KB prototype now lives
+  at `public/media-ops/index.html` (recovered losslessly from the session transcript
+  and verified — all 17 routes render with 0 console errors). `viewMyDay()` no longer
+  renders the desktop phone device-frame; the day's cards now fill the page as a
+  responsive 2/3-column masonry (assignments + task log | submit + deliverables +
+  gear), with the date/status header spanning the top. Next: wire its in-memory
+  `DB`/`ACTIONS` to `/api/v1/media/*`.
 - **Phase 1 (backend):** `server/mediaops-api.ts` — `/api/v1/media/*` with the §16
   role model (super_admin/admin→admin, sub_admin→team_lead, user→employee),
   deny-by-default, and append-only audit. Endpoints: `GET /lookups`; Projects
