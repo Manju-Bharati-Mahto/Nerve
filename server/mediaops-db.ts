@@ -25,7 +25,21 @@ import { pool } from "./db.js";
 
 export async function bootstrapMediaOpsDatabase() {
   // Postgres range-overlap exclusion for equipment bookings (AC-7 / VR-8).
-  await pool.query(`CREATE EXTENSION IF NOT EXISTS btree_gist`);
+  // btree_gist backs the AC-7 no-double-booking EXCLUDE constraint on
+  // mo_equipment_bookings. If the app DB role can't create extensions, a superuser
+  // must run it once — fail fast with an actionable message rather than a cryptic one.
+  try {
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS btree_gist`);
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error(
+      "[media-ops] FATAL: could not enable the btree_gist extension (needed for the " +
+      "equipment no-double-booking constraint). Ask a Postgres superuser to run once:\n" +
+      "    CREATE EXTENSION IF NOT EXISTS btree_gist;\n" +
+      "Original error:", (e as Error).message,
+    );
+    throw e;
+  }
 
   // The 'media' team must exist (global team seeding only runs on empty DBs).
   await pool.query(
