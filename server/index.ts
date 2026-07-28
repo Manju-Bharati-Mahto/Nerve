@@ -150,6 +150,7 @@ import {
   cancelLeave,
   getLeaveForDate,
 } from "./branding-db.js";
+import * as designDb from "./design-db.js";
 
 const app = express();
 const PgStore = connectPgSimple(session);
@@ -179,6 +180,24 @@ const avatarUpload = multer({
 const designUpload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+    },
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype.startsWith("image/")) cb(null, true);
+    else cb(new Error("Only image files are allowed."));
+  },
+});
+
+const DESIGN_PORTAL_UPLOADS_DIR = path.resolve("uploads/design");
+fs.mkdirSync(DESIGN_PORTAL_UPLOADS_DIR, { recursive: true });
+
+const designPortalUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, DESIGN_PORTAL_UPLOADS_DIR),
     filename: (_req, file, cb) => {
       const ext = path.extname(file.originalname).toLowerCase();
       cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
@@ -228,7 +247,7 @@ type SessionRequest = express.Request & {
 
 // task_manager mirrors task_owner exactly (same dashboard + lead powers); it
 // exists so the branding head can hand out the role under a distinct title.
-const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "branding_reports_admin", "task_owner", "task_manager"] as const;
+const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "branding_reports_admin", "design_reports_admin", "task_owner", "task_manager"] as const;
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -1635,6 +1654,839 @@ app.get("/api/branding/portal/leave/date/:date", asyncHandler(async (req, res) =
   res.json({ leave });
 }));
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Design Portal — full clone of the Branding portal, scoped to team "design"
+// and backed by the design_* tables (server/design-db.ts).
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Design Portal middleware ─────────────────────────────────────────────
+
+function isDesignTeamMember(role: AppRole, team: string | null) {
+  return role === "super_admin" || team === "design";
+}
+function isDesignAdminOrSuper(role: AppRole, team: string | null) {
+  return role === "super_admin" || (team === "design" && role === "admin");
+}
+// Daily-reports + category management can be delegated to the
+// `design_reports_admin` role. KRA, leaves, peer-marking etc. stay
+// admin-only.
+function isDesignReportsAdminOrAdminOrSuper(role: AppRole, team: string | null) {
+  return isDesignAdminOrSuper(role, team)
+    || (team === "design" && role === "design_reports_admin");
+}
+
+function requireDesign(res: express.Response): boolean {
+  const u = res.locals.currentUser;
+  if (!isDesignTeamMember(u.role, u.team)) {
+    sendError(res, 403, "Design team access only.");
+    return false;
+  }
+  return true;
+}
+function requireDesignAdmin(res: express.Response): boolean {
+  const u = res.locals.currentUser;
+  if (!isDesignAdminOrSuper(u.role, u.team)) {
+    sendError(res, 403, "Design admin access only.");
+    return false;
+  }
+  return true;
+}
+// For Daily Reports + Category endpoints — accepts design_reports_admin too,
+// plus any user with the `design:manage_categories` capability grant. The
+// capability check lets an admin delegate category management to a regular
+// user without promoting them to admin.
+function requireDesignReportsAdmin(res: express.Response): boolean {
+  const u = res.locals.currentUser;
+  if (!isDesignReportsAdminOrAdminOrSuper(u.role, u.team)) {
+    sendError(res, 403, "Design admin or reports-admin access only.");
+    return false;
+  }
+  return true;
+}
+async function requireDesignCategoryManager(res: express.Response): Promise<boolean> {
+  const u = res.locals.currentUser;
+  if (isDesignReportsAdminOrAdminOrSuper(u.role, u.team)) return true;
+  // Fallback: explicit capability grant on a design-team member.
+  if (u.team === "design") {
+    const caps = await listUserCapabilities(u.id);
+    if (caps.includes("design:manage_categories")) return true;
+  }
+  sendError(res, 403, "You need the 'Manage Categories' capability to do that.");
+  return false;
+}
+// Project assignment: full design admins always, plus any design-team
+// member the head has granted the 'assign_projects' capability to.
+async function requireDesignProjectAssigner(res: express.Response): Promise<boolean> {
+  const u = res.locals.currentUser;
+  if (isDesignAdminOrSuper(u.role, u.team)) return true;
+  // Task owners are leads with built-in assign rights.
+  if (u.team === "design" && (u.role === "task_owner" || u.role === "task_manager")) return true;
+  if (u.team === "design") {
+    const caps = await listUserCapabilities(u.id);
+    if (caps.includes("design:assign_projects")) return true;
+  }
+  sendError(res, 403, "You need the 'Assign Projects' capability to do that.");
+  return false;
+}
+// Design "lead" roles: team leads (sub_admin) and task owners (a lead variant
+// with built-in project-assign rights). Used wherever lead-level access applies.
+function isDesignLeadRole(role: AppRole, team: string | null): boolean {
+  return team === "design" && (role === "sub_admin" || role === "task_owner" || role === "task_manager");
+}
+function requireDesignLead(res: express.Response): boolean {
+  const u = res.locals.currentUser;
+  const ok = u.role === "super_admin" ||
+    (u.team === "design" && u.role === "admin") ||
+    isDesignLeadRole(u.role, u.team);
+  if (!ok) { sendError(res, 403, "Design lead or admin access only."); return false; }
+  return true;
+}
+
+// ── Category routes ────────────────────────────────────────────────────────
+
+app.get("/api/design/portal/categories", asyncHandler(async (_req, res) => {
+  if (!requireDesign(res)) return;
+  res.json({ categories: await designDb.listWorkCategories() });
+}));
+
+app.post("/api/design/portal/categories", asyncHandler(async (req, res) => {
+  if (!(await requireDesignCategoryManager(res))) return;
+  const { name } = z.object({ name: z.string().min(1) }).parse(req.body);
+  const category = await designDb.createWorkCategory(name);
+  res.status(201).json({ category });
+}));
+
+app.patch("/api/design/portal/categories/:id", asyncHandler(async (req, res) => {
+  if (!(await requireDesignCategoryManager(res))) return;
+  const { name } = z.object({ name: z.string().min(1) }).parse(req.body);
+  const ok = await designDb.updateWorkCategory(getSingleParam(req.params.id), name);
+  if (!ok) return sendError(res, 404, "Category not found.");
+  res.json({ ok: true });
+}));
+
+app.delete("/api/design/portal/categories/:id", asyncHandler(async (req, res) => {
+  if (!(await requireDesignCategoryManager(res))) return;
+  const result = await designDb.deleteWorkCategory(getSingleParam(req.params.id));
+  res.json({ ok: true, usageCount: result.usageCount });
+}));
+
+app.post("/api/design/portal/categories/reorder", asyncHandler(async (req, res) => {
+  if (!(await requireDesignCategoryManager(res))) return;
+  const { orderedIds } = z.object({ orderedIds: z.array(z.string()) }).parse(req.body);
+  await designDb.reorderWorkCategories(orderedIds);
+  res.json({ ok: true });
+}));
+
+app.post("/api/design/portal/categories/:id/sub", asyncHandler(async (req, res) => {
+  if (!(await requireDesignCategoryManager(res))) return;
+  const { name } = z.object({ name: z.string().min(1) }).parse(req.body);
+  const sub = await designDb.createWorkSubCategory(getSingleParam(req.params.id), name);
+  res.status(201).json({ sub });
+}));
+
+app.patch("/api/design/portal/sub-categories/:id", asyncHandler(async (req, res) => {
+  if (!(await requireDesignCategoryManager(res))) return;
+  const { name } = z.object({ name: z.string().min(1) }).parse(req.body);
+  const ok = await designDb.updateWorkSubCategory(getSingleParam(req.params.id), name);
+  if (!ok) return sendError(res, 404, "Sub-category not found or is a protected 'Others' entry.");
+  res.json({ ok: true });
+}));
+
+app.delete("/api/design/portal/sub-categories/:id", asyncHandler(async (req, res) => {
+  if (!(await requireDesignCategoryManager(res))) return;
+  const result = await designDb.deleteWorkSubCategory(getSingleParam(req.params.id));
+  res.json({ ok: true, usageCount: result.usageCount });
+}));
+
+// ── Daily Report routes ────────────────────────────────────────────────────
+
+const designSaveRowsSchema = z.object({
+  rows: z.array(z.object({
+    sr_no: z.number().int().min(1),
+    type_of_work: z.string(),
+    sub_category: z.string(),
+    specific_work: z.string(),
+    time_taken: z.string(),
+    collaborative_colleagues: z.array(z.string()).default([]),
+    stopwatch_status: z.enum(['idle', 'running', 'paused', 'finished']).optional(),
+    elapsed_seconds: z.number().int().min(0).optional(),
+    stopwatch_started_at: z.string().nullable().optional(),
+    carried_over_from_row_id: z.string().nullable().optional(),
+  })),
+});
+
+app.get("/api/design/portal/report", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const date = getSingleParam(req.query["date"] as string | string[]);
+  if (!date) return sendError(res, 400, "date query param required (YYYY-MM-DD).");
+  const user = res.locals.currentUser;
+  const report = await designDb.getOrCreateDailyReport(user.id, date);
+  res.json({ report });
+}));
+
+app.put("/api/design/portal/report/:reportId/rows", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const parsed = designSaveRowsSchema.safeParse(req.body);
+  if (!parsed.success) return sendError(res, 400, "Invalid rows payload.");
+  const user = res.locals.currentUser;
+  const rows = await designDb.saveReportRows(getSingleParam(req.params.reportId), user.id, parsed.data.rows);
+  if (!rows) return sendError(res, 403, "Report not found, already submitted, or past the 9 PM IST edit window.");
+  res.json({ rows });
+}));
+
+app.post("/api/design/portal/report/:reportId/submit", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const user = res.locals.currentUser;
+  const report = await designDb.submitDailyReport(getSingleParam(req.params.reportId), user.id);
+  if (!report) return sendError(res, 403, "Report not found or already submitted.");
+  res.json({ report });
+}));
+
+app.get("/api/design/portal/reports", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const q = req.query as Record<string, string | string[]>;
+  const user = res.locals.currentUser;
+  // Treat design_reports_admin like an admin for the purposes of fetching
+  // all team reports — that role's whole point is read-access to everyone's
+  // daily submissions. A user explicitly granted `design:view_team_dashboard`
+  // gets the same broad read access without role escalation.
+  let isAdmin = isDesignReportsAdminOrAdminOrSuper(user.role, user.team);
+  if (!isAdmin && user.team === "design") {
+    const caps = await listUserCapabilities(user.id);
+    if (caps.includes("design:view_team_dashboard")) isAdmin = true;
+  }
+  const teamScope = q["scope"] === "team"; // non-admin members may opt-in for live-collab UI
+
+  // Parse userIds: supports ?userId=id1&userId=id2 (array) or ?userId=id1 (single)
+  let userIds: string[] | undefined;
+  let userId: string | undefined;
+  if (isAdmin || teamScope) {
+    const raw = q["userId"];
+    if (Array.isArray(raw) && raw.length > 0) {
+      userIds = raw;
+    } else if (typeof raw === "string" && raw) {
+      userIds = [raw];
+    }
+    // If no filter, userIds stays undefined → fetches all design team
+  } else {
+    userId = user.id;
+  }
+
+  const reports = await designDb.listAllDailyReports({
+    userId,
+    userIds,
+    dateFrom:    typeof q["dateFrom"]    === "string" ? q["dateFrom"]    : undefined,
+    dateTo:      typeof q["dateTo"]      === "string" ? q["dateTo"]      : undefined,
+    typeOfWork:  typeof q["typeOfWork"]  === "string" ? q["typeOfWork"]  : undefined,
+    subCategory: typeof q["subCategory"] === "string" ? q["subCategory"] : undefined,
+    collaborator: typeof q["collaborator"] === "string" ? q["collaborator"] : undefined,
+    lockedOnly:  q["lockedOnly"] === "true",
+  });
+  res.json({ reports });
+}));
+
+app.get("/api/design/portal/analytics", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const q = req.query as Record<string, string>;
+  const user = res.locals.currentUser;
+  const now = new Date();
+  const dateFrom = q["dateFrom"] || new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split("T")[0];
+  const dateTo   = q["dateTo"]   || now.toISOString().split("T")[0];
+  const targetId = isDesignAdminOrSuper(user.role, user.team) && q["userId"] ? q["userId"] : user.id;
+  const analytics = await designDb.getUserAnalytics(targetId, dateFrom, dateTo);
+  res.json({ analytics });
+}));
+
+// ── KRA routes ─────────────────────────────────────────────────────────────
+
+app.get("/api/design/portal/kra/parameters", asyncHandler(async (_req, res) => {
+  if (!requireDesign(res)) return;
+  res.json({ parameters: await designDb.listKraParameters() });
+}));
+
+app.get("/api/design/portal/kra/peer-marking-enabled", asyncHandler(async (_req, res) => {
+  if (!requireDesign(res)) return;
+  res.json({ enabled: await designDb.getPeerMarkingEnabled() });
+}));
+
+app.patch("/api/design/portal/kra/peer-marking-toggle", asyncHandler(async (req, res) => {
+  if (!requireDesignAdmin(res)) return;
+  const { enabled } = z.object({ enabled: z.boolean() }).parse(req.body);
+  await designDb.togglePeerMarking(enabled, res.locals.currentUser.id);
+  res.json({ ok: true, enabled });
+}));
+
+app.get("/api/design/portal/kra/self-appraisal", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const { month, year } = req.query as { month: string; year: string };
+  const appraisal = await designDb.getSelfAppraisal(res.locals.currentUser.id, parseInt(month), parseInt(year));
+  res.json({ appraisal });
+}));
+
+app.post("/api/design/portal/kra/self-appraisal", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const { month, year, scores } = z.object({
+    month:  z.number().int().min(1).max(12),
+    year:   z.number().int().min(2020),
+    scores: z.record(z.string(), z.number().min(0).max(10)),
+  }).parse(req.body);
+  const result = await designDb.submitSelfAppraisal(res.locals.currentUser.id, month, year, scores);
+  if (result === "already_submitted") return sendError(res, 409, "Self appraisal already submitted for this month.");
+  res.status(201).json({ appraisal: result });
+}));
+
+app.get("/api/design/portal/kra/peer-marking/completed", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const { month, year } = req.query as { month: string; year: string };
+  const completed = await designDb.getCompletedPeerMarkings(res.locals.currentUser.id, parseInt(month), parseInt(year));
+  res.json({ completed });
+}));
+
+app.post("/api/design/portal/kra/peer-marking", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const enabled = await designDb.getPeerMarkingEnabled();
+  if (!enabled) return sendError(res, 403, "Peer marking is currently disabled.");
+  const { revieweeId, month, year, scores } = z.object({
+    revieweeId: z.string(),
+    month:  z.number().int().min(1).max(12),
+    year:   z.number().int().min(2020),
+    scores: z.record(z.string(), z.number().min(0).max(10)),
+  }).parse(req.body);
+  const user = res.locals.currentUser;
+  if (revieweeId === user.id) return sendError(res, 400, "Cannot mark yourself.");
+  const result = await designDb.submitPeerMarking(user.id, revieweeId, month, year, scores);
+  if (result === "already_submitted") return sendError(res, 409, "Already marked this colleague.");
+  res.status(201).json({ marking: result });
+}));
+
+app.get("/api/design/portal/kra/report/:userId/:month/:year", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const { userId, month, year } = req.params;
+  const currentUser = res.locals.currentUser;
+  // User can only see own report unless admin/super
+  if (userId !== currentUser.id && !isDesignAdminOrSuper(currentUser.role, currentUser.team)) {
+    return sendError(res, 403, "Access denied.");
+  }
+  const report = await designDb.getKraReport(getSingleParam(userId), parseInt(getSingleParam(month)), parseInt(getSingleParam(year)));
+  if (!report) return sendError(res, 404, "KRA report not found.");
+  // Non-admins only see composite if final-pushed
+  if (!isDesignAdminOrSuper(currentUser.role, currentUser.team) && !report.is_final_pushed) {
+    return res.json({
+      report: {
+        ...report,
+        peer_average: {},
+        admin_score: null,
+        composite_score: null,
+        composite_score_after_penalty: null,
+      },
+    });
+  }
+  res.json({ report });
+}));
+
+app.get("/api/design/portal/kra/admin/dashboard", asyncHandler(async (req, res) => {
+  if (!requireDesignAdmin(res)) return;
+  const { month, year } = req.query as { month: string; year: string };
+  const dashboard = await designDb.getAdminKraDashboard(parseInt(month), parseInt(year));
+  res.json({ dashboard });
+}));
+
+app.get("/api/design/portal/kra/admin/score/:userId/:month/:year", asyncHandler(async (req, res) => {
+  if (!requireDesignAdmin(res)) return;
+  const { userId, month, year } = req.params;
+  const score = await designDb.getAdminKraScore(getSingleParam(userId), parseInt(getSingleParam(month)), parseInt(getSingleParam(year)));
+  res.json({ score });
+}));
+
+app.post("/api/design/portal/kra/admin/score", asyncHandler(async (req, res) => {
+  if (!requireDesignAdmin(res)) return;
+  const { userId, month, year, scores } = z.object({
+    userId: z.string(),
+    month:  z.number().int().min(1).max(12),
+    year:   z.number().int().min(2020),
+    scores: z.record(z.string(), z.number().min(0).max(10)),
+  }).parse(req.body);
+  const adminScore = await designDb.getAdminKraScore(userId, month, year);
+  if (adminScore?.is_final_pushed) return sendError(res, 403, "KRA is already final-pushed and locked.");
+  const score = await designDb.setAdminKraScore(userId, month, year, scores, res.locals.currentUser.id);
+  res.json({ score });
+}));
+
+app.post("/api/design/portal/kra/admin/penalty", asyncHandler(async (req, res) => {
+  if (!requireDesignAdmin(res)) return;
+  const { userId, month, year, penalty_percent, reason } = z.object({
+    userId: z.string(),
+    month:  z.number().int().min(1).max(12),
+    year:   z.number().int().min(2020),
+    penalty_percent: z.number().min(0).max(100),
+    reason: z.string().optional().default(''),
+  }).parse(req.body);
+  const existing = await designDb.getAdminKraScore(userId, month, year);
+  if (existing?.is_final_pushed) return sendError(res, 403, "KRA is already final-pushed and locked.");
+  const score = await designDb.setAdminManualPenalty(userId, month, year, penalty_percent, reason);
+  res.json({ score });
+}));
+
+// Full TOTAL penalty override — replaces both auto (missed-report) and manual
+// penalties. Pass percent=null to clear the override.
+app.post("/api/design/portal/kra/admin/penalty-override", asyncHandler(async (req, res) => {
+  if (!requireDesignAdmin(res)) return;
+  const { userId, month, year, percent, reason } = z.object({
+    userId: z.string(),
+    month:  z.number().int().min(1).max(12),
+    year:   z.number().int().min(2020),
+    percent: z.number().min(0).max(100).nullable(),
+    reason: z.string().optional().default(''),
+  }).parse(req.body);
+  const existing = await designDb.getAdminKraScore(userId, month, year);
+  if (existing?.is_final_pushed) return sendError(res, 403, "KRA is already final-pushed and locked.");
+  const score = await designDb.setAdminTotalPenaltyOverride(userId, month, year, percent, reason);
+  res.json({ score });
+}));
+
+app.post("/api/design/portal/kra/admin/final-push", asyncHandler(async (req, res) => {
+  if (!requireDesignAdmin(res)) return;
+  const { userId, month, year } = z.object({
+    userId: z.string(),
+    month:  z.number().int().min(1).max(12),
+    year:   z.number().int().min(2020),
+  }).parse(req.body);
+  const result = await designDb.finalPushKra(userId, month, year, res.locals.currentUser.id);
+  if (result === "not_found")     return sendError(res, 404, "Admin KRA score not set yet.");
+  if (result === "already_pushed") return sendError(res, 409, "KRA already final-pushed.");
+  res.json({ ok: true, score: result });
+}));
+
+app.get("/api/design/portal/kra/admin/peer-markings", asyncHandler(async (req, res) => {
+  if (!requireDesignAdmin(res)) return;
+  const { month, year } = req.query as { month: string; year: string };
+  const markings = await designDb.getAllPeerMarkings(parseInt(month), parseInt(year));
+  res.json({ markings });
+}));
+
+// Get peer markings for a specific user (admin view of individual reviewer scores)
+app.get("/api/design/portal/kra/admin/user-peer-markings/:userId", asyncHandler(async (req, res) => {
+  if (!requireDesignAdmin(res)) return;
+  const { month, year } = req.query as { month: string; year: string };
+  const userId = getSingleParam(req.params.userId);
+  const markings = await designDb.getPeerMarkingsForUser(userId, parseInt(month), parseInt(year));
+  res.json({ markings });
+}));
+
+// ── Super admin design stats ─────────────────────────────────────────────
+
+app.get("/api/design/portal/super-admin/stats", asyncHandler(async (req, res) => {
+  const user = res.locals.currentUser;
+  if (user.role !== "super_admin") return sendError(res, 403, "Super admin only.");
+  res.json(await designDb.getDesignPortalStats());
+}));
+
+// ── Team lead: report status ───────────────────────────────────────────────
+
+app.get("/api/design/portal/team/report-status", asyncHandler(async (req, res) => {
+  if (!requireDesignLead(res)) return;
+  const date = getSingleParam((req.query as Record<string, string>).date ?? "");
+  if (!date) return sendError(res, 400, "date query param required (YYYY-MM-DD).");
+  const u = res.locals.currentUser;
+  // sub_admin sees only their own managed members; admin/super_admin sees everyone
+  const managedBy = u.role === "sub_admin" ? u.id : null;
+  const statuses = await designDb.getTeamReportStatus(date, managedBy);
+  res.json({ statuses });
+}));
+
+// ── Design gallery ────────────────────────────────────────────────────────
+
+app.get("/api/design/portal/designs", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const q = req.query as Record<string, string>;
+  const designs = await designDb.listDesignDesigns({
+    search: q.search || undefined,
+    category: q.category || undefined,
+    uploaderId: q.uploaderId || undefined,
+    dateFrom: q.dateFrom || undefined,
+    dateTo: q.dateTo || undefined,
+  }, res.locals.currentUser.id);
+  res.json({ designs });
+}));
+
+app.post("/api/design/portal/designs/:id/vote", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const id = getSingleParam(req.params.id);
+  const { vote_type } = req.body as { vote_type: "up" | "down" | null };
+  if (vote_type !== null && vote_type !== "up" && vote_type !== "down") {
+    return sendError(res, 400, "vote_type must be 'up', 'down', or null.");
+  }
+  const result = await designDb.castDesignVote(id, res.locals.currentUser.id, vote_type);
+  res.json(result);
+}));
+
+app.get("/api/design/portal/designs/:id/voters", asyncHandler(async (req, res) => {
+  if (!requireDesignAdmin(res)) return;
+  const id = getSingleParam(req.params.id);
+  const voters = await designDb.getDesignVoters(id);
+  res.json({ voters });
+}));
+
+app.post(
+  "/api/design/portal/designs",
+  (req, res, next) => {
+    if (!requireDesign(res)) return;
+    next();
+  },
+  designPortalUpload.single("image"),
+  asyncHandler(async (req, res) => {
+    const user = res.locals.currentUser;
+    if (!req.file) return sendError(res, 400, "Image file is required.");
+    const { title, description, category, tags } = req.body as {
+      title?: string; description?: string; category?: string; tags?: string;
+    };
+    if (!title?.trim()) {
+      fs.unlinkSync(req.file.path);
+      return sendError(res, 400, "Title is required.");
+    }
+    const imageUrl = `/uploads/design/${req.file.filename}`;
+    const parsedTags = tags ? (tags as string).split(",").map((t: string) => t.trim()).filter(Boolean) : [];
+    const design = await designDb.createDesignDesign(
+      title.trim(),
+      description?.trim() ?? "",
+      category?.trim() ?? "",
+      parsedTags,
+      imageUrl,
+      user.id,
+      user.full_name || user.email
+    );
+    res.status(201).json({ design });
+  })
+);
+
+app.delete("/api/design/portal/designs/:id", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const user = res.locals.currentUser;
+  const id = getSingleParam(req.params.id);
+  const design = await designDb.getDesignDesignById(id);
+  if (!design) return sendError(res, 404, "Design not found.");
+
+  const isAdminLevel = isDesignAdminOrSuper(user.role, user.team);
+
+  if (!isAdminLevel) {
+    // Non-admins can only delete their own design within 1 hour of upload
+    if (design.uploader_id !== user.id) {
+      return sendError(res, 403, "You can only delete your own designs.");
+    }
+    const ageMs = Date.now() - new Date(design.created_at).getTime();
+    if (ageMs > 60 * 60 * 1000) {
+      return sendError(res, 403, "The 1-hour deletion window has passed. Contact an admin to remove this design.");
+    }
+  }
+
+  const imageUrl = await designDb.deleteDesignDesign(id);
+  if (imageUrl) {
+    const filePath = path.resolve(imageUrl.replace(/^\//, ""));
+    fs.unlink(filePath, () => {});
+  }
+  res.json({ ok: true });
+}));
+
+// ── Design projects ──────────────────────────────────────────────────────
+
+app.get("/api/design/portal/projects", asyncHandler(async (_req, res) => {
+  if (!requireDesign(res)) return;
+  // Access restriction (req 5): admins/head see all projects; designers, leads
+  // and task owners see only projects they're assigned to, supervise, or created.
+  const u = res.locals.currentUser;
+  const seesAll = isDesignReportsAdminOrAdminOrSuper(u.role, u.team);
+  res.json({ projects: await designDb.listDesignProjects(seesAll ? undefined : u.id) });
+}));
+
+// When a lead (sub_admin) creates/updates a project, they can only assign it
+// to members they manage. Admin/super_admin can assign to anyone.
+async function designScopeAssignmentsForActor(
+  actor: { id: string; role: string; team: string | null },
+  ids: string[],
+): Promise<string[]> {
+  const isAdmin = actor.role === "super_admin" ||
+    (actor.team === "design" && actor.role === "admin");
+  if (isAdmin) return ids;
+  // Non-admin assigners (leads / task managers / capability grantees) can
+  // assign to ANY design-team member with an assignable role — the picker
+  // shows the whole roster for everyone, so the filter must match. Self stays
+  // allowed (a lead can assign work to themselves).
+  const ASSIGNABLE_ROLES = ["user", "sub_admin", "task_owner", "task_manager"];
+  const filtered: string[] = [];
+  for (const id of ids) {
+    const u = await getUserById(id);
+    if (!u) continue;
+    if (u.id === actor.id || (u.team === "design" && ASSIGNABLE_ROLES.includes(u.role))) filtered.push(id);
+  }
+  return filtered;
+}
+
+app.post("/api/design/portal/projects", asyncHandler(async (req, res) => {
+  if (!requireDesignLead(res)) return;
+  const { name, description, deadline, assigned_user_ids, type_of_work, sub_category, specific_work } = req.body as {
+    name: string; description?: string; deadline?: string; assigned_user_ids?: string[];
+    type_of_work?: string; sub_category?: string; specific_work?: string;
+  };
+  if (!name?.trim()) return sendError(res, 400, "Project name is required.");
+  const actor = res.locals.currentUser;
+  const scoped = await designScopeAssignmentsForActor(actor, assigned_user_ids ?? []);
+  const project = await designDb.createDesignProject(
+    name.trim(),
+    description?.trim() ?? "",
+    deadline || null,
+    actor.id,
+    scoped,
+    {
+      typeOfWork: type_of_work?.trim() ?? "",
+      subCategory: sub_category?.trim() ?? "",
+      specificWork: specific_work?.trim() ?? "",
+    },
+  );
+  res.status(201).json({ project });
+}));
+
+app.put("/api/design/portal/projects/:id", asyncHandler(async (req, res) => {
+  if (!requireDesignLead(res)) return;
+  const id = getSingleParam(req.params.id);
+  const { name, description, deadline, status, assigned_user_ids, type_of_work, sub_category, specific_work } = req.body as {
+    name: string; description?: string; deadline?: string;
+    status?: "active" | "completed" | "on_hold"; assigned_user_ids?: string[];
+    type_of_work?: string; sub_category?: string; specific_work?: string;
+  };
+  if (!name?.trim()) return sendError(res, 400, "Project name is required.");
+  const actor = res.locals.currentUser;
+  const scoped = await designScopeAssignmentsForActor(actor, assigned_user_ids ?? []);
+  const project = await designDb.updateDesignProject(
+    id,
+    name.trim(),
+    description?.trim() ?? "",
+    deadline || null,
+    status ?? "active",
+    scoped,
+    actor.id,
+    {
+      typeOfWork: type_of_work?.trim(),
+      subCategory: sub_category?.trim(),
+      specificWork: specific_work?.trim(),
+    },
+  );
+  if (!project) return sendError(res, 404, "Project not found.");
+  res.json({ project });
+}));
+
+// Assign a project to designers (capability-gated). Creates the project with
+// its work classification, assigns the chosen designers, and seeds a row into
+// each designer's daily report for the given work date. (Spec: leads granted
+// the 'Assign Projects' capability assign work that lands in the designer's
+// daily report.)
+app.post("/api/design/portal/projects/assign", asyncHandler(async (req, res) => {
+  if (!(await requireDesignProjectAssigner(res))) return;
+  const { name, description, deadline, type_of_work, sub_category, specific_work, assigned_user_ids, assign_lead_id, work_date } = req.body as {
+    name: string; description?: string; deadline?: string;
+    type_of_work?: string; sub_category?: string; specific_work?: string;
+    assigned_user_ids?: string[]; assign_lead_id?: string | null; work_date?: string;
+  };
+  if (!name?.trim()) return sendError(res, 400, "Project name is required.");
+  const typeOfWork = type_of_work?.trim() ?? "";
+  const subCategory = sub_category?.trim() ?? "";
+  const specificWork = specific_work?.trim() ?? "";
+  if (!typeOfWork || !subCategory || !specificWork) {
+    return sendError(res, 400, "Type of work, sub-category and specific work are required.");
+  }
+  if (!work_date || !/^\d{4}-\d{2}-\d{2}$/.test(work_date)) {
+    return sendError(res, 400, "A valid work date (YYYY-MM-DD) is required.");
+  }
+  const actor = res.locals.currentUser;
+  // "Assign to designers" now accepts designers AND leads; each gets a report row.
+  const scoped = await designScopeAssignmentsForActor(actor, assigned_user_ids ?? []);
+  if (scoped.length === 0) {
+    return sendError(res, 400, "Assign the project to at least one design team member.");
+  }
+  // "Assign Lead" (optional, supervisory) — must be a lead-role design member
+  // and does NOT get a daily-report row (req 4).
+  let leadId: string | null = null;
+  if (assign_lead_id) {
+    const lead = await getUserById(assign_lead_id);
+    if (lead && lead.team === "design" && (lead.role === "admin" || lead.role === "sub_admin" || lead.role === "task_owner" || lead.role === "task_manager")) {
+      leadId = lead.id;
+    }
+  }
+  const project = await designDb.createDesignProject(
+    name.trim(), description?.trim() ?? "", deadline || null, actor.id, scoped,
+    { typeOfWork, subCategory, specificWork, assignedLeadId: leadId },
+  );
+  // Seed a daily-report row for each "assign to designers" assignee (designers
+  // and leads picked there) — but NOT for the supervisory Assign-Lead.
+  for (const designerId of scoped) {
+    await designDb.createAssignedReportRow({ designerId, workDate: work_date, typeOfWork, subCategory, specificWork });
+  }
+  res.status(201).json({ project });
+}));
+
+// Mark the current user's assignment on a project complete (req 6).
+app.post("/api/design/portal/projects/:id/complete", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const id = getSingleParam(req.params.id);
+  const project = await designDb.completeProjectAssignment(id, res.locals.currentUser.id);
+  if (!project) return sendError(res, 404, "You have no assignment on this project.");
+  res.json({ project });
+}));
+
+app.delete("/api/design/portal/projects/:id", asyncHandler(async (req, res) => {
+  if (!requireDesignLead(res)) return;
+  const id = getSingleParam(req.params.id);
+  const ok = await designDb.deleteDesignProject(id);
+  if (!ok) return sendError(res, 404, "Project not found.");
+  res.json({ ok: true });
+}));
+
+// ── Report row comments ────────────────────────────────────────────────────
+// Leads/admins post per-row feedback on a managed member's daily report; the
+// member sees the thread on their own dashboard.
+
+// Read: any design member can fetch comments for rows they're allowed to see.
+// We trust the row-id allowlist: the client only sends rows they already have
+// access to via /reports (their own) or as a lead/admin viewing managed reports.
+app.get("/api/design/portal/report-row-comments", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const raw = req.query["row_ids"];
+  const rowIds = typeof raw === "string"
+    ? raw.split(",").filter(Boolean)
+    : Array.isArray(raw)
+      ? raw.flatMap(v => String(v).split(",")).filter(Boolean)
+      : [];
+  if (rowIds.length === 0) return res.json({ comments: [] });
+  const comments = await designDb.listRowComments(rowIds);
+  res.json({ comments });
+}));
+
+// Write: lead managing the row's owner, or admin/super_admin.
+app.post("/api/design/portal/report-row-comments", asyncHandler(async (req, res) => {
+  if (!requireDesignLead(res)) return;
+  const { row_id, body } = req.body as { row_id?: string; body?: string };
+  if (!row_id || !body?.trim()) return sendError(res, 400, "row_id and body are required.");
+  const owner = await designDb.getRowOwner(row_id);
+  if (!owner) return sendError(res, 404, "Row not found.");
+  const actor = res.locals.currentUser;
+  const isAdmin = actor.role === "super_admin" ||
+    (actor.team === "design" && actor.role === "admin");
+  if (!isAdmin) {
+    // sub_admin: only on managed members' rows (or their own).
+    const target = await getUserById(owner.ownerUserId);
+    if (!target || (target.managed_by !== actor.id && target.id !== actor.id)) {
+      return sendError(res, 403, "You can only comment on rows of members you manage.");
+    }
+  }
+  const comment = await designDb.createRowComment(row_id, actor.id, body.trim());
+  res.status(201).json({ comment });
+}));
+
+// Edit/delete: author only.
+app.patch("/api/design/portal/report-row-comments/:id", asyncHandler(async (req, res) => {
+  if (!requireDesignLead(res)) return;
+  const id = getSingleParam(req.params.id);
+  const { body } = req.body as { body?: string };
+  if (!body?.trim()) return sendError(res, 400, "body is required.");
+  const comment = await designDb.updateRowComment(id, res.locals.currentUser.id, body.trim());
+  if (!comment) return sendError(res, 404, "Comment not found or not yours to edit.");
+  res.json({ comment });
+}));
+
+app.delete("/api/design/portal/report-row-comments/:id", asyncHandler(async (req, res) => {
+  if (!requireDesignLead(res)) return;
+  const id = getSingleParam(req.params.id);
+  const ok = await designDb.deleteRowComment(id, res.locals.currentUser.id);
+  if (!ok) return sendError(res, 404, "Comment not found or not yours to delete.");
+  res.json({ ok: true });
+}));
+
+// ── Leave routes ───────────────────────────────────────────────────────────
+
+// Apply for leave (any design member, today or future only)
+app.post("/api/design/portal/leave", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const user = res.locals.currentUser;
+  const body = req.body as {
+    start_at?: string; end_at?: string;
+    leave_date?: string;       // legacy clients (single full-day leave)
+    reason?: string; transfer_date?: string;
+  };
+  let startAt = body.start_at;
+  let endAt = body.end_at;
+  if (!startAt || !endAt) {
+    if (!body.leave_date) return sendError(res, 400, "start_at and end_at (or leave_date) are required.");
+    startAt = `${body.leave_date}T09:00:00.000Z`;
+    endAt   = `${body.leave_date}T17:00:00.000Z`;
+  }
+  const startDate = startAt.split("T")[0];
+  const today = new Date().toISOString().split("T")[0];
+  if (startDate < today) return sendError(res, 400, "Cannot apply leave for a past date.");
+  try {
+    const leave = await designDb.applyLeave(user.id, startAt, endAt, body.reason || "", body.transfer_date || undefined);
+    res.status(201).json({ leave });
+  } catch (e) {
+    return sendError(res, 400, e instanceof Error ? e.message : "Invalid leave window.");
+  }
+}));
+
+// Get leaves — user sees own; admins (or holders of the leave-calendar
+// capability) see the whole team's.
+app.get("/api/design/portal/leaves", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const user = res.locals.currentUser;
+  let canViewAll = isDesignAdminOrSuper(user.role, user.team);
+  if (!canViewAll && user.team === "design") {
+    const caps = await listUserCapabilities(user.id);
+    canViewAll = caps.includes("design:leave_calendar");
+  }
+  if (canViewAll) {
+    const status = typeof req.query["status"] === "string" ? req.query["status"] : undefined;
+    res.json({ leaves: await designDb.getAllLeaves(status) });
+  } else {
+    res.json({ leaves: await designDb.getUserLeaves(user.id) });
+  }
+}));
+
+// Review a leave (admin: approve/reject + update transfer_date); users can only cancel pending
+app.patch("/api/design/portal/leave/:id", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const user = res.locals.currentUser;
+  const leaveId = getSingleParam(req.params.id);
+  if (!isDesignAdminOrSuper(user.role, user.team)) {
+    return sendError(res, 403, "Only admins can modify leave records.");
+  }
+  const { status, transfer_date } = req.body as { status?: string; transfer_date?: string | null };
+  if (status) {
+    if (status !== "approved" && status !== "rejected") return sendError(res, 400, "status must be approved or rejected.");
+    const leave = await designDb.reviewLeave(leaveId, user.id, status);
+    if (!leave) return sendError(res, 404, "Leave not found.");
+    res.json({ leave });
+  } else {
+    // Admin updating transfer_date (no status change)
+    const leave = await designDb.updateLeaveTransfer(leaveId, user.id, transfer_date ?? null);
+    if (!leave) return sendError(res, 404, "Leave not found.");
+    res.json({ leave });
+  }
+}));
+
+// Cancel own pending leave
+app.delete("/api/design/portal/leave/:id", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const user = res.locals.currentUser;
+  const ok = await designDb.cancelLeave(getSingleParam(req.params.id), user.id);
+  if (!ok) return sendError(res, 404, "Leave not found or already reviewed.");
+  res.json({ ok: true });
+}));
+
+// Check leave status for a specific date (used by report page)
+app.get("/api/design/portal/leave/date/:date", asyncHandler(async (req, res) => {
+  if (!requireDesign(res)) return;
+  const user = res.locals.currentUser;
+  const leave = await designDb.getLeaveForDate(user.id, getSingleParam(req.params.date));
+  res.json({ leave });
+}));
+
+
 // ── Outreach routes ────────────────────────────────────────────────────────
 
 function requireOutreach(res: express.Response): boolean {
@@ -2398,6 +3250,7 @@ bootstrapDatabase()
   .then(() => bootstrapSettingsDatabase())
   .then(() => bootstrapOutreach())
   .then(() => bootstrapMediaDatabase())
+  .then(() => designDb.bootstrapDesignDatabase())
   .then(async () => {
     // Catch up on any reports whose 21:00 IST submit cutoff or 17:00 IST
     // auto-pause cutoff already passed while the server was down, then keep an
@@ -2415,7 +3268,25 @@ bootstrapDatabase()
     } catch (e) {
       console.error('Initial auto-pause pass failed:', e);
     }
+    try {
+      const dCaught = await designDb.autoSubmitOverdueReports();
+      if (dCaught > 0) console.log(`Auto-submitted ${dCaught} overdue design daily report(s) on startup.`);
+    } catch (e) {
+      console.error('Initial design auto-submit pass failed:', e);
+    }
+    try {
+      const dPaused = await designDb.autoPauseRunningStopwatches();
+      if (dPaused > 0) console.log(`Auto-paused ${dPaused} overdue design stopwatch(es) on startup.`);
+    } catch (e) {
+      console.error('Initial design auto-pause pass failed:', e);
+    }
     setInterval(() => {
+      designDb.autoSubmitOverdueReports()
+        .then(n => { if (n > 0) console.log(`Auto-submitted ${n} overdue design daily report(s).`); })
+        .catch(e => console.error('Periodic design auto-submit failed:', e));
+      designDb.autoPauseRunningStopwatches()
+        .then(n => { if (n > 0) console.log(`Auto-paused ${n} overdue design stopwatch(es).`); })
+        .catch(e => console.error('Periodic design auto-pause failed:', e));
       autoSubmitOverdueReports()
         .then(n => { if (n > 0) console.log(`Auto-submitted ${n} overdue daily report(s).`); })
         .catch(e => console.error('Periodic auto-submit failed:', e));

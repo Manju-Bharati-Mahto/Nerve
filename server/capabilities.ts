@@ -9,6 +9,10 @@ export const CAPABILITIES = [
   "branding:view_team_dashboard",
   "branding:assign_projects",
   "branding:leave_calendar",
+  "design:manage_categories",
+  "design:view_team_dashboard",
+  "design:assign_projects",
+  "design:leave_calendar",
 ] as const;
 
 export type CapabilityKey = (typeof CAPABILITIES)[number];

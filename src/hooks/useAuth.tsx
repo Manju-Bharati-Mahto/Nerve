@@ -101,12 +101,13 @@ export function getRoleDashboard(role: AppRole | null, team: AppTeam | null): st
   if (role === 'super_admin')           return '/super-admin/dashboard'
   if (role === 'outreach_manager')      return '/outreach/dashboard'
   if (role === 'branding_reports_admin') return '/branding/dashboard'
-  if (role === 'admin')                 return team === 'media' ? '/media/home' : team === 'content' ? '/content/dashboard'   : '/branding/dashboard'
-  if (role === 'sub_admin')             return team === 'media' ? '/media/home' : team === 'content' ? '/content/sub-admin'   : '/branding/sub-admin'
-  // Task Owner: a branding lead variant with project-assign rights. Lands on
-  // the shared branding dashboard (projects / reports / team / assign).
-  if (role === 'task_owner')            return '/branding/user'
-  if (role === 'task_manager')          return '/branding/user'
-  if (role === 'user')                  return team === 'media' ? '/media/home' : team === 'content' ? '/content/user'        : '/branding/user'
+  if (role === 'design_reports_admin')  return '/design/dashboard'
+  if (role === 'admin')                 return team === 'media' ? '/media/home' : team === 'content' ? '/content/dashboard'   : team === 'design' ? '/design/dashboard' : '/branding/dashboard'
+  if (role === 'sub_admin')             return team === 'media' ? '/media/home' : team === 'content' ? '/content/sub-admin'   : team === 'design' ? '/design/sub-admin' : '/branding/sub-admin'
+  // Task Owner: a branding/design lead variant with project-assign rights. Lands
+  // on the shared team dashboard (projects / reports / team / assign).
+  if (role === 'task_owner')            return team === 'design' ? '/design/user' : '/branding/user'
+  if (role === 'task_manager')          return team === 'design' ? '/design/user' : '/branding/user'
+  if (role === 'user')                  return team === 'media' ? '/media/home' : team === 'content' ? '/content/user'        : team === 'design' ? '/design/user' : '/branding/user'
   return '/login'
 }
