@@ -7030,7 +7030,14 @@ const ACTIONS = {
       toast('Task logged in '+((t2m(en)-t2m(st))/60).toFixed(1)+'h block — visible on the project instantly','ok');
     }
     trgReportTotal(r.id);
+    const _tl={project_id:pid,task_category_id:cat,deliverable_id:$('#tl-deliv').value?+$('#tl-deliv').value:null,
+      description:desc,start_time:st,end_time:en,status,quantity:qty,unit,
+      blocker_note:status==='blocked'?$('#tl-blocknote').value.trim():'',
+      progress_before:$('#tl-pb').value?+$('#tl-pb').value:null,progress_after:$('#tl-pa').value?+$('#tl-pa').value:null,
+      evidence:link?[link]:[]};
+    const _req=d.tid?MO_API.patch('/tasks/'+d.tid,_tl):MO_API.post('/reports/'+TODAY+'/tasks',_tl);
     closeModal();render();
+    moSync(_req);
   },
   deleteTask:(d)=>{
     const t=DB.report_tasks.find(x=>x.id===+d.tid);if(!t)return;
@@ -7039,6 +7046,7 @@ const ACTIONS = {
     trgReportTotal(rid);
     audit(S.me,'report.task_deleted','daily_report',rid,{description:t.description},null);
     closeModal();render();toast('Task removed','ok');
+    moSync(MO_API.del('/tasks/'+d.tid));
   },
   confirmSubmit:(d)=>{
     const r=DB.daily_reports.find(x=>x.user_id===S.me&&x.report_date===d.date);
@@ -7051,6 +7059,7 @@ const ACTIONS = {
     r.flagged_reason=flags.join(' · ')||null;
     audit(S.me,'report.submitted','daily_report',r.id,{status:'draft'},{status:r.status,total_minutes:r.total_minutes});
     closeModal();render();
+    moSync(MO_API.post('/reports/'+d.date+'/submit',{note:r.note}));
     toast(flags.length?'Submitted and flagged for review — a lead will look at it':'Submitted. Auto-approves in 48h unless flagged.',
       flags.length?'warn':'ok');
   },
@@ -7060,11 +7069,13 @@ const ACTIONS = {
     const before={status:r.status};r.status='approved';r.reviewed_by=S.me;r.reviewed_at=TODAY;r.auto_approved=false;
     audit(S.me,'report.approved','daily_report',r.id,before,{status:'approved',reviewed_by:S.me});
     closeDrawer();render();toast('Report approved','ok');
+    moSync(MO_API.post('/reports/'+d.rid+'/review',{action:'approve'}));
   },
   flagReport:(d)=>{const r=DB.daily_reports.find(x=>x.id===+d.rid);
     r.status='flagged';r.flagged_reason='Manually flagged by '+me().full_name;
     audit(S.me,'report.flagged','daily_report',r.id,{status:'submitted'},{status:'flagged'});
-    closeDrawer();render();toast('Flagged — auto-approval blocked until reviewed (BR-4)','warn');},
+    closeDrawer();render();toast('Flagged — auto-approval blocked until reviewed (BR-4)','warn');
+    moSync(MO_API.post('/reports/'+d.rid+'/review',{action:'flag'}));},
   returnReport:(d)=>{
     const r=DB.daily_reports.find(x=>x.id===+d.rid);
     modal(`<div class="mo-head"><div><h2>Comment &amp; return</h2>
@@ -7079,6 +7090,7 @@ const ACTIONS = {
     r.status='returned';r.review_comment=$('#rr-note').value.trim();r.reviewed_by=S.me;r.reviewed_at=TODAY;
     audit(S.me,'report.returned','daily_report',r.id,{status:'flagged'},{status:'returned',comment:r.review_comment});
     closeModal();closeDrawer();render();toast('Returned to '+user(r.user_id).full_name.split(' ')[0],'ok');
+    moSync(MO_API.post('/reports/'+d.rid+'/review',{action:'return',comment:r.review_comment}));
   },
   unlockReport:(d)=>{
     const r=DB.daily_reports.find(x=>x.id===+d.rid);
@@ -7147,7 +7159,10 @@ const ACTIONS = {
         social_status:'na',social_post_url:null,social_posted_at:null,mail_status:'na',mail_sent_at:null,deleted_at:null});
       made++;});}
     audit(S.me,'project.created','project',id,null,{name,status:p.status,deliverables_created:made});
+    const _np={name,project_type_id:tid,priority:$('#np-pri').value,faculty_served:$('#np-fac').value,
+      start_date:start,end_date:end,description:$('#np-desc').value.trim(),academic_year_id:+$('#np-year').value};
     closeModal();location.hash='#/media/projects/'+id;render();
+    moSync(MO_API.post('/projects',_np), res=>{ if(res&&res.project) location.hash='#/media/projects/'+res.project.id; });
     toast(gated?'Proposed — pending approval before it is reportable-against (BR-11)':
       'Created with '+made+' deliverables from the template (FR-3.2)','ok');
   },
@@ -7166,7 +7181,10 @@ const ACTIONS = {
       status:'not_started',social_status:'na',social_post_url:null,social_posted_at:null,
       mail_status:'na',mail_sent_at:null,deleted_at:null});
     audit(S.me,'deliverable.created','project',pid,null,{title,type:t.name});
+    const _nd={title,deliverable_type_id:tid,owner_id:'mo-u'+(+$('#nd-owner').value),due_date:due,
+      quantity_target:$('#nd-qty').value?+$('#nd-qty').value:null,spec_notes:$('#nd-spec').value.trim()};
     closeModal();render();toast('Deliverable created','ok');
+    moSync(MO_API.post('/projects/'+pid+'/deliverables',_nd));
   },
   createShoot:()=>{
     const title=$('#ns-title').value.trim();
@@ -7226,7 +7244,9 @@ const ACTIONS = {
       submitted_at:NOW.toISOString().slice(0,19),review_status:'pending',reviewed_by:null,reviewed_at:null,review_comment:''});
     dl.status='in_review';
     audit(S.me,'deliverable.version_submitted','deliverable_version',DB.deliverable_versions.length,null,{version_no:+d.v});
+    const _sv={drive_url:url,note:$('#sv-note').value.trim()};
     closeModal();drawerDeliverable(dl.id);render();
+    moSync(MO_API.post('/deliverables/'+dl.id+'/versions',_sv), ()=>drawerDeliverable(dl.id));
     toast('v'+d.v+' submitted. AUTO-4 reminds the reviewer at 24h and escalates at 72h.','ok');
   },
   approveVersion:(d)=>{
@@ -7238,6 +7258,7 @@ const ACTIONS = {
     dl.status='approved';
     audit(S.me,'deliverable.version_reviewed','deliverable_version',v.id,{review_status:'pending'},{review_status:'approved'});
     drawerDeliverable(dl.id);render();toast('v'+v.version_no+' approved','ok');
+    moSync(MO_API.post('/deliverables/'+dl.id+'/review',{outcome:'approved'}), ()=>drawerDeliverable(dl.id));
   },
   requestChanges:(d)=>{
     const dl=deliv(+d.did);
@@ -7255,6 +7276,7 @@ const ACTIONS = {
     dl.status='changes_requested';
     audit(S.me,'deliverable.version_reviewed','deliverable_version',v.id,{review_status:'pending'},{review_status:'changes_requested'});
     closeModal();drawerDeliverable(dl.id);render();toast('Changes requested — owner notified','ok');
+    moSync(MO_API.post('/deliverables/'+dl.id+'/review',{outcome:'changes_requested',comment:v.review_comment}), ()=>drawerDeliverable(dl.id));
   },
   markDelivered:(d)=>{
     const dl=deliv(+d.did);const t=dtype(dl.deliverable_type_id);
@@ -7266,6 +7288,7 @@ const ACTIONS = {
     if(dl.quantity_target&&!dl.quantity_delivered)dl.quantity_delivered=dl.quantity_target;
     audit(S.me,'deliverable.delivered','deliverable',dl.id,{status:'approved'},{status:'delivered',completed_at:TODAY});
     drawerDeliverable(dl.id);render();toast('Marked delivered','ok');
+    moSync(MO_API.post('/deliverables/'+dl.id+'/deliver',{}), ()=>drawerDeliverable(dl.id));
   },
   setSocial:(d,n)=>{const dl=deliv(+d.did);const before=dl.social_status;dl.social_status=n.value;
     if(n.value==='posted'){dl.social_posted_at=TODAY;if(!dl.social_post_url)dl.social_post_url='https://instagram.com/parul.university';}
@@ -7760,8 +7783,16 @@ function wireDnD(){
    string dates — so views render unchanged, now backed by Postgres. */
 const MO_API = {
   base:'/api/v1/media',
-  async get(p){ const r=await fetch(this.base+p,{credentials:'same-origin',headers:{Accept:'application/json'}});
-    if(!r.ok) throw new Error(p+' → HTTP '+r.status); return r.json(); }
+  async req(m,p,body){
+    const r=await fetch(this.base+p,{method:m,credentials:'same-origin',
+      headers:{'Content-Type':'application/json',Accept:'application/json'},
+      body:body!==undefined?JSON.stringify(body):undefined});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(j.message||('HTTP '+r.status));
+    return j;
+  },
+  get(p){return this.req('GET',p);}, post(p,b){return this.req('POST',p,b);},
+  patch(p,b){return this.req('PATCH',p,b);}, del(p){return this.req('DELETE',p);}
 };
 async function hydrateFromServer(){
   const keys=['projects','project_assignments','deliverables','deliverable_versions','drive_links','daily_reports','report_tasks'];
@@ -7770,9 +7801,33 @@ async function hydrateFromServer(){
   window.__MO_LIVE__=true;
   return {projects:(st.projects||[]).length, reports:(st.daily_reports||[]).length};
 }
+/* Optimistic write-through: the action has already mutated DB locally and
+   re-rendered; here we persist to the server (which re-enforces the business
+   rules) then re-hydrate to the authoritative state — picking up server-assigned
+   ids, project codes, template deliverables and flag results. On rejection we
+   surface the server's reason and revert by re-hydrating. In seed mode (no
+   session/backend) this is a no-op, so the prototype behaves exactly as before. */
+async function moSync(promise, onOk){
+  if(!window.__MO_LIVE__) return;
+  try{
+    const res=await promise;
+    await hydrateFromServer();
+    if(onOk) onOk(res);
+    render();
+  }catch(e){
+    toast('Server rejected this change: '+e.message+' — reverting.','bad');
+    try{ await hydrateFromServer(); render(); }catch(_){/* stay on optimistic state */}
+  }
+}
 (async function boot(){
   if(!location.hash)location.hash='#/media/home';
   let live=null;
+  // Bind identity to the signed-in Nerve user (media crew are 'mo-uN' in the shared users table).
+  try{
+    const r=await fetch('/api/auth/me',{credentials:'same-origin'});
+    if(r.ok){ const who=await r.json(); const uid=who&&who.user&&who.user.id;
+      if(typeof uid==='string'&&/^mo-u\d+$/.test(uid)){ const n=+uid.slice(4); if(DB.users.some(u=>u.id===n)) S.me=n; } }
+  }catch(_){/* not signed in / standalone — keep default identity */}
   try{ live=await hydrateFromServer(); }
   catch(e){ console.warn('[Media Ops] server hydration failed — running on seed data:', e.message); }
   render();
@@ -7781,7 +7836,7 @@ async function hydrateFromServer(){
     !$('#drawer').classList.contains('on')&&!$('#palette').classList.contains('on')){/* silent no-op re-render guard */}},60000);
   setTimeout(()=>{
     toast(live
-      ? `Live · ${live.projects} projects and ${live.reports} daily reports loaded from the server. Press ⌘K to explore.`
+      ? `Live · ${live.projects} projects and ${live.reports} daily reports from the server. Signed in as ${me().full_name}.`
       : 'Running on seed data — sign in to Nerve to load live data.', live?'ok':'warn');
   },700);
 })();

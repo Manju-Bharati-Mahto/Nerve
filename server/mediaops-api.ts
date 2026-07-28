@@ -162,7 +162,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       [ay.rows[0]?.id ?? null, typeId, name, String(b.description ?? ""), (b.faculty_served as string) || null,
        gated ? "proposed" : "planning", (b.priority as string) || "normal", u.id, start, end,
        JSON.stringify(b.type_meta ?? {})]);
-    const id = ins.rows[0].id as number;
+    const id = Number(ins.rows[0].id); // pg returns BIGINT as a string — coerce before arithmetic
     const code = `MC-2627-${100 + id}`;
     await pool.query(`UPDATE mo_projects SET code=$1 WHERE id=$2`, [code, id]);
     // Creator becomes owner + PM (BR-2).

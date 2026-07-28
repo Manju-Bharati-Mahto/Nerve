@@ -145,7 +145,7 @@ Business/validation rules (BR-1…16, VR-1…12) and the automation engine (AUTO
 | Phase | Scope | Status |
 |-------|-------|--------|
 | **0 — Foundations** | Full §11 schema + lookups, media team + users, `/media` mount serving the prototype, README | ✅ **done** |
-| **1 — Kill WhatsApp & Excel** | Projects, Deliverables (+versions/approvals), Daily Reporting (+review queue, AUTO-13), Dashboard, lookups — REST API + prototype wired to it | 🟡 **backend + read-path live**: API (`server/mediaops-api.ts`), full seed imported (`server/mediaops-import.ts`), prototype hydrates `DB` from `/state` on boot with seed fallback. Remaining: write-through so UI mutations persist |
+| **1 — Kill WhatsApp & Excel** | Projects, Deliverables (+versions/approvals), Daily Reporting (+review queue, AUTO-13), Dashboard, lookups — REST API + prototype fully wired to it | ✅ **done**: API (`server/mediaops-api.ts`), full seed imported (`server/mediaops-import.ts`), prototype hydrates from `/state` on boot **and writes through** — create project, log/edit/delete task, submit report, report review, deliverable create/version/review/deliver all persist to Postgres and survive reload; identity bound to the Nerve session. Secondary actions (social/mail status, comments, link validation, bulk ops) still local-only |
 | **2 — Physical world** | Equipment + QR + kiosk, Shoots, unified Calendar, Leave (production-aware) | ⏳ |
 | **3 — Insight** | Media Library + search + exports, Analytics + snapshots + month-close, KRA auto-metrics, Management Kanban | ⏳ |
 | **4 — Intelligence & polish** | AI-1/2/3, PWA offline, Drive validation/provisioning, Gallery, ICS | ⏳ |
@@ -172,6 +172,21 @@ npm run dev          # Vite (8080/8081)
 
 ## 7. Change log
 
+- **Phase 1 wiring — Part C (write-through + identity):** UI mutations now persist.
+  `boot()` binds `S.me` to the signed-in Nerve user via `/api/auth/me` (crew are
+  `mo-uN`). A `moSync()` helper wraps each mutating action: the existing optimistic
+  local change renders instantly, then the change is POST/PATCH/DELETEd to
+  `/api/v1/media/*` (which re-enforces the business rules), and the client
+  re-hydrates from `/state` to the authoritative result — picking up server ids,
+  project codes, template deliverables and flag outcomes; on rejection it toasts the
+  server's reason and reverts. Wired actions: create project, log/edit/delete task,
+  submit report, report approve/flag/return, deliverable create + version submit +
+  approve/request-changes + mark-delivered. Verified in-browser: creating a project
+  through the UI takes the server 28→29, stamps `MC-2627-129` + owner = the session
+  user, and **survives a reload**; 0 console errors. Also fixed a server bug where a
+  `BIGINT` id (returned as a string by pg) string-concatenated in the project-code
+  formula. In seed mode (no session) `moSync` is a no-op, so the standalone prototype
+  is unchanged.
 - **Phase 1 wiring — Part B (read path):** the prototype now loads from the backend.
   New `GET /api/v1/media/state` returns the Phase-1 transactional dataset (projects,
   assignments, deliverables, versions, drive links, daily reports, task logs) in the
