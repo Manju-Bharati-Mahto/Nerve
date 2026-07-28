@@ -39,6 +39,15 @@ import BrandingUserDashboard from "@/pages/branding/BrandingUserDashboard";
 import BrandingTeamPanel from "@/pages/branding/BrandingTeamPanel";
 import BrandingBrowse from "@/pages/branding/BrandingBrowse";
 
+// Design team
+import DesignAdminDashboard from "@/pages/design/DesignAdminDashboard";
+import DesignAdminShell, { MaybeDesignAdminShell } from "@/pages/design/DesignAdminShell";
+import DesignProjectsAssign from "@/pages/design/DesignProjectsAssign";
+import DesignSubAdminDashboard from "@/pages/design/DesignSubAdminDashboard";
+import DesignUserDashboard from "@/pages/design/DesignUserDashboard";
+import DesignTeamPanel from "@/pages/design/DesignTeamPanel";
+import DesignBrowse from "@/pages/design/DesignBrowse";
+
 // Content team
 import ContentAdminDashboard from "@/pages/content/ContentAdminDashboard";
 import ContentSubAdminDashboard from "@/pages/content/ContentSubAdminDashboard";
@@ -167,6 +176,80 @@ const App = () => (
                   <MaybeBrandingAdminShell>
                     <BrandingBrowse />
                   </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+
+              {/* ── Design team routes ── */}
+              <Route path="/design/dashboard" element={
+                <RoleGuard
+                  allowed={['super_admin', 'admin', 'design_reports_admin']}
+                  team="design"
+                  anyCapability={['design:view_team_dashboard']}
+                >
+                  <DesignAdminDashboard />
+                </RoleGuard>
+              } />
+              <Route path="/design/kra" element={
+                <RoleGuard allowed={['super_admin', 'admin']} team="design">
+                  <DesignAdminDashboard />
+                </RoleGuard>
+              } />
+              <Route path="/design/leaves" element={
+                <RoleGuard allowed={['super_admin', 'admin']} team="design">
+                  <DesignAdminDashboard />
+                </RoleGuard>
+              } />
+              <Route path="/design/leave-calendar" element={
+                <RoleGuard
+                  allowed={['super_admin', 'admin']}
+                  team="design"
+                  anyCapability={['design:leave_calendar']}
+                >
+                  <DesignAdminDashboard />
+                </RoleGuard>
+              } />
+              <Route path="/design/categories" element={
+                <RoleGuard
+                  allowed={['super_admin', 'admin', 'design_reports_admin']}
+                  team="design"
+                  anyCapability={['design:manage_categories']}
+                >
+                  <DesignAdminDashboard />
+                </RoleGuard>
+              } />
+              <Route path="/design/projects" element={
+                <RoleGuard
+                  allowed={['super_admin', 'admin', 'task_owner', 'task_manager']}
+                  team="design"
+                  anyCapability={['design:assign_projects']}
+                >
+                  <DesignAdminShell>
+                    <DesignProjectsAssign />
+                  </DesignAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/design/sub-admin" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'task_owner', 'task_manager']} team="design">
+                  <DesignSubAdminDashboard />
+                </RoleGuard>
+              } />
+              <Route path="/design/user" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user', 'task_owner', 'task_manager']} team="design">
+                  <DesignUserDashboard />
+                </RoleGuard>
+              } />
+              <Route path="/design/team" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'task_owner', 'task_manager']} team="design">
+                  <MaybeDesignAdminShell>
+                    <DesignTeamPanel />
+                  </MaybeDesignAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/design/browse" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user', 'task_owner', 'task_manager']} team="design">
+                  <MaybeDesignAdminShell>
+                    <DesignBrowse />
+                  </MaybeDesignAdminShell>
                 </RoleGuard>
               } />
 

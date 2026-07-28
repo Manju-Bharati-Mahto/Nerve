@@ -1,4 +1,4 @@
-export type SeedRole = "super_admin" | "admin" | "sub_admin" | "user" | "outreach_manager" | "branding_reports_admin" | "task_owner" | "task_manager";
+export type SeedRole = "super_admin" | "admin" | "sub_admin" | "user" | "outreach_manager" | "branding_reports_admin" | "design_reports_admin" | "task_owner" | "task_manager";
 
 export interface SeedTeam {
   id: string;
@@ -38,6 +38,7 @@ export interface SeedEntry {
 
 export const BUILT_IN_TEAMS: SeedTeam[] = [
   { id: "branding", name: "Branding", color: "pink", isBuiltIn: true },
+  { id: "design", name: "Design", color: "violet", isBuiltIn: true },
   { id: "content", name: "Content", color: "blue", isBuiltIn: true },
   { id: "outreach", name: "Outreach", color: "orange", isBuiltIn: true },
 ];
@@ -70,6 +71,36 @@ export const SEED_USERS: SeedUser[] = [
     role: "admin",
     team: "branding",
     managed_by: null,
+  },
+  {
+    id: "da-001",
+    full_name: "Design Admin",
+    email: "design-admin@parul.ac.in",
+    password: "design123",
+    department: "University-Wide",
+    role: "admin",
+    team: "design",
+    managed_by: null,
+  },
+  {
+    id: "ds-001",
+    full_name: "Design Lead",
+    email: "design-lead@parul.ac.in",
+    password: "designlead123",
+    department: "Design",
+    role: "sub_admin",
+    team: "design",
+    managed_by: null,
+  },
+  {
+    id: "du-001",
+    full_name: "Design User",
+    email: "design-user@parul.ac.in",
+    password: "designuser123",
+    department: "Design",
+    role: "user",
+    team: "design",
+    managed_by: "ds-001",
   },
   {
     id: "ca-001",
