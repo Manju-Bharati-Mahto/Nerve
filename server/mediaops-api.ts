@@ -122,6 +122,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["performance_snapshots", "mo_performance_snapshots", null, ["user_id"]],
     ["comments", "mo_comments", null, ["user_id"]],
     ["saved_views", "mo_saved_views", null, ["user_id"]],
+    ["automation_rules", "mo_automation_rules", null, ["updated_by"]],
   ];
   app.get(`${P}/state`, asyncHandler(async (_req, res) => {
     if (!requireMedia(res)) return;
@@ -623,6 +624,77 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       [decision, u.id, String((req.body as Record<string, unknown>).note ?? ""), id]);
     await audit(u, `leave.${decision}`, "leave_request", id, null, { decision }, req);
     res.json({ ok: true, status: decision });
+  }));
+
+  // ═════════════════════════ PHASE 4 — AUTOMATION / AI / ICS ══════════════
+  // Automation rules are config, not code (NFR-10) — Admin toggles/edits persist.
+  app.patch(`${P}/automation-rules/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may change automation rules.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    const cur = await pool.query(`SELECT is_enabled, config FROM mo_automation_rules WHERE id=$1`, [id]);
+    if (!cur.rows[0]) return sendError(res, 404, "Rule not found.");
+    const enabled = "is_enabled" in b ? !!b.is_enabled : cur.rows[0].is_enabled;
+    const config = "config" in b ? JSON.stringify(b.config) : JSON.stringify(cur.rows[0].config);
+    await pool.query(`UPDATE mo_automation_rules SET is_enabled=$1, config=$2, updated_by=$3 WHERE id=$4`,
+      [enabled, config, u.id, id]);
+    await audit(u, "automation.updated", "automation_rule", id, { is_enabled: cur.rows[0].is_enabled }, { is_enabled: enabled }, req);
+    res.json({ ok: true, is_enabled: enabled });
+  }));
+
+  // AI-1 weekly digest — real anomalies computed from live data (labelled, never auto-commits).
+  app.get(`${P}/ai/digest`, asyncHandler(async (_req, res) => {
+    if (!requireMedia(res)) return;
+    const [reports, overHours, blocked, stalls, fast] = await Promise.all([
+      pool.query(`SELECT COUNT(*)::int c FROM mo_daily_reports WHERE report_date >= CURRENT_DATE - 7`),
+      pool.query(`SELECT to_char(r.report_date,'YYYY-MM-DD') AS report_date, u.full_name, r.total_minutes FROM mo_daily_reports r
+                    JOIN users u ON u.id=r.user_id WHERE r.total_minutes > 840 ORDER BY r.total_minutes DESC LIMIT 5`),
+      pool.query(`SELECT t.description, u.full_name FROM mo_report_tasks t
+                    JOIN mo_daily_reports r ON r.id=t.daily_report_id JOIN users u ON u.id=r.user_id
+                   WHERE t.status='blocked' ORDER BY r.report_date DESC LIMIT 5`),
+      pool.query(`SELECT p.name, p.code FROM mo_projects p
+                   WHERE p.status IN ('in_production','in_review') AND p.deleted_at IS NULL
+                     AND NOT EXISTS (SELECT 1 FROM mo_report_tasks t WHERE t.project_id=p.id
+                       AND t.daily_report_id IN (SELECT id FROM mo_daily_reports WHERE report_date >= CURRENT_DATE - 21))
+                   LIMIT 5`),
+      pool.query(`SELECT d.title, COUNT(v.id)::int versions FROM mo_deliverables d
+                    JOIN mo_deliverable_versions v ON v.deliverable_id=d.id
+                   GROUP BY d.id, d.title HAVING COUNT(v.id) >= 2 ORDER BY COUNT(v.id) DESC LIMIT 3`),
+    ]);
+    res.json({
+      reports_this_week: reports.rows[0].c,
+      needs_attention: overHours.rows.length + blocked.rows.length + stalls.rows.length,
+      anomalies: {
+        over_hours: overHours.rows.map((r) => `${r.full_name} logged ${(r.total_minutes / 60).toFixed(1)}h on ${String(r.report_date).slice(0, 10)} (above the 14h threshold)`),
+        blocked: blocked.rows.map((r) => `${r.full_name}: "${String(r.description).slice(0, 60)}"`),
+        stalls: stalls.rows.map((r) => `${r.name} (${r.code}) — no logged activity in 21 days (AUTO-7)`),
+      },
+      positive: fast.rows.map((r) => `${r.title} iterated through ${r.versions} versions`),
+    });
+  }));
+
+  // ICS calendar feed (§7.11) — subscribe to shoots + deadlines + leave + holidays.
+  app.get(`${P}/calendar/feed.ics`, asyncHandler(async (_req, res) => {
+    if (!requireMedia(res)) return;
+    const esc = (s: string) => String(s ?? "").replace(/([,;\\])/g, "\\$1").replace(/\n/g, "\\n");
+    const d = (s: string) => String(s).slice(0, 10).replace(/-/g, "");
+    const [shoots, dls, holidays] = await Promise.all([
+      pool.query(`SELECT s.title, s.shoot_date, s.location, p.name pname FROM mo_shoots s
+                    JOIN mo_projects p ON p.id=s.project_id WHERE s.status<>'cancelled'`),
+      pool.query(`SELECT title, due_date FROM mo_deliverables WHERE due_date IS NOT NULL AND status NOT IN ('delivered','not_required','cancelled')`),
+      pool.query(`SELECT name, date FROM mo_holidays`),
+    ]);
+    const ev: string[] = [];
+    const push = (uid: string, date: string, summary: string, loc?: string) =>
+      ev.push(`BEGIN:VEVENT\r\nUID:${uid}@nerve.media\r\nDTSTART;VALUE=DATE:${d(date)}\r\nSUMMARY:${esc(summary)}${loc ? `\r\nLOCATION:${esc(loc)}` : ""}\r\nEND:VEVENT`);
+    shoots.rows.forEach((s, i) => push(`shoot-${i}`, s.shoot_date, `🎥 ${s.title} — ${s.pname}`, s.location));
+    dls.rows.forEach((x, i) => push(`deliv-${i}`, x.due_date, `◆ Due: ${x.title}`));
+    holidays.rows.forEach((h, i) => push(`hol-${i}`, h.date, `🏛 ${h.name}`));
+    const ics = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Nerve//Media Ops//EN\r\nCALSCALE:GREGORIAN\r\nX-WR-CALNAME:Nerve Media Ops\r\n${ev.join("\r\n")}\r\nEND:VCALENDAR\r\n`;
+    res.set("Content-Type", "text/calendar; charset=utf-8");
+    res.set("Content-Disposition", 'inline; filename="nerve-media-ops.ics"');
+    res.send(ics);
   }));
 
   // ═════════════════════════ PHASE 3 — BOARDS / COMMENTS ══════════════════

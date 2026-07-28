@@ -148,7 +148,7 @@ Business/validation rules (BR-1…16, VR-1…12) and the automation engine (AUTO
 | **1 — Kill WhatsApp & Excel** | Projects, Deliverables (+versions/approvals), Daily Reporting (+review queue, AUTO-13), Dashboard, lookups — REST API + prototype fully wired to it | ✅ **done**: API (`server/mediaops-api.ts`), full seed imported (`server/mediaops-import.ts`), prototype hydrates from `/state` on boot **and writes through** — create project, log/edit/delete task, submit report, report review, deliverable create/version/review/deliver all persist to Postgres and survive reload; identity bound to the Nerve session. Secondary actions (social/mail status, comments, link validation, bulk ops) still local-only |
 | **2 — Physical world** | Equipment + QR + kiosk, Shoots, unified Calendar, Leave (production-aware) | ✅ **done**: seed imported + served via `/state`; endpoints for shoots, bookings (**AC-7** no-double-booking via DB EXCLUDE → 409), checkout/check-in ledger (desk + kiosk), damage, leave request/decision; all wired through `moSync` and verified to persist + survive reload |
 | **3 — Insight** | Media Library + search + exports, Analytics + snapshots + month-close, KRA auto-metrics, Management Kanban | ✅ **done**: boards/KRA/analytics/comments imported + served via `/state` (Kanban cards reassembled with embedded assignees/labels/checklist); Library/Analytics/KRA render live; board write-through — create/move/archive card, checklist toggle (with **FR-14.2** two-way linked-status sync), comments. KRA/Analytics/Saved-views are read-only auto-metric views in the prototype |
-| **4 — Intelligence & polish** | AI-1/2/3, PWA offline, Drive validation/provisioning, Gallery, ICS | ⏳ |
+| **4 — Intelligence & polish** | AI-1/2/3, PWA offline, Drive validation/provisioning, Gallery, ICS | ✅ **core done**: PWA (manifest + service worker + icon, offline-capable — shell & last-good `/state` cached); `GET /calendar/feed.ics` (74 real VEVENTs); `GET /ai/digest` (AI-1 anomalies computed from live data); automation-rule toggle persists (NFR-10). AI-2/AI-3 (duplicate/demand prediction) and Drive validation remain prototype mocks (no real UI hook) |
 
 ---
 
@@ -172,6 +172,20 @@ npm run dev          # Vite (8080/8081)
 
 ## 7. Change log
 
+- **Phase 4 (intelligence & polish) — core done.** *PWA/offline:*
+  `public/media-ops/manifest.webmanifest` + `icon.svg` + `sw.js` (registered from
+  `boot()`) make Media Ops installable and offline-capable — the service worker
+  network-firsts the shell and `/state` and caches last-good copies, so the app opens
+  and shows the most recent data with no network (writes still need connectivity).
+  *ICS:* `GET /api/v1/media/calendar/feed.ics` emits a real `VCALENDAR` (shoots +
+  deliverable deadlines + holidays; 74 events) to subscribe to. *AI-1:* `GET /ai/digest`
+  computes the weekly digest — over-hours days, blocked tasks, stalled projects,
+  fast turnarounds — from live data (labelled, never auto-commits). *Automation
+  (NFR-10):* `PATCH /automation-rules/:id` persists Admin toggles/config; the
+  prototype's `toggleRule` writes through and the state hydrates `automation_rules`
+  so a toggle survives reload. AI-2/AI-3 and Drive validation stay prototype mocks.
+  Verified: SW registers, manifest links, ICS valid, digest returns real anomalies,
+  automation toggle persists across reload; 0 console errors.
 - **Phase 3 (insight) — done.** *Part A (read):* importer + `/state` extended with
   labels, boards, board_columns, cards, kra_cycles, kras, kra_reviews,
   performance_snapshots (216), comments, saved_views; each Kanban card's embedded

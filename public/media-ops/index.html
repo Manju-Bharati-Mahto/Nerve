@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0E1512">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="icon" type="image/svg+xml" href="icon.svg">
 <title>Nerve Media Ops — Media Crew, Parul University</title>
 <style>
 /* ============================================================================
@@ -7553,7 +7556,8 @@ const ACTIONS = {
   toggleRule:(d,n)=>{const r=DB.automation_rules.find(x=>x.id===+d.rid);
     r.is_enabled=!r.is_enabled;n.classList.toggle('on');
     audit(S.me,'automation.updated','automation_rule',r.id,{is_enabled:!r.is_enabled},{is_enabled:r.is_enabled});
-    toast(r.rule_key+' '+(r.is_enabled?'enabled':'disabled'),'ok');},
+    toast(r.rule_key+' '+(r.is_enabled?'enabled':'disabled'),'ok');
+    moSync(MO_API.patch('/automation-rules/'+r.id,{is_enabled:r.is_enabled}));},
   editRuleConfig:(d)=>{
     const r=DB.automation_rules.find(x=>x.id===+d.rid);
     modal(`<div class="mo-head"><div><h2>${r.rule_key} — ${esc(r.name)}</h2>
@@ -7829,7 +7833,8 @@ async function hydrateFromServer(){
   const keys=['projects','project_assignments','deliverables','deliverable_versions','drive_links','daily_reports','report_tasks',
     'vendors','equipment_categories','equipment_items','equipment_kits','kit_items','equipment_bookings','equipment_transactions',
     'maintenance_records','shoots','shoot_crew','leave_types','leave_requests','leave_replacements','holidays',
-    'labels','boards','board_columns','cards','kra_cycles','kras','kra_reviews','performance_snapshots','comments','saved_views'];
+    'labels','boards','board_columns','cards','kra_cycles','kras','kra_reviews','performance_snapshots','comments','saved_views',
+    'automation_rules'];
   const st=await MO_API.get('/state');
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
   window.__MO_LIVE__=true;
@@ -7853,6 +7858,9 @@ async function moSync(promise, onOk){
     try{ await hydrateFromServer(); render(); }catch(_){/* stay on optimistic state */}
   }
 }
+/* PWA: register the offline service worker (Phase 4). Guarded — harmless if the
+   browser/iframe context doesn't allow it. */
+if('serviceWorker' in navigator){ try{ navigator.serviceWorker.register('sw.js',{scope:'/media-ops/'}).catch(()=>{}); }catch(_){} }
 (async function boot(){
   if(!location.hash)location.hash='#/media/home';
   let live=null;
