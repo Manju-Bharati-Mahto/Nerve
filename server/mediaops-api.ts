@@ -443,6 +443,164 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ ok: true, status: to });
   }));
 
+  // ═════════════════════════ PHASE 2 — EQUIPMENT / SHOOTS / LEAVE ══════════
+  // Prototype sends integer user ids; the shared users table keys crew as 'mo-uN'.
+  const toUid = (v: unknown): string | null =>
+    v == null ? null : (typeof v === "number" || /^\d+$/.test(String(v))) ? `mo-u${v}` : String(v);
+
+  // ── Shoots (§7.5) ─────────────────────────────────────────────────────────
+  app.post(`${P}/projects/:id/shoots`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) {
+      const pm = await pool.query(`SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND is_project_manager AND removed_at IS NULL`,
+        [parseInt(getSingleParam(req.params.id), 10), u.id]);
+      if (!pm.rows[0]) return sendError(res, 403, "Only a PM, Team Lead or Admin may schedule a shoot.");
+    }
+    const pid = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    if (!String(b.title ?? "").trim()) return sendError(res, 400, "Shoot title is required.");
+    if (!b.shoot_date) return sendError(res, 400, "Shoot date is required.");
+    const ins = await pool.query(
+      `INSERT INTO mo_shoots (project_id, title, shoot_date, call_time, end_time, location, location_url, notes, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'planned') RETURNING *`,
+      [pid, String(b.title), b.shoot_date, (b.call_time as string) || null, (b.end_time as string) || null,
+       (b.location as string) || "TBC", (b.location_url as string) || null, String(b.notes ?? "")]);
+    const shoot = ins.rows[0];
+    for (const raw of (Array.isArray(b.crew) ? b.crew : [])) {
+      await pool.query(`INSERT INTO mo_shoot_crew (shoot_id, user_id, capacity_role_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+        [shoot.id, toUid(raw), 2]);
+    }
+    await audit(u, "shoot.created", "shoot", shoot.id, null, { title: shoot.title, date: shoot.shoot_date }, req);
+    res.status(201).json({ shoot });
+  }));
+
+  app.patch(`${P}/shoots/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    for (const k of ["title", "shoot_date", "call_time", "end_time", "location", "notes", "status"])
+      if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
+    if (!fields.length) return res.json({ ok: true });
+    vals.push(id);
+    const { rows } = await pool.query(`UPDATE mo_shoots SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals);
+    if (!rows[0]) return sendError(res, 404, "Shoot not found.");
+    await audit(u, "shoot.updated", "shoot", id, null, rows[0], req);
+    res.json({ shoot: rows[0] });
+  }));
+
+  // ── Equipment bookings — AC-7: no double-booking (DB EXCLUDE constraint) ───
+  app.post(`${P}/equipment/bookings`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const b = req.body as Record<string, unknown>;
+    const itemId = Number(b.equipment_item_id);
+    if (!itemId) return sendError(res, 400, "equipment_item_id is required.");
+    const s = b.starts_at as string, e = b.ends_at as string;
+    if (!s || !e) return sendError(res, 400, "Booking start and end are required.");
+    if (e < s) return sendError(res, 400, "Booking end must be on or after the start.");
+    try {
+      const ins = await pool.query(
+        `INSERT INTO mo_equipment_bookings (equipment_item_id, user_id, shoot_id, project_id, starts_at, ends_at, status, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,'reserved',$2) RETURNING *`,
+        [itemId, u.id, b.shoot_id ? Number(b.shoot_id) : null, b.project_id ? Number(b.project_id) : null, s, e]);
+      await audit(u, "equipment.booked", "equipment_booking", ins.rows[0].id, null, { item: itemId, s, e }, req);
+      res.status(201).json({ booking: ins.rows[0] });
+    } catch (err) {
+      if ((err as { code?: string }).code === "23P01")
+        return sendError(res, 409, "AC-7: this item is already booked for overlapping dates.");
+      throw err;
+    }
+  }));
+
+  app.post(`${P}/equipment/bookings/:id/cancel`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    await pool.query(`UPDATE mo_equipment_bookings SET status='cancelled' WHERE id=$1`, [id]);
+    await audit(u, "equipment.booking_cancelled", "equipment_booking", id, null, null, req);
+    res.json({ ok: true });
+  }));
+
+  // ── Checkout / check-in — immutable transaction ledger (§7.6) ─────────────
+  app.post(`${P}/equipment/:id/checkout`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const itemId = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    const item = await pool.query(`SELECT status FROM mo_equipment_items WHERE id=$1 AND deleted_at IS NULL`, [itemId]);
+    if (!item.rows[0]) return sendError(res, 404, "Item not found.");
+    if (item.rows[0].status === "checked_out") return sendError(res, 409, "Item is already checked out.");
+    const holder = toUid(b.holder_id) ?? u.id;
+    const via = ["desktop", "mobile", "kiosk"].includes(String(b.recorded_via)) ? String(b.recorded_via) : "desktop";
+    const tx = await pool.query(
+      `INSERT INTO mo_equipment_transactions (equipment_item_id, booking_id, holder_id, action, quantity, condition_noted, expected_return_at, occurred_at, recorded_via, recorded_by)
+       VALUES ($1,$2,$3,'check_out',1,$4,$5,NOW(),$6,$7) RETURNING *`,
+      [itemId, b.booking_id ? Number(b.booking_id) : null, holder, (b.condition_noted as string) || "good",
+       (b.expected_return_at as string) || null, via, u.id]);
+    await pool.query(`UPDATE mo_equipment_items SET status='checked_out' WHERE id=$1`, [itemId]);
+    if (b.booking_id) await pool.query(`UPDATE mo_equipment_bookings SET status='active' WHERE id=$1`, [Number(b.booking_id)]);
+    await audit(u, "equipment.checked_out", "equipment_item", itemId, null, { holder }, req);
+    res.status(201).json({ transaction: tx.rows[0] });
+  }));
+
+  app.post(`${P}/equipment/:id/checkin`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const itemId = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    const via = ["desktop", "mobile", "kiosk"].includes(String(b.recorded_via)) ? String(b.recorded_via) : "desktop";
+    const cond = (b.condition_noted as string) || "good";
+    const tx = await pool.query(
+      `INSERT INTO mo_equipment_transactions (equipment_item_id, holder_id, action, quantity, condition_noted, occurred_at, recorded_via, recorded_by)
+       VALUES ($1,$2,'check_in',1,$3,NOW(),$4,$5) RETURNING *`,
+      [itemId, u.id, cond, via, u.id]);
+    const damaged = ["poor", "fair"].includes(cond) || b.damaged === true;
+    await pool.query(`UPDATE mo_equipment_items SET status=$2, condition=COALESCE($3,condition) WHERE id=$1`,
+      [itemId, damaged ? "maintenance" : "available", cond || null]);
+    await pool.query(`UPDATE mo_equipment_bookings SET status='completed' WHERE equipment_item_id=$1 AND status='active'`, [itemId]);
+    if (damaged) await pool.query(
+      `INSERT INTO mo_maintenance_records (equipment_item_id, kind, description, reported_by, started_at)
+       VALUES ($1,'damage_report',$2,$3,CURRENT_DATE)`, [itemId, `Flagged on check-in (condition: ${cond}).`, u.id]);
+    await audit(u, "equipment.checked_in", "equipment_item", itemId, null, { condition: cond, damaged }, req);
+    res.status(201).json({ transaction: tx.rows[0] });
+  }));
+
+  app.post(`${P}/equipment/:id/damage`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const itemId = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    const kind = ["maintenance", "repair", "damage_report"].includes(String(b.kind)) ? String(b.kind) : "damage_report";
+    const ins = await pool.query(
+      `INSERT INTO mo_maintenance_records (equipment_item_id, kind, description, reported_by, started_at)
+       VALUES ($1,$2,$3,$4,CURRENT_DATE) RETURNING *`, [itemId, kind, String(b.description ?? ""), u.id]);
+    await pool.query(`UPDATE mo_equipment_items SET status='maintenance' WHERE id=$1`, [itemId]);
+    await audit(u, "equipment.damage_reported", "equipment_item", itemId, null, { kind }, req);
+    res.status(201).json({ record: ins.rows[0] });
+  }));
+
+  // ── Leave (§7.8) ──────────────────────────────────────────────────────────
+  app.post(`${P}/leave`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const b = req.body as Record<string, unknown>;
+    if (!b.leave_type_id || !b.starts_on || !b.ends_on) return sendError(res, 400, "Leave type and dates are required.");
+    if ((b.ends_on as string) < (b.starts_on as string)) return sendError(res, 400, "Leave end must be on or after the start.");
+    const ins = await pool.query(
+      `INSERT INTO mo_leave_requests (user_id, leave_type_id, starts_on, ends_on, half_day, reason, status)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending') RETURNING *`,
+      [u.id, Number(b.leave_type_id), b.starts_on, b.ends_on, !!b.half_day, String(b.reason ?? "")]);
+    await audit(u, "leave.requested", "leave_request", ins.rows[0].id, null, { s: b.starts_on, e: b.ends_on }, req);
+    res.status(201).json({ leave: ins.rows[0] });
+  }));
+
+  app.post(`${P}/leave/:id/decision`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may decide leave.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const decision = String((req.body as Record<string, unknown>).decision ?? "");
+    if (!["approved", "rejected", "cancelled"].includes(decision)) return sendError(res, 400, "Invalid decision.");
+    await pool.query(`UPDATE mo_leave_requests SET status=$1, decided_by=$2, decided_at=NOW(), decision_note=$3 WHERE id=$4`,
+      [decision, u.id, String((req.body as Record<string, unknown>).note ?? ""), id]);
+    await audit(u, `leave.${decision}`, "leave_request", id, null, { decision }, req);
+    res.json({ ok: true, status: decision });
+  }));
+
   // ═════════════════════════ DASHBOARD (§7.1) ═════════════════════════════
   app.get(`${P}/dashboard`, asyncHandler(async (_req, res) => {
     const u = requireMedia(res); if (!u) return;

@@ -146,7 +146,7 @@ Business/validation rules (BR-1…16, VR-1…12) and the automation engine (AUTO
 |-------|-------|--------|
 | **0 — Foundations** | Full §11 schema + lookups, media team + users, `/media` mount serving the prototype, README | ✅ **done** |
 | **1 — Kill WhatsApp & Excel** | Projects, Deliverables (+versions/approvals), Daily Reporting (+review queue, AUTO-13), Dashboard, lookups — REST API + prototype fully wired to it | ✅ **done**: API (`server/mediaops-api.ts`), full seed imported (`server/mediaops-import.ts`), prototype hydrates from `/state` on boot **and writes through** — create project, log/edit/delete task, submit report, report review, deliverable create/version/review/deliver all persist to Postgres and survive reload; identity bound to the Nerve session. Secondary actions (social/mail status, comments, link validation, bulk ops) still local-only |
-| **2 — Physical world** | Equipment + QR + kiosk, Shoots, unified Calendar, Leave (production-aware) | ⏳ |
+| **2 — Physical world** | Equipment + QR + kiosk, Shoots, unified Calendar, Leave (production-aware) | ✅ **done**: seed imported + served via `/state`; endpoints for shoots, bookings (**AC-7** no-double-booking via DB EXCLUDE → 409), checkout/check-in ledger (desk + kiosk), damage, leave request/decision; all wired through `moSync` and verified to persist + survive reload |
 | **3 — Insight** | Media Library + search + exports, Analytics + snapshots + month-close, KRA auto-metrics, Management Kanban | ⏳ |
 | **4 — Intelligence & polish** | AI-1/2/3, PWA offline, Drive validation/provisioning, Gallery, ICS | ⏳ |
 
@@ -172,6 +172,20 @@ npm run dev          # Vite (8080/8081)
 
 ## 7. Change log
 
+- **Phase 2 (physical world) — done.** *Part A (read):* `server/mediaops-import.ts`
+  PLAN extended (FK-safe) to load vendors, equipment categories/items/kits/bookings/
+  transactions, maintenance, shoots + crew, leave types/requests/replacements,
+  holidays; `GET /state` + `hydrateFromServer()` extended so Equipment/Calendar/Leave
+  render from Postgres. *Parts B/C (mutations + write-through):* `mediaops-api.ts`
+  gained `POST /projects/:id/shoots` + `PATCH /shoots/:id`; `POST /equipment/bookings`
+  (**AC-7**: the `mo_equipment_bookings` gist EXCLUDE constraint rejects overlaps →
+  `409`) + `.../cancel`; `POST /equipment/:id/checkout` and `/checkin` (immutable
+  transaction ledger, item-status flip, BR-8 damage-on-worse-condition); `POST
+  /equipment/:id/damage`; `POST /leave` + `/leave/:id/decision` (TL/Admin). The
+  prototype's createShoot, checkout, confirmCheckin, createBooking, cancelBooking,
+  confirmDamage, createLeave, decideLeave **and the cupboard kiosk's `commitKiosk`**
+  now write through `moSync`. Verified in-browser: desk + kiosk checkout persist and
+  survive reload, AC-7 conflicts 409, leave request persists; 0 console errors.
 - **Phase 1 wiring — Part C (write-through + identity):** UI mutations now persist.
   `boot()` binds `S.me` to the signed-in Nerve user via `/api/auth/me` (crew are
   `mo-uN`). A `moSync()` helper wraps each mutating action: the existing optimistic

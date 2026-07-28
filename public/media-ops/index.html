@@ -4570,6 +4570,12 @@ function commitKiosk(){
     }
   });
   trgEquipStatus();
+  if(window.__MO_LIVE__){
+    const _kx=K.items.map(id=>K.mode==='check_out'
+      ? MO_API.post('/equipment/'+id+'/checkout',{recorded_via:'kiosk',expected_return_at:K.ret})
+      : MO_API.post('/equipment/'+id+'/checkin',{recorded_via:'kiosk',condition_noted:K.cond}));
+    moSync(Promise.all(_kx));
+  }
   S.kiosk.step=5;drawKiosk();
   if(S.route.includes('equipment'))setTimeout(render,60);
 }
@@ -7194,12 +7200,16 @@ const ACTIONS = {
     DB.shoots.push({id,project_id:+$('#ns-project').value,title,shoot_date:date,
       call_time:$('#ns-call').value,end_time:$('#ns-end').value,location:$('#ns-loc').value.trim()||'TBC',
       location_url:'https://maps.google.com/',notes:$('#ns-notes').value.trim(),status:'planned'});
-    let overrides=0;
-    $$('#ns-crew .chip.sel').forEach(c=>{const uid=+c.dataset.uid;
+    let overrides=0;const _crew=[];
+    $$('#ns-crew .chip.sel').forEach(c=>{const uid=+c.dataset.uid;_crew.push(uid);
       if(onLeave(uid,date)){overrides++;audit(S.me,'shoot.leave_override','shoot',id,null,{user_id:uid,date});}
       DB.shoot_crew.push({shoot_id:id,user_id:uid,capacity_role_id:2});});
     audit(S.me,'shoot.created','project',+$('#ns-project').value,null,{title,date});
+    const _nsPid=+$('#ns-project').value;
+    const _ns={title,shoot_date:date,call_time:$('#ns-call').value,end_time:$('#ns-end').value,
+      location:$('#ns-loc').value.trim()||'TBC',notes:$('#ns-notes').value.trim(),crew:_crew};
     closeModal();render();
+    moSync(MO_API.post('/projects/'+_nsPid+'/shoots',_ns));
     toast('Shoot created. AUTO-10 will remind the crew 24h before.'+(overrides?' '+overrides+' leave override(s) logged (BR-15).':''),'ok');
   },
   assignCrew:()=>{toast('Assignment picker shows current load and leave conflicts (FR-3.4) — demo stub','ok');},
@@ -7322,6 +7332,7 @@ const ACTIONS = {
       occurred_at:NOW.toISOString().slice(0,19),recorded_via:'desktop',recorded_by:S.me});
     audit(S.me,'equipment.check_out','equipment_item',e.id,{status:e.status},{status:'checked_out',holder:S.me});
     trgEquipStatus();render();toast(e.asset_tag+' checked out to you — due back '+D.fmt(D.add(TODAY,1)),'ok');
+    moSync(MO_API.post('/equipment/'+e.id+'/checkout',{recorded_via:'desktop',condition_noted:e.condition,expected_return_at:D.add(TODAY,1)}));
   },
   checkin:(d)=>{
     const e=equip(+d.eid);
@@ -7353,6 +7364,7 @@ const ACTIONS = {
     }
     audit(S.me,'equipment.check_in','equipment_item',e.id,{status:'checked_out'},{status:'available',condition:cond});
     trgEquipStatus();closeModal();render();
+    moSync(MO_API.post('/equipment/'+e.id+'/checkin',{recorded_via:'desktop',condition_noted:cond}));
     toast(dmg?'Checked in — condition dropped, damage report auto-opened and the custodian notified (BR-8)':'Checked in','ok');
   },
   bookingDates:(d,n)=>{
@@ -7392,9 +7404,12 @@ const ACTIONS = {
       audit(S.me,'equipment.booked','equipment_item',id,null,{from,to,shoot_id:sid});});
     trgEquipStatus();closeModal();render();
     toast(sel.length+' item(s) booked. The DB exclusion constraint makes double-booking impossible even under concurrency (AC-7).','ok');
+    moSync(Promise.all(sel.map(id=>MO_API.post('/equipment/bookings',{equipment_item_id:id,starts_at:from,ends_at:to,
+      shoot_id:sid,project_id:sid?(DB.shoots.find(s=>s.id===sid)||{}).project_id:null}))));
   },
   cancelBooking:(d)=>{const b=DB.equipment_bookings.find(x=>x.id===+d.bid);b.status='cancelled';
-    trgEquipStatus();render();toast('Booking cancelled','ok');},
+    trgEquipStatus();render();toast('Booking cancelled','ok');
+    moSync(MO_API.post('/equipment/bookings/'+d.bid+'/cancel',{}));},
   checkoutKit:(d)=>{S._bkSel=DB.kit_items.filter(i=>i.kit_id===+d.kid).map(i=>i.equipment_item_id);
     openBooking();setTimeout(()=>ACTIONS.bookingCheck(),80);},
   reportDamage:(d)=>{
@@ -7420,6 +7435,7 @@ const ACTIONS = {
     e.status='maintenance';
     audit(S.me,'equipment.damage_reported','equipment_item',id,{status:'available'},{status:'maintenance'});
     closeModal();render();toast('Damage reported — '+e.asset_tag+' is now Under Maintenance','warn');
+    moSync(MO_API.post('/equipment/'+id+'/damage',{kind:'damage_report',description:desc}));
   },
   showQR:(d)=>{const e=equip(+d.eid);
     modal(`<div class="mo-head"><div><h2>QR label — ${esc(e.asset_tag)}</h2>
@@ -7459,7 +7475,9 @@ const ACTIONS = {
     DB.leave_requests.push({id,user_id:S.me,leave_type_id:+$('#lv-type').value,starts_on:from,ends_on:to,
       half_day:false,reason,status:'pending',decided_by:null,decided_at:null,decision_note:''});
     audit(S.me,'leave.requested','leave_request',id,null,{from,to});
+    const _lv={leave_type_id:+$('#lv-type').value,starts_on:from,ends_on:to,reason};
     closeModal();render();toast('Request submitted. AUTO-4 reminds your approver at 24h.','ok');
+    moSync(MO_API.post('/leave',_lv));
   },
   decideLeave:(d)=>{
     const l=DB.leave_requests.find(x=>x.id===+d.lid);
@@ -7468,6 +7486,7 @@ const ACTIONS = {
     audit(S.me,'leave.decided','leave_request',l.id,{status:'pending'},{status:d.v});
     const {shoots}=leaveConflicts(l);
     render();
+    moSync(MO_API.post('/leave/'+d.lid+'/decision',{decision:d.v}));
     toast(d.v==='approved'?
       'Approved.'+(shoots.length?' AUTO-12 created a replacement-suggestion task for '+shoots.length+' shoot(s).':''):
       'Rejected — the requester is notified with your note.', d.v==='approved'?'ok':'warn');
