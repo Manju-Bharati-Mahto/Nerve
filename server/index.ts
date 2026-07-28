@@ -200,6 +200,21 @@ const designPortalUpload = multer({
 
 app.set("trust proxy", 1);
 app.use("/uploads", express.static(path.resolve("uploads")));
+
+// ── Nerve Media Ops prototype (+ its PWA assets) ────────────────────────────
+// Served through the API so it rides the same nginx `/api` proxy as the media
+// endpoints — independent of any static-hosting config. Registered BEFORE the
+// global `X-Frame-Options: DENY` (below) and overridden to SAMEORIGIN, because the
+// app is embedded in a same-origin <iframe> at /media (MediaOps.tsx); DENY would
+// otherwise block the frame. Public (before the /api auth middleware), matching the
+// old static path — the prototype itself is not sensitive; its /api/v1/media/* data
+// calls remain authenticated.
+app.use(
+  "/api/media-ops",
+  (_req, res, next) => { res.setHeader("X-Frame-Options", "SAMEORIGIN"); next(); },
+  express.static(path.resolve("public/media-ops")),
+);
+
 app.use(express.json());
 
 // ── Security headers (VAPT TDL-003: missing headers, TDL-005: clickjacking) ─
