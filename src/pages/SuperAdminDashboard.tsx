@@ -7,6 +7,7 @@ import {
   Shield, UserCheck, User, Image, FolderKanban, ClipboardCheck,
   ThumbsUp, ThumbsDown, Clock,
   Megaphone, Send, Calendar as CalendarIcon, BarChart3, Sparkles,
+  Video, Camera,
 } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
@@ -15,7 +16,7 @@ import { brandingApi } from '@/lib/branding-api'
 import type { BrandingPortalStats } from '@/lib/branding-types'
 import { useOutreachData, campaignMetrics } from '@/lib/outreach-data'
 
-const DASHBOARD_TABS = ['overview', 'branding', 'content', 'outreach'] as const
+const DASHBOARD_TABS = ['overview', 'branding', 'content', 'outreach', 'media'] as const
 
 type DashboardTab = (typeof DASHBOARD_TABS)[number]
 
@@ -449,6 +450,129 @@ function OutreachTeamContent({ allUsers }: { allUsers: AppUser[] }) {
   )
 }
 
+// ── Media Crew section (Media Ops portal-aware) ────────────────────────────
+type MediaStats = {
+  active_projects: number; deliverables_due_week: number; overdue_deliverables: number
+  shoots_today: number; equipment_out: number; reports_to_review: number
+}
+function MediaTeamContent({ allUsers }: { allUsers: AppUser[] }) {
+  const [stats, setStats] = useState<MediaStats | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    // super_admin is allowed through the media-ops policy (maps to admin).
+    fetch('/api/v1/media/dashboard', { credentials: 'same-origin' })
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then(d => { if (live) setStats(d) })
+      .catch(e => { if (live) setError(String(e.message || e)) })
+    return () => { live = false }
+  }, [])
+
+  const teamUsers = allUsers.filter(u => u.team === 'media')
+  const admins    = teamUsers.filter(u => u.role === 'admin')
+  const subAdmins = teamUsers.filter(u => u.role === 'sub_admin')
+  const members   = teamUsers.filter(u => u.role === 'user')
+
+  const statCards = [
+    { label: 'Crew',             value: teamUsers.length,                    icon: Users,          bg: 'bg-emerald-50', color: 'text-emerald-600' },
+    { label: 'Active projects',  value: stats?.active_projects ?? '—',       icon: FolderKanban,   bg: 'bg-green-50',   color: 'text-green-600' },
+    { label: 'Due this week',    value: stats?.deliverables_due_week ?? '—', icon: ClipboardCheck, bg: 'bg-blue-50',    color: 'text-blue-600' },
+    { label: 'Overdue',          value: stats?.overdue_deliverables ?? '—', icon: Clock,          bg: 'bg-rose-50',    color: 'text-rose-600' },
+    { label: 'Shoots today',     value: stats?.shoots_today ?? '—',          icon: Video,          bg: 'bg-purple-50',  color: 'text-purple-600' },
+    { label: 'Reports to review',value: stats?.reports_to_review ?? '—',     icon: FileText,       bg: 'bg-amber-50',   color: 'text-amber-600' },
+  ]
+  const roleGroups = [
+    { label: 'Admin',      items: admins,    badge: 'bg-emerald-100 text-emerald-700' },
+    { label: 'Team Leads', items: subAdmins, badge: 'bg-teal-100 text-teal-700' },
+    { label: 'Members',    items: members,   badge: 'bg-slate-100 text-slate-700' },
+  ]
+
+  return (
+    <div className="space-y-5 pt-4">
+      {error && (
+        <div className="hub-card bg-rose-50 border-rose-200 text-xs text-rose-900">
+          Couldn't load Media Ops stats: {error}
+        </div>
+      )}
+
+      <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+        {statCards.map(card => {
+          const Icon = card.icon
+          return (
+            <div key={card.label} className="hub-card flex items-center gap-2.5 py-3">
+              <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${card.bg} shrink-0`}>
+                <Icon className={`w-4 h-4 ${card.color}`} />
+              </div>
+              <div>
+                <div className={`text-xl font-serif leading-none ${stats == null && typeof card.value !== 'number' ? 'text-muted-foreground' : 'text-foreground'}`}>
+                  {card.value}
+                </div>
+                <div className="text-[10px] text-muted-foreground mt-0.5 leading-tight">{card.label}</div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="grid grid-cols-5 gap-5">
+        <div className="col-span-3 hub-card">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-foreground">Media Crew Members</h2>
+            <Link to="/super-admin/users" className="text-xs text-primary hover:underline">Manage</Link>
+          </div>
+          {teamUsers.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-6">No crew assigned yet.</p>
+          ) : (
+            <div className="space-y-4">
+              {roleGroups.filter(g => g.items.length).map(g => (
+                <div key={g.label}>
+                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">{g.label}</p>
+                  {g.items.map(u => (
+                    <div key={u.id} className="flex items-center justify-between py-1.5">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-7 h-7 rounded-full bg-emerald-100 flex items-center justify-center shrink-0">
+                          <span className="text-xs font-semibold text-emerald-700">{(u.full_name || u.email)[0].toUpperCase()}</span>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-foreground truncate">{u.full_name || 'Unnamed'}</p>
+                          <p className="text-xs text-muted-foreground truncate">{u.email}</p>
+                        </div>
+                      </div>
+                      <span className={`hub-badge shrink-0 ${g.badge}`}>{g.label}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="col-span-2 space-y-4">
+          <div className="hub-card">
+            <h2 className="text-sm font-semibold text-foreground mb-2">Media Ops surfaces</h2>
+            {[
+              { icon: Video,        label: 'Media Ops app' },
+              { icon: FolderKanban, label: 'Projects & pipeline' },
+              { icon: Camera,       label: 'Equipment & kiosk' },
+              { icon: BarChart3,    label: 'Analytics & KRA' },
+            ].map(({ icon: Icon, label }, i) => (
+              <Link key={i} to="/media"
+                className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-accent transition-colors text-sm text-foreground">
+                <Icon className="w-4 h-4 text-emerald-500 shrink-0" />{label}
+              </Link>
+            ))}
+          </div>
+          <div className="hub-card text-xs text-muted-foreground leading-relaxed">
+            Media Ops runs as its own operating system at{' '}
+            <Link to="/media" className="text-primary hover:underline">/media</Link>, backed by{' '}
+            <span className="font-mono">/api/v1/media/*</span>. You have full admin access there.
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function fmt(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
@@ -473,6 +597,7 @@ export default function SuperAdminDashboard() {
     branding:     users.filter(u => u.team === 'branding').length,
     content:      users.filter(u => u.team === 'content').length,
     outreach:     users.filter(u => u.role === 'outreach_manager').length,
+    media:        users.filter(u => u.team === 'media').length,
   }), [users, entries])
 
   const contentEntries = useMemo(() =>
@@ -523,17 +648,21 @@ export default function SuperAdminDashboard() {
           <TabsTrigger value="outreach" className="flex items-center gap-1.5">
             <Megaphone className="w-3.5 h-3.5" /> Outreach Team
           </TabsTrigger>
+          <TabsTrigger value="media" className="flex items-center gap-1.5">
+            <Video className="w-3.5 h-3.5" /> Media Crew
+          </TabsTrigger>
         </TabsList>
 
         {/* ── Overview ── */}
         <TabsContent value="overview" className="space-y-5 pt-4">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
             {[
               { label: 'Total users',   value: stats.totalUsers,   icon: Users,     bg: 'bg-purple-50', color: 'text-purple-600' },
               { label: 'Total entries', value: stats.totalEntries, icon: FileText,  bg: 'bg-green-50',  color: 'text-green-600' },
               { label: 'Branding team', value: stats.branding,     icon: Palette,   bg: 'bg-pink-50',   color: 'text-pink-600' },
               { label: 'Content team',  value: stats.content,      icon: FileText,  bg: 'bg-blue-50',   color: 'text-blue-600' },
               { label: 'Outreach team', value: stats.outreach,     icon: Megaphone, bg: 'bg-orange-50', color: 'text-orange-600' },
+              { label: 'Media Crew',    value: stats.media,        icon: Video,     bg: 'bg-emerald-50', color: 'text-emerald-600' },
             ].map(s => {
               const Icon = s.icon
               return (
@@ -558,6 +687,7 @@ export default function SuperAdminDashboard() {
                   { team: 'branding', label: 'Branding Team', bar: 'bg-pink-500',   count: stats.branding, link: '/branding/team' },
                   { team: 'content',  label: 'Content Team',  bar: 'bg-blue-500',   count: stats.content,  link: '/content/team' },
                   { team: 'outreach', label: 'Outreach Team', bar: 'bg-orange-500', count: stats.outreach, link: '/outreach/dashboard' },
+                  { team: 'media',    label: 'Media Crew',    bar: 'bg-emerald-500',count: stats.media,    link: '/media' },
                 ].map(t => (
                   <div key={t.team} className="space-y-1.5">
                     <div className="flex items-center justify-between text-xs">
@@ -634,6 +764,11 @@ export default function SuperAdminDashboard() {
         {/* ── Outreach Team ── */}
         <TabsContent value="outreach">
           <OutreachTeamContent allUsers={users} />
+        </TabsContent>
+
+        {/* ── Media Crew ── */}
+        <TabsContent value="media">
+          <MediaTeamContent allUsers={users} />
         </TabsContent>
       </Tabs>
     </div>
