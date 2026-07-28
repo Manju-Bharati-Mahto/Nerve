@@ -145,7 +145,7 @@ Business/validation rules (BR-1…16, VR-1…12) and the automation engine (AUTO
 | Phase | Scope | Status |
 |-------|-------|--------|
 | **0 — Foundations** | Full §11 schema + lookups, media team + users, `/media` mount serving the prototype, README | ✅ **done** |
-| **1 — Kill WhatsApp & Excel** | Projects, Deliverables (+versions/approvals/pipeline), Daily Reporting (+review queue, AUTO-1/4/13), Dashboard — wired to real API; swap prototype's in-memory `DB`/`ACTIONS` for `/api/v1/media/*` | ⏳ next |
+| **1 — Kill WhatsApp & Excel** | Projects, Deliverables (+versions/approvals), Daily Reporting (+review queue, AUTO-13), Dashboard, lookups — REST API on the real schema | 🟡 **backend live** (`server/mediaops-api.ts`); frontend wiring pending the prototype install |
 | **2 — Physical world** | Equipment + QR + kiosk, Shoots, unified Calendar, Leave (production-aware) | ⏳ |
 | **3 — Insight** | Media Library + search + exports, Analytics + snapshots + month-close, KRA auto-metrics, Management Kanban | ⏳ |
 | **4 — Intelligence & polish** | AI-1/2/3, PWA offline, Drive validation/provisioning, Gallery, ICS | ⏳ |
@@ -174,6 +174,17 @@ npm run dev          # Vite (8080/8081)
 
 ## 7. Change log
 
+- **Phase 1 (backend):** `server/mediaops-api.ts` — `/api/v1/media/*` with the §16
+  role model (super_admin/admin→admin, sub_admin→team_lead, user→employee),
+  deny-by-default, and append-only audit. Endpoints: `GET /lookups`; Projects
+  (list/get/create/status/assignments) with **FR-3.2** template auto-create,
+  **BR-11** approval gate, **BR-1** state machine, **BR-2** one-PM; Deliverables
+  (create/patch/versions/review/deliver) with **BR-5** (submitter ≠ reviewer) and
+  **BR-6** (approved-version-before-delivered); Daily Reporting (get/tasks
+  CRUD/submit/review) with **AUTO-13** flag evaluation, **BR-3** one-report/day,
+  **VR-1/3/4/FR-2.8**; Dashboard aggregates. Verified end-to-end via the API.
+  Frontend wiring is blocked on installing the prototype at
+  `public/media-ops/index.html`.
 - **Phase 0 (foundations):** reverted the earlier Branding-clone Media; built the
   full `mo_*` schema (`server/mediaops-db.ts`, §11) with DB-level integrity (BR-2,
   BR-3, AC-7) and seeded all lookups + 14 automation rules; registered the `media`

@@ -591,6 +591,35 @@ async function seedMediaOpsLookups() {
     (1,'AUTO-13','Report flag rules','Report submitted','Flag if hours >14 or <2, completion claim without evidence, 3+ identical descriptions, first report after 3+ missing days, random sample',true,'{"max_hours":14,"min_hours":2,"identical_streak":3,"missing_days":3,"random_sample_pct":10}'),
     (1,'AUTO-14','Warranty / insurance / certification expiry','Expiring within 30 days','Admin + custodian notice; user + Admin for drone licence',true,'{"lead_days":30}')`);
 
+  // FR-3.2 project templates — auto-create the default deliverable set per type.
+  // Referenced by slug so it is robust to identity id ordering.
+  const tmpl = async (typeSlug: string, name: string, items: [string, string, number, number][]) => {
+    const t = await pool.query(
+      `INSERT INTO mo_project_templates (project_type_id, name, is_active)
+       SELECT id,$2,true FROM mo_project_types WHERE slug=$1 RETURNING id`, [typeSlug, name]);
+    const tid = t.rows[0].id;
+    for (const [dtSlug, pattern, weight, offset] of items) {
+      await pool.query(
+        `INSERT INTO mo_template_deliverables (template_id, deliverable_type_id, title_pattern, default_weight, days_offset_due)
+         SELECT $1, id, $3, $4, $5 FROM mo_deliverable_types WHERE slug=$2`, [tid, dtSlug, pattern, weight, offset]);
+    }
+  };
+  await tmpl("annual-event", "Annual Event — standard pack", [
+    ["photos-edited", "Edited Photos — {project}", 3, 5], ["aftermovie", "Aftermovie — {project}", 8, 12],
+    ["highlight-reel", "Highlight Reel — {project}", 5, 8], ["story", "Social Posts — {project}", 1, 3],
+    ["raw-archive", "Raw Archive — {project}", 1, 2]]);
+  await tmpl("tour", "Educational Tour — standard pack", [
+    ["photos-edited", "Edited Photos — {project}", 3, 6], ["highlight-reel", "Highlight Reel — {project}", 5, 10],
+    ["raw-archive", "Raw Archive — {project}", 1, 3]]);
+  await tmpl("branding", "Branding Content — standard pack", [
+    ["video-edited", "Brand Film — {project}", 4, 14], ["reel", "Cutdown Reels — {project}", 2, 16]]);
+  await tmpl("campaign", "Monthly Campaign — standard pack", [
+    ["reel", "Campaign Reels — {project}", 2, 10], ["story", "Story Set — {project}", 1, 7],
+    ["outreach", "Outreach Mailer — {project}", 2, 9]]);
+  await tmpl("social", "Social Media — reel pack", [["reel", "Reels — {project}", 2, 5]]);
+  await tmpl("deputation", "Deputation — minimal pack", [
+    ["photos-edited", "Edited Photos — {project}", 3, 4], ["raw-archive", "Raw Archive — {project}", 1, 2]]);
+
   // eslint-disable-next-line no-console
-  console.log("Media Ops lookups seeded (§11).");
+  console.log("Media Ops lookups + templates seeded (§11).");
 }
