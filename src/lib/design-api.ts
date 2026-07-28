@@ -1,0 +1,218 @@
+import type {
+  WorkCategory, WorkSubCategory, DailyReport, DailyReportRow,
+  KraParameter, SelfAppraisal, PeerMarking, AdminKraScore, KraReport,
+  DesignProject, MemberReportStatus, DesignAsset, DesignVoter,
+  DesignPortalStats, DesignLeave, ReportRowComment,
+} from "./design-types";
+
+const BASE = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
+const P = `${BASE}/design/portal`;
+
+async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${P}${path}`, {
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+    ...init,
+  });
+  const payload = await res.json().catch(() => ({})) as { message?: string } & Record<string, unknown>;
+  if (!res.ok) throw new Error(payload.message || "Request failed.");
+  return payload as T;
+}
+
+export const designApi = {
+  // ── Categories ─────────────────────────────────────────────────────────
+  getCategories: () =>
+    req<{ categories: WorkCategory[] }>("/categories"),
+  createCategory: (name: string) =>
+    req<{ category: WorkCategory }>("/categories", { method: "POST", body: JSON.stringify({ name }) }),
+  updateCategory: (id: string, name: string) =>
+    req<{ ok: boolean }>(`/categories/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  deleteCategory: (id: string) =>
+    req<{ ok: boolean; usageCount: number }>(`/categories/${id}`, { method: "DELETE" }),
+  reorderCategories: (orderedIds: string[]) =>
+    req<{ ok: boolean }>("/categories/reorder", { method: "POST", body: JSON.stringify({ orderedIds }) }),
+  createSubCategory: (categoryId: string, name: string) =>
+    req<{ sub: WorkSubCategory }>(`/categories/${categoryId}/sub`, { method: "POST", body: JSON.stringify({ name }) }),
+  updateSubCategory: (id: string, name: string) =>
+    req<{ ok: boolean }>(`/sub-categories/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  deleteSubCategory: (id: string) =>
+    req<{ ok: boolean; usageCount: number }>(`/sub-categories/${id}`, { method: "DELETE" }),
+
+  // ── Daily Reports ───────────────────────────────────────────────────────
+  getReport: (date: string) =>
+    req<{ report: DailyReport }>(`/report?date=${date}`),
+  saveRows: (reportId: string, rows: Omit<DailyReportRow, "id" | "report_id" | "created_at">[]) =>
+    req<{ rows: DailyReportRow[] }>(`/report/${reportId}/rows`, {
+      method: "PUT",
+      body: JSON.stringify({ rows }),
+    }),
+  submitReport: (reportId: string) =>
+    req<{ report: DailyReport }>(`/report/${reportId}/submit`, { method: "POST" }),
+  getAllReports: (filters?: {
+    userId?: string; userIds?: string[]; dateFrom?: string; dateTo?: string;
+    typeOfWork?: string; subCategory?: string; collaborator?: string; lockedOnly?: boolean;
+    teamScope?: boolean;
+  }) => {
+    const params = new URLSearchParams();
+    if (filters?.userIds && filters.userIds.length > 0) {
+      filters.userIds.forEach(id => params.append("userId", id));
+    } else if (filters?.userId) {
+      params.set("userId", filters.userId);
+    }
+    if (filters?.dateFrom)     params.set("dateFrom", filters.dateFrom);
+    if (filters?.dateTo)       params.set("dateTo", filters.dateTo);
+    if (filters?.typeOfWork)   params.set("typeOfWork", filters.typeOfWork);
+    if (filters?.subCategory)  params.set("subCategory", filters.subCategory);
+    if (filters?.collaborator) params.set("collaborator", filters.collaborator);
+    if (filters?.lockedOnly)   params.set("lockedOnly", "true");
+    if (filters?.teamScope)    params.set("scope", "team");
+    const qs = params.toString();
+    return req<{ reports: DailyReport[] }>(`/reports${qs ? `?${qs}` : ""}`);
+  },
+  getAnalytics: (opts?: { dateFrom?: string; dateTo?: string; userId?: string }) => {
+    const params = new URLSearchParams();
+    if (opts?.dateFrom) params.set("dateFrom", opts.dateFrom);
+    if (opts?.dateTo)   params.set("dateTo",   opts.dateTo);
+    if (opts?.userId)   params.set("userId",   opts.userId);
+    const qs = params.toString();
+    return req<{ analytics: {
+      typeHours: Record<string, number>;
+      subCatHours: Record<string, Record<string, number>>;
+      typeProjects: Record<string, number>;
+      subCatProjects: Record<string, Record<string, number>>;
+      collaboratorMap: Record<string, { hours: number; count: number }>;
+      totalReports: number;
+    } }>(`/analytics${qs ? `?${qs}` : ""}`);
+  },
+
+  // ── KRA ─────────────────────────────────────────────────────────────────
+  getKraParameters: () =>
+    req<{ parameters: KraParameter[] }>("/kra/parameters"),
+  getPeerMarkingEnabled: () =>
+    req<{ enabled: boolean }>("/kra/peer-marking-enabled"),
+  togglePeerMarking: (enabled: boolean) =>
+    req<{ ok: boolean; enabled: boolean }>("/kra/peer-marking-toggle", { method: "PATCH", body: JSON.stringify({ enabled }) }),
+  getSelfAppraisal: (month: number, year: number) =>
+    req<{ appraisal: SelfAppraisal | null }>(`/kra/self-appraisal?month=${month}&year=${year}`),
+  submitSelfAppraisal: (month: number, year: number, scores: Record<string, number>) =>
+    req<{ appraisal: SelfAppraisal }>("/kra/self-appraisal", { method: "POST", body: JSON.stringify({ month, year, scores }) }),
+  getPeerMarkingCompleted: (month: number, year: number) =>
+    req<{ completed: string[] }>(`/kra/peer-marking/completed?month=${month}&year=${year}`),
+  submitPeerMarking: (revieweeId: string, month: number, year: number, scores: Record<string, number>) =>
+    req<{ marking: PeerMarking }>("/kra/peer-marking", { method: "POST", body: JSON.stringify({ revieweeId, month, year, scores }) }),
+  getKraReport: (userId: string, month: number, year: number) =>
+    req<{ report: KraReport }>(`/kra/report/${userId}/${month}/${year}`),
+  getAdminKraDashboard: (month: number, year: number) =>
+    req<{ dashboard: KraReport[] }>(`/kra/admin/dashboard?month=${month}&year=${year}`),
+  getAdminScore: (userId: string, month: number, year: number) =>
+    req<{ score: AdminKraScore | null }>(`/kra/admin/score/${userId}/${month}/${year}`),
+  setAdminScore: (userId: string, month: number, year: number, scores: Record<string, number>) =>
+    req<{ score: AdminKraScore }>("/kra/admin/score", { method: "POST", body: JSON.stringify({ userId, month, year, scores }) }),
+  setAdminPenalty: (userId: string, month: number, year: number, penalty_percent: number, reason: string) =>
+    req<{ score: AdminKraScore }>("/kra/admin/penalty", {
+      method: "POST",
+      body: JSON.stringify({ userId, month, year, penalty_percent, reason }),
+    }),
+  setTotalPenaltyOverride: (userId: string, month: number, year: number, percent: number | null, reason: string) =>
+    req<{ score: AdminKraScore }>("/kra/admin/penalty-override", {
+      method: "POST",
+      body: JSON.stringify({ userId, month, year, percent, reason }),
+    }),
+  finalPush: (userId: string, month: number, year: number) =>
+    req<{ ok: boolean; score: AdminKraScore }>("/kra/admin/final-push", { method: "POST", body: JSON.stringify({ userId, month, year }) }),
+  getAllPeerMarkings: (month: number, year: number) =>
+    req<{ markings: PeerMarking[] }>(`/kra/admin/peer-markings?month=${month}&year=${year}`),
+  getUserPeerMarkings: (userId: string, month: number, year: number) =>
+    req<{ markings: PeerMarking[] }>(`/kra/admin/user-peer-markings/${userId}?month=${month}&year=${year}`),
+
+  // ── Super admin stats ──────────────────────────────────────────────────
+  getSuperAdminStats: () =>
+    req<DesignPortalStats>(`/super-admin/stats`),
+
+  // ── Team lead ──────────────────────────────────────────────────────────
+  getTeamReportStatus: (date: string) =>
+    req<{ statuses: MemberReportStatus[] }>(`/team/report-status?date=${date}`),
+
+  // ── Design gallery ─────────────────────────────────────────────────────
+  getDesigns: (filters?: { search?: string; category?: string; uploaderId?: string; dateFrom?: string; dateTo?: string }) => {
+    const params = new URLSearchParams();
+    if (filters?.search)     params.set("search", filters.search);
+    if (filters?.category)   params.set("category", filters.category);
+    if (filters?.uploaderId) params.set("uploaderId", filters.uploaderId);
+    if (filters?.dateFrom)   params.set("dateFrom", filters.dateFrom);
+    if (filters?.dateTo)     params.set("dateTo", filters.dateTo);
+    const qs = params.toString();
+    return req<{ designs: DesignAsset[] }>(`/designs${qs ? `?${qs}` : ""}`);
+  },
+  uploadDesign: (formData: FormData) => {
+    const base = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
+    return fetch(`${base}/design/portal/designs`, {
+      method: "POST",
+      credentials: "include",
+      body: formData,
+    }).then(async r => {
+      const payload = await r.json().catch(() => ({})) as { message?: string; design?: DesignAsset };
+      if (!r.ok) throw new Error(payload.message || "Upload failed.");
+      return payload as { design: DesignAsset };
+    });
+  },
+  deleteDesign: (id: string) =>
+    req<{ ok: boolean }>(`/designs/${id}`, { method: "DELETE" }),
+  castVote: (id: string, voteType: "up" | "down" | null) =>
+    req<{ upvotes: number; downvotes: number; user_vote: "up" | "down" | null }>(
+      `/designs/${id}/vote`, { method: "POST", body: JSON.stringify({ vote_type: voteType }) }
+    ),
+  getVoters: (id: string) =>
+    req<{ voters: DesignVoter[] }>(`/designs/${id}/voters`),
+
+  // ── Leaves ─────────────────────────────────────────────────────────────
+  applyLeave: (data: { start_at: string; end_at: string; reason: string; transfer_date?: string }) =>
+    req<{ leave: DesignLeave }>("/leave", { method: "POST", body: JSON.stringify(data) }),
+  getLeaves: (status?: string) => {
+    const qs = status ? `?status=${status}` : "";
+    return req<{ leaves: DesignLeave[] }>(`/leaves${qs}`);
+  },
+  getLeaveForDate: (date: string) =>
+    req<{ leave: DesignLeave | null }>(`/leave/date/${date}`),
+  reviewLeave: (id: string, status: 'approved' | 'rejected') =>
+    req<{ leave: DesignLeave }>(`/leave/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
+  updateLeaveTransfer: (id: string, transfer_date: string | null) =>
+    req<{ leave: DesignLeave }>(`/leave/${id}`, { method: "PATCH", body: JSON.stringify({ transfer_date }) }),
+  cancelLeave: (id: string) =>
+    req<{ ok: boolean }>(`/leave/${id}`, { method: "DELETE" }),
+
+  // ── Projects ───────────────────────────────────────────────────────────
+  getProjects: () =>
+    req<{ projects: DesignProject[] }>("/projects"),
+  createProject: (data: { name: string; description?: string; deadline?: string; assigned_user_ids?: string[]; type_of_work?: string; sub_category?: string; specific_work?: string }) =>
+    req<{ project: DesignProject }>("/projects", { method: "POST", body: JSON.stringify(data) }),
+  updateProject: (id: string, data: { name: string; description?: string; deadline?: string; status?: DesignProject["status"]; assigned_user_ids?: string[]; type_of_work?: string; sub_category?: string; specific_work?: string }) =>
+    req<{ project: DesignProject }>(`/projects/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  deleteProject: (id: string) =>
+    req<{ ok: boolean }>(`/projects/${id}`, { method: "DELETE" }),
+  // Capability-gated: create + assign a project to designers/leads; seeds a
+  // daily-report row for each "assign to designers" assignee on the work date.
+  // `assign_lead_id` is an optional supervisory lead that gets NO report row.
+  assignProject: (data: { name: string; description?: string; deadline?: string; type_of_work: string; sub_category: string; specific_work: string; assigned_user_ids: string[]; assign_lead_id?: string | null; work_date: string }) =>
+    req<{ project: DesignProject }>("/projects/assign", { method: "POST", body: JSON.stringify(data) }),
+  // The current user marks their assignment on a project complete (req 6).
+  completeProject: (id: string) =>
+    req<{ project: DesignProject }>(`/projects/${id}/complete`, { method: "POST" }),
+
+  // ── Report row comments (lead → member feedback) ───────────────────────
+  getRowComments: (rowIds: string[]) => {
+    if (rowIds.length === 0) return Promise.resolve({ comments: [] as ReportRowComment[] });
+    const qs = `row_ids=${encodeURIComponent(rowIds.join(","))}`;
+    return req<{ comments: ReportRowComment[] }>(`/report-row-comments?${qs}`);
+  },
+  createRowComment: (row_id: string, body: string) =>
+    req<{ comment: ReportRowComment }>(`/report-row-comments`, {
+      method: "POST", body: JSON.stringify({ row_id, body }),
+    }),
+  updateRowComment: (id: string, body: string) =>
+    req<{ comment: ReportRowComment }>(`/report-row-comments/${id}`, {
+      method: "PATCH", body: JSON.stringify({ body }),
+    }),
+  deleteRowComment: (id: string) =>
+    req<{ ok: boolean }>(`/report-row-comments/${id}`, { method: "DELETE" }),
+};

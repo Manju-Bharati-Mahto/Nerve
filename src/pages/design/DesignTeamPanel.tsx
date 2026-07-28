@@ -2,15 +2,15 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
-import { brandingApi } from '@/lib/branding-api'
+import { designApi } from '@/lib/design-api'
 import { api } from '@/lib/api'
 import type {
-  BrandingProject, MemberReportStatus, DailyReport, DailyReportRow,
+  DesignProject, MemberReportStatus, DailyReport, DailyReportRow,
   ReportRowComment,
-} from '@/lib/branding-types'
+} from '@/lib/design-types'
 import {
   perDayElapsedSeconds, elapsedToTimeTaken,
-} from '@/lib/branding-types'
+} from '@/lib/design-types'
 import type { AppUser } from '@/lib/app-types'
 import { CAPABILITIES, CAPABILITY_META } from '@/lib/capabilities'
 import {
@@ -23,12 +23,12 @@ import {
 
 type TabKey = 'members' | 'projects' | 'live'
 
-const STATUS_LABELS: Record<BrandingProject['status'], string> = {
+const STATUS_LABELS: Record<DesignProject['status'], string> = {
   active: 'Active',
   completed: 'Completed',
   on_hold: 'On Hold',
 }
-const STATUS_BADGE: Record<BrandingProject['status'], string> = {
+const STATUS_BADGE: Record<DesignProject['status'], string> = {
   active: 'bg-green-100 text-green-700',
   completed: 'bg-blue-100 text-blue-700',
   on_hold: 'bg-yellow-100 text-yellow-700',
@@ -166,7 +166,7 @@ function MemberDialog({ mode, initial, canManageCapabilities, onSave, onClose }:
                 Grant access to specific admin features without promoting the member to admin. Each grant adds a sidebar entry on the user's dashboard.
               </p>
               <div className="space-y-1.5">
-                {CAPABILITIES.filter(k => k.startsWith('branding:')).map(key => {
+                {CAPABILITIES.filter(k => k.startsWith('design:')).map(key => {
                   const meta = CAPABILITY_META[key]
                   const checked = form.capabilities.includes(key)
                   return (
@@ -210,7 +210,7 @@ interface ProjectFormState {
   name: string
   description: string
   deadline: string
-  status: BrandingProject['status']
+  status: DesignProject['status']
   assigned_user_ids: string[]
 }
 
@@ -308,7 +308,7 @@ function ProjectDialog({ mode, initial, members, onSave, onClose }: ProjectDialo
               <select
                 className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
                 value={form.status}
-                onChange={e => setForm(f => ({ ...f, status: e.target.value as BrandingProject['status'] }))}
+                onChange={e => setForm(f => ({ ...f, status: e.target.value as DesignProject['status'] }))}
               >
                 <option value="active">Active</option>
                 <option value="on_hold">On Hold</option>
@@ -376,17 +376,17 @@ function todayIso() {
 
 // ── Main Component ─────────────────────────────────────────────────────────
 
-export default function BrandingTeamPanel() {
+export default function DesignTeamPanel() {
   const { role, user } = useAuth()
   const { users: allUsers, addUser, updateUser, deleteUser, refreshAll } = useAppData()
   const isAdmin = role === 'admin' || role === 'super_admin'
   const isLead = role === 'sub_admin' || role === 'task_owner' || role === 'task_manager'
 
-  // Branding members only
-  // - admin/super_admin: all branding members
+  // Design members only
+  // - admin/super_admin: all design members
   // - sub_admin (lead): members they manage + themselves (so their own report is visible)
   const members = allUsers.filter(u =>
-    u.team === 'branding' &&
+    u.team === 'design' &&
     u.role !== 'super_admin' &&
     (isAdmin
       ? true
@@ -424,7 +424,7 @@ export default function BrandingTeamPanel() {
 
   const loadStatuses = useCallback((d: string) => {
     setStatusLoading(true)
-    brandingApi.getTeamReportStatus(d)
+    designApi.getTeamReportStatus(d)
       .then(r => setTodayStatuses(r.statuses))
       .catch(() => {})
       .finally(() => setStatusLoading(false))
@@ -438,16 +438,16 @@ export default function BrandingTeamPanel() {
   const [deleteConfirm, setDeleteConfirm] = useState(false)
 
   // ── Projects state ────────────────────────────────────────────────────
-  const [projects, setProjects] = useState<BrandingProject[]>([])
+  const [projects, setProjects] = useState<DesignProject[]>([])
   const [projLoading, setProjLoading] = useState(true)
-  const [projDialog, setProjDialog] = useState<null | 'add' | { mode: 'edit'; project: BrandingProject }>(null)
-  const [deleteProjTarget, setDeleteProjTarget] = useState<BrandingProject | null>(null)
+  const [projDialog, setProjDialog] = useState<null | 'add' | { mode: 'edit'; project: DesignProject }>(null)
+  const [deleteProjTarget, setDeleteProjTarget] = useState<DesignProject | null>(null)
 
   useEffect(() => {
     // Leads and admins both need the project list: admins manage all, leads
     // assign to their managed members.
     if (isAdmin || isLead) {
-      brandingApi.getProjects()
+      designApi.getProjects()
         .then(r => setProjects(r.projects))
         .catch(() => {})
         .finally(() => setProjLoading(false))
@@ -465,7 +465,7 @@ export default function BrandingTeamPanel() {
       password: data.password,
       department: data.department,
       role: data.role,
-      team: 'branding',
+      team: 'design',
       managed_by: user?.id ?? null,
     })
     // Capability grants are admin-only; non-admins won't send a non-empty
@@ -507,7 +507,7 @@ export default function BrandingTeamPanel() {
   // ── Project handlers ──────────────────────────────────────────────────
 
   async function handleAddProject(data: ProjectFormState) {
-    const { project } = await brandingApi.createProject({
+    const { project } = await designApi.createProject({
       name: data.name,
       description: data.description,
       deadline: data.deadline || undefined,
@@ -517,7 +517,7 @@ export default function BrandingTeamPanel() {
   }
 
   async function handleEditProject(data: ProjectFormState, projectId: string) {
-    const { project } = await brandingApi.updateProject(projectId, {
+    const { project } = await designApi.updateProject(projectId, {
       name: data.name,
       description: data.description,
       deadline: data.deadline || undefined,
@@ -529,7 +529,7 @@ export default function BrandingTeamPanel() {
 
   async function handleDeleteProject() {
     if (!deleteProjTarget) return
-    await brandingApi.deleteProject(deleteProjTarget.id)
+    await designApi.deleteProject(deleteProjTarget.id)
     setProjects(ps => ps.filter(p => p.id !== deleteProjTarget.id))
     setDeleteProjTarget(null)
   }
@@ -547,7 +547,7 @@ export default function BrandingTeamPanel() {
             {isLead ? 'My Team' : 'Team Management'}
           </h1>
           <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>
-            {isLead ? 'Branding team — members & daily report status' : 'Branding team — members & projects'}
+            {isLead ? 'Design team — members & daily report status' : 'Design team — members & projects'}
           </p>
         </div>
         {isAdmin && tab === 'members' && (
@@ -732,7 +732,7 @@ export default function BrandingTeamPanel() {
           <div className="bg-card border border-border rounded-xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
             <h2 className="text-sm font-semibold text-foreground">Remove Member</h2>
             <p className="text-sm text-muted-foreground">
-              Remove <span className="font-medium text-foreground">{deleteTarget.full_name || deleteTarget.email}</span> from the branding team?
+              Remove <span className="font-medium text-foreground">{deleteTarget.full_name || deleteTarget.email}</span> from the design team?
               This cannot be undone.
             </p>
             {!deleteConfirm && (
@@ -935,7 +935,7 @@ function MemberGroup({
 function ProjectCard({
   project, members, canEdit, canDelete, onEdit, onDelete
 }: {
-  project: BrandingProject
+  project: DesignProject
   members: AppUser[]
   canEdit: boolean
   canDelete: boolean
@@ -1062,13 +1062,13 @@ function LiveReportsView({
     if (inFlight.current) return
     inFlight.current = true
     try {
-      const { reports } = await brandingApi.getAllReports({
+      const { reports } = await designApi.getAllReports({
         userIds: memberIds, dateFrom: date, dateTo: date, teamScope: true,
       })
       setReports(reports)
       const rowIds = reports.flatMap(r => (r.rows ?? []).map(row => row.id))
       if (rowIds.length > 0) {
-        const { comments } = await brandingApi.getRowComments(rowIds)
+        const { comments } = await designApi.getRowComments(rowIds)
         const grouped: Record<string, ReportRowComment[]> = {}
         for (const c of comments) (grouped[c.row_id] ??= []).push(c)
         setCommentsByRow(grouped)
@@ -1116,7 +1116,7 @@ function LiveReportsView({
     const trimmed = body.trim()
     if (!trimmed) return
     try {
-      const { comment } = await brandingApi.createRowComment(rowId, trimmed)
+      const { comment } = await designApi.createRowComment(rowId, trimmed)
       setCommentsByRow(m => ({ ...m, [rowId]: [...(m[rowId] ?? []), comment] }))
     } catch (e) {
       console.error(e)
@@ -1125,7 +1125,7 @@ function LiveReportsView({
 
   async function removeComment(rowId: string, commentId: string) {
     try {
-      await brandingApi.deleteRowComment(commentId)
+      await designApi.deleteRowComment(commentId)
       setCommentsByRow(m => ({
         ...m,
         [rowId]: (m[rowId] ?? []).filter(c => c.id !== commentId),
