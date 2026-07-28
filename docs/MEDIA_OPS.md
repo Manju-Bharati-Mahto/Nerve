@@ -172,6 +172,19 @@ npm run dev          # Vite (8080/8081)
 
 ## 7. Change log
 
+- **AI Assist made real + Super Admin sync.** The AI Assist page is now computed
+  from live data: `GET /ai/digest` (anomalies), `GET /ai/duplicates` (project
+  similarity — title/description Jaccard + faculty + date-overlap, threshold 0.5),
+  `GET /ai/forecast` (equipment demand: upcoming booking load vs per-category
+  inventory). `viewAI()` fetches all three, caches in `MO_AI`, and re-renders; the
+  hardcoded mock is gone. **Super Admin dashboard** (`src/pages/SuperAdminDashboard.tsx`)
+  gained a **Media Crew tab** (`MediaTeamContent`) that pulls live KPIs from
+  `/api/v1/media/dashboard` (super_admin → media-ops admin) + the crew roster + links
+  into `/media`; Media is also in the overview cards and team bars. **Equipment scan:**
+  the kiosk scanner is *simulated* (tap-to-scan buttons + viewfinder) and QR labels
+  are decorative — the deep-link a scan opens (`#/media/equipment/<tag>`) works and
+  the checkout/check-in ledger persists, but real camera QR decode/generation needs a
+  QR library (deferred). Verified in-browser; 0 console errors.
 - **Phase 4 (intelligence & polish) — core done.** *PWA/offline:*
   `public/media-ops/manifest.webmanifest` + `icon.svg` + `sw.js` (registered from
   `boot()`) make Media Ops installable and offline-capable — the service worker
