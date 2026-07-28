@@ -147,7 +147,7 @@ Business/validation rules (BR-1…16, VR-1…12) and the automation engine (AUTO
 | **0 — Foundations** | Full §11 schema + lookups, media team + users, `/media` mount serving the prototype, README | ✅ **done** |
 | **1 — Kill WhatsApp & Excel** | Projects, Deliverables (+versions/approvals), Daily Reporting (+review queue, AUTO-13), Dashboard, lookups — REST API + prototype fully wired to it | ✅ **done**: API (`server/mediaops-api.ts`), full seed imported (`server/mediaops-import.ts`), prototype hydrates from `/state` on boot **and writes through** — create project, log/edit/delete task, submit report, report review, deliverable create/version/review/deliver all persist to Postgres and survive reload; identity bound to the Nerve session. Secondary actions (social/mail status, comments, link validation, bulk ops) still local-only |
 | **2 — Physical world** | Equipment + QR + kiosk, Shoots, unified Calendar, Leave (production-aware) | ✅ **done**: seed imported + served via `/state`; endpoints for shoots, bookings (**AC-7** no-double-booking via DB EXCLUDE → 409), checkout/check-in ledger (desk + kiosk), damage, leave request/decision; all wired through `moSync` and verified to persist + survive reload |
-| **3 — Insight** | Media Library + search + exports, Analytics + snapshots + month-close, KRA auto-metrics, Management Kanban | ⏳ |
+| **3 — Insight** | Media Library + search + exports, Analytics + snapshots + month-close, KRA auto-metrics, Management Kanban | ✅ **done**: boards/KRA/analytics/comments imported + served via `/state` (Kanban cards reassembled with embedded assignees/labels/checklist); Library/Analytics/KRA render live; board write-through — create/move/archive card, checklist toggle (with **FR-14.2** two-way linked-status sync), comments. KRA/Analytics/Saved-views are read-only auto-metric views in the prototype |
 | **4 — Intelligence & polish** | AI-1/2/3, PWA offline, Drive validation/provisioning, Gallery, ICS | ⏳ |
 
 ---
@@ -172,6 +172,19 @@ npm run dev          # Vite (8080/8081)
 
 ## 7. Change log
 
+- **Phase 3 (insight) — done.** *Part A (read):* importer + `/state` extended with
+  labels, boards, board_columns, cards, kra_cycles, kras, kra_reviews,
+  performance_snapshots (216), comments, saved_views; each Kanban card's embedded
+  assignees/labels/checklist are exploded into `mo_card_*` child tables on import and
+  reassembled in `/state` via jsonb subqueries. *Parts B/C (mutations + write-through):*
+  `mediaops-api.ts` gained `POST /boards/:id/cards`, `PATCH /cards/:id`
+  (move/archive, with **FR-14.2** two-way sync — moving a linked card to a
+  status-mapped column updates the deliverable), `POST /cards/:id/checklist/:ix/toggle`,
+  and `POST /comments` (BR-16). Prototype actions createCard, card drag-move,
+  archiveCard, toggleCheck, postComment, postDelivComment write through `moSync`.
+  Library, Analytics, KRA and Performance are read-only auto-metric views (no writes).
+  Verified in-browser: checklist toggle persists + survives reload, card create 201,
+  two-way sync flips the linked deliverable, comment persists; 0 console errors.
 - **Phase 2 (physical world) — done.** *Part A (read):* `server/mediaops-import.ts`
   PLAN extended (FK-safe) to load vendors, equipment categories/items/kits/bookings/
   transactions, maintenance, shoots + crew, leave types/requests/replacements,

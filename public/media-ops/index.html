@@ -7217,15 +7217,19 @@ const ACTIONS = {
   applyTemplate:(d)=>{toast('Template re-applied — existing deliverables are never duplicated','ok');},
   postComment:(d)=>{
     const box=$('#newcomment');if(!box||!box.value.trim())return;
+    const _cb=box.value.trim();
     DB.comments.push({id:DB.comments.length+1,entity_type:'project',entity_id:+d.pid,user_id:S.me,
-      created_at:NOW.toISOString().slice(0,19),body:box.value.trim()});
+      created_at:NOW.toISOString().slice(0,19),body:_cb});
     render();toast('Comment posted — notified: owner, assignees, watchers (BR-16)','ok');
+    moSync(MO_API.post('/comments',{entity_type:'project',entity_id:+d.pid,body:_cb}));
   },
   postDelivComment:(d)=>{
     const box=$('#dcomment');if(!box||!box.value.trim())return;
+    const _cb=box.value.trim();
     DB.comments.push({id:DB.comments.length+1,entity_type:'deliverable',entity_id:+d.did,user_id:S.me,
-      created_at:NOW.toISOString().slice(0,19),body:box.value.trim()});
+      created_at:NOW.toISOString().slice(0,19),body:_cb});
     drawerDeliverable(+d.did);toast('Comment posted','ok');
+    moSync(MO_API.post('/comments',{entity_type:'deliverable',entity_id:+d.did,body:_cb}), ()=>drawerDeliverable(+d.did));
   },
 
   /* ---- deliverables ---- */
@@ -7504,9 +7508,11 @@ const ACTIONS = {
 
   /* ---- boards ---- */
   toggleCheck:(d)=>{const c=DB.cards.find(x=>x.id===d.cid);
-    c.checklist[d.ix].is_done=!c.checklist[d.ix].is_done;drawerCard(c.id);},
+    c.checklist[d.ix].is_done=!c.checklist[d.ix].is_done;drawerCard(c.id);
+    moSync(MO_API.post('/cards/'+d.cid+'/checklist/'+d.ix+'/toggle',{}), ()=>drawerCard(d.cid));},
   editCard:()=>toast('Card editor — assignees, labels, priority, due date, checklist, attachments (FR-14.3)','ok'),
-  archiveCard:(d)=>{const c=DB.cards.find(x=>x.id===+d.cid);c.archived_at=TODAY;closeDrawer();render();toast('Card archived','ok');},
+  archiveCard:(d)=>{const c=DB.cards.find(x=>x.id===+d.cid);c.archived_at=TODAY;closeDrawer();render();toast('Card archived','ok');
+    moSync(MO_API.patch('/cards/'+d.cid,{archived:true}));},
   newColumn:()=>toast('Add column — name, WIP limit, optional status mapping','ok'),
   boardSettings:(d)=>{
     const b=DB.boards.find(x=>x.id===+d.bid);
@@ -7535,7 +7541,12 @@ const ACTIONS = {
       linked_entity_type:link?link.split(':')[0]:null,linked_entity_id:link?+link.split(':')[1]:null,
       priority:$('#nc-pri').value,due_date:null,sort_order:999,created_by:S.me,archived_at:null,
       assignees:$$('#nc-assign .chip.sel').map(c=>+c.dataset.uid),labels:[],checklist:[]});
+    const _ncBid=+d.bid;
+    const _nc={column_id:+$('#nc-col').value,title,description:$('#nc-desc').value.trim(),priority:$('#nc-pri').value,
+      linked_entity_type:link?link.split(':')[0]:null,linked_entity_id:link?+link.split(':')[1]:null,
+      assignees:$$('#nc-assign .chip.sel').map(c=>+c.dataset.uid)};
     closeModal();render();toast('Card created','ok');
+    moSync(MO_API.post('/boards/'+_ncBid+'/cards',_nc));
   },
 
   /* ---- admin ---- */
@@ -7787,6 +7798,7 @@ function wireDnD(){
         }
         audit(S.me,'card.moved','card',c.id,null,{column:col2.name});
         render();toast('Moved to '+col2.name+synced,'ok');
+        moSync(MO_API.patch('/cards/'+c.id,{column_id:+did}));
       }
     });
   });

@@ -625,6 +625,75 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ ok: true, status: decision });
   }));
 
+  // ═════════════════════════ PHASE 3 — BOARDS / COMMENTS ══════════════════
+  app.post(`${P}/boards/:id/cards`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Boards are Admin/Team-Lead only (FR-14.1).");
+    const boardId = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    if (!String(b.title ?? "").trim()) return sendError(res, 400, "Card title is required.");
+    const ins = await pool.query(
+      `INSERT INTO mo_cards (board_id, column_id, title, description, linked_entity_type, linked_entity_id, priority, sort_order, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,999,$8) RETURNING *`,
+      [boardId, Number(b.column_id), String(b.title), String(b.description ?? ""),
+       (b.linked_entity_type as string) || null, b.linked_entity_id ? Number(b.linked_entity_id) : null,
+       (b.priority as string) || "normal", u.id]);
+    for (const a of (Array.isArray(b.assignees) ? b.assignees : []))
+      await pool.query(`INSERT INTO mo_card_assignees (card_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [ins.rows[0].id, toUid(a)]);
+    await audit(u, "card.created", "card", ins.rows[0].id, null, { title: b.title }, req);
+    res.status(201).json({ card: ins.rows[0] });
+  }));
+
+  app.patch(`${P}/cards/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    const cur = await pool.query(`SELECT * FROM mo_cards WHERE id=$1`, [id]);
+    if (!cur.rows[0]) return sendError(res, 404, "Card not found.");
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    for (const k of ["column_id", "sort_order", "title", "description", "priority", "due_date"])
+      if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
+    if (b.archived === true) { fields.push(`archived_at=CURRENT_DATE`); }
+    if (fields.length) { vals.push(id); await pool.query(`UPDATE mo_cards SET ${fields.join(",")} WHERE id=$${i}`, vals); }
+    // FR-14.2 two-way sync: moving a linked card to a status-mapped column updates the object.
+    let synced: string | null = null;
+    if ("column_id" in b) {
+      const info = await pool.query(
+        `SELECT bd.sync_status, col.maps_to_status FROM mo_boards bd
+           JOIN mo_board_columns col ON col.id=$1 WHERE bd.id=$2`, [Number(b.column_id), cur.rows[0].board_id]);
+      const maps = info.rows[0]?.maps_to_status;
+      if (info.rows[0]?.sync_status && maps && cur.rows[0].linked_entity_type === "deliverable" && cur.rows[0].linked_entity_id) {
+        await pool.query(`UPDATE mo_deliverables SET status=$1 WHERE id=$2`, [maps, cur.rows[0].linked_entity_id]);
+        synced = maps;
+      }
+    }
+    await audit(u, "card.updated", "card", id, cur.rows[0], b, req);
+    res.json({ ok: true, synced });
+  }));
+
+  app.post(`${P}/cards/:id/checklist/:ix/toggle`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10), ix = parseInt(getSingleParam(req.params.ix), 10);
+    const { rows } = await pool.query(
+      `UPDATE mo_card_checklist_items SET is_done = NOT is_done WHERE card_id=$1 AND sort_order=$2 RETURNING is_done`, [id, ix]);
+    if (!rows[0]) return sendError(res, 404, "Checklist item not found.");
+    await audit(u, "card.checklist_toggled", "card", id, null, { ix, is_done: rows[0].is_done }, req);
+    res.json({ ok: true, is_done: rows[0].is_done });
+  }));
+
+  // ── Comments (BR-16) ──────────────────────────────────────────────────────
+  app.post(`${P}/comments`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const b = req.body as Record<string, unknown>;
+    if (!b.entity_type || !b.entity_id || !String(b.body ?? "").trim())
+      return sendError(res, 400, "entity_type, entity_id and body are required.");
+    const ins = await pool.query(
+      `INSERT INTO mo_comments (entity_type, entity_id, user_id, body) VALUES ($1,$2,$3,$4) RETURNING *`,
+      [String(b.entity_type), Number(b.entity_id), u.id, String(b.body)]);
+    await audit(u, "comment.posted", String(b.entity_type), Number(b.entity_id), null, null, req);
+    res.status(201).json({ comment: ins.rows[0] });
+  }));
+
   // ═════════════════════════ DASHBOARD (§7.1) ═════════════════════════════
   app.get(`${P}/dashboard`, asyncHandler(async (_req, res) => {
     const u = requireMedia(res); if (!u) return;
