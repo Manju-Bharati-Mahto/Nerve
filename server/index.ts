@@ -137,6 +137,8 @@ import {
   getLeaveForDate,
 } from "./branding-db.js";
 import * as designDb from "./design-db.js";
+import { bootstrapMediaOpsDatabase } from "./mediaops-db.js";
+import { registerMediaOpsApi } from "./mediaops-api.js";
 
 const app = express();
 const PgStore = connectPgSimple(session);
@@ -509,6 +511,11 @@ app.use("/api", asyncHandler(async (req, res, next) => {
   res.locals.currentUser = user;
   return next();
 }));
+
+// ── Nerve Media Ops API (/api/v1/media/*) — Phase 1: Projects, Deliverables,
+// Daily Reporting, Dashboard. Registered after the auth middleware so every
+// media-ops route sees res.locals.currentUser.
+registerMediaOpsApi(app, { asyncHandler, sendError, getSingleParam });
 
 // ── App settings (super admin) ─────────────────────────────────────────────
 
@@ -2720,6 +2727,7 @@ bootstrapDatabase()
   .then(() => bootstrapSettingsDatabase())
   .then(() => bootstrapOutreach())
   .then(() => designDb.bootstrapDesignDatabase())
+  .then(() => bootstrapMediaOpsDatabase())
   .then(async () => {
     // Catch up on any reports whose 21:00 IST submit cutoff or 17:00 IST
     // auto-pause cutoff already passed while the server was down, then keep an

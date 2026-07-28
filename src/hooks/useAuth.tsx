@@ -102,6 +102,9 @@ export function getRoleDashboard(role: AppRole | null, team: AppTeam | null): st
   if (role === 'outreach_manager')      return '/outreach/dashboard'
   if (role === 'branding_reports_admin') return '/branding/dashboard'
   if (role === 'design_reports_admin')  return '/design/dashboard'
+  // Media Crew uses the self-contained Media Ops app, which adapts its own UI
+  // to the user's role internally — every media-team role lands on /media.
+  if (team === 'media')                 return '/media'
   if (role === 'admin')                 return team === 'content' ? '/content/dashboard'   : team === 'design' ? '/design/dashboard' : '/branding/dashboard'
   if (role === 'sub_admin')             return team === 'content' ? '/content/sub-admin'   : team === 'design' ? '/design/sub-admin' : '/branding/sub-admin'
   // Task Owner: a branding/design lead variant with project-assign rights. Lands

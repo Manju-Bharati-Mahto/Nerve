@@ -1,0 +1,293 @@
+# Nerve Media Ops — Architecture & Build Log
+
+> Living document. Updated as the build progresses. Source of truth for the
+> Media Crew production platform inside Nerve.
+> Spec: **PRD/SRS v1.0 (22 Jul 2026)** + the interactive prototype
+> (`public/media-ops/index.html`).
+
+Media Ops is a **production-first operating system** for the Media Crew
+department (~18 people producing 150+ events/tours/campaigns a year). It replaces
+WhatsApp daily reporting + a hand-maintained Excel workbook with one queryable
+system.
+
+---
+
+## 1. The spine (PRD §5.1)
+
+```
+Project → Shoots → Deliverables → Versions / Drive Links → Daily Task Logs
+```
+
+Everything else — dashboard, library, analytics, KRA, equipment, calendar — is a
+**view over this chain**. One fact, one record, many views.
+
+Key product decisions baked into the design:
+
+| # | Decision | Where enforced |
+|---|----------|----------------|
+| D1 | Log-as-you-go (task logs during the day; the "daily report" is a review-and-submit) | `mo_report_tasks` + `mo_daily_reports` |
+| D2 | Exception-based review — reports auto-approve at 48h unless flagged | `mo_daily_reports.status`, AUTO-13 |
+| D3 | Project progress = weighted deliverable completion, **not** task % | `mo_deliverable_types.default_weight` |
+| D4 | Three roles only + **duty flags** (custodian, PM…), never a 4th role | `mo_duty_flags` / `mo_user_duties` |
+| D5 | Media files stay in Google Drive; we store validated structured links | `mo_drive_links` |
+
+---
+
+## 2. How it lives inside Nerve
+
+The Media Ops UI is the **self-contained prototype**, served verbatim and wired to
+a real backend (chosen build strategy — "serve the prototype, wire the backend").
+
+- **Frontend mount:** React route `/media` (`src/pages/media/MediaOps.tsx`) renders
+  the prototype full-screen in an `<iframe src="/media-ops/index.html">`. The
+  prototype owns its own shell (sidebar + topbar + `#/media/*` hash routing), so it
+  runs edge-to-edge with no surrounding app chrome. The iframe is same-origin, so
+  the session cookie flows through to `/api/v1/media/*`.
+- **Static UI asset:** `public/media-ops/index.html` (the prototype). Vite serves
+  `public/` at the site root.
+- **Routing in:** any user with `team = 'media'` is sent to `/media` by
+  `getRoleDashboard()` in `src/hooks/useAuth.tsx`.
+
+### Identity & role mapping
+
+Media Ops does **not** own a users table — it reuses the global `users` table. A
+Media Ops "user" is a Nerve user with `team = 'media'`. The prototype's 3-role model
+maps onto Nerve roles:
+
+| Media Ops role (PRD) | Nerve role (`users.role`, team=media) |
+|----------------------|----------------------------------------|
+| `admin`              | `admin` (+ `super_admin` sees all)     |
+| `team_lead`          | `sub_admin`                            |
+| `employee`           | `user`                                 |
+
+Media-specific per-user attributes (designation, skills, duties, capacity) live in
+`mo_user_profiles`, `mo_user_skills`, `mo_user_duties`.
+
+---
+
+## 3. Database (PRD §11)
+
+All tables carry the `mo_` prefix and live in the same Postgres DB as the other
+portals. Owned by **`server/mediaops-db.ts`** (`bootstrapMediaOpsDatabase()`, run
+from the startup chain in `server/index.ts`). Idempotent — `CREATE TABLE IF NOT
+EXISTS` + guarded lookup seed.
+
+Table groups (≈45 tables):
+
+- **§11.1 Identity/org** — `mo_departments`, `mo_campuses`, `mo_academic_years`,
+  `mo_teams`, `mo_team_members`, `mo_duty_flags`, `mo_user_duties`, `mo_skills`,
+  `mo_user_skills`, `mo_capacity_roles`, `mo_user_profiles`
+- **§11.2 Projects/production** — `mo_project_types`, `mo_projects`,
+  `mo_project_assignments`, `mo_shoots`, `mo_shoot_crew`, `mo_project_templates`,
+  `mo_template_deliverables`
+- **§11.3 Deliverables/assets** — `mo_deliverable_types`, `mo_deliverables`,
+  `mo_deliverable_versions`, `mo_drive_links`, `mo_attachments`, `mo_tags`,
+  `mo_entity_tags`
+- **§11.4 Daily reporting** — `mo_task_categories`, `mo_daily_reports`,
+  `mo_report_tasks`
+- **§11.5 Equipment** — `mo_equipment_categories`, `mo_vendors`,
+  `mo_equipment_items`, `mo_equipment_kits`, `mo_kit_items`,
+  `mo_equipment_bookings`, `mo_equipment_transactions`, `mo_maintenance_records`
+- **§11.6 Kanban/calendar/HR** — `mo_boards`, `mo_board_columns`, `mo_labels`,
+  `mo_cards`, `mo_card_assignees`, `mo_card_labels`, `mo_card_checklist_items`,
+  `mo_leave_types`, `mo_leave_requests`, `mo_leave_replacements`, `mo_holidays`,
+  `mo_kra_cycles`, `mo_kras`, `mo_kra_reviews`, `mo_performance_snapshots`
+- **§11.7 Platform** — `mo_comments`, `mo_notifications`,
+  `mo_notification_preferences`, `mo_automation_rules`, `mo_audit_logs`,
+  `mo_saved_views`, `mo_import_batches`, `mo_import_issues`
+
+Integrity guarantees implemented at the DB level:
+
+- `mo_daily_reports UNIQUE(user_id, report_date)` — **BR-3**, one report/day.
+- Partial unique on `mo_project_assignments(project_id) WHERE is_project_manager` —
+  **BR-2**, at most one PM per project.
+- `mo_equipment_bookings EXCLUDE USING gist (equipment_item_id =, daterange &&)` —
+  **AC-7**, double-booking is impossible even under concurrency (needs
+  `btree_gist`).
+- Partial unique on `mo_team_members(user_id) WHERE is_primary` — one primary team.
+- `mo_deliverable_versions UNIQUE(deliverable_id, version_no)` — immutable versions.
+- CHECK constraints encode every status machine (project, deliverable, report,
+  equipment, leave).
+- `mo_audit_logs` — append-only, indexed by entity and actor.
+
+FK type note: `mo_*` PKs are `BIGINT GENERATED ALWAYS AS IDENTITY`; user references
+are `TEXT` → `users(id)`.
+
+Seeded lookups (idempotent, config-driven — **NFR-10**): departments, campuses,
+academic years, capacity roles, duty flags, skills, project types (8), task
+categories (12), deliverable types (14), equipment categories (11), leave types (5),
+and the 14 automation rules (AUTO-1…14).
+
+---
+
+## 4. REST API (PRD §13) — plan
+
+Versioned under **`/api/v1/media/*`**, enforced server-side against the §16
+permission matrix (deny-by-default). Being built module by module (see status).
+
+| Resource | Core endpoints |
+|----------|----------------|
+| Projects | `GET/POST /projects`, `GET/PATCH/DELETE /projects/:id`, `POST /projects/:id/status`, `.../assignments`, `.../activity` |
+| Shoots | `GET/POST /projects/:id/shoots`, `PATCH /shoots/:id`, `PUT /shoots/:id/crew` |
+| Deliverables | `GET/POST /projects/:id/deliverables`, `PATCH /deliverables/:id`, `POST /deliverables/:id/versions`, `POST /versions/:id/review`, `POST /deliverables/:id/deliver` |
+| Reports | `GET /reports`, `GET/POST /reports/:date/tasks`, `PATCH/DELETE /tasks/:id`, `POST /reports/:date/submit`, `POST /reports/:id/review`, `.../unlock` |
+| Equipment | `GET/POST /equipment`, `.../bookings`, `POST /equipment/transactions`, `GET /equipment/availability`, `POST /equipment/:id/damage` |
+| Library | `GET /search`, `GET /library/export` |
+| Team / Leave / KRA / Boards / Analytics / Platform | per §13 |
+
+Business/validation rules (BR-1…16, VR-1…12) and the automation engine (AUTO-1…14,
+`mo_automation_rules`) are applied at the API/service layer.
+
+---
+
+## 5. Build phases & status
+
+| Phase | Scope | Status |
+|-------|-------|--------|
+| **0 — Foundations** | Full §11 schema + lookups, media team + users, `/media` mount serving the prototype, README | ✅ **done** |
+| **1 — Kill WhatsApp & Excel** | Projects, Deliverables (+versions/approvals), Daily Reporting (+review queue, AUTO-13), Dashboard, lookups — REST API + prototype fully wired to it | ✅ **done**: API (`server/mediaops-api.ts`), full seed imported (`server/mediaops-import.ts`), prototype hydrates from `/state` on boot **and writes through** — create project, log/edit/delete task, submit report, report review, deliverable create/version/review/deliver all persist to Postgres and survive reload; identity bound to the Nerve session. Secondary actions (social/mail status, comments, link validation, bulk ops) still local-only |
+| **2 — Physical world** | Equipment + QR + kiosk, Shoots, unified Calendar, Leave (production-aware) | ✅ **done**: seed imported + served via `/state`; endpoints for shoots, bookings (**AC-7** no-double-booking via DB EXCLUDE → 409), checkout/check-in ledger (desk + kiosk), damage, leave request/decision; all wired through `moSync` and verified to persist + survive reload |
+| **3 — Insight** | Media Library + search + exports, Analytics + snapshots + month-close, KRA auto-metrics, Management Kanban | ✅ **done**: boards/KRA/analytics/comments imported + served via `/state` (Kanban cards reassembled with embedded assignees/labels/checklist); Library/Analytics/KRA render live; board write-through — create/move/archive card, checklist toggle (with **FR-14.2** two-way linked-status sync), comments. KRA/Analytics/Saved-views are read-only auto-metric views in the prototype |
+| **4 — Intelligence & polish** | AI-1/2/3, PWA offline, Drive validation/provisioning, Gallery, ICS | ✅ **core done**: PWA (manifest + service worker + icon, offline-capable — shell & last-good `/state` cached); `GET /calendar/feed.ics` (74 real VEVENTs); `GET /ai/digest` (AI-1 anomalies computed from live data); automation-rule toggle persists (NFR-10). AI-2/AI-3 (duplicate/demand prediction) and Drive validation remain prototype mocks (no real UI hook) |
+
+---
+
+## 6. Running it locally
+
+```bash
+# DB + API + Vite (Docker path)
+npm run dev:local
+# or, against a native Postgres:
+set -a; source .env.local; set +a
+npm run dev:server   # API :3001, runs bootstrapMediaOpsDatabase()
+npm run dev          # Vite (8080/8081)
+```
+
+- Open the app → log in as a **media-team** user → you land on `/media`, which serves
+  the real prototype (`public/media-ops/index.html`) full-screen.
+- Demo media logins (fresh-seed DBs): `media-admin@parul.ac.in / media123`,
+  `media-lead@parul.ac.in / medialead123`, `media-user@parul.ac.in / mediauser123`.
+
+---
+
+## 7. Change log
+
+- **AI Assist made real + Super Admin sync.** The AI Assist page is now computed
+  from live data: `GET /ai/digest` (anomalies), `GET /ai/duplicates` (project
+  similarity — title/description Jaccard + faculty + date-overlap, threshold 0.5),
+  `GET /ai/forecast` (equipment demand: upcoming booking load vs per-category
+  inventory). `viewAI()` fetches all three, caches in `MO_AI`, and re-renders; the
+  hardcoded mock is gone. **Super Admin dashboard** (`src/pages/SuperAdminDashboard.tsx`)
+  gained a **Media Crew tab** (`MediaTeamContent`) that pulls live KPIs from
+  `/api/v1/media/dashboard` (super_admin → media-ops admin) + the crew roster + links
+  into `/media`; Media is also in the overview cards and team bars. **Equipment scan:**
+  the kiosk scanner is *simulated* (tap-to-scan buttons + viewfinder) and QR labels
+  are decorative — the deep-link a scan opens (`#/media/equipment/<tag>`) works and
+  the checkout/check-in ledger persists, but real camera QR decode/generation needs a
+  QR library (deferred). Verified in-browser; 0 console errors.
+- **Phase 4 (intelligence & polish) — core done.** *PWA/offline:*
+  `public/media-ops/manifest.webmanifest` + `icon.svg` + `sw.js` (registered from
+  `boot()`) make Media Ops installable and offline-capable — the service worker
+  network-firsts the shell and `/state` and caches last-good copies, so the app opens
+  and shows the most recent data with no network (writes still need connectivity).
+  *ICS:* `GET /api/v1/media/calendar/feed.ics` emits a real `VCALENDAR` (shoots +
+  deliverable deadlines + holidays; 74 events) to subscribe to. *AI-1:* `GET /ai/digest`
+  computes the weekly digest — over-hours days, blocked tasks, stalled projects,
+  fast turnarounds — from live data (labelled, never auto-commits). *Automation
+  (NFR-10):* `PATCH /automation-rules/:id` persists Admin toggles/config; the
+  prototype's `toggleRule` writes through and the state hydrates `automation_rules`
+  so a toggle survives reload. AI-2/AI-3 and Drive validation stay prototype mocks.
+  Verified: SW registers, manifest links, ICS valid, digest returns real anomalies,
+  automation toggle persists across reload; 0 console errors.
+- **Phase 3 (insight) — done.** *Part A (read):* importer + `/state` extended with
+  labels, boards, board_columns, cards, kra_cycles, kras, kra_reviews,
+  performance_snapshots (216), comments, saved_views; each Kanban card's embedded
+  assignees/labels/checklist are exploded into `mo_card_*` child tables on import and
+  reassembled in `/state` via jsonb subqueries. *Parts B/C (mutations + write-through):*
+  `mediaops-api.ts` gained `POST /boards/:id/cards`, `PATCH /cards/:id`
+  (move/archive, with **FR-14.2** two-way sync — moving a linked card to a
+  status-mapped column updates the deliverable), `POST /cards/:id/checklist/:ix/toggle`,
+  and `POST /comments` (BR-16). Prototype actions createCard, card drag-move,
+  archiveCard, toggleCheck, postComment, postDelivComment write through `moSync`.
+  Library, Analytics, KRA and Performance are read-only auto-metric views (no writes).
+  Verified in-browser: checklist toggle persists + survives reload, card create 201,
+  two-way sync flips the linked deliverable, comment persists; 0 console errors.
+- **Phase 2 (physical world) — done.** *Part A (read):* `server/mediaops-import.ts`
+  PLAN extended (FK-safe) to load vendors, equipment categories/items/kits/bookings/
+  transactions, maintenance, shoots + crew, leave types/requests/replacements,
+  holidays; `GET /state` + `hydrateFromServer()` extended so Equipment/Calendar/Leave
+  render from Postgres. *Parts B/C (mutations + write-through):* `mediaops-api.ts`
+  gained `POST /projects/:id/shoots` + `PATCH /shoots/:id`; `POST /equipment/bookings`
+  (**AC-7**: the `mo_equipment_bookings` gist EXCLUDE constraint rejects overlaps →
+  `409`) + `.../cancel`; `POST /equipment/:id/checkout` and `/checkin` (immutable
+  transaction ledger, item-status flip, BR-8 damage-on-worse-condition); `POST
+  /equipment/:id/damage`; `POST /leave` + `/leave/:id/decision` (TL/Admin). The
+  prototype's createShoot, checkout, confirmCheckin, createBooking, cancelBooking,
+  confirmDamage, createLeave, decideLeave **and the cupboard kiosk's `commitKiosk`**
+  now write through `moSync`. Verified in-browser: desk + kiosk checkout persist and
+  survive reload, AC-7 conflicts 409, leave request persists; 0 console errors.
+- **Phase 1 wiring — Part C (write-through + identity):** UI mutations now persist.
+  `boot()` binds `S.me` to the signed-in Nerve user via `/api/auth/me` (crew are
+  `mo-uN`). A `moSync()` helper wraps each mutating action: the existing optimistic
+  local change renders instantly, then the change is POST/PATCH/DELETEd to
+  `/api/v1/media/*` (which re-enforces the business rules), and the client
+  re-hydrates from `/state` to the authoritative result — picking up server ids,
+  project codes, template deliverables and flag outcomes; on rejection it toasts the
+  server's reason and reverts. Wired actions: create project, log/edit/delete task,
+  submit report, report approve/flag/return, deliverable create + version submit +
+  approve/request-changes + mark-delivered. Verified in-browser: creating a project
+  through the UI takes the server 28→29, stamps `MC-2627-129` + owner = the session
+  user, and **survives a reload**; 0 console errors. Also fixed a server bug where a
+  `BIGINT` id (returned as a string by pg) string-concatenated in the project-code
+  formula. In seed mode (no session) `moSync` is a no-op, so the standalone prototype
+  is unchanged.
+- **Phase 1 wiring — Part B (read path):** the prototype now loads from the backend.
+  New `GET /api/v1/media/state` returns the Phase-1 transactional dataset (projects,
+  assignments, deliverables, versions, drive links, daily reports, task logs) in the
+  prototype's exact shape — user-ref columns emitted as the seed's integer ids
+  (media crew are `mo-uN` in the shared `users` table) and dates as clean strings via
+  `to_jsonb`. On boot the prototype's `boot()` is now async: it overlays `/state`
+  onto the in-memory `DB`, **guarded** so a missing session or down backend silently
+  falls back to the seed (the UI always runs). Verified in-browser: with a Nerve
+  session it hydrates 28 projects + 368 reports and the Projects/My Day/Reports views
+  render live server data with 0 console errors; without a session it keeps the seed.
+  Remaining Phase-1 slice: write-through (create/log/submit/review actions POST to the
+  API so mutations persist) + binding `S.me` to the real session identity.
+- **Phase 1 wiring — Part A (seed import):** `server/mediaops-import.ts` +
+  `server/mediaops-seed.json` load the prototype's full demo dataset into the real
+  `mo_*` schema so the backend holds the data the UI was designed around. The
+  prototype's integer ids are FK-consistent, so every row is inserted **with its
+  original id** (`OVERRIDING SYSTEM VALUE`) — only user references remap, because the
+  18 media crew are upserted into the shared `users` table (login `<email> /
+  media123`, e.g. `rahul.joshi@paruluniversity.ac.in`). A generic inserter writes the
+  intersection of prototype keys ∩ real columns, remapping user-ref columns and
+  stringifying JSONB, then bumps each identity sequence past the imported ids.
+  Imported: 28 projects, 77 assignments, 70 deliverables, 13 versions, 13 drive
+  links, **368 daily reports, 1 087 task logs**, + all lookups/templates/automation
+  rules. Verified: the API returns 28 projects and live dashboard aggregates. Run
+  once on a demo DB with `npx tsx server/mediaops-import.ts`. Next: Part B — hydrate
+  the prototype's `DB` from the API on boot and write mutations through.
+- **Prototype installed + My Day full-width:** the real ~590 KB prototype now lives
+  at `public/media-ops/index.html` (recovered losslessly from the session transcript
+  and verified — all 17 routes render with 0 console errors). `viewMyDay()` no longer
+  renders the desktop phone device-frame; the day's cards now fill the page as a
+  responsive 2/3-column masonry (assignments + task log | submit + deliverables +
+  gear), with the date/status header spanning the top. Next: wire its in-memory
+  `DB`/`ACTIONS` to `/api/v1/media/*`.
+- **Phase 1 (backend):** `server/mediaops-api.ts` — `/api/v1/media/*` with the §16
+  role model (super_admin/admin→admin, sub_admin→team_lead, user→employee),
+  deny-by-default, and append-only audit. Endpoints: `GET /lookups`; Projects
+  (list/get/create/status/assignments) with **FR-3.2** template auto-create,
+  **BR-11** approval gate, **BR-1** state machine, **BR-2** one-PM; Deliverables
+  (create/patch/versions/review/deliver) with **BR-5** (submitter ≠ reviewer) and
+  **BR-6** (approved-version-before-delivered); Daily Reporting (get/tasks
+  CRUD/submit/review) with **AUTO-13** flag evaluation, **BR-3** one-report/day,
+  **VR-1/3/4/FR-2.8**; Dashboard aggregates. Verified end-to-end via the API.
+  Frontend wiring is blocked on installing the prototype at
+  `public/media-ops/index.html`.
+- **Phase 0 (foundations):** reverted the earlier Branding-clone Media; built the
+  full `mo_*` schema (`server/mediaops-db.ts`, §11) with DB-level integrity (BR-2,
+  BR-3, AC-7) and seeded all lookups + 14 automation rules; registered the `media`
+  team + demo users; mounted the prototype at `/media`
+  (`src/pages/media/MediaOps.tsx`, `public/media-ops/`); routed media-team users to
+  `/media`.
