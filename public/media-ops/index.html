@@ -7877,9 +7877,15 @@ async function moSync(promise, onOk){
     try{ await hydrateFromServer(); render(); }catch(_){/* stay on optimistic state */}
   }
 }
-/* PWA: register the offline service worker (Phase 4). Guarded — harmless if the
-   browser/iframe context doesn't allow it. */
-if('serviceWorker' in navigator){ try{ navigator.serviceWorker.register('sw.js',{scope:'/media-ops/'}).catch(()=>{}); }catch(_){} }
+/* PWA service worker (Phase 4). The app is served under /api/media-ops/, so the SW
+   scope is its own directory. First unregister any stale worker from the earlier
+   /media-ops/ static path so it can't serve a cached shell. Guarded throughout. */
+if('serviceWorker' in navigator){ try{
+  navigator.serviceWorker.getRegistrations().then(rs=>{
+    rs.filter(r=>!(r.scope||'').includes('/api/media-ops/')).forEach(r=>r.unregister());
+  }).catch(()=>{});
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
+}catch(_){} }
 (async function boot(){
   if(!location.hash)location.hash='#/media/home';
   let live=null;
