@@ -112,6 +112,16 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["leave_requests", "mo_leave_requests", null, ["user_id", "decided_by"]],
     ["leave_replacements", "mo_leave_replacements", null, ["replacement_user_id"]],
     ["holidays", "mo_holidays", null, []],
+    // Phase 3 — boards, KRA, analytics, comments (cards handled separately below)
+    ["labels", "mo_labels", null, []],
+    ["boards", "mo_boards", null, ["created_by"]],
+    ["board_columns", "mo_board_columns", null, []],
+    ["kra_cycles", "mo_kra_cycles", null, []],
+    ["kras", "mo_kras", null, ["user_id"]],
+    ["kra_reviews", "mo_kra_reviews", null, ["reviewer_id"]],
+    ["performance_snapshots", "mo_performance_snapshots", null, ["user_id"]],
+    ["comments", "mo_comments", null, ["user_id"]],
+    ["saved_views", "mo_saved_views", null, ["user_id"]],
   ];
   app.get(`${P}/state`, asyncHandler(async (_req, res) => {
     if (!requireMedia(res)) return;
@@ -124,6 +134,20 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         return o;
       });
     }
+    // Kanban cards — reassemble the prototype's embedded arrays from child tables.
+    const cards = await pool.query(`
+      SELECT to_jsonb(c) || jsonb_build_object(
+        'assignees', COALESCE((SELECT jsonb_agg(a.user_id) FROM mo_card_assignees a WHERE a.card_id=c.id),'[]'::jsonb),
+        'labels',    COALESCE((SELECT jsonb_agg(cl.label_id) FROM mo_card_labels cl WHERE cl.card_id=c.id),'[]'::jsonb),
+        'checklist', COALESCE((SELECT jsonb_agg(jsonb_build_object('text',ci.text,'is_done',ci.is_done) ORDER BY ci.sort_order)
+                               FROM mo_card_checklist_items ci WHERE ci.card_id=c.id),'[]'::jsonb)
+      ) AS row FROM mo_cards c WHERE c.archived_at IS NULL`);
+    out.cards = cards.rows.map((r) => {
+      const o = r.row as Record<string, unknown>;
+      o.created_by = uidToInt(o.created_by);
+      o.assignees = (o.assignees as unknown[]).map(uidToInt);
+      return o;
+    });
     res.json(out);
   }));
 

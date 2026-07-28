@@ -7816,7 +7816,8 @@ const MO_API = {
 async function hydrateFromServer(){
   const keys=['projects','project_assignments','deliverables','deliverable_versions','drive_links','daily_reports','report_tasks',
     'vendors','equipment_categories','equipment_items','equipment_kits','kit_items','equipment_bookings','equipment_transactions',
-    'maintenance_records','shoots','shoot_crew','leave_types','leave_requests','leave_replacements','holidays'];
+    'maintenance_records','shoots','shoot_crew','leave_types','leave_requests','leave_replacements','holidays',
+    'labels','boards','board_columns','cards','kra_cycles','kras','kra_reviews','performance_snapshots','comments','saved_views'];
   const st=await MO_API.get('/state');
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
   window.__MO_LIVE__=true;

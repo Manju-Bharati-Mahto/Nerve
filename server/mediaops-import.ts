@@ -27,6 +27,7 @@ const USER_REF = new Set([
   "added_by", "actor_id", "holder_id", "checked_out_by", "requested_by", "approved_by",
   "lead_user_id", "manager_id", "head_user_id", "custodian_id", "replaced_by",
   "recorded_by", "reported_by", "decided_by", "replacement_user_id", "replaced_user_id",
+  "reviewer_id",
 ]);
 // prototype DB key → mo_ table, in FK-safe order. Lookups first, then transactional.
 const PLAN: [string, string][] = [
@@ -47,6 +48,11 @@ const PLAN: [string, string][] = [
   ["equipment_bookings", "mo_equipment_bookings"], ["equipment_transactions", "mo_equipment_transactions"],
   ["maintenance_records", "mo_maintenance_records"], ["leave_requests", "mo_leave_requests"],
   ["leave_replacements", "mo_leave_replacements"],
+  // ── Phase 3: boards, KRA, analytics, comments ──
+  ["labels", "mo_labels"], ["boards", "mo_boards"], ["board_columns", "mo_board_columns"],
+  ["cards", "mo_cards"], ["kra_cycles", "mo_kra_cycles"], ["kras", "mo_kras"],
+  ["kra_reviews", "mo_kra_reviews"], ["performance_snapshots", "mo_performance_snapshots"],
+  ["comments", "mo_comments"], ["saved_views", "mo_saved_views"],
 ];
 const ROLE_MAP: Record<string, string> = { admin: "admin", team_lead: "sub_admin", employee: "user" };
 
@@ -133,6 +139,19 @@ export async function importMediaOpsSeed(): Promise<void> {
     for (const t of db.project_types) {
       if (t.default_template_id != null)
         await client.query(`UPDATE mo_project_types SET default_template_id=$1 WHERE id=$2`, [t.default_template_id, t.id]);
+    }
+
+    // 6) Explode Kanban cards' embedded arrays into the normalized child tables.
+    for (const c of db.cards ?? []) {
+      for (const uid of (c.assignees as number[] ?? []))
+        await client.query(`INSERT INTO mo_card_assignees (card_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+          [c.id, userMap.get(Number(uid)) ?? null]).catch(() => {});
+      for (const lid of (c.labels as number[] ?? []))
+        await client.query(`INSERT INTO mo_card_labels (card_id, label_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [c.id, lid]).catch(() => {});
+      let i = 0;
+      for (const ci of (c.checklist as { text: string; is_done: boolean }[] ?? []))
+        await client.query(`INSERT INTO mo_card_checklist_items (card_id, text, is_done, sort_order) VALUES ($1,$2,$3,$4)`,
+          [c.id, ci.text, ci.is_done, i++]).catch(() => {});
     }
     console.log("Media Ops seed import complete.");
   } finally {
