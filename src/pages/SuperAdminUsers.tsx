@@ -17,6 +17,7 @@ const ROLE_CFG: Record<AppRole, { label: string; icon: React.ElementType; color:
   user: { label: 'Member', icon: User, color: 'text-green-600', bg: 'bg-green-100' },
   outreach_manager: { label: 'Outreach Manager', icon: Megaphone, color: 'text-orange-600', bg: 'bg-orange-100' },
   branding_reports_admin: { label: 'Reports Admin', icon: ClipboardList, color: 'text-pink-600', bg: 'bg-pink-100' },
+  design_reports_admin: { label: 'Reports Admin', icon: ClipboardList, color: 'text-violet-600', bg: 'bg-violet-100' },
   task_owner: { label: 'Task Owner', icon: UserCheck, color: 'text-indigo-600', bg: 'bg-indigo-100' },
   task_manager: { label: 'Task Manager', icon: UserCheck, color: 'text-cyan-600', bg: 'bg-cyan-100' },
 }
@@ -35,7 +36,7 @@ const CUSTOM_COLORS = [
 
 const ROLE_LABEL: Record<AppRole, string> = {
   super_admin: 'Super Admin', admin: 'Admin', sub_admin: 'Team Lead', user: 'Member', outreach_manager: 'Outreach Manager',
-  branding_reports_admin: 'Reports Admin', task_owner: 'Task Owner', task_manager: 'Task Manager',
+  branding_reports_admin: 'Reports Admin', design_reports_admin: 'Reports Admin', task_owner: 'Task Owner', task_manager: 'Task Manager',
 }
 
 function UserRow({
@@ -82,7 +83,8 @@ function UserRow({
             <option value="sub_admin">Team Lead</option>
             <option value="admin">Admin</option>
             <option value="outreach_manager">Outreach Manager</option>
-            <option value="branding_reports_admin">Reports Admin</option>
+            <option value="branding_reports_admin">Reports Admin (Branding)</option>
+            <option value="design_reports_admin">Reports Admin (Design)</option>
           </select>
           <select
             className="hub-input text-xs py-1 w-32"

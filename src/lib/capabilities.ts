@@ -6,6 +6,10 @@ export const CAPABILITIES = [
   "branding:view_team_dashboard",
   "branding:assign_projects",
   "branding:leave_calendar",
+  "design:manage_categories",
+  "design:view_team_dashboard",
+  "design:assign_projects",
+  "design:leave_calendar",
 ] as const;
 
 export type CapabilityKey = (typeof CAPABILITIES)[number];
@@ -42,6 +46,30 @@ export const CAPABILITY_META: Record<CapabilityKey, {
     label: "Leave calendar",
     description: "View the team-wide leave calendar showing everyone's submitted and approved leaves.",
     route: "/branding/leave-calendar",
+    sidebarLabel: "Leave Calendar",
+  },
+  "design:manage_categories": {
+    label: "Manage categories",
+    description: "Add / edit / delete work categories that members pick from in daily reports.",
+    route: "/design/categories",
+    sidebarLabel: "Manage Categories",
+  },
+  "design:view_team_dashboard": {
+    label: "Design dashboard (all team reports)",
+    description: "View the full team daily-reports dashboard with charts, work analytics, and top contributors.",
+    route: "/design/dashboard",
+    sidebarLabel: "Team Dashboard",
+  },
+  "design:assign_projects": {
+    label: "Assign projects",
+    description: "Create projects and assign work to designers; each assignment adds a row to the designer's daily report.",
+    route: "/design/projects",
+    sidebarLabel: "Assign Projects",
+  },
+  "design:leave_calendar": {
+    label: "Leave calendar",
+    description: "View the team-wide leave calendar showing everyone's submitted and approved leaves.",
+    route: "/design/leave-calendar",
     sidebarLabel: "Leave Calendar",
   },
 };
