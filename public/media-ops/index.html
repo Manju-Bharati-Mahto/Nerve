@@ -5443,54 +5443,72 @@ const AI_FEATURES=[
   ['AI-7','Equipment demand prediction','From booking history + event calendar','Capital planning','C',false],
   ['AI-8','Monthly summary prose draft','Numbers stay computed; the prose is drafted','Saves Admin hours','C',true]
 ];
+/* AI Assist is computed live from /api/v1/media/ai/* — cached in MO_AI, refreshed
+   on demand (Regenerate). Guarded: in seed mode it shows the feature register only. */
+let MO_AI=null, MO_AI_LOADING=false;
+async function loadAI(force){
+  if(MO_AI_LOADING||(MO_AI&&!force))return;
+  MO_AI_LOADING=true; if(force)MO_AI=null;
+  try{ const [digest,dups,fc]=await Promise.all([
+      MO_API.get('/ai/digest'),MO_API.get('/ai/duplicates'),MO_API.get('/ai/forecast')]);
+    MO_AI={digest,dups,fc}; }
+  catch(e){ MO_AI={error:e.message}; }
+  MO_AI_LOADING=false;
+  if(S.route==='#/media/ai')render();
+}
 function viewAI(){
-  return `<div class="page-head">
-      <div><div class="crumb">§7.15 — cross-cutting</div><h1 class="page-title">AI Assist</h1>
-      <div class="page-sub">Applied only where it removes real work. Every output is labelled, editable, and never
-        auto-commits a decision. <b>Explicitly rejected:</b> AI scoring of employee performance (trust-destroying, gameable)
-        and AI-written daily reports (defeats the purpose of evidence-based logging).</div></div>
-      <div class="page-actions"><button class="btn" data-act="aiSettings">⚙ AI settings</button></div></div>
-
-    <div class="ai-box mb5">
-      <div class="between mb3"><b>Weekly digest — week of ${D.fmt(D.add(TODAY,-7))}</b><span class="ai-chip">✦ AI-1</span></div>
-      <p class="small mb3"><b>96 reports across both teams; 4 need you.</b></p>
-      <ul class="small" style="line-height:1.9">
-        <li><b>Anomalies:</b> Manav Trivedi filed his first report after 4 missing days — third occurrence this quarter.
-          Yash Panchal logged 15.5h on 24 Jul (above the 14h threshold).</li>
-        <li><b>Stalls:</b> Pharmacy Research Symposium has had no movement in 24 days (AUTO-7). The faculty postponed the
-          poster session; the project should probably be On Hold rather than In Production.</li>
-        <li><b>Blocked work:</b> two tasks blocked on the licensed music track for the Convocation aftermovie —
-          the same blocker appears on a war-room card with no owner.</li>
-        <li><b>Positive:</b> the YEEP aftermovie went v1→v2 in 48h with all notes addressed; Bengaluru tour crew logged
-          every day despite the connectivity problems.</li>
-      </ul>
-      <div class="f gap2 mt3"><button class="btn sm primary" data-go="#/media/reports">Open the 4 flagged</button>
-        <button class="btn sm">Edit digest</button><button class="btn sm ghost">Regenerate</button></div>
-    </div>
-
-    <div class="sec"><div class="sec-head"><h2 class="sec-title">Feature register</h2>
-      <span class="small mut3">Priority: S = Should (Phase 2–3), C = Could (Phase 3–4)</span></div>
+  if(window.__MO_LIVE__&&!MO_AI&&!MO_AI_LOADING)loadAI();
+  const A=MO_AI;
+  const head=`<div class="page-head">
+      <div><div class="crumb">§7.15 — cross-cutting · computed live</div><h1 class="page-title">AI Assist</h1>
+      <div class="page-sub">Applied only where it removes real work — every output is labelled, editable, and never
+        auto-commits a decision. The insights below are computed live from your data. <b>Explicitly rejected:</b>
+        AI scoring of employee performance and AI-written daily reports.</div></div>
+      <div class="page-actions"><button class="btn" data-act="aiRegen">↻ Regenerate</button>
+        <button class="btn" data-act="aiSettings">⚙ AI settings</button></div></div>`;
+  const register=`<div class="sec"><div class="sec-head"><h2 class="sec-title">Feature register</h2>
+      <span class="small mut3">Priority: S = Should · C = Could</span></div>
       <div class="grid g2">${AI_FEATURES.map(([id,name,desc,val,pri,on])=>`
         <div class="card"><div class="card-body">
           <div class="between mb2"><div class="f ac gap2"><span class="reqid">${id}</span><b>${esc(name)}</b></div>
             <span class="switch ${on?'on':''}" data-act="toggleAI" data-id="${id}"></span></div>
           <div class="small mut mb2">${esc(desc)}</div>
           <div class="between"><span class="chip sel">${esc(val)}</span><span class="chip">${pri==='S'?'Should':'Could'}</span></div>
-        </div></div>`).join('')}</div></div>
+        </div></div>`).join('')}</div></div>`;
+  if(!window.__MO_LIVE__) return head+`<div class="note warn mb5">Sign in to Nerve to load live AI insights.</div>`+register;
+  if(!A) return head+`<div class="ai-box mb5"><div class="skel" style="height:18px;width:38%;margin-bottom:14px"></div>
+      <div class="skel" style="height:64px"></div></div>
+      <div class="grid g2 mb5"><div class="ai-box"><div class="skel" style="height:80px"></div></div>
+      <div class="ai-box"><div class="skel" style="height:80px"></div></div></div>`+register;
+  if(A.error) return head+`<div class="note danger mb5">Couldn't load AI insights: ${esc(A.error)}</div>`+register;
 
-    <div class="grid g2">
-      <div class="ai-box"><div class="between mb3"><b>Duplicate detection preview</b><span class="ai-chip">✦ AI-3</span></div>
-        <div class="note warn"><b>“Hostel Life Reel Series”</b> looks similar to <b>Admissions 2026-27 — Brand Film</b>
-          (hostel & mess block scenes, overlapping dates, same faculty scope).<br>
-          <span class="small">Semantic similarity 0.71 · above the 0.62 threshold in AUTO-6.</span></div>
-        <div class="f gap2 mt3"><button class="btn sm">Merge as deliverables</button>
-          <button class="btn sm ghost">Not a duplicate</button></div></div>
-      <div class="ai-box"><div class="between mb3"><b>Equipment demand prediction</b><span class="ai-chip">✦ AI-7</span></div>
-        <p class="small">Convocation (14–16 Aug) + Sports Meet (4–8 Sep) both need 2 parallel crews. Booking history says
-          you will be 2 bodies and 1 gimbal short on 14 Aug and 5 Sep.</p>
-        <div class="note mt2"><b>Options:</b> rent from PVB (~₹6,500/day × 3 days = ₹19,500) or buy a fourth A7 IV (₹215,000,
-          pays back in 33 rental-days at current demand).</div></div>
+  const dg=A.digest, an=dg.anomalies||{over_hours:[],blocked:[],stalls:[]};
+  const clean=!an.over_hours.length&&!an.stalls.length&&!an.blocked.length;
+  const digestBox=`<div class="ai-box mb5">
+      <div class="between mb3"><b>Weekly digest — computed now</b><span class="ai-chip">✦ AI-1</span></div>
+      <p class="small mb3"><b>${dg.reports_this_week} reports in the last 7 days · ${dg.needs_attention} need attention.</b></p>
+      <ul class="small" style="line-height:1.9">
+        ${an.over_hours.map(x=>`<li><b>Over hours:</b> ${esc(x)}</li>`).join('')}
+        ${an.stalls.map(x=>`<li><b>Stalled:</b> ${esc(x)}</li>`).join('')}
+        ${an.blocked.map(x=>`<li><b>Blocked:</b> ${esc(x)}</li>`).join('')}
+        ${clean?'<li class="mut3">No anomalies detected in this window.</li>':''}
+      </ul>
+      ${(dg.positive||[]).length?`<div class="note"><b>Positive:</b> ${dg.positive.map(esc).join(' · ')}</div>`:''}
+      <div class="f gap2 mt3"><button class="btn sm primary" data-go="#/media/reports">Open reports</button></div>
     </div>`;
+  const dups=A.dups.candidates||[];
+  const dupBox=`<div class="ai-box"><div class="between mb3"><b>Duplicate detection</b><span class="ai-chip">✦ AI-3</span></div>
+      ${dups.length?dups.map(c=>`<div class="note warn mb2"><b>${esc(c.a.name)}</b> ~ <b>${esc(c.b.name)}</b>
+        <br><span class="small">similarity ${c.score} · ${c.reasons.join(', ')}</span></div>`).join(''):
+        `<div class="hint">No likely duplicates above the ${A.dups.threshold} threshold.</div>`}</div>`;
+  const sf=A.fc.shortfalls||[];
+  const fcBox=`<div class="ai-box"><div class="between mb3"><b>Equipment demand forecast</b><span class="ai-chip">✦ AI-7</span></div>
+      ${sf.length?sf.map(s=>`<div class="note mb2"><b>${esc(s.category)}</b>: ${s.upcoming_bookings} upcoming bookings vs
+        ${s.items} in inventory — short by ~${s.short_by}.</div>`).join(''):
+        `<div class="hint">Inventory covers all upcoming bookings.</div>`}
+      <div class="small mut mt2">Next shoots: ${(A.fc.upcoming_shoots||[]).map(s=>esc(s.title)+' ('+s.shoot_date+')').join(' · ')||'none scheduled'}</div></div>`;
+
+  return head+digestBox+`<div class="grid g2 mb5">${dupBox}${fcBox}</div>`+register;
 }
 
 /* ==========================================================================
@@ -7645,6 +7663,7 @@ const ACTIONS = {
   toggleAI:(d,n)=>{n.classList.toggle('on');toast(d.id+' '+(n.classList.contains('on')?'enabled':'disabled')+
     ' — AI outputs are always labelled and editable','ok');},
   aiSettings:()=>toast('AI settings — model, retention, opt-out per feature. No AI performance scoring, ever (§7.15).','ok'),
+  aiRegen:()=>{loadAI(true);toast('Recomputing AI insights from live data…','ok');},
   nlSearch:()=>{
     modal(`<div class="mo-head"><div><h2>Natural-language search <span class="ai-chip">✦ AI-5</span></h2>
         <p>Maps plain English to structured filters. The filters remain visible and editable — you always see what it did.</p></div></div>

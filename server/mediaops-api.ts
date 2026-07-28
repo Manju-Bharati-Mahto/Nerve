@@ -674,6 +674,51 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     });
   }));
 
+  // AI-3 duplicate detection — real similarity over live projects (§AUTO-6).
+  app.get(`${P}/ai/duplicates`, asyncHandler(async (_req, res) => {
+    if (!requireMedia(res)) return;
+    const { rows } = await pool.query(
+      `SELECT id, name, description, faculty_served, start_date, end_date, code FROM mo_projects
+        WHERE deleted_at IS NULL AND status NOT IN ('completed','archived','cancelled')`);
+    const norm = (s: string) => new Set(String(s ?? "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 2));
+    const jac = (a: Set<string>, b: Set<string>) => { let i = 0; a.forEach((x) => b.has(x) && i++); const u = a.size + b.size - i; return u ? i / u : 0; };
+    const overlap = (a: Record<string, unknown>, b: Record<string, unknown>) =>
+      a.start_date && a.end_date && b.start_date && b.end_date && !(String(a.end_date) < String(b.start_date) || String(b.end_date) < String(a.start_date));
+    const pairs: unknown[] = [];
+    for (let i = 0; i < rows.length; i++) for (let j = i + 1; j < rows.length; j++) {
+      const a = rows[i], b = rows[j];
+      const t = jac(norm(a.name + " " + a.description), norm(b.name + " " + b.description));
+      let score = t;
+      if (a.faculty_served && a.faculty_served === b.faculty_served) score += 0.15;
+      if (overlap(a, b)) score += 0.15;
+      if (score >= 0.5) pairs.push({ a: { id: a.id, name: a.name, code: a.code }, b: { id: b.id, name: b.name, code: b.code },
+        score: Math.min(1, score).toFixed(2), reasons: [t >= 0.2 ? "similar title/scope" : null, a.faculty_served === b.faculty_served ? "same faculty" : null, overlap(a, b) ? "overlapping dates" : null].filter(Boolean) });
+    }
+    pairs.sort((x, y) => Number((y as { score: string }).score) - Number((x as { score: string }).score));
+    res.json({ threshold: 0.5, candidates: pairs.slice(0, 8) });
+  }));
+
+  // AI-7 equipment demand forecast — upcoming booking load vs inventory per category.
+  app.get(`${P}/ai/forecast`, asyncHandler(async (_req, res) => {
+    if (!requireMedia(res)) return;
+    const [inv, load, shoots] = await Promise.all([
+      pool.query(`SELECT c.id, c.name, COUNT(i.id)::int items FROM mo_equipment_categories c
+                    LEFT JOIN mo_equipment_items i ON i.category_id=c.id AND i.deleted_at IS NULL AND i.status<>'retired'
+                   GROUP BY c.id, c.name`),
+      pool.query(`SELECT i.category_id, COUNT(*)::int booked FROM mo_equipment_bookings b
+                    JOIN mo_equipment_items i ON i.id=b.equipment_item_id
+                   WHERE b.status IN ('reserved','active') AND b.ends_at >= CURRENT_DATE
+                   GROUP BY i.category_id`),
+      pool.query(`SELECT title, to_char(shoot_date,'YYYY-MM-DD') shoot_date FROM mo_shoots
+                   WHERE shoot_date >= CURRENT_DATE AND status<>'cancelled' ORDER BY shoot_date LIMIT 6`),
+    ]);
+    const loadBy = new Map(load.rows.map((r) => [r.category_id, r.booked]));
+    const shortfalls = inv.rows.map((c) => ({ category: c.name, items: c.items, upcoming_bookings: loadBy.get(c.id) ?? 0 }))
+      .filter((c) => c.upcoming_bookings >= c.items && c.items > 0)
+      .map((c) => ({ ...c, short_by: c.upcoming_bookings - c.items + 1 }));
+    res.json({ upcoming_shoots: shoots.rows, shortfalls });
+  }));
+
   // ICS calendar feed (§7.11) — subscribe to shoots + deadlines + leave + holidays.
   app.get(`${P}/calendar/feed.ics`, asyncHandler(async (_req, res) => {
     if (!requireMedia(res)) return;
