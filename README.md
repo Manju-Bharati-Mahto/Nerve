@@ -107,3 +107,26 @@ The repo currently reflects two overlapping system shapes:
 - The retained backend architecture is Supabase-based, with schema, storage, and edge-function assets still present in the repository.
 
 That distinction matters when discussing the system design: the local `AuthProvider` and `db` modules define how the app works now, while the Supabase schema and `ai-chat` function define the cloud path the project can reconnect to later.
+
+## Nerve Media Ops (Media Crew department)
+
+**Nerve Media Ops** is a production-first operating system for the Media Crew
+department — Projects → Shoots → Deliverables → Drive Links → Daily Task Logs, plus
+equipment, calendar, analytics, KRA and leave, built to the **PRD/SRS v1.0**. It is
+a distinct module family living alongside the Branding/Design/Outreach portals.
+
+- **UI:** the self-contained prototype is served verbatim and progressively wired to
+  a real backend. Mounted full-screen at **`/media`**
+  (`src/pages/media/MediaOps.tsx` → `public/media-ops/index.html`). Media-team users
+  are routed there by `getRoleDashboard()`.
+- **Backend:** `server/mediaops-db.ts` owns the full `mo_*` schema (§11, ~45 tables)
+  with DB-level integrity — one report/day (BR-3), one PM/project (BR-2),
+  no equipment double-booking (AC-7, `btree_gist`). REST under `/api/v1/media/*`.
+- **Identity:** reuses the global `users` table (a media user = a Nerve user with
+  `team = 'media'`); roles map `admin`→admin, `sub_admin`→team_lead, `user`→employee.
+
+Built in phases (0 → 4). **Phase 0 (foundations) is complete.** Full architecture,
+schema, API plan, role mapping, phase status and change log:
+
+➡️ **[`docs/MEDIA_OPS.md`](docs/MEDIA_OPS.md)** — the living Media Ops doc (kept
+updated with every architecture change).

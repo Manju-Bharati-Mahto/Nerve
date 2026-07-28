@@ -39,6 +39,9 @@ import BrandingUserDashboard from "@/pages/branding/BrandingUserDashboard";
 import BrandingTeamPanel from "@/pages/branding/BrandingTeamPanel";
 import BrandingBrowse from "@/pages/branding/BrandingBrowse";
 
+// Media Ops (self-contained prototype, served at /media)
+import MediaOps from "@/pages/media/MediaOps";
+
 // Design team
 import DesignAdminDashboard from "@/pages/design/DesignAdminDashboard";
 import DesignAdminShell, { MaybeDesignAdminShell } from "@/pages/design/DesignAdminShell";
@@ -84,6 +87,13 @@ const App = () => (
             <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route path="/verify-email" element={<VerifyEmailPage />} />
             <Route path="/" element={<RootRoute />} />
+
+            {/* ── Media Ops — full-screen self-contained app (own shell, no chrome) ── */}
+            <Route path="/media" element={
+              <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']} team="media">
+                <MediaOps />
+              </RoleGuard>
+            } />
 
             {/* All authenticated routes */}
             <Route element={<AppLayout />}>

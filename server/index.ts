@@ -137,6 +137,7 @@ import {
   getLeaveForDate,
 } from "./branding-db.js";
 import * as designDb from "./design-db.js";
+import { bootstrapMediaOpsDatabase } from "./mediaops-db.js";
 
 const app = express();
 const PgStore = connectPgSimple(session);
@@ -2720,6 +2721,7 @@ bootstrapDatabase()
   .then(() => bootstrapSettingsDatabase())
   .then(() => bootstrapOutreach())
   .then(() => designDb.bootstrapDesignDatabase())
+  .then(() => bootstrapMediaOpsDatabase())
   .then(async () => {
     // Catch up on any reports whose 21:00 IST submit cutoff or 17:00 IST
     // auto-pause cutoff already passed while the server was down, then keep an

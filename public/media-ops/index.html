@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nerve Media Ops — install the prototype</title>
+<style>
+  :root{--brand:#1B7A56;--bg:#0E1512;--surface:#141D19;--border:#24322B;--text:#E8EFEA;--text2:#A8B8AF;--mono:ui-monospace,Menlo,Consolas,monospace}
+  *{box-sizing:border-box} html,body{height:100%}
+  body{margin:0;background:linear-gradient(160deg,#07271C,#0E1512 60%);color:var(--text);
+    font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:grid;place-items:center;padding:24px}
+  .card{max-width:720px;width:100%;background:var(--surface);border:1px solid var(--border);border-radius:18px;
+    padding:34px 36px;box-shadow:0 24px 60px rgba(0,0,0,.5)}
+  .brand{display:flex;align-items:center;gap:12px;margin-bottom:18px}
+  .mark{width:40px;height:40px;border-radius:12px;background:linear-gradient(145deg,#35A277,#0F4E37);display:grid;place-items:center;color:#fff;font-weight:800}
+  h1{font-size:22px;margin:0;letter-spacing:-.01em} .tag{font-size:11px;letter-spacing:.18em;color:#63C9A0;text-transform:uppercase;font-weight:700}
+  p{color:var(--text2);line-height:1.6;font-size:15px}
+  code,.path{font-family:var(--mono);background:#0b1512;border:1px solid var(--border);border-radius:8px;padding:2px 8px;color:#8ADCBB;font-size:13px}
+  .path{display:inline-block;padding:8px 12px;margin:8px 0}
+  ol{color:var(--text2);line-height:1.9;padding-left:20px}
+  .foot{margin-top:22px;padding-top:18px;border-top:1px solid var(--border);font-size:12.5px;color:#7C8C84}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand">
+      <div class="mark">N</div>
+      <div><div class="tag">Nerve · Media Ops</div><h1>Prototype mount is ready — drop in the UI</h1></div>
+    </div>
+    <p>This route (<code>/media</code>) is wired and serving from
+      <span class="path">public/media-ops/index.html</span>. The backend schema
+      (<code>server/mediaops-db.ts</code>, all <code>mo_*</code> tables) and the API namespace
+      <code>/api/v1/media/*</code> are being built out phase by phase.</p>
+    <p><b>To install the exact prototype UI:</b></p>
+    <ol>
+      <li>Save the attached <code>nerve-media-ops.html</code> as
+        <span class="path">public/media-ops/index.html</span> (replace this file).</li>
+      <li>Reload — the full Media Ops app appears here, edge to edge.</li>
+    </ol>
+    <p>Then Phase&nbsp;1 swaps its in-memory demo data for live calls to the Projects, Deliverables
+      and Daily-Reporting API on top of this same schema.</p>
+    <div class="foot">Phase 0 — Foundations · schema + shell + mount. See <code>README.md → Media Ops</code> for the full plan.</div>
+  </div>
+</body>
+</html>
