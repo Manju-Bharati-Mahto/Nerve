@@ -172,6 +172,20 @@ npm run dev          # Vite (8080/8081)
 
 ## 7. Change log
 
+- **Phase 1 wiring — Part A (seed import):** `server/mediaops-import.ts` +
+  `server/mediaops-seed.json` load the prototype's full demo dataset into the real
+  `mo_*` schema so the backend holds the data the UI was designed around. The
+  prototype's integer ids are FK-consistent, so every row is inserted **with its
+  original id** (`OVERRIDING SYSTEM VALUE`) — only user references remap, because the
+  18 media crew are upserted into the shared `users` table (login `<email> /
+  media123`, e.g. `rahul.joshi@paruluniversity.ac.in`). A generic inserter writes the
+  intersection of prototype keys ∩ real columns, remapping user-ref columns and
+  stringifying JSONB, then bumps each identity sequence past the imported ids.
+  Imported: 28 projects, 77 assignments, 70 deliverables, 13 versions, 13 drive
+  links, **368 daily reports, 1 087 task logs**, + all lookups/templates/automation
+  rules. Verified: the API returns 28 projects and live dashboard aggregates. Run
+  once on a demo DB with `npx tsx server/mediaops-import.ts`. Next: Part B — hydrate
+  the prototype's `DB` from the API on boot and write mutations through.
 - **Prototype installed + My Day full-width:** the real ~590 KB prototype now lives
   at `public/media-ops/index.html` (recovered losslessly from the session transcript
   and verified — all 17 routes render with 0 console errors). `viewMyDay()` no longer
