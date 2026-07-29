@@ -12,7 +12,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import type express from "express";
 import { pool } from "./db.js";
-import { hashPassword } from "./password.js";
+import { hashPassword, verifyPassword } from "./password.js";
 
 type Handlers = {
   asyncHandler: (fn: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<unknown>) =>
@@ -838,6 +838,19 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       [String(b.entity_type), Number(b.entity_id), u.id, String(b.body)]);
     await audit(u, "comment.posted", String(b.entity_type), Number(b.entity_id), null, null, req);
     res.status(201).json({ comment: ins.rows[0] });
+  }));
+
+  // Change own password (profile dialog).
+  app.post(`${P}/me/password`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const b = req.body as Record<string, unknown>;
+    if (String(b.new_password ?? "").length < 6) return sendError(res, 400, "New password must be at least 6 characters.");
+    const row = (await pool.query(`SELECT password_hash FROM users WHERE id=$1`, [u.id])).rows[0];
+    if (!row || !(await verifyPassword(String(b.current_password ?? ""), row.password_hash)))
+      return sendError(res, 400, "Current password is incorrect.");
+    await pool.query(`UPDATE users SET password_hash=$1, updated_at=NOW() WHERE id=$2`, [await hashPassword(String(b.new_password)), u.id]);
+    await audit(u, "user.password_changed", "user", null, null, null, req);
+    res.json({ ok: true });
   }));
 
   // ═════════════════════════ ADMIN: CREW / EQUIPMENT / DRIVE LINKS ═════════
