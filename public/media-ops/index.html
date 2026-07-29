@@ -2664,10 +2664,27 @@ if(matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches){S.theme='dark
 $('#btn-help').onclick=()=>showShortcuts();
 $('#btn-bell').onclick=()=>{location.hash='#/media/notifications';};
 $('#btn-quickadd').onclick=e=>menu(e.currentTarget,quickAddItems());
-$('#btn-role').onclick=e=>menu(e.currentTarget,[
-  {label_only:me().full_name+' · '+({admin:'Admin',team_lead:'Team Lead',employee:'Employee'})[me().role]},
-  {label:'Back to Nerve', icon:'←', fn:()=>{window.location.href='/';}}
-]);
+$('#btn-role').onclick=()=>{
+  const m=me(), rl={admin:'Admin',team_lead:'Team Lead',employee:'Employee'}[m.role]||'Member';
+  modal(`<div class="mo-head"><div class="f ac gap3">${avatar(S.me,'lg')}
+      <div><h2>${esc(m.full_name)}</h2><p>${esc(m.email||'')} · ${rl}</p></div></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <dl class="kv mb4"><dt>Name</dt><dd>${esc(m.full_name)}</dd>
+        <dt>Email</dt><dd>${esc(m.email||'—')}</dd>
+        <dt>Role</dt><dd>${rl}</dd>
+        ${m.designation?`<dt>Designation</dt><dd>${esc(m.designation)}</dd>`:''}</dl>
+      <div class="divider"></div>
+      <div class="small b mb3">Change password</div>
+      <div class="field"><label class="lbl">Current password</label><input class="inp" id="pw-cur" type="password" autocomplete="current-password"></div>
+      <div class="row">
+        <div class="field"><label class="lbl">New password</label><input class="inp" id="pw-new" type="password" placeholder="min 6 characters" autocomplete="new-password"></div>
+        <div class="field"><label class="lbl">Confirm</label><input class="inp" id="pw-conf" type="password" autocomplete="new-password"></div></div></div>
+    <div class="mo-foot"><button class="btn ghost" onclick="closeModal();window.location.href='/'">← Nerve home</button>
+      <div class="ml-auto f gap2"><button class="btn" onclick="closeModal()">Close</button>
+        <button class="btn primary" data-act="changePassword">Update password</button></div></div>`);
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+};
 function quickAddItems(){return [
   {label:'Log Task',icon:'✎',hint:'L',fn:()=>openTaskLog()},
   {label:'New Project',icon:'▤',hint:'P',fn:()=>openNewProject()},
@@ -2820,7 +2837,7 @@ function viewDashboard(){
   const out=DB.equipment_items.filter(e=>e.status==='checked_out').length;
   const totalUnits=DB.equipment_items.reduce((a,e)=>a+(e.pool_quantity||1),0);
   const outUnits=DB.equipment_items.filter(e=>e.status==='checked_out').reduce((a,e)=>a+(e.pool_quantity||1),0);
-  const pctOut=Math.round(outUnits/totalUnits*100);
+  const pctOut=totalUnits?Math.round(outUnits/totalUnits*100):0;
   const greet=NOW.getHours()<12?'Good morning':NOW.getHours()<17?'Good afternoon':'Good evening';
   const dProj=active.length-lastMonth;
 
@@ -7739,6 +7756,14 @@ const ACTIONS = {
     ' — AI outputs are always labelled and editable','ok');},
   aiSettings:()=>toast('AI settings — model, retention, opt-out per feature. No AI performance scoring, ever (§7.15).','ok'),
   aiRegen:()=>{loadAI(true);toast('Recomputing AI insights from live data…','ok');},
+  changePassword:()=>{
+    const cur=$('#pw-cur').value, nw=$('#pw-new').value, cf=$('#pw-conf').value;
+    if(nw.length<6){toast('New password must be at least 6 characters','bad');return;}
+    if(nw!==cf){toast('Passwords do not match','bad');return;}
+    MO_API.post('/me/password',{current_password:cur,new_password:nw})
+      .then(()=>{closeModal();toast('Password updated — use it next sign-in','ok');})
+      .catch(e=>toast('Could not update: '+e.message,'bad'));
+  },
   nlSearch:()=>{
     modal(`<div class="mo-head"><div><h2>Natural-language search <span class="ai-chip">✦ AI-5</span></h2>
         <p>Maps plain English to structured filters. The filters remain visible and editable — you always see what it did.</p></div></div>
@@ -7933,6 +7958,9 @@ async function hydrateFromServer(){
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
   // Bind identity to the real logged-in Nerve user (server sends its prototype int id).
   if(typeof st.me==='number' && DB.users.some(u=>u.id===st.me)) S.me=st.me;
+  // Clear the prototype's seed activity + notifications so nothing dummy shows on live;
+  // audit() re-populates the activity feed from this session's real actions.
+  DB.audit_logs=[]; DB.notifications=[]; DB.activity=[];
   window.__MO_LIVE__=true;
   return {projects:(st.projects||[]).length, reports:(st.daily_reports||[]).length};
 }
