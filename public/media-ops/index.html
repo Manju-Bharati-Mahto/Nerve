@@ -2662,17 +2662,9 @@ $('#btn-help').onclick=()=>showShortcuts();
 $('#btn-bell').onclick=()=>{location.hash='#/media/notifications';};
 $('#btn-quickadd').onclick=e=>menu(e.currentTarget,quickAddItems());
 $('#btn-role').onclick=e=>menu(e.currentTarget,[
-  {label_only:'Demo control — switch identity to test §16 scoping'},
-  ...DB.users.filter(u=>u.is_active).map(u=>({
-    label:u.full_name+' · '+({admin:'Admin',team_lead:'Team Lead',employee:'Employee'})[u.role],
-    icon:u.role==='admin'?'★':u.role==='team_lead'?'▲':'●', on:u.id===S.me,
-    hint:duties(u.id).length?'duty':'',
-    fn:()=>{S.me=u.id;
-      if(!can('boards.manage')&&S.route.includes('boards'))location.hash='#/media/home';
-      if(!can('analytics.department')&&S.route.includes('analytics'))location.hash='#/media/home';
-      if(!isAdmin()&&S.route.includes('admin'))location.hash='#/media/home';
-      render();toast('Now viewing as '+u.full_name+' ('+u.role.replace('_',' ')+')','ok');}
-  }))]);
+  {label_only:me().full_name+' · '+({admin:'Admin',team_lead:'Team Lead',employee:'Employee'})[me().role]},
+  {label:'Back to Nerve', icon:'←', fn:()=>{window.location.href='/';}}
+]);
 function quickAddItems(){return [
   {label:'Log Task',icon:'✎',hint:'L',fn:()=>openTaskLog()},
   {label:'New Project',icon:'▤',hint:'P',fn:()=>openNewProject()},
@@ -4968,6 +4960,12 @@ function perfCompare(scope){
    ========================================================================== */
 function viewKRA(){
   const cycle=DB.kra_cycles.find(c=>c.status==='active');
+  if(!cycle) return `<div class="page-head"><div><div class="crumb">Module 9 · §7.9</div>
+      <h1 class="page-title">KRA</h1>
+      <div class="page-sub">Auto-metric KRAs bind to performance snapshots and compute achievement without self-reporting.</div></div>
+      <div class="page-actions">${isAdmin()?`<button class="btn primary">＋ New cycle</button>`:''}</div></div>
+    <div class="card"><div class="empty"><div class="e-ico">◎</div><h4>No active KRA cycle</h4>
+      <p>${isAdmin()?'Open a cycle to start setting KRAs for the team.':'Your admin will open a KRA cycle here.'}</p></div></div>`;
   const scope=can('team.workload')?myTeamIds():[S.me];
   const mine=DB.kras.filter(k=>k.kra_cycle_id===cycle.id&&k.user_id===S.me);
   const total=mine.reduce((s,k)=>s+k.weight,0);
@@ -5389,6 +5387,12 @@ function anPack(from){
    ========================================================================== */
 function viewBoards(){
   const b=DB.boards.find(x=>x.id===S.board)||DB.boards[0];
+  if(!b) return `<div class="page-head"><div><div class="crumb">Module 14 · §7.14</div>
+      <h1 class="page-title">Management Boards</h1>
+      <div class="page-sub">Kanban boards for cross-project coordination — war rooms, monthly planning, department ops.
+        Visible to Admins and Team Leads (FR-14.1).</div></div></div>
+    <div class="card"><div class="empty"><div class="e-ico">▥</div><h4>No boards yet</h4>
+      <p>Management boards will appear here once they’re created.</p></div></div>`;
   const cols=DB.board_columns.filter(c=>c.board_id===b.id).sort((x,y)=>x.sort_order-y.sort_order);
   return `<div class="page-head">
       <div><div class="crumb">Module 14 · §7.14</div><h1 class="page-title">Management Boards</h1>
@@ -7853,9 +7857,11 @@ async function hydrateFromServer(){
     'vendors','equipment_categories','equipment_items','equipment_kits','kit_items','equipment_bookings','equipment_transactions',
     'maintenance_records','shoots','shoot_crew','leave_types','leave_requests','leave_replacements','holidays',
     'labels','boards','board_columns','cards','kra_cycles','kras','kra_reviews','performance_snapshots','comments','saved_views',
-    'automation_rules'];
+    'automation_rules','users'];
   const st=await MO_API.get('/state');
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
+  // Bind identity to the real logged-in Nerve user (server sends its prototype int id).
+  if(typeof st.me==='number' && DB.users.some(u=>u.id===st.me)) S.me=st.me;
   window.__MO_LIVE__=true;
   return {projects:(st.projects||[]).length, reports:(st.daily_reports||[]).length};
 }
@@ -7889,12 +7895,9 @@ if('serviceWorker' in navigator){ try{
 (async function boot(){
   if(!location.hash)location.hash='#/media/home';
   let live=null;
-  // Bind identity to the signed-in Nerve user (media crew are 'mo-uN' in the shared users table).
-  try{
-    const r=await fetch('/api/auth/me',{credentials:'same-origin'});
-    if(r.ok){ const who=await r.json(); const uid=who&&who.user&&who.user.id;
-      if(typeof uid==='string'&&/^mo-u\d+$/.test(uid)){ const n=+uid.slice(4); if(DB.users.some(u=>u.id===n)) S.me=n; } }
-  }catch(_){/* not signed in / standalone — keep default identity */}
+  // Identity is bound inside hydrateFromServer() from /state's `me` (the real crew,
+  // not the demo seed). If hydration fails (no session/standalone), the seed identity
+  // is used as a fallback so the app still runs.
   try{ live=await hydrateFromServer(); }
   catch(e){ console.warn('[Media Ops] server hydration failed — running on seed data:', e.message); }
   render();

@@ -125,13 +125,27 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["automation_rules", "mo_automation_rules", null, ["updated_by"]],
   ];
   app.get(`${P}/state`, asyncHandler(async (_req, res) => {
-    if (!requireMedia(res)) return;
-    const out: Record<string, unknown[]> = {};
+    const u = requireMedia(res); if (!u) return;
+    // Stable {real user id → prototype integer id} map for the media crew (+ the
+    // current user if they aren't on the media team, e.g. super_admin). Used for
+    // BOTH the user-ref columns and the roster, so identities line up even for real
+    // (non-'mo-uN') users. This roster REPLACES the prototype's seed users.
+    const crew = (await pool.query(
+      `SELECT id, full_name, email, role, avatar_url FROM users WHERE team='media' ORDER BY id`)).rows as Array<Record<string, unknown>>;
+    if (!crew.some((r) => r.id === u.id))
+      crew.unshift({ id: u.id, full_name: u.full_name ?? "You", email: u.email ?? "", role: u.role, avatar_url: null });
+    let ctr = 900;
+    const idMap = new Map<string, number>();
+    for (const r of crew) { const m = /^mo-u(\d+)$/.exec(String(r.id)); idMap.set(String(r.id), m ? Number(m[1]) : ctr++); }
+    const toInt = (v: unknown) => (typeof v === "string" && idMap.has(v)) ? idMap.get(v)! : uidToInt(v);
+    const roleMap: Record<string, string> = { super_admin: "admin", admin: "admin", sub_admin: "team_lead", user: "employee" };
+
+    const out: Record<string, unknown> = {};
     for (const [key, table, where, refs] of STATE) {
       const { rows } = await pool.query(`SELECT to_jsonb(t) AS row FROM ${table} t${where ? " WHERE " + where : ""}`);
       out[key] = rows.map((r) => {
         const o = r.row as Record<string, unknown>;
-        for (const f of refs) o[f] = uidToInt(o[f]);
+        for (const f of refs) o[f] = toInt(o[f]);
         return o;
       });
     }
@@ -145,10 +159,21 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       ) AS row FROM mo_cards c WHERE c.archived_at IS NULL`);
     out.cards = cards.rows.map((r) => {
       const o = r.row as Record<string, unknown>;
-      o.created_by = uidToInt(o.created_by);
-      o.assignees = (o.assignees as unknown[]).map(uidToInt);
+      o.created_by = toInt(o.created_by);
+      o.assignees = (o.assignees as unknown[]).map(toInt);
       return o;
     });
+    // Real roster (replaces the prototype's seed users) + the current identity.
+    out.users = crew.map((r) => {
+      const name = String(r.full_name ?? "User");
+      return {
+        id: idMap.get(String(r.id)), full_name: name, email: r.email ?? "",
+        role: roleMap[String(r.role)] ?? "employee",
+        initials: (name.split(/\s+/).map((w) => w[0] || "").join("").slice(0, 2).toUpperCase()) || "?",
+        color: "#3B9B76", avatar_url: r.avatar_url ?? null, is_active: true,
+      };
+    });
+    out.me = idMap.get(u.id);
     res.json(out);
   }));
 
