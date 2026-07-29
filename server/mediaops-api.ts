@@ -12,6 +12,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import type express from "express";
 import { pool } from "./db.js";
+import { hashPassword } from "./password.js";
 
 type Handlers = {
   asyncHandler: (fn: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<unknown>) =>
@@ -167,13 +168,16 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     out.users = crew.map((r) => {
       const name = String(r.full_name ?? "User");
       return {
-        id: idMap.get(String(r.id)), full_name: name, email: r.email ?? "",
+        id: idMap.get(String(r.id)), real_id: r.id, full_name: name, email: r.email ?? "",
         role: roleMap[String(r.role)] ?? "employee",
         initials: (name.split(/\s+/).map((w) => w[0] || "").join("").slice(0, 2).toUpperCase()) || "?",
         color: "#3B9B76", avatar_url: r.avatar_url ?? null, is_active: true,
       };
     });
     out.me = idMap.get(u.id);
+    // The prototype expects a tags array on each project (seed had one); real
+    // projects have none — default to [] so viewProject's `p.tags.map` never crashes.
+    for (const p of (out.projects as Array<Record<string, unknown>>)) if (!Array.isArray(p.tags)) p.tags = [];
     res.json(out);
   }));
 
@@ -834,6 +838,67 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       [String(b.entity_type), Number(b.entity_id), u.id, String(b.body)]);
     await audit(u, "comment.posted", String(b.entity_type), Number(b.entity_id), null, null, req);
     res.status(201).json({ comment: ins.rows[0] });
+  }));
+
+  // ═════════════════════════ ADMIN: CREW / EQUIPMENT / DRIVE LINKS ═════════
+  // Add a media crew member (real Nerve user). Admin only. Requires email + password.
+  app.post(`${P}/crew`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may add crew members.");
+    const b = req.body as Record<string, unknown>;
+    const email = String(b.email ?? "").trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendError(res, 400, "A valid email is required.");
+    if (String(b.password ?? "").length < 6) return sendError(res, 400, "Password must be at least 6 characters.");
+    const role = ({ admin: "admin", team_lead: "sub_admin", employee: "user" } as Record<string, string>)[String(b.role)] ?? "user";
+    const exists = await pool.query(`SELECT 1 FROM users WHERE email=$1`, [email]);
+    if (exists.rows[0]) return sendError(res, 409, "A user with that email already exists.");
+    const id = `u-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const pw = await hashPassword(String(b.password));
+    await pool.query(
+      `INSERT INTO users (id, full_name, email, department, role, team, password_hash, email_verified)
+       VALUES ($1,$2,$3,'Media Crew',$4,'media',$5,true)`,
+      [id, String(b.full_name ?? "New Member").trim() || "New Member", email, role, pw]);
+    await pool.query(`INSERT INTO mo_user_profiles (user_id, designation, mo_role) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+      [id, String(b.designation ?? ""), ({ admin: "admin", sub_admin: "team_lead", user: "employee" } as Record<string, string>)[role]]);
+    await audit(u, "crew.added", "user", null, null, { email, role }, req);
+    res.status(201).json({ ok: true, id, email, role });
+  }));
+
+  // Add an equipment item (auto asset tag EQ-<CAT>-NNN). Team Lead / Admin.
+  app.post(`${P}/equipment`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Team Lead or Admin only.");
+    const b = req.body as Record<string, unknown>;
+    const catId = Number(b.category_id);
+    if (!catId || !String(b.make ?? "").trim()) return sendError(res, 400, "Category and make are required.");
+    const cat = await pool.query(`SELECT name FROM mo_equipment_categories WHERE id=$1`, [catId]);
+    if (!cat.rows[0]) return sendError(res, 400, "Invalid category.");
+    const prefix = String(cat.rows[0].name).replace(/[^A-Za-z]/g, "").slice(0, 3).toUpperCase() || "GEN";
+    const n = (await pool.query(`SELECT COUNT(*)::int c FROM mo_equipment_items WHERE category_id=$1`, [catId])).rows[0].c + 1;
+    const tag = `EQ-${prefix}-${String(n).padStart(3, "0")}`;
+    const cond = ["excellent", "good", "fair", "poor"].includes(String(b.condition)) ? String(b.condition) : "good";
+    const ins = await pool.query(
+      `INSERT INTO mo_equipment_items (department_id, campus_id, category_id, asset_tag, qr_uid, make, model, serial_no, purchase_cost, condition, status)
+       VALUES (1,1,$1,$2,$3,$4,$5,$6,$7,$8,'available') RETURNING *`,
+      [catId, tag, `QR-${tag}`, String(b.make).trim(), String(b.model ?? "").trim(),
+       (b.serial_no as string)?.trim() || null, b.purchase_cost ? Number(b.purchase_cost) : null, cond]);
+    await audit(u, "equipment.added", "equipment_item", ins.rows[0].id, null, { tag }, req);
+    res.status(201).json({ item: ins.rows[0], asset_tag: tag });
+  }));
+
+  // Attach a validated Drive link to a project/deliverable (FR-4.3).
+  app.post(`${P}/drive-links`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const b = req.body as Record<string, unknown>;
+    const url = String(b.url ?? "").trim();
+    if (!b.entity_type || !b.entity_id) return sendError(res, 400, "entity_type and entity_id are required.");
+    if (!/^https:\/\/(drive|docs)\.google\.com\//.test(url)) return sendError(res, 400, "VR-4: must be a Google Drive/Docs link.");
+    const ins = await pool.query(
+      `INSERT INTO mo_drive_links (entity_type, entity_id, label, url, added_by, validation_status, last_validated_at)
+       VALUES ($1,$2,$3,$4,$5,'ok',NOW()) RETURNING *`,
+      [String(b.entity_type), Number(b.entity_id), String(b.label ?? "").trim(), url, u.id]);
+    await audit(u, "drive_link.added", String(b.entity_type), Number(b.entity_id), null, { url }, req);
+    res.status(201).json({ link: ins.rows[0] });
   }));
 
   // ═════════════════════════ DASHBOARD (§7.1) ═════════════════════════════

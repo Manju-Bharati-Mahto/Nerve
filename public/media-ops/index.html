@@ -2045,8 +2045,11 @@ const S = {
   cal:{month:'2026-07-01',layers:{shoots:1,tours:1,deadlines:1,projects:1,leave:1,bookings:1,holidays:1},view:'month'},
   reportDate:TODAY, libView:'table', teamTab:'workload', dragging:null
 };
-const me   = ()=>DB.users.find(u=>u.id===S.me);
+const me   = ()=>DB.users.find(u=>u.id===S.me)||{full_name:'—',role:'employee',initials:'?',color:'#888'};
 const user = id=>DB.users.find(u=>u.id===id)||{full_name:'—',initials:'?',color:'#888',designation:''};
+/* Map a prototype integer user-id back to the REAL Nerve users.id for write payloads
+   (the server keys users by text id; sending 'mo-u'+int breaks for non-mo-uN users). */
+const ruid = n=>{const u=DB.users.find(x=>x.id===n);return u&&u.real_id?u.real_id:('mo-u'+n);};
 const role = ()=>me().role;
 const isAdmin = ()=>role()==='admin';
 const isTL = ()=>role()==='team_lead';
@@ -7212,7 +7215,7 @@ const ACTIONS = {
       status:'not_started',social_status:'na',social_post_url:null,social_posted_at:null,
       mail_status:'na',mail_sent_at:null,deleted_at:null});
     audit(S.me,'deliverable.created','project',pid,null,{title,type:t.name});
-    const _nd={title,deliverable_type_id:tid,owner_id:'mo-u'+(+$('#nd-owner').value),due_date:due,
+    const _nd={title,deliverable_type_id:tid,owner_id:ruid(+$('#nd-owner').value),due_date:due,
       quantity_target:$('#nd-qty').value?+$('#nd-qty').value:null,spec_notes:$('#nd-spec').value.trim()};
     closeModal();render();toast('Deliverable created','ok');
     moSync(MO_API.post('/projects/'+pid+'/deliverables',_nd));
@@ -7232,7 +7235,7 @@ const ACTIONS = {
     audit(S.me,'shoot.created','project',+$('#ns-project').value,null,{title,date});
     const _nsPid=+$('#ns-project').value;
     const _ns={title,shoot_date:date,call_time:$('#ns-call').value,end_time:$('#ns-end').value,
-      location:$('#ns-loc').value.trim()||'TBC',notes:$('#ns-notes').value.trim(),crew:_crew};
+      location:$('#ns-loc').value.trim()||'TBC',notes:$('#ns-notes').value.trim(),crew:_crew.map(ruid)};
     closeModal();render();
     moSync(MO_API.post('/projects/'+_nsPid+'/shoots',_ns));
     toast('Shoot created. AUTO-10 will remind the crew 24h before.'+(overrides?' '+overrides+' leave override(s) logged (BR-15).':''),'ok');
@@ -7343,7 +7346,24 @@ const ACTIONS = {
     toast('Link copied — this is what replaces “scroll up in WhatsApp to find the link”','ok');},
   validateLinks:()=>{toast('AUTO-5 running — HEAD + permission check via Drive API (read-metadata scope only)','ok');
     setTimeout(()=>toast('13 links checked · 1 broken · 1 no-permission — adders and PMs notified','warn'),1500);},
-  addLink:()=>{toast('Structured link add — label, URL, validation state (FR-4.3)','ok');},
+  addLink:(d)=>{
+    modal(`<div class="mo-head"><div><h2>Add Drive link</h2>
+        <p>Structured link with a label — validated and stored on the project (FR-4.3). Must be a Google Drive/Docs URL.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Label</label><input class="inp" id="dl-label" placeholder="e.g. Master folder"></div>
+        <div class="field"><label class="lbl">Drive URL <span class="req">*</span></label><input class="inp" id="dl-url" placeholder="https://drive.google.com/…"></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="createLink" data-pid="${d.pid||''}">Add link</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  createLink:(d)=>{
+    const url=$('#dl-url').value.trim();
+    if(!/^https:\/\/(drive|docs)\.google\.com\//.test(url)){toast('VR-4: must be a Google Drive/Docs link','bad');return;}
+    const payload={entity_type:'project',entity_id:+d.pid,label:$('#dl-label').value.trim(),url};
+    closeModal();
+    moSync(MO_API.post('/drive-links',payload), ()=>{render();toast('Drive link added','ok');});
+  },
   delivAction:(d,n)=>menu(n,[
     {label:'Open drawer',icon:'▤',fn:()=>drawerDeliverable(+d.did)},
     {label:'Mark Not Required',icon:'–',fn:()=>{const dl=deliv(+d.did);dl.status='not_required';render();toast('Marked not required','ok');}},
@@ -7479,7 +7499,33 @@ const ACTIONS = {
         <div class="small mut3">#/media/equipment/${e.asset_tag}</div></div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Close</button>
         <button class="btn primary" onclick="window.print()">Print label</button></div>`);},
-  newEquipment:()=>toast('Add-item form — asset tag auto-generates as EQ-CAT-NNN (FR-6.1)','ok'),
+  newEquipment:()=>{
+    if(!can('equipment.manage')){toast('Team Lead or Admin only','bad');return;}
+    modal(`<div class="mo-head"><div><h2>Add equipment item</h2>
+        <p>Asset tag auto-generates as EQ-CAT-NNN (FR-6.1). The item starts Available.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Category <span class="req">*</span></label>
+          <select class="inp" id="eq-cat">${DB.equipment_categories.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Make <span class="req">*</span></label><input class="inp" id="eq-make" placeholder="e.g. Sony"></div>
+          <div class="field"><label class="lbl">Model</label><input class="inp" id="eq-model" placeholder="e.g. FX3"></div></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Serial no.</label><input class="inp" id="eq-serial"></div>
+          <div class="field"><label class="lbl">Purchase cost (₹)</label><input class="inp" id="eq-cost" type="number" placeholder="0"></div></div>
+        <div class="field"><label class="lbl">Condition</label><select class="inp" id="eq-cond">
+          <option>excellent</option><option selected>good</option><option>fair</option><option>poor</option></select></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="createEquipment">Add item</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  createEquipment:()=>{
+    const make=$('#eq-make').value.trim(); if(!make){toast('Make is required','bad');return;}
+    const payload={category_id:+$('#eq-cat').value,make,model:$('#eq-model').value.trim(),
+      serial_no:$('#eq-serial').value.trim(),purchase_cost:$('#eq-cost').value?+$('#eq-cost').value:null,condition:$('#eq-cond').value};
+    closeModal();
+    moSync(MO_API.post('/equipment',payload), ()=>{render();toast('Equipment added — '+make,'ok');});
+  },
 
   /* ---- leave ---- */
   leaveCheck:()=>{
@@ -7569,7 +7615,7 @@ const ACTIONS = {
     const _ncBid=+d.bid;
     const _nc={column_id:+$('#nc-col').value,title,description:$('#nc-desc').value.trim(),priority:$('#nc-pri').value,
       linked_entity_type:link?link.split(':')[0]:null,linked_entity_id:link?+link.split(':')[1]:null,
-      assignees:$$('#nc-assign .chip.sel').map(c=>+c.dataset.uid)};
+      assignees:$$('#nc-assign .chip.sel').map(c=>ruid(+c.dataset.uid))};
     closeModal();render();toast('Card created','ok');
     moSync(MO_API.post('/boards/'+_ncBid+'/cards',_nc));
   },
@@ -7594,7 +7640,32 @@ const ACTIONS = {
   addLookup:()=>toast('Add lookup row — Admin-editable, no deploy required (NFR-10)','ok'),
   editLookup:()=>toast('Edit lookup — names unique per department (VR-11)','ok'),
   deactivateLookup:()=>toast('VR-11: deactivated, not deleted — referential history is preserved','ok'),
-  addUser:()=>toast('Users mirror Nerve identity — created via SSO provisioning, not here','ok'),
+  addUser:()=>{
+    if(!can('admin.users')){toast('Admins only','bad');return;}
+    modal(`<div class="mo-head"><div><h2>Add crew member</h2>
+        <p>Creates a real Nerve account on the Media team — they sign in with the email + password you set.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Full name <span class="req">*</span></label><input class="inp" id="au-name" placeholder="e.g. Anita Verma"></div>
+        <div class="field"><label class="lbl">Email <span class="req">*</span></label><input class="inp" id="au-email" type="email" placeholder="name@paruluniversity.ac.in"></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Temp password <span class="req">*</span></label><input class="inp" id="au-pass" placeholder="min 6 characters"></div>
+          <div class="field"><label class="lbl">Role</label><select class="inp" id="au-role">
+            <option value="employee">Employee</option><option value="team_lead">Team Lead</option><option value="admin">Admin</option></select></div></div>
+        <div class="field"><label class="lbl">Designation</label><input class="inp" id="au-desig" placeholder="e.g. Video Editor"></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="createCrew">Create member</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  createCrew:()=>{
+    const name=$('#au-name').value.trim(), email=$('#au-email').value.trim(), pass=$('#au-pass').value;
+    if(!name){toast('Name is required','bad');return;}
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){toast('A valid email is required','bad');return;}
+    if(pass.length<6){toast('Password must be at least 6 characters','bad');return;}
+    const payload={full_name:name,email,password:pass,role:$('#au-role').value,designation:$('#au-desig').value.trim()};
+    closeModal();
+    moSync(MO_API.post('/crew',payload), ()=>{render();toast(name+' added to the crew','ok');});
+  },
   manageDuties:(d)=>{
     const uid=+d.uid;
     modal(`<div class="mo-head"><div><h2>Duties — ${esc(user(uid).full_name)}</h2>
