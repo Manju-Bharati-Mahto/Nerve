@@ -933,9 +933,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const id = `u-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const pw = await hashPassword(String(b.password));
     await pool.query(
-      `INSERT INTO users (id, full_name, email, department, role, team, password_hash, email_verified)
-       VALUES ($1,$2,$3,'Media Crew',$4,'media',$5,true)`,
-      [id, String(b.full_name ?? "New Member").trim() || "New Member", email, role, pw]);
+      `INSERT INTO users (id, full_name, email, department, role, team, password_hash, email_verified, avatar_url)
+       VALUES ($1,$2,$3,'Media Crew',$4,'media',$5,true,$6)`,
+      [id, String(b.full_name ?? "New Member").trim() || "New Member", email, role, pw, (b.avatar_url as string) || null]);
     await pool.query(`INSERT INTO mo_user_profiles (user_id, designation, mo_role) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
       [id, String(b.designation ?? ""), ({ admin: "admin", sub_admin: "team_lead", user: "employee" } as Record<string, string>)[role]]);
     await audit(u, "crew.added", "user", null, null, { email, role }, req);
