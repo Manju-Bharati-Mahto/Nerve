@@ -2178,7 +2178,7 @@ const PROJ_TRANSITIONS = {
 };
 const DELIV_TRANSITIONS = {
   not_started:['in_progress','not_required','cancelled'], in_progress:['in_review','not_required','cancelled'],
-  in_review:['approved','changes_requested','cancelled'], changes_requested:['in_progress','in_review','cancelled'],
+  in_review:['approved','changes_requested','cancelled'], changes_requested:['in_progress','in_review','approved','cancelled'],
   approved:['delivered','changes_requested'], delivered:[], not_required:['not_started'], cancelled:['not_started']
 };
 
@@ -2544,7 +2544,7 @@ const NAV = [
   ]},
   {group:'Planning',items:[
     {r:'#/media/calendar',i:'calendar',l:'Calendar',       show:()=>true},
-    {r:'#/media/team',    i:'users', l:'Team',             show:()=>true},
+    {r:'#/media/team',    i:'users', l:'Team',             show:()=>!isEmp()},
     {r:'#/media/leave',   i:'umbrella',l:'Leave',          show:()=>true, badge:()=>pendingLeaveCount()||''}
   ]},
   {group:'Insight',items:[
@@ -4719,9 +4719,11 @@ function teamDirectory(){
     return `<div class="card" data-go="#/media/team/${u.id}" style="cursor:pointer">
       <div class="card-body">
         <div class="f gap3 ac mb3">${avatarP(u.id,'xl')}
-          <div style="min-width:0"><b class="trunc" style="display:block;font-size:15px">${esc(u.designation)}</b>
-            <span class="small mut trunc" style="display:block">${esc(capacityOf(u.id))}</span>
-            <span class="xsmall mut3">${({admin:'★ Admin',team_lead:'▲ Team Lead',employee:'● Employee'})[u.role]}</span></div></div>
+          <div style="min-width:0"><b class="trunc" style="display:block;font-size:15px">${esc(u.full_name)}</b>
+            <span class="small mut trunc" style="display:block">${esc(u.designation||capacityOf(u.id))}</span>
+            <span class="xsmall mut3">${({admin:'★ Admin',team_lead:'▲ Team Lead',employee:'● Employee'})[u.role]}</span></div>
+          ${(can('admin.users')&&u.id!==S.me)?`<button class="icon-btn ml-auto" title="Remove member"
+            onclick="event.stopPropagation();ACTIONS.deleteCrew({uid:${u.id},name:'${esc((u.full_name||'').replace(/'/g,''))}'})">✕</button>`:''}</div>
         <div class="f wrap gap2 mb2">${sk.slice(0,3).map(s=>`<span class="tag">${esc((DB.skills.find(k=>k.id===s.skill_id)||{}).name)} ${'●'.repeat(s.proficiency)}</span>`).join('')}</div>
         ${dt.length?`<div class="f wrap gap2">${dt.map(d=>`<span class="chip sel">⚑ ${esc(DB.duty_flags.find(f=>f.id===d.duty_flag_id).name)}</span>`).join('')}</div>`:''}
         <div class="divider"></div>
@@ -6772,9 +6774,12 @@ function openNewProject(){
         <div class="field"><label class="lbl">End date <span class="req">*</span></label><input class="inp" type="date" id="np-end" value="${D.add(TODAY,7)}"></div>
       </div>
       <div class="field"><label class="lbl">Description</label><textarea class="inp" id="np-desc" placeholder="Scope, constraints, who asked for it…"></textarea></div>
-      <div class="field"><label class="lbl">Template</label>
-        <div class="card"><div class="card-body tight" id="np-template"></div></div>
-        <div class="hint">Deliverables are auto-created from the type’s template with due-date offsets (FR-3.2 / AC-5).</div></div>
+      <div class="field"><label class="lbl">Assign crew</label>
+        <div class="f wrap gap2" id="np-assign">${(can('project.assign')?DB.users.filter(x=>x.is_active):DB.users.filter(x=>x.id===S.me)).map(x=>`<button type="button" class="chip ${x.id===S.me?'sel':''}" data-uid="${x.id}" onclick="this.classList.toggle('sel')">${esc(x.full_name)}</button>`).join('')}</div>
+        <div class="hint">${can('project.assign')?'Assigned crew see this project in their dashboard (§8).':'You can only assign the project to yourself.'}</div></div>
+      <div class="field">
+        <label class="chk mb2"><input type="checkbox" id="np-tmpl" checked> Create deliverables from the type’s template (FR-3.2)</label>
+        <div class="card"><div class="card-body tight" id="np-template"></div></div></div>
     </div>
     <div class="mo-foot"><span class="left small mut3">Duplicate scan runs on create (AUTO-6)</span>
       <button class="btn" onclick="closeModal()">Cancel</button>
@@ -7211,7 +7216,9 @@ const ACTIONS = {
       made++;});}
     audit(S.me,'project.created','project',id,null,{name,status:p.status,deliverables_created:made});
     const _np={name,project_type_id:tid,priority:$('#np-pri').value,faculty_served:$('#np-fac').value,
-      start_date:start,end_date:end,description:$('#np-desc').value.trim(),academic_year_id:+$('#np-year').value};
+      start_date:start,end_date:end,description:$('#np-desc').value.trim(),academic_year_id:+$('#np-year').value,
+      apply_template:!$('#np-tmpl')||$('#np-tmpl').checked,
+      assignees:$$('#np-assign .chip.sel').map(c=>ruid(+c.dataset.uid))};
     closeModal();location.hash='#/media/projects/'+id;render();
     moSync(MO_API.post('/projects',_np), res=>{ if(res&&res.project) location.hash='#/media/projects/'+res.project.id; });
     toast(gated?'Proposed — pending approval before it is reportable-against (BR-11)':
@@ -7669,7 +7676,9 @@ const ACTIONS = {
           <div class="field"><label class="lbl">Temp password <span class="req">*</span></label><input class="inp" id="au-pass" placeholder="min 6 characters"></div>
           <div class="field"><label class="lbl">Role</label><select class="inp" id="au-role">
             <option value="employee">Employee</option><option value="team_lead">Team Lead</option><option value="admin">Admin</option></select></div></div>
-        <div class="field"><label class="lbl">Designation</label><input class="inp" id="au-desig" placeholder="e.g. Video Editor"></div></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Designation</label><input class="inp" id="au-desig" placeholder="e.g. Video Editor"></div>
+          <div class="field"><label class="lbl">Photo URL (optional)</label><input class="inp" id="au-avatar" placeholder="https://…/photo.jpg"></div></div></div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" data-act="createCrew">Create member</button></div>`);
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
@@ -7679,7 +7688,8 @@ const ACTIONS = {
     if(!name){toast('Name is required','bad');return;}
     if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){toast('A valid email is required','bad');return;}
     if(pass.length<6){toast('Password must be at least 6 characters','bad');return;}
-    const payload={full_name:name,email,password:pass,role:$('#au-role').value,designation:$('#au-desig').value.trim()};
+    const payload={full_name:name,email,password:pass,role:$('#au-role').value,designation:$('#au-desig').value.trim(),
+      avatar_url:$('#au-avatar').value.trim()||null};
     closeModal();
     moSync(MO_API.post('/crew',payload), ()=>{render();toast(name+' added to the crew','ok');});
   },
@@ -7729,10 +7739,24 @@ const ACTIONS = {
       <div class="mo-foot"><button class="btn primary" onclick="closeModal()">Close</button></div>`,{size:'wide'});
   },
   doExport:(d)=>{
-    const fmt=($('#ex-fmt button.on')||{dataset:{f:'xlsx'}}).dataset.f;
-    audit(S.me,'export.generated','analytics',0,null,{report:d.what,format:fmt});
-    closeModal();
-    toast('Export queued as an async job — download URL will arrive in your notifications. This export is itself audited (§21).','ok');
+    const w=d.what||'projects';
+    const sets={
+      projects:()=>['projects',filteredProjects().map(p=>({code:p.code,name:p.name,type:ptype(p.project_type_id).name,status:p.status,priority:p.priority,owner:user(p.owner_id).full_name,start:p.start_date,end:p.end_date}))],
+      pipeline:()=>['deliverables',DB.deliverables.map(x=>({title:x.title,project:proj(x.project_id).name,type:dtype(x.deliverable_type_id).name,status:x.status,owner:user(x.owner_id).full_name,due:x.due_date}))],
+      library:()=>['library',DB.deliverables.map(x=>({title:x.title,project:proj(x.project_id).name,status:x.status,due:x.due_date}))],
+      audit:()=>['audit',DB.audit_logs.map(a=>({when:a.at||a.created_at||'',actor:user(a.actor_id).full_name,action:a.action,entity:(a.entity_type||'')+' #'+(a.entity_id||'')}))],
+      performance:()=>['performance',DB.performance_snapshots.map(s=>({user:user(s.user_id).full_name,month:s.month,hours:s.hours_logged,tasks:s.tasks_count,deliverables:s.deliverables_completed,on_time:s.on_time_pct,consistency:s.consistency_pct}))],
+      analytics:()=>['team',DB.users.filter(u=>u.is_active).map(u=>({name:u.full_name,role:u.role,projects:activeProjectsOf(u.id).length,open_deliverables:openDeliverables(u.id).length,consistency:consistency(u.id)}))],
+      pack:()=>['projects',filteredProjects().map(p=>({code:p.code,name:p.name,status:p.status,owner:user(p.owner_id).full_name}))]
+    };
+    const [name,rows]=(sets[w]||sets.projects)();
+    if(!rows.length){toast('Nothing to export in this view','warn');return;}
+    const cols=Object.keys(rows[0]);
+    const csv=[cols.join(','),...rows.map(r=>cols.map(c=>'"'+String(r[c]==null?'':r[c]).replace(/"/g,'""')+'"').join(','))].join('\n');
+    const a=document.createElement('a'); const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+    a.href=url; a.download='media-ops-'+name+'-'+TODAY+'.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    audit(S.me,'export.generated','export',0,null,{report:w,rows:rows.length});
+    closeModal(); toast('Exported '+rows.length+' rows — media-ops-'+name+'-'+TODAY+'.csv','ok');
   },
   schedulePack:()=>toast('AUTO-11 delivers the pack on the 1st at 02:00 to Admin and the CEO office','ok'),
   icsFeed:()=>{
@@ -7763,6 +7787,33 @@ const ACTIONS = {
     MO_API.post('/me/password',{current_password:cur,new_password:nw})
       .then(()=>{closeModal();toast('Password updated — use it next sign-in','ok');})
       .catch(e=>toast('Could not update: '+e.message,'bad'));
+  },
+  deleteCrew:(d)=>{
+    if(!confirm('Remove '+(d.name||'this member')+' from the Media crew? This deletes their Nerve account.'))return;
+    moSync(MO_API.del('/crew/'+ruid(+d.uid)), ()=>{render();toast('Member removed','ok');});
+  },
+  assignProject:(d)=>{
+    const p=proj(+d.pid);
+    modal(`<div class="mo-head"><div><h2>Assign crew — ${esc(p.name)}</h2>
+        <p>Assigned crew see this project in their dashboard (§8).</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><div class="f wrap gap2" id="pa-crew">${DB.users.filter(u=>u.is_active).map(u=>`<button type="button" class="chip ${isOnProject(p.id,u.id)?'sel':''}" data-uid="${u.id}" onclick="this.classList.toggle('sel')">${esc(u.full_name)}</button>`).join('')}</div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="confirmAssign" data-pid="${p.id}">Assign</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  confirmAssign:(d)=>{
+    const uids=$$('#pa-crew .chip.sel').map(c=>ruid(+c.dataset.uid));
+    if(!uids.length){toast('Select at least one crew member','bad');return;}
+    closeModal();
+    moSync(Promise.all(uids.map(uid=>MO_API.post('/projects/'+d.pid+'/assignments',{user_id:uid}))), ()=>{render();toast(uids.length+' crew assigned','ok');});
+  },
+  deleteProject:(d)=>{
+    if(!confirm('Delete this project? It is removed from active views.'))return;
+    const p=proj(+d.pid); if(p)p.deleted_at=TODAY;
+    if(S.route.includes('/projects/'))location.hash='#/media/projects';
+    render();
+    moSync(MO_API.del('/projects/'+d.pid), ()=>{render();toast('Project deleted','ok');});
   },
   nlSearch:()=>{
     modal(`<div class="mo-head"><div><h2>Natural-language search <span class="ai-chip">✦ AI-5</span></h2>
@@ -7825,10 +7876,11 @@ const MENUS = {
   projMore:(d)=>{
     const p=proj(+d.pid);
     return [
-      {label:'Apply template',icon:'▤',fn:()=>ACTIONS.applyTemplate(d)},
+      {label:'Assign crew',icon:'◈',disabled:!can('project.assign'),fn:()=>ACTIONS.assignProject(d)},
       {label:'Add Drive link',icon:'⛁',fn:()=>ACTIONS.addLink(d)},
-      {label:'Duplicate project',icon:'⧉',fn:()=>toast('Duplicate — deliverables copied, dates shifted','ok')},
+      {label:'Apply template',icon:'▤',fn:()=>ACTIONS.applyTemplate(d)},
       {sep:true},
+      {label:'Delete project',icon:'🗑',cls:'danger',disabled:!(can('project.status')||isAdmin()),fn:()=>ACTIONS.deleteProject(d)},
       {label:'Archive project',icon:'⛁',disabled:!can('project.archive'),
        fn:()=>{p.status='archived';p.archived_at=TODAY;
          audit(S.me,'project.archived','project',p.id,{status:'completed'},{status:'archived'});
@@ -7874,7 +7926,9 @@ function applyDelivStatus(dl,s){
   const before=dl.status;dl.status=s;
   if(s==='delivered')dl.completed_at=TODAY;
   audit(S.me,'deliverable.status_changed','deliverable',dl.id,{status:before},{status:s});
-  render();toast('Status → '+DELIV_STATUS[s].l,'ok');return true;
+  render();toast('Status → '+DELIV_STATUS[s].l,'ok');
+  moSync(MO_API.post('/deliverables/'+dl.id+'/status',{status:s}));
+  return true;
 }
 
 /* ==========================================================================
@@ -7948,6 +8002,20 @@ const MO_API = {
   get(p){return this.req('GET',p);}, post(p,b){return this.req('POST',p,b);},
   patch(p,b){return this.req('PATCH',p,b);}, del(p){return this.req('DELETE',p);}
 };
+/* Build real notifications for the current user from live data (the click-through /
+   redirect in ACTIONS.openNotif already works). Runs after each hydrate. */
+function genNotifications(){
+  DB.notifications=[];
+  const add=(kind,title,body,et,eid)=>notify(S.me,kind,title,body,et,eid,0);
+  DB.deliverables.filter(d=>d.owner_id===S.me&&d.due_date&&d.due_date<TODAY&&!['delivered','not_required','cancelled'].includes(d.status))
+    .slice(0,12).forEach(d=>add('overdue','Deliverable overdue','“'+d.title+'” was due '+D.fmt(d.due_date),'deliverable',d.id));
+  DB.deliverables.filter(d=>d.status==='in_review'&&(isAdmin()||isTL()||isPMof(d.project_id)))
+    .slice(0,12).forEach(d=>add('approval','Awaiting your review','“'+d.title+'” has a version pending','deliverable',d.id));
+  if(!isEmp())DB.daily_reports.filter(r=>r.status==='flagged').slice(0,12)
+    .forEach(r=>add('automation','Report flagged for review',user(r.user_id).full_name+' · '+r.report_date,'report',r.id));
+  DB.project_assignments.filter(a=>a.user_id===S.me&&!a.removed_at&&!a.is_project_manager).slice(0,6)
+    .forEach(a=>{const p=proj(a.project_id);if(p&&p.id)add('review','Assigned to a project','You were assigned to “'+p.name+'”','project',p.id);});
+}
 async function hydrateFromServer(){
   const keys=['projects','project_assignments','deliverables','deliverable_versions','drive_links','daily_reports','report_tasks',
     'vendors','equipment_categories','equipment_items','equipment_kits','kit_items','equipment_bookings','equipment_transactions',
@@ -7960,7 +8028,7 @@ async function hydrateFromServer(){
   if(typeof st.me==='number' && DB.users.some(u=>u.id===st.me)) S.me=st.me;
   // Clear the prototype's seed activity + notifications so nothing dummy shows on live;
   // audit() re-populates the activity feed from this session's real actions.
-  DB.audit_logs=[]; DB.notifications=[]; DB.activity=[];
+  DB.audit_logs=[]; DB.activity=[]; genNotifications();
   window.__MO_LIVE__=true;
   return {projects:(st.projects||[]).length, reports:(st.daily_reports||[]).length};
 }

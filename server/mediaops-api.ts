@@ -238,9 +238,18 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     await pool.query(
       `INSERT INTO mo_project_assignments (project_id, user_id, capacity_role_id, is_project_manager, assigned_by)
        VALUES ($1,$2,(SELECT id FROM mo_capacity_roles WHERE name='Coordinator' LIMIT 1),true,$2)`, [id, u.id]);
-    // FR-3.2: auto-create the type's template deliverable set.
+    // #8/#10: assign additional crew (real user ids) — only a TL/Admin may assign others.
+    const assignees = Array.isArray(b.assignees) ? (b.assignees as unknown[]).map(String) : [];
+    if (assignees.length && (isMoAdmin(u) || isMoTL(u))) {
+      for (const uid of assignees) {
+        if (uid === u.id) continue; // creator already assigned
+        await pool.query(`INSERT INTO mo_project_assignments (project_id, user_id, assigned_by) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [id, uid, u.id]);
+      }
+    }
+    // FR-3.2: auto-create the type's template deliverable set (unless opted out — #2).
     let made = 0;
-    const tmpl = await pool.query(`SELECT id FROM mo_project_templates WHERE project_type_id=$1 AND is_active LIMIT 1`, [typeId]);
+    const tmpl = b.apply_template === false ? { rows: [] }
+      : await pool.query(`SELECT id FROM mo_project_templates WHERE project_type_id=$1 AND is_active LIMIT 1`, [typeId]);
     if (tmpl.rows[0]) {
       const items = await pool.query(`SELECT * FROM mo_template_deliverables WHERE template_id=$1`, [tmpl.rows[0].id]);
       for (const it of items.rows) {
@@ -840,6 +849,62 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.status(201).json({ comment: ins.rows[0] });
   }));
 
+  // Deliverable status change (Production Board drag) — persists + enforces the
+  // machine, BR-5 (submitter≠approver, reviewer must be PM/TL/Admin) and BR-6.
+  // changes_requested→approved is allowed for a PM/TL/Admin (#4).
+  app.post(`${P}/deliverables/:id/status`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const to = String((req.body as Record<string, unknown>).status ?? "");
+    const d = (await pool.query(`SELECT d.*, dt.review_exempt FROM mo_deliverables d JOIN mo_deliverable_types dt ON dt.id=d.deliverable_type_id WHERE d.id=$1`, [id])).rows[0];
+    if (!d) return sendError(res, 404, "Deliverable not found.");
+    const DELIV: Record<string, string[]> = {
+      not_started: ["in_progress", "not_required", "cancelled"], in_progress: ["in_review", "not_required", "cancelled"],
+      in_review: ["approved", "changes_requested", "cancelled"], changes_requested: ["in_progress", "in_review", "approved", "cancelled"],
+      approved: ["delivered", "changes_requested"], delivered: [], not_required: ["not_started"], cancelled: ["not_started"],
+    };
+    if (!(DELIV[d.status] ?? []).includes(to)) return sendError(res, 400, `BR-1: ${d.status} → ${to} is not a valid transition.`);
+    if (to === "approved") {
+      const v = (await pool.query(`SELECT submitted_by FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [id])).rows[0];
+      if (v && v.submitted_by === u.id) return sendError(res, 403, "BR-5: a version cannot be approved by its submitter.");
+      const isPM = await pool.query(`SELECT 1 FROM mo_project_assignments a WHERE a.project_id=$1 AND a.user_id=$2 AND a.is_project_manager AND a.removed_at IS NULL`, [d.project_id, u.id]);
+      if (!(isMoAdmin(u) || isMoTL(u) || isPM.rows[0])) return sendError(res, 403, "BR-5: reviewer must be the PM, a Team Lead or Admin.");
+    }
+    if (to === "delivered" && !d.review_exempt) {
+      const v = (await pool.query(`SELECT review_status FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [id])).rows[0];
+      if (v?.review_status !== "approved") return sendError(res, 400, "BR-6: Delivered requires an approved latest version.");
+    }
+    await pool.query(`UPDATE mo_deliverables SET status=$1, completed_at=CASE WHEN $1='delivered' THEN CURRENT_DATE ELSE completed_at END WHERE id=$2`, [to, id]);
+    await audit(u, "deliverable.status_changed", "deliverable", id, { status: d.status }, { status: to }, req);
+    res.json({ ok: true, status: to });
+  }));
+
+  // Delete a project (soft) — #11. TL/Admin.
+  app.delete(`${P}/projects/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may delete a project.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    await pool.query(`UPDATE mo_projects SET deleted_at=NOW() WHERE id=$1`, [id]);
+    await audit(u, "project.deleted", "project", id, null, null, req);
+    res.json({ ok: true });
+  }));
+
+  // Remove a media crew member — #6. Admin only. Blocks if they have activity.
+  app.delete(`${P}/crew/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may remove crew members.");
+    const realId = getSingleParam(req.params.id);
+    if (realId === u.id) return sendError(res, 400, "You cannot remove yourself.");
+    try {
+      await pool.query(`DELETE FROM mo_user_profiles WHERE user_id=$1`, [realId]);
+      await pool.query(`DELETE FROM users WHERE id=$1 AND team='media'`, [realId]);
+    } catch {
+      return sendError(res, 409, "This member has activity (reports/projects/audit). Reassign their work first.");
+    }
+    await audit(u, "crew.removed", "user", null, null, { id: realId }, req);
+    res.json({ ok: true });
+  }));
+
   // Change own password (profile dialog).
   app.post(`${P}/me/password`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
@@ -868,9 +933,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const id = `u-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const pw = await hashPassword(String(b.password));
     await pool.query(
-      `INSERT INTO users (id, full_name, email, department, role, team, password_hash, email_verified)
-       VALUES ($1,$2,$3,'Media Crew',$4,'media',$5,true)`,
-      [id, String(b.full_name ?? "New Member").trim() || "New Member", email, role, pw]);
+      `INSERT INTO users (id, full_name, email, department, role, team, password_hash, email_verified, avatar_url)
+       VALUES ($1,$2,$3,'Media Crew',$4,'media',$5,true,$6)`,
+      [id, String(b.full_name ?? "New Member").trim() || "New Member", email, role, pw, (b.avatar_url as string) || null]);
     await pool.query(`INSERT INTO mo_user_profiles (user_id, designation, mo_role) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
       [id, String(b.designation ?? ""), ({ admin: "admin", sub_admin: "team_lead", user: "employee" } as Record<string, string>)[role]]);
     await audit(u, "crew.added", "user", null, null, { email, role }, req);
