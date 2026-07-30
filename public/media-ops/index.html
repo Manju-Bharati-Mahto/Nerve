@@ -2676,9 +2676,9 @@ $('#btn-role').onclick=()=>{
         ${m.designation?`<dt>Designation</dt><dd>${esc(m.designation)}</dd>`:''}</dl>
       <div class="divider"></div>
       <div class="small b mb3">Profile photo</div>
-      <div class="field"><label class="lbl">Photo URL</label>
-        <div class="row"><input class="inp" id="pf-avatar" value="${esc(m.avatar_url||'')}" placeholder="https://…/photo.jpg">
-          <button class="btn" style="flex:0 0 auto" data-act="editPhoto">Save</button></div></div>
+      <div class="field"><label class="lbl">Upload a new photo</label>
+        <input class="inp" type="file" id="pf-photo" accept="image/*" onchange="ACTIONS.uploadMyPhoto(this)">
+        <div id="pf-photo-status" class="hint">${m.avatar_url?'A photo is set.':'No photo yet.'}</div></div>
       <div class="divider"></div>
       <div class="small b mb3">Change password</div>
       <div class="field"><label class="lbl">Current password</label><input class="inp" id="pw-cur" type="password" autocomplete="current-password"></div>
@@ -4808,7 +4808,7 @@ function viewTeamMember(uid){
             <span class="chip">${({admin:'★ Admin',team_lead:'▲ Team Lead',employee:'● Employee'})[u.role]}</span>
             ${statusPill(PRESENCE_MAP(),presence(uid))}
             <span class="chip">joined ${D.fmt(u.joined_on)}</span>
-            ${DB.user_duties.filter(d=>d.user_id===uid).map(d=>`<span class="chip sel">⚑ ${esc(DB.duty_flags.find(f=>f.id===d.duty_flag_id).name)}</span>`).join('')}
+            ${DB.user_duties.filter(d=>d.user_id===uid).map(d=>`<span class="chip sel">⚑ ${esc((DB.duty_flags.find(f=>f.id===d.duty_flag_id)||{name:'duty'}).name)}</span>`).join('')}
           </div></div></div>
       <div class="page-actions">
         ${can('project.assign')?`<button class="btn">Assign to project</button>`:''}
@@ -4863,8 +4863,8 @@ function viewTeamMember(uid){
             <dt>Email</dt><dd class="small mono">${esc(u.email)}</dd>
             <dt>Phone</dt><dd class="small">${esc(u.phone)}</dd>
             <dt>Nerve ID</dt><dd class="small mono">${esc(u.nerve_user_id)}</dd>
-            <dt>Primary team</dt><dd>${esc((DB.teams.find(t=>DB.team_members.some(m=>m.team_id===t.id&&m.user_id===uid))||{name:'—'}).name)}</dd>
-            <dt>Campus</dt><dd>${esc(DB.campuses.find(c=>c.id===u.campus_id).name)}</dd>
+            <dt>Primary team</dt><dd>${esc((DB.teams.find(t=>DB.team_members.some(m=>m.team_id===t.id&&m.user_id===uid))||{name:'Media Crew'}).name)}</dd>
+            <dt>Campus</dt><dd>${esc((DB.campuses.find(c=>c.id===u.campus_id)||{name:'—'}).name)}</dd>
           </dl></div></div>
         <div class="card"><div class="card-head"><h3>Skills</h3></div>
           <div class="card-body">${DB.user_skills.filter(s=>s.user_id===uid).map(s=>{
@@ -7686,7 +7686,9 @@ const ACTIONS = {
             <option value="employee">Employee</option><option value="team_lead">Team Lead</option><option value="admin">Admin</option></select></div></div>
         <div class="row">
           <div class="field"><label class="lbl">Designation</label><input class="inp" id="au-desig" placeholder="e.g. Video Editor"></div>
-          <div class="field"><label class="lbl">Photo URL <span class="req">*</span></label><input class="inp" id="au-avatar" placeholder="https://…/photo.jpg"></div></div></div>
+          <div class="field"><label class="lbl">Photo <span class="req">*</span></label>
+            <input class="inp" type="file" id="au-photo" accept="image/*" onchange="ACTIONS.uploadCrewPhoto(this)">
+            <input type="hidden" id="au-avatar"><div id="au-photo-status" class="hint">Upload a photo (required).</div></div></div></div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" data-act="createCrew">Create member</button></div>`);
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
@@ -7789,12 +7791,20 @@ const ACTIONS = {
     ' — AI outputs are always labelled and editable','ok');},
   aiSettings:()=>toast('AI settings — model, retention, opt-out per feature. No AI performance scoring, ever (§7.15).','ok'),
   aiRegen:()=>{loadAI(true);toast('Recomputing AI insights from live data…','ok');},
-  editPhoto:()=>{
-    const url=$('#pf-avatar').value.trim();
-    MO_API.post('/me/profile',{avatar_url:url||null}).then(()=>{
-      const m=DB.users.find(u=>u.id===S.me); if(m)m.avatar_url=url||null;
-      render();toast('Profile photo updated','ok');
-    }).catch(e=>toast('Could not update: '+e.message,'bad'));
+  uploadCrewPhoto:(input)=>{
+    const f=input.files&&input.files[0]; if(!f)return;
+    const st=$('#au-photo-status'); st.textContent='Uploading…';
+    uploadImage(f).then(url=>{$('#au-avatar').value=url; st.innerHTML='✔ Photo uploaded';})
+      .catch(e=>{st.textContent='Upload failed: '+e.message;});
+  },
+  uploadMyPhoto:(input)=>{
+    const f=input.files&&input.files[0]; if(!f)return;
+    const st=$('#pf-photo-status'); st.textContent='Uploading…';
+    const fd=new FormData(); fd.append('avatar',f);
+    fetch('/api/users/me/avatar',{method:'POST',credentials:'same-origin',body:fd})
+      .then(r=>r.json().then(j=>{if(!r.ok)throw new Error(j.message||('HTTP '+r.status));return j;}))
+      .then(j=>{const m=DB.users.find(u=>u.id===S.me); if(m)m.avatar_url=j.avatar_url; render(); toast('Profile photo updated','ok'); closeModal();})
+      .catch(e=>{st.textContent='Upload failed: '+e.message;});
   },
   changePassword:()=>{
     const cur=$('#pw-cur').value, nw=$('#pw-new').value, cf=$('#pw-conf').value;
@@ -8020,6 +8030,13 @@ const MO_API = {
   get(p){return this.req('GET',p);}, post(p,b){return this.req('POST',p,b);},
   patch(p,b){return this.req('PATCH',p,b);}, del(p){return this.req('DELETE',p);}
 };
+/* Upload an image file → returns its URL (add-member + profile photos). */
+async function uploadImage(file){
+  const fd=new FormData(); fd.append('image',file);
+  const r=await fetch('/api/v1/media/upload-image',{method:'POST',credentials:'same-origin',body:fd});
+  const j=await r.json().catch(()=>({})); if(!r.ok) throw new Error(j.message||('HTTP '+r.status));
+  return j.url;
+}
 /* Build real notifications for the current user from live data (the click-through /
    redirect in ACTIONS.openNotif already works). Runs after each hydrate. */
 function genNotifications(){
