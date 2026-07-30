@@ -2675,6 +2675,11 @@ $('#btn-role').onclick=()=>{
         <dt>Role</dt><dd>${rl}</dd>
         ${m.designation?`<dt>Designation</dt><dd>${esc(m.designation)}</dd>`:''}</dl>
       <div class="divider"></div>
+      <div class="small b mb3">Profile photo</div>
+      <div class="field"><label class="lbl">Photo URL</label>
+        <div class="row"><input class="inp" id="pf-avatar" value="${esc(m.avatar_url||'')}" placeholder="https://…/photo.jpg">
+          <button class="btn" style="flex:0 0 auto" data-act="editPhoto">Save</button></div></div>
+      <div class="divider"></div>
       <div class="small b mb3">Change password</div>
       <div class="field"><label class="lbl">Current password</label><input class="inp" id="pw-cur" type="password" autocomplete="current-password"></div>
       <div class="row">
@@ -3686,7 +3691,9 @@ function projList(ps){
             <span class="hide-sm f ac gap2" style="width:140px">${bar(pr)}<span class="xsmall b">${pr}%</span></span>
             <span class="hide-sm chip">${dl.filter(d=>d.status==='delivered').length}/${dl.length} ◆</span>
             <span class="hide-sm">${avStack(crew,3)}</span>
-            ${priTag(p.priority)}</button>`;}).join('')}
+            ${priTag(p.priority)}
+            ${(can('project.status')||isAdmin())?`<span class="icon-btn" role="button" title="Delete project" style="flex:0 0 auto;color:var(--danger)"
+              onclick="event.stopPropagation();event.preventDefault();ACTIONS.deleteProject({pid:${p.id}})">🗑</span>`:''}</button>`;}).join('')}
       </div></div></div>`).join('')||`<div class="empty"><div class="e-ico">◌</div><h4>No projects match</h4>
         <p>Adjust the filters, or create one.</p><button class="btn primary" data-act="newProject">＋ New project</button></div>`;
 }
@@ -4722,8 +4729,8 @@ function teamDirectory(){
           <div style="min-width:0"><b class="trunc" style="display:block;font-size:15px">${esc(u.full_name)}</b>
             <span class="small mut trunc" style="display:block">${esc(u.designation||capacityOf(u.id))}</span>
             <span class="xsmall mut3">${({admin:'★ Admin',team_lead:'▲ Team Lead',employee:'● Employee'})[u.role]}</span></div>
-          ${(can('admin.users')&&u.id!==S.me)?`<button class="icon-btn ml-auto" title="Remove member"
-            onclick="event.stopPropagation();ACTIONS.deleteCrew({uid:${u.id},name:'${esc((u.full_name||'').replace(/'/g,''))}'})">✕</button>`:''}</div>
+          ${(can('admin.users')&&u.id!==S.me)?`<span class="icon-btn ml-auto" role="button" title="Remove member" style="color:var(--danger)"
+            onclick="event.stopPropagation();event.preventDefault();ACTIONS.deleteCrew({uid:${u.id},name:'${esc((u.full_name||'').replace(/'/g,''))}'})">🗑</span>`:''}</div>
         <div class="f wrap gap2 mb2">${sk.slice(0,3).map(s=>`<span class="tag">${esc((DB.skills.find(k=>k.id===s.skill_id)||{}).name)} ${'●'.repeat(s.proficiency)}</span>`).join('')}</div>
         ${dt.length?`<div class="f wrap gap2">${dt.map(d=>`<span class="chip sel">⚑ ${esc(DB.duty_flags.find(f=>f.id===d.duty_flag_id).name)}</span>`).join('')}</div>`:''}
         <div class="divider"></div>
@@ -6777,9 +6784,9 @@ function openNewProject(){
       <div class="field"><label class="lbl">Assign crew</label>
         <div class="f wrap gap2" id="np-assign">${(can('project.assign')?DB.users.filter(x=>x.is_active):DB.users.filter(x=>x.id===S.me)).map(x=>`<button type="button" class="chip ${x.id===S.me?'sel':''}" data-uid="${x.id}" onclick="this.classList.toggle('sel')">${esc(x.full_name)}</button>`).join('')}</div>
         <div class="hint">${can('project.assign')?'Assigned crew see this project in their dashboard (§8).':'You can only assign the project to yourself.'}</div></div>
-      <div class="field">
-        <label class="chk mb2"><input type="checkbox" id="np-tmpl" checked> Create deliverables from the type’s template (FR-3.2)</label>
-        <div class="card"><div class="card-body tight" id="np-template"></div></div></div>
+      <div class="field"><label class="lbl">Template deliverables</label>
+        <div class="card"><div class="card-body tight" id="np-template"></div></div>
+        <div class="hint">Untick any you don’t need — the ticked ones are auto-created (FR-3.2).</div></div>
     </div>
     <div class="mo-foot"><span class="left small mut3">Duplicate scan runs on create (AUTO-6)</span>
       <button class="btn" onclick="closeModal()">Cancel</button>
@@ -7183,10 +7190,11 @@ const ACTIONS = {
     const box=$('#np-template');if(!box)return;
     if(!t){box.innerHTML='<span class="small mut3">No template for this type — create deliverables manually.</span>';return;}
     const items=DB.template_deliverables.filter(x=>x.template_id===t.id);
-    box.innerHTML=`<div class="small b mb2">${esc(t.name)} — ${items.length} deliverables auto-created</div>
-      ${items.map(i=>`<div class="between small mut" style="padding:3px 0">
-        <span>${dtype(i.deliverable_type_id).icon} ${esc(dtype(i.deliverable_type_id).name)}</span>
-        <span class="chip">due +${i.days_offset_due}d · weight ${i.default_weight}</span></div>`).join('')}`;
+    box.innerHTML=`<div class="small b mb2">${esc(t.name)} — tick the deliverables to create</div>
+      ${items.map(i=>`<label class="between small" style="padding:4px 0;cursor:pointer">
+        <span class="f ac gap2"><input type="checkbox" class="np-tmpl-item" value="${i.id}" checked>
+          <span>${dtype(i.deliverable_type_id).icon} ${esc(dtype(i.deliverable_type_id).name)}</span></span>
+        <span class="chip">due +${i.days_offset_due}d · weight ${i.default_weight}</span></label>`).join('')}`;
   },
   createProject:()=>{
     const name=$('#np-name').value.trim();
@@ -7217,7 +7225,7 @@ const ACTIONS = {
     audit(S.me,'project.created','project',id,null,{name,status:p.status,deliverables_created:made});
     const _np={name,project_type_id:tid,priority:$('#np-pri').value,faculty_served:$('#np-fac').value,
       start_date:start,end_date:end,description:$('#np-desc').value.trim(),academic_year_id:+$('#np-year').value,
-      apply_template:!$('#np-tmpl')||$('#np-tmpl').checked,
+      apply_template:true, template_items:$$('#np-template .np-tmpl-item:checked').map(c=>+c.value),
       assignees:$$('#np-assign .chip.sel').map(c=>ruid(+c.dataset.uid))};
     closeModal();location.hash='#/media/projects/'+id;render();
     moSync(MO_API.post('/projects',_np), res=>{ if(res&&res.project) location.hash='#/media/projects/'+res.project.id; });
@@ -7678,7 +7686,7 @@ const ACTIONS = {
             <option value="employee">Employee</option><option value="team_lead">Team Lead</option><option value="admin">Admin</option></select></div></div>
         <div class="row">
           <div class="field"><label class="lbl">Designation</label><input class="inp" id="au-desig" placeholder="e.g. Video Editor"></div>
-          <div class="field"><label class="lbl">Photo URL (optional)</label><input class="inp" id="au-avatar" placeholder="https://…/photo.jpg"></div></div></div>
+          <div class="field"><label class="lbl">Photo URL <span class="req">*</span></label><input class="inp" id="au-avatar" placeholder="https://…/photo.jpg"></div></div></div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" data-act="createCrew">Create member</button></div>`);
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
@@ -7688,8 +7696,9 @@ const ACTIONS = {
     if(!name){toast('Name is required','bad');return;}
     if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){toast('A valid email is required','bad');return;}
     if(pass.length<6){toast('Password must be at least 6 characters','bad');return;}
+    if(!$('#au-avatar').value.trim()){toast('A profile photo URL is required','bad');return;}
     const payload={full_name:name,email,password:pass,role:$('#au-role').value,designation:$('#au-desig').value.trim(),
-      avatar_url:$('#au-avatar').value.trim()||null};
+      avatar_url:$('#au-avatar').value.trim()};
     closeModal();
     moSync(MO_API.post('/crew',payload), ()=>{render();toast(name+' added to the crew','ok');});
   },
@@ -7780,6 +7789,13 @@ const ACTIONS = {
     ' — AI outputs are always labelled and editable','ok');},
   aiSettings:()=>toast('AI settings — model, retention, opt-out per feature. No AI performance scoring, ever (§7.15).','ok'),
   aiRegen:()=>{loadAI(true);toast('Recomputing AI insights from live data…','ok');},
+  editPhoto:()=>{
+    const url=$('#pf-avatar').value.trim();
+    MO_API.post('/me/profile',{avatar_url:url||null}).then(()=>{
+      const m=DB.users.find(u=>u.id===S.me); if(m)m.avatar_url=url||null;
+      render();toast('Profile photo updated','ok');
+    }).catch(e=>toast('Could not update: '+e.message,'bad'));
+  },
   changePassword:()=>{
     const cur=$('#pw-cur').value, nw=$('#pw-new').value, cf=$('#pw-conf').value;
     if(nw.length<6){toast('New password must be at least 6 characters','bad');return;}
@@ -7917,12 +7933,14 @@ function applyDelivStatus(dl,s){
   const t=dtype(dl.deliverable_type_id);
   const vs=DB.deliverable_versions.filter(v=>v.deliverable_id===dl.id).sort((a,b)=>b.version_no-a.version_no);
   const latest=vs[0];
-  if(s==='approved'&&latest&&latest.submitted_by===S.me){
-    toast('BR-5: you submitted the latest version — someone else must approve it','bad');return false;}
-  if(s==='approved'&&!(isAdmin()||isTL()||isPMof(dl.project_id))){
-    toast('BR-5: reviewer must be the project PM, a Team Lead or Admin','bad');return false;}
-  if(s==='delivered'&&!t.review_exempt&&(!latest||latest.review_status!=='approved')){
-    toast('BR-6: Delivered requires an approved latest version','bad');return false;}
+  if(!isAdmin()){  /* Admin has full override — no review mandate (#4) */
+    if(s==='approved'&&latest&&latest.submitted_by===S.me){
+      toast('BR-5: you submitted the latest version — someone else must approve it','bad');return false;}
+    if(s==='approved'&&!(isTL()||isPMof(dl.project_id))){
+      toast('BR-5: reviewer must be the project PM, a Team Lead or Admin','bad');return false;}
+    if(s==='delivered'&&!t.review_exempt&&(!latest||latest.review_status!=='approved')){
+      toast('BR-6: Delivered requires an approved latest version','bad');return false;}
+  }
   const before=dl.status;dl.status=s;
   if(s==='delivered')dl.completed_at=TODAY;
   audit(S.me,'deliverable.status_changed','deliverable',dl.id,{status:before},{status:s});
