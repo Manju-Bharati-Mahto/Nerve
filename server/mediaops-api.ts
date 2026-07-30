@@ -132,7 +132,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // BOTH the user-ref columns and the roster, so identities line up even for real
     // (non-'mo-uN') users. This roster REPLACES the prototype's seed users.
     const crew = (await pool.query(
-      `SELECT id, full_name, email, role, avatar_url FROM users WHERE team='media' ORDER BY id`)).rows as Array<Record<string, unknown>>;
+      `SELECT u.id, u.full_name, u.email, u.role, u.avatar_url, u.created_at,
+              p.designation, p.joined_on FROM users u LEFT JOIN mo_user_profiles p ON p.user_id=u.id
+        WHERE u.team='media' ORDER BY u.id`)).rows as Array<Record<string, unknown>>;
     if (!crew.some((r) => r.id === u.id))
       crew.unshift({ id: u.id, full_name: u.full_name ?? "You", email: u.email ?? "", role: u.role, avatar_url: null });
     let ctr = 900;
@@ -172,6 +174,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         role: roleMap[String(r.role)] ?? "employee",
         initials: (name.split(/\s+/).map((w) => w[0] || "").join("").slice(0, 2).toUpperCase()) || "?",
         color: "#3B9B76", avatar_url: r.avatar_url ?? null, is_active: true,
+        designation: r.designation ?? "", joined_on: r.joined_on ?? (r.created_at ? String(r.created_at).slice(0, 10) : null),
       };
     });
     out.me = idMap.get(u.id);
@@ -246,13 +249,16 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         await pool.query(`INSERT INTO mo_project_assignments (project_id, user_id, assigned_by) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [id, uid, u.id]);
       }
     }
-    // FR-3.2: auto-create the type's template deliverable set (unless opted out — #2).
+    // FR-3.2: create deliverables from the SELECTED template items (#2 — per-item
+    // checkboxes), or the whole set if no selection was sent.
     let made = 0;
-    const tmpl = b.apply_template === false ? { rows: [] }
+    const picked = Array.isArray(b.template_items) ? (b.template_items as unknown[]).map(Number) : null;
+    const tmpl = b.apply_template === false ? { rows: [] as Array<{ id: number }> }
       : await pool.query(`SELECT id FROM mo_project_templates WHERE project_type_id=$1 AND is_active LIMIT 1`, [typeId]);
     if (tmpl.rows[0]) {
-      const items = await pool.query(`SELECT * FROM mo_template_deliverables WHERE template_id=$1`, [tmpl.rows[0].id]);
-      for (const it of items.rows) {
+      let items = (await pool.query(`SELECT * FROM mo_template_deliverables WHERE template_id=$1`, [tmpl.rows[0].id])).rows;
+      if (picked) items = items.filter((it: { id: number }) => picked.includes(Number(it.id)));
+      for (const it of items) {
         await pool.query(
           `INSERT INTO mo_deliverables (project_id, deliverable_type_id, title, owner_id, due_date, unit, weight, status)
            SELECT $1,$2,$3,$4,$5, dt.default_unit, $6,'not_started' FROM mo_deliverable_types dt WHERE dt.id=$2`,
@@ -864,15 +870,18 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       approved: ["delivered", "changes_requested"], delivered: [], not_required: ["not_started"], cancelled: ["not_started"],
     };
     if (!(DELIV[d.status] ?? []).includes(to)) return sendError(res, 400, `BR-1: ${d.status} → ${to} is not a valid transition.`);
-    if (to === "approved") {
-      const v = (await pool.query(`SELECT submitted_by FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [id])).rows[0];
-      if (v && v.submitted_by === u.id) return sendError(res, 403, "BR-5: a version cannot be approved by its submitter.");
-      const isPM = await pool.query(`SELECT 1 FROM mo_project_assignments a WHERE a.project_id=$1 AND a.user_id=$2 AND a.is_project_manager AND a.removed_at IS NULL`, [d.project_id, u.id]);
-      if (!(isMoAdmin(u) || isMoTL(u) || isPM.rows[0])) return sendError(res, 403, "BR-5: reviewer must be the PM, a Team Lead or Admin.");
-    }
-    if (to === "delivered" && !d.review_exempt) {
-      const v = (await pool.query(`SELECT review_status FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [id])).rows[0];
-      if (v?.review_status !== "approved") return sendError(res, 400, "BR-6: Delivered requires an approved latest version.");
+    // Admin has full override (no review mandate — #4). Everyone else obeys BR-5/BR-6.
+    if (!isMoAdmin(u)) {
+      if (to === "approved") {
+        const v = (await pool.query(`SELECT submitted_by FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [id])).rows[0];
+        if (v && v.submitted_by === u.id) return sendError(res, 403, "BR-5: a version cannot be approved by its submitter.");
+        const isPM = await pool.query(`SELECT 1 FROM mo_project_assignments a WHERE a.project_id=$1 AND a.user_id=$2 AND a.is_project_manager AND a.removed_at IS NULL`, [d.project_id, u.id]);
+        if (!(isMoTL(u) || isPM.rows[0])) return sendError(res, 403, "BR-5: reviewer must be the PM, a Team Lead or Admin.");
+      }
+      if (to === "delivered" && !d.review_exempt) {
+        const v = (await pool.query(`SELECT review_status FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [id])).rows[0];
+        if (v?.review_status !== "approved") return sendError(res, 400, "BR-6: Delivered requires an approved latest version.");
+      }
     }
     await pool.query(`UPDATE mo_deliverables SET status=$1, completed_at=CASE WHEN $1='delivered' THEN CURRENT_DATE ELSE completed_at END WHERE id=$2`, [to, id]);
     await audit(u, "deliverable.status_changed", "deliverable", id, { status: d.status }, { status: to }, req);
@@ -905,6 +914,15 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ ok: true });
   }));
 
+  // Update own profile photo (edit-avatar from the profile dialog — #5).
+  app.post(`${P}/me/profile`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const b = req.body as Record<string, unknown>;
+    await pool.query(`UPDATE users SET avatar_url=$1 WHERE id=$2`, [(b.avatar_url as string) || null, u.id]);
+    await audit(u, "user.avatar_updated", "user", null, null, null, req);
+    res.json({ ok: true });
+  }));
+
   // Change own password (profile dialog).
   app.post(`${P}/me/password`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
@@ -927,6 +945,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const email = String(b.email ?? "").trim().toLowerCase();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendError(res, 400, "A valid email is required.");
     if (String(b.password ?? "").length < 6) return sendError(res, 400, "Password must be at least 6 characters.");
+    if (!String(b.avatar_url ?? "").trim()) return sendError(res, 400, "A profile photo is required.");
     const role = ({ admin: "admin", team_lead: "sub_admin", employee: "user" } as Record<string, string>)[String(b.role)] ?? "user";
     const exists = await pool.query(`SELECT 1 FROM users WHERE email=$1`, [email]);
     if (exists.rows[0]) return sendError(res, 409, "A user with that email already exists.");

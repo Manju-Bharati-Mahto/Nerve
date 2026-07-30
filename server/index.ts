@@ -680,6 +680,14 @@ app.post("/api/users/me/avatar", avatarUpload.single("avatar"), asyncHandler(asy
   res.json({ user: updated, avatar_url: avatarUrl });
 }));
 
+// Media Ops: upload an image and get its URL (used for add-member + profile photos).
+// Returns the URL only — the caller decides where to attach it.
+app.post("/api/v1/media/upload-image", avatarUpload.single("image"), asyncHandler(async (req, res) => {
+  if (!res.locals.currentUser) return sendError(res, 401, "Not authenticated.");
+  if (!req.file) return sendError(res, 400, "No image uploaded.");
+  res.json({ url: `/uploads/avatars/${req.file.filename}` });
+}));
+
 app.patch("/api/users/:id", asyncHandler(async (req, res) => {
   const userId = getSingleParam(req.params.id);
   const currentUser = res.locals.currentUser;
