@@ -46,6 +46,17 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     return u;
   }
 
+  // Per-user module access (allowed_modules). Admins bypass; NULL = unrestricted
+  // (role-based). Backend defense-in-depth behind the client's nav/route gating.
+  async function requireModule(res: express.Response, u: CurrentUser, key: string): Promise<boolean> {
+    if (isMoAdmin(u)) return true;
+    const row = (await pool.query(`SELECT allowed_modules FROM mo_user_profiles WHERE user_id=$1`, [u.id])).rows[0];
+    const am = row?.allowed_modules;
+    if (!Array.isArray(am) || am.includes(key)) return true;
+    sendError(res, 403, `Your account has no access to the "${key}" module.`);
+    return false;
+  }
+
   // Append-only audit (FR-13). Never throws into the request path.
   async function audit(actor: CurrentUser, action: string, entityType: string, entityId: number | null,
                        before: unknown, after: unknown, req: express.Request) {
@@ -140,7 +151,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // (non-'mo-uN') users. This roster REPLACES the prototype's seed users.
     const crew = (await pool.query(
       `SELECT u.id, u.full_name, u.email, u.role, u.avatar_url, u.created_at,
-              p.designation, p.joined_on FROM users u LEFT JOIN mo_user_profiles p ON p.user_id=u.id
+              p.designation, p.joined_on, p.allowed_modules FROM users u LEFT JOIN mo_user_profiles p ON p.user_id=u.id
         WHERE u.team='media' ORDER BY u.id`)).rows as Array<Record<string, unknown>>;
     if (!crew.some((r) => r.id === u.id))
       crew.unshift({ id: u.id, full_name: u.full_name ?? "You", email: u.email ?? "", role: u.role, avatar_url: null });
@@ -182,6 +193,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         initials: (name.split(/\s+/).map((w) => w[0] || "").join("").slice(0, 2).toUpperCase()) || "?",
         color: "#3B9B76", avatar_url: r.avatar_url ?? null, is_active: true,
         designation: r.designation ?? "", joined_on: r.joined_on ?? (r.created_at ? String(r.created_at).slice(0, 10) : null),
+        allowed_modules: Array.isArray(r.allowed_modules) ? r.allowed_modules : null,
       };
     });
     out.me = idMap.get(u.id);
@@ -674,6 +686,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // ── Leave (§7.8) ──────────────────────────────────────────────────────────
   app.post(`${P}/leave`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
+    if (!(await requireModule(res, u, "leave"))) return;
     const b = req.body as Record<string, unknown>;
     if (!b.leave_type_id || !b.starts_on || !b.ends_on) return sendError(res, 400, "Leave type and dates are required.");
     if ((b.ends_on as string) < (b.starts_on as string)) return sendError(res, 400, "Leave end must be on or after the start.");
@@ -1118,15 +1131,31 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       `INSERT INTO users (id, full_name, email, department, role, team, password_hash, email_verified, avatar_url)
        VALUES ($1,$2,$3,'Media Crew',$4,'media',$5,true,$6)`,
       [id, String(b.full_name ?? "New Member").trim() || "New Member", email, role, pw, (b.avatar_url as string) || null]);
-    await pool.query(`INSERT INTO mo_user_profiles (user_id, designation, mo_role) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
-      [id, String(b.designation ?? ""), ({ admin: "admin", sub_admin: "team_lead", user: "employee" } as Record<string, string>)[role]]);
-    await audit(u, "crew.added", "user", null, null, { email, role }, req);
+    const mods = Array.isArray(b.allowed_modules) ? JSON.stringify(b.allowed_modules) : null;
+    await pool.query(`INSERT INTO mo_user_profiles (user_id, designation, mo_role, allowed_modules) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+      [id, String(b.designation ?? ""), ({ admin: "admin", sub_admin: "team_lead", user: "employee" } as Record<string, string>)[role], mods]);
+    await audit(u, "crew.added", "user", null, null, { email, role, allowed_modules: b.allowed_modules ?? null }, req);
     res.status(201).json({ ok: true, id, email, role });
+  }));
+
+  // Update a user's module access (edit an existing member). Admin only.
+  app.post(`${P}/crew/:id/modules`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may change module access.");
+    const memberId = getSingleParam(req.params.id);
+    const mods = (req.body as Record<string, unknown>).allowed_modules;
+    const val = Array.isArray(mods) ? JSON.stringify(mods) : null;   // null clears the restriction
+    await pool.query(
+      `INSERT INTO mo_user_profiles (user_id, allowed_modules) VALUES ($1,$2)
+       ON CONFLICT (user_id) DO UPDATE SET allowed_modules=EXCLUDED.allowed_modules`, [memberId, val]);
+    await audit(u, "crew.modules_changed", "user", null, null, { member: memberId, allowed_modules: mods ?? null }, req);
+    res.json({ ok: true });
   }));
 
   // Add an equipment item (auto asset tag EQ-<CAT>-NNN). Team Lead / Admin.
   app.post(`${P}/equipment`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
+    if (!(await requireModule(res, u, "equipment"))) return;
     if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Team Lead or Admin only.");
     const b = req.body as Record<string, unknown>;
     const catId = Number(b.category_id);
@@ -1237,6 +1266,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // ═════════════════════════ KRA (§7.9 / FR-9.x) ══════════════════════════
   app.post(`${P}/kra/cycles`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
+    if (!(await requireModule(res, u, "performance"))) return;
     if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may open a KRA cycle.");
     const b = req.body as Record<string, unknown>;
     if (!String(b.label ?? "").trim()) return sendError(res, 400, "Cycle label is required.");

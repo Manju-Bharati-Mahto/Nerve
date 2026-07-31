@@ -117,8 +117,11 @@ export async function bootstrapMediaOpsDatabase() {
       user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       designation TEXT NOT NULL DEFAULT '', mo_role TEXT NOT NULL DEFAULT 'employee'
         CHECK (mo_role IN ('admin','team_lead','employee')),
-      color TEXT, joined_on DATE, campus_id BIGINT REFERENCES mo_campuses(id)
+      color TEXT, joined_on DATE, campus_id BIGINT REFERENCES mo_campuses(id),
+      allowed_modules JSONB   -- NULL = unrestricted (role-based); array = restrict to these module keys
     )`);
+  // Existing DBs: add the column if it predates the module-access feature.
+  await pool.query(`ALTER TABLE mo_user_profiles ADD COLUMN IF NOT EXISTS allowed_modules JSONB`);
 
   // ── §11.2 Projects & production ──────────────────────────────────────────
   await pool.query(`

@@ -2563,6 +2563,26 @@ const NAV = [
     {r:'#/media/spec',    i:'grid',  l:'Spec Coverage',    show:()=>true}
   ]}
 ];
+/* ── Per-user Module Access ────────────────────────────────────────────────
+   Admin grants a set of module keys per user (allowed_modules on /state.users).
+   NULL = unrestricted (role-based, the default for existing users/admins); an
+   array restricts the sidebar + routes to those modules. Admins always bypass. */
+const MODULES = [
+  {key:'dashboard',   label:'Dashboard',            pfx:['#/media/home']},
+  {key:'reporting',   label:'Daily Reporting',      pfx:['#/media/my-day','#/media/reports']},
+  {key:'projects',    label:'Projects',             pfx:['#/media/projects','#/media/pipeline','#/media/boards','#/media/calendar']},
+  {key:'library',     label:'Media Library',        pfx:['#/media/library']},
+  {key:'ai',          label:'AI Summary',           pfx:['#/media/ai']},
+  {key:'equipment',   label:'Equipment Management', pfx:['#/media/equipment']},
+  {key:'leave',       label:'Leave Management',      pfx:['#/media/leave']},
+  {key:'performance', label:'Performance Review',   pfx:['#/media/performance','#/media/kra']},
+  {key:'admin',       label:'Admin Panel',          pfx:['#/media/admin','#/media/team','#/media/analytics','#/media/spec']},
+  {key:'settings',    label:'Settings',             pfx:['#/media/admin/settings']},
+];
+function hashModule(hash){ let best=null,len=-1; for(const m of MODULES) for(const p of m.pfx) if(hash.startsWith(p)&&p.length>len){best=m.key;len=p.length;} return best; }
+function moduleAllowed(mod){ if(mod==null)return true; const am=(me()||{}).allowed_modules; if(!Array.isArray(am)||isAdmin())return true; return am.includes(mod); }
+function firstAllowedRoute(){ const am=(me()||{}).allowed_modules; if(!Array.isArray(am)||isAdmin())return '#/media/home';
+  for(const g of NAV)for(const it of g.items)if(it.show()&&moduleAllowed(hashModule(it.r)))return it.r; return null; }
 function reviewQueueCount(){
   if(isEmp())return DB.daily_reports.filter(r=>r.user_id===S.me&&r.status==='returned').length;
   return visibleReports().filter(r=>r.status==='flagged'||r.status==='returned').length;
@@ -2573,7 +2593,7 @@ function pendingLeaveCount(){
 }
 function renderNav(){
   $('#nav').innerHTML = NAV.map(g=>{
-    const items=g.items.filter(it=>it.show());
+    const items=g.items.filter(it=>it.show()&&moduleAllowed(hashModule(it.r)));
     if(!items.length)return '';
     return `<div class="nav-group"><div class="nav-group-label">${g.group}</div>${items.map(it=>{
       const b=it.badge?it.badge():'';
@@ -2583,6 +2603,7 @@ function renderNav(){
         ${b?`<span class="nav-badge ${it.r.includes('leave')||it.r.includes('reports')?'':'muted'}">${b}</span>`:''}</a>`;
     }).join('')}</div>`;
   }).join('');
+  const kb=$('#btn-kiosk'); if(kb) kb.style.display=moduleAllowed('equipment')?'':'none';   // kiosk = equipment module
   const u=me();
   $('#me-av').style.backgroundImage="url('"+avatarURL(S.me)+"')";
   $('#me-av').title=u.full_name+' · '+({admin:'Admin',team_lead:'Team Lead',employee:'Employee'})[u.role];
@@ -2626,12 +2647,20 @@ function render(){
   const hash=location.hash||'#/media/home';
   S.route=hash;
   let html='';
+  // Module-access guard (§ Module Access): bounce to the user's first allowed
+  // module, or show a denied state if they have none. Admins/unrestricted bypass.
+  if(!moduleAllowed(hashModule(hash))){
+    const fa=firstAllowedRoute();
+    if(fa&&fa!==hash){location.hash=fa;return;}
+    html=roleDenied('Your account has no access to this module. Ask an administrator to grant module access.');
+  } else {
   for(const [re,fn] of ROUTES){const m=hash.match(re);if(m){try{html=fn(m);}catch(e){
     html=`<div class="empty"><div class="e-ico">⚠</div><h4>Render error</h4><p>${esc(e.message)}</p>
       <pre style="text-align:left;font-size:11px;overflow:auto;max-height:200px">${esc(e.stack||'')}</pre></div>`;}break;}}
   if(!html)html=`<div class="empty"><div class="e-ico">◌</div><h4>Nothing here</h4>
     <p>The route <span class="mono">${esc(hash)}</span> does not exist.</p>
     <a class="btn primary" href="#/media/home">Go home</a></div>`;
+  }
   $('#page').innerHTML=html;
   renderNav();
   $('#content').scrollTop=0;
@@ -4753,10 +4782,11 @@ function teamDirectory(){
         <div class="between small mut3"><span>${activeProjectsOf(u.id).length} projects</span>
           <span>${openDeliverables(u.id).length} open ◆</span><span>${consistency(u.id)}% consistency</span></div>
         ${(can('admin.users')&&u.id!==S.me)?`<div class="mt3" onclick="event.stopPropagation();event.preventDefault()">
-          <select class="inp" style="height:32px;font-size:12px" onchange="ACTIONS.changeRole({uid:${u.id},role:this.value})">
+          <div class="f gap2 ac"><select class="inp" style="height:32px;font-size:12px;flex:1" onchange="ACTIONS.changeRole({uid:${u.id},role:this.value})">
             <option value="employee" ${u.role==='employee'?'selected':''}>● Employee</option>
             <option value="team_lead" ${u.role==='team_lead'?'selected':''}>▲ Team Lead</option>
-            <option value="admin" ${u.role==='admin'?'selected':''}>★ Admin</option></select></div>`:''}
+            <option value="admin" ${u.role==='admin'?'selected':''}>★ Admin</option></select>
+          <button class="btn xs" title="Module access" onclick="ACTIONS.editModules({uid:${u.id}})">⚿ Modules${Array.isArray(u.allowed_modules)?' ('+u.allowed_modules.length+')':''}</button></div></div>`:''}
       </div></div>`;}).join('')}</div>`;
 }
 function teamAvailability(){
@@ -7806,7 +7836,10 @@ const ACTIONS = {
           <div class="field"><label class="lbl">Designation</label><input class="inp" id="au-desig" placeholder="e.g. Video Editor"></div>
           <div class="field"><label class="lbl">Photo <span class="req">*</span></label>
             <input class="inp" type="file" id="au-photo" accept="image/*" onchange="ACTIONS.uploadCrewPhoto(this)">
-            <input type="hidden" id="au-avatar"><div id="au-photo-status" class="hint">Upload a photo (required).</div></div></div></div>
+            <input type="hidden" id="au-avatar"><div id="au-photo-status" class="hint">Upload a photo (required).</div></div></div>
+        <div class="field"><label class="lbl">Module Access <span class="mut3">(select one or more)</span></label>
+          <div class="grid g2" style="gap:4px 16px">${MODULES.map(m=>`<label class="chk"><input type="checkbox" class="au-mod" value="${m.key}"> ${m.label}</label>`).join('')}</div>
+          <div class="hint">The member sees only the modules you grant — sidebar, routes and API are gated to these. No selection = no access.</div></div></div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" data-act="createCrew">Create member</button></div>`);
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
@@ -7818,7 +7851,8 @@ const ACTIONS = {
     if(pass.length<6){toast('Password must be at least 6 characters','bad');return;}
     if(!$('#au-avatar').value.trim()){toast('A profile photo URL is required','bad');return;}
     const payload={full_name:name,email,password:pass,role:$('#au-role').value,designation:$('#au-desig').value.trim(),
-      avatar_url:$('#au-avatar').value.trim()};
+      avatar_url:$('#au-avatar').value.trim(),
+      allowed_modules:$$('.au-mod:checked').map(c=>c.value)};
     closeModal();
     moSync(MO_API.post('/crew',payload), ()=>{render();toast(name+' added to the crew','ok');});
   },
@@ -7948,6 +7982,24 @@ const ACTIONS = {
   changeRole:(d)=>{
     if(!d.role)return;
     moSync(MO_API.post('/crew/'+ruid(+d.uid)+'/role',{role:d.role}), ()=>{render();toast('Role updated to '+d.role.replace('_',' '),'ok');});
+  },
+  editModules:(d)=>{
+    const u=user(+d.uid), am=Array.isArray(u.allowed_modules)?u.allowed_modules:null;
+    modal(`<div class="mo-head"><div><h2>Module access — ${esc(u.full_name)}</h2>
+        <p>Tick the modules this member may open. “Unrestricted” gives every module (role-based) — the default.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <label class="chk mb3"><input type="checkbox" id="em-unrestricted" ${am==null?'checked':''} onchange="document.querySelectorAll('.em-mod').forEach(c=>c.disabled=this.checked)"> Unrestricted (all modules, role-based)</label>
+        <div class="grid g2" style="gap:4px 16px">${MODULES.map(m=>`<label class="chk"><input type="checkbox" class="em-mod" value="${m.key}" ${am&&am.includes(m.key)?'checked':''} ${am==null?'disabled':''}> ${m.label}</label>`).join('')}</div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="saveModules" data-uid="${u.id}">Save access</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  saveModules:(d)=>{
+    const mods=$('#em-unrestricted').checked?null:$$('.em-mod:checked').map(c=>c.value);
+    const u=user(+d.uid); if(u)u.allowed_modules=mods;
+    closeModal();render();
+    moSync(MO_API.post('/crew/'+ruid(+d.uid)+'/modules',{allowed_modules:mods}),()=>{render();toast('Module access updated','ok');});
   },
   assignProject:(d)=>{
     const p=proj(+d.pid);
