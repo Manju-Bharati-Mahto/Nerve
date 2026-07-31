@@ -7412,11 +7412,13 @@ const ACTIONS = {
   setSocial:(d,n)=>{const dl=deliv(+d.did);const before=dl.social_status;dl.social_status=n.value;
     if(n.value==='posted'){dl.social_posted_at=TODAY;if(!dl.social_post_url)dl.social_post_url='https://instagram.com/parul.university';}
     audit(S.me,'deliverable.social_updated','deliverable',dl.id,{social_status:before},{social_status:n.value});
-    toast('Social status: '+n.value,'ok');},
+    toast('Social status: '+n.value,'ok');
+    moSync(MO_API.patch('/deliverables/'+dl.id,{social_status:n.value,social_post_url:dl.social_post_url}));},
   setMail:(d,n)=>{const dl=deliv(+d.did);const before=dl.mail_status;dl.mail_status=n.value;
     if(n.value==='sent')dl.mail_sent_at=TODAY;
     audit(S.me,'deliverable.mail_updated','deliverable',dl.id,{mail_status:before},{mail_status:n.value});
-    toast('Mail status: '+n.value,'ok');},
+    toast('Mail status: '+n.value,'ok');
+    moSync(MO_API.patch('/deliverables/'+dl.id,{mail_status:n.value}));},
   copyLink:(d)=>{const l=DB.drive_links.find(x=>x.entity_type==='deliverable'&&x.entity_id===+d.did);
     if(l)ACTIONS.copyURL({url:l.url});},
   copyURL:(d)=>{navigator.clipboard&&navigator.clipboard.writeText(d.url);
@@ -7979,7 +7981,8 @@ const MENUS = {
         const before=p.status;p.status=s;
         if(s==='archived')p.archived_at=TODAY;
         audit(S.me,'project.status_changed','project',p.id,{status:before},{status:s});
-        render();toast('Status → '+PROJ_STATUS[s].l,'ok');}})),
+        render();toast('Status → '+PROJ_STATUS[s].l,'ok');
+        moSync(MO_API.post('/projects/'+p.id+'/status',{status:s}));}})),
       ...(allowed.length?[]:[{label:'No transitions available',disabled:true}])];
   },
   projMore:(d)=>{
@@ -7993,9 +7996,11 @@ const MENUS = {
       {label:'Archive project',icon:'⛁',disabled:!can('project.archive'),
        fn:()=>{p.status='archived';p.archived_at=TODAY;
          audit(S.me,'project.archived','project',p.id,{status:'completed'},{status:'archived'});
-         render();toast('Archived — read-only except for Admin, always searchable in the Library (FR-3.8 / BR-12)','ok');}},
+         render();toast('Archived — read-only except for Admin, always searchable in the Library (FR-3.8 / BR-12)','ok');
+         moSync(MO_API.post('/projects/'+p.id+'/status',{status:'archived'}));}},
       {label:'Cancel project',icon:'✕',cls:'danger',disabled:!can('project.status',{project_id:p.id}),
-       fn:()=>{p.status='cancelled';render();toast('Cancelled','warn');}}];
+       fn:()=>{p.status='cancelled';render();toast('Cancelled','warn');
+         moSync(MO_API.post('/projects/'+p.id+'/status',{status:'cancelled'}));}}];
   },
   delivMenu:(d)=>{
     const dl=deliv(+d.did);
@@ -8067,6 +8072,7 @@ function wireDnD(){
         const before=p.status;p.status=did;
         audit(S.me,'project.status_changed','project',p.id,{status:before},{status:did});
         render();toast(p.name+' → '+PROJ_STATUS[did].l,'ok');
+        moSync(MO_API.post('/projects/'+p.id+'/status',{status:did}));
       }
       else if(skind==='deliverable'&&dkind==='delivstatus'){
         const dl=deliv(+sid);

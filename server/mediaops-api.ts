@@ -461,6 +461,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const b = req.body as Record<string, unknown>;
     const cur = await pool.query(`SELECT * FROM mo_report_tasks WHERE id=$1`, [id]);
     if (!cur.rows[0]) return sendError(res, 404, "Task not found.");
+    const rpt = (await pool.query(`SELECT user_id, status FROM mo_daily_reports WHERE id=$1`, [cur.rows[0].daily_report_id])).rows[0];
+    const isReviewer = isMoAdmin(u) || isMoTL(u);
+    if (rpt && rpt.user_id !== u.id && !isReviewer) return sendError(res, 403, "You can only edit your own tasks.");
+    if (rpt && !["draft", "returned"].includes(rpt.status) && !isReviewer)
+      return sendError(res, 403, "BR-9: this report is locked — a Team Lead must return/unlock it before its tasks can be edited.");
     const start = (b.start_time as string) ?? cur.rows[0].start_time, end = (b.end_time as string) ?? cur.rows[0].end_time;
     const mins = t2m(end) - t2m(start);
     await pool.query(
@@ -471,16 +476,23 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        start, end, mins, b.quantity !== undefined ? b.quantity : cur.rows[0].quantity, (b.unit as string) ?? cur.rows[0].unit,
        (b.status as string) ?? cur.rows[0].status, (b.blocker_note as string) ?? cur.rows[0].blocker_note, id]);
     await refreshReportTotal(cur.rows[0].daily_report_id);
+    await audit(u, "report.task_edited", "report_task", id, cur.rows[0], b, req);
     res.json({ ok: true });
   }));
 
   app.delete(`${P}/tasks/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
-    const cur = await pool.query(`SELECT daily_report_id FROM mo_report_tasks WHERE id=$1`, [id]);
+    const cur = await pool.query(`SELECT * FROM mo_report_tasks WHERE id=$1`, [id]);
     if (!cur.rows[0]) return sendError(res, 404, "Task not found.");
+    const rpt = (await pool.query(`SELECT user_id, status FROM mo_daily_reports WHERE id=$1`, [cur.rows[0].daily_report_id])).rows[0];
+    const isReviewer = isMoAdmin(u) || isMoTL(u);
+    if (rpt && rpt.user_id !== u.id && !isReviewer) return sendError(res, 403, "You can only delete your own tasks.");
+    if (rpt && !["draft", "returned"].includes(rpt.status) && !isReviewer)
+      return sendError(res, 403, "BR-9: this report is locked — a Team Lead must return/unlock it before its tasks can be deleted.");
     await pool.query(`DELETE FROM mo_report_tasks WHERE id=$1`, [id]);
     await refreshReportTotal(cur.rows[0].daily_report_id);
+    await audit(u, "report.task_deleted", "report_task", id, cur.rows[0], null, req);
     res.json({ ok: true });
   }));
 
