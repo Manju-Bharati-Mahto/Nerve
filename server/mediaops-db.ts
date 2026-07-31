@@ -123,6 +123,21 @@ export async function bootstrapMediaOpsDatabase() {
   // Existing DBs: add the column if it predates the module-access feature.
   await pool.query(`ALTER TABLE mo_user_profiles ADD COLUMN IF NOT EXISTS allowed_modules JSONB`);
 
+  // ── CRUD Engine lifecycle columns ─────────────────────────────────────────
+  // Every Admin-configurable table carries the same lifecycle: is_active
+  // (enable/disable — VR-11 deactivate-never-delete), archived_at (hidden from
+  // future use, history intact), created_by/updated_at (audit filters). Applied
+  // uniformly so the generic CRUD engine can treat all config modules the same.
+  for (const t of ["mo_project_types", "mo_deliverable_types", "mo_task_categories", "mo_equipment_categories",
+                   "mo_leave_types", "mo_skills", "mo_capacity_roles", "mo_vendors", "mo_tags", "mo_duty_flags",
+                   "mo_academic_years", "mo_campuses", "mo_holidays", "mo_project_templates", "mo_automation_rules"]) {
+    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true`);
+    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS created_by TEXT`);
+    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+  }
+
   // ── §11.2 Projects & production ──────────────────────────────────────────
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_project_types (

@@ -1387,6 +1387,380 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.status(201).json({ ok: true });
   }));
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // CRUD ENGINE — one configuration-driven framework for every Admin config
+  // module (NFR-10). A module declares its table, fields, display columns,
+  // dependencies and permissions; the engine provides list/search/sort/
+  // pagination, create, edit, duplicate, enable/disable, archive, dependency-
+  // checked delete, bulk actions and per-record audit history — uniformly.
+  // ═══════════════════════════════════════════════════════════════════════
+  type CrudField = {
+    name: string; label: string;
+    type: "text" | "textarea" | "select" | "switch" | "color" | "icon" | "date" | "number" | "slug" | "relation";
+    required?: boolean; def?: unknown; options?: string[];
+    relation?: { module: string; labelCol: string };
+    showIf?: { field: string; value: unknown };
+  };
+  type CrudModule = {
+    key: string; label: string; table: string; fields: CrudField[];
+    cols: string[];                                     // listing display columns
+    deps: { table: string; fk: string; label: string }[];
+    activeCol?: string;                                 // default is_active
+  };
+  const CRUD: Record<string, CrudModule> = {
+    project_types: { key: "project_types", label: "Project Types", table: "mo_project_types",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "slug", label: "Slug", type: "slug" },
+        { name: "color", label: "Colour", type: "color" },
+        { name: "icon", label: "Icon", type: "icon" },
+        { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
+      cols: ["name", "slug", "icon", "sort_order"],
+      deps: [{ table: "mo_projects", fk: "project_type_id", label: "Projects" },
+             { table: "mo_project_templates", fk: "project_type_id", label: "Templates" }] },
+    project_templates: { key: "project_templates", label: "Project Templates", table: "mo_project_templates",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "project_type_id", label: "Project type", type: "relation", required: true, relation: { module: "project_types", labelCol: "name" } }],
+      cols: ["name", "project_type_id"],
+      deps: [{ table: "mo_template_deliverables", fk: "template_id", label: "Template deliverables" }] },
+    deliverable_types: { key: "deliverable_types", label: "Deliverable Types", table: "mo_deliverable_types",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "slug", label: "Slug", type: "slug" },
+        { name: "icon", label: "Icon", type: "icon" },
+        { name: "default_weight", label: "Default weight", type: "number", def: 1 },
+        { name: "default_unit", label: "Default unit", type: "text" },
+        { name: "review_exempt", label: "Review exempt (BR-6)", type: "switch", def: false },
+        { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
+      cols: ["name", "icon", "default_weight", "default_unit", "review_exempt"],
+      deps: [{ table: "mo_deliverables", fk: "deliverable_type_id", label: "Deliverables" },
+             { table: "mo_template_deliverables", fk: "deliverable_type_id", label: "Template items" }] },
+    task_categories: { key: "task_categories", label: "Task Categories", table: "mo_task_categories",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "icon", label: "Icon", type: "icon" },
+        { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
+      cols: ["name", "icon", "sort_order"],
+      deps: [{ table: "mo_report_tasks", fk: "task_category_id", label: "Task logs" }] },
+    equipment_categories: { key: "equipment_categories", label: "Equipment Categories", table: "mo_equipment_categories",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "icon", label: "Icon", type: "icon" },
+        { name: "tracking_mode", label: "Tracking mode", type: "select", options: ["individual", "pooled"], def: "individual" },
+        { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
+      cols: ["name", "icon", "tracking_mode"],
+      deps: [{ table: "mo_equipment_items", fk: "category_id", label: "Equipment items" }] },
+    leave_types: { key: "leave_types", label: "Leave Types", table: "mo_leave_types",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "annual_quota", label: "Annual quota (days)", type: "number" }],
+      cols: ["name", "annual_quota"],
+      deps: [{ table: "mo_leave_requests", fk: "leave_type_id", label: "Leave requests" }] },
+    skills: { key: "skills", label: "Skills", table: "mo_skills",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "category", label: "Category", type: "text" }],
+      cols: ["name", "category"],
+      deps: [{ table: "mo_user_skills", fk: "skill_id", label: "Member skills" }] },
+    capacity_roles: { key: "capacity_roles", label: "Capacity Roles", table: "mo_capacity_roles",
+      fields: [{ name: "name", label: "Name", type: "text", required: true }],
+      cols: ["name"],
+      deps: [{ table: "mo_project_assignments", fk: "capacity_role_id", label: "Project assignments" },
+             { table: "mo_shoot_crew", fk: "capacity_role_id", label: "Shoot crew" }] },
+    vendors: { key: "vendors", label: "Vendors", table: "mo_vendors",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "contact", label: "Contact person", type: "text" },
+        { name: "phone", label: "Phone", type: "text" },
+        { name: "email", label: "Email", type: "text" },
+        { name: "notes", label: "Notes", type: "textarea" }],
+      cols: ["name", "contact", "phone"],
+      deps: [{ table: "mo_equipment_items", fk: "vendor_id", label: "Equipment items" },
+             { table: "mo_maintenance_records", fk: "vendor_id", label: "Maintenance records" }] },
+    tags: { key: "tags", label: "Tags", table: "mo_tags",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "color", label: "Colour", type: "color" }],
+      cols: ["name", "color"],
+      deps: [{ table: "mo_entity_tags", fk: "tag_id", label: "Tagged records" }] },
+    duty_flags: { key: "duty_flags", label: "Duty Flags", table: "mo_duty_flags",
+      fields: [
+        { name: "code", label: "Code", type: "slug", required: true },
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "description", label: "Description", type: "textarea" }],
+      cols: ["code", "name"],
+      deps: [{ table: "mo_user_duties", fk: "duty_flag_id", label: "Duty holders" }] },
+    academic_years: { key: "academic_years", label: "Academic Years", table: "mo_academic_years",
+      fields: [
+        { name: "label", label: "Label", type: "text", required: true },
+        { name: "start_date", label: "Starts", type: "date", required: true },
+        { name: "end_date", label: "Ends", type: "date", required: true },
+        { name: "is_current", label: "Current year", type: "switch", def: false }],
+      cols: ["label", "start_date", "end_date", "is_current"],
+      deps: [{ table: "mo_projects", fk: "academic_year_id", label: "Projects" }] },
+    campuses: { key: "campuses", label: "Campuses", table: "mo_campuses",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "code", label: "Code", type: "slug", required: true },
+        { name: "city", label: "City", type: "text" }],
+      cols: ["name", "code", "city"],
+      deps: [{ table: "mo_holidays", fk: "campus_id", label: "Holidays" },
+             { table: "mo_equipment_items", fk: "campus_id", label: "Equipment items" },
+             { table: "mo_user_profiles", fk: "campus_id", label: "User profiles" }] },
+    holidays: { key: "holidays", label: "Holidays", table: "mo_holidays",
+      fields: [
+        { name: "date", label: "Date", type: "date", required: true },
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "campus_id", label: "Campus", type: "relation", relation: { module: "campuses", labelCol: "name" } }],
+      cols: ["date", "name", "campus_id"], deps: [] },
+    automation_rules: { key: "automation_rules", label: "Automation Rules", table: "mo_automation_rules",
+      activeCol: "is_enabled",
+      fields: [
+        { name: "rule_key", label: "Rule key", type: "slug", required: true },
+        { name: "is_enabled", label: "Enabled", type: "switch", def: true }],
+      cols: ["rule_key", "is_enabled"], deps: [] },
+  };
+  const CRUD_ICONS = ["◆", "●", "▲", "■", "◉", "✦", "⚑", "✎", "◈", "⛁", "▤", "☂", "♪", "✈", "☎"];
+
+  // Permission engine: Admin = everything · Team Lead = view/edit/enable-disable ·
+  // Employee = read-only. Archive + delete are Admin-only (VR-11 spirit).
+  function crudCan(u: CurrentUser) {
+    const r = moRoleOf(u);
+    return { read: true, create: r === "admin" || r === "team_lead", update: r === "admin" || r === "team_lead",
+             state: r === "admin" || r === "team_lead", archive: r === "admin", delete: r === "admin" };
+  }
+  const crudMod = (res: express.Response, key: string): CrudModule | null => {
+    const m = CRUD[key]; if (!m) sendError(res, 400, "Unknown config module."); return m ?? null;
+  };
+  // Validate + coerce a payload against the module's field metadata.
+  function crudValidate(m: CrudModule, b: Record<string, unknown>, partial: boolean): { ok: true; rec: Record<string, unknown> } | { ok: false; msg: string } {
+    const rec: Record<string, unknown> = {};
+    for (const f of m.fields) {
+      let v = b[f.name];
+      if (v === undefined) { if (partial) continue; v = f.def; }
+      if ((f.type === "slug") && (v == null || v === "") && typeof b.name === "string" && f.name === "slug")
+        v = (b.name as string).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      if (f.required && (v == null || v === "")) return { ok: false, msg: `${f.label} is required.` };
+      if (v == null || v === "") { rec[f.name] = f.type === "switch" ? false : null; continue; }
+      switch (f.type) {
+        case "number": { const n = Number(v); if (Number.isNaN(n)) return { ok: false, msg: `${f.label} must be a number.` }; rec[f.name] = n; break; }
+        case "switch": rec[f.name] = v === true || v === "true" || v === 1; break;
+        case "select": if (f.options && !f.options.includes(String(v))) return { ok: false, msg: `${f.label}: invalid option.` }; rec[f.name] = String(v); break;
+        case "relation": rec[f.name] = Number(v) || null; break;
+        case "slug": rec[f.name] = String(v).toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, ""); break;
+        default: rec[f.name] = String(v);
+      }
+    }
+    return { ok: true, rec };
+  }
+  async function crudDeps(m: CrudModule, id: number): Promise<{ label: string; count: number }[]> {
+    const out: { label: string; count: number }[] = [];
+    for (const d of m.deps) {
+      const r = await pool.query(`SELECT COUNT(*)::int c FROM ${d.table} WHERE ${d.fk}=$1`, [id]);
+      if (r.rows[0].c > 0) out.push({ label: d.label, count: r.rows[0].c });
+    }
+    return out;
+  }
+
+  // Meta — module definitions + relation options + the caller's permissions.
+  app.get(`${P}/crud/meta`, asyncHandler(async (_req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const can = crudCan(u);
+    const out: Record<string, unknown>[] = [];
+    for (const m of Object.values(CRUD)) {
+      const fields = [];
+      for (const f of m.fields) {
+        const ff: Record<string, unknown> = { ...f };
+        if (f.type === "relation" && f.relation) {
+          const rm = CRUD[f.relation.module];
+          const opts = await pool.query(`SELECT id, ${f.relation.labelCol} AS l FROM ${rm.table} WHERE archived_at IS NULL ORDER BY 2`);
+          ff.options2 = opts.rows.map((r) => ({ v: Number(r.id), l: r.l }));
+        }
+        fields.push(ff);
+      }
+      out.push({ key: m.key, label: m.label, cols: m.cols, fields, activeCol: m.activeCol ?? "is_active", deps: m.deps.map((d) => d.label) });
+    }
+    res.json({ modules: out, can, icons: CRUD_ICONS });
+  }));
+
+  // List — search / status filter / sort / pagination.
+  app.get(`${P}/crud/:module`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const q = req.query as Record<string, string>;
+    const ac = m.activeCol ?? "is_active";
+    const conds: string[] = [], vals: unknown[] = []; let i = 1;
+    const status = q.status || "active";
+    if (status === "active") conds.push(`${ac}=true AND archived_at IS NULL`);
+    else if (status === "disabled") conds.push(`${ac}=false AND archived_at IS NULL`);
+    else if (status === "archived") conds.push(`archived_at IS NOT NULL`);
+    if (q.q) {
+      const textCols = m.fields.filter((f) => ["text", "textarea", "slug"].includes(f.type)).map((f) => f.name);
+      if (textCols.length) { conds.push(`(${textCols.map((c) => `${c}::text ILIKE $${i}`).join(" OR ")})`); vals.push(`%${q.q}%`); i++; }
+    }
+    const sortable = new Set([...m.cols, "id", "created_at", "updated_at"]);
+    const sort = sortable.has(q.sort) ? q.sort : "id";
+    const dir = q.dir === "desc" ? "DESC" : "ASC";
+    const per = Math.min(50, Math.max(5, parseInt(q.per || "12", 10)));
+    const page = Math.max(1, parseInt(q.page || "1", 10));
+    const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
+    const total = (await pool.query(`SELECT COUNT(*)::int c FROM ${m.table} ${where}`, vals)).rows[0].c;
+    const rows = (await pool.query(
+      `SELECT * FROM ${m.table} ${where} ORDER BY ${sort} ${dir} NULLS LAST LIMIT ${per} OFFSET ${(page - 1) * per}`, vals)).rows;
+    res.json({ rows, total, page, per });
+  }));
+
+  // One record — row + dependency usage + audit history (View drawer tabs).
+  app.get(`${P}/crud/:module/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const row = (await pool.query(`SELECT * FROM ${m.table} WHERE id=$1`, [id])).rows[0];
+    if (!row) return sendError(res, 404, "Record not found.");
+    const deps = await crudDeps(m, id);
+    const hist = (await pool.query(
+      `SELECT a.action, a.before, a.after, a.occurred_at, us.full_name AS actor
+       FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
+       WHERE a.entity_type=$1 AND a.entity_id=$2 ORDER BY a.occurred_at DESC LIMIT 30`, [m.key, id])).rows;
+    res.json({ row, dependencies: deps, audit: hist });
+  }));
+
+  // Create.
+  app.post(`${P}/crud/:module`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!crudCan(u).create) return sendError(res, 403, "You don't have permission to create records.");
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const v = crudValidate(m, req.body as Record<string, unknown>, false);
+    if (!v.ok) return sendError(res, 400, v.msg);
+    v.rec.created_by = u.id;
+    const keys = Object.keys(v.rec);
+    try {
+      const ins = await pool.query(
+        `INSERT INTO ${m.table} (${keys.join(",")}) VALUES (${keys.map((_, ix) => "$" + (ix + 1)).join(",")}) RETURNING *`,
+        keys.map((k) => v.rec[k]));
+      await audit(u, "crud.created", m.key, ins.rows[0].id, null, v.rec, req);
+      res.status(201).json({ row: ins.rows[0] });
+    } catch (e) {
+      if ((e as { code?: string }).code === "23505") return sendError(res, 409, "A record with that name/slug already exists (VR-11: unique per department).");
+      throw e;
+    }
+  }));
+
+  // Update (every editable field).
+  app.patch(`${P}/crud/:module/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!crudCan(u).update) return sendError(res, 403, "You don't have permission to edit records.");
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM ${m.table} WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Record not found.");
+    const v = crudValidate(m, req.body as Record<string, unknown>, true);
+    if (!v.ok) return sendError(res, 400, v.msg);
+    const keys = Object.keys(v.rec);
+    if (!keys.length) return res.json({ row: cur });
+    try {
+      const upd = await pool.query(
+        `UPDATE ${m.table} SET ${keys.map((k, ix) => `${k}=$${ix + 1}`).join(",")}, updated_at=NOW() WHERE id=$${keys.length + 1} RETURNING *`,
+        [...keys.map((k) => v.rec[k]), id]);
+      await audit(u, "crud.updated", m.key, id, cur, v.rec, req);
+      res.json({ row: upd.rows[0] });
+    } catch (e) {
+      if ((e as { code?: string }).code === "23505") return sendError(res, 409, "A record with that name/slug already exists.");
+      throw e;
+    }
+  }));
+
+  // Duplicate — clone all editable fields, auto "(Copy)".
+  app.post(`${P}/crud/:module/:id/duplicate`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!crudCan(u).create) return sendError(res, 403, "You don't have permission to duplicate records.");
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM ${m.table} WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Record not found.");
+    const rec: Record<string, unknown> = {};
+    const suffix = Math.random().toString(36).slice(2, 6);
+    for (const f of m.fields) {
+      let v = cur[f.name];
+      if (["name", "label"].includes(f.name) && typeof v === "string") v = `${v} (Copy)`;
+      if (f.type === "slug" && typeof v === "string") v = `${v}-copy-${suffix}`;
+      rec[f.name] = v;
+    }
+    rec.created_by = u.id;
+    const keys = Object.keys(rec);
+    const ins = await pool.query(
+      `INSERT INTO ${m.table} (${keys.join(",")}) VALUES (${keys.map((_, ix) => "$" + (ix + 1)).join(",")}) RETURNING *`,
+      keys.map((k) => rec[k]));
+    await audit(u, "crud.duplicated", m.key, ins.rows[0].id, { source: id }, rec, req);
+    res.status(201).json({ row: ins.rows[0] });
+  }));
+
+  // Enable / Disable / Archive / Restore.
+  app.post(`${P}/crud/:module/:id/state`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const action = String((req.body as Record<string, unknown>).action);
+    const can = crudCan(u);
+    if (["enable", "disable"].includes(action) && !can.state) return sendError(res, 403, "No permission.");
+    if (["archive", "restore"].includes(action) && !can.archive) return sendError(res, 403, "Archive is Admin-only.");
+    const ac = m.activeCol ?? "is_active";
+    const sql = { enable: `${ac}=true`, disable: `${ac}=false`, archive: `archived_at=NOW()`, restore: `archived_at=NULL` }[action];
+    if (!sql) return sendError(res, 400, "Unknown action.");
+    await pool.query(`UPDATE ${m.table} SET ${sql}, updated_at=NOW() WHERE id=$1`, [id]);
+    await audit(u, `crud.${action}d`, m.key, id, null, { action }, req);
+    res.json({ ok: true });
+  }));
+
+  // Delete — dependency analysis first; refuse (409) when referenced.
+  app.delete(`${P}/crud/:module/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!crudCan(u).delete) return sendError(res, 403, "Delete is Admin-only.");
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const deps = await crudDeps(m, id);
+    if (deps.length) {
+      res.status(409).json({
+        message: `Cannot delete — in use by ${deps.map((d) => `${d.count} ${d.label}`).join(", ")}. Archive it instead (VR-11).`,
+        dependencies: deps,
+      });
+      return;
+    }
+    await pool.query(`DELETE FROM ${m.table} WHERE id=$1`, [id]);
+    await audit(u, "crud.deleted", m.key, id, null, null, req);
+    res.json({ ok: true });
+  }));
+
+  // Bulk — enable / disable / archive / delete across a selection.
+  app.post(`${P}/crud/:module/bulk`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const b = req.body as Record<string, unknown>;
+    const ids = (Array.isArray(b.ids) ? b.ids : []).map(Number).filter(Boolean);
+    const action = String(b.action);
+    const can = crudCan(u);
+    if (["enable", "disable"].includes(action) && !can.state) return sendError(res, 403, "No permission.");
+    if (action === "archive" && !can.archive) return sendError(res, 403, "Archive is Admin-only.");
+    if (action === "delete" && !can.delete) return sendError(res, 403, "Delete is Admin-only.");
+    const ac = m.activeCol ?? "is_active";
+    let done = 0, blocked = 0;
+    for (const id of ids) {
+      if (action === "delete") {
+        const deps = await crudDeps(m, id);
+        if (deps.length) { blocked++; continue; }
+        await pool.query(`DELETE FROM ${m.table} WHERE id=$1`, [id]);
+      } else {
+        const sql = { enable: `${ac}=true`, disable: `${ac}=false`, archive: `archived_at=NOW()` }[action];
+        if (!sql) return sendError(res, 400, "Unknown bulk action.");
+        await pool.query(`UPDATE ${m.table} SET ${sql}, updated_at=NOW() WHERE id=$1`, [id]);
+      }
+      done++;
+    }
+    await audit(u, `crud.bulk_${action}`, m.key, null, null, { ids, done, blocked }, req);
+    res.json({ done, blocked });
+  }));
+
   // ═════════════════════════ DASHBOARD (§7.1) ═════════════════════════════
   app.get(`${P}/dashboard`, asyncHandler(async (_req, res) => {
     const u = requireMedia(res); if (!u) return;

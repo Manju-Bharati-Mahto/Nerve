@@ -5717,9 +5717,163 @@ function viewAdmin(section){
     <div class="tabs">${secs.map(([k,l,i])=>`<a href="#/media/admin/${k}"
       style="padding:9px 13px;font-size:13px;font-weight:600;text-decoration:none;white-space:nowrap;color:${section===k?'var(--brand-600)':'var(--text-2)'};
       border-bottom:2px solid ${section===k?'var(--brand-500)':'transparent'};margin-bottom:-1px">${i} ${l}</a>`).join('')}</div>
-    ${section==='lookups'?admLookups():section==='types'?admTypes():section==='templates'?admTemplates():
+    ${section==='lookups'?viewCrudEngine():section==='types'?viewCrudEngine('deliverable_types'):section==='templates'?viewCrudEngine('project_templates'):
       section==='automations'?admAutomations():section==='users'?admUsers():section==='permissions'?admPermissions():
       section==='import'?admImport():section==='audit'?admAudit():section==='schema'?admSchema():admSettings()}`;
+}
+/* ══════════════════════════════════════════════════════════════════════════
+   CRUD ENGINE (client) — one configuration-driven framework for every Admin
+   config page. The server registry (/crud/meta) declares fields, columns,
+   relations and permissions; everything below renders from that metadata.
+   Adding a new module = one registry entry on the server. Zero page code.
+   ══════════════════════════════════════════════════════════════════════════ */
+function crudState(){
+  if(!S.crud){
+    let saved={}; try{saved=JSON.parse(localStorage.getItem('mo_crud_filter')||'{}');}catch(_){}
+    S.crud={mod:saved.mod||'project_types',q:'',status:saved.status||'active',sort:'id',dir:'asc',page:1,sel:{}};
+  }
+  return S.crud;
+}
+function crudPersist(){const c=S.crud;try{localStorage.setItem('mo_crud_filter',JSON.stringify({mod:c.mod,status:c.status}));}catch(_){}}
+async function loadCrudMeta(){ if(!S._crudMeta) S._crudMeta=await MO_API.get('/crud/meta'); }
+async function loadCrudList(){
+  const c=crudState();
+  S._crudData=await MO_API.get('/crud/'+c.mod+'?q='+encodeURIComponent(c.q)+'&status='+c.status+'&sort='+c.sort+'&dir='+c.dir+'&page='+c.page);
+  render();
+}
+function crudModMeta(){const m=S._crudMeta;return m&&m.modules.find(x=>x.key===crudState().mod);}
+function crudCellVal(mod,f,v){
+  if(v==null||v==='')return '<span class="mut3">—</span>';
+  const fld=mod.fields.find(x=>x.name===f);
+  if(fld){
+    if(fld.type==='switch')return v?'<span class="yes">✓</span>':'<span class="mut3">—</span>';
+    if(fld.type==='color')return `<span class="chip"><span class="dot" style="background:${esc(String(v))}"></span>${esc(String(v))}</span>`;
+    if(fld.type==='relation'&&fld.options2){const o=fld.options2.find(x=>x.v===Number(v));return esc(o?o.l:String(v));}
+    if(fld.type==='date')return D.fmt(String(v).slice(0,10));
+    if(fld.type==='slug')return `<span class="mono small">${esc(String(v))}</span>`;
+  }
+  return esc(String(v));
+}
+function viewCrudEngine(preMod){
+  const c=crudState();
+  if(preMod&&c.mod!==preMod&&!S._crudPre){c.mod=preMod;c.page=1;c.sel={};S._crudData=null;}
+  S._crudPre=preMod||null;
+  if(!S._crudMeta||!S._crudData){
+    loadCrudMeta().then(()=>loadCrudList()).catch(e=>{S._crudData={rows:[],total:0,err:e.message};render();});
+    return `<div class="card"><div class="card-body"><div class="empty" style="padding:40px"><p>Loading configuration…</p></div></div></div>`;
+  }
+  const meta=S._crudMeta, mod=crudModMeta(), data=S._crudData, can=meta.can;
+  if(!mod)return `<div class="empty"><p>Unknown module.</p></div>`;
+  const ac=mod.activeCol, selIds=Object.keys(c.sel).filter(k=>c.sel[k]), pages=Math.max(1,Math.ceil(data.total/(data.per||12)));
+  return `
+    <div class="f wrap gap2 mb3">${meta.modules.map(m=>`<button class="chip ${m.key===c.mod?'sel':''}" data-act="crudMod" data-mod="${m.key}">${esc(m.label)}</button>`).join('')}</div>
+    <div class="card"><div class="card-head"><h3>${esc(mod.label)}</h3>
+      <div class="ca f gap2 ac">
+        <input class="inp" style="height:32px;max-width:220px" placeholder="Search ${esc(mod.label.toLowerCase())}…" value="${esc(c.q)}"
+          onkeydown="if(event.key==='Enter')ACTIONS.crudQ({},this)" onblur="ACTIONS.crudQ({},this)">
+        <select class="inp" style="height:32px;width:auto" onchange="ACTIONS.crudStatus({},this)">
+          ${['active','disabled','archived','all'].map(s=>`<option value="${s}" ${c.status===s?'selected':''}>${s[0].toUpperCase()+s.slice(1)}</option>`).join('')}</select>
+        ${can.create?`<button class="btn sm primary" data-act="crudNew">＋ New</button>`:''}
+      </div></div>
+    ${selIds.length?`<div class="card-body tight" style="background:var(--surface-2)"><div class="f gap2 ac">
+      <span class="small b">${selIds.length} selected</span>
+      ${can.state?`<button class="btn xs" data-act="crudBulk" data-a="enable">Enable</button>
+      <button class="btn xs" data-act="crudBulk" data-a="disable">Disable</button>`:''}
+      ${can.archive?`<button class="btn xs" data-act="crudBulk" data-a="archive">Archive</button>`:''}
+      ${can.delete?`<button class="btn xs danger" data-act="crudBulk" data-a="delete">Delete</button>`:''}
+      <button class="btn xs" data-act="crudBulk" data-a="export">⇩ Export</button>
+      <button class="btn xs ghost ml-auto" data-act="crudSelNone">Clear</button></div></div>`:''}
+    <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
+      <thead><tr>
+        <th style="width:34px"><input type="checkbox" ${data.rows.length&&data.rows.every(r=>c.sel[r.id])?'checked':''} onclick="ACTIONS.crudSelAll({},this)"></th>
+        ${mod.cols.map(col=>{const f=mod.fields.find(x=>x.name===col);
+          return `<th class="click" data-act="crudSort" data-col="${col}" style="cursor:pointer">${esc(f?f.label:col)}
+            ${c.sort===col?(c.dir==='asc'?' ↑':' ↓'):''}</th>`;}).join('')}
+        <th>Status</th><th class="num"></th></tr></thead>
+      <tbody>${data.rows.map(r=>{
+        const st=r.archived_at?'<span class="chip">⛁ Archived</span>':(r[ac]?'<span class="chip sel">● Active</span>':'<span class="chip">○ Disabled</span>');
+        return `<tr>
+          <td><input type="checkbox" ${c.sel[r.id]?'checked':''} onclick="ACTIONS.crudSel({id:${r.id}},this)"></td>
+          ${mod.cols.map(col=>`<td>${crudCellVal(mod,col,r[col])}</td>`).join('')}
+          <td>${st}</td>
+          <td class="num nowrap">
+            <button class="btn xs" data-act="crudViewOne" data-id="${r.id}">View</button>
+            ${can.update?`<button class="btn xs" data-act="crudEdit" data-id="${r.id}">Edit</button>`:''}
+            <button class="btn xs" data-menu="crudRow" data-id="${r.id}">⋯</button></td></tr>`;}).join('')
+        ||`<tr><td colspan="${mod.cols.length+3}" class="tbl-empty">No ${esc(mod.label.toLowerCase())} match.</td></tr>`}
+      </tbody></table></div></div>
+    <div class="card-foot"><div class="between">
+      <span class="small mut3">${data.total} record(s) · page ${c.page} of ${pages}</span>
+      <span class="f gap2">
+        <button class="btn xs" ${c.page<=1?'disabled':''} data-act="crudPage" data-p="${c.page-1}">← Prev</button>
+        <button class="btn xs" ${c.page>=pages?'disabled':''} data-act="crudPage" data-p="${c.page+1}">Next →</button></span>
+    </div></div></div>
+    <div class="note mt3">Every module on this screen is powered by the same CRUD engine — search, filters, sorting, pagination,
+      create/edit forms, duplicate, enable/disable, archive, dependency-checked delete, bulk actions and audit history are all
+      generated from the module's field definitions (NFR-10). Adding a new configuration page requires only a registry entry.</div>`;
+}
+/* Dynamic form generator — Create + Edit share this. */
+function crudFormModal(row){
+  const mod=crudModMeta(), meta=S._crudMeta, isEdit=!!row;
+  const widget=f=>{
+    const v=row?row[f.name]:(f.def!==undefined?f.def:'');
+    const id=`cf-${f.name}`;
+    switch(f.type){
+      case 'textarea':return `<textarea class="inp" id="${id}">${esc(String(v??''))}</textarea>`;
+      case 'select':return `<select class="inp" id="${id}">${(f.options||[]).map(o=>`<option ${String(v)===o?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
+      case 'switch':return `<label class="chk"><input type="checkbox" id="${id}" ${v===true?'checked':''}> ${esc(f.label)}</label>`;
+      case 'color':return `<input class="inp" type="color" id="${id}" value="${esc(String(v||'#3B9B76'))}" style="height:38px;padding:4px">`;
+      case 'icon':return `<div class="f wrap gap2">${meta.icons.map(i=>`<button type="button" class="chip ${String(v)===i?'sel':''}" onclick="document.getElementById('${id}').value='${i}';this.parentNode.querySelectorAll('.chip').forEach(c=>c.classList.remove('sel'));this.classList.add('sel')">${i}</button>`).join('')}
+        <input type="hidden" id="${id}" value="${esc(String(v??''))}"></div>`;
+      case 'date':return `<input class="inp" type="date" id="${id}" value="${esc(String(v??'').slice(0,10))}">`;
+      case 'number':return `<input class="inp" type="number" id="${id}" value="${esc(String(v??''))}">`;
+      case 'relation':return `<select class="inp" id="${id}"><option value="">—</option>${(f.options2||[]).map(o=>`<option value="${o.v}" ${Number(v)===o.v?'selected':''}>${esc(o.l)}</option>`).join('')}</select>`;
+      case 'slug':return `<input class="inp mono" id="${id}" value="${esc(String(v??''))}" placeholder="auto-generated from name">`;
+      default:return `<input class="inp" id="${id}" value="${esc(String(v??''))}" ${f.name==='name'?`oninput="const s=document.getElementById('cf-slug');if(s&&!s.dataset.touched)s.value=this.value.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')"`:''}>`;
+    }
+  };
+  modal(`<div class="mo-head"><div><h2>${isEdit?'Edit':'New'} — ${esc(mod.label)}</h2>
+      <p>Form generated from the module's field definitions; validation runs server-side too.</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">${mod.fields.map(f=>`
+      <div class="field"${f.showIf?` data-showif="${esc(f.showIf.field)}:${esc(String(f.showIf.value))}"`:''}>
+        ${f.type!=='switch'?`<label class="lbl">${esc(f.label)} ${f.required?'<span class="req">*</span>':''}</label>`:''}
+        ${widget(f)}</div>`).join('')}</div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+      <div class="ml-auto f gap2">
+        <button class="btn" data-act="crudSubmit" data-id="${row?row.id:''}">Save</button>
+        <button class="btn primary" data-act="crudSubmit" data-id="${row?row.id:''}" data-close="1">Save &amp; Close</button></div></div>`,{size:'wide'});
+  const sl=$('#cf-slug'); if(sl)sl.addEventListener('input',()=>sl.dataset.touched='1');
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+}
+/* Read-only View drawer — General / Configuration / Dependencies / Audit. */
+function crudViewModal(tab){
+  const v=S._crudView; if(!v)return;
+  const mod=crudModMeta(), r=v.row; tab=tab||'general';
+  const tabs=[['general','General'],['config','Configuration'],['deps','Dependencies'],['audit','Audit History']];
+  const body=
+    tab==='general'?`<dl class="kv">${mod.cols.map(c2=>{const f=mod.fields.find(x=>x.name===c2);
+        return `<dt>${esc(f?f.label:c2)}</dt><dd>${crudCellVal(mod,c2,r[c2])}</dd>`;}).join('')}
+      <dt>Status</dt><dd>${r.archived_at?'Archived':(r[mod.activeCol]?'Active':'Disabled')}</dd>
+      <dt>Created</dt><dd>${r.created_at?D.fmt(String(r.created_at).slice(0,10)):'—'}</dd>
+      <dt>Updated</dt><dd>${r.updated_at?D.fmt(String(r.updated_at).slice(0,10)):'—'}</dd></dl>`:
+    tab==='config'?`<dl class="kv">${mod.fields.map(f=>`<dt>${esc(f.label)}</dt><dd>${crudCellVal(mod,f.name,r[f.name])}</dd>`).join('')}</dl>`:
+    tab==='deps'?(v.dependencies.length?`${v.dependencies.map(d=>`<div class="between mb2"><span>${esc(d.label)}</span><span class="chip">${d.count}</span></div>`).join('')}
+      <div class="note warn mt3">This record is referenced ${v.dependencies.reduce((s,d)=>s+d.count,0)} time(s) — it cannot be deleted, only archived (VR-11).</div>`
+      :`<div class="note">Not referenced anywhere — safe to delete.</div>`):
+    `${v.audit.length?v.audit.map(a=>`<div class="list-row" style="cursor:default">
+      <span class="mono small">${esc(String(a.occurred_at).replace('T',' ').slice(0,16))}</span>
+      <span class="lr-main"><b>${esc(a.action)}</b><span>${esc(a.actor||'system')}</span></span>
+      ${a.after?`<span class="xsmall mut" style="max-width:280px;overflow:hidden;text-overflow:ellipsis">${esc(JSON.stringify(a.after))}</span>`:''}</div>`).join('')
+      :'<div class="note">No audit entries yet.</div>'}`;
+  modal(`<div class="mo-head"><div><h2>${esc(String(r.name||r.label||r.rule_key||('#'+r.id)))}</h2><p>${esc(mod.label)} · read-only</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <div class="tabs mb3">${tabs.map(([k,l])=>`<button data-crudtab="${k}" style="padding:8px 12px;font-size:13px;font-weight:600;border:0;background:none;cursor:pointer;
+        color:${tab===k?'var(--brand-600)':'var(--text-2)'};border-bottom:2px solid ${tab===k?'var(--brand-500)':'transparent'}">${l}</button>`).join('')}</div>
+      ${body}</div>
+    <div class="mo-foot"><button class="btn primary ml-auto" onclick="closeModal()">Close</button></div>`,{size:'wide'});
+  $('#modal-layer').querySelectorAll('[data-crudtab]').forEach(n=>n.onclick=()=>crudViewModal(n.dataset.crudtab));
 }
 function lookupTable(type,title,rows,cols,note){
   const editable=['task_categories','deliverable_types','equipment_categories','leave_types','project_types','capacity_roles','skills','tags'].includes(type);
@@ -7842,6 +7996,69 @@ const ACTIONS = {
         <button class="btn primary" data-act="saveLookup" data-type="${d.type}" data-id="${d.id}">Save</button></div>`);
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
   },
+  /* ── CRUD engine actions ── */
+  crudMod:(d)=>{const c=crudState();c.mod=d.mod;c.page=1;c.q='';c.sel={};S._crudData=null;S._crudPre=d.mod;crudPersist();render();},
+  crudQ:(d,n)=>{const c=crudState();if(c.q===n.value)return;c.q=n.value;c.page=1;loadCrudList();},
+  crudStatus:(d,n)=>{const c=crudState();c.status=n.value;c.page=1;crudPersist();loadCrudList();},
+  crudSort:(d)=>{const c=crudState();if(c.sort===d.col)c.dir=c.dir==='asc'?'desc':'asc';else{c.sort=d.col;c.dir='asc';}loadCrudList();},
+  crudPage:(d)=>{const c=crudState();c.page=+d.p;loadCrudList();},
+  crudSel:(d,n)=>{const c=crudState();c.sel[d.id]=n.checked;render();},
+  crudSelAll:(d,n)=>{const c=crudState();(S._crudData?.rows||[]).forEach(r=>c.sel[r.id]=n.checked);render();},
+  crudSelNone:()=>{crudState().sel={};render();},
+  crudNew:()=>crudFormModal(null),
+  crudEdit:(d)=>{const r=(S._crudData?.rows||[]).find(x=>x.id===+d.id);if(r)crudFormModal(r);},
+  crudSubmit:(d)=>{
+    const mod=crudModMeta(), payload={};
+    for(const f of mod.fields){const el=$('#cf-'+f.name);if(!el)continue;
+      payload[f.name]=f.type==='switch'?el.checked:el.value;}
+    const req=d.id?MO_API.patch('/crud/'+crudState().mod+'/'+d.id,payload):MO_API.post('/crud/'+crudState().mod,payload);
+    req.then(()=>{if(d.close||!d.id)closeModal();toast(d.id?'Saved':'Created','ok');loadCrudList();})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  crudViewOne:(d)=>{
+    MO_API.get('/crud/'+crudState().mod+'/'+d.id).then(v=>{S._crudView=v;crudViewModal('general');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  crudDup:(d)=>{
+    MO_API.post('/crud/'+crudState().mod+'/'+d.id+'/duplicate',{}).then(()=>{toast('Duplicated — "(Copy)" created','ok');loadCrudList();})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  crudStateAct:(d)=>{
+    MO_API.post('/crud/'+crudState().mod+'/'+d.id+'/state',{action:d.a}).then(()=>{closeModal();toast(d.a[0].toUpperCase()+d.a.slice(1)+'d','ok');loadCrudList();})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  crudDelete:(d)=>{
+    /* Dependency analysis FIRST — refuse + offer Archive when referenced. */
+    MO_API.get('/crud/'+crudState().mod+'/'+d.id).then(v=>{
+      if(v.dependencies.length){
+        modal(`<div class="mo-head"><div><h2>Cannot delete</h2><p>This record is in use — deleting it would orphan history.</p></div>
+            <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+          <div class="mo-body">${v.dependencies.map(x=>`<div class="between mb2"><span>Used by</span><span class="chip">${x.count} ${esc(x.label)}</span></div>`).join('')}
+            <div class="note warn mt2"><b>VR-11:</b> deactivate or archive, never delete — referential history stays intact.</div></div>
+          <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+            <button class="btn primary ml-auto" data-act="crudStateAct" data-id="${d.id}" data-a="archive">⛁ Archive instead</button></div>`);
+        $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+        return;
+      }
+      if(!confirm('No dependencies found — delete permanently?'))return;
+      MO_API.del('/crud/'+crudState().mod+'/'+d.id).then(()=>{toast('Deleted','ok');loadCrudList();}).catch(e=>toast(e.message,'bad'));
+    }).catch(e=>toast(e.message,'bad'));
+  },
+  crudBulk:(d)=>{
+    const c=crudState(), ids=Object.keys(c.sel).filter(k=>c.sel[k]).map(Number);
+    if(!ids.length){toast('Select at least one record','warn');return;}
+    if(d.a==='export'){
+      const mod=crudModMeta(), rows=(S._crudData?.rows||[]).filter(r=>c.sel[r.id]);
+      const csv=[mod.cols.join(',')].concat(rows.map(r=>mod.cols.map(cc=>'"'+String(r[cc]??'').replace(/"/g,'""')+'"').join(','))).join('\n');
+      const a=document.createElement('a');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+      a.href=url;a.download='media-ops-'+c.mod+'.csv';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+      toast('Exported '+rows.length+' row(s)','ok');return;
+    }
+    if(d.a==='delete'&&!confirm('Delete '+ids.length+' record(s)? Records still in use are skipped automatically.'))return;
+    MO_API.post('/crud/'+c.mod+'/bulk',{ids,action:d.a}).then(r=>{
+      c.sel={};toast(r.done+' done'+(r.blocked?' · '+r.blocked+' blocked (in use — archive those instead)':''),r.blocked?'warn':'ok');loadCrudList();
+    }).catch(e=>toast(e.message,'bad'));
+  },
   saveLookup:(d)=>{
     const name=$('#lk-name').value.trim(); if(!name){toast('Name is required','bad');return;}
     const payload={name};
@@ -8270,6 +8487,21 @@ const MENUS = {
         render();toast('Status → '+PROJ_STATUS[s].l,'ok');
         moSync(MO_API.post('/projects/'+p.id+'/status',{status:s}));}})),
       ...(allowed.length?[]:[{label:'No transitions available',disabled:true}])];
+  },
+  crudRow:(d)=>{
+    const meta=S._crudMeta, mod=crudModMeta(), can=meta.can;
+    const r=(S._crudData?.rows||[]).find(x=>x.id===+d.id)||{};
+    const active=!!r[mod.activeCol], archived=!!r.archived_at;
+    return [
+      {label:'View',icon:'◔',fn:()=>ACTIONS.crudViewOne(d)},
+      {label:'Edit',icon:'✎',disabled:!can.update,fn:()=>ACTIONS.crudEdit(d)},
+      {label:'Duplicate',icon:'⧉',disabled:!can.create,fn:()=>ACTIONS.crudDup(d)},
+      {sep:true},
+      active?{label:'Disable',icon:'○',disabled:!can.state,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'disable'})}
+            :{label:'Enable',icon:'●',disabled:!can.state,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'enable'})},
+      archived?{label:'Restore',icon:'↺',disabled:!can.archive,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'restore'})}
+              :{label:'Archive',icon:'⛁',disabled:!can.archive,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'archive'})},
+      {label:'Delete',icon:'🗑',cls:'danger',disabled:!can.delete,fn:()=>ACTIONS.crudDelete(d)}];
   },
   projMore:(d)=>{
     const p=proj(+d.pid);
