@@ -9,7 +9,7 @@
  * in LoginForm.tsx so both this page and the landing page can render it.
  */
 import { useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth, getRoleDashboard } from '@/hooks/useAuth'
 import AuthShell from '@/components/AuthShell'
 import LoginForm from './LoginForm'
@@ -17,6 +17,8 @@ import LoginForm from './LoginForm'
 export default function LoginPage() {
   const { user, role } = useAuth()
   const navigate = useNavigate()
+  const [params] = useSearchParams()
+  const expired = params.get('expired') === '1'
 
   useEffect(() => {
     if (user && role) navigate(getRoleDashboard(role, null))
@@ -24,6 +26,18 @@ export default function LoginPage() {
 
   return (
     <AuthShell>
+      {expired && (
+        <div
+          role="alert"
+          style={{
+            marginBottom: 16, padding: '10px 14px', borderRadius: 10,
+            background: 'rgba(245,158,11,.14)', border: '1px solid rgba(245,158,11,.4)',
+            color: '#fbbf24', fontSize: 14, textAlign: 'center',
+          }}
+        >
+          Your session has expired. Please log in again.
+        </div>
+      )}
       <LoginForm dark />
     </AuthShell>
   )

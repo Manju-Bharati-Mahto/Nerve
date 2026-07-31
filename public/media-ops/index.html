@@ -816,11 +816,15 @@ html[data-theme=dark] .cal-cell.today{background:var(--brand-50)}
       <div class="brand-txt"><b>NERVE</b><span>Media Ops</span></div>
     </div>
     <nav class="nav" id="nav"></nav>
-    <div class="nav-foot">
-      <button class="nav-item" id="btn-kiosk" title="Launch equipment kiosk (FR-6.6)" style="flex:1">
-        <span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4.6" y="2.6" width="14.8" height="18.8" rx="2.2"/><path d="M9.6 18.4h4.8"/><circle cx="12" cy="10" r="3.2"/></svg></span><span class="nav-label">Kiosk mode</span></button>
-      <button class="collapse-btn" id="btn-collapse" title="Collapse sidebar" aria-label="Collapse sidebar">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14.6 6-6 6 6 6"/></svg></button>
+    <div class="nav-foot" style="flex-direction:column;align-items:stretch">
+      <button class="nav-item" id="btn-logout" title="Log out" style="color:var(--danger)">
+        <span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg></span><span class="nav-label">Log out</span></button>
+      <div class="f gap2 ac">
+        <button class="nav-item" id="btn-kiosk" title="Launch equipment kiosk (FR-6.6)" style="flex:1">
+          <span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4.6" y="2.6" width="14.8" height="18.8" rx="2.2"/><path d="M9.6 18.4h4.8"/><circle cx="12" cy="10" r="3.2"/></svg></span><span class="nav-label">Kiosk mode</span></button>
+        <button class="collapse-btn" id="btn-collapse" title="Collapse sidebar" aria-label="Collapse sidebar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14.6 6-6 6 6 6"/></svg></button>
+      </div>
     </div>
   </aside>
 
@@ -2695,6 +2699,7 @@ if(matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches){S.theme='dark
 $('#btn-help').onclick=()=>showShortcuts();
 $('#btn-bell').onclick=()=>{location.hash='#/media/notifications';};
 $('#btn-quickadd').onclick=e=>menu(e.currentTarget,quickAddItems());
+$('#btn-logout').onclick=()=>ACTIONS.logout();
 $('#btn-role').onclick=()=>{
   const m=me(), rl={admin:'Admin',team_lead:'Team Lead',employee:'Employee'}[m.role]||'Member';
   modal(`<div class="mo-head"><div class="f ac gap3">${avatar(S.me,'lg')}
@@ -2716,8 +2721,9 @@ $('#btn-role').onclick=()=>{
       <div class="row">
         <div class="field"><label class="lbl">New password</label><input class="inp" id="pw-new" type="password" placeholder="min 6 characters" autocomplete="new-password"></div>
         <div class="field"><label class="lbl">Confirm</label><input class="inp" id="pw-conf" type="password" autocomplete="new-password"></div></div></div>
-    <div class="mo-foot"><button class="btn ghost" onclick="closeModal();window.location.href='/'">← Nerve home</button>
-      <div class="ml-auto f gap2"><button class="btn" onclick="closeModal()">Close</button>
+    <div class="mo-foot"><button class="btn danger" data-act="logout">⏻ Log out</button>
+      <div class="ml-auto f gap2"><button class="btn ghost" onclick="closeModal();window.location.href='/'">← Nerve home</button>
+        <button class="btn" onclick="closeModal()">Close</button>
         <button class="btn primary" data-act="changePassword">Update password</button></div></div>`);
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
 };
@@ -7967,6 +7973,15 @@ const ACTIONS = {
       .then(j=>{const m=DB.users.find(u=>u.id===S.me); if(m)m.avatar_url=j.avatar_url; render(); toast('Profile photo updated','ok'); closeModal();})
       .catch(e=>{st.textContent='Upload failed: '+e.message;});
   },
+  logout:()=>{
+    modal(`<div class="mo-head"><div><h2>Log out</h2></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><p>Are you sure you want to log out? You’ll need to sign in again to access any dashboard or module.</p></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn danger ml-auto" data-act="confirmLogout">Log out</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  confirmLogout:()=>{ closeModal(); doLogout(); },
   changePassword:()=>{
     const cur=$('#pw-cur').value, nw=$('#pw-new').value, cf=$('#pw-conf').value;
     if(nw.length<6){toast('New password must be at least 6 characters','bad');return;}
@@ -8316,12 +8331,33 @@ const MO_API = {
       headers:{'Content-Type':'application/json',Accept:'application/json'},
       body:body!==undefined?JSON.stringify(body):undefined});
     const j=await r.json().catch(()=>({}));
-    if(!r.ok) throw new Error(j.message||('HTTP '+r.status));
+    if(!r.ok){ if(r.status===401) handle401(); throw new Error(j.message||('HTTP '+r.status)); }
     return j;
   },
   get(p){return this.req('GET',p);}, post(p,b){return this.req('POST',p,b);},
   patch(p,b){return this.req('PATCH',p,b);}, del(p){return this.req('DELETE',p);}
 };
+/* ── Session / logout (auth) ──────────────────────────────────────────────
+   Explicit logout ends the session server-side and wipes every client cache so
+   the browser Back button can't resurface protected data. Any 401 (expired /
+   destroyed session) triggers the same wipe + a redirect to /login with notice. */
+let _loggingOut=false;
+async function clearClientAuth(){
+  try{ localStorage.clear(); sessionStorage.clear(); }catch(_){}
+  try{ if(window.caches){ const ks=await caches.keys(); await Promise.all(ks.map(k=>caches.delete(k))); } }catch(_){}
+  try{ if(navigator.serviceWorker){ const rs=await navigator.serviceWorker.getRegistrations(); await Promise.all(rs.map(r=>r.unregister())); } }catch(_){}
+}
+async function doLogout(){
+  if(_loggingOut)return; _loggingOut=true; window.__MO_LIVE__=false;
+  try{ await fetch('/api/auth/logout',{method:'POST',credentials:'same-origin'}); }catch(_){}
+  await clearClientAuth();
+  window.location.replace('/login');       // replace() → Back can't return to the dashboard
+}
+function handle401(){
+  if(_loggingOut)return; _loggingOut=true; window.__MO_LIVE__=false;
+  clearClientAuth();
+  window.location.replace('/login?expired=1');
+}
 /* Upload an image file → returns its URL (add-member + profile photos). */
 async function uploadImage(file){
   const fd=new FormData(); fd.append('image',file);
