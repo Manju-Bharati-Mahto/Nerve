@@ -5013,7 +5013,7 @@ function viewKRA(){
   if(!cycle) return `<div class="page-head"><div><div class="crumb">Module 9 · §7.9</div>
       <h1 class="page-title">KRA</h1>
       <div class="page-sub">Auto-metric KRAs bind to performance snapshots and compute achievement without self-reporting.</div></div>
-      <div class="page-actions">${isAdmin()?`<button class="btn primary">＋ New cycle</button>`:''}</div></div>
+      <div class="page-actions">${(isAdmin()||isTL())?`<button class="btn primary" data-act="newKraCycle">＋ New cycle</button>`:''}</div></div>
     <div class="card"><div class="empty"><div class="e-ico">◎</div><h4>No active KRA cycle</h4>
       <p>${isAdmin()?'Open a cycle to start setting KRAs for the team.':'Your admin will open a KRA cycle here.'}</p></div></div>`;
   const scope=can('team.workload')?myTeamIds():[S.me];
@@ -5033,8 +5033,9 @@ function viewKRA(){
       <div><div class="crumb">Module 9 · §7.9 — extends the existing Nerve KRA module</div><h1 class="page-title">KRA</h1>
       <div class="page-sub">Auto-metric KRAs bind to performance snapshot fields and compute achievement without self-reporting
         ${reqid('FR-9.2','No self-reported numbers where the system already knows')}.</div></div>
-      <div class="page-actions">${isAdmin()?`<button class="btn">＋ New cycle</button>`:''}
-        <button class="btn primary" data-act="selfReview">Start self review</button></div></div>
+      <div class="page-actions">${(isAdmin()||isTL())?`<button class="btn" data-act="newKraCycle">＋ New cycle</button>`:''}
+        <button class="btn" data-act="newKra" data-cid="${cycle.id}">＋ Add KRA</button>
+        <button class="btn primary" data-act="selfReview" data-cid="${cycle.id}">Start self review</button></div></div>
 
     <div class="grid g4 sec">
       <div class="stat"><span class="stat-label">Cycle</span><span class="stat-val" style="font-size:18px;padding-top:8px">${esc(cycle.label)}</span>
@@ -5084,14 +5085,16 @@ function viewKRA(){
         </div></div></div>
       ${can('team.workload')?`<div class="card"><div class="card-head"><h3>Team roll-up</h3>${reqid('FR-9.4','Current quarter progress vs target')}</div>
         <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
-          <thead><tr><th>Person</th><th class="num">KRAs</th><th class="num">Weight</th><th class="num">Projected</th></tr></thead>
+          <thead><tr><th>Person</th><th class="num">KRAs</th><th class="num">Weight</th><th class="num">Projected</th><th></th></tr></thead>
           <tbody>${scope.map(id=>{const ks=DB.kras.filter(k=>k.kra_cycle_id===cycle.id&&k.user_id===id);
             const w=ks.reduce((s,k)=>s+k.weight,0);
             return `<tr class="click" data-go="#/media/team/${id}">
-              <td><div class="f ac gap2">${avatarP(id,'sm')}<span class="t-main">${esc(user(id).designation)}</span></div></td>
+              <td><div class="f ac gap2">${avatarP(id,'sm')}<span class="t-main">${esc(user(id).full_name)}</span></div></td>
               <td class="num">${ks.length||'<span class="mut3">—</span>'}</td>
               <td class="num" style="${ks.length&&w!==100?'color:var(--danger)':''}">${ks.length?w+'%':'—'}</td>
-              <td class="num">${ks.length?(ks.reduce((s,k)=>s+k.weight*((achievement(k)??70)/100),0)).toFixed(0):'—'}</td></tr>`;}).join('')}
+              <td class="num">${ks.length?(ks.reduce((s,k)=>s+k.weight*((achievement(k)??70)/100),0)).toFixed(0):'—'}</td>
+              <td class="num nowrap">${(isAdmin()||isTL())?`<button class="btn xs" onclick="event.stopPropagation();ACTIONS.newKra({cid:${cycle.id},uid:${id}})">＋</button>
+                ${ks.length?`<button class="btn xs" onclick="event.stopPropagation();ACTIONS.managerReview({cid:${cycle.id},uid:${id}})">Review</button>`:''}`:''}</td></tr>`;}).join('')}
           </tbody></table></div></div>
         <div class="card-foot">${scope.filter(id=>!DB.kras.some(k=>k.kra_cycle_id===cycle.id&&k.user_id===id)).length} people have no KRAs set this cycle.</div></div>`:''}
     </div>`;
@@ -7990,7 +7993,81 @@ const ACTIONS = {
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" onclick="closeModal();toast('Filters applied','ok')">Apply filters</button></div>`);
   },
-  selfReview:()=>toast('Self review opens per KRA item — comment + self score, revisable until the manager phase','ok'),
+  newKraCycle:()=>{
+    modal(`<div class="mo-head"><div><h2>New KRA cycle</h2></div><button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Label <span class="req">*</span></label><input class="inp" id="kc-label" placeholder="e.g. Q3 2026-27"></div>
+        <div class="row"><div class="field"><label class="lbl">Starts</label><input class="inp" type="date" id="kc-start" value="${rtoday()}"></div>
+          <div class="field"><label class="lbl">Ends</label><input class="inp" type="date" id="kc-end" value="${D.add(rtoday(),90)}"></div></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="saveKraCycle">Open cycle</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  saveKraCycle:()=>{
+    const label=$('#kc-label').value.trim(); if(!label){toast('Label is required','bad');return;}
+    const payload={label,starts_on:$('#kc-start').value,ends_on:$('#kc-end').value};
+    closeModal();
+    moSync(MO_API.post('/kra/cycles',payload),()=>{render();toast('KRA cycle opened','ok');});
+  },
+  newKra:(d)=>{
+    const cid=+d.cid, canOther=isAdmin()||isTL(), pre=d.uid?+d.uid:S.me;
+    modal(`<div class="mo-head"><div><h2>Add KRA</h2></div><button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        ${canOther?`<div class="field"><label class="lbl">For</label><select class="inp" id="kr-user">${DB.users.filter(u=>u.is_active).map(u=>`<option value="${u.id}" ${u.id===pre?'selected':''}>${esc(u.full_name)}</option>`).join('')}</select></div>`:''}
+        <div class="field"><label class="lbl">Title <span class="req">*</span></label><input class="inp" id="kr-title" placeholder="e.g. Reporting consistency ≥ 95%"></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Source</label><select class="inp" id="kr-src"><option value="manual">Manual</option><option value="auto">Auto-metric</option></select></div>
+          <div class="field"><label class="lbl">Weight (%)</label><input class="inp" type="number" min="0" max="100" id="kr-weight" value="20"></div></div>
+        <div class="field"><label class="lbl">Target</label><input class="inp" id="kr-target" placeholder="e.g. ≥ 95% on-time"></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="saveKra" data-cid="${cid}">Add KRA</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  saveKra:(d)=>{
+    const title=$('#kr-title').value.trim(); if(!title){toast('Title is required','bad');return;}
+    const payload={title,metric_source:$('#kr-src').value,weight:+$('#kr-weight').value||0,target_text:$('#kr-target').value.trim()};
+    if($('#kr-user'))payload.user_id=ruid(+$('#kr-user').value);
+    closeModal();
+    moSync(MO_API.post('/kra/'+d.cid+'/items',payload),()=>{render();toast('KRA added','ok');});
+  },
+  selfReview:(d)=>{
+    const cid=+d.cid||(DB.kra_cycles.find(c=>c.status==='active')||{}).id;
+    const mine=DB.kras.filter(k=>k.kra_cycle_id===cid&&k.user_id===S.me);
+    if(!mine.length){toast('You have no KRAs to review this cycle','warn');return;}
+    modal(`<div class="mo-head"><div><h2>Self review</h2><p>Score each KRA 0–100 and add context; the manager scores next (FR-9.3).</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">${mine.map(k=>{const rv=DB.kra_reviews.find(r=>r.kra_id===k.id&&r.phase==='self')||{};
+        return `<div class="field"><label class="lbl">${esc(k.title)} <span class="mut3">(${k.weight}%)</span></label>
+          <div class="row"><input class="inp" type="number" min="0" max="100" data-kid="${k.id}" data-f="score" placeholder="score 0–100" value="${rv.score??''}">
+            <input class="inp" data-kid="${k.id}" data-f="comment" placeholder="comment" value="${esc(rv.comment||'')}"></div></div>`;}).join('')}</div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="submitKraReview" data-phase="self">Submit self review</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  managerReview:(d)=>{
+    const cid=+d.cid, uid=+d.uid;
+    const ks=DB.kras.filter(k=>k.kra_cycle_id===cid&&k.user_id===uid);
+    if(!ks.length){toast('No KRAs to review','warn');return;}
+    modal(`<div class="mo-head"><div><h2>Manager review — ${esc(user(uid).full_name)}</h2><p>Score + achievement per KRA (FR-9.3).</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">${ks.map(k=>{const rv=DB.kra_reviews.find(r=>r.kra_id===k.id&&r.phase==='manager')||{};
+        return `<div class="field"><label class="lbl">${esc(k.title)} <span class="mut3">(${k.weight}%)</span></label>
+          <div class="row"><input class="inp" type="number" min="0" max="100" data-kid="${k.id}" data-f="score" placeholder="score" value="${rv.score??''}">
+            <input class="inp" type="number" min="0" max="100" data-kid="${k.id}" data-f="achievement_pct" placeholder="achievement %" value="${rv.achievement_pct??''}"></div>
+          <input class="inp mt2" data-kid="${k.id}" data-f="comment" placeholder="comment" value="${esc(rv.comment||'')}"></div>`;}).join('')}</div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="submitKraReview" data-phase="manager">Submit manager review</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  submitKraReview:(d)=>{
+    const phase=d.phase, items={};
+    $$('#modal-layer [data-kid]').forEach(el=>{const k=el.dataset.kid; items[k]=items[k]||{}; items[k][el.dataset.f]=el.value;});
+    const posts=Object.entries(items).map(([kid,v])=>MO_API.post('/kra/items/'+kid+'/review',
+      {phase,score:v.score?+v.score:null,achievement_pct:v.achievement_pct?+v.achievement_pct:null,comment:v.comment||''}));
+    if(!posts.length){toast('Nothing to submit','warn');return;}
+    closeModal();
+    moSync(Promise.all(posts),()=>{render();toast((phase==='self'?'Self':'Manager')+' review submitted','ok');});
+  },
   markAllRead:()=>{DB.notifications.filter(n=>n.user_id===S.me).forEach(n=>n.is_read=true);render();toast('All marked read','ok');},
   notifPrefs:()=>toast('Per-kind × per-channel preferences — the watched metric is notification-to-action rate (§18)','ok'),
   openNotif:(d)=>{const n=DB.notifications.find(x=>x.id===+d.nid);n.is_read=true;

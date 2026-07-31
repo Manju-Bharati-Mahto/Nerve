@@ -37,7 +37,7 @@ Legend: ✅ Implemented · 🟡 Partial · 🔴 Missing · ⛔ Wrong.
 | **M6 Equipment (FR-6.x)** | ✅ | Strongest module. Catalog, QR, bookings with **real AC-7 double-booking prevention** (btree_gist EXCLUDE, `mediaops-db.ts:346`), checkout/checkin ledger, damage→maintenance, kiosk mode wired (`commitKiosk`, `4610`). Gaps: no `GET /equipment/availability` endpoint; BR-7 checkout only blocks on `status`, not on foreign active booking; FR-6.8 overdue engine not scheduled. |
 | **M7 Team (FR-7.x)** | 🟡 | Profiles + workload render. **`teams`/`team_members`/`user_duties`/`user_skills` are never hydrated** (seed-only, `index.html §5`) — so team-lead scoping and custodian-duty permission run on prototype data even when live. `toggleDuty` LOCAL-ONLY. No `GET /team/:id/*` endpoints. |
 | **M8 Performance (FR-8.x)** | 🟡 | Snapshots table + views exist and hydrate. **Not computed/scheduled** — `performance_snapshots` populated only by seed; AUTO-11 month-close missing, so FR-8.1/8.5 monthly rollups don't happen. |
-| **M9 KRA (FR-9.x)** | 🔴 | **Display-only.** `viewKRA` renders (`5010`) but create-cycle button has no `data-act` (dead), no create-item, `selfReview` is a **stub** (`7940`), **no manager-review action exists**. No KRA endpoints. FR-9.1–9.4 unwired. |
+| **M9 KRA (FR-9.x)** | ✅ | **Now wired (P1b).** Endpoints `POST /kra/cycles`, `/kra/:cycleId/items` (BR-14 weight ≤100 enforced), `/kra/items/:id/review` (self=owner, manager=TL/Admin, upsert). UI: new cycle, add KRA (self or, for TL/Admin, any member), self-review + manager-review modals. FR-9.1–9.4 functional. Remaining nicety: final-score locking at cycle close (FR-8.5 immutability) pairs with the month-close scheduler (P2). |
 | **M10 Leave (FR-10.x)** | 🟡 | Request + decide wired (conflict-aware). **FR-10.3 replacement assignment is LOCAL-ONLY** (`assignReplacement`, `7646`) — not persisted; `POST /leave/:id/replacements` missing. |
 | **M11 Calendar (FR-11.x)** | ✅ | Layered calendar renders; scoping present. ICS feed endpoint real (`mediaops-api.ts:772`). Drag-reschedule not persisted. |
 | **M12 Analytics (FR-12.x)** | 🟡 | Metrics computed **client-side** (real, mostly per §19) with **2 definition deviations**: *logged hours* counts draft/submitted not just approved (`2214`); *cycle time* uses planned span not approved→completed (`5275`). **Exports lie**: XLSX/PDF toggles emit CSV always (`7847`). No server `/exports`, no async job. |
@@ -153,6 +153,11 @@ Known follow-up from this batch: SVG rejection currently returns 500 (should be 
 | §13 `PATCH /projects/:id` missing | endpoint (owner/PM/TL/Admin, VR-6 validated) + "Edit details" action wired end-to-end | ✅ admin edit persists, **employee 403** |
 | FR-10.3 leave replacement not persisted | `POST /leave/:id/replacements` (TL/Admin) + `assignReplacement` now `moSync`s | ✅ 201, `mo_leave_replacements` + `mo_shoot_crew` rows created |
 
-Deferred from P1 into **P1b** (coupled work): B7 KRA create/self/manager wiring (whole module), and B9 org-table hydration — hydrating empty `teams`/`team_members` would *break* TL scoping without a team-management UI, so it ships together with "assign employees to a team lead".
+### Batch P1b — KRA module (landed 2026-07-31)
+| Gap | Fix | Verified |
+|---|---|---|
+| **B7** KRA entirely display-only | `POST /kra/cycles`, `POST /kra/:cycleId/items`, `POST /kra/items/:id/review`; wired new-cycle, add-KRA, self-review, manager-review in `viewKRA` | ✅ cycle+item persist; **BR-14 weight >100 → 400**; self by owner 201 / by non-owner 403; manager by TL/Admin 201; reviews stored (self:88, manager:85); UI smoke 0 errors |
+
+Still open in P1: **B9 org-table hydration** — deferred because hydrating empty `teams`/`team_members` would *break* TL scoping without a team-management UI; it ships together with "assign employees to a team lead" (team management). **Notifications server round-trip** is folded into P2 (belongs with the automation engine that writes them).
 </content>
 </invoke>

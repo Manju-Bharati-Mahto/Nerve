@@ -1172,6 +1172,59 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ audit: rows });
   }));
 
+  // ═════════════════════════ KRA (§7.9 / FR-9.x) ══════════════════════════
+  app.post(`${P}/kra/cycles`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may open a KRA cycle.");
+    const b = req.body as Record<string, unknown>;
+    if (!String(b.label ?? "").trim()) return sendError(res, 400, "Cycle label is required.");
+    const ins = await pool.query(
+      `INSERT INTO mo_kra_cycles (department_id, label, starts_on, ends_on, status) VALUES (1,$1,$2,$3,'active') RETURNING *`,
+      [String(b.label).trim(), (b.starts_on as string) || null, (b.ends_on as string) || null]);
+    await audit(u, "kra.cycle_created", "kra_cycle", ins.rows[0].id, null, { label: b.label }, req);
+    res.status(201).json({ cycle: ins.rows[0] });
+  }));
+
+  app.post(`${P}/kra/:cycleId/items`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const cid = parseInt(getSingleParam(req.params.cycleId), 10);
+    const b = req.body as Record<string, unknown>;
+    const target = String(b.user_id ?? u.id);
+    if (target !== u.id && !(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "You can only set your own KRAs.");
+    if (!String(b.title ?? "").trim()) return sendError(res, 400, "KRA title is required.");
+    const weight = Math.max(0, Math.min(100, Number(b.weight) || 0));
+    const cur = Number((await pool.query(`SELECT COALESCE(SUM(weight),0) s FROM mo_kras WHERE kra_cycle_id=$1 AND user_id=$2`, [cid, target])).rows[0].s);
+    if (cur + weight > 100) return sendError(res, 400, `BR-14: a user's KRA weights cannot exceed 100 (currently ${cur}).`);
+    const src = ["manual", "auto"].includes(String(b.metric_source)) ? String(b.metric_source) : "manual";
+    const ins = await pool.query(
+      `INSERT INTO mo_kras (kra_cycle_id, user_id, title, metric_source, auto_metric_key, target_text, weight)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [cid, target, String(b.title).trim(), src, (b.auto_metric_key as string) || null, (b.target_text as string) || "", weight]);
+    await audit(u, "kra.item_created", "kra", ins.rows[0].id, null, { title: b.title, weight, user: target }, req);
+    res.status(201).json({ kra: ins.rows[0] });
+  }));
+
+  app.post(`${P}/kra/items/:id/review`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    const phase = String(b.phase);
+    if (!["self", "manager"].includes(phase)) return sendError(res, 400, "phase must be 'self' or 'manager'.");
+    const kra = (await pool.query(`SELECT user_id FROM mo_kras WHERE id=$1`, [id])).rows[0];
+    if (!kra) return sendError(res, 404, "KRA not found.");
+    if (phase === "self" && kra.user_id !== u.id) return sendError(res, 403, "Only the KRA owner may self-review.");
+    if (phase === "manager" && !(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may do the manager review.");
+    await pool.query(
+      `INSERT INTO mo_kra_reviews (kra_id, phase, score, achievement_pct, comment, reviewer_id, reviewed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,CURRENT_DATE)
+       ON CONFLICT (kra_id, phase) DO UPDATE SET score=EXCLUDED.score, achievement_pct=EXCLUDED.achievement_pct,
+         comment=EXCLUDED.comment, reviewer_id=EXCLUDED.reviewer_id, reviewed_at=CURRENT_DATE`,
+      [id, phase, b.score != null ? Number(b.score) : null, b.achievement_pct != null ? Number(b.achievement_pct) : null,
+       (b.comment as string) || "", u.id]);
+    await audit(u, "kra.reviewed", "kra", id, null, { phase, score: b.score }, req);
+    res.status(201).json({ ok: true });
+  }));
+
   // ═════════════════════════ DASHBOARD (§7.1) ═════════════════════════════
   app.get(`${P}/dashboard`, asyncHandler(async (_req, res) => {
     const u = requireMedia(res); if (!u) return;
