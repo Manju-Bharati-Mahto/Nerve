@@ -30,7 +30,7 @@ Legend: ✅ Implemented · 🟡 Partial · 🔴 Missing · ⛔ Wrong.
 | Module | Status | Evidence / gap |
 |---|:--:|---|
 | **M1 Dashboard (FR-1.x)** | 🟡 | Role-adaptive dashboard renders client-side (`index.html:2835`). Live counts. `GET /dashboard` exists (`mediaops-api.ts:1105`) but the **client never calls it** — all widgets computed in-browser over `/state`. FR-1.10 Recent Activity + FR-1.2 nudge are **client-only** (`nudgeAll` is a toast, `7193`). |
-| **M2 Daily Reporting (FR-2.x)** | 🟡 | Log-as-you-go (D1) ✅ AC-1 met (`openTaskLog` compact modal, wired `saveTask`). Submit/review wired. **BR-4 auto-approve after 48h NOT implemented** (`auto_approved` enum is dead — nothing sets it). **BR-9 edit-lock NOT enforced**: `PATCH/DELETE /tasks/:id` (`mediaops-api.ts:458,477`) has **no owner check, no report-status lock, no audit()**. FR-2.10 offline is **fake** (toasts). |
+| **M2 Daily Reporting (FR-2.x)** | ✅ | Log-as-you-go (D1) ✅ AC-1 met. Submit/review wired. **BR-4 auto-approve after 48h now implemented (P2a)** — the automation engine flips `submitted`→`auto_approved` after 48h (unflagged) and audits it. **BR-9 edit-lock enforced (P0)**. Remaining: FR-2.10 offline queue still fake (P2/P3). |
 | **M3 Project Mgmt (FR-3.x)** | 🟡 | CRUD, per-type templates (per-item ✅), assignments ✅, all 6 views render ✅. **BR-1 project status transitions are LOCAL-ONLY** — `MENUS.projStatus`, `projMore`, and Kanban drag set `p.status` with no persist (`index.html:7977,7994,8062`). `PATCH /projects/:id` (generic edit) **missing**. `GET /projects/:id/activity` missing. |
 | **M4 Deliverables (FR-4.x)** | ✅ | Strong. Versions immutable, approval workflow, BR-5/BR-6 enforced server-side (`mediaops-api.ts:378,396`) and client (`applyDelivStatus`→wired, `8041`). **FR-4.5 social/mail status is LOCAL-ONLY** (`setSocial`/`setMail`, `7412`) — silently not saved. FR-4.7 import → see M-import. |
 | **M5 Media Library (FR-5.x)** | 🟡 | Faceted browse + gallery render. **Search is a client substring filter of already-loaded data** (`2735`), **not** the Postgres FTS the UI claims (`4174`). No `GET /search`, no `GET /library/export`. Export is CSV-only. |
@@ -163,6 +163,15 @@ Known follow-up from this batch: SVG rejection currently returns 500 (should be 
 |---|---|---|
 | **B9** teams/duties never hydrated → TL scoping + custodian duty ran on seed | added `teams`/`team_members`/`duty_flags`/`user_duties`/`skills`/`user_skills` to `/state`; `POST /crew/:id/team` (assign to a lead, lazy team create, one-primary-team) + `POST /crew/:id/duties` (grant/revoke); `teamStructure()` gains member-assign + duty-grant selects; `toggleDuty`/`assignTeamLead` persist | ✅ assign 200 (team_members row, lazy team), duty grant 200, **employee 403**; all 6 keys hydrate; **full route sweep both roles 0 errors** (myTeamIds admin 25 / employee 1); UI actions persist |
 
-**✅ P1 (functional integrity) is complete.** Remaining: **P2** — scheduler (automations + BR-4 auto-approve + month-close snapshots), notifications server round-trip (belongs with the scheduler that writes them), real XLSX/PDF exports + leadership pack, server FTS search, real Excel importer; then **P3** intelligence/polish. Estimated compliance after P1: **~70%**.
+**✅ P1 (functional integrity) is complete.** Estimated compliance after P1: **~70%**.
+
+### Batch P2a — the scheduler + automation engine (landed 2026-07-31)
+| Gap | Fix | Verified |
+|---|---|---|
+| **No scheduler** (§17) → 11/14 automations dead; **BR-4** never fired; **B6** notifications faked client-side | `runMediaOpsAutomations()` (module-level, exported) wired into the existing 5-min `setInterval` + an 8s boot run. It: **(BR-4)** flips `submitted`→`auto_approved` after 48h unflagged (audited as `system`); generates **server-persisted** notifications (AUTO-1 report-not-submitted, AUTO-2 overdue deliverable, AUTO-3 overdue equipment, review-pending→PM), **deduped** on (user,kind,entity) while unread. New `GET /notifications` + `POST /notifications/read`; `/state` now returns the user's notifications; client hydrates them (no more client-side fabrication) and mark-read persists. | ✅ engine RUN1 `{autoApproved:1,notified:2}`, RUN2 `{0,0}` (dedupe); BR-4 report→`auto_approved`; mark-read persists; client badge from server; 0 console errors |
+
+This single batch closes **BR-4** and the **notifications round-trip (B6)**, and gives AUTO-1/2/3 + review-pending real execution. Est. compliance now **~74%**.
+
+**Remaining P2:** AUTO-11 month-close (compute `performance_snapshots` + leadership pack) · real XLSX/PDF exports · server FTS `GET /search` · real Excel importer (`xlsx`) · remaining automations (AUTO-4/5/6-trigger/7/8/9/10/12/14) · email/push delivery (needs SMTP/push config). Then **P3** intelligence/polish. Note the automations are best-effort/idempotent and run every 5 min; a true event-bus (§13) is a later refinement.
 </content>
 </invoke>

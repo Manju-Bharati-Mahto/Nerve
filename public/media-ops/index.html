@@ -8088,12 +8088,14 @@ const ACTIONS = {
     closeModal();
     moSync(Promise.all(posts),()=>{render();toast((phase==='self'?'Self':'Manager')+' review submitted','ok');});
   },
-  markAllRead:()=>{DB.notifications.filter(n=>n.user_id===S.me).forEach(n=>n.is_read=true);render();toast('All marked read','ok');},
+  markAllRead:()=>{DB.notifications.filter(n=>n.user_id===S.me).forEach(n=>n.is_read=true);render();toast('All marked read','ok');
+    if(window.__MO_LIVE__)MO_API.post('/notifications/read',{}).catch(()=>{});},
   notifPrefs:()=>toast('Per-kind × per-channel preferences — the watched metric is notification-to-action rate (§18)','ok'),
-  openNotif:(d)=>{const n=DB.notifications.find(x=>x.id===+d.nid);n.is_read=true;
+  openNotif:(d)=>{const n=DB.notifications.find(x=>x.id===+d.nid);if(!n)return;n.is_read=true;
+    if(window.__MO_LIVE__)MO_API.post('/notifications/read',{id:n.id}).catch(()=>{});
     if(n.entity_type==='deliverable'&&n.entity_id)drawerDeliverable(n.entity_id);
     else if(n.entity_type==='project'&&n.entity_id)location.hash='#/media/projects/'+n.entity_id;
-    else if(n.entity_type==='equipment'&&n.entity_id)location.hash='#/media/equipment/'+equip(n.entity_id).asset_tag;
+    else if(n.entity_type==='equipment'&&n.entity_id&&equip(n.entity_id))location.hash='#/media/equipment/'+equip(n.entity_id).asset_tag;
     else if(n.entity_type==='shoot'&&n.entity_id)drawerShoot(n.entity_id);
     else if(n.entity_type==='report')location.hash='#/media/reports';
     render();}
@@ -8294,14 +8296,17 @@ async function hydrateFromServer(){
     'vendors','equipment_categories','equipment_items','equipment_kits','kit_items','equipment_bookings','equipment_transactions',
     'maintenance_records','shoots','shoot_crew','leave_types','leave_requests','leave_replacements','holidays',
     'labels','boards','board_columns','cards','kra_cycles','kras','kra_reviews','performance_snapshots','comments','saved_views',
-    'automation_rules','teams','team_members','duty_flags','user_duties','skills','user_skills','users'];
+    'automation_rules','teams','team_members','duty_flags','user_duties','skills','user_skills','notifications','users'];
   const st=await MO_API.get('/state');
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
   // Bind identity to the real logged-in Nerve user (server sends its prototype int id).
   if(typeof st.me==='number' && DB.users.some(u=>u.id===st.me)) S.me=st.me;
   // Clear the prototype's seed activity + notifications so nothing dummy shows on live;
   // audit() re-populates the activity feed from this session's real actions.
-  DB.audit_logs=[]; DB.activity=[]; genNotifications();
+  // Notifications are now server-persisted (written by the automation engine) and
+  // arrive via /state; only synthesize client-side if the server didn't send any.
+  DB.audit_logs=[]; DB.activity=[];
+  if(!Array.isArray(st.notifications)) genNotifications();
   window.__MO_LIVE__=true;
   return {projects:(st.projects||[]).length, reports:(st.daily_reports||[]).length};
 }

@@ -185,6 +185,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       };
     });
     out.me = idMap.get(u.id);
+    // Server-persisted notifications for this user (written by the automation engine).
+    const notifs = await pool.query(`SELECT * FROM mo_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, [u.id]);
+    out.notifications = notifs.rows.map((n) => ({ ...n, user_id: idMap.get(u.id) }));
     // The prototype expects a tags array on each project (seed had one); real
     // projects have none — default to [] so viewProject's `p.tags.map` never crashes.
     for (const p of (out.projects as Array<Record<string, unknown>>)) if (!Array.isArray(p.tags)) p.tags = [];
@@ -1217,6 +1220,20 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ audit: rows });
   }));
 
+  // Notifications (§18) — the feed is written by the automation engine.
+  app.get(`${P}/notifications`, asyncHandler(async (_req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const { rows } = await pool.query(`SELECT * FROM mo_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, [u.id]);
+    res.json({ notifications: rows });
+  }));
+  app.post(`${P}/notifications/read`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const id = (req.body as Record<string, unknown>).id;
+    if (id) await pool.query(`UPDATE mo_notifications SET is_read=true WHERE id=$1 AND user_id=$2`, [Number(id), u.id]);
+    else await pool.query(`UPDATE mo_notifications SET is_read=true WHERE user_id=$1`, [u.id]);
+    res.json({ ok: true });
+  }));
+
   // ═════════════════════════ KRA (§7.9 / FR-9.x) ══════════════════════════
   app.post(`${P}/kra/cycles`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
@@ -1311,4 +1328,69 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 function t2m(t: string): number { if (!t) return 0; const [a, b] = t.split(":").map(Number); return (a || 0) * 60 + (b || 0); }
 function addDays(iso: string, n: number): string {
   const d = new Date(iso + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Automation engine (§17) — invoked on a scheduler (see server/index.ts). Runs
+// the time-based rules the request path cannot: BR-4 report auto-approve, and the
+// server-persisted notification feed (AUTO-1/2/3 + review-pending). Idempotent —
+// notifications dedupe on (user, kind, entity) while unread, so re-runs never spam.
+// ═══════════════════════════════════════════════════════════════════════════
+export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; notified: number }> {
+  let notified = 0;
+  // BR-4 / D2 — reports auto-approve 48 h after submission unless flagged.
+  const aa = await pool.query(
+    `UPDATE mo_daily_reports SET status='auto_approved', reviewed_at=NOW()
+      WHERE status='submitted' AND submitted_at IS NOT NULL AND submitted_at < NOW() - INTERVAL '48 hours'
+      RETURNING id`);
+  for (const r of aa.rows)
+    await pool.query(
+      `INSERT INTO mo_audit_logs (actor_id, actor_role, action, entity_type, entity_id, after)
+       VALUES (NULL,'system','report.auto_approved','daily_report',$1,$2)`,
+      [r.id, JSON.stringify({ status: "auto_approved", rule: "BR-4 (48h, unflagged)" })]).catch(() => {});
+
+  const notify = async (userId: string, kind: string, title: string, body: string, et: string, eid: number | null) => {
+    const r = await pool.query(
+      `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+       SELECT $1,$2,$3,$4,$5,$6
+        WHERE NOT EXISTS (SELECT 1 FROM mo_notifications n
+                          WHERE n.user_id=$1 AND n.kind=$2 AND n.entity_type=$5
+                            AND COALESCE(n.entity_id,-1)=COALESCE($6::bigint,-1) AND n.is_read=false)`,
+      [userId, kind, title, body, et, eid]);
+    notified += r.rowCount ?? 0;
+  };
+
+  // AUTO-2 — overdue deliverables → owner.
+  for (const d of (await pool.query(
+    `SELECT id, title, owner_id, due_date FROM mo_deliverables
+      WHERE deleted_at IS NULL AND due_date < CURRENT_DATE
+        AND status NOT IN ('delivered','not_required','cancelled') AND owner_id IS NOT NULL`)).rows)
+    await notify(d.owner_id, "overdue", "Deliverable overdue", `“${d.title}” was due ${String(d.due_date).slice(0, 10)}`, "deliverable", d.id);
+
+  // Review pending → the project PM.
+  for (const d of (await pool.query(
+    `SELECT d.id, d.title, a.user_id AS pm FROM mo_deliverables d
+       JOIN mo_project_assignments a ON a.project_id=d.project_id AND a.is_project_manager AND a.removed_at IS NULL
+      WHERE d.status='in_review'`)).rows)
+    await notify(d.pm, "approval", "Awaiting your review", `“${d.title}” has a version pending`, "deliverable", d.id);
+
+  // AUTO-3 — overdue equipment → current holder.
+  for (const t of (await pool.query(
+    `SELECT DISTINCT ON (t.equipment_item_id) t.equipment_item_id AS id, t.holder_id, t.expected_return_at, e.asset_tag
+       FROM mo_equipment_transactions t JOIN mo_equipment_items e ON e.id=t.equipment_item_id
+      WHERE e.status='checked_out'
+      ORDER BY t.equipment_item_id, t.occurred_at DESC`)).rows)
+    if (t.expected_return_at && new Date(t.expected_return_at) < new Date())
+      await notify(t.holder_id, "overdue", "Equipment overdue", `${t.asset_tag} is past its return date`, "equipment", t.id);
+
+  // AUTO-1 — today's report not submitted (working day, not on leave) → nudge the member.
+  if (new Date().getDay() !== 0)
+    for (const p of (await pool.query(
+      `SELECT u.id FROM users u
+        WHERE u.team='media' AND COALESCE(u.role,'user') <> 'admin'
+          AND NOT EXISTS (SELECT 1 FROM mo_daily_reports r WHERE r.user_id=u.id AND r.report_date=CURRENT_DATE AND r.status <> 'draft')
+          AND NOT EXISTS (SELECT 1 FROM mo_leave_requests l WHERE l.user_id=u.id AND l.status='approved' AND CURRENT_DATE BETWEEN l.starts_on AND l.ends_on)`)).rows)
+      await notify(p.id, "reminder", "Daily report not submitted", "Log your tasks and submit today’s report (AUTO-1).", "report", null);
+
+  return { autoApproved: aa.rowCount ?? 0, notified };
 }
