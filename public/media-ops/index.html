@@ -4793,24 +4793,35 @@ function teamSkills(){
       Devansh Bhatt’s DGCA drone licence expires ${D.fmt('2026-08-19')}, before the Sports Meet aerials.</div></div>`;
 }
 function teamStructure(){
+  const canMng=can('admin.users');
+  const assigned=new Set(DB.team_members.map(m=>m.user_id));
+  const unassigned=DB.users.filter(u=>u.is_active&&u.role==='employee'&&!assigned.has(u.id));
   return `<div class="grid g2">
     <div class="card"><div class="card-head"><h3>Teams</h3>${reqid('FR-7.2','A member belongs to exactly one primary team; project assignments cut across')}</div>
       <div class="card-body">${DB.teams.map(t=>{
         const ms=DB.team_members.filter(m=>m.team_id===t.id);
         return `<div class="mb4"><div class="between mb2"><b>${esc(t.name)}</b>
           <span class="chip">Lead: ${esc(user(t.lead_user_id).full_name)}</span></div>
-          <div class="f wrap gap2">${ms.map(m=>`<span class="chip">${avatar(m.user_id,'xs')} ${esc(user(m.user_id).designation)}</span>`).join('')}</div>
-        </div>`;}).join('')}
+          <div class="f wrap gap2 ac">${ms.map(m=>`<span class="chip">${avatar(m.user_id,'xs')} ${esc(user(m.user_id).full_name)}
+            ${canMng?`<span role="button" title="Remove from team" style="cursor:pointer;color:var(--danger)" onclick="ACTIONS.assignTeamLead({uid:${m.user_id},lead:0})">×</span>`:''}</span>`).join('')||'<span class="small mut3">No members yet</span>'}
+            ${canMng&&unassigned.length?`<select class="inp" style="height:30px;font-size:12px;max-width:210px" onchange="ACTIONS.assignTeamLead({uid:this.value,lead:${t.lead_user_id}});this.value=''">
+              <option value="">＋ Add member…</option>${unassigned.map(u=>`<option value="${u.id}">${esc(u.full_name)}</option>`).join('')}</select>`:''}</div>
+        </div>`;}).join('')||'<div class="small mut3 mb3">No teams yet — assigning a member to a lead creates their team.</div>'}
+        ${canMng&&unassigned.length?`<div class="note">${unassigned.length} employee(s) not on a team yet.</div>`:''}
         <div class="note">Partial unique index on <span class="mono">(user_id) WHERE is_primary</span> enforces one primary team at the database level (§11.1).</div>
       </div></div>
     <div class="card"><div class="card-head"><h3>Duty flags</h3>${reqid('D4','Responsibilities without a fourth role')}</div>
       <div class="card-body">
         ${DB.duty_flags.map(f=>{const holders=DB.user_duties.filter(d=>d.duty_flag_id===f.id);
+          const nonHolders=DB.users.filter(u=>u.is_active&&!holders.some(h=>h.user_id===u.id));
           return `<div class="mb4"><div class="between mb1"><b class="small">⚑ ${esc(f.name)}</b>
             <span class="chip mono">${esc(f.code)}</span></div>
-            <div class="small mut mb2">${esc(f.desc)}</div>
-            <div class="f wrap gap2">${holders.map(h=>`<span class="chip sel">${avatar(h.user_id,'xs')} ${esc(user(h.user_id).designation)}</span>`).join('')
-              ||'<span class="small mut3">Nobody assigned</span>'}</div></div>`;}).join('')}
+            <div class="small mut mb2">${esc(f.desc||f.description||'')}</div>
+            <div class="f wrap gap2 ac">${holders.map(h=>`<span class="chip sel">${avatar(h.user_id,'xs')} ${esc(user(h.user_id).full_name)}
+              ${canMng?`<span role="button" title="Revoke" style="cursor:pointer" onclick="ACTIONS.toggleDuty({uid:${h.user_id},fid:${f.id}})">×</span>`:''}</span>`).join('')
+              ||'<span class="small mut3">Nobody assigned</span>'}
+              ${canMng?`<select class="inp" style="height:30px;font-size:12px;max-width:180px" onchange="ACTIONS.toggleDuty({uid:this.value,fid:${f.id}});this.value=''">
+                <option value="">＋ Grant…</option>${nonHolders.map(u=>`<option value="${u.id}">${esc(u.full_name)}</option>`).join('')}</select>`:''}</div></div>`;}).join('')}
         <div class="note warn">Duties route notifications and default assignments. They grant <b>no</b> data visibility beyond
           their narrow function, enforced in the policy layer — Nerve-wide three-role parity is preserved.</div>
       </div></div></div>`;
@@ -7823,10 +7834,19 @@ const ACTIONS = {
       <div class="mo-foot"><button class="btn primary" onclick="closeModal();render()">Done</button></div>`);
   },
   toggleDuty:(d)=>{
-    const i=DB.user_duties.findIndex(x=>x.user_id===d.uid&&x.duty_flag_id===d.fid);
-    if(i>=0){DB.user_duties.splice(i,1);audit(S.me,'user.duty_revoked','user',d.uid,{duty:d.fid},null);}
-    else{DB.user_duties.push({user_id:d.uid,duty_flag_id:d.fid,granted_by:S.me,granted_at:TODAY});
-      audit(S.me,'user.duty_granted','user',d.uid,null,{duty:d.fid});}
+    const uid=+d.uid, fid=+d.fid;
+    const i=DB.user_duties.findIndex(x=>x.user_id===uid&&x.duty_flag_id===fid);
+    const grant=i<0;
+    if(i>=0){DB.user_duties.splice(i,1);audit(S.me,'user.duty_revoked','user',uid,{duty:fid},null);}
+    else{DB.user_duties.push({user_id:uid,duty_flag_id:fid,granted_by:S.me,granted_at:TODAY});
+      audit(S.me,'user.duty_granted','user',uid,null,{duty:fid});}
+    render();
+    moSync(MO_API.post('/crew/'+ruid(uid)+'/duties',{duty_flag_id:fid,grant}),()=>{render();toast(grant?'Duty granted':'Duty revoked','ok');});
+  },
+  assignTeamLead:(d)=>{
+    const uid=+d.uid, leadInt=d.lead?+d.lead:0;
+    moSync(MO_API.post('/crew/'+ruid(uid)+'/team',{lead_user_id:leadInt?ruid(leadInt):''}),
+      ()=>{render();toast(leadInt?user(uid).full_name.split(' ')[0]+' → '+user(leadInt).full_name.split(' ')[0]+"'s team":'Removed from team','ok');});
   },
   deactivateUser:(d)=>{
     const uid=+d.uid;
@@ -8274,7 +8294,7 @@ async function hydrateFromServer(){
     'vendors','equipment_categories','equipment_items','equipment_kits','kit_items','equipment_bookings','equipment_transactions',
     'maintenance_records','shoots','shoot_crew','leave_types','leave_requests','leave_replacements','holidays',
     'labels','boards','board_columns','cards','kra_cycles','kras','kra_reviews','performance_snapshots','comments','saved_views',
-    'automation_rules','users'];
+    'automation_rules','teams','team_members','duty_flags','user_duties','skills','user_skills','users'];
   const st=await MO_API.get('/state');
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
   // Bind identity to the real logged-in Nerve user (server sends its prototype int id).

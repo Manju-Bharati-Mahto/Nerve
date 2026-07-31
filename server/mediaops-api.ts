@@ -124,6 +124,13 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["comments", "mo_comments", null, ["user_id"]],
     ["saved_views", "mo_saved_views", null, ["user_id"]],
     ["automation_rules", "mo_automation_rules", null, ["updated_by"]],
+    // Org structure (§11.1) — drives real TL scoping (team_members) + custodian duty (user_duties).
+    ["teams", "mo_teams", null, ["lead_user_id"]],
+    ["team_members", "mo_team_members", null, ["user_id"]],
+    ["duty_flags", "mo_duty_flags", null, []],
+    ["user_duties", "mo_user_duties", null, ["user_id", "granted_by"]],
+    ["skills", "mo_skills", null, []],
+    ["user_skills", "mo_user_skills", null, ["user_id"]],
   ];
   app.get(`${P}/state`, asyncHandler(async (_req, res) => {
     const u = requireMedia(res); if (!u) return;
@@ -942,6 +949,44 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     await pool.query(`UPDATE users SET role=$1 WHERE id=$2 AND team='media'`, [role, realId]);
     await audit(u, "crew.role_changed", "user", null, null, { id: realId, role }, req);
     res.json({ ok: true, role });
+  }));
+
+  // Assign a member to a team lead (FR-7.2) — creates the lead's team lazily and makes
+  // it the member's one primary team; empty lead_user_id unassigns. Admin only.
+  app.post(`${P}/crew/:id/team`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may assign team membership.");
+    const memberId = getSingleParam(req.params.id);
+    const leadId = String((req.body as Record<string, unknown>).lead_user_id ?? "");
+    await pool.query(`DELETE FROM mo_team_members WHERE user_id=$1`, [memberId]);   // one primary team
+    if (leadId) {
+      let team = (await pool.query(`SELECT id FROM mo_teams WHERE lead_user_id=$1 AND is_active LIMIT 1`, [leadId])).rows[0];
+      if (!team) {
+        const lead = (await pool.query(`SELECT full_name FROM users WHERE id=$1`, [leadId])).rows[0];
+        team = (await pool.query(`INSERT INTO mo_teams (department_id, name, lead_user_id, is_active) VALUES (1,$1,$2,true) RETURNING id`,
+          [`${lead?.full_name ?? "Team"}'s team`, leadId])).rows[0];
+      }
+      await pool.query(`INSERT INTO mo_team_members (team_id, user_id, is_primary) VALUES ($1,$2,true)`, [team.id, memberId]);
+    }
+    await audit(u, leadId ? "user.team_assigned" : "user.team_unassigned", "user", null, null, { member: memberId, lead: leadId || null }, req);
+    res.json({ ok: true });
+  }));
+
+  // Grant/revoke a duty flag (D4). Admin. Persists what was a local-only toggle.
+  app.post(`${P}/crew/:id/duties`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may grant duties.");
+    const memberId = getSingleParam(req.params.id);
+    const b = req.body as Record<string, unknown>;
+    const fid = Number(b.duty_flag_id);
+    if (!fid) return sendError(res, 400, "duty_flag_id is required.");
+    if (b.grant)
+      await pool.query(`INSERT INTO mo_user_duties (user_id, duty_flag_id, granted_by, granted_at) VALUES ($1,$2,$3,CURRENT_DATE)
+                        ON CONFLICT (user_id, duty_flag_id) DO NOTHING`, [memberId, fid, u.id]);
+    else
+      await pool.query(`DELETE FROM mo_user_duties WHERE user_id=$1 AND duty_flag_id=$2`, [memberId, fid]);
+    await audit(u, b.grant ? "user.duty_granted" : "user.duty_revoked", "user", null, null, { member: memberId, duty: fid }, req);
+    res.json({ ok: true });
   }));
 
   // Remove a crew member from a project (#3). TL/Admin.
