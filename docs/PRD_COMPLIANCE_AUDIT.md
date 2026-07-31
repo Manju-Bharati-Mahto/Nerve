@@ -172,6 +172,28 @@ Known follow-up from this batch: SVG rejection currently returns 500 (should be 
 
 This single batch closes **BR-4** and the **notifications round-trip (B6)**, and gives AUTO-1/2/3 + review-pending real execution. Est. compliance now **~74%**.
 
-**Remaining P2:** AUTO-11 month-close (compute `performance_snapshots` + leadership pack) · real XLSX/PDF exports · server FTS `GET /search` · real Excel importer (`xlsx`) · remaining automations (AUTO-4/5/6-trigger/7/8/9/10/12/14) · email/push delivery (needs SMTP/push config). Then **P3** intelligence/polish. Note the automations are best-effort/idempotent and run every 5 min; a true event-bus (§13) is a later refinement.
+**Remaining P2:** AUTO-11 month-close (compute `performance_snapshots` + leadership pack) · real XLSX/PDF exports · server FTS `GET /search` · real Excel importer (`xlsx`) · remaining automations (AUTO-5/6-trigger/7/8/9/10/12/14) · email/push delivery (needs SMTP/push config). Then **P3** intelligence/polish. Note the automations are best-effort/idempotent and run every 5 min; a true event-bus (§13) is a later refinement.
+
+### Admin Config Connection Report (integration sprint, 2026-07-31)
+Answers the per-entity validation: *consumer module · reading API · referencing tables · UI that updates · View/Edit/Duplicate/Archive functional · dependency-aware Delete · Force Delete super-admin-only.* All CRUD engine actions (View/Edit/Duplicate/Enable/Disable/Archive/Delete/Bulk/Audit/server-side Search+filters) are REAL for every module below; the table lists the operational consumers.
+
+| Config module | Operational consumer(s) | Read via | Referenced by |
+|---|---|---|---|
+| Project Types | New-project type dropdown; project chips/filters everywhere | `/state.project_types` (DB) + create validates FK | `mo_projects`, `mo_project_templates` |
+| Project Templates | Template auto-creation at project create (server reads DB) | `POST /projects` → `mo_project_templates` | `mo_template_deliverables` |
+| **Template Items** (new module) | Deliverable generation: title/weight/due-offset drive every future create (verified: offset 99 ⇒ due +99d) | `POST /projects` | — leaf |
+| Deliverable Types | New-deliverable form, board/library/pipeline labels, weights (D3 progress) | `/state.deliverable_types` | `mo_deliverables`, `mo_template_deliverables` |
+| Task Categories | Task-log category chips, daily reports, analytics groupings | `/state.task_categories` | `mo_report_tasks` |
+| Equipment Categories | Add-item form, catalog facets, asset-tag prefixes | `/state.equipment_categories` | `mo_equipment_items` |
+| Leave Types | Leave-request form, balances | `/state.leave_types` | `mo_leave_requests` |
+| Skills / Capacity Roles / Tags / Duty Flags | Team profiles, assignment pickers, project tags, custodian permission | `/state.*` | `mo_user_skills` / `mo_project_assignments`+`mo_shoot_crew` / `mo_entity_tags` / `mo_user_duties` |
+| Academic Years / Campuses / Holidays | New-project year picker; campus fields; report-expectation suppression (FR-2.11) | `/state.*` | `mo_projects` / several / — |
+| Vendors | Equipment add-item + maintenance records | `/state.vendors` | `mo_equipment_items`, `mo_maintenance_records` |
+| Automation Rules | **Executable**: engine gates AUTO-1/2/3/4 on `is_enabled`; AUTO-13 reads `config` thresholds at submit | scheduler + `POST /reports/:date/submit` | — |
+| Users & Roles | permissions (role map), sidebar, module access (`allowed_modules`), team scoping | `/state.users` + auth | everywhere |
+
+**Force Delete:** super-admin only (platform role, typed `DELETE` confirm); nullable FKs → NULL, NOT-NULL → child rows removed, transactional, audited (`crud.force_deleted`). Verified 403/400/success paths.
+
+**Known remaining disconnects (honest):** (1) `faculties` is still a client-side seed list — no DB table in §11; promote to a lookup table if desired. (2) The **Permission Matrix page** remains informational — the enforced model is §16 CAPS (client) + role checks (server) + per-user `allowed_modules`; they are consistent, but the matrix is code-defined policy, not a DB table (per PRD D4 three-role design). Making it DB-driven is a deliberate future decision, not an oversight. (3) `mo_holidays`/`mo_academic_years` CRUD edits hydrate, but holiday changes only affect report-expectation logic client-side today.
 </content>
 </invoke>
