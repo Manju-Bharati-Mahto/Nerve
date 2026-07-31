@@ -150,34 +150,36 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 const AVATARS_DIR = path.resolve("uploads/avatars");
 fs.mkdirSync(AVATARS_DIR, { recursive: true });
 
+// Hardened image handling (security): allowlist RASTER image types only — `image/svg+xml`
+// is a stored-XSS vector when served same-origin — and derive the on-disk extension from
+// the validated MIME, never from the attacker-controlled originalname (which could carry
+// `.html`/`.svg` while claiming an image mimetype).
+const SAFE_IMAGE_EXT: Record<string, string> = {
+  "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif",
+};
+const imageFileFilter: NonNullable<multer.Options["fileFilter"]> = (_req, file, cb) => {
+  if (SAFE_IMAGE_EXT[file.mimetype]) cb(null, true);
+  else cb(new Error("Only JPG, PNG, WEBP or GIF images are allowed."));
+};
+const safeImageName = (file: Express.Multer.File) =>
+  `${Date.now()}-${Math.random().toString(36).slice(2)}${SAFE_IMAGE_EXT[file.mimetype] || ".bin"}`;
+
 const avatarUpload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, AVATARS_DIR),
-    filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname).toLowerCase();
-      cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
-    },
+    filename: (_req, file, cb) => cb(null, safeImageName(file)),
   }),
   limits: { fileSize: 3 * 1024 * 1024 }, // 3 MB
-  fileFilter: (_req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) cb(null, true);
-    else cb(new Error("Only image files are allowed."));
-  },
+  fileFilter: imageFileFilter,
 });
 
 const designUpload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
-    filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname).toLowerCase();
-      cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
-    },
+    filename: (_req, file, cb) => cb(null, safeImageName(file)),
   }),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
-  fileFilter: (_req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) cb(null, true);
-    else cb(new Error("Only image files are allowed."));
-  },
+  fileFilter: imageFileFilter,
 });
 
 const DESIGN_PORTAL_UPLOADS_DIR = path.resolve("uploads/design");
@@ -186,16 +188,10 @@ fs.mkdirSync(DESIGN_PORTAL_UPLOADS_DIR, { recursive: true });
 const designPortalUpload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, DESIGN_PORTAL_UPLOADS_DIR),
-    filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname).toLowerCase();
-      cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
-    },
+    filename: (_req, file, cb) => cb(null, safeImageName(file)),
   }),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
-  fileFilter: (_req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) cb(null, true);
-    else cb(new Error("Only image files are allowed."));
-  },
+  fileFilter: imageFileFilter,
 });
 
 app.set("trust proxy", 1);
@@ -530,6 +526,19 @@ app.use("/api", asyncHandler(async (req, res, next) => {
 // ── Nerve Media Ops API (/api/v1/media/*) — Phase 1: Projects, Deliverables,
 // Daily Reporting, Dashboard. Registered after the auth middleware so every
 // media-ops route sees res.locals.currentUser.
+// §13: throttle the Media Ops API (100/min/user, burst 300). Keyed per authenticated
+// user (the /api auth middleware above has already set res.locals.currentUser), falling
+// back to IP. Applies before the routes are registered so every /api/v1/media/* is covered.
+const mediaApiLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req, res) => (res.locals.currentUser?.id as string) || req.ip || "anon",
+  message: { message: "Too many requests — please slow down." },
+});
+app.use("/api/v1/media", mediaApiLimiter);
+
 registerMediaOpsApi(app, { asyncHandler, sendError, getSingleParam });
 
 // ── App settings (super admin) ─────────────────────────────────────────────
