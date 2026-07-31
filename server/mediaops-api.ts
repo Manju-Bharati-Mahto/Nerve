@@ -323,6 +323,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        FROM mo_deliverable_types dt WHERE dt.id=$2 RETURNING *`,
       [pid, typeId, title, (b.owner_id as string) || u.id, (b.due_date as string) || null,
        b.quantity_target ? Number(b.quantity_target) : null, String(b.spec_notes ?? "")]);
+    // #7: optional Drive link attached to the new deliverable.
+    const url = String(b.drive_url ?? "").trim();
+    if (url && /^https:\/\/(drive|docs)\.google\.com\//.test(url))
+      await pool.query(`INSERT INTO mo_drive_links (entity_type, entity_id, label, url, added_by, validation_status, last_validated_at)
+        VALUES ('deliverable',$1,$2,$3,$4,'ok',NOW())`, [ins.rows[0].id, title, url, u.id]);
     await audit(u, "deliverable.created", "deliverable", ins.rows[0].id, null, { title }, req);
     res.status(201).json({ deliverable: ins.rows[0] });
   }));
@@ -914,6 +919,52 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ ok: true });
   }));
 
+  // Change a member's role (and optionally team-lead) — #1. Admin only.
+  app.post(`${P}/crew/:id/role`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may change roles.");
+    const realId = getSingleParam(req.params.id);
+    const role = ({ admin: "admin", team_lead: "sub_admin", employee: "user" } as Record<string, string>)[String((req.body as Record<string, unknown>).role)];
+    if (!role) return sendError(res, 400, "Invalid role.");
+    if (realId === u.id) return sendError(res, 400, "You cannot change your own role.");
+    await pool.query(`UPDATE users SET role=$1 WHERE id=$2 AND team='media'`, [role, realId]);
+    await audit(u, "crew.role_changed", "user", null, null, { id: realId, role }, req);
+    res.json({ ok: true, role });
+  }));
+
+  // Remove a crew member from a project (#3). TL/Admin.
+  app.delete(`${P}/projects/:id/assignments/:uid`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may change assignments.");
+    const pid = parseInt(getSingleParam(req.params.id), 10);
+    const uid = getSingleParam(req.params.uid);
+    await pool.query(`UPDATE mo_project_assignments SET removed_at=NOW() WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`, [pid, uid]);
+    await audit(u, "project.assignment_removed", "project", pid, null, { user_id: uid }, req);
+    res.json({ ok: true });
+  }));
+
+  // Remove a crew member from a shoot (#7).
+  app.delete(`${P}/shoots/:id/crew/:uid`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may change shoot crew.");
+    const sid = parseInt(getSingleParam(req.params.id), 10);
+    const uid = getSingleParam(req.params.uid);
+    await pool.query(`DELETE FROM mo_shoot_crew WHERE shoot_id=$1 AND user_id=$2`, [sid, uid]);
+    await audit(u, "shoot.crew_removed", "shoot", sid, null, { user_id: uid }, req);
+    res.json({ ok: true });
+  }));
+
+  // Add crew to a shoot (#7).
+  app.post(`${P}/shoots/:id/crew`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may assign shoot crew.");
+    const sid = parseInt(getSingleParam(req.params.id), 10);
+    for (const raw of (Array.isArray((req.body as Record<string, unknown>).crew) ? (req.body as Record<string, unknown>).crew as unknown[] : []))
+      await pool.query(`INSERT INTO mo_shoot_crew (shoot_id, user_id, capacity_role_id) VALUES ($1,$2,2) ON CONFLICT DO NOTHING`, [sid, String(raw)]);
+    await audit(u, "shoot.crew_added", "shoot", sid, null, null, req);
+    res.status(201).json({ ok: true });
+  }));
+
   // Update own profile photo (edit-avatar from the profile dialog — #5).
   app.post(`${P}/me/profile`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
@@ -921,6 +972,58 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     await pool.query(`UPDATE users SET avatar_url=$1 WHERE id=$2`, [(b.avatar_url as string) || null, u.id]);
     await audit(u, "user.avatar_updated", "user", null, null, null, req);
     res.json({ ok: true });
+  }));
+
+  // Generic lookup CRUD (Settings — #2). Admin-editable, no deploy (NFR-10).
+  const LOOKUP_CFG: Record<string, { table: string; fields: string[] }> = {
+    task_categories: { table: "mo_task_categories", fields: ["name", "icon"] },
+    deliverable_types: { table: "mo_deliverable_types", fields: ["name", "icon", "default_unit", "default_weight", "review_exempt"] },
+    equipment_categories: { table: "mo_equipment_categories", fields: ["name", "icon", "tracking_mode"] },
+    leave_types: { table: "mo_leave_types", fields: ["name", "annual_quota"] },
+    project_types: { table: "mo_project_types", fields: ["name", "icon", "color"] },
+    capacity_roles: { table: "mo_capacity_roles", fields: ["name"] },
+    skills: { table: "mo_skills", fields: ["name", "category"] },
+    tags: { table: "mo_tags", fields: ["name", "color"] },
+  };
+  const lookupCols = async (t: string) =>
+    new Set((await pool.query(`SELECT column_name FROM information_schema.columns WHERE table_name=$1`, [t])).rows.map((r) => r.column_name as string));
+
+  app.post(`${P}/lookups/:type`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may edit lookups.");
+    const cfg = LOOKUP_CFG[getSingleParam(req.params.type)]; if (!cfg) return sendError(res, 400, "Unknown lookup type.");
+    const b = req.body as Record<string, unknown>;
+    const name = String(b.name ?? "").trim(); if (!name) return sendError(res, 400, "Name is required.");
+    const cols = await lookupCols(cfg.table);
+    const rec: Record<string, unknown> = { name };
+    for (const f of cfg.fields) if (f !== "name" && f in b && cols.has(f)) rec[f] = b[f];
+    if (cols.has("department_id")) rec.department_id = 1;
+    if (cols.has("is_active")) rec.is_active = true;
+    if (cols.has("slug")) rec.slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    if (cols.has("sort_order")) rec.sort_order = (await pool.query(`SELECT COALESCE(MAX(sort_order),0)+1 n FROM ${cfg.table}`)).rows[0].n;
+    if (cols.has("icon") && !("icon" in rec)) rec.icon = "◆";
+    const keys = Object.keys(rec);
+    const ins = await pool.query(
+      `INSERT INTO ${cfg.table} (${keys.map((k) => `"${k}"`).join(",")}) VALUES (${keys.map((_, i) => "$" + (i + 1)).join(",")}) RETURNING *`,
+      keys.map((k) => rec[k]));
+    await audit(u, "lookup.created", cfg.table, ins.rows[0].id, null, { name }, req);
+    res.status(201).json({ row: ins.rows[0] });
+  }));
+
+  app.patch(`${P}/lookups/:type/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may edit lookups.");
+    const cfg = LOOKUP_CFG[getSingleParam(req.params.type)]; if (!cfg) return sendError(res, 400, "Unknown lookup type.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    const cols = await lookupCols(cfg.table);
+    const sets: string[] = [], vals: unknown[] = []; let i = 1;
+    for (const f of [...cfg.fields, "is_active"]) if (f in b && cols.has(f)) { sets.push(`"${f}"=$${i++}`); vals.push(b[f]); }
+    if (!sets.length) return res.json({ ok: true });
+    vals.push(id);
+    const { rows } = await pool.query(`UPDATE ${cfg.table} SET ${sets.join(",")} WHERE id=$${i} RETURNING *`, vals);
+    await audit(u, "lookup.updated", cfg.table, id, null, b, req);
+    res.json({ row: rows[0] });
   }));
 
   // Change own password (profile dialog).

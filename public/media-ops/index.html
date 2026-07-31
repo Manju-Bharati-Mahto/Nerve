@@ -899,6 +899,7 @@ html[data-theme=dark] .cal-cell.today{background:var(--brand-50)}
 
 const TODAY = '2026-07-28';                       // env date — Tuesday
 const NOW   = new Date('2026-07-28T14:20:00+05:30');
+const rtoday=()=>new Date().toISOString().slice(0,10);   // real current date (for new-record date pickers)
 
 /* ---------- date helpers ---------- */
 const D = {
@@ -2123,6 +2124,7 @@ function can(cap,ctx={}){
 /* Data scoping — mirrors what the API would return, not just what the UI hides */
 function visibleProjects(){
   const all=DB.projects.filter(p=>!p.deleted_at);
+  if(isEmp())return all.filter(p=>isOnProject(p.id)||p.owner_id===S.me);   /* #6: employees see only their assigned projects */
   return all;                                    /* §16 note (1): production history is departmental knowledge */
 }
 function visibleReports(){
@@ -3320,6 +3322,7 @@ function viewMyDay(){
   const myDue=DB.deliverables.filter(d=>d.owner_id===S.me&&!['delivered','not_required','cancelled'].includes(d.status))
     .sort((a,b)=>(a.due_date||'9')<(b.due_date||'9')?-1:1);
   const expects=expectsReport(S.me,TODAY);
+  const myProjects=userProjects(S.me);   /* #5: projects assigned to me */
 
   const content=`
     <div class="between mb4">
@@ -3335,6 +3338,16 @@ function viewMyDay(){
             <span>${esc(s.call_time)} call · ${esc(s.location)}</span>
             <span>${avStack(DB.shoot_crew.filter(c=>c.shoot_id===s.id).map(c=>c.user_id),4)}</span></span>
         </button>`).join(''):`<div class="empty" style="padding:20px"><p>No shoot today. Desk work.</p></div>`}
+      </div></div>
+
+    <div class="card mb4"><div class="card-head"><h3>My projects</h3>
+      <div class="ca"><span class="chip">${myProjects.length}</span></div></div>
+      <div class="card-body flush">${myProjects.length?myProjects.slice(0,6).map(p=>`
+        <button class="list-row" data-go="#/media/projects/${p.id}">
+          <span style="font-size:15px;color:${ptype(p.project_type_id).color}">${ptype(p.project_type_id).icon}</span>
+          <span class="lr-main"><b>${esc(p.name)}</b><span><span class="code">${p.code}</span> · ${esc(ptype(p.project_type_id).name)}</span></span>
+          ${statusPill(PROJ_STATUS,p.status)}
+        </button>`).join(''):`<div class="empty" style="padding:20px"><p>No projects assigned to you yet.</p></div>`}
       </div></div>
 
     <div class="card mb4">
@@ -3888,7 +3901,9 @@ function projOverview(p,dls,crew,shoots,pr){
             <td><span class="chip">${esc(caprole(a.capacity_role_id))}</span></td>
             <td class="num">${((perPerson[a.user_id]||0)/60).toFixed(1)}h</td>
             <td class="num">${dls.filter(d=>d.owner_id===a.user_id).length}</td>
-            <td class="num">${statusPill(PRESENCE_MAP(),presence(a.user_id))}</td></tr>`).join('')}
+            <td class="num">${statusPill(PRESENCE_MAP(),presence(a.user_id))}
+              ${(can('project.assign')&&!a.is_project_manager)?`<span class="icon-btn" role="button" title="Remove from project" style="color:var(--danger)"
+                onclick="event.stopPropagation();event.preventDefault();ACTIONS.removeAssignment({pid:${p.id},uid:${a.user_id}})">🗑</span>`:''}</td></tr>`).join('')}
           </tbody></table></div></div></div>
     </div>
 
@@ -4736,6 +4751,11 @@ function teamDirectory(){
         <div class="divider"></div>
         <div class="between small mut3"><span>${activeProjectsOf(u.id).length} projects</span>
           <span>${openDeliverables(u.id).length} open ◆</span><span>${consistency(u.id)}% consistency</span></div>
+        ${(can('admin.users')&&u.id!==S.me)?`<div class="mt3" onclick="event.stopPropagation();event.preventDefault()">
+          <select class="inp" style="height:32px;font-size:12px" onchange="ACTIONS.changeRole({uid:${u.id},role:this.value})">
+            <option value="employee" ${u.role==='employee'?'selected':''}>● Employee</option>
+            <option value="team_lead" ${u.role==='team_lead'?'selected':''}>▲ Team Lead</option>
+            <option value="admin" ${u.role==='admin'?'selected':''}>★ Admin</option></select></div>`:''}
       </div></div>`;}).join('')}</div>`;
 }
 function teamAvailability(){
@@ -5605,59 +5625,59 @@ function viewAdmin(section){
       section==='automations'?admAutomations():section==='users'?admUsers():section==='permissions'?admPermissions():
       section==='import'?admImport():section==='audit'?admAudit():section==='schema'?admSchema():admSettings()}`;
 }
-function lookupTable(title,rows,cols,note){
+function lookupTable(type,title,rows,cols,note){
+  const editable=['task_categories','deliverable_types','equipment_categories','leave_types','project_types','capacity_roles','skills','tags'].includes(type);
   return `<div class="card mb4"><div class="card-head"><h3>${esc(title)}</h3>
-      <div class="ca"><span class="chip">${rows.length}</span><button class="btn xs primary" data-act="addLookup">＋ Add</button></div></div>
+      <div class="ca"><span class="chip">${rows.length}</span>${editable?`<button class="btn xs primary" data-act="addLookup" data-type="${type}">＋ Add</button>`:''}</div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
       <thead><tr>${cols.map(c=>`<th>${esc(c[0])}</th>`).join('')}<th class="num"></th></tr></thead>
       <tbody>${rows.map(r=>`<tr>${cols.map(c=>`<td>${c[1](r)}</td>`).join('')}
-        <td class="num nowrap"><button class="btn xs" data-act="editLookup">Edit</button>
-          <button class="btn xs ghost" data-act="deactivateLookup" title="VR-11: deactivate, never delete — referential history is preserved">Deactivate</button></td></tr>`).join('')}
+        <td class="num nowrap">${editable?`<button class="btn xs" data-act="editLookup" data-type="${type}" data-id="${r.id}" data-name="${esc((r.name||'').replace(/"/g,''))}">Edit</button>`:'<span class="mut3 small">—</span>'}</td></tr>`).join('')}
       </tbody></table></div></div>
     ${note?`<div class="card-foot">${note}</div>`:''}</div>`;
 }
 function admLookups(){
-  return `${lookupTable('Project types',DB.project_types,[
+  return `${lookupTable('project_types','Project types',DB.project_types,[
       ['Name',r=>`<span class="chip"><span class="dot" style="background:${r.color}"></span>${esc(r.name)}</span>`],
       ['Slug',r=>`<span class="mono small">${esc(r.slug)}</span>`],
       ['Icon',r=>r.icon],['Default template',r=>r.default_template_id?esc((DB.project_templates.find(t=>t.id===r.default_template_id)||{name:'—'}).name):'—'],
       ['Active',r=>r.is_active?'<span class="yes">✓</span>':'<span class="no">—</span>']],
       'Adding a new type (e.g. “Podcast Series”) is configuration, not a schema change — that is the whole point of the type discriminator (§5.1).')}
-    ${lookupTable('Task categories',DB.task_categories,[
+    ${lookupTable('task_categories','Task categories',DB.task_categories,[
       ['Name',r=>`${r.icon} ${esc(r.name)}`],['Sort',r=>r.sort_order],
       ['Used in tasks',r=>DB.report_tasks.filter(t=>t.task_category_id===r.id).length],
       ['Active',r=>r.is_active?'<span class="yes">✓</span>':'<span class="no">—</span>']])}
-    ${lookupTable('Equipment categories',DB.equipment_categories,[
+    ${lookupTable('equipment_categories','Equipment categories',DB.equipment_categories,[
       ['Name',r=>`${r.icon} ${esc(r.name)}`],
       ['Tracking mode',r=>`<span class="chip ${r.tracking_mode==='pooled'?'sel':''}">${r.tracking_mode}</span>`],
       ['Items',r=>DB.equipment_items.filter(e=>e.category_id===r.id).length]],
       'Pooled categories (cards, batteries) are counted, not serial-tracked — FR-6.3.')}
-    ${lookupTable('Capacity roles',DB.capacity_roles,[['Name',r=>esc(r.name)],
+    ${lookupTable('capacity_roles','Capacity roles',DB.capacity_roles,[['Name',r=>esc(r.name)],
       ['Assignments',r=>DB.project_assignments.filter(a=>a.capacity_role_id===r.id).length]])}
-    ${lookupTable('Skills',DB.skills,[['Name',r=>esc(r.name)],['Category',r=>`<span class="chip">${esc(r.category)}</span>`],
+    ${lookupTable('skills','Skills',DB.skills,[['Name',r=>esc(r.name)],['Category',r=>`<span class="chip">${esc(r.category)}</span>`],
       ['People',r=>DB.user_skills.filter(s=>s.skill_id===r.id).length]])}
-    ${lookupTable('Leave types',DB.leave_types,[['Name',r=>esc(r.name)],['Annual quota',r=>r.annual_quota||'—'],
+    ${lookupTable('leave_types','Leave types',DB.leave_types,[['Name',r=>esc(r.name)],['Annual quota',r=>r.annual_quota||'—'],
       ['Requests',r=>DB.leave_requests.filter(l=>l.leave_type_id===r.id).length]])}
-    ${lookupTable('Academic years',DB.academic_years,[['Label',r=>`<b>${esc(r.label)}</b>`],
+    ${lookupTable('academic_years','Academic years',DB.academic_years,[['Label',r=>`<b>${esc(r.label)}</b>`],
       ['Span',r=>D.fmt(r.start_date)+' → '+D.fmt(r.end_date)],
       ['Current',r=>r.is_current?'<span class="yes">✓</span>':'—'],
       ['Projects',r=>DB.projects.filter(p=>p.academic_year_id===r.id).length]],
       'A lookup, not arithmetic — university years are policy (§11.1).')}
-    ${lookupTable('Campuses',DB.campuses,[['Name',r=>esc(r.name)],['Code',r=>`<span class="mono">${r.code}</span>`],
+    ${lookupTable('campuses','Campuses',DB.campuses,[['Name',r=>esc(r.name)],['Code',r=>`<span class="mono">${r.code}</span>`],
       ['City',r=>esc(r.city)],['Active',r=>r.is_active?'<span class="yes">✓</span>':'<span class="no">dormant</span>']],
       'campus_id is present on users, projects, equipment and holidays from day one. Adding it later would touch every query (§22).')}
-    ${lookupTable('Holidays',DB.holidays,[['Date',r=>D.fmt(r.date)],['Name',r=>esc(r.name)],
+    ${lookupTable('holidays','Holidays',DB.holidays,[['Date',r=>D.fmt(r.date)],['Name',r=>esc(r.name)],
       ['Campus',r=>esc((DB.campuses.find(c=>c.id===r.campus_id)||{name:'—'}).name)]],
       'Holidays suppress report expectations and are excluded from consistency denominators (FR-2.11).')}
-    ${lookupTable('Vendors',DB.vendors,[['Name',r=>esc(r.name)],['Contact',r=>esc(r.contact)],['Phone',r=>esc(r.phone)],
+    ${lookupTable('vendors','Vendors',DB.vendors,[['Name',r=>esc(r.name)],['Contact',r=>esc(r.contact)],['Phone',r=>esc(r.phone)],
       ['Notes',r=>`<span class="small mut">${esc(r.notes)}</span>`]])}
-    ${lookupTable('Tags',DB.tags,[['Tag',r=>`<span class="tag" style="border-color:${r.color}">#${esc(r.name)}</span>`],
+    ${lookupTable('tags','Tags',DB.tags,[['Tag',r=>`<span class="tag" style="border-color:${r.color}">#${esc(r.name)}</span>`],
       ['Used on',r=>DB.projects.filter(p=>p.tags.includes(r.id)).length+' projects']])}`;
 }
 function admTypes(){
   return `<div class="card"><div class="card-head"><h3>Deliverable types</h3>
       ${reqid('FR-4.1','Admin-managed lookup driving templates, weights and units')}
-      <div class="ca"><button class="btn xs primary" data-act="addLookup">＋ Add type</button></div></div>
+      <div class="ca"><button class="btn xs primary" data-act="addLookup" data-type="deliverable_types">＋ Add type</button></div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Type</th><th>Slug</th><th class="num">Default weight</th><th>Default unit</th>
         <th>Review exempt</th><th class="num">In use</th><th class="num">Delivered</th><th class="num"></th></tr></thead>
@@ -5667,7 +5687,7 @@ function admTypes(){
         <td class="num b">${t.default_weight}</td><td class="small">${esc(t.default_unit)}</td>
         <td>${t.review_exempt?'<span class="chip sel" title="BR-6: Delivered does not require an approved version">exempt</span>':'<span class="mut3">—</span>'}</td>
         <td class="num">${used.length}</td><td class="num">${used.filter(d=>d.status==='delivered').length}</td>
-        <td class="num"><button class="btn xs" data-act="editLookup">Edit</button></td></tr>`;}).join('')}
+        <td class="num"><button class="btn xs" data-act="editLookup" data-type="deliverable_types" data-id="${t.id}" data-name="${esc((t.name||"").replace(/"/g,""))}">Edit</button></td></tr>`;}).join('')}
       </tbody></table></div></div>
     <div class="card-foot">Weight drives project progress (D3) and the weighted-output metric (§19). Changing a default
       weight does not retro-edit existing deliverables — each row copies the weight at creation and is editable per project.</div></div>`;
@@ -6777,8 +6797,8 @@ function openNewProject(){
           <select class="inp" id="np-year">${DB.academic_years.map(a=>`<option value="${a.id}" ${a.is_current?'selected':''}>${a.label}</option>`).join('')}</select></div>
       </div>
       <div class="row">
-        <div class="field"><label class="lbl">Start date <span class="req">*</span></label><input class="inp" type="date" id="np-start" value="${TODAY}"></div>
-        <div class="field"><label class="lbl">End date <span class="req">*</span></label><input class="inp" type="date" id="np-end" value="${D.add(TODAY,7)}"></div>
+        <div class="field"><label class="lbl">Start date <span class="req">*</span></label><input class="inp" type="date" id="np-start" value="${rtoday()}"></div>
+        <div class="field"><label class="lbl">End date <span class="req">*</span></label><input class="inp" type="date" id="np-end" value="${D.add(rtoday(),7)}"></div>
       </div>
       <div class="field"><label class="lbl">Description</label><textarea class="inp" id="np-desc" placeholder="Scope, constraints, who asked for it…"></textarea></div>
       <div class="field"><label class="lbl">Assign crew</label>
@@ -6809,11 +6829,14 @@ function openNewDeliverable(pid){
       </div>
       <div class="field"><label class="lbl">Title <span class="req">*</span></label><input class="inp" id="nd-title" placeholder="e.g. Edited Photos — Convocation 2026"></div>
       <div class="row">
-        <div class="field"><label class="lbl">Due date</label><input class="inp" type="date" id="nd-due" value="${D.add(TODAY,7)}">
+        <div class="field"><label class="lbl">Due date</label><input class="inp" type="date" id="nd-due" value="${D.add(rtoday(),7)}">
           <div class="hint">Warns if outside project span ± 30 days (VR-7).</div></div>
         <div class="field"><label class="lbl">Quantity target</label><input class="inp" type="number" id="nd-qty" placeholder="e.g. 1800"></div>
       </div>
       <div class="field"><label class="lbl">Spec notes</label><textarea class="inp" id="nd-spec" placeholder="Format, deadline constraints, who signs off…"></textarea></div>
+      <div class="field"><label class="lbl">Drive link <span class="mut3">(optional)</span></label>
+        <input class="inp" id="nd-drive" placeholder="https://drive.google.com/… (can add later)">
+        <div class="hint">Attach the Google Drive/Docs folder now, or add it later from the deliverable.</div></div>
     </div>
     <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn primary" data-act="createDeliverable">Create deliverable</button></div>`,{size:'wide'});
@@ -7248,7 +7271,8 @@ const ACTIONS = {
       mail_status:'na',mail_sent_at:null,deleted_at:null});
     audit(S.me,'deliverable.created','project',pid,null,{title,type:t.name});
     const _nd={title,deliverable_type_id:tid,owner_id:ruid(+$('#nd-owner').value),due_date:due,
-      quantity_target:$('#nd-qty').value?+$('#nd-qty').value:null,spec_notes:$('#nd-spec').value.trim()};
+      quantity_target:$('#nd-qty').value?+$('#nd-qty').value:null,spec_notes:$('#nd-spec').value.trim(),
+      drive_url:($('#nd-drive')?$('#nd-drive').value.trim():'')};
     closeModal();render();toast('Deliverable created','ok');
     moSync(MO_API.post('/projects/'+pid+'/deliverables',_nd));
   },
@@ -7272,7 +7296,28 @@ const ACTIONS = {
     moSync(MO_API.post('/projects/'+_nsPid+'/shoots',_ns));
     toast('Shoot created. AUTO-10 will remind the crew 24h before.'+(overrides?' '+overrides+' leave override(s) logged (BR-15).':''),'ok');
   },
-  assignCrew:()=>{toast('Assignment picker shows current load and leave conflicts (FR-3.4) — demo stub','ok');},
+  assignCrew:(d)=>{ if(d.sid)ACTIONS.assignShoot(d); else if(d.pid)ACTIONS.assignProject(d); },
+  assignShoot:(d)=>{
+    const s=DB.shoots.find(x=>x.id===+d.sid);
+    modal(`<div class="mo-head"><div><h2>Assign shoot crew</h2><p>${esc(s.title)} · ${D.fmt(s.shoot_date)}</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><div class="f wrap gap2" id="sc-crew">${DB.users.filter(u=>u.is_active).map(u=>`<button type="button" class="chip ${DB.shoot_crew.some(c=>c.shoot_id===s.id&&c.user_id===u.id)?'sel':''}" data-uid="${u.id}" onclick="this.classList.toggle('sel')">${esc(u.full_name)}</button>`).join('')}</div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="confirmShootCrew" data-sid="${s.id}">Assign</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  confirmShootCrew:(d)=>{
+    const uids=$$('#sc-crew .chip.sel').map(c=>ruid(+c.dataset.uid));
+    closeModal();
+    moSync(MO_API.post('/shoots/'+d.sid+'/crew',{crew:uids}), ()=>{render();toast('Shoot crew assigned','ok');});
+  },
+  removeAssignment:(d)=>{
+    if(!confirm('Remove this member from the project?'))return;
+    moSync(MO_API.del('/projects/'+d.pid+'/assignments/'+ruid(+d.uid)), ()=>{render();toast('Removed from project','ok');});
+  },
+  removeShootCrew:(d)=>{
+    moSync(MO_API.del('/shoots/'+d.sid+'/crew/'+ruid(+d.uid)), ()=>{render();toast('Removed from shoot','ok');});
+  },
   watchProject:()=>{toast('Watching — you now receive this project’s notifications (FR-3.9)','ok');},
   applyTemplate:(d)=>{toast('Template re-applied — existing deliverables are never duplicated','ok');},
   postComment:(d)=>{
@@ -7669,8 +7714,42 @@ const ACTIONS = {
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" onclick="closeModal();toast('Rule updated and audited','ok')">Save</button></div>`);
   },
-  addLookup:()=>toast('Add lookup row — Admin-editable, no deploy required (NFR-10)','ok'),
-  editLookup:()=>toast('Edit lookup — names unique per department (VR-11)','ok'),
+  addLookup:(d)=>{
+    const t=d.type, isD=t==='deliverable_types';
+    modal(`<div class="mo-head"><div><h2>Add ${esc((t||'').replace(/_/g,' '))}</h2></div><button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Name <span class="req">*</span></label><input class="inp" id="lk-name"></div>
+        ${(t!=='capacity_roles'&&t!=='skills')?`<div class="field"><label class="lbl">Icon</label><input class="inp" id="lk-icon" value="◆"></div>`:''}
+        ${isD?`<div class="row"><div class="field"><label class="lbl">Default unit</label><input class="inp" id="lk-unit" placeholder="e.g. photos"></div>
+          <div class="field"><label class="lbl">Default weight</label><input class="inp" type="number" id="lk-weight" value="1"></div></div>`:''}
+        ${t==='leave_types'?`<div class="field"><label class="lbl">Annual quota</label><input class="inp" type="number" id="lk-quota"></div>`:''}
+        ${t==='tags'?`<div class="field"><label class="lbl">Colour</label><input class="inp" id="lk-color" value="var(--cat-1)"></div>`:''}</div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="saveLookup" data-type="${t}">Add</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  editLookup:(d)=>{
+    modal(`<div class="mo-head"><div><h2>Edit ${esc((d.type||'').replace(/_/g,' '))}</h2></div><button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><div class="field"><label class="lbl">Name</label><input class="inp" id="lk-name" value="${esc(d.name||'')}"></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="saveLookup" data-type="${d.type}" data-id="${d.id}">Save</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  saveLookup:(d)=>{
+    const name=$('#lk-name').value.trim(); if(!name){toast('Name is required','bad');return;}
+    const payload={name};
+    if($('#lk-icon'))payload.icon=$('#lk-icon').value.trim()||'◆';
+    if($('#lk-unit'))payload.default_unit=$('#lk-unit').value.trim();
+    if($('#lk-weight'))payload.default_weight=+$('#lk-weight').value||1;
+    if($('#lk-quota'))payload.annual_quota=$('#lk-quota').value?+$('#lk-quota').value:null;
+    if($('#lk-color'))payload.color=$('#lk-color').value.trim();
+    closeModal();
+    const req=d.id?MO_API.patch('/lookups/'+d.type+'/'+d.id,payload):MO_API.post('/lookups/'+d.type,payload);
+    req.then(()=>MO_API.get('/lookups')).then(lk=>{
+      ['task_categories','deliverable_types','equipment_categories','leave_types','project_types','capacity_roles','skills'].forEach(k=>{if(Array.isArray(lk[k]))DB[k]=lk[k];});
+      render();toast(d.id?'Updated':'Added — configuration, no deploy (NFR-10)','ok');
+    }).catch(e=>toast('Could not save: '+e.message,'bad'));
+  },
   deactivateLookup:()=>toast('VR-11: deactivated, not deleted — referential history is preserved','ok'),
   addUser:()=>{
     if(!can('admin.users')){toast('Admins only','bad');return;}
@@ -7817,6 +7896,10 @@ const ACTIONS = {
   deleteCrew:(d)=>{
     if(!confirm('Remove '+(d.name||'this member')+' from the Media crew? This deletes their Nerve account.'))return;
     moSync(MO_API.del('/crew/'+ruid(+d.uid)), ()=>{render();toast('Member removed','ok');});
+  },
+  changeRole:(d)=>{
+    if(!d.role)return;
+    moSync(MO_API.post('/crew/'+ruid(+d.uid)+'/role',{role:d.role}), ()=>{render();toast('Role updated to '+d.role.replace('_',' '),'ok');});
   },
   assignProject:(d)=>{
     const p=proj(+d.pid);
