@@ -117,8 +117,26 @@ export async function bootstrapMediaOpsDatabase() {
       user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       designation TEXT NOT NULL DEFAULT '', mo_role TEXT NOT NULL DEFAULT 'employee'
         CHECK (mo_role IN ('admin','team_lead','employee')),
-      color TEXT, joined_on DATE, campus_id BIGINT REFERENCES mo_campuses(id)
+      color TEXT, joined_on DATE, campus_id BIGINT REFERENCES mo_campuses(id),
+      allowed_modules JSONB   -- NULL = unrestricted (role-based); array = restrict to these module keys
     )`);
+  // Existing DBs: add the column if it predates the module-access feature.
+  await pool.query(`ALTER TABLE mo_user_profiles ADD COLUMN IF NOT EXISTS allowed_modules JSONB`);
+
+  // ── CRUD Engine lifecycle columns ─────────────────────────────────────────
+  // Every Admin-configurable table carries the same lifecycle: is_active
+  // (enable/disable — VR-11 deactivate-never-delete), archived_at (hidden from
+  // future use, history intact), created_by/updated_at (audit filters). Applied
+  // uniformly so the generic CRUD engine can treat all config modules the same.
+  for (const t of ["mo_project_types", "mo_deliverable_types", "mo_task_categories", "mo_equipment_categories",
+                   "mo_leave_types", "mo_skills", "mo_capacity_roles", "mo_vendors", "mo_tags", "mo_duty_flags",
+                   "mo_academic_years", "mo_campuses", "mo_holidays", "mo_project_templates", "mo_template_deliverables", "mo_automation_rules"]) {
+    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true`);
+    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS created_by TEXT`);
+    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+  }
 
   // ── §11.2 Projects & production ──────────────────────────────────────────
   await pool.query(`
@@ -194,6 +212,32 @@ export async function bootstrapMediaOpsDatabase() {
       deliverable_type_id BIGINT NOT NULL, title_pattern TEXT NOT NULL,
       default_weight SMALLINT NOT NULL DEFAULT 1, days_offset_due INTEGER NOT NULL DEFAULT 5
     )`);
+  // Task/Assignment layer — a TL/Admin assigns scheduled work to crew inside a
+  // project. Distinct from mo_project_assignments (membership → "My Projects") and
+  // from mo_report_tasks (self-logged work). Surfaces in the assignee's "Today's
+  // Assignments" when the current date falls within [start_date, due_date].
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_assignments (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      project_id BIGINT NOT NULL REFERENCES mo_projects(id) ON DELETE CASCADE,
+      title TEXT NOT NULL, assigned_by TEXT REFERENCES users(id),
+      priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('urgent','high','normal','low')),
+      status TEXT NOT NULL DEFAULT 'not_started' CHECK (status IN ('not_started','in_progress','done','blocked','cancelled')),
+      start_date DATE, due_date DATE, start_time TEXT, end_time TEXT, notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_assignment_users (
+      assignment_id BIGINT NOT NULL REFERENCES mo_assignments(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      PRIMARY KEY (assignment_id, user_id)
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_assign_sched ON mo_assignments(start_date, due_date)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_assign_user ON mo_assignment_users(user_id)`);
+  // Deliverable-backed assignments (auto-generated at project creation): link the
+  // assignment to its deliverable + carry an effort estimate. Existing rows keep NULLs.
+  await pool.query(`ALTER TABLE mo_assignments ADD COLUMN IF NOT EXISTS deliverable_id BIGINT REFERENCES mo_deliverables(id) ON DELETE CASCADE`);
+  await pool.query(`ALTER TABLE mo_assignments ADD COLUMN IF NOT EXISTS estimated_hours NUMERIC(5,1)`);
 
   // ── §11.3 Deliverables & assets ──────────────────────────────────────────
   await pool.query(`

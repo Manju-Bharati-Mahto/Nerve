@@ -30,12 +30,12 @@ Legend: ✅ Implemented · 🟡 Partial · 🔴 Missing · ⛔ Wrong.
 | Module | Status | Evidence / gap |
 |---|:--:|---|
 | **M1 Dashboard (FR-1.x)** | 🟡 | Role-adaptive dashboard renders client-side (`index.html:2835`). Live counts. `GET /dashboard` exists (`mediaops-api.ts:1105`) but the **client never calls it** — all widgets computed in-browser over `/state`. FR-1.10 Recent Activity + FR-1.2 nudge are **client-only** (`nudgeAll` is a toast, `7193`). |
-| **M2 Daily Reporting (FR-2.x)** | 🟡 | Log-as-you-go (D1) ✅ AC-1 met (`openTaskLog` compact modal, wired `saveTask`). Submit/review wired. **BR-4 auto-approve after 48h NOT implemented** (`auto_approved` enum is dead — nothing sets it). **BR-9 edit-lock NOT enforced**: `PATCH/DELETE /tasks/:id` (`mediaops-api.ts:458,477`) has **no owner check, no report-status lock, no audit()**. FR-2.10 offline is **fake** (toasts). |
+| **M2 Daily Reporting (FR-2.x)** | ✅ | Log-as-you-go (D1) ✅ AC-1 met. Submit/review wired. **BR-4 auto-approve after 48h now implemented (P2a)** — the automation engine flips `submitted`→`auto_approved` after 48h (unflagged) and audits it. **BR-9 edit-lock enforced (P0)**. Remaining: FR-2.10 offline queue still fake (P2/P3). |
 | **M3 Project Mgmt (FR-3.x)** | 🟡 | CRUD, per-type templates (per-item ✅), assignments ✅, all 6 views render ✅. **BR-1 project status transitions are LOCAL-ONLY** — `MENUS.projStatus`, `projMore`, and Kanban drag set `p.status` with no persist (`index.html:7977,7994,8062`). `PATCH /projects/:id` (generic edit) **missing**. `GET /projects/:id/activity` missing. |
 | **M4 Deliverables (FR-4.x)** | ✅ | Strong. Versions immutable, approval workflow, BR-5/BR-6 enforced server-side (`mediaops-api.ts:378,396`) and client (`applyDelivStatus`→wired, `8041`). **FR-4.5 social/mail status is LOCAL-ONLY** (`setSocial`/`setMail`, `7412`) — silently not saved. FR-4.7 import → see M-import. |
 | **M5 Media Library (FR-5.x)** | 🟡 | Faceted browse + gallery render. **Search is a client substring filter of already-loaded data** (`2735`), **not** the Postgres FTS the UI claims (`4174`). No `GET /search`, no `GET /library/export`. Export is CSV-only. |
 | **M6 Equipment (FR-6.x)** | ✅ | Strongest module. Catalog, QR, bookings with **real AC-7 double-booking prevention** (btree_gist EXCLUDE, `mediaops-db.ts:346`), checkout/checkin ledger, damage→maintenance, kiosk mode wired (`commitKiosk`, `4610`). Gaps: no `GET /equipment/availability` endpoint; BR-7 checkout only blocks on `status`, not on foreign active booking; FR-6.8 overdue engine not scheduled. |
-| **M7 Team (FR-7.x)** | 🟡 | Profiles + workload render. **`teams`/`team_members`/`user_duties`/`user_skills` are never hydrated** (seed-only, `index.html §5`) — so team-lead scoping and custodian-duty permission run on prototype data even when live. `toggleDuty` LOCAL-ONLY. No `GET /team/:id/*` endpoints. |
+| **M7 Team (FR-7.x)** | ✅ | **Now real (P1b).** `teams`/`team_members`/`duty_flags`/`user_duties`/`skills`/`user_skills` hydrated from `/state`, so **TL scoping (`myTeamIds`) and custodian-duty permission run on real data**. Team management wired: assign a member to a lead (`POST /crew/:id/team`, lazily creates the lead's team, enforces one-primary-team), grant/revoke duties (`POST /crew/:id/duties`) — both persist (were seed-only / local-only). Remaining nicety: `GET /team/:id/*` dedicated read endpoints (data currently rides `/state`). |
 | **M8 Performance (FR-8.x)** | 🟡 | Snapshots table + views exist and hydrate. **Not computed/scheduled** — `performance_snapshots` populated only by seed; AUTO-11 month-close missing, so FR-8.1/8.5 monthly rollups don't happen. |
 | **M9 KRA (FR-9.x)** | ✅ | **Now wired (P1b).** Endpoints `POST /kra/cycles`, `/kra/:cycleId/items` (BR-14 weight ≤100 enforced), `/kra/items/:id/review` (self=owner, manager=TL/Admin, upsert). UI: new cycle, add KRA (self or, for TL/Admin, any member), self-review + manager-review modals. FR-9.1–9.4 functional. Remaining nicety: final-score locking at cycle close (FR-8.5 immutability) pairs with the month-close scheduler (P2). |
 | **M10 Leave (FR-10.x)** | 🟡 | Request + decide wired (conflict-aware). **FR-10.3 replacement assignment is LOCAL-ONLY** (`assignReplacement`, `7646`) — not persisted; `POST /leave/:id/replacements` missing. |
@@ -158,6 +158,42 @@ Known follow-up from this batch: SVG rejection currently returns 500 (should be 
 |---|---|---|
 | **B7** KRA entirely display-only | `POST /kra/cycles`, `POST /kra/:cycleId/items`, `POST /kra/items/:id/review`; wired new-cycle, add-KRA, self-review, manager-review in `viewKRA` | ✅ cycle+item persist; **BR-14 weight >100 → 400**; self by owner 201 / by non-owner 403; manager by TL/Admin 201; reviews stored (self:88, manager:85); UI smoke 0 errors |
 
-Still open in P1: **B9 org-table hydration** — deferred because hydrating empty `teams`/`team_members` would *break* TL scoping without a team-management UI; it ships together with "assign employees to a team lead" (team management). **Notifications server round-trip** is folded into P2 (belongs with the automation engine that writes them).
+### Batch P1b — team management + org hydration (landed 2026-07-31)
+| Gap | Fix | Verified |
+|---|---|---|
+| **B9** teams/duties never hydrated → TL scoping + custodian duty ran on seed | added `teams`/`team_members`/`duty_flags`/`user_duties`/`skills`/`user_skills` to `/state`; `POST /crew/:id/team` (assign to a lead, lazy team create, one-primary-team) + `POST /crew/:id/duties` (grant/revoke); `teamStructure()` gains member-assign + duty-grant selects; `toggleDuty`/`assignTeamLead` persist | ✅ assign 200 (team_members row, lazy team), duty grant 200, **employee 403**; all 6 keys hydrate; **full route sweep both roles 0 errors** (myTeamIds admin 25 / employee 1); UI actions persist |
+
+**✅ P1 (functional integrity) is complete.** Estimated compliance after P1: **~70%**.
+
+### Batch P2a — the scheduler + automation engine (landed 2026-07-31)
+| Gap | Fix | Verified |
+|---|---|---|
+| **No scheduler** (§17) → 11/14 automations dead; **BR-4** never fired; **B6** notifications faked client-side | `runMediaOpsAutomations()` (module-level, exported) wired into the existing 5-min `setInterval` + an 8s boot run. It: **(BR-4)** flips `submitted`→`auto_approved` after 48h unflagged (audited as `system`); generates **server-persisted** notifications (AUTO-1 report-not-submitted, AUTO-2 overdue deliverable, AUTO-3 overdue equipment, review-pending→PM), **deduped** on (user,kind,entity) while unread. New `GET /notifications` + `POST /notifications/read`; `/state` now returns the user's notifications; client hydrates them (no more client-side fabrication) and mark-read persists. | ✅ engine RUN1 `{autoApproved:1,notified:2}`, RUN2 `{0,0}` (dedupe); BR-4 report→`auto_approved`; mark-read persists; client badge from server; 0 console errors |
+
+This single batch closes **BR-4** and the **notifications round-trip (B6)**, and gives AUTO-1/2/3 + review-pending real execution. Est. compliance now **~74%**.
+
+**Remaining P2:** AUTO-11 month-close (compute `performance_snapshots` + leadership pack) · real XLSX/PDF exports · server FTS `GET /search` · real Excel importer (`xlsx`) · remaining automations (AUTO-5/6-trigger/7/8/9/10/12/14) · email/push delivery (needs SMTP/push config). Then **P3** intelligence/polish. Note the automations are best-effort/idempotent and run every 5 min; a true event-bus (§13) is a later refinement.
+
+### Admin Config Connection Report (integration sprint, 2026-07-31)
+Answers the per-entity validation: *consumer module · reading API · referencing tables · UI that updates · View/Edit/Duplicate/Archive functional · dependency-aware Delete · Force Delete super-admin-only.* All CRUD engine actions (View/Edit/Duplicate/Enable/Disable/Archive/Delete/Bulk/Audit/server-side Search+filters) are REAL for every module below; the table lists the operational consumers.
+
+| Config module | Operational consumer(s) | Read via | Referenced by |
+|---|---|---|---|
+| Project Types | New-project type dropdown; project chips/filters everywhere | `/state.project_types` (DB) + create validates FK | `mo_projects`, `mo_project_templates` |
+| Project Templates | Template auto-creation at project create (server reads DB) | `POST /projects` → `mo_project_templates` | `mo_template_deliverables` |
+| **Template Items** (new module) | Deliverable generation: title/weight/due-offset drive every future create (verified: offset 99 ⇒ due +99d) | `POST /projects` | — leaf |
+| Deliverable Types | New-deliverable form, board/library/pipeline labels, weights (D3 progress) | `/state.deliverable_types` | `mo_deliverables`, `mo_template_deliverables` |
+| Task Categories | Task-log category chips, daily reports, analytics groupings | `/state.task_categories` | `mo_report_tasks` |
+| Equipment Categories | Add-item form, catalog facets, asset-tag prefixes | `/state.equipment_categories` | `mo_equipment_items` |
+| Leave Types | Leave-request form, balances | `/state.leave_types` | `mo_leave_requests` |
+| Skills / Capacity Roles / Tags / Duty Flags | Team profiles, assignment pickers, project tags, custodian permission | `/state.*` | `mo_user_skills` / `mo_project_assignments`+`mo_shoot_crew` / `mo_entity_tags` / `mo_user_duties` |
+| Academic Years / Campuses / Holidays | New-project year picker; campus fields; report-expectation suppression (FR-2.11) | `/state.*` | `mo_projects` / several / — |
+| Vendors | Equipment add-item + maintenance records | `/state.vendors` | `mo_equipment_items`, `mo_maintenance_records` |
+| Automation Rules | **Executable**: engine gates AUTO-1/2/3/4 on `is_enabled`; AUTO-13 reads `config` thresholds at submit | scheduler + `POST /reports/:date/submit` | — |
+| Users & Roles | permissions (role map), sidebar, module access (`allowed_modules`), team scoping | `/state.users` + auth | everywhere |
+
+**Force Delete:** super-admin only (platform role, typed `DELETE` confirm); nullable FKs → NULL, NOT-NULL → child rows removed, transactional, audited (`crud.force_deleted`). Verified 403/400/success paths.
+
+**Known remaining disconnects (honest):** (1) `faculties` is still a client-side seed list — no DB table in §11; promote to a lookup table if desired. (2) The **Permission Matrix page** remains informational — the enforced model is §16 CAPS (client) + role checks (server) + per-user `allowed_modules`; they are consistent, but the matrix is code-defined policy, not a DB table (per PRD D4 three-role design). Making it DB-driven is a deliberate future decision, not an oversight. (3) `mo_holidays`/`mo_academic_years` CRUD edits hydrate, but holiday changes only affect report-expectation logic client-side today.
 </content>
 </invoke>

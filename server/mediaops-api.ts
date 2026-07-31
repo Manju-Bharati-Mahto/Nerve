@@ -46,6 +46,17 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     return u;
   }
 
+  // Per-user module access (allowed_modules). Admins bypass; NULL = unrestricted
+  // (role-based). Backend defense-in-depth behind the client's nav/route gating.
+  async function requireModule(res: express.Response, u: CurrentUser, key: string): Promise<boolean> {
+    if (isMoAdmin(u)) return true;
+    const row = (await pool.query(`SELECT allowed_modules FROM mo_user_profiles WHERE user_id=$1`, [u.id])).rows[0];
+    const am = row?.allowed_modules;
+    if (!Array.isArray(am) || am.includes(key)) return true;
+    sendError(res, 403, `Your account has no access to the "${key}" module.`);
+    return false;
+  }
+
   // Append-only audit (FR-13). Never throws into the request path.
   async function audit(actor: CurrentUser, action: string, entityType: string, entityId: number | null,
                        before: unknown, after: unknown, req: express.Request) {
@@ -99,8 +110,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["daily_reports", "mo_daily_reports", null, ["user_id", "reviewed_by"]],
     ["report_tasks", "mo_report_tasks", null, []],
     // Phase 2 — equipment, shoots, leave
-    ["vendors", "mo_vendors", null, []],
-    ["equipment_categories", "mo_equipment_categories", null, []],
+    ["vendors", "mo_vendors", "archived_at IS NULL", []],
+    ["equipment_categories", "mo_equipment_categories", "archived_at IS NULL", []],
     ["equipment_items", "mo_equipment_items", "deleted_at IS NULL", []],
     ["equipment_kits", "mo_equipment_kits", null, []],
     ["kit_items", "mo_kit_items", null, []],
@@ -109,7 +120,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["maintenance_records", "mo_maintenance_records", null, ["reported_by"]],
     ["shoots", "mo_shoots", null, []],
     ["shoot_crew", "mo_shoot_crew", null, ["user_id", "replaced_user_id"]],
-    ["leave_types", "mo_leave_types", null, []],
+    ["leave_types", "mo_leave_types", "archived_at IS NULL", []],
     ["leave_requests", "mo_leave_requests", null, ["user_id", "decided_by"]],
     ["leave_replacements", "mo_leave_replacements", null, ["replacement_user_id"]],
     ["holidays", "mo_holidays", null, []],
@@ -124,6 +135,25 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["comments", "mo_comments", null, ["user_id"]],
     ["saved_views", "mo_saved_views", null, ["user_id"]],
     ["automation_rules", "mo_automation_rules", null, ["updated_by"]],
+    // Admin configuration (CRUD engine) — the DB is the source of truth for every
+    // picker/template in the operational UI. Archived rows are excluded (cannot be
+    // selected); disabled rows ship and are filtered by is_active client-side.
+    ["project_types", "mo_project_types", "archived_at IS NULL", []],
+    ["deliverable_types", "mo_deliverable_types", "archived_at IS NULL", []],
+    ["task_categories", "mo_task_categories", "archived_at IS NULL", []],
+    ["project_templates", "mo_project_templates", "archived_at IS NULL", []],
+    ["template_deliverables", "mo_template_deliverables", null, []],
+    ["academic_years", "mo_academic_years", "archived_at IS NULL", []],
+    ["campuses", "mo_campuses", "archived_at IS NULL", []],
+    ["capacity_roles", "mo_capacity_roles", "archived_at IS NULL", []],
+    ["tags", "mo_tags", "archived_at IS NULL", []],
+    // Org structure (§11.1) — drives real TL scoping (team_members) + custodian duty (user_duties).
+    ["teams", "mo_teams", null, ["lead_user_id"]],
+    ["team_members", "mo_team_members", null, ["user_id"]],
+    ["duty_flags", "mo_duty_flags", "archived_at IS NULL", []],
+    ["user_duties", "mo_user_duties", null, ["user_id", "granted_by"]],
+    ["skills", "mo_skills", "archived_at IS NULL", []],
+    ["user_skills", "mo_user_skills", null, ["user_id"]],
   ];
   app.get(`${P}/state`, asyncHandler(async (_req, res) => {
     const u = requireMedia(res); if (!u) return;
@@ -133,7 +163,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // (non-'mo-uN') users. This roster REPLACES the prototype's seed users.
     const crew = (await pool.query(
       `SELECT u.id, u.full_name, u.email, u.role, u.avatar_url, u.created_at,
-              p.designation, p.joined_on FROM users u LEFT JOIN mo_user_profiles p ON p.user_id=u.id
+              p.designation, p.joined_on, p.allowed_modules FROM users u LEFT JOIN mo_user_profiles p ON p.user_id=u.id
         WHERE u.team='media' ORDER BY u.id`)).rows as Array<Record<string, unknown>>;
     if (!crew.some((r) => r.id === u.id))
       crew.unshift({ id: u.id, full_name: u.full_name ?? "You", email: u.email ?? "", role: u.role, avatar_url: null });
@@ -166,6 +196,17 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       o.assignees = (o.assignees as unknown[]).map(toInt);
       return o;
     });
+    // Task/Assignment layer — embed the assignee list (like cards).
+    const assigns = await pool.query(`
+      SELECT to_jsonb(a) || jsonb_build_object(
+        'assignees', COALESCE((SELECT jsonb_agg(au.user_id) FROM mo_assignment_users au WHERE au.assignment_id=a.id),'[]'::jsonb)
+      ) AS row FROM mo_assignments a`);
+    out.assignments = assigns.rows.map((r) => {
+      const o = r.row as Record<string, unknown>;
+      o.assigned_by = toInt(o.assigned_by);
+      o.assignees = (o.assignees as unknown[]).map(toInt);
+      return o;
+    });
     // Real roster (replaces the prototype's seed users) + the current identity.
     out.users = crew.map((r) => {
       const name = String(r.full_name ?? "User");
@@ -175,9 +216,13 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         initials: (name.split(/\s+/).map((w) => w[0] || "").join("").slice(0, 2).toUpperCase()) || "?",
         color: "#3B9B76", avatar_url: r.avatar_url ?? null, is_active: true,
         designation: r.designation ?? "", joined_on: r.joined_on ?? (r.created_at ? String(r.created_at).slice(0, 10) : null),
+        allowed_modules: Array.isArray(r.allowed_modules) ? r.allowed_modules : null,
       };
     });
     out.me = idMap.get(u.id);
+    // Server-persisted notifications for this user (written by the automation engine).
+    const notifs = await pool.query(`SELECT * FROM mo_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, [u.id]);
+    out.notifications = notifs.rows.map((n) => ({ ...n, user_id: idMap.get(u.id) }));
     // The prototype expects a tags array on each project (seed had one); real
     // projects have none — default to [] so viewProject's `p.tags.map` never crashes.
     for (const p of (out.projects as Array<Record<string, unknown>>)) if (!Array.isArray(p.tags)) p.tags = [];
@@ -250,24 +295,49 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       }
     }
     // FR-3.2: create deliverables from the SELECTED template items (#2 — per-item
-    // checkboxes), or the whole set if no selection was sent.
-    let made = 0;
-    const picked = Array.isArray(b.template_items) ? (b.template_items as unknown[]).map(Number) : null;
+    // checkboxes), or the whole set if no selection was sent. template_config (the
+    // richer form: per-item owners/priority/estimated hours) supersedes template_items
+    // and ALSO auto-generates one mo_assignments record per owner, so the work lands
+    // in each owner's My Day → Today's Assignments — no manual assignment step.
+    let made = 0, assignmentsMade = 0;
+    type TplCfg = { id: number; owners: string[]; priority: string; est_hours: number | null };
+    const cfg: TplCfg[] | null = Array.isArray(b.template_config)
+      ? (b.template_config as Array<Record<string, unknown>>).map((c) => ({
+          id: Number(c.id),
+          owners: Array.isArray(c.owners) ? (c.owners as unknown[]).map(String) : [],
+          priority: ["urgent", "high", "normal", "low"].includes(String(c.priority)) ? String(c.priority) : "normal",
+          est_hours: c.est_hours != null && !Number.isNaN(Number(c.est_hours)) ? Number(c.est_hours) : null,
+        }))
+      : null;
+    const picked = cfg ? cfg.map((c) => c.id) : (Array.isArray(b.template_items) ? (b.template_items as unknown[]).map(Number) : null);
     const tmpl = b.apply_template === false ? { rows: [] as Array<{ id: number }> }
       : await pool.query(`SELECT id FROM mo_project_templates WHERE project_type_id=$1 AND is_active LIMIT 1`, [typeId]);
     if (tmpl.rows[0]) {
       let items = (await pool.query(`SELECT * FROM mo_template_deliverables WHERE template_id=$1`, [tmpl.rows[0].id])).rows;
       if (picked) items = items.filter((it: { id: number }) => picked.includes(Number(it.id)));
       for (const it of items) {
-        await pool.query(
+        const c = cfg?.find((x) => x.id === Number(it.id));
+        const due = end ? addDays(end, it.days_offset_due) : null;
+        const dl = await pool.query(
           `INSERT INTO mo_deliverables (project_id, deliverable_type_id, title, owner_id, due_date, unit, weight, status)
-           SELECT $1,$2,$3,$4,$5, dt.default_unit, $6,'not_started' FROM mo_deliverable_types dt WHERE dt.id=$2`,
-          [id, it.deliverable_type_id, String(it.title_pattern).replace("{project}", name), u.id,
-           end ? addDays(end, it.days_offset_due) : null, it.default_weight]);
+           SELECT $1,$2,$3,$4,$5, dt.default_unit, $6,'not_started' FROM mo_deliverable_types dt WHERE dt.id=$2
+           RETURNING id, title`,
+          [id, it.deliverable_type_id, String(it.title_pattern).replace("{project}", name),
+           c?.owners[0] || u.id, due, it.default_weight]);
         made++;
+        // One assignment per owner (independent status per person).
+        for (const owner of (c?.owners ?? [])) {
+          const asg = await pool.query(
+            `INSERT INTO mo_assignments (project_id, deliverable_id, title, assigned_by, priority, status, start_date, due_date, estimated_hours)
+             VALUES ($1,$2,$3,$4,$5,'not_started',$6,$7,$8) RETURNING id`,
+            [id, dl.rows[0].id, dl.rows[0].title, u.id, c?.priority ?? "normal", start ?? null, due, c?.est_hours ?? null]);
+          await pool.query(`INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [asg.rows[0].id, owner]);
+          assignmentsMade++;
+        }
       }
     }
-    await audit(u, "project.created", "project", id, null, { name, status: gated ? "proposed" : "planning", deliverables_created: made }, req);
+    await audit(u, "project.created", "project", id, null,
+      { name, status: gated ? "proposed" : "planning", deliverables_created: made, assignments_created: assignmentsMade }, req);
     const { rows } = await pool.query(`SELECT * FROM mo_projects WHERE id=$1`, [id]);
     res.status(201).json({ project: rows[0], deliverables_created: made });
   }));
@@ -664,6 +734,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // ── Leave (§7.8) ──────────────────────────────────────────────────────────
   app.post(`${P}/leave`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
+    if (!(await requireModule(res, u, "leave"))) return;
     const b = req.body as Record<string, unknown>;
     if (!b.leave_type_id || !b.starts_on || !b.ends_on) return sendError(res, 400, "Leave type and dates are required.");
     if ((b.ends_on as string) < (b.starts_on as string)) return sendError(res, 400, "Leave end must be on or after the start.");
@@ -944,6 +1015,44 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ ok: true, role });
   }));
 
+  // Assign a member to a team lead (FR-7.2) — creates the lead's team lazily and makes
+  // it the member's one primary team; empty lead_user_id unassigns. Admin only.
+  app.post(`${P}/crew/:id/team`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may assign team membership.");
+    const memberId = getSingleParam(req.params.id);
+    const leadId = String((req.body as Record<string, unknown>).lead_user_id ?? "");
+    await pool.query(`DELETE FROM mo_team_members WHERE user_id=$1`, [memberId]);   // one primary team
+    if (leadId) {
+      let team = (await pool.query(`SELECT id FROM mo_teams WHERE lead_user_id=$1 AND is_active LIMIT 1`, [leadId])).rows[0];
+      if (!team) {
+        const lead = (await pool.query(`SELECT full_name FROM users WHERE id=$1`, [leadId])).rows[0];
+        team = (await pool.query(`INSERT INTO mo_teams (department_id, name, lead_user_id, is_active) VALUES (1,$1,$2,true) RETURNING id`,
+          [`${lead?.full_name ?? "Team"}'s team`, leadId])).rows[0];
+      }
+      await pool.query(`INSERT INTO mo_team_members (team_id, user_id, is_primary) VALUES ($1,$2,true)`, [team.id, memberId]);
+    }
+    await audit(u, leadId ? "user.team_assigned" : "user.team_unassigned", "user", null, null, { member: memberId, lead: leadId || null }, req);
+    res.json({ ok: true });
+  }));
+
+  // Grant/revoke a duty flag (D4). Admin. Persists what was a local-only toggle.
+  app.post(`${P}/crew/:id/duties`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may grant duties.");
+    const memberId = getSingleParam(req.params.id);
+    const b = req.body as Record<string, unknown>;
+    const fid = Number(b.duty_flag_id);
+    if (!fid) return sendError(res, 400, "duty_flag_id is required.");
+    if (b.grant)
+      await pool.query(`INSERT INTO mo_user_duties (user_id, duty_flag_id, granted_by, granted_at) VALUES ($1,$2,$3,CURRENT_DATE)
+                        ON CONFLICT (user_id, duty_flag_id) DO NOTHING`, [memberId, fid, u.id]);
+    else
+      await pool.query(`DELETE FROM mo_user_duties WHERE user_id=$1 AND duty_flag_id=$2`, [memberId, fid]);
+    await audit(u, b.grant ? "user.duty_granted" : "user.duty_revoked", "user", null, null, { member: memberId, duty: fid }, req);
+    res.json({ ok: true });
+  }));
+
   // Remove a crew member from a project (#3). TL/Admin.
   app.delete(`${P}/projects/:id/assignments/:uid`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
@@ -1070,15 +1179,31 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       `INSERT INTO users (id, full_name, email, department, role, team, password_hash, email_verified, avatar_url)
        VALUES ($1,$2,$3,'Media Crew',$4,'media',$5,true,$6)`,
       [id, String(b.full_name ?? "New Member").trim() || "New Member", email, role, pw, (b.avatar_url as string) || null]);
-    await pool.query(`INSERT INTO mo_user_profiles (user_id, designation, mo_role) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
-      [id, String(b.designation ?? ""), ({ admin: "admin", sub_admin: "team_lead", user: "employee" } as Record<string, string>)[role]]);
-    await audit(u, "crew.added", "user", null, null, { email, role }, req);
+    const mods = Array.isArray(b.allowed_modules) ? JSON.stringify(b.allowed_modules) : null;
+    await pool.query(`INSERT INTO mo_user_profiles (user_id, designation, mo_role, allowed_modules) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+      [id, String(b.designation ?? ""), ({ admin: "admin", sub_admin: "team_lead", user: "employee" } as Record<string, string>)[role], mods]);
+    await audit(u, "crew.added", "user", null, null, { email, role, allowed_modules: b.allowed_modules ?? null }, req);
     res.status(201).json({ ok: true, id, email, role });
+  }));
+
+  // Update a user's module access (edit an existing member). Admin only.
+  app.post(`${P}/crew/:id/modules`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may change module access.");
+    const memberId = getSingleParam(req.params.id);
+    const mods = (req.body as Record<string, unknown>).allowed_modules;
+    const val = Array.isArray(mods) ? JSON.stringify(mods) : null;   // null clears the restriction
+    await pool.query(
+      `INSERT INTO mo_user_profiles (user_id, allowed_modules) VALUES ($1,$2)
+       ON CONFLICT (user_id) DO UPDATE SET allowed_modules=EXCLUDED.allowed_modules`, [memberId, val]);
+    await audit(u, "crew.modules_changed", "user", null, null, { member: memberId, allowed_modules: mods ?? null }, req);
+    res.json({ ok: true });
   }));
 
   // Add an equipment item (auto asset tag EQ-<CAT>-NNN). Team Lead / Admin.
   app.post(`${P}/equipment`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
+    if (!(await requireModule(res, u, "equipment"))) return;
     if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Team Lead or Admin only.");
     const b = req.body as Record<string, unknown>;
     const catId = Number(b.category_id);
@@ -1172,9 +1297,83 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ audit: rows });
   }));
 
+  // Notifications (§18) — the feed is written by the automation engine.
+  app.get(`${P}/notifications`, asyncHandler(async (_req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const { rows } = await pool.query(`SELECT * FROM mo_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, [u.id]);
+    res.json({ notifications: rows });
+  }));
+  app.post(`${P}/notifications/read`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const id = (req.body as Record<string, unknown>).id;
+    if (id) await pool.query(`UPDATE mo_notifications SET is_read=true WHERE id=$1 AND user_id=$2`, [Number(id), u.id]);
+    else await pool.query(`UPDATE mo_notifications SET is_read=true WHERE user_id=$1`, [u.id]);
+    res.json({ ok: true });
+  }));
+
+  // ═════════════════ TASK / ASSIGNMENT layer (Projects → Assignments) ══════
+  // A TL/Admin assigns scheduled work to crew inside a project; it surfaces in the
+  // assignee's "Today's Assignments" when today ∈ [start_date, due_date].
+  app.post(`${P}/projects/:id/tasks`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may assign tasks.");
+    const pid = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    const title = String(b.title ?? "").trim();
+    if (!title) return sendError(res, 400, "Task title is required.");
+    const assignees = Array.isArray(b.assignees) ? (b.assignees as unknown[]).map(String) : [];
+    if (!assignees.length) return sendError(res, 400, "Assign the task to at least one member.");
+    if (b.start_date && b.due_date && String(b.due_date) < String(b.start_date))
+      return sendError(res, 400, "Due date must be on or after the start date.");
+    const priority = ["urgent", "high", "normal", "low"].includes(String(b.priority)) ? String(b.priority) : "normal";
+    const status = ["not_started", "in_progress", "done", "blocked", "cancelled"].includes(String(b.status)) ? String(b.status) : "not_started";
+    const ins = await pool.query(
+      `INSERT INTO mo_assignments (project_id, title, assigned_by, priority, status, start_date, due_date, start_time, end_time, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [pid, title, u.id, priority, status, (b.start_date as string) || null, (b.due_date as string) || null,
+       (b.start_time as string) || null, (b.end_time as string) || null, String(b.notes ?? "")]);
+    for (const uid of assignees)
+      await pool.query(`INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [ins.rows[0].id, uid]);
+    await audit(u, "assignment.created", "assignment", ins.rows[0].id, null, { title, assignees }, req);
+    res.status(201).json({ assignment: ins.rows[0] });
+  }));
+
+  app.patch(`${P}/assignments/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM mo_assignments WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Assignment not found.");
+    const isAssignee = (await pool.query(`SELECT 1 FROM mo_assignment_users WHERE assignment_id=$1 AND user_id=$2`, [id, u.id])).rows[0];
+    const priv = isMoAdmin(u) || isMoTL(u) || cur.assigned_by === u.id;
+    if (!priv && !isAssignee) return sendError(res, 403, "You can't change this assignment.");
+    const b = req.body as Record<string, unknown>;
+    // Assignees may only move the status; TL/Admin/creator may edit everything.
+    const cols = priv ? ["title", "priority", "status", "start_date", "due_date", "start_time", "end_time", "notes"] : ["status"];
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    for (const k of cols) if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
+    if (fields.length) { vals.push(id); await pool.query(`UPDATE mo_assignments SET ${fields.join(",")} WHERE id=$${i}`, vals); }
+    if (priv && Array.isArray(b.assignees)) {
+      await pool.query(`DELETE FROM mo_assignment_users WHERE assignment_id=$1`, [id]);
+      for (const uid of (b.assignees as unknown[]).map(String))
+        await pool.query(`INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [id, uid]);
+    }
+    await audit(u, "assignment.updated", "assignment", id, cur, b, req);
+    res.json({ ok: true });
+  }));
+
+  app.delete(`${P}/assignments/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may delete an assignment.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    await pool.query(`DELETE FROM mo_assignments WHERE id=$1`, [id]);
+    await audit(u, "assignment.deleted", "assignment", id, null, null, req);
+    res.json({ ok: true });
+  }));
+
   // ═════════════════════════ KRA (§7.9 / FR-9.x) ══════════════════════════
   app.post(`${P}/kra/cycles`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
+    if (!(await requireModule(res, u, "performance"))) return;
     if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may open a KRA cycle.");
     const b = req.body as Record<string, unknown>;
     if (!String(b.label ?? "").trim()) return sendError(res, 400, "Cycle label is required.");
@@ -1225,6 +1424,436 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.status(201).json({ ok: true });
   }));
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // CRUD ENGINE — one configuration-driven framework for every Admin config
+  // module (NFR-10). A module declares its table, fields, display columns,
+  // dependencies and permissions; the engine provides list/search/sort/
+  // pagination, create, edit, duplicate, enable/disable, archive, dependency-
+  // checked delete, bulk actions and per-record audit history — uniformly.
+  // ═══════════════════════════════════════════════════════════════════════
+  type CrudField = {
+    name: string; label: string;
+    type: "text" | "textarea" | "select" | "switch" | "color" | "icon" | "date" | "number" | "slug" | "relation";
+    required?: boolean; def?: unknown; options?: string[];
+    relation?: { module: string; labelCol: string };
+    showIf?: { field: string; value: unknown };
+  };
+  type CrudModule = {
+    key: string; label: string; table: string; fields: CrudField[];
+    cols: string[];                                     // listing display columns
+    deps: { table: string; fk: string; label: string }[];
+    activeCol?: string;                                 // default is_active
+  };
+  const CRUD: Record<string, CrudModule> = {
+    project_types: { key: "project_types", label: "Project Types", table: "mo_project_types",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "slug", label: "Slug", type: "slug" },
+        { name: "color", label: "Colour", type: "color" },
+        { name: "icon", label: "Icon", type: "icon" },
+        { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
+      cols: ["name", "slug", "icon", "sort_order"],
+      deps: [{ table: "mo_projects", fk: "project_type_id", label: "Projects" },
+             { table: "mo_project_templates", fk: "project_type_id", label: "Templates" }] },
+    project_templates: { key: "project_templates", label: "Project Templates", table: "mo_project_templates",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "project_type_id", label: "Project type", type: "relation", required: true, relation: { module: "project_types", labelCol: "name" } }],
+      cols: ["name", "project_type_id"],
+      deps: [{ table: "mo_template_deliverables", fk: "template_id", label: "Template deliverables" }] },
+    template_deliverables: { key: "template_deliverables", label: "Template Items", table: "mo_template_deliverables",
+      fields: [
+        { name: "template_id", label: "Template", type: "relation", required: true, relation: { module: "project_templates", labelCol: "name" } },
+        { name: "deliverable_type_id", label: "Deliverable type", type: "relation", required: true, relation: { module: "deliverable_types", labelCol: "name" } },
+        { name: "title_pattern", label: "Title pattern ({project} substitutes)", type: "text", required: true },
+        { name: "default_weight", label: "Weight", type: "number", def: 1 },
+        { name: "days_offset_due", label: "Due offset (days after project end)", type: "number", def: 5 }],
+      cols: ["template_id", "deliverable_type_id", "title_pattern", "default_weight", "days_offset_due"],
+      deps: [] },
+    deliverable_types: { key: "deliverable_types", label: "Deliverable Types", table: "mo_deliverable_types",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "slug", label: "Slug", type: "slug" },
+        { name: "icon", label: "Icon", type: "icon" },
+        { name: "default_weight", label: "Default weight", type: "number", def: 1 },
+        { name: "default_unit", label: "Default unit", type: "text" },
+        { name: "review_exempt", label: "Review exempt (BR-6)", type: "switch", def: false },
+        { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
+      cols: ["name", "icon", "default_weight", "default_unit", "review_exempt"],
+      deps: [{ table: "mo_deliverables", fk: "deliverable_type_id", label: "Deliverables" },
+             { table: "mo_template_deliverables", fk: "deliverable_type_id", label: "Template items" }] },
+    task_categories: { key: "task_categories", label: "Task Categories", table: "mo_task_categories",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "icon", label: "Icon", type: "icon" },
+        { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
+      cols: ["name", "icon", "sort_order"],
+      deps: [{ table: "mo_report_tasks", fk: "task_category_id", label: "Task logs" }] },
+    equipment_categories: { key: "equipment_categories", label: "Equipment Categories", table: "mo_equipment_categories",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "icon", label: "Icon", type: "icon" },
+        { name: "tracking_mode", label: "Tracking mode", type: "select", options: ["individual", "pooled"], def: "individual" },
+        { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
+      cols: ["name", "icon", "tracking_mode"],
+      deps: [{ table: "mo_equipment_items", fk: "category_id", label: "Equipment items" }] },
+    leave_types: { key: "leave_types", label: "Leave Types", table: "mo_leave_types",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "annual_quota", label: "Annual quota (days)", type: "number" }],
+      cols: ["name", "annual_quota"],
+      deps: [{ table: "mo_leave_requests", fk: "leave_type_id", label: "Leave requests" }] },
+    skills: { key: "skills", label: "Skills", table: "mo_skills",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "category", label: "Category", type: "text" }],
+      cols: ["name", "category"],
+      deps: [{ table: "mo_user_skills", fk: "skill_id", label: "Member skills" }] },
+    capacity_roles: { key: "capacity_roles", label: "Capacity Roles", table: "mo_capacity_roles",
+      fields: [{ name: "name", label: "Name", type: "text", required: true }],
+      cols: ["name"],
+      deps: [{ table: "mo_project_assignments", fk: "capacity_role_id", label: "Project assignments" },
+             { table: "mo_shoot_crew", fk: "capacity_role_id", label: "Shoot crew" }] },
+    vendors: { key: "vendors", label: "Vendors", table: "mo_vendors",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "contact", label: "Contact person", type: "text" },
+        { name: "phone", label: "Phone", type: "text" },
+        { name: "email", label: "Email", type: "text" },
+        { name: "notes", label: "Notes", type: "textarea" }],
+      cols: ["name", "contact", "phone"],
+      deps: [{ table: "mo_equipment_items", fk: "vendor_id", label: "Equipment items" },
+             { table: "mo_maintenance_records", fk: "vendor_id", label: "Maintenance records" }] },
+    tags: { key: "tags", label: "Tags", table: "mo_tags",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "color", label: "Colour", type: "color" }],
+      cols: ["name", "color"],
+      deps: [{ table: "mo_entity_tags", fk: "tag_id", label: "Tagged records" }] },
+    duty_flags: { key: "duty_flags", label: "Duty Flags", table: "mo_duty_flags",
+      fields: [
+        { name: "code", label: "Code", type: "slug", required: true },
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "description", label: "Description", type: "textarea" }],
+      cols: ["code", "name"],
+      deps: [{ table: "mo_user_duties", fk: "duty_flag_id", label: "Duty holders" }] },
+    academic_years: { key: "academic_years", label: "Academic Years", table: "mo_academic_years",
+      fields: [
+        { name: "label", label: "Label", type: "text", required: true },
+        { name: "start_date", label: "Starts", type: "date", required: true },
+        { name: "end_date", label: "Ends", type: "date", required: true },
+        { name: "is_current", label: "Current year", type: "switch", def: false }],
+      cols: ["label", "start_date", "end_date", "is_current"],
+      deps: [{ table: "mo_projects", fk: "academic_year_id", label: "Projects" }] },
+    campuses: { key: "campuses", label: "Campuses", table: "mo_campuses",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "code", label: "Code", type: "slug", required: true },
+        { name: "city", label: "City", type: "text" }],
+      cols: ["name", "code", "city"],
+      deps: [{ table: "mo_holidays", fk: "campus_id", label: "Holidays" },
+             { table: "mo_equipment_items", fk: "campus_id", label: "Equipment items" },
+             { table: "mo_user_profiles", fk: "campus_id", label: "User profiles" }] },
+    holidays: { key: "holidays", label: "Holidays", table: "mo_holidays",
+      fields: [
+        { name: "date", label: "Date", type: "date", required: true },
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "campus_id", label: "Campus", type: "relation", relation: { module: "campuses", labelCol: "name" } }],
+      cols: ["date", "name", "campus_id"], deps: [] },
+    automation_rules: { key: "automation_rules", label: "Automation Rules", table: "mo_automation_rules",
+      activeCol: "is_enabled",
+      fields: [
+        { name: "rule_key", label: "Rule key", type: "slug", required: true },
+        { name: "is_enabled", label: "Enabled", type: "switch", def: true }],
+      cols: ["rule_key", "is_enabled"], deps: [] },
+  };
+  const CRUD_ICONS = ["◆", "●", "▲", "■", "◉", "✦", "⚑", "✎", "◈", "⛁", "▤", "☂", "♪", "✈", "☎"];
+
+  // Permission engine: Admin = everything · Team Lead = view/edit/enable-disable ·
+  // Employee = read-only. Archive + delete are Admin-only (VR-11 spirit).
+  function crudCan(u: CurrentUser) {
+    const r = moRoleOf(u);
+    return { read: true, create: r === "admin" || r === "team_lead", update: r === "admin" || r === "team_lead",
+             state: r === "admin" || r === "team_lead", archive: r === "admin", delete: r === "admin" };
+  }
+  const crudMod = (res: express.Response, key: string): CrudModule | null => {
+    const m = CRUD[key]; if (!m) sendError(res, 400, "Unknown config module."); return m ?? null;
+  };
+  // Validate + coerce a payload against the module's field metadata.
+  function crudValidate(m: CrudModule, b: Record<string, unknown>, partial: boolean): { ok: true; rec: Record<string, unknown> } | { ok: false; msg: string } {
+    const rec: Record<string, unknown> = {};
+    for (const f of m.fields) {
+      let v = b[f.name];
+      if (v === undefined) { if (partial) continue; v = f.def; }
+      if ((f.type === "slug") && (v == null || v === "") && typeof b.name === "string" && f.name === "slug")
+        v = (b.name as string).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      if (f.required && (v == null || v === "")) return { ok: false, msg: `${f.label} is required.` };
+      if (v == null || v === "") { rec[f.name] = f.type === "switch" ? false : null; continue; }
+      switch (f.type) {
+        case "number": { const n = Number(v); if (Number.isNaN(n)) return { ok: false, msg: `${f.label} must be a number.` }; rec[f.name] = n; break; }
+        case "switch": rec[f.name] = v === true || v === "true" || v === 1; break;
+        case "select": if (f.options && !f.options.includes(String(v))) return { ok: false, msg: `${f.label}: invalid option.` }; rec[f.name] = String(v); break;
+        case "relation": rec[f.name] = Number(v) || null; break;
+        case "slug": rec[f.name] = String(v).toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-|-$/g, ""); break;
+        default: rec[f.name] = String(v);
+      }
+    }
+    return { ok: true, rec };
+  }
+  async function crudDeps(m: CrudModule, id: number): Promise<{ label: string; count: number }[]> {
+    const out: { label: string; count: number }[] = [];
+    for (const d of m.deps) {
+      const r = await pool.query(`SELECT COUNT(*)::int c FROM ${d.table} WHERE ${d.fk}=$1`, [id]);
+      if (r.rows[0].c > 0) out.push({ label: d.label, count: r.rows[0].c });
+    }
+    return out;
+  }
+
+  // Meta — module definitions + relation options + the caller's permissions.
+  app.get(`${P}/crud/meta`, asyncHandler(async (_req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const can = crudCan(u);
+    const out: Record<string, unknown>[] = [];
+    for (const m of Object.values(CRUD)) {
+      const fields = [];
+      for (const f of m.fields) {
+        const ff: Record<string, unknown> = { ...f };
+        if (f.type === "relation" && f.relation) {
+          const rm = CRUD[f.relation.module];
+          const opts = await pool.query(`SELECT id, ${f.relation.labelCol} AS l FROM ${rm.table} WHERE archived_at IS NULL ORDER BY 2`);
+          ff.options2 = opts.rows.map((r) => ({ v: Number(r.id), l: r.l }));
+        }
+        fields.push(ff);
+      }
+      out.push({ key: m.key, label: m.label, cols: m.cols, fields, activeCol: m.activeCol ?? "is_active", deps: m.deps.map((d) => d.label) });
+    }
+    // Force Delete is reserved for the platform Super Admin (raw role, not the
+    // media-ops role mapping — a media 'admin' does NOT qualify).
+    (can as Record<string, unknown>).force = u.role === "super_admin";
+    res.json({ modules: out, can, icons: CRUD_ICONS });
+  }));
+
+  // List — search / status filter / sort / pagination.
+  app.get(`${P}/crud/:module`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const q = req.query as Record<string, string>;
+    const ac = m.activeCol ?? "is_active";
+    const conds: string[] = [], vals: unknown[] = []; let i = 1;
+    const status = q.status || "active";
+    if (status === "active") conds.push(`${ac}=true AND archived_at IS NULL`);
+    else if (status === "disabled") conds.push(`${ac}=false AND archived_at IS NULL`);
+    else if (status === "archived") conds.push(`archived_at IS NOT NULL`);
+    if (q.q) {
+      const textCols = m.fields.filter((f) => ["text", "textarea", "slug"].includes(f.type)).map((f) => f.name);
+      if (textCols.length) { conds.push(`(${textCols.map((c) => `${c}::text ILIKE $${i}`).join(" OR ")})`); vals.push(`%${q.q}%`); i++; }
+    }
+    if (q.created_by) { conds.push(`created_by=$${i++}`); vals.push(String(q.created_by)); }
+    if (q.created_from) { conds.push(`created_at>=$${i++}`); vals.push(String(q.created_from)); }
+    const sortable = new Set([...m.cols, "id", "created_at", "updated_at"]);
+    const sort = sortable.has(q.sort) ? q.sort : "id";
+    const dir = q.dir === "desc" ? "DESC" : "ASC";
+    const per = Math.min(50, Math.max(5, parseInt(q.per || "12", 10)));
+    const page = Math.max(1, parseInt(q.page || "1", 10));
+    const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
+    const total = (await pool.query(`SELECT COUNT(*)::int c FROM ${m.table} ${where}`, vals)).rows[0].c;
+    const rows = (await pool.query(
+      `SELECT * FROM ${m.table} ${where} ORDER BY ${sort} ${dir} NULLS LAST LIMIT ${per} OFFSET ${(page - 1) * per}`, vals)).rows;
+    res.json({ rows, total, page, per });
+  }));
+
+  // One record — row + dependency usage + audit history (View drawer tabs).
+  app.get(`${P}/crud/:module/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const row = (await pool.query(`SELECT * FROM ${m.table} WHERE id=$1`, [id])).rows[0];
+    if (!row) return sendError(res, 404, "Record not found.");
+    const deps = await crudDeps(m, id);
+    const hist = (await pool.query(
+      `SELECT a.action, a.before, a.after, a.occurred_at, us.full_name AS actor
+       FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
+       WHERE a.entity_type=$1 AND a.entity_id=$2 ORDER BY a.occurred_at DESC LIMIT 30`, [m.key, id])).rows;
+    res.json({ row, dependencies: deps, audit: hist });
+  }));
+
+  // Create.
+  app.post(`${P}/crud/:module`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!crudCan(u).create) return sendError(res, 403, "You don't have permission to create records.");
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const v = crudValidate(m, req.body as Record<string, unknown>, false);
+    if (!v.ok) return sendError(res, 400, v.msg);
+    v.rec.created_by = u.id;
+    const keys = Object.keys(v.rec);
+    try {
+      const ins = await pool.query(
+        `INSERT INTO ${m.table} (${keys.join(",")}) VALUES (${keys.map((_, ix) => "$" + (ix + 1)).join(",")}) RETURNING *`,
+        keys.map((k) => v.rec[k]));
+      await audit(u, "crud.created", m.key, ins.rows[0].id, null, v.rec, req);
+      res.status(201).json({ row: ins.rows[0] });
+    } catch (e) {
+      if ((e as { code?: string }).code === "23505") return sendError(res, 409, "A record with that name/slug already exists (VR-11: unique per department).");
+      throw e;
+    }
+  }));
+
+  // Update (every editable field).
+  app.patch(`${P}/crud/:module/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!crudCan(u).update) return sendError(res, 403, "You don't have permission to edit records.");
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM ${m.table} WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Record not found.");
+    const v = crudValidate(m, req.body as Record<string, unknown>, true);
+    if (!v.ok) return sendError(res, 400, v.msg);
+    const keys = Object.keys(v.rec);
+    if (!keys.length) return res.json({ row: cur });
+    try {
+      const upd = await pool.query(
+        `UPDATE ${m.table} SET ${keys.map((k, ix) => `${k}=$${ix + 1}`).join(",")}, updated_at=NOW() WHERE id=$${keys.length + 1} RETURNING *`,
+        [...keys.map((k) => v.rec[k]), id]);
+      await audit(u, "crud.updated", m.key, id, cur, v.rec, req);
+      res.json({ row: upd.rows[0] });
+    } catch (e) {
+      if ((e as { code?: string }).code === "23505") return sendError(res, 409, "A record with that name/slug already exists.");
+      throw e;
+    }
+  }));
+
+  // Duplicate — clone all editable fields, auto "(Copy)".
+  app.post(`${P}/crud/:module/:id/duplicate`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!crudCan(u).create) return sendError(res, 403, "You don't have permission to duplicate records.");
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM ${m.table} WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Record not found.");
+    const rec: Record<string, unknown> = {};
+    const suffix = Math.random().toString(36).slice(2, 6);
+    for (const f of m.fields) {
+      let v = cur[f.name];
+      if (["name", "label"].includes(f.name) && typeof v === "string") v = `${v} (Copy)`;
+      if (f.type === "slug" && typeof v === "string") v = `${v}-copy-${suffix}`;
+      rec[f.name] = v;
+    }
+    rec.created_by = u.id;
+    const keys = Object.keys(rec);
+    const ins = await pool.query(
+      `INSERT INTO ${m.table} (${keys.join(",")}) VALUES (${keys.map((_, ix) => "$" + (ix + 1)).join(",")}) RETURNING *`,
+      keys.map((k) => rec[k]));
+    await audit(u, "crud.duplicated", m.key, ins.rows[0].id, { source: id }, rec, req);
+    res.status(201).json({ row: ins.rows[0] });
+  }));
+
+  // Enable / Disable / Archive / Restore.
+  app.post(`${P}/crud/:module/:id/state`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const action = String((req.body as Record<string, unknown>).action);
+    const can = crudCan(u);
+    if (["enable", "disable"].includes(action) && !can.state) return sendError(res, 403, "No permission.");
+    if (["archive", "restore"].includes(action) && !can.archive) return sendError(res, 403, "Archive is Admin-only.");
+    const ac = m.activeCol ?? "is_active";
+    const sql = { enable: `${ac}=true`, disable: `${ac}=false`, archive: `archived_at=NOW()`, restore: `archived_at=NULL` }[action];
+    if (!sql) return sendError(res, 400, "Unknown action.");
+    await pool.query(`UPDATE ${m.table} SET ${sql}, updated_at=NOW() WHERE id=$1`, [id]);
+    await audit(u, `crud.${action}d`, m.key, id, null, { action }, req);
+    res.json({ ok: true });
+  }));
+
+  // Delete — dependency analysis first; refuse (409) when referenced.
+  app.delete(`${P}/crud/:module/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!crudCan(u).delete) return sendError(res, 403, "Delete is Admin-only.");
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const deps = await crudDeps(m, id);
+    if (deps.length) {
+      res.status(409).json({
+        message: `Cannot delete — in use by ${deps.map((d) => `${d.count} ${d.label}`).join(", ")}. Archive it instead (VR-11).`,
+        dependencies: deps,
+      });
+      return;
+    }
+    await pool.query(`DELETE FROM ${m.table} WHERE id=$1`, [id]);
+    await audit(u, "crud.deleted", m.key, id, null, null, req);
+    res.json({ ok: true });
+  }));
+
+  // Force Delete — SUPER ADMIN ONLY. Requires the literal confirmation "DELETE".
+  // Nulls out references where the FK is nullable, deletes child rows where it
+  // isn't, then removes the record. Fully audited with the impact summary.
+  app.post(`${P}/crud/:module/:id/force-delete`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (u.role !== "super_admin") return sendError(res, 403, "Force Delete is available only to the Super Admin.");
+    if (String((req.body as Record<string, unknown>).confirm) !== "DELETE")
+      return sendError(res, 400, 'Type DELETE to confirm this high-risk action.');
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM ${m.table} WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Record not found.");
+    const impact = await crudDeps(m, id);
+    const cleaned: Record<string, string> = {};
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const d of m.deps) {
+        // Nullable FK → references become NULL; NOT NULL → referencing rows are removed.
+        const nullable = (await client.query(
+          `SELECT is_nullable FROM information_schema.columns WHERE table_name=$1 AND column_name=$2`,
+          [d.table, d.fk])).rows[0]?.is_nullable === "YES";
+        if (nullable) {
+          await client.query(`UPDATE ${d.table} SET ${d.fk}=NULL WHERE ${d.fk}=$1`, [id]);
+          cleaned[d.label] = "references set to NULL";
+        } else {
+          await client.query(`DELETE FROM ${d.table} WHERE ${d.fk}=$1`, [id]);
+          cleaned[d.label] = "referencing rows deleted";
+        }
+      }
+      await client.query(`DELETE FROM ${m.table} WHERE id=$1`, [id]);
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+      return sendError(res, 409, `Force delete failed — a deeper reference blocks it: ${(e as Error).message}`);
+    }
+    client.release();
+    await audit(u, "crud.force_deleted", m.key, id, cur, { impact, cleaned, confirmed: true }, req);
+    res.json({ ok: true, impact, cleaned });
+  }));
+
+  // Bulk — enable / disable / archive / delete across a selection.
+  app.post(`${P}/crud/:module/bulk`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const b = req.body as Record<string, unknown>;
+    const ids = (Array.isArray(b.ids) ? b.ids : []).map(Number).filter(Boolean);
+    const action = String(b.action);
+    const can = crudCan(u);
+    if (["enable", "disable"].includes(action) && !can.state) return sendError(res, 403, "No permission.");
+    if (action === "archive" && !can.archive) return sendError(res, 403, "Archive is Admin-only.");
+    if (action === "delete" && !can.delete) return sendError(res, 403, "Delete is Admin-only.");
+    const ac = m.activeCol ?? "is_active";
+    let done = 0, blocked = 0;
+    for (const id of ids) {
+      if (action === "delete") {
+        const deps = await crudDeps(m, id);
+        if (deps.length) { blocked++; continue; }
+        await pool.query(`DELETE FROM ${m.table} WHERE id=$1`, [id]);
+      } else {
+        const sql = { enable: `${ac}=true`, disable: `${ac}=false`, archive: `archived_at=NOW()` }[action];
+        if (!sql) return sendError(res, 400, "Unknown bulk action.");
+        await pool.query(`UPDATE ${m.table} SET ${sql}, updated_at=NOW() WHERE id=$1`, [id]);
+      }
+      done++;
+    }
+    await audit(u, `crud.bulk_${action}`, m.key, null, null, { ids, done, blocked }, req);
+    res.json({ done, blocked });
+  }));
+
   // ═════════════════════════ DASHBOARD (§7.1) ═════════════════════════════
   app.get(`${P}/dashboard`, asyncHandler(async (_req, res) => {
     const u = requireMedia(res); if (!u) return;
@@ -1266,4 +1895,73 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 function t2m(t: string): number { if (!t) return 0; const [a, b] = t.split(":").map(Number); return (a || 0) * 60 + (b || 0); }
 function addDays(iso: string, n: number): string {
   const d = new Date(iso + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Automation engine (§17) — invoked on a scheduler (see server/index.ts). Runs
+// the time-based rules the request path cannot: BR-4 report auto-approve, and the
+// server-persisted notification feed (AUTO-1/2/3 + review-pending). Idempotent —
+// notifications dedupe on (user, kind, entity) while unread, so re-runs never spam.
+// ═══════════════════════════════════════════════════════════════════════════
+export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; notified: number }> {
+  let notified = 0;
+  // Admin-configurable rules (NFR-10): each block below is gated on its rule's
+  // is_enabled toggle — editing a rule in Settings changes behaviour immediately.
+  const ruleRows = await pool.query(`SELECT rule_key, is_enabled FROM mo_automation_rules`);
+  const ruleOn = (k: string) => { const r = ruleRows.rows.find((x) => x.rule_key === k); return r ? !!r.is_enabled : true; };
+  // BR-4 / D2 — reports auto-approve 48 h after submission unless flagged.
+  const aa = await pool.query(
+    `UPDATE mo_daily_reports SET status='auto_approved', reviewed_at=NOW()
+      WHERE status='submitted' AND submitted_at IS NOT NULL AND submitted_at < NOW() - INTERVAL '48 hours'
+      RETURNING id`);
+  for (const r of aa.rows)
+    await pool.query(
+      `INSERT INTO mo_audit_logs (actor_id, actor_role, action, entity_type, entity_id, after)
+       VALUES (NULL,'system','report.auto_approved','daily_report',$1,$2)`,
+      [r.id, JSON.stringify({ status: "auto_approved", rule: "BR-4 (48h, unflagged)" })]).catch(() => {});
+
+  const notify = async (userId: string, kind: string, title: string, body: string, et: string, eid: number | null) => {
+    const r = await pool.query(
+      `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+       SELECT $1,$2,$3,$4,$5,$6
+        WHERE NOT EXISTS (SELECT 1 FROM mo_notifications n
+                          WHERE n.user_id=$1 AND n.kind=$2 AND n.entity_type=$5
+                            AND COALESCE(n.entity_id,-1)=COALESCE($6::bigint,-1) AND n.is_read=false)`,
+      [userId, kind, title, body, et, eid]);
+    notified += r.rowCount ?? 0;
+  };
+
+  // AUTO-2 — overdue deliverables → owner.
+  if (ruleOn("AUTO-2")) for (const d of (await pool.query(
+    `SELECT id, title, owner_id, due_date FROM mo_deliverables
+      WHERE deleted_at IS NULL AND due_date < CURRENT_DATE
+        AND status NOT IN ('delivered','not_required','cancelled') AND owner_id IS NOT NULL`)).rows)
+    await notify(d.owner_id, "overdue", "Deliverable overdue", `“${d.title}” was due ${String(d.due_date).slice(0, 10)}`, "deliverable", d.id);
+
+  // Review pending → the project PM (escalation family AUTO-4).
+  if (ruleOn("AUTO-4")) for (const d of (await pool.query(
+    `SELECT d.id, d.title, a.user_id AS pm FROM mo_deliverables d
+       JOIN mo_project_assignments a ON a.project_id=d.project_id AND a.is_project_manager AND a.removed_at IS NULL
+      WHERE d.status='in_review'`)).rows)
+    await notify(d.pm, "approval", "Awaiting your review", `“${d.title}” has a version pending`, "deliverable", d.id);
+
+  // AUTO-3 — overdue equipment → current holder.
+  if (ruleOn("AUTO-3")) for (const t of (await pool.query(
+    `SELECT DISTINCT ON (t.equipment_item_id) t.equipment_item_id AS id, t.holder_id, t.expected_return_at, e.asset_tag
+       FROM mo_equipment_transactions t JOIN mo_equipment_items e ON e.id=t.equipment_item_id
+      WHERE e.status='checked_out'
+      ORDER BY t.equipment_item_id, t.occurred_at DESC`)).rows)
+    if (t.expected_return_at && new Date(t.expected_return_at) < new Date())
+      await notify(t.holder_id, "overdue", "Equipment overdue", `${t.asset_tag} is past its return date`, "equipment", t.id);
+
+  // AUTO-1 — today's report not submitted (working day, not on leave) → nudge the member.
+  if (ruleOn("AUTO-1") && new Date().getDay() !== 0)
+    for (const p of (await pool.query(
+      `SELECT u.id FROM users u
+        WHERE u.team='media' AND COALESCE(u.role,'user') <> 'admin'
+          AND NOT EXISTS (SELECT 1 FROM mo_daily_reports r WHERE r.user_id=u.id AND r.report_date=CURRENT_DATE AND r.status <> 'draft')
+          AND NOT EXISTS (SELECT 1 FROM mo_leave_requests l WHERE l.user_id=u.id AND l.status='approved' AND CURRENT_DATE BETWEEN l.starts_on AND l.ends_on)`)).rows)
+      await notify(p.id, "reminder", "Daily report not submitted", "Log your tasks and submit today’s report (AUTO-1).", "report", null);
+
+  return { autoApproved: aa.rowCount ?? 0, notified };
 }

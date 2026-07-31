@@ -816,11 +816,15 @@ html[data-theme=dark] .cal-cell.today{background:var(--brand-50)}
       <div class="brand-txt"><b>NERVE</b><span>Media Ops</span></div>
     </div>
     <nav class="nav" id="nav"></nav>
-    <div class="nav-foot">
-      <button class="nav-item" id="btn-kiosk" title="Launch equipment kiosk (FR-6.6)" style="flex:1">
-        <span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4.6" y="2.6" width="14.8" height="18.8" rx="2.2"/><path d="M9.6 18.4h4.8"/><circle cx="12" cy="10" r="3.2"/></svg></span><span class="nav-label">Kiosk mode</span></button>
-      <button class="collapse-btn" id="btn-collapse" title="Collapse sidebar" aria-label="Collapse sidebar">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14.6 6-6 6 6 6"/></svg></button>
+    <div class="nav-foot" style="flex-direction:column;align-items:stretch">
+      <button class="nav-item" id="btn-logout" title="Log out" style="color:var(--danger)">
+        <span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg></span><span class="nav-label">Log out</span></button>
+      <div class="f gap2 ac">
+        <button class="nav-item" id="btn-kiosk" title="Launch equipment kiosk (FR-6.6)" style="flex:1">
+          <span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4.6" y="2.6" width="14.8" height="18.8" rx="2.2"/><path d="M9.6 18.4h4.8"/><circle cx="12" cy="10" r="3.2"/></svg></span><span class="nav-label">Kiosk mode</span></button>
+        <button class="collapse-btn" id="btn-collapse" title="Collapse sidebar" aria-label="Collapse sidebar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14.6 6-6 6 6 6"/></svg></button>
+      </div>
     </div>
   </aside>
 
@@ -1831,7 +1835,7 @@ DB.automation_rules = [
 
 /* runtime tables filled by the engine */
 DB.daily_reports=[]; DB.report_tasks=[]; DB.performance_snapshots=[];
-DB.notifications=[]; DB.audit_logs=[]; DB.comments=[]; DB.activity=[];
+DB.notifications=[]; DB.audit_logs=[]; DB.comments=[]; DB.activity=[]; DB.assignments=[];
 /* ==========================================================================
    GENERATORS — daily reports (§11.4), snapshots (§7.8), notifications, audit
    ========================================================================== */
@@ -2563,6 +2567,26 @@ const NAV = [
     {r:'#/media/spec',    i:'grid',  l:'Spec Coverage',    show:()=>true}
   ]}
 ];
+/* ── Per-user Module Access ────────────────────────────────────────────────
+   Admin grants a set of module keys per user (allowed_modules on /state.users).
+   NULL = unrestricted (role-based, the default for existing users/admins); an
+   array restricts the sidebar + routes to those modules. Admins always bypass. */
+const MODULES = [
+  {key:'dashboard',   label:'Dashboard',            pfx:['#/media/home']},
+  {key:'reporting',   label:'Daily Reporting',      pfx:['#/media/my-day','#/media/reports']},
+  {key:'projects',    label:'Projects',             pfx:['#/media/projects','#/media/pipeline','#/media/boards','#/media/calendar']},
+  {key:'library',     label:'Media Library',        pfx:['#/media/library']},
+  {key:'ai',          label:'AI Summary',           pfx:['#/media/ai']},
+  {key:'equipment',   label:'Equipment Management', pfx:['#/media/equipment']},
+  {key:'leave',       label:'Leave Management',      pfx:['#/media/leave']},
+  {key:'performance', label:'Performance Review',   pfx:['#/media/performance','#/media/kra']},
+  {key:'admin',       label:'Admin Panel',          pfx:['#/media/admin','#/media/team','#/media/analytics','#/media/spec']},
+  {key:'settings',    label:'Settings',             pfx:['#/media/admin/settings']},
+];
+function hashModule(hash){ let best=null,len=-1; for(const m of MODULES) for(const p of m.pfx) if(hash.startsWith(p)&&p.length>len){best=m.key;len=p.length;} return best; }
+function moduleAllowed(mod){ if(mod==null)return true; const am=(me()||{}).allowed_modules; if(!Array.isArray(am)||isAdmin())return true; return am.includes(mod); }
+function firstAllowedRoute(){ const am=(me()||{}).allowed_modules; if(!Array.isArray(am)||isAdmin())return '#/media/home';
+  for(const g of NAV)for(const it of g.items)if(it.show()&&moduleAllowed(hashModule(it.r)))return it.r; return null; }
 function reviewQueueCount(){
   if(isEmp())return DB.daily_reports.filter(r=>r.user_id===S.me&&r.status==='returned').length;
   return visibleReports().filter(r=>r.status==='flagged'||r.status==='returned').length;
@@ -2573,7 +2597,7 @@ function pendingLeaveCount(){
 }
 function renderNav(){
   $('#nav').innerHTML = NAV.map(g=>{
-    const items=g.items.filter(it=>it.show());
+    const items=g.items.filter(it=>it.show()&&moduleAllowed(hashModule(it.r)));
     if(!items.length)return '';
     return `<div class="nav-group"><div class="nav-group-label">${g.group}</div>${items.map(it=>{
       const b=it.badge?it.badge():'';
@@ -2583,6 +2607,7 @@ function renderNav(){
         ${b?`<span class="nav-badge ${it.r.includes('leave')||it.r.includes('reports')?'':'muted'}">${b}</span>`:''}</a>`;
     }).join('')}</div>`;
   }).join('');
+  const kb=$('#btn-kiosk'); if(kb) kb.style.display=moduleAllowed('equipment')?'':'none';   // kiosk = equipment module
   const u=me();
   $('#me-av').style.backgroundImage="url('"+avatarURL(S.me)+"')";
   $('#me-av').title=u.full_name+' · '+({admin:'Admin',team_lead:'Team Lead',employee:'Employee'})[u.role];
@@ -2626,12 +2651,20 @@ function render(){
   const hash=location.hash||'#/media/home';
   S.route=hash;
   let html='';
+  // Module-access guard (§ Module Access): bounce to the user's first allowed
+  // module, or show a denied state if they have none. Admins/unrestricted bypass.
+  if(!moduleAllowed(hashModule(hash))){
+    const fa=firstAllowedRoute();
+    if(fa&&fa!==hash){location.hash=fa;return;}
+    html=roleDenied('Your account has no access to this module. Ask an administrator to grant module access.');
+  } else {
   for(const [re,fn] of ROUTES){const m=hash.match(re);if(m){try{html=fn(m);}catch(e){
     html=`<div class="empty"><div class="e-ico">⚠</div><h4>Render error</h4><p>${esc(e.message)}</p>
       <pre style="text-align:left;font-size:11px;overflow:auto;max-height:200px">${esc(e.stack||'')}</pre></div>`;}break;}}
   if(!html)html=`<div class="empty"><div class="e-ico">◌</div><h4>Nothing here</h4>
     <p>The route <span class="mono">${esc(hash)}</span> does not exist.</p>
     <a class="btn primary" href="#/media/home">Go home</a></div>`;
+  }
   $('#page').innerHTML=html;
   renderNav();
   $('#content').scrollTop=0;
@@ -2666,6 +2699,7 @@ if(matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches){S.theme='dark
 $('#btn-help').onclick=()=>showShortcuts();
 $('#btn-bell').onclick=()=>{location.hash='#/media/notifications';};
 $('#btn-quickadd').onclick=e=>menu(e.currentTarget,quickAddItems());
+$('#btn-logout').onclick=()=>ACTIONS.logout();
 $('#btn-role').onclick=()=>{
   const m=me(), rl={admin:'Admin',team_lead:'Team Lead',employee:'Employee'}[m.role]||'Member';
   modal(`<div class="mo-head"><div class="f ac gap3">${avatar(S.me,'lg')}
@@ -2687,8 +2721,9 @@ $('#btn-role').onclick=()=>{
       <div class="row">
         <div class="field"><label class="lbl">New password</label><input class="inp" id="pw-new" type="password" placeholder="min 6 characters" autocomplete="new-password"></div>
         <div class="field"><label class="lbl">Confirm</label><input class="inp" id="pw-conf" type="password" autocomplete="new-password"></div></div></div>
-    <div class="mo-foot"><button class="btn ghost" onclick="closeModal();window.location.href='/'">← Nerve home</button>
-      <div class="ml-auto f gap2"><button class="btn" onclick="closeModal()">Close</button>
+    <div class="mo-foot"><button class="btn danger" data-act="logout">⏻ Log out</button>
+      <div class="ml-auto f gap2"><button class="btn ghost" onclick="closeModal();window.location.href='/'">← Nerve home</button>
+        <button class="btn" onclick="closeModal()">Close</button>
         <button class="btn primary" data-act="changePassword">Update password</button></div></div>`);
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
 };
@@ -3314,10 +3349,25 @@ function heatmapWidget(){
    MY DAY (§5.2 · wireframe W2) — the mobile landing screen, shown as a
    real phone frame on desktop so the mobile composition can be reviewed.
    ========================================================================== */
+/* Task/Assignment layer: is `date` within an assignment's schedule? */
+function inSchedule(a,date){
+  if(a.start_date&&a.due_date)return date>=a.start_date&&date<=a.due_date;
+  if(a.start_date)return date>=a.start_date;
+  if(a.due_date)return date<=a.due_date;
+  return true;                                    /* undated → active */
+}
+/* Assignments (scheduled tasks) for a user on a date — powers Today's Assignments.
+   Uses the REAL current date (rtoday), since assignments are scheduled with real
+   dates, not the prototype's fixed demo TODAY. */
+function myAssignments(uid=S.me,date){
+  date=date||rtoday();
+  return (DB.assignments||[]).filter(a=>(a.assignees||[]).includes(uid)&&a.status!=='cancelled'&&inSchedule(a,String(date).slice(0,10)));
+}
 function viewMyDay(){
   const r=DB.daily_reports.find(x=>x.user_id===S.me&&x.report_date===TODAY);
   const tasks=r?DB.report_tasks.filter(t=>t.daily_report_id===r.id):[];
   const myShoots=DB.shoots.filter(s=>s.shoot_date===TODAY&&DB.shoot_crew.some(c=>c.shoot_id===s.id&&c.user_id===S.me));
+  const myAssigns=myAssignments(S.me);   /* scheduled tasks assigned to me for today */
   const held=DB.equipment_items.filter(e=>{const h=eqHolder(e.id);return h&&h.holder_id===S.me;});
   const myDue=DB.deliverables.filter(d=>d.owner_id===S.me&&!['delivered','not_required','cancelled'].includes(d.status))
     .sort((a,b)=>(a.due_date||'9')<(b.due_date||'9')?-1:1);
@@ -3331,13 +3381,22 @@ function viewMyDay(){
         '<span class="status st-warn"><span class="si">◐</span>On leave</span>'}
     </div>
 
-    <div class="card mb4"><div class="card-head"><h3>Today’s assignments</h3></div>
-      <div class="card-body flush">${myShoots.length?myShoots.map(s=>`
-        <button class="list-row" data-drawer="shoot:${s.id}"><span style="font-size:16px;color:var(--info)">◉</span>
-          <span class="lr-main"><b>${esc(s.title)}</b>
-            <span>${esc(s.call_time)} call · ${esc(s.location)}</span>
-            <span>${avStack(DB.shoot_crew.filter(c=>c.shoot_id===s.id).map(c=>c.user_id),4)}</span></span>
-        </button>`).join(''):`<div class="empty" style="padding:20px"><p>No shoot today. Desk work.</p></div>`}
+    <div class="card mb4"><div class="card-head"><h3>Today’s assignments</h3>
+      <div class="ca"><span class="chip">${myAssigns.length+myShoots.length}</span></div></div>
+      <div class="card-body flush">
+        ${myAssigns.map(a=>`<div class="list-row" style="cursor:default">
+          <span style="width:8px;height:8px;border-radius:50%;flex:0 0 auto;background:${({urgent:'var(--danger)',high:'var(--warn)',normal:'var(--info)',low:'var(--text-3)'})[a.priority]||'var(--info)'}" title="${esc(a.priority)} priority"></span>
+          <span class="lr-main"><b>${esc(a.title)}</b>
+            <span><span class="code">${esc(proj(a.project_id).code||'')}</span> ${esc(proj(a.project_id).name)}${a.estimated_hours?' · ~'+(+a.estimated_hours)+'h':''}${a.start_time?' · '+esc(a.start_time)+'–'+esc(a.end_time||''):''}${a.due_date?' · due '+D.fmt(a.due_date):''} · by ${esc((user(a.assigned_by).full_name||'—').split(' ')[0])}</span></span>
+          <button class="btn xs" style="flex:0 0 auto" title="Log work on this — project & deliverable pre-filled" onclick="ACTIONS.logFromAssign({aid:${a.id}})">✎ Log</button>
+          <select class="inp" style="height:28px;font-size:12px;width:auto;flex:0 0 auto" onchange="ACTIONS.setAssignStatus({aid:${a.id},status:this.value})">
+            ${['not_started','in_progress','done','blocked'].map(s=>`<option value="${s}" ${a.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}</select>
+        </div>`).join('')}
+        ${myShoots.map(s=>`<button class="list-row" data-drawer="shoot:${s.id}"><span style="font-size:16px;color:var(--info);flex:0 0 auto">◉</span>
+          <span class="lr-main"><b>${esc(s.title)} <span class="chip">shoot</span></b>
+            <span>${esc(s.call_time)} call · ${esc(s.location)}</span></span>
+          <span>${avStack(DB.shoot_crew.filter(c=>c.shoot_id===s.id).map(c=>c.user_id),4)}</span></button>`).join('')}
+        ${(!myAssigns.length&&!myShoots.length)?`<div class="empty" style="padding:20px"><p>No assignments scheduled for today.</p></div>`:''}
       </div></div>
 
     <div class="card mb4"><div class="card-head"><h3>My projects</h3>
@@ -3828,6 +3887,7 @@ function viewProject(id,tab){
         <span class="f ac gap2"><span class="small mut3">Owner</span>${avatar(p.owner_id,'sm')}
           <span class="small b">${esc(user(p.owner_id).full_name)}</span></span>
         <button class="btn sm" data-act="watchProject" data-pid="${p.id}">◔ Watch</button>
+        ${can('project.assign')?`<button class="btn sm" data-act="newAssignment" data-pid="${p.id}">＋ Assign task</button>`:''}
         <button class="btn sm" data-act="newDeliverable" data-pid="${p.id}">＋ Deliverable</button>
         <button class="btn sm primary" data-act="newShoot" data-pid="${p.id}" ${can('project.assign')?'':'disabled'}>＋ Shoot</button>
         <button class="btn sm" data-menu="projMore" data-pid="${p.id}">⋯</button>
@@ -4753,10 +4813,11 @@ function teamDirectory(){
         <div class="between small mut3"><span>${activeProjectsOf(u.id).length} projects</span>
           <span>${openDeliverables(u.id).length} open ◆</span><span>${consistency(u.id)}% consistency</span></div>
         ${(can('admin.users')&&u.id!==S.me)?`<div class="mt3" onclick="event.stopPropagation();event.preventDefault()">
-          <select class="inp" style="height:32px;font-size:12px" onchange="ACTIONS.changeRole({uid:${u.id},role:this.value})">
+          <div class="f gap2 ac"><select class="inp" style="height:32px;font-size:12px;flex:1" onchange="ACTIONS.changeRole({uid:${u.id},role:this.value})">
             <option value="employee" ${u.role==='employee'?'selected':''}>● Employee</option>
             <option value="team_lead" ${u.role==='team_lead'?'selected':''}>▲ Team Lead</option>
-            <option value="admin" ${u.role==='admin'?'selected':''}>★ Admin</option></select></div>`:''}
+            <option value="admin" ${u.role==='admin'?'selected':''}>★ Admin</option></select>
+          <button class="btn xs" title="Module access" onclick="ACTIONS.editModules({uid:${u.id}})">⚿ Modules${Array.isArray(u.allowed_modules)?' ('+u.allowed_modules.length+')':''}</button></div></div>`:''}
       </div></div>`;}).join('')}</div>`;
 }
 function teamAvailability(){
@@ -4793,24 +4854,35 @@ function teamSkills(){
       Devansh Bhatt’s DGCA drone licence expires ${D.fmt('2026-08-19')}, before the Sports Meet aerials.</div></div>`;
 }
 function teamStructure(){
+  const canMng=can('admin.users');
+  const assigned=new Set(DB.team_members.map(m=>m.user_id));
+  const unassigned=DB.users.filter(u=>u.is_active&&u.role==='employee'&&!assigned.has(u.id));
   return `<div class="grid g2">
     <div class="card"><div class="card-head"><h3>Teams</h3>${reqid('FR-7.2','A member belongs to exactly one primary team; project assignments cut across')}</div>
       <div class="card-body">${DB.teams.map(t=>{
         const ms=DB.team_members.filter(m=>m.team_id===t.id);
         return `<div class="mb4"><div class="between mb2"><b>${esc(t.name)}</b>
           <span class="chip">Lead: ${esc(user(t.lead_user_id).full_name)}</span></div>
-          <div class="f wrap gap2">${ms.map(m=>`<span class="chip">${avatar(m.user_id,'xs')} ${esc(user(m.user_id).designation)}</span>`).join('')}</div>
-        </div>`;}).join('')}
+          <div class="f wrap gap2 ac">${ms.map(m=>`<span class="chip">${avatar(m.user_id,'xs')} ${esc(user(m.user_id).full_name)}
+            ${canMng?`<span role="button" title="Remove from team" style="cursor:pointer;color:var(--danger)" onclick="ACTIONS.assignTeamLead({uid:${m.user_id},lead:0})">×</span>`:''}</span>`).join('')||'<span class="small mut3">No members yet</span>'}
+            ${canMng&&unassigned.length?`<select class="inp" style="height:30px;font-size:12px;max-width:210px" onchange="ACTIONS.assignTeamLead({uid:this.value,lead:${t.lead_user_id}});this.value=''">
+              <option value="">＋ Add member…</option>${unassigned.map(u=>`<option value="${u.id}">${esc(u.full_name)}</option>`).join('')}</select>`:''}</div>
+        </div>`;}).join('')||'<div class="small mut3 mb3">No teams yet — assigning a member to a lead creates their team.</div>'}
+        ${canMng&&unassigned.length?`<div class="note">${unassigned.length} employee(s) not on a team yet.</div>`:''}
         <div class="note">Partial unique index on <span class="mono">(user_id) WHERE is_primary</span> enforces one primary team at the database level (§11.1).</div>
       </div></div>
     <div class="card"><div class="card-head"><h3>Duty flags</h3>${reqid('D4','Responsibilities without a fourth role')}</div>
       <div class="card-body">
         ${DB.duty_flags.map(f=>{const holders=DB.user_duties.filter(d=>d.duty_flag_id===f.id);
+          const nonHolders=DB.users.filter(u=>u.is_active&&!holders.some(h=>h.user_id===u.id));
           return `<div class="mb4"><div class="between mb1"><b class="small">⚑ ${esc(f.name)}</b>
             <span class="chip mono">${esc(f.code)}</span></div>
-            <div class="small mut mb2">${esc(f.desc)}</div>
-            <div class="f wrap gap2">${holders.map(h=>`<span class="chip sel">${avatar(h.user_id,'xs')} ${esc(user(h.user_id).designation)}</span>`).join('')
-              ||'<span class="small mut3">Nobody assigned</span>'}</div></div>`;}).join('')}
+            <div class="small mut mb2">${esc(f.desc||f.description||'')}</div>
+            <div class="f wrap gap2 ac">${holders.map(h=>`<span class="chip sel">${avatar(h.user_id,'xs')} ${esc(user(h.user_id).full_name)}
+              ${canMng?`<span role="button" title="Revoke" style="cursor:pointer" onclick="ACTIONS.toggleDuty({uid:${h.user_id},fid:${f.id}})">×</span>`:''}</span>`).join('')
+              ||'<span class="small mut3">Nobody assigned</span>'}
+              ${canMng?`<select class="inp" style="height:30px;font-size:12px;max-width:180px" onchange="ACTIONS.toggleDuty({uid:this.value,fid:${f.id}});this.value=''">
+                <option value="">＋ Grant…</option>${nonHolders.map(u=>`<option value="${u.id}">${esc(u.full_name)}</option>`).join('')}</select>`:''}</div></div>`;}).join('')}
         <div class="note warn">Duties route notifications and default assignments. They grant <b>no</b> data visibility beyond
           their narrow function, enforced in the policy layer — Nerve-wide three-role parity is preserved.</div>
       </div></div></div>`;
@@ -5646,9 +5718,172 @@ function viewAdmin(section){
     <div class="tabs">${secs.map(([k,l,i])=>`<a href="#/media/admin/${k}"
       style="padding:9px 13px;font-size:13px;font-weight:600;text-decoration:none;white-space:nowrap;color:${section===k?'var(--brand-600)':'var(--text-2)'};
       border-bottom:2px solid ${section===k?'var(--brand-500)':'transparent'};margin-bottom:-1px">${i} ${l}</a>`).join('')}</div>
-    ${section==='lookups'?admLookups():section==='types'?admTypes():section==='templates'?admTemplates():
+    ${section==='lookups'?viewCrudEngine():section==='types'?viewCrudEngine('deliverable_types'):section==='templates'?viewCrudEngine('project_templates'):
       section==='automations'?admAutomations():section==='users'?admUsers():section==='permissions'?admPermissions():
       section==='import'?admImport():section==='audit'?admAudit():section==='schema'?admSchema():admSettings()}`;
+}
+/* ══════════════════════════════════════════════════════════════════════════
+   CRUD ENGINE (client) — one configuration-driven framework for every Admin
+   config page. The server registry (/crud/meta) declares fields, columns,
+   relations and permissions; everything below renders from that metadata.
+   Adding a new module = one registry entry on the server. Zero page code.
+   ══════════════════════════════════════════════════════════════════════════ */
+function crudState(){
+  if(!S.crud){
+    let saved={}; try{saved=JSON.parse(localStorage.getItem('mo_crud_filter')||'{}');}catch(_){}
+    S.crud={mod:saved.mod||'project_types',q:'',status:saved.status||'active',sort:'id',dir:'asc',page:1,sel:{}};
+  }
+  return S.crud;
+}
+function crudPersist(){const c=S.crud;try{localStorage.setItem('mo_crud_filter',JSON.stringify({mod:c.mod,status:c.status}));}catch(_){}}
+async function loadCrudMeta(){ if(!S._crudMeta) S._crudMeta=await MO_API.get('/crud/meta'); }
+/* After any config mutation: refresh the engine list AND re-hydrate the operational
+   DB so every picker/template in the app reflects the change immediately. */
+function crudAfterMutate(){ loadCrudList(); S._crudMeta=null; loadCrudMeta().catch(()=>{}); hydrateFromServer().then(render).catch(()=>{}); }
+async function loadCrudList(){
+  const c=crudState();
+  S._crudData=await MO_API.get('/crud/'+c.mod+'?q='+encodeURIComponent(c.q)+'&status='+c.status+'&sort='+c.sort+'&dir='+c.dir+'&page='+c.page
+    +(c.created_by?'&created_by='+encodeURIComponent(c.created_by):'')+(c.created_from?'&created_from='+c.created_from:''));
+  render();
+}
+function crudModMeta(){const m=S._crudMeta;return m&&m.modules.find(x=>x.key===crudState().mod);}
+function crudCellVal(mod,f,v){
+  if(v==null||v==='')return '<span class="mut3">—</span>';
+  const fld=mod.fields.find(x=>x.name===f);
+  if(fld){
+    if(fld.type==='switch')return v?'<span class="yes">✓</span>':'<span class="mut3">—</span>';
+    if(fld.type==='color')return `<span class="chip"><span class="dot" style="background:${esc(String(v))}"></span>${esc(String(v))}</span>`;
+    if(fld.type==='relation'&&fld.options2){const o=fld.options2.find(x=>x.v===Number(v));return esc(o?o.l:String(v));}
+    if(fld.type==='date')return D.fmt(String(v).slice(0,10));
+    if(fld.type==='slug')return `<span class="mono small">${esc(String(v))}</span>`;
+  }
+  return esc(String(v));
+}
+function viewCrudEngine(preMod){
+  const c=crudState();
+  if(preMod&&c.mod!==preMod&&!S._crudPre){c.mod=preMod;c.page=1;c.sel={};S._crudData=null;}
+  S._crudPre=preMod||null;
+  if(!S._crudMeta||!S._crudData){
+    loadCrudMeta().then(()=>loadCrudList()).catch(e=>{S._crudData={rows:[],total:0,err:e.message};render();});
+    return `<div class="card"><div class="card-body"><div class="empty" style="padding:40px"><p>Loading configuration…</p></div></div></div>`;
+  }
+  const meta=S._crudMeta, mod=crudModMeta(), data=S._crudData, can=meta.can;
+  if(!mod)return `<div class="empty"><p>Unknown module.</p></div>`;
+  const ac=mod.activeCol, selIds=Object.keys(c.sel).filter(k=>c.sel[k]), pages=Math.max(1,Math.ceil(data.total/(data.per||12)));
+  return `
+    <div class="f wrap gap2 mb3">${meta.modules.map(m=>`<button class="chip ${m.key===c.mod?'sel':''}" data-act="crudMod" data-mod="${m.key}">${esc(m.label)}</button>`).join('')}</div>
+    <div class="card"><div class="card-head"><h3>${esc(mod.label)}</h3>
+      <div class="ca f gap2 ac">
+        <input class="inp" style="height:32px;max-width:220px" placeholder="Search ${esc(mod.label.toLowerCase())}…" value="${esc(c.q)}"
+          onkeydown="if(event.key==='Enter')ACTIONS.crudQ({},this)" onblur="ACTIONS.crudQ({},this)">
+        <select class="inp" style="height:32px;width:auto" onchange="ACTIONS.crudStatus({},this)">
+          ${['active','disabled','archived','all'].map(s=>`<option value="${s}" ${c.status===s?'selected':''}>${s[0].toUpperCase()+s.slice(1)}</option>`).join('')}</select>
+        <select class="inp hide-sm" style="height:32px;width:auto;max-width:150px" title="Created by" onchange="ACTIONS.crudCreatedBy({},this)">
+          <option value="">Any creator</option>${DB.users.filter(u2=>u2.real_id).map(u2=>`<option value="${esc(u2.real_id)}" ${c.created_by===u2.real_id?'selected':''}>${esc(u2.full_name.split(' ')[0])}</option>`).join('')}</select>
+        <input class="inp hide-sm" type="date" style="height:32px;width:auto" title="Created on or after" value="${esc(c.created_from||'')}" onchange="ACTIONS.crudCreatedFrom({},this)">
+        ${can.create?`<button class="btn sm primary" data-act="crudNew">＋ New</button>`:''}
+      </div></div>
+    ${selIds.length?`<div class="card-body tight" style="background:var(--surface-2)"><div class="f gap2 ac">
+      <span class="small b">${selIds.length} selected</span>
+      ${can.state?`<button class="btn xs" data-act="crudBulk" data-a="enable">Enable</button>
+      <button class="btn xs" data-act="crudBulk" data-a="disable">Disable</button>`:''}
+      ${can.archive?`<button class="btn xs" data-act="crudBulk" data-a="archive">Archive</button>`:''}
+      ${can.delete?`<button class="btn xs danger" data-act="crudBulk" data-a="delete">Delete</button>`:''}
+      <button class="btn xs" data-act="crudBulk" data-a="export">⇩ Export</button>
+      <button class="btn xs ghost ml-auto" data-act="crudSelNone">Clear</button></div></div>`:''}
+    <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
+      <thead><tr>
+        <th style="width:34px"><input type="checkbox" ${data.rows.length&&data.rows.every(r=>c.sel[r.id])?'checked':''} onclick="ACTIONS.crudSelAll({},this)"></th>
+        ${mod.cols.map(col=>{const f=mod.fields.find(x=>x.name===col);
+          return `<th class="click" data-act="crudSort" data-col="${col}" style="cursor:pointer">${esc(f?f.label:col)}
+            ${c.sort===col?(c.dir==='asc'?' ↑':' ↓'):''}</th>`;}).join('')}
+        <th>Status</th><th class="num"></th></tr></thead>
+      <tbody>${data.rows.map(r=>{
+        const st=r.archived_at?'<span class="chip">⛁ Archived</span>':(r[ac]?'<span class="chip sel">● Active</span>':'<span class="chip">○ Disabled</span>');
+        return `<tr>
+          <td><input type="checkbox" ${c.sel[r.id]?'checked':''} onclick="ACTIONS.crudSel({id:${r.id}},this)"></td>
+          ${mod.cols.map(col=>`<td>${crudCellVal(mod,col,r[col])}</td>`).join('')}
+          <td>${st}</td>
+          <td class="num nowrap">
+            <button class="btn xs" data-act="crudViewOne" data-id="${r.id}">View</button>
+            ${can.update?`<button class="btn xs" data-act="crudEdit" data-id="${r.id}">Edit</button>`:''}
+            <button class="btn xs" data-menu="crudRow" data-id="${r.id}">⋯</button></td></tr>`;}).join('')
+        ||`<tr><td colspan="${mod.cols.length+3}" class="tbl-empty">No ${esc(mod.label.toLowerCase())} match.</td></tr>`}
+      </tbody></table></div></div>
+    <div class="card-foot"><div class="between">
+      <span class="small mut3">${data.total} record(s) · page ${c.page} of ${pages}</span>
+      <span class="f gap2">
+        <button class="btn xs" ${c.page<=1?'disabled':''} data-act="crudPage" data-p="${c.page-1}">← Prev</button>
+        <button class="btn xs" ${c.page>=pages?'disabled':''} data-act="crudPage" data-p="${c.page+1}">Next →</button></span>
+    </div></div></div>
+    <div class="note mt3">Every module on this screen is powered by the same CRUD engine — search, filters, sorting, pagination,
+      create/edit forms, duplicate, enable/disable, archive, dependency-checked delete, bulk actions and audit history are all
+      generated from the module's field definitions (NFR-10). Adding a new configuration page requires only a registry entry.</div>`;
+}
+/* Dynamic form generator — Create + Edit share this. */
+function crudFormModal(row){
+  const mod=crudModMeta(), meta=S._crudMeta, isEdit=!!row;
+  const widget=f=>{
+    const v=row?row[f.name]:(f.def!==undefined?f.def:'');
+    const id=`cf-${f.name}`;
+    switch(f.type){
+      case 'textarea':return `<textarea class="inp" id="${id}">${esc(String(v??''))}</textarea>`;
+      case 'select':return `<select class="inp" id="${id}">${(f.options||[]).map(o=>`<option ${String(v)===o?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
+      case 'switch':return `<label class="chk"><input type="checkbox" id="${id}" ${v===true?'checked':''}> ${esc(f.label)}</label>`;
+      case 'color':return `<input class="inp" type="color" id="${id}" value="${esc(String(v||'#3B9B76'))}" style="height:38px;padding:4px">`;
+      case 'icon':return `<div class="f wrap gap2">${meta.icons.map(i=>`<button type="button" class="chip ${String(v)===i?'sel':''}" onclick="document.getElementById('${id}').value='${i}';this.parentNode.querySelectorAll('.chip').forEach(c=>c.classList.remove('sel'));this.classList.add('sel')">${i}</button>`).join('')}
+        <input type="hidden" id="${id}" value="${esc(String(v??''))}"></div>`;
+      case 'date':return `<input class="inp" type="date" id="${id}" value="${esc(String(v??'').slice(0,10))}">`;
+      case 'number':return `<input class="inp" type="number" id="${id}" value="${esc(String(v??''))}">`;
+      case 'relation':return `<select class="inp" id="${id}"><option value="">—</option>${(f.options2||[]).map(o=>`<option value="${o.v}" ${Number(v)===o.v?'selected':''}>${esc(o.l)}</option>`).join('')}</select>`;
+      case 'slug':return `<input class="inp mono" id="${id}" value="${esc(String(v??''))}" placeholder="auto-generated from name">`;
+      default:return `<input class="inp" id="${id}" value="${esc(String(v??''))}" ${f.name==='name'?`oninput="const s=document.getElementById('cf-slug');if(s&&!s.dataset.touched)s.value=this.value.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')"`:''}>`;
+    }
+  };
+  modal(`<div class="mo-head"><div><h2>${isEdit?'Edit':'New'} — ${esc(mod.label)}</h2>
+      <p>Form generated from the module's field definitions; validation runs server-side too.</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">${mod.fields.map(f=>`
+      <div class="field"${f.showIf?` data-showif="${esc(f.showIf.field)}:${esc(String(f.showIf.value))}"`:''}>
+        ${f.type!=='switch'?`<label class="lbl">${esc(f.label)} ${f.required?'<span class="req">*</span>':''}</label>`:''}
+        ${widget(f)}</div>`).join('')}</div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+      <div class="ml-auto f gap2">
+        <button class="btn" data-act="crudSubmit" data-id="${row?row.id:''}">Save</button>
+        <button class="btn primary" data-act="crudSubmit" data-id="${row?row.id:''}" data-close="1">Save &amp; Close</button></div></div>`,{size:'wide'});
+  const sl=$('#cf-slug'); if(sl)sl.addEventListener('input',()=>sl.dataset.touched='1');
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+}
+/* Read-only View drawer — General / Configuration / Dependencies / Audit. */
+function crudViewModal(tab){
+  const v=S._crudView; if(!v)return;
+  const mod=crudModMeta(), r=v.row; tab=tab||'general';
+  const tabs=[['general','General'],['config','Configuration'],['deps','Dependencies'],['audit','Audit History']];
+  const body=
+    tab==='general'?`<dl class="kv">${mod.cols.map(c2=>{const f=mod.fields.find(x=>x.name===c2);
+        return `<dt>${esc(f?f.label:c2)}</dt><dd>${crudCellVal(mod,c2,r[c2])}</dd>`;}).join('')}
+      <dt>Status</dt><dd>${r.archived_at?'Archived':(r[mod.activeCol]?'Active':'Disabled')}</dd>
+      <dt>Created by</dt><dd>${esc((DB.users.find(u2=>u2.real_id===r.created_by)||{}).full_name||r.created_by||'—')}</dd>
+      <dt>Created</dt><dd>${r.created_at?D.fmt(String(r.created_at).slice(0,10)):'—'}</dd>
+      <dt>Updated</dt><dd>${r.updated_at?D.fmt(String(r.updated_at).slice(0,10)):'—'}</dd>
+      <dt>Usage count</dt><dd>${v.dependencies.reduce((s,x)=>s+x.count,0)} reference(s) across ${v.dependencies.length} table(s)</dd></dl>`:
+    tab==='config'?`<dl class="kv">${mod.fields.map(f=>`<dt>${esc(f.label)}</dt><dd>${crudCellVal(mod,f.name,r[f.name])}</dd>`).join('')}</dl>`:
+    tab==='deps'?(v.dependencies.length?`${v.dependencies.map(d=>`<div class="between mb2"><span>${esc(d.label)}</span><span class="chip">${d.count}</span></div>`).join('')}
+      <div class="note warn mt3">This record is referenced ${v.dependencies.reduce((s,d)=>s+d.count,0)} time(s) — it cannot be deleted, only archived (VR-11).</div>`
+      :`<div class="note">Not referenced anywhere — safe to delete.</div>`):
+    `${v.audit.length?v.audit.map(a=>`<div class="list-row" style="cursor:default">
+      <span class="mono small">${esc(String(a.occurred_at).replace('T',' ').slice(0,16))}</span>
+      <span class="lr-main"><b>${esc(a.action)}</b><span>${esc(a.actor||'system')}</span></span>
+      ${a.after?`<span class="xsmall mut" style="max-width:280px;overflow:hidden;text-overflow:ellipsis">${esc(JSON.stringify(a.after))}</span>`:''}</div>`).join('')
+      :'<div class="note">No audit entries yet.</div>'}`;
+  modal(`<div class="mo-head"><div><h2>${esc(String(r.name||r.label||r.rule_key||('#'+r.id)))}</h2><p>${esc(mod.label)} · read-only</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <div class="tabs mb3">${tabs.map(([k,l])=>`<button data-crudtab="${k}" style="padding:8px 12px;font-size:13px;font-weight:600;border:0;background:none;cursor:pointer;
+        color:${tab===k?'var(--brand-600)':'var(--text-2)'};border-bottom:2px solid ${tab===k?'var(--brand-500)':'transparent'}">${l}</button>`).join('')}</div>
+      ${body}</div>
+    <div class="mo-foot"><button class="btn primary ml-auto" onclick="closeModal()">Close</button></div>`,{size:'wide'});
+  $('#modal-layer').querySelectorAll('[data-crudtab]').forEach(n=>n.onclick=()=>crudViewModal(n.dataset.crudtab));
 }
 function lookupTable(type,title,rows,cols,note){
   const editable=['task_categories','deliverable_types','equipment_categories','leave_types','project_types','capacity_roles','skills','tags'].includes(type);
@@ -6827,7 +7062,7 @@ function openNewProject(){
       </div>
       <div class="field"><label class="lbl">Description</label><textarea class="inp" id="np-desc" placeholder="Scope, constraints, who asked for it…"></textarea></div>
       <div class="field"><label class="lbl">Assign crew</label>
-        <div class="f wrap gap2" id="np-assign">${(can('project.assign')?DB.users.filter(x=>x.is_active):DB.users.filter(x=>x.id===S.me)).map(x=>`<button type="button" class="chip ${x.id===S.me?'sel':''}" data-uid="${x.id}" onclick="this.classList.toggle('sel')">${esc(x.full_name)}</button>`).join('')}</div>
+        <div class="f wrap gap2" id="np-assign">${(can('project.assign')?DB.users.filter(x=>x.is_active):DB.users.filter(x=>x.id===S.me)).map(x=>`<button type="button" class="chip ${x.id===S.me?'sel':''}" data-uid="${x.id}" onclick="this.classList.toggle('sel');ACTIONS.npCrewSync()">${esc(x.full_name)}</button>`).join('')}</div>
         <div class="hint">${can('project.assign')?'Assigned crew see this project in their dashboard (§8).':'You can only assign the project to yourself.'}</div></div>
       <div class="field"><label class="lbl">Template deliverables</label>
         <div class="card"><div class="card-body tight" id="np-template"></div></div>
@@ -7014,6 +7249,14 @@ function submitReport(date){
       <p>${D.fmtLong(d)} · ${ts.length} tasks · ${mins2h(total)}. This is a confirmation, not a re-typing exercise (D1).</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
     <div class="mo-body">
+      ${(()=>{const as=myAssignments(S.me),
+        dd=DB.deliverables.filter(x=>x.owner_id===S.me&&x.due_date===d&&!['delivered','not_required','cancelled'].includes(x.status));
+        return `<div class="note mb3"><b>Auto-composed from your day — review, don’t re-type (D1):</b>
+          <div class="between small mt2"><span>Today’s assignments</span><span class="b">${as.length}</span></div>
+          <div class="between small"><span>Task logs</span><span class="b">${ts.length}</span></div>
+          <div class="between small"><span>Deliverables due today</span><span class="b">${dd.length}</span></div>
+          <div class="between small"><span>Working hours</span><span class="b">${mins2h(total)}</span></div>
+          ${as.length?`<div class="small mut mt2">Assignments: ${as.map(a=>esc(a.title)+' <span class="chip">'+a.status.replace('_',' ')+'</span>').join(' · ')}</div>`:''}</div>`;})()}
       ${ts.map(t=>`<div class="list-row" style="cursor:default">
         <span>${tcat(t.task_category_id).icon}</span>
         <span class="lr-main"><b>${esc(t.description)}</b>
@@ -7238,11 +7481,34 @@ const ACTIONS = {
     const box=$('#np-template');if(!box)return;
     if(!t){box.innerHTML='<span class="small mut3">No template for this type — create deliverables manually.</span>';return;}
     const items=DB.template_deliverables.filter(x=>x.template_id===t.id);
-    box.innerHTML=`<div class="small b mb2">${esc(t.name)} — tick the deliverables to create</div>
-      ${items.map(i=>`<label class="between small" style="padding:4px 0;cursor:pointer">
-        <span class="f ac gap2"><input type="checkbox" class="np-tmpl-item" value="${i.id}" checked>
-          <span>${dtype(i.deliverable_type_id).icon} ${esc(dtype(i.deliverable_type_id).name)}</span></span>
-        <span class="chip">due +${i.days_offset_due}d · weight ${i.default_weight}</span></label>`).join('')}`;
+    /* Each deliverable is an assignment-configuration row: owners (from the crew
+       selected above), priority, estimated hours. Owners → auto assignments. */
+    box.innerHTML=`<div class="small b mb2">${esc(t.name)} — tick the deliverables to create; pick owners to auto-assign the work</div>
+      ${items.map(i=>`<div class="np-tpl-row" style="padding:8px 0;border-bottom:1px solid var(--border)">
+        <div class="between mb1"><label class="f ac gap2" style="cursor:pointer">
+          <input type="checkbox" class="np-tmpl-item" value="${i.id}" checked>
+          <b class="small">${dtype(i.deliverable_type_id).icon} ${esc(dtype(i.deliverable_type_id).name)}</b></label>
+          <span class="chip">due +${i.days_offset_due}d</span></div>
+        <div class="f wrap gap2 ac" style="padding-left:24px">
+          <span class="xsmall mut3" style="min-width:72px">Assigned to</span>
+          <span class="f wrap gap1 np-own" data-tid="${i.id}"><span class="xsmall mut3">— select crew above —</span></span>
+          <select class="inp np-pri-item" data-tid="${i.id}" style="height:26px;font-size:11px;width:auto">
+            <option value="normal">Normal</option><option value="urgent">Urgent</option><option value="high">High</option><option value="low">Low</option></select>
+          <input class="inp np-est-item" data-tid="${i.id}" type="number" min="0" step="0.5" value="${Math.max(2,(i.default_weight||1)*4)}"
+            title="Estimated hours" style="height:26px;font-size:11px;width:58px"> <span class="xsmall mut3">h</span>
+        </div></div>`).join('')}`;
+    ACTIONS.npCrewSync();
+  },
+  npCrewSync:()=>{
+    /* Owner pickers show ONLY the crew currently selected for this project;
+       already-picked owners survive as long as they stay on the crew. */
+    const crew=$$('#np-assign .chip.sel').map(c=>+c.dataset.uid);
+    $$('#np-template .np-own').forEach(box=>{
+      const kept=$$('#np-template .np-own[data-tid="'+box.dataset.tid+'"] .np-owner.sel').map(c=>+c.dataset.uid).filter(u2=>crew.includes(u2));
+      box.innerHTML=crew.length?crew.map(u2=>`<button type="button" class="chip np-owner ${kept.includes(u2)?'sel':''}" data-uid="${u2}"
+        style="height:24px;font-size:11px;padding:0 8px" onclick="this.classList.toggle('sel')">${esc(user(u2).full_name.split(' ')[0])}</button>`).join('')
+        :'<span class="xsmall mut3">— select crew above —</span>';
+    });
   },
   createProject:()=>{
     const name=$('#np-name').value.trim();
@@ -7273,7 +7539,12 @@ const ACTIONS = {
     audit(S.me,'project.created','project',id,null,{name,status:p.status,deliverables_created:made});
     const _np={name,project_type_id:tid,priority:$('#np-pri').value,faculty_served:$('#np-fac').value,
       start_date:start,end_date:end,description:$('#np-desc').value.trim(),academic_year_id:+$('#np-year').value,
-      apply_template:true, template_items:$$('#np-template .np-tmpl-item:checked').map(c=>+c.value),
+      apply_template:true,
+      template_config:$$('#np-template .np-tmpl-item:checked').map(c=>{const tid=+c.value;
+        return {id:tid,
+          owners:$$('#np-template .np-own[data-tid="'+tid+'"] .np-owner.sel').map(o=>ruid(+o.dataset.uid)),
+          priority:($('#np-template .np-pri-item[data-tid="'+tid+'"]')||{}).value||'normal',
+          est_hours:+((($('#np-template .np-est-item[data-tid="'+tid+'"]')||{}).value)||0)||null};}),
       assignees:$$('#np-assign .chip.sel').map(c=>ruid(+c.dataset.uid))};
     closeModal();location.hash='#/media/projects/'+id;render();
     moSync(MO_API.post('/projects',_np), res=>{ if(res&&res.project) location.hash='#/media/projects/'+res.project.id; });
@@ -7763,6 +8034,96 @@ const ACTIONS = {
         <button class="btn primary" data-act="saveLookup" data-type="${d.type}" data-id="${d.id}">Save</button></div>`);
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
   },
+  /* ── CRUD engine actions ── */
+  crudMod:(d)=>{const c=crudState();c.mod=d.mod;c.page=1;c.q='';c.sel={};S._crudData=null;S._crudPre=d.mod;crudPersist();render();},
+  crudQ:(d,n)=>{const c=crudState();if(c.q===n.value)return;c.q=n.value;c.page=1;loadCrudList();},
+  crudStatus:(d,n)=>{const c=crudState();c.status=n.value;c.page=1;crudPersist();loadCrudList();},
+  crudCreatedBy:(d,n)=>{const c=crudState();c.created_by=n.value;c.page=1;loadCrudList();},
+  crudCreatedFrom:(d,n)=>{const c=crudState();c.created_from=n.value;c.page=1;loadCrudList();},
+  crudSort:(d)=>{const c=crudState();if(c.sort===d.col)c.dir=c.dir==='asc'?'desc':'asc';else{c.sort=d.col;c.dir='asc';}loadCrudList();},
+  crudPage:(d)=>{const c=crudState();c.page=+d.p;loadCrudList();},
+  crudSel:(d,n)=>{const c=crudState();c.sel[d.id]=n.checked;render();},
+  crudSelAll:(d,n)=>{const c=crudState();(S._crudData?.rows||[]).forEach(r=>c.sel[r.id]=n.checked);render();},
+  crudSelNone:()=>{crudState().sel={};render();},
+  crudNew:()=>crudFormModal(null),
+  crudEdit:(d)=>{const r=(S._crudData?.rows||[]).find(x=>x.id===+d.id);if(r)crudFormModal(r);},
+  crudSubmit:(d)=>{
+    const mod=crudModMeta(), payload={};
+    for(const f of mod.fields){const el=$('#cf-'+f.name);if(!el)continue;
+      payload[f.name]=f.type==='switch'?el.checked:el.value;}
+    const req=d.id?MO_API.patch('/crud/'+crudState().mod+'/'+d.id,payload):MO_API.post('/crud/'+crudState().mod,payload);
+    req.then(()=>{if(d.close||!d.id)closeModal();toast(d.id?'Saved':'Created','ok');crudAfterMutate();})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  crudViewOne:(d)=>{
+    MO_API.get('/crud/'+crudState().mod+'/'+d.id).then(v=>{S._crudView=v;crudViewModal('general');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  crudDup:(d)=>{
+    MO_API.post('/crud/'+crudState().mod+'/'+d.id+'/duplicate',{}).then(()=>{toast('Duplicated — "(Copy)" created','ok');crudAfterMutate();})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  crudStateAct:(d)=>{
+    MO_API.post('/crud/'+crudState().mod+'/'+d.id+'/state',{action:d.a}).then(()=>{closeModal();toast(d.a[0].toUpperCase()+d.a.slice(1)+'d','ok');crudAfterMutate();})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  crudDelete:(d)=>{
+    /* Dependency analysis FIRST — refuse + offer Archive when referenced. */
+    MO_API.get('/crud/'+crudState().mod+'/'+d.id).then(v=>{
+      if(v.dependencies.length){
+        const canForce=!!(S._crudMeta&&S._crudMeta.can&&S._crudMeta.can.force);
+        modal(`<div class="mo-head"><div><h2>This configuration is currently used</h2><p>Deleting it would orphan history.</p></div>
+            <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+          <div class="mo-body">${v.dependencies.map(x=>`<div class="between mb2"><span>Used by</span><span class="chip">${x.count} ${esc(x.label)}</span></div>`).join('')}
+            <div class="note warn mt2"><b>VR-11:</b> deactivate or archive, never delete — referential history stays intact.</div></div>
+          <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+            ${canForce?`<button class="btn danger" data-act="crudForcePrompt" data-id="${d.id}">⚠ Force delete…</button>`:''}
+            <div class="ml-auto f gap2">
+              <button class="btn" data-act="crudStateAct" data-id="${d.id}" data-a="disable">○ Disable</button>
+              <button class="btn primary" data-act="crudStateAct" data-id="${d.id}" data-a="archive">⛁ Archive</button></div></div>`);
+        $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+        return;
+      }
+      if(!confirm('No dependencies found — delete permanently?'))return;
+      MO_API.del('/crud/'+crudState().mod+'/'+d.id).then(()=>{toast('Deleted','ok');crudAfterMutate();}).catch(e=>toast(e.message,'bad'));
+    }).catch(e=>toast(e.message,'bad'));
+  },
+  crudForcePrompt:(d)=>{
+    MO_API.get('/crud/'+crudState().mod+'/'+d.id).then(v=>{
+      modal(`<div class="mo-head"><div><h2 style="color:var(--danger)">⚠ Force Delete</h2>
+          <p>Super Admin only. This configuration is referenced by:</p></div>
+          <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+        <div class="mo-body">
+          ${v.dependencies.map(x=>`<div class="between mb2"><span>${esc(x.label)}</span><span class="chip">${x.count}</span></div>`).join('')||'<div class="small mut">No references.</div>'}
+          <div class="note warn mt2">Deleting it will <b>permanently remove or null these references</b>. This cannot be undone and is fully audited.</div>
+          <div class="field mt3"><label class="lbl">Type <span class="mono b">DELETE</span> to continue</label>
+            <input class="inp mono" id="fd-confirm" autocomplete="off" oninput="document.getElementById('fd-go').disabled=this.value!=='DELETE'"></div></div>
+        <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+          <button class="btn danger ml-auto" id="fd-go" disabled data-act="crudForceDo" data-id="${d.id}">Force delete permanently</button></div>`);
+      $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+    }).catch(e=>toast(e.message,'bad'));
+  },
+  crudForceDo:(d)=>{
+    if(($('#fd-confirm')||{}).value!=='DELETE')return;
+    MO_API.post('/crud/'+crudState().mod+'/'+d.id+'/force-delete',{confirm:'DELETE'})
+      .then(r=>{closeModal();toast('Force-deleted. '+Object.entries(r.cleaned||{}).map(([k,v])=>k+': '+v).join(' · '),'warn');crudAfterMutate();})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  crudBulk:(d)=>{
+    const c=crudState(), ids=Object.keys(c.sel).filter(k=>c.sel[k]).map(Number);
+    if(!ids.length){toast('Select at least one record','warn');return;}
+    if(d.a==='export'){
+      const mod=crudModMeta(), rows=(S._crudData?.rows||[]).filter(r=>c.sel[r.id]);
+      const csv=[mod.cols.join(',')].concat(rows.map(r=>mod.cols.map(cc=>'"'+String(r[cc]??'').replace(/"/g,'""')+'"').join(','))).join('\n');
+      const a=document.createElement('a');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+      a.href=url;a.download='media-ops-'+c.mod+'.csv';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
+      toast('Exported '+rows.length+' row(s)','ok');return;
+    }
+    if(d.a==='delete'&&!confirm('Delete '+ids.length+' record(s)? Records still in use are skipped automatically.'))return;
+    MO_API.post('/crud/'+c.mod+'/bulk',{ids,action:d.a}).then(r=>{
+      c.sel={};toast(r.done+' done'+(r.blocked?' · '+r.blocked+' blocked (in use — archive those instead)':''),r.blocked?'warn':'ok');crudAfterMutate();
+    }).catch(e=>toast(e.message,'bad'));
+  },
   saveLookup:(d)=>{
     const name=$('#lk-name').value.trim(); if(!name){toast('Name is required','bad');return;}
     const payload={name};
@@ -7795,7 +8156,10 @@ const ACTIONS = {
           <div class="field"><label class="lbl">Designation</label><input class="inp" id="au-desig" placeholder="e.g. Video Editor"></div>
           <div class="field"><label class="lbl">Photo <span class="req">*</span></label>
             <input class="inp" type="file" id="au-photo" accept="image/*" onchange="ACTIONS.uploadCrewPhoto(this)">
-            <input type="hidden" id="au-avatar"><div id="au-photo-status" class="hint">Upload a photo (required).</div></div></div></div>
+            <input type="hidden" id="au-avatar"><div id="au-photo-status" class="hint">Upload a photo (required).</div></div></div>
+        <div class="field"><label class="lbl">Module Access <span class="mut3">(select one or more)</span></label>
+          <div class="grid g2" style="gap:4px 16px">${MODULES.map(m=>`<label class="chk"><input type="checkbox" class="au-mod" value="${m.key}"> ${m.label}</label>`).join('')}</div>
+          <div class="hint">The member sees only the modules you grant — sidebar, routes and API are gated to these. No selection = no access.</div></div></div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" data-act="createCrew">Create member</button></div>`);
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
@@ -7807,7 +8171,8 @@ const ACTIONS = {
     if(pass.length<6){toast('Password must be at least 6 characters','bad');return;}
     if(!$('#au-avatar').value.trim()){toast('A profile photo URL is required','bad');return;}
     const payload={full_name:name,email,password:pass,role:$('#au-role').value,designation:$('#au-desig').value.trim(),
-      avatar_url:$('#au-avatar').value.trim()};
+      avatar_url:$('#au-avatar').value.trim(),
+      allowed_modules:$$('.au-mod:checked').map(c=>c.value)};
     closeModal();
     moSync(MO_API.post('/crew',payload), ()=>{render();toast(name+' added to the crew','ok');});
   },
@@ -7823,10 +8188,19 @@ const ACTIONS = {
       <div class="mo-foot"><button class="btn primary" onclick="closeModal();render()">Done</button></div>`);
   },
   toggleDuty:(d)=>{
-    const i=DB.user_duties.findIndex(x=>x.user_id===d.uid&&x.duty_flag_id===d.fid);
-    if(i>=0){DB.user_duties.splice(i,1);audit(S.me,'user.duty_revoked','user',d.uid,{duty:d.fid},null);}
-    else{DB.user_duties.push({user_id:d.uid,duty_flag_id:d.fid,granted_by:S.me,granted_at:TODAY});
-      audit(S.me,'user.duty_granted','user',d.uid,null,{duty:d.fid});}
+    const uid=+d.uid, fid=+d.fid;
+    const i=DB.user_duties.findIndex(x=>x.user_id===uid&&x.duty_flag_id===fid);
+    const grant=i<0;
+    if(i>=0){DB.user_duties.splice(i,1);audit(S.me,'user.duty_revoked','user',uid,{duty:fid},null);}
+    else{DB.user_duties.push({user_id:uid,duty_flag_id:fid,granted_by:S.me,granted_at:TODAY});
+      audit(S.me,'user.duty_granted','user',uid,null,{duty:fid});}
+    render();
+    moSync(MO_API.post('/crew/'+ruid(uid)+'/duties',{duty_flag_id:fid,grant}),()=>{render();toast(grant?'Duty granted':'Duty revoked','ok');});
+  },
+  assignTeamLead:(d)=>{
+    const uid=+d.uid, leadInt=d.lead?+d.lead:0;
+    moSync(MO_API.post('/crew/'+ruid(uid)+'/team',{lead_user_id:leadInt?ruid(leadInt):''}),
+      ()=>{render();toast(leadInt?user(uid).full_name.split(' ')[0]+' → '+user(leadInt).full_name.split(' ')[0]+"'s team":'Removed from team','ok');});
   },
   deactivateUser:(d)=>{
     const uid=+d.uid;
@@ -7913,6 +8287,15 @@ const ACTIONS = {
       .then(j=>{const m=DB.users.find(u=>u.id===S.me); if(m)m.avatar_url=j.avatar_url; render(); toast('Profile photo updated','ok'); closeModal();})
       .catch(e=>{st.textContent='Upload failed: '+e.message;});
   },
+  logout:()=>{
+    modal(`<div class="mo-head"><div><h2>Log out</h2></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><p>Are you sure you want to log out? You’ll need to sign in again to access any dashboard or module.</p></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn danger ml-auto" data-act="confirmLogout">Log out</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  confirmLogout:()=>{ closeModal(); doLogout(); },
   changePassword:()=>{
     const cur=$('#pw-cur').value, nw=$('#pw-new').value, cf=$('#pw-conf').value;
     if(nw.length<6){toast('New password must be at least 6 characters','bad');return;}
@@ -7928,6 +8311,24 @@ const ACTIONS = {
   changeRole:(d)=>{
     if(!d.role)return;
     moSync(MO_API.post('/crew/'+ruid(+d.uid)+'/role',{role:d.role}), ()=>{render();toast('Role updated to '+d.role.replace('_',' '),'ok');});
+  },
+  editModules:(d)=>{
+    const u=user(+d.uid), am=Array.isArray(u.allowed_modules)?u.allowed_modules:null;
+    modal(`<div class="mo-head"><div><h2>Module access — ${esc(u.full_name)}</h2>
+        <p>Tick the modules this member may open. “Unrestricted” gives every module (role-based) — the default.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <label class="chk mb3"><input type="checkbox" id="em-unrestricted" ${am==null?'checked':''} onchange="document.querySelectorAll('.em-mod').forEach(c=>c.disabled=this.checked)"> Unrestricted (all modules, role-based)</label>
+        <div class="grid g2" style="gap:4px 16px">${MODULES.map(m=>`<label class="chk"><input type="checkbox" class="em-mod" value="${m.key}" ${am&&am.includes(m.key)?'checked':''} ${am==null?'disabled':''}> ${m.label}</label>`).join('')}</div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="saveModules" data-uid="${u.id}">Save access</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  saveModules:(d)=>{
+    const mods=$('#em-unrestricted').checked?null:$$('.em-mod:checked').map(c=>c.value);
+    const u=user(+d.uid); if(u)u.allowed_modules=mods;
+    closeModal();render();
+    moSync(MO_API.post('/crew/'+ruid(+d.uid)+'/modules',{allowed_modules:mods}),()=>{render();toast('Module access updated','ok');});
   },
   assignProject:(d)=>{
     const p=proj(+d.pid);
@@ -7979,6 +8380,56 @@ const ACTIONS = {
     Object.assign(p,{name,priority:pri,faculty_served:fac,start_date:start,end_date:end,description:desc});
     closeModal();render();
     moSync(MO_API.patch('/projects/'+p.id,{name,priority:pri,faculty_served:fac,start_date:start,end_date:end,description:desc}),()=>{render();toast('Project updated','ok');});
+  },
+  setAssignStatus:(d)=>{
+    const a=(DB.assignments||[]).find(x=>x.id===+d.aid); if(a)a.status=d.status; render();
+    moSync(MO_API.patch('/assignments/'+d.aid,{status:d.status}),()=>{render();toast('Task '+d.status.replace('_',' '),'ok');});
+  },
+  logFromAssign:(d)=>{
+    /* Log Task from an assignment: project + deliverable inherited — the employee
+       only writes description, time and progress. No duplicate data entry. */
+    const a=(DB.assignments||[]).find(x=>x.id===+d.aid); if(!a)return;
+    openTaskLog();
+    const ps=$('#tl-project'); if(!ps)return;
+    if(![...ps.options].some(o=>+o.value===a.project_id))
+      ps.insertAdjacentHTML('beforeend',`<option value="${a.project_id}">${esc(proj(a.project_id).name)} — ${esc(proj(a.project_id).code||'')}</option>`);
+    ps.value=String(a.project_id);
+    if(ps.onchange)ps.onchange();
+    if(a.deliverable_id){const dsel=$('#tl-deliv');
+      if(dsel&&[...dsel.options].some(o=>+o.value===a.deliverable_id))dsel.value=String(a.deliverable_id);}
+  },
+  newAssignment:(d)=>{
+    const pid=+d.pid;
+    modal(`<div class="mo-head"><div><h2>Assign a task</h2><p>Scheduled work for crew — appears in their My Day “Today’s assignments” on the day.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Title <span class="req">*</span></label><input class="inp" id="na-title" placeholder="e.g. Edit convocation highlights"></div>
+        <div class="field"><label class="lbl">Assign to <span class="req">*</span></label>
+          <div class="f wrap gap2" id="na-users">${DB.users.filter(u=>u.is_active).map(u=>`<button type="button" class="chip" data-uid="${u.id}" onclick="this.classList.toggle('sel')">${esc(u.full_name)}</button>`).join('')}</div></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Start date</label><input class="inp" type="date" id="na-start" value="${rtoday()}"></div>
+          <div class="field"><label class="lbl">Due date</label><input class="inp" type="date" id="na-due" value="${rtoday()}"></div></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Start time</label><input class="inp" type="time" id="na-stime"></div>
+          <div class="field"><label class="lbl">End time</label><input class="inp" type="time" id="na-etime"></div></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Priority</label><select class="inp" id="na-pri"><option value="normal">Normal</option><option value="urgent">Urgent</option><option value="high">High</option><option value="low">Low</option></select></div>
+          <div class="field"><label class="lbl">Status</label><select class="inp" id="na-status"><option value="not_started">Not started</option><option value="in_progress">In progress</option></select></div></div>
+        <div class="field"><label class="lbl">Notes</label><textarea class="inp" id="na-notes" placeholder="Details, specs, context…"></textarea></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="createAssignment" data-pid="${pid}">Assign task</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  createAssignment:(d)=>{
+    const title=$('#na-title').value.trim(); if(!title){toast('Title is required','bad');return;}
+    const assignees=$$('#na-users .chip.sel').map(c=>ruid(+c.dataset.uid));
+    if(!assignees.length){toast('Assign to at least one member','bad');return;}
+    const start=$('#na-start').value, due=$('#na-due').value;
+    if(start&&due&&due<start){toast('Due date must be on or after the start date','bad');return;}
+    const payload={title,assignees,start_date:start,due_date:due,start_time:$('#na-stime').value,end_time:$('#na-etime').value,
+      priority:$('#na-pri').value,status:$('#na-status').value,notes:$('#na-notes').value.trim()};
+    closeModal();
+    moSync(MO_API.post('/projects/'+d.pid+'/tasks',payload),()=>{render();toast('Task assigned','ok');});
   },
   nlSearch:()=>{
     modal(`<div class="mo-head"><div><h2>Natural-language search <span class="ai-chip">✦ AI-5</span></h2>
@@ -8068,12 +8519,14 @@ const ACTIONS = {
     closeModal();
     moSync(Promise.all(posts),()=>{render();toast((phase==='self'?'Self':'Manager')+' review submitted','ok');});
   },
-  markAllRead:()=>{DB.notifications.filter(n=>n.user_id===S.me).forEach(n=>n.is_read=true);render();toast('All marked read','ok');},
+  markAllRead:()=>{DB.notifications.filter(n=>n.user_id===S.me).forEach(n=>n.is_read=true);render();toast('All marked read','ok');
+    if(window.__MO_LIVE__)MO_API.post('/notifications/read',{}).catch(()=>{});},
   notifPrefs:()=>toast('Per-kind × per-channel preferences — the watched metric is notification-to-action rate (§18)','ok'),
-  openNotif:(d)=>{const n=DB.notifications.find(x=>x.id===+d.nid);n.is_read=true;
+  openNotif:(d)=>{const n=DB.notifications.find(x=>x.id===+d.nid);if(!n)return;n.is_read=true;
+    if(window.__MO_LIVE__)MO_API.post('/notifications/read',{id:n.id}).catch(()=>{});
     if(n.entity_type==='deliverable'&&n.entity_id)drawerDeliverable(n.entity_id);
     else if(n.entity_type==='project'&&n.entity_id)location.hash='#/media/projects/'+n.entity_id;
-    else if(n.entity_type==='equipment'&&n.entity_id)location.hash='#/media/equipment/'+equip(n.entity_id).asset_tag;
+    else if(n.entity_type==='equipment'&&n.entity_id&&equip(n.entity_id))location.hash='#/media/equipment/'+equip(n.entity_id).asset_tag;
     else if(n.entity_type==='shoot'&&n.entity_id)drawerShoot(n.entity_id);
     else if(n.entity_type==='report')location.hash='#/media/reports';
     render();}
@@ -8112,6 +8565,21 @@ const MENUS = {
         render();toast('Status → '+PROJ_STATUS[s].l,'ok');
         moSync(MO_API.post('/projects/'+p.id+'/status',{status:s}));}})),
       ...(allowed.length?[]:[{label:'No transitions available',disabled:true}])];
+  },
+  crudRow:(d)=>{
+    const meta=S._crudMeta, mod=crudModMeta(), can=meta.can;
+    const r=(S._crudData?.rows||[]).find(x=>x.id===+d.id)||{};
+    const active=!!r[mod.activeCol], archived=!!r.archived_at;
+    return [
+      {label:'View',icon:'◔',fn:()=>ACTIONS.crudViewOne(d)},
+      {label:'Edit',icon:'✎',disabled:!can.update,fn:()=>ACTIONS.crudEdit(d)},
+      {label:'Duplicate',icon:'⧉',disabled:!can.create,fn:()=>ACTIONS.crudDup(d)},
+      {sep:true},
+      active?{label:'Disable',icon:'○',disabled:!can.state,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'disable'})}
+            :{label:'Enable',icon:'●',disabled:!can.state,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'enable'})},
+      archived?{label:'Restore',icon:'↺',disabled:!can.archive,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'restore'})}
+              :{label:'Archive',icon:'⛁',disabled:!can.archive,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'archive'})},
+      {label:'Delete',icon:'🗑',cls:'danger',disabled:!can.delete,fn:()=>ACTIONS.crudDelete(d)}];
   },
   projMore:(d)=>{
     const p=proj(+d.pid);
@@ -8242,12 +8710,33 @@ const MO_API = {
       headers:{'Content-Type':'application/json',Accept:'application/json'},
       body:body!==undefined?JSON.stringify(body):undefined});
     const j=await r.json().catch(()=>({}));
-    if(!r.ok) throw new Error(j.message||('HTTP '+r.status));
+    if(!r.ok){ if(r.status===401) handle401(); throw new Error(j.message||('HTTP '+r.status)); }
     return j;
   },
   get(p){return this.req('GET',p);}, post(p,b){return this.req('POST',p,b);},
   patch(p,b){return this.req('PATCH',p,b);}, del(p){return this.req('DELETE',p);}
 };
+/* ── Session / logout (auth) ──────────────────────────────────────────────
+   Explicit logout ends the session server-side and wipes every client cache so
+   the browser Back button can't resurface protected data. Any 401 (expired /
+   destroyed session) triggers the same wipe + a redirect to /login with notice. */
+let _loggingOut=false;
+async function clearClientAuth(){
+  try{ localStorage.clear(); sessionStorage.clear(); }catch(_){}
+  try{ if(window.caches){ const ks=await caches.keys(); await Promise.all(ks.map(k=>caches.delete(k))); } }catch(_){}
+  try{ if(navigator.serviceWorker){ const rs=await navigator.serviceWorker.getRegistrations(); await Promise.all(rs.map(r=>r.unregister())); } }catch(_){}
+}
+async function doLogout(){
+  if(_loggingOut)return; _loggingOut=true; window.__MO_LIVE__=false;
+  try{ await fetch('/api/auth/logout',{method:'POST',credentials:'same-origin'}); }catch(_){}
+  await clearClientAuth();
+  window.location.replace('/login');       // replace() → Back can't return to the dashboard
+}
+function handle401(){
+  if(_loggingOut)return; _loggingOut=true; window.__MO_LIVE__=false;
+  clearClientAuth();
+  window.location.replace('/login?expired=1');
+}
 /* Upload an image file → returns its URL (add-member + profile photos). */
 async function uploadImage(file){
   const fd=new FormData(); fd.append('image',file);
@@ -8274,14 +8763,19 @@ async function hydrateFromServer(){
     'vendors','equipment_categories','equipment_items','equipment_kits','kit_items','equipment_bookings','equipment_transactions',
     'maintenance_records','shoots','shoot_crew','leave_types','leave_requests','leave_replacements','holidays',
     'labels','boards','board_columns','cards','kra_cycles','kras','kra_reviews','performance_snapshots','comments','saved_views',
-    'automation_rules','users'];
+    'automation_rules','teams','team_members','duty_flags','user_duties','skills','user_skills','assignments','notifications',
+    'project_types','deliverable_types','task_categories','project_templates','template_deliverables','academic_years',
+    'campuses','capacity_roles','tags','users'];
   const st=await MO_API.get('/state');
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
   // Bind identity to the real logged-in Nerve user (server sends its prototype int id).
   if(typeof st.me==='number' && DB.users.some(u=>u.id===st.me)) S.me=st.me;
   // Clear the prototype's seed activity + notifications so nothing dummy shows on live;
   // audit() re-populates the activity feed from this session's real actions.
-  DB.audit_logs=[]; DB.activity=[]; genNotifications();
+  // Notifications are now server-persisted (written by the automation engine) and
+  // arrive via /state; only synthesize client-side if the server didn't send any.
+  DB.audit_logs=[]; DB.activity=[];
+  if(!Array.isArray(st.notifications)) genNotifications();
   window.__MO_LIVE__=true;
   return {projects:(st.projects||[]).length, reports:(st.daily_reports||[]).length};
 }

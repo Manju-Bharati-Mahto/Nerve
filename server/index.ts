@@ -138,7 +138,7 @@ import {
 } from "./branding-db.js";
 import * as designDb from "./design-db.js";
 import { bootstrapMediaOpsDatabase } from "./mediaops-db.js";
-import { registerMediaOpsApi } from "./mediaops-api.js";
+import { registerMediaOpsApi, runMediaOpsAutomations } from "./mediaops-api.js";
 
 const app = express();
 const PgStore = connectPgSimple(session);
@@ -2808,7 +2808,12 @@ bootstrapDatabase()
       maybeRunScheduledSync()
         .then(r => { if (r) console.log(`Outreach auto-sync (${r.slot} IST): ${r.result.synced_pages} pages, ${r.result.upserted_posts} posts, ${r.result.refreshed_live_posts} live posts refreshed.`); })
         .catch(e => console.error('Outreach auto-sync failed:', e));
+      runMediaOpsAutomations()
+        .then(r => { if (r.autoApproved || r.notified) console.log(`Media Ops automations: ${r.autoApproved} report(s) auto-approved, ${r.notified} notification(s) queued.`); })
+        .catch(e => console.error('Media Ops automations failed:', e));
     }, 5 * 60 * 1000).unref();
+    // Boot run so notifications / auto-approve don't wait for the first 5-min tick.
+    setTimeout(() => { runMediaOpsAutomations().catch(e => console.error('Media Ops automations (boot) failed:', e)); }, 8000).unref();
 
     app.listen(config.apiPort, () => {
       console.log(`Nerve API listening on ${config.apiPort}`);
