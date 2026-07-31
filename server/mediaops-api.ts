@@ -1113,6 +1113,65 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.status(201).json({ link: ins.rows[0] });
   }));
 
+  // Edit project details (§13 PATCH /projects/:id). Owner/PM/TL/Admin.
+  app.patch(`${P}/projects/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Project not found.");
+    const isPM = await pool.query(`SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND is_project_manager AND removed_at IS NULL`, [id, u.id]);
+    if (!(isMoAdmin(u) || isMoTL(u) || cur.owner_id === u.id || isPM.rows[0]))
+      return sendError(res, 403, "Only the owner/PM, a Team Lead or Admin may edit this project.");
+    const b = req.body as Record<string, unknown>;
+    if (typeof b.name === "string" && (b.name.trim().length < 3 || b.name.trim().length > 120))
+      return sendError(res, 400, "VR-6: name must be 3–120 characters.");
+    if (b.start_date && b.end_date && String(b.end_date) < String(b.start_date))
+      return sendError(res, 400, "VR-6: end date must be on or after start date.");
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    for (const k of ["name", "description", "faculty_served", "priority", "start_date", "end_date", "cover_image_url", "academic_year_id"])
+      if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
+    if (!fields.length) return res.json({ project: cur });
+    vals.push(id);
+    const { rows } = await pool.query(`UPDATE mo_projects SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals);
+    await audit(u, "project.updated", "project", id, cur, rows[0], req);
+    res.json({ project: rows[0] });
+  }));
+
+  // Leave replacement (FR-10.3 / §13 POST /leave/:id/replacements). TL/Admin.
+  app.post(`${P}/leave/:id/replacements`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may assign replacements.");
+    const lid = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    const shootId = Number(b.shoot_id), repl = String(b.replacement_user_id ?? "");
+    const lr = (await pool.query(`SELECT user_id FROM mo_leave_requests WHERE id=$1`, [lid])).rows[0];
+    if (!lr) return sendError(res, 404, "Leave request not found.");
+    if (!shootId || !repl) return sendError(res, 400, "shoot_id and replacement_user_id are required.");
+    await pool.query(`INSERT INTO mo_leave_replacements (leave_request_id, shoot_id, replacement_user_id) VALUES ($1,$2,$3)`, [lid, shootId, repl]);
+    await pool.query(`INSERT INTO mo_shoot_crew (shoot_id, user_id, capacity_role_id, is_replacement, replaced_user_id)
+                      VALUES ($1,$2,2,true,$3) ON CONFLICT DO NOTHING`, [shootId, repl, lr.user_id]);
+    await audit(u, "leave.replacement_assigned", "shoot", shootId, null, { leave: lid, replacement: repl }, req);
+    res.status(201).json({ ok: true });
+  }));
+
+  // Admin audit browser (FR-13.3) — read the real append-only mo_audit_logs.
+  app.get(`${P}/audit`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "The audit log is Admin-only (FR-13.3).");
+    const q = req.query as Record<string, unknown>;
+    const conds: string[] = [], vals: unknown[] = []; let i = 1;
+    if (q.entity_type) { conds.push(`a.entity_type=$${i++}`); vals.push(String(q.entity_type)); }
+    if (q.action) { conds.push(`a.action ILIKE $${i++}`); vals.push("%" + String(q.action) + "%"); }
+    if (q.actor) { conds.push(`us.full_name ILIKE $${i++}`); vals.push("%" + String(q.actor) + "%"); }
+    const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
+    const { rows } = await pool.query(
+      `SELECT a.id, a.actor_id, us.full_name AS actor_name, a.actor_role, a.action, a.entity_type, a.entity_id,
+              a.before, a.after, a.occurred_at, a.ip, a.user_agent
+       FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id ${where}
+       ORDER BY a.occurred_at DESC LIMIT 300`, vals);
+    res.json({ audit: rows });
+  }));
+
   // ═════════════════════════ DASHBOARD (§7.1) ═════════════════════════════
   app.get(`${P}/dashboard`, asyncHandler(async (_req, res) => {
     const u = requireMedia(res); if (!u) return;

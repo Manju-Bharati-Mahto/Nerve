@@ -144,5 +144,15 @@ Each batch is verified with `tsc`, targeted API tests (curl), and Playwright bro
 | **B5** social/mail status silently not saved (FR-4.5) | wired `setSocial`/`setMail` to `PATCH /deliverables/:id` | ✅ social status **posted persisted** on `/state` |
 
 Known follow-up from this batch: SVG rejection currently returns 500 (should be a clean 400 — cosmetic, rejection itself is correct); B10 (missing FK) added to schema for fresh DBs only (existing DBs need an ALTER migration).
+
+### Batch P1a — functional integrity, part 1 (landed 2026-07-31)
+| Gap | Fix | Verified |
+|---|---|---|
+| **B6a** audit browser showed session-only client data | new `GET /audit` (admin-only, filterable) reads the real append-only `mo_audit_logs`; client `loadAudit()` fetches it and remaps actor → prototype id | ✅ 75 real rows loaded, admin 200 / **employee 403** |
+| **B8** Boards/Analytics/Team not URL-guarded (FR-14.1/AC-10) | `roleDenied()` guard at the top of `viewBoards`/`viewAnalytics`/`viewTeam` | ✅ employee blocked on all three via direct URL |
+| §13 `PATCH /projects/:id` missing | endpoint (owner/PM/TL/Admin, VR-6 validated) + "Edit details" action wired end-to-end | ✅ admin edit persists, **employee 403** |
+| FR-10.3 leave replacement not persisted | `POST /leave/:id/replacements` (TL/Admin) + `assignReplacement` now `moSync`s | ✅ 201, `mo_leave_replacements` + `mo_shoot_crew` rows created |
+
+Deferred from P1 into **P1b** (coupled work): B7 KRA create/self/manager wiring (whole module), and B9 org-table hydration — hydrating empty `teams`/`team_members` would *break* TL scoping without a team-management UI, so it ships together with "assign employees to a team lead".
 </content>
 </invoke>
