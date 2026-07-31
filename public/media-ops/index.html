@@ -1835,7 +1835,7 @@ DB.automation_rules = [
 
 /* runtime tables filled by the engine */
 DB.daily_reports=[]; DB.report_tasks=[]; DB.performance_snapshots=[];
-DB.notifications=[]; DB.audit_logs=[]; DB.comments=[]; DB.activity=[];
+DB.notifications=[]; DB.audit_logs=[]; DB.comments=[]; DB.activity=[]; DB.assignments=[];
 /* ==========================================================================
    GENERATORS — daily reports (§11.4), snapshots (§7.8), notifications, audit
    ========================================================================== */
@@ -3349,10 +3349,25 @@ function heatmapWidget(){
    MY DAY (§5.2 · wireframe W2) — the mobile landing screen, shown as a
    real phone frame on desktop so the mobile composition can be reviewed.
    ========================================================================== */
+/* Task/Assignment layer: is `date` within an assignment's schedule? */
+function inSchedule(a,date){
+  if(a.start_date&&a.due_date)return date>=a.start_date&&date<=a.due_date;
+  if(a.start_date)return date>=a.start_date;
+  if(a.due_date)return date<=a.due_date;
+  return true;                                    /* undated → active */
+}
+/* Assignments (scheduled tasks) for a user on a date — powers Today's Assignments.
+   Uses the REAL current date (rtoday), since assignments are scheduled with real
+   dates, not the prototype's fixed demo TODAY. */
+function myAssignments(uid=S.me,date){
+  date=date||rtoday();
+  return (DB.assignments||[]).filter(a=>(a.assignees||[]).includes(uid)&&a.status!=='cancelled'&&inSchedule(a,String(date).slice(0,10)));
+}
 function viewMyDay(){
   const r=DB.daily_reports.find(x=>x.user_id===S.me&&x.report_date===TODAY);
   const tasks=r?DB.report_tasks.filter(t=>t.daily_report_id===r.id):[];
   const myShoots=DB.shoots.filter(s=>s.shoot_date===TODAY&&DB.shoot_crew.some(c=>c.shoot_id===s.id&&c.user_id===S.me));
+  const myAssigns=myAssignments(S.me);   /* scheduled tasks assigned to me for today */
   const held=DB.equipment_items.filter(e=>{const h=eqHolder(e.id);return h&&h.holder_id===S.me;});
   const myDue=DB.deliverables.filter(d=>d.owner_id===S.me&&!['delivered','not_required','cancelled'].includes(d.status))
     .sort((a,b)=>(a.due_date||'9')<(b.due_date||'9')?-1:1);
@@ -3366,13 +3381,21 @@ function viewMyDay(){
         '<span class="status st-warn"><span class="si">◐</span>On leave</span>'}
     </div>
 
-    <div class="card mb4"><div class="card-head"><h3>Today’s assignments</h3></div>
-      <div class="card-body flush">${myShoots.length?myShoots.map(s=>`
-        <button class="list-row" data-drawer="shoot:${s.id}"><span style="font-size:16px;color:var(--info)">◉</span>
-          <span class="lr-main"><b>${esc(s.title)}</b>
-            <span>${esc(s.call_time)} call · ${esc(s.location)}</span>
-            <span>${avStack(DB.shoot_crew.filter(c=>c.shoot_id===s.id).map(c=>c.user_id),4)}</span></span>
-        </button>`).join(''):`<div class="empty" style="padding:20px"><p>No shoot today. Desk work.</p></div>`}
+    <div class="card mb4"><div class="card-head"><h3>Today’s assignments</h3>
+      <div class="ca"><span class="chip">${myAssigns.length+myShoots.length}</span></div></div>
+      <div class="card-body flush">
+        ${myAssigns.map(a=>`<div class="list-row" style="cursor:default">
+          <span style="width:8px;height:8px;border-radius:50%;flex:0 0 auto;background:${({urgent:'var(--danger)',high:'var(--warn)',normal:'var(--info)',low:'var(--text-3)'})[a.priority]||'var(--info)'}" title="${esc(a.priority)} priority"></span>
+          <span class="lr-main"><b>${esc(a.title)}</b>
+            <span><span class="code">${esc(proj(a.project_id).code||'')}</span> ${esc(proj(a.project_id).name)}${a.start_time?' · '+esc(a.start_time)+'–'+esc(a.end_time||''):''}${a.due_date?' · due '+D.fmt(a.due_date):''} · by ${esc((user(a.assigned_by).full_name||'—').split(' ')[0])}</span></span>
+          <select class="inp" style="height:28px;font-size:12px;width:auto;flex:0 0 auto" onchange="ACTIONS.setAssignStatus({aid:${a.id},status:this.value})">
+            ${['not_started','in_progress','done','blocked'].map(s=>`<option value="${s}" ${a.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}</select>
+        </div>`).join('')}
+        ${myShoots.map(s=>`<button class="list-row" data-drawer="shoot:${s.id}"><span style="font-size:16px;color:var(--info);flex:0 0 auto">◉</span>
+          <span class="lr-main"><b>${esc(s.title)} <span class="chip">shoot</span></b>
+            <span>${esc(s.call_time)} call · ${esc(s.location)}</span></span>
+          <span>${avStack(DB.shoot_crew.filter(c=>c.shoot_id===s.id).map(c=>c.user_id),4)}</span></button>`).join('')}
+        ${(!myAssigns.length&&!myShoots.length)?`<div class="empty" style="padding:20px"><p>No assignments scheduled for today.</p></div>`:''}
       </div></div>
 
     <div class="card mb4"><div class="card-head"><h3>My projects</h3>
@@ -3863,6 +3886,7 @@ function viewProject(id,tab){
         <span class="f ac gap2"><span class="small mut3">Owner</span>${avatar(p.owner_id,'sm')}
           <span class="small b">${esc(user(p.owner_id).full_name)}</span></span>
         <button class="btn sm" data-act="watchProject" data-pid="${p.id}">◔ Watch</button>
+        ${can('project.assign')?`<button class="btn sm" data-act="newAssignment" data-pid="${p.id}">＋ Assign task</button>`:''}
         <button class="btn sm" data-act="newDeliverable" data-pid="${p.id}">＋ Deliverable</button>
         <button class="btn sm primary" data-act="newShoot" data-pid="${p.id}" ${can('project.assign')?'':'disabled'}>＋ Shoot</button>
         <button class="btn sm" data-menu="projMore" data-pid="${p.id}">⋯</button>
@@ -7061,6 +7085,14 @@ function submitReport(date){
       <p>${D.fmtLong(d)} · ${ts.length} tasks · ${mins2h(total)}. This is a confirmation, not a re-typing exercise (D1).</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
     <div class="mo-body">
+      ${(()=>{const as=myAssignments(S.me),
+        dd=DB.deliverables.filter(x=>x.owner_id===S.me&&x.due_date===d&&!['delivered','not_required','cancelled'].includes(x.status));
+        return `<div class="note mb3"><b>Auto-composed from your day — review, don’t re-type (D1):</b>
+          <div class="between small mt2"><span>Today’s assignments</span><span class="b">${as.length}</span></div>
+          <div class="between small"><span>Task logs</span><span class="b">${ts.length}</span></div>
+          <div class="between small"><span>Deliverables due today</span><span class="b">${dd.length}</span></div>
+          <div class="between small"><span>Working hours</span><span class="b">${mins2h(total)}</span></div>
+          ${as.length?`<div class="small mut mt2">Assignments: ${as.map(a=>esc(a.title)+' <span class="chip">'+a.status.replace('_',' ')+'</span>').join(' · ')}</div>`:''}</div>`;})()}
       ${ts.map(t=>`<div class="list-row" style="cursor:default">
         <span>${tcat(t.task_category_id).icon}</span>
         <span class="lr-main"><b>${esc(t.description)}</b>
@@ -8067,6 +8099,43 @@ const ACTIONS = {
     closeModal();render();
     moSync(MO_API.patch('/projects/'+p.id,{name,priority:pri,faculty_served:fac,start_date:start,end_date:end,description:desc}),()=>{render();toast('Project updated','ok');});
   },
+  setAssignStatus:(d)=>{
+    const a=(DB.assignments||[]).find(x=>x.id===+d.aid); if(a)a.status=d.status; render();
+    moSync(MO_API.patch('/assignments/'+d.aid,{status:d.status}),()=>{render();toast('Task '+d.status.replace('_',' '),'ok');});
+  },
+  newAssignment:(d)=>{
+    const pid=+d.pid;
+    modal(`<div class="mo-head"><div><h2>Assign a task</h2><p>Scheduled work for crew — appears in their My Day “Today’s assignments” on the day.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Title <span class="req">*</span></label><input class="inp" id="na-title" placeholder="e.g. Edit convocation highlights"></div>
+        <div class="field"><label class="lbl">Assign to <span class="req">*</span></label>
+          <div class="f wrap gap2" id="na-users">${DB.users.filter(u=>u.is_active).map(u=>`<button type="button" class="chip" data-uid="${u.id}" onclick="this.classList.toggle('sel')">${esc(u.full_name)}</button>`).join('')}</div></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Start date</label><input class="inp" type="date" id="na-start" value="${rtoday()}"></div>
+          <div class="field"><label class="lbl">Due date</label><input class="inp" type="date" id="na-due" value="${rtoday()}"></div></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Start time</label><input class="inp" type="time" id="na-stime"></div>
+          <div class="field"><label class="lbl">End time</label><input class="inp" type="time" id="na-etime"></div></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Priority</label><select class="inp" id="na-pri"><option value="normal">Normal</option><option value="urgent">Urgent</option><option value="high">High</option><option value="low">Low</option></select></div>
+          <div class="field"><label class="lbl">Status</label><select class="inp" id="na-status"><option value="not_started">Not started</option><option value="in_progress">In progress</option></select></div></div>
+        <div class="field"><label class="lbl">Notes</label><textarea class="inp" id="na-notes" placeholder="Details, specs, context…"></textarea></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="createAssignment" data-pid="${pid}">Assign task</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  createAssignment:(d)=>{
+    const title=$('#na-title').value.trim(); if(!title){toast('Title is required','bad');return;}
+    const assignees=$$('#na-users .chip.sel').map(c=>ruid(+c.dataset.uid));
+    if(!assignees.length){toast('Assign to at least one member','bad');return;}
+    const start=$('#na-start').value, due=$('#na-due').value;
+    if(start&&due&&due<start){toast('Due date must be on or after the start date','bad');return;}
+    const payload={title,assignees,start_date:start,due_date:due,start_time:$('#na-stime').value,end_time:$('#na-etime').value,
+      priority:$('#na-pri').value,status:$('#na-status').value,notes:$('#na-notes').value.trim()};
+    closeModal();
+    moSync(MO_API.post('/projects/'+d.pid+'/tasks',payload),()=>{render();toast('Task assigned','ok');});
+  },
   nlSearch:()=>{
     modal(`<div class="mo-head"><div><h2>Natural-language search <span class="ai-chip">✦ AI-5</span></h2>
         <p>Maps plain English to structured filters. The filters remain visible and editable — you always see what it did.</p></div></div>
@@ -8384,7 +8453,7 @@ async function hydrateFromServer(){
     'vendors','equipment_categories','equipment_items','equipment_kits','kit_items','equipment_bookings','equipment_transactions',
     'maintenance_records','shoots','shoot_crew','leave_types','leave_requests','leave_replacements','holidays',
     'labels','boards','board_columns','cards','kra_cycles','kras','kra_reviews','performance_snapshots','comments','saved_views',
-    'automation_rules','teams','team_members','duty_flags','user_duties','skills','user_skills','notifications','users'];
+    'automation_rules','teams','team_members','duty_flags','user_duties','skills','user_skills','assignments','notifications','users'];
   const st=await MO_API.get('/state');
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
   // Bind identity to the real logged-in Nerve user (server sends its prototype int id).

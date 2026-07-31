@@ -197,6 +197,28 @@ export async function bootstrapMediaOpsDatabase() {
       deliverable_type_id BIGINT NOT NULL, title_pattern TEXT NOT NULL,
       default_weight SMALLINT NOT NULL DEFAULT 1, days_offset_due INTEGER NOT NULL DEFAULT 5
     )`);
+  // Task/Assignment layer — a TL/Admin assigns scheduled work to crew inside a
+  // project. Distinct from mo_project_assignments (membership → "My Projects") and
+  // from mo_report_tasks (self-logged work). Surfaces in the assignee's "Today's
+  // Assignments" when the current date falls within [start_date, due_date].
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_assignments (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      project_id BIGINT NOT NULL REFERENCES mo_projects(id) ON DELETE CASCADE,
+      title TEXT NOT NULL, assigned_by TEXT REFERENCES users(id),
+      priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('urgent','high','normal','low')),
+      status TEXT NOT NULL DEFAULT 'not_started' CHECK (status IN ('not_started','in_progress','done','blocked','cancelled')),
+      start_date DATE, due_date DATE, start_time TEXT, end_time TEXT, notes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_assignment_users (
+      assignment_id BIGINT NOT NULL REFERENCES mo_assignments(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      PRIMARY KEY (assignment_id, user_id)
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_assign_sched ON mo_assignments(start_date, due_date)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_assign_user ON mo_assignment_users(user_id)`);
 
   // ── §11.3 Deliverables & assets ──────────────────────────────────────────
   await pool.query(`

@@ -184,6 +184,17 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       o.assignees = (o.assignees as unknown[]).map(toInt);
       return o;
     });
+    // Task/Assignment layer — embed the assignee list (like cards).
+    const assigns = await pool.query(`
+      SELECT to_jsonb(a) || jsonb_build_object(
+        'assignees', COALESCE((SELECT jsonb_agg(au.user_id) FROM mo_assignment_users au WHERE au.assignment_id=a.id),'[]'::jsonb)
+      ) AS row FROM mo_assignments a`);
+    out.assignments = assigns.rows.map((r) => {
+      const o = r.row as Record<string, unknown>;
+      o.assigned_by = toInt(o.assigned_by);
+      o.assignees = (o.assignees as unknown[]).map(toInt);
+      return o;
+    });
     // Real roster (replaces the prototype's seed users) + the current identity.
     out.users = crew.map((r) => {
       const name = String(r.full_name ?? "User");
@@ -1260,6 +1271,65 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const id = (req.body as Record<string, unknown>).id;
     if (id) await pool.query(`UPDATE mo_notifications SET is_read=true WHERE id=$1 AND user_id=$2`, [Number(id), u.id]);
     else await pool.query(`UPDATE mo_notifications SET is_read=true WHERE user_id=$1`, [u.id]);
+    res.json({ ok: true });
+  }));
+
+  // ═════════════════ TASK / ASSIGNMENT layer (Projects → Assignments) ══════
+  // A TL/Admin assigns scheduled work to crew inside a project; it surfaces in the
+  // assignee's "Today's Assignments" when today ∈ [start_date, due_date].
+  app.post(`${P}/projects/:id/tasks`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may assign tasks.");
+    const pid = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    const title = String(b.title ?? "").trim();
+    if (!title) return sendError(res, 400, "Task title is required.");
+    const assignees = Array.isArray(b.assignees) ? (b.assignees as unknown[]).map(String) : [];
+    if (!assignees.length) return sendError(res, 400, "Assign the task to at least one member.");
+    if (b.start_date && b.due_date && String(b.due_date) < String(b.start_date))
+      return sendError(res, 400, "Due date must be on or after the start date.");
+    const priority = ["urgent", "high", "normal", "low"].includes(String(b.priority)) ? String(b.priority) : "normal";
+    const status = ["not_started", "in_progress", "done", "blocked", "cancelled"].includes(String(b.status)) ? String(b.status) : "not_started";
+    const ins = await pool.query(
+      `INSERT INTO mo_assignments (project_id, title, assigned_by, priority, status, start_date, due_date, start_time, end_time, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [pid, title, u.id, priority, status, (b.start_date as string) || null, (b.due_date as string) || null,
+       (b.start_time as string) || null, (b.end_time as string) || null, String(b.notes ?? "")]);
+    for (const uid of assignees)
+      await pool.query(`INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [ins.rows[0].id, uid]);
+    await audit(u, "assignment.created", "assignment", ins.rows[0].id, null, { title, assignees }, req);
+    res.status(201).json({ assignment: ins.rows[0] });
+  }));
+
+  app.patch(`${P}/assignments/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM mo_assignments WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Assignment not found.");
+    const isAssignee = (await pool.query(`SELECT 1 FROM mo_assignment_users WHERE assignment_id=$1 AND user_id=$2`, [id, u.id])).rows[0];
+    const priv = isMoAdmin(u) || isMoTL(u) || cur.assigned_by === u.id;
+    if (!priv && !isAssignee) return sendError(res, 403, "You can't change this assignment.");
+    const b = req.body as Record<string, unknown>;
+    // Assignees may only move the status; TL/Admin/creator may edit everything.
+    const cols = priv ? ["title", "priority", "status", "start_date", "due_date", "start_time", "end_time", "notes"] : ["status"];
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    for (const k of cols) if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
+    if (fields.length) { vals.push(id); await pool.query(`UPDATE mo_assignments SET ${fields.join(",")} WHERE id=$${i}`, vals); }
+    if (priv && Array.isArray(b.assignees)) {
+      await pool.query(`DELETE FROM mo_assignment_users WHERE assignment_id=$1`, [id]);
+      for (const uid of (b.assignees as unknown[]).map(String))
+        await pool.query(`INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [id, uid]);
+    }
+    await audit(u, "assignment.updated", "assignment", id, cur, b, req);
+    res.json({ ok: true });
+  }));
+
+  app.delete(`${P}/assignments/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may delete an assignment.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    await pool.query(`DELETE FROM mo_assignments WHERE id=$1`, [id]);
+    await audit(u, "assignment.deleted", "assignment", id, null, null, req);
     res.json({ ok: true });
   }));
 
