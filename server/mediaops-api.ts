@@ -283,24 +283,49 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       }
     }
     // FR-3.2: create deliverables from the SELECTED template items (#2 — per-item
-    // checkboxes), or the whole set if no selection was sent.
-    let made = 0;
-    const picked = Array.isArray(b.template_items) ? (b.template_items as unknown[]).map(Number) : null;
+    // checkboxes), or the whole set if no selection was sent. template_config (the
+    // richer form: per-item owners/priority/estimated hours) supersedes template_items
+    // and ALSO auto-generates one mo_assignments record per owner, so the work lands
+    // in each owner's My Day → Today's Assignments — no manual assignment step.
+    let made = 0, assignmentsMade = 0;
+    type TplCfg = { id: number; owners: string[]; priority: string; est_hours: number | null };
+    const cfg: TplCfg[] | null = Array.isArray(b.template_config)
+      ? (b.template_config as Array<Record<string, unknown>>).map((c) => ({
+          id: Number(c.id),
+          owners: Array.isArray(c.owners) ? (c.owners as unknown[]).map(String) : [],
+          priority: ["urgent", "high", "normal", "low"].includes(String(c.priority)) ? String(c.priority) : "normal",
+          est_hours: c.est_hours != null && !Number.isNaN(Number(c.est_hours)) ? Number(c.est_hours) : null,
+        }))
+      : null;
+    const picked = cfg ? cfg.map((c) => c.id) : (Array.isArray(b.template_items) ? (b.template_items as unknown[]).map(Number) : null);
     const tmpl = b.apply_template === false ? { rows: [] as Array<{ id: number }> }
       : await pool.query(`SELECT id FROM mo_project_templates WHERE project_type_id=$1 AND is_active LIMIT 1`, [typeId]);
     if (tmpl.rows[0]) {
       let items = (await pool.query(`SELECT * FROM mo_template_deliverables WHERE template_id=$1`, [tmpl.rows[0].id])).rows;
       if (picked) items = items.filter((it: { id: number }) => picked.includes(Number(it.id)));
       for (const it of items) {
-        await pool.query(
+        const c = cfg?.find((x) => x.id === Number(it.id));
+        const due = end ? addDays(end, it.days_offset_due) : null;
+        const dl = await pool.query(
           `INSERT INTO mo_deliverables (project_id, deliverable_type_id, title, owner_id, due_date, unit, weight, status)
-           SELECT $1,$2,$3,$4,$5, dt.default_unit, $6,'not_started' FROM mo_deliverable_types dt WHERE dt.id=$2`,
-          [id, it.deliverable_type_id, String(it.title_pattern).replace("{project}", name), u.id,
-           end ? addDays(end, it.days_offset_due) : null, it.default_weight]);
+           SELECT $1,$2,$3,$4,$5, dt.default_unit, $6,'not_started' FROM mo_deliverable_types dt WHERE dt.id=$2
+           RETURNING id, title`,
+          [id, it.deliverable_type_id, String(it.title_pattern).replace("{project}", name),
+           c?.owners[0] || u.id, due, it.default_weight]);
         made++;
+        // One assignment per owner (independent status per person).
+        for (const owner of (c?.owners ?? [])) {
+          const asg = await pool.query(
+            `INSERT INTO mo_assignments (project_id, deliverable_id, title, assigned_by, priority, status, start_date, due_date, estimated_hours)
+             VALUES ($1,$2,$3,$4,$5,'not_started',$6,$7,$8) RETURNING id`,
+            [id, dl.rows[0].id, dl.rows[0].title, u.id, c?.priority ?? "normal", start ?? null, due, c?.est_hours ?? null]);
+          await pool.query(`INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [asg.rows[0].id, owner]);
+          assignmentsMade++;
+        }
       }
     }
-    await audit(u, "project.created", "project", id, null, { name, status: gated ? "proposed" : "planning", deliverables_created: made }, req);
+    await audit(u, "project.created", "project", id, null,
+      { name, status: gated ? "proposed" : "planning", deliverables_created: made, assignments_created: assignmentsMade }, req);
     const { rows } = await pool.query(`SELECT * FROM mo_projects WHERE id=$1`, [id]);
     res.status(201).json({ project: rows[0], deliverables_created: made });
   }));

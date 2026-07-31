@@ -234,6 +234,10 @@ export async function bootstrapMediaOpsDatabase() {
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_assign_sched ON mo_assignments(start_date, due_date)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_assign_user ON mo_assignment_users(user_id)`);
+  // Deliverable-backed assignments (auto-generated at project creation): link the
+  // assignment to its deliverable + carry an effort estimate. Existing rows keep NULLs.
+  await pool.query(`ALTER TABLE mo_assignments ADD COLUMN IF NOT EXISTS deliverable_id BIGINT REFERENCES mo_deliverables(id) ON DELETE CASCADE`);
+  await pool.query(`ALTER TABLE mo_assignments ADD COLUMN IF NOT EXISTS estimated_hours NUMERIC(5,1)`);
 
   // ── §11.3 Deliverables & assets ──────────────────────────────────────────
   await pool.query(`

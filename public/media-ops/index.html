@@ -3387,7 +3387,8 @@ function viewMyDay(){
         ${myAssigns.map(a=>`<div class="list-row" style="cursor:default">
           <span style="width:8px;height:8px;border-radius:50%;flex:0 0 auto;background:${({urgent:'var(--danger)',high:'var(--warn)',normal:'var(--info)',low:'var(--text-3)'})[a.priority]||'var(--info)'}" title="${esc(a.priority)} priority"></span>
           <span class="lr-main"><b>${esc(a.title)}</b>
-            <span><span class="code">${esc(proj(a.project_id).code||'')}</span> ${esc(proj(a.project_id).name)}${a.start_time?' · '+esc(a.start_time)+'–'+esc(a.end_time||''):''}${a.due_date?' · due '+D.fmt(a.due_date):''} · by ${esc((user(a.assigned_by).full_name||'—').split(' ')[0])}</span></span>
+            <span><span class="code">${esc(proj(a.project_id).code||'')}</span> ${esc(proj(a.project_id).name)}${a.estimated_hours?' · ~'+(+a.estimated_hours)+'h':''}${a.start_time?' · '+esc(a.start_time)+'–'+esc(a.end_time||''):''}${a.due_date?' · due '+D.fmt(a.due_date):''} · by ${esc((user(a.assigned_by).full_name||'—').split(' ')[0])}</span></span>
+          <button class="btn xs" style="flex:0 0 auto" title="Log work on this — project & deliverable pre-filled" onclick="ACTIONS.logFromAssign({aid:${a.id}})">✎ Log</button>
           <select class="inp" style="height:28px;font-size:12px;width:auto;flex:0 0 auto" onchange="ACTIONS.setAssignStatus({aid:${a.id},status:this.value})">
             ${['not_started','in_progress','done','blocked'].map(s=>`<option value="${s}" ${a.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}</select>
         </div>`).join('')}
@@ -7052,7 +7053,7 @@ function openNewProject(){
       </div>
       <div class="field"><label class="lbl">Description</label><textarea class="inp" id="np-desc" placeholder="Scope, constraints, who asked for it…"></textarea></div>
       <div class="field"><label class="lbl">Assign crew</label>
-        <div class="f wrap gap2" id="np-assign">${(can('project.assign')?DB.users.filter(x=>x.is_active):DB.users.filter(x=>x.id===S.me)).map(x=>`<button type="button" class="chip ${x.id===S.me?'sel':''}" data-uid="${x.id}" onclick="this.classList.toggle('sel')">${esc(x.full_name)}</button>`).join('')}</div>
+        <div class="f wrap gap2" id="np-assign">${(can('project.assign')?DB.users.filter(x=>x.is_active):DB.users.filter(x=>x.id===S.me)).map(x=>`<button type="button" class="chip ${x.id===S.me?'sel':''}" data-uid="${x.id}" onclick="this.classList.toggle('sel');ACTIONS.npCrewSync()">${esc(x.full_name)}</button>`).join('')}</div>
         <div class="hint">${can('project.assign')?'Assigned crew see this project in their dashboard (§8).':'You can only assign the project to yourself.'}</div></div>
       <div class="field"><label class="lbl">Template deliverables</label>
         <div class="card"><div class="card-body tight" id="np-template"></div></div>
@@ -7471,11 +7472,34 @@ const ACTIONS = {
     const box=$('#np-template');if(!box)return;
     if(!t){box.innerHTML='<span class="small mut3">No template for this type — create deliverables manually.</span>';return;}
     const items=DB.template_deliverables.filter(x=>x.template_id===t.id);
-    box.innerHTML=`<div class="small b mb2">${esc(t.name)} — tick the deliverables to create</div>
-      ${items.map(i=>`<label class="between small" style="padding:4px 0;cursor:pointer">
-        <span class="f ac gap2"><input type="checkbox" class="np-tmpl-item" value="${i.id}" checked>
-          <span>${dtype(i.deliverable_type_id).icon} ${esc(dtype(i.deliverable_type_id).name)}</span></span>
-        <span class="chip">due +${i.days_offset_due}d · weight ${i.default_weight}</span></label>`).join('')}`;
+    /* Each deliverable is an assignment-configuration row: owners (from the crew
+       selected above), priority, estimated hours. Owners → auto assignments. */
+    box.innerHTML=`<div class="small b mb2">${esc(t.name)} — tick the deliverables to create; pick owners to auto-assign the work</div>
+      ${items.map(i=>`<div class="np-tpl-row" style="padding:8px 0;border-bottom:1px solid var(--border)">
+        <div class="between mb1"><label class="f ac gap2" style="cursor:pointer">
+          <input type="checkbox" class="np-tmpl-item" value="${i.id}" checked>
+          <b class="small">${dtype(i.deliverable_type_id).icon} ${esc(dtype(i.deliverable_type_id).name)}</b></label>
+          <span class="chip">due +${i.days_offset_due}d</span></div>
+        <div class="f wrap gap2 ac" style="padding-left:24px">
+          <span class="xsmall mut3" style="min-width:72px">Assigned to</span>
+          <span class="f wrap gap1 np-own" data-tid="${i.id}"><span class="xsmall mut3">— select crew above —</span></span>
+          <select class="inp np-pri-item" data-tid="${i.id}" style="height:26px;font-size:11px;width:auto">
+            <option value="normal">Normal</option><option value="urgent">Urgent</option><option value="high">High</option><option value="low">Low</option></select>
+          <input class="inp np-est-item" data-tid="${i.id}" type="number" min="0" step="0.5" value="${Math.max(2,(i.default_weight||1)*4)}"
+            title="Estimated hours" style="height:26px;font-size:11px;width:58px"> <span class="xsmall mut3">h</span>
+        </div></div>`).join('')}`;
+    ACTIONS.npCrewSync();
+  },
+  npCrewSync:()=>{
+    /* Owner pickers show ONLY the crew currently selected for this project;
+       already-picked owners survive as long as they stay on the crew. */
+    const crew=$$('#np-assign .chip.sel').map(c=>+c.dataset.uid);
+    $$('#np-template .np-own').forEach(box=>{
+      const kept=$$('#np-template .np-own[data-tid="'+box.dataset.tid+'"] .np-owner.sel').map(c=>+c.dataset.uid).filter(u2=>crew.includes(u2));
+      box.innerHTML=crew.length?crew.map(u2=>`<button type="button" class="chip np-owner ${kept.includes(u2)?'sel':''}" data-uid="${u2}"
+        style="height:24px;font-size:11px;padding:0 8px" onclick="this.classList.toggle('sel')">${esc(user(u2).full_name.split(' ')[0])}</button>`).join('')
+        :'<span class="xsmall mut3">— select crew above —</span>';
+    });
   },
   createProject:()=>{
     const name=$('#np-name').value.trim();
@@ -7506,7 +7530,12 @@ const ACTIONS = {
     audit(S.me,'project.created','project',id,null,{name,status:p.status,deliverables_created:made});
     const _np={name,project_type_id:tid,priority:$('#np-pri').value,faculty_served:$('#np-fac').value,
       start_date:start,end_date:end,description:$('#np-desc').value.trim(),academic_year_id:+$('#np-year').value,
-      apply_template:true, template_items:$$('#np-template .np-tmpl-item:checked').map(c=>+c.value),
+      apply_template:true,
+      template_config:$$('#np-template .np-tmpl-item:checked').map(c=>{const tid=+c.value;
+        return {id:tid,
+          owners:$$('#np-template .np-own[data-tid="'+tid+'"] .np-owner.sel').map(o=>ruid(+o.dataset.uid)),
+          priority:($('#np-template .np-pri-item[data-tid="'+tid+'"]')||{}).value||'normal',
+          est_hours:+((($('#np-template .np-est-item[data-tid="'+tid+'"]')||{}).value)||0)||null};}),
       assignees:$$('#np-assign .chip.sel').map(c=>ruid(+c.dataset.uid))};
     closeModal();location.hash='#/media/projects/'+id;render();
     moSync(MO_API.post('/projects',_np), res=>{ if(res&&res.project) location.hash='#/media/projects/'+res.project.id; });
@@ -8319,6 +8348,19 @@ const ACTIONS = {
   setAssignStatus:(d)=>{
     const a=(DB.assignments||[]).find(x=>x.id===+d.aid); if(a)a.status=d.status; render();
     moSync(MO_API.patch('/assignments/'+d.aid,{status:d.status}),()=>{render();toast('Task '+d.status.replace('_',' '),'ok');});
+  },
+  logFromAssign:(d)=>{
+    /* Log Task from an assignment: project + deliverable inherited — the employee
+       only writes description, time and progress. No duplicate data entry. */
+    const a=(DB.assignments||[]).find(x=>x.id===+d.aid); if(!a)return;
+    openTaskLog();
+    const ps=$('#tl-project'); if(!ps)return;
+    if(![...ps.options].some(o=>+o.value===a.project_id))
+      ps.insertAdjacentHTML('beforeend',`<option value="${a.project_id}">${esc(proj(a.project_id).name)} — ${esc(proj(a.project_id).code||'')}</option>`);
+    ps.value=String(a.project_id);
+    if(ps.onchange)ps.onchange();
+    if(a.deliverable_id){const dsel=$('#tl-deliv');
+      if(dsel&&[...dsel.options].some(o=>+o.value===a.deliverable_id))dsel.value=String(a.deliverable_id);}
   },
   newAssignment:(d)=>{
     const pid=+d.pid;
