@@ -5737,9 +5737,13 @@ function crudState(){
 }
 function crudPersist(){const c=S.crud;try{localStorage.setItem('mo_crud_filter',JSON.stringify({mod:c.mod,status:c.status}));}catch(_){}}
 async function loadCrudMeta(){ if(!S._crudMeta) S._crudMeta=await MO_API.get('/crud/meta'); }
+/* After any config mutation: refresh the engine list AND re-hydrate the operational
+   DB so every picker/template in the app reflects the change immediately. */
+function crudAfterMutate(){ loadCrudList(); S._crudMeta=null; loadCrudMeta().catch(()=>{}); hydrateFromServer().then(render).catch(()=>{}); }
 async function loadCrudList(){
   const c=crudState();
-  S._crudData=await MO_API.get('/crud/'+c.mod+'?q='+encodeURIComponent(c.q)+'&status='+c.status+'&sort='+c.sort+'&dir='+c.dir+'&page='+c.page);
+  S._crudData=await MO_API.get('/crud/'+c.mod+'?q='+encodeURIComponent(c.q)+'&status='+c.status+'&sort='+c.sort+'&dir='+c.dir+'&page='+c.page
+    +(c.created_by?'&created_by='+encodeURIComponent(c.created_by):'')+(c.created_from?'&created_from='+c.created_from:''));
   render();
 }
 function crudModMeta(){const m=S._crudMeta;return m&&m.modules.find(x=>x.key===crudState().mod);}
@@ -5774,6 +5778,9 @@ function viewCrudEngine(preMod){
           onkeydown="if(event.key==='Enter')ACTIONS.crudQ({},this)" onblur="ACTIONS.crudQ({},this)">
         <select class="inp" style="height:32px;width:auto" onchange="ACTIONS.crudStatus({},this)">
           ${['active','disabled','archived','all'].map(s=>`<option value="${s}" ${c.status===s?'selected':''}>${s[0].toUpperCase()+s.slice(1)}</option>`).join('')}</select>
+        <select class="inp hide-sm" style="height:32px;width:auto;max-width:150px" title="Created by" onchange="ACTIONS.crudCreatedBy({},this)">
+          <option value="">Any creator</option>${DB.users.filter(u2=>u2.real_id).map(u2=>`<option value="${esc(u2.real_id)}" ${c.created_by===u2.real_id?'selected':''}>${esc(u2.full_name.split(' ')[0])}</option>`).join('')}</select>
+        <input class="inp hide-sm" type="date" style="height:32px;width:auto" title="Created on or after" value="${esc(c.created_from||'')}" onchange="ACTIONS.crudCreatedFrom({},this)">
         ${can.create?`<button class="btn sm primary" data-act="crudNew">＋ New</button>`:''}
       </div></div>
     ${selIds.length?`<div class="card-body tight" style="background:var(--surface-2)"><div class="f gap2 ac">
@@ -5856,8 +5863,10 @@ function crudViewModal(tab){
     tab==='general'?`<dl class="kv">${mod.cols.map(c2=>{const f=mod.fields.find(x=>x.name===c2);
         return `<dt>${esc(f?f.label:c2)}</dt><dd>${crudCellVal(mod,c2,r[c2])}</dd>`;}).join('')}
       <dt>Status</dt><dd>${r.archived_at?'Archived':(r[mod.activeCol]?'Active':'Disabled')}</dd>
+      <dt>Created by</dt><dd>${esc((DB.users.find(u2=>u2.real_id===r.created_by)||{}).full_name||r.created_by||'—')}</dd>
       <dt>Created</dt><dd>${r.created_at?D.fmt(String(r.created_at).slice(0,10)):'—'}</dd>
-      <dt>Updated</dt><dd>${r.updated_at?D.fmt(String(r.updated_at).slice(0,10)):'—'}</dd></dl>`:
+      <dt>Updated</dt><dd>${r.updated_at?D.fmt(String(r.updated_at).slice(0,10)):'—'}</dd>
+      <dt>Usage count</dt><dd>${v.dependencies.reduce((s,x)=>s+x.count,0)} reference(s) across ${v.dependencies.length} table(s)</dd></dl>`:
     tab==='config'?`<dl class="kv">${mod.fields.map(f=>`<dt>${esc(f.label)}</dt><dd>${crudCellVal(mod,f.name,r[f.name])}</dd>`).join('')}</dl>`:
     tab==='deps'?(v.dependencies.length?`${v.dependencies.map(d=>`<div class="between mb2"><span>${esc(d.label)}</span><span class="chip">${d.count}</span></div>`).join('')}
       <div class="note warn mt3">This record is referenced ${v.dependencies.reduce((s,d)=>s+d.count,0)} time(s) — it cannot be deleted, only archived (VR-11).</div>`
@@ -8029,6 +8038,8 @@ const ACTIONS = {
   crudMod:(d)=>{const c=crudState();c.mod=d.mod;c.page=1;c.q='';c.sel={};S._crudData=null;S._crudPre=d.mod;crudPersist();render();},
   crudQ:(d,n)=>{const c=crudState();if(c.q===n.value)return;c.q=n.value;c.page=1;loadCrudList();},
   crudStatus:(d,n)=>{const c=crudState();c.status=n.value;c.page=1;crudPersist();loadCrudList();},
+  crudCreatedBy:(d,n)=>{const c=crudState();c.created_by=n.value;c.page=1;loadCrudList();},
+  crudCreatedFrom:(d,n)=>{const c=crudState();c.created_from=n.value;c.page=1;loadCrudList();},
   crudSort:(d)=>{const c=crudState();if(c.sort===d.col)c.dir=c.dir==='asc'?'desc':'asc';else{c.sort=d.col;c.dir='asc';}loadCrudList();},
   crudPage:(d)=>{const c=crudState();c.page=+d.p;loadCrudList();},
   crudSel:(d,n)=>{const c=crudState();c.sel[d.id]=n.checked;render();},
@@ -8041,7 +8052,7 @@ const ACTIONS = {
     for(const f of mod.fields){const el=$('#cf-'+f.name);if(!el)continue;
       payload[f.name]=f.type==='switch'?el.checked:el.value;}
     const req=d.id?MO_API.patch('/crud/'+crudState().mod+'/'+d.id,payload):MO_API.post('/crud/'+crudState().mod,payload);
-    req.then(()=>{if(d.close||!d.id)closeModal();toast(d.id?'Saved':'Created','ok');loadCrudList();})
+    req.then(()=>{if(d.close||!d.id)closeModal();toast(d.id?'Saved':'Created','ok');crudAfterMutate();})
       .catch(e=>toast(e.message,'bad'));
   },
   crudViewOne:(d)=>{
@@ -8049,29 +8060,54 @@ const ACTIONS = {
       .catch(e=>toast(e.message,'bad'));
   },
   crudDup:(d)=>{
-    MO_API.post('/crud/'+crudState().mod+'/'+d.id+'/duplicate',{}).then(()=>{toast('Duplicated — "(Copy)" created','ok');loadCrudList();})
+    MO_API.post('/crud/'+crudState().mod+'/'+d.id+'/duplicate',{}).then(()=>{toast('Duplicated — "(Copy)" created','ok');crudAfterMutate();})
       .catch(e=>toast(e.message,'bad'));
   },
   crudStateAct:(d)=>{
-    MO_API.post('/crud/'+crudState().mod+'/'+d.id+'/state',{action:d.a}).then(()=>{closeModal();toast(d.a[0].toUpperCase()+d.a.slice(1)+'d','ok');loadCrudList();})
+    MO_API.post('/crud/'+crudState().mod+'/'+d.id+'/state',{action:d.a}).then(()=>{closeModal();toast(d.a[0].toUpperCase()+d.a.slice(1)+'d','ok');crudAfterMutate();})
       .catch(e=>toast(e.message,'bad'));
   },
   crudDelete:(d)=>{
     /* Dependency analysis FIRST — refuse + offer Archive when referenced. */
     MO_API.get('/crud/'+crudState().mod+'/'+d.id).then(v=>{
       if(v.dependencies.length){
-        modal(`<div class="mo-head"><div><h2>Cannot delete</h2><p>This record is in use — deleting it would orphan history.</p></div>
+        const canForce=!!(S._crudMeta&&S._crudMeta.can&&S._crudMeta.can.force);
+        modal(`<div class="mo-head"><div><h2>This configuration is currently used</h2><p>Deleting it would orphan history.</p></div>
             <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
           <div class="mo-body">${v.dependencies.map(x=>`<div class="between mb2"><span>Used by</span><span class="chip">${x.count} ${esc(x.label)}</span></div>`).join('')}
             <div class="note warn mt2"><b>VR-11:</b> deactivate or archive, never delete — referential history stays intact.</div></div>
           <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
-            <button class="btn primary ml-auto" data-act="crudStateAct" data-id="${d.id}" data-a="archive">⛁ Archive instead</button></div>`);
+            ${canForce?`<button class="btn danger" data-act="crudForcePrompt" data-id="${d.id}">⚠ Force delete…</button>`:''}
+            <div class="ml-auto f gap2">
+              <button class="btn" data-act="crudStateAct" data-id="${d.id}" data-a="disable">○ Disable</button>
+              <button class="btn primary" data-act="crudStateAct" data-id="${d.id}" data-a="archive">⛁ Archive</button></div></div>`);
         $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
         return;
       }
       if(!confirm('No dependencies found — delete permanently?'))return;
-      MO_API.del('/crud/'+crudState().mod+'/'+d.id).then(()=>{toast('Deleted','ok');loadCrudList();}).catch(e=>toast(e.message,'bad'));
+      MO_API.del('/crud/'+crudState().mod+'/'+d.id).then(()=>{toast('Deleted','ok');crudAfterMutate();}).catch(e=>toast(e.message,'bad'));
     }).catch(e=>toast(e.message,'bad'));
+  },
+  crudForcePrompt:(d)=>{
+    MO_API.get('/crud/'+crudState().mod+'/'+d.id).then(v=>{
+      modal(`<div class="mo-head"><div><h2 style="color:var(--danger)">⚠ Force Delete</h2>
+          <p>Super Admin only. This configuration is referenced by:</p></div>
+          <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+        <div class="mo-body">
+          ${v.dependencies.map(x=>`<div class="between mb2"><span>${esc(x.label)}</span><span class="chip">${x.count}</span></div>`).join('')||'<div class="small mut">No references.</div>'}
+          <div class="note warn mt2">Deleting it will <b>permanently remove or null these references</b>. This cannot be undone and is fully audited.</div>
+          <div class="field mt3"><label class="lbl">Type <span class="mono b">DELETE</span> to continue</label>
+            <input class="inp mono" id="fd-confirm" autocomplete="off" oninput="document.getElementById('fd-go').disabled=this.value!=='DELETE'"></div></div>
+        <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+          <button class="btn danger ml-auto" id="fd-go" disabled data-act="crudForceDo" data-id="${d.id}">Force delete permanently</button></div>`);
+      $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+    }).catch(e=>toast(e.message,'bad'));
+  },
+  crudForceDo:(d)=>{
+    if(($('#fd-confirm')||{}).value!=='DELETE')return;
+    MO_API.post('/crud/'+crudState().mod+'/'+d.id+'/force-delete',{confirm:'DELETE'})
+      .then(r=>{closeModal();toast('Force-deleted. '+Object.entries(r.cleaned||{}).map(([k,v])=>k+': '+v).join(' · '),'warn');crudAfterMutate();})
+      .catch(e=>toast(e.message,'bad'));
   },
   crudBulk:(d)=>{
     const c=crudState(), ids=Object.keys(c.sel).filter(k=>c.sel[k]).map(Number);
@@ -8085,7 +8121,7 @@ const ACTIONS = {
     }
     if(d.a==='delete'&&!confirm('Delete '+ids.length+' record(s)? Records still in use are skipped automatically.'))return;
     MO_API.post('/crud/'+c.mod+'/bulk',{ids,action:d.a}).then(r=>{
-      c.sel={};toast(r.done+' done'+(r.blocked?' · '+r.blocked+' blocked (in use — archive those instead)':''),r.blocked?'warn':'ok');loadCrudList();
+      c.sel={};toast(r.done+' done'+(r.blocked?' · '+r.blocked+' blocked (in use — archive those instead)':''),r.blocked?'warn':'ok');crudAfterMutate();
     }).catch(e=>toast(e.message,'bad'));
   },
   saveLookup:(d)=>{
@@ -8727,7 +8763,9 @@ async function hydrateFromServer(){
     'vendors','equipment_categories','equipment_items','equipment_kits','kit_items','equipment_bookings','equipment_transactions',
     'maintenance_records','shoots','shoot_crew','leave_types','leave_requests','leave_replacements','holidays',
     'labels','boards','board_columns','cards','kra_cycles','kras','kra_reviews','performance_snapshots','comments','saved_views',
-    'automation_rules','teams','team_members','duty_flags','user_duties','skills','user_skills','assignments','notifications','users'];
+    'automation_rules','teams','team_members','duty_flags','user_duties','skills','user_skills','assignments','notifications',
+    'project_types','deliverable_types','task_categories','project_templates','template_deliverables','academic_years',
+    'campuses','capacity_roles','tags','users'];
   const st=await MO_API.get('/state');
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
   // Bind identity to the real logged-in Nerve user (server sends its prototype int id).

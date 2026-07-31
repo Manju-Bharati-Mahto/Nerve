@@ -110,8 +110,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["daily_reports", "mo_daily_reports", null, ["user_id", "reviewed_by"]],
     ["report_tasks", "mo_report_tasks", null, []],
     // Phase 2 — equipment, shoots, leave
-    ["vendors", "mo_vendors", null, []],
-    ["equipment_categories", "mo_equipment_categories", null, []],
+    ["vendors", "mo_vendors", "archived_at IS NULL", []],
+    ["equipment_categories", "mo_equipment_categories", "archived_at IS NULL", []],
     ["equipment_items", "mo_equipment_items", "deleted_at IS NULL", []],
     ["equipment_kits", "mo_equipment_kits", null, []],
     ["kit_items", "mo_kit_items", null, []],
@@ -120,7 +120,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["maintenance_records", "mo_maintenance_records", null, ["reported_by"]],
     ["shoots", "mo_shoots", null, []],
     ["shoot_crew", "mo_shoot_crew", null, ["user_id", "replaced_user_id"]],
-    ["leave_types", "mo_leave_types", null, []],
+    ["leave_types", "mo_leave_types", "archived_at IS NULL", []],
     ["leave_requests", "mo_leave_requests", null, ["user_id", "decided_by"]],
     ["leave_replacements", "mo_leave_replacements", null, ["replacement_user_id"]],
     ["holidays", "mo_holidays", null, []],
@@ -135,12 +135,24 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["comments", "mo_comments", null, ["user_id"]],
     ["saved_views", "mo_saved_views", null, ["user_id"]],
     ["automation_rules", "mo_automation_rules", null, ["updated_by"]],
+    // Admin configuration (CRUD engine) — the DB is the source of truth for every
+    // picker/template in the operational UI. Archived rows are excluded (cannot be
+    // selected); disabled rows ship and are filtered by is_active client-side.
+    ["project_types", "mo_project_types", "archived_at IS NULL", []],
+    ["deliverable_types", "mo_deliverable_types", "archived_at IS NULL", []],
+    ["task_categories", "mo_task_categories", "archived_at IS NULL", []],
+    ["project_templates", "mo_project_templates", "archived_at IS NULL", []],
+    ["template_deliverables", "mo_template_deliverables", null, []],
+    ["academic_years", "mo_academic_years", "archived_at IS NULL", []],
+    ["campuses", "mo_campuses", "archived_at IS NULL", []],
+    ["capacity_roles", "mo_capacity_roles", "archived_at IS NULL", []],
+    ["tags", "mo_tags", "archived_at IS NULL", []],
     // Org structure (§11.1) — drives real TL scoping (team_members) + custodian duty (user_duties).
     ["teams", "mo_teams", null, ["lead_user_id"]],
     ["team_members", "mo_team_members", null, ["user_id"]],
-    ["duty_flags", "mo_duty_flags", null, []],
+    ["duty_flags", "mo_duty_flags", "archived_at IS NULL", []],
     ["user_duties", "mo_user_duties", null, ["user_id", "granted_by"]],
-    ["skills", "mo_skills", null, []],
+    ["skills", "mo_skills", "archived_at IS NULL", []],
     ["user_skills", "mo_user_skills", null, ["user_id"]],
   ];
   app.get(`${P}/state`, asyncHandler(async (_req, res) => {
@@ -1449,6 +1461,15 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         { name: "project_type_id", label: "Project type", type: "relation", required: true, relation: { module: "project_types", labelCol: "name" } }],
       cols: ["name", "project_type_id"],
       deps: [{ table: "mo_template_deliverables", fk: "template_id", label: "Template deliverables" }] },
+    template_deliverables: { key: "template_deliverables", label: "Template Items", table: "mo_template_deliverables",
+      fields: [
+        { name: "template_id", label: "Template", type: "relation", required: true, relation: { module: "project_templates", labelCol: "name" } },
+        { name: "deliverable_type_id", label: "Deliverable type", type: "relation", required: true, relation: { module: "deliverable_types", labelCol: "name" } },
+        { name: "title_pattern", label: "Title pattern ({project} substitutes)", type: "text", required: true },
+        { name: "default_weight", label: "Weight", type: "number", def: 1 },
+        { name: "days_offset_due", label: "Due offset (days after project end)", type: "number", def: 5 }],
+      cols: ["template_id", "deliverable_type_id", "title_pattern", "default_weight", "days_offset_due"],
+      deps: [] },
     deliverable_types: { key: "deliverable_types", label: "Deliverable Types", table: "mo_deliverable_types",
       fields: [
         { name: "name", label: "Name", type: "text", required: true },
@@ -1606,6 +1627,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       }
       out.push({ key: m.key, label: m.label, cols: m.cols, fields, activeCol: m.activeCol ?? "is_active", deps: m.deps.map((d) => d.label) });
     }
+    // Force Delete is reserved for the platform Super Admin (raw role, not the
+    // media-ops role mapping — a media 'admin' does NOT qualify).
+    (can as Record<string, unknown>).force = u.role === "super_admin";
     res.json({ modules: out, can, icons: CRUD_ICONS });
   }));
 
@@ -1624,6 +1648,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       const textCols = m.fields.filter((f) => ["text", "textarea", "slug"].includes(f.type)).map((f) => f.name);
       if (textCols.length) { conds.push(`(${textCols.map((c) => `${c}::text ILIKE $${i}`).join(" OR ")})`); vals.push(`%${q.q}%`); i++; }
     }
+    if (q.created_by) { conds.push(`created_by=$${i++}`); vals.push(String(q.created_by)); }
+    if (q.created_from) { conds.push(`created_at>=$${i++}`); vals.push(String(q.created_from)); }
     const sortable = new Set([...m.cols, "id", "created_at", "updated_at"]);
     const sort = sortable.has(q.sort) ? q.sort : "id";
     const dir = q.dir === "desc" ? "DESC" : "ASC";
@@ -1757,6 +1783,48 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ ok: true });
   }));
 
+  // Force Delete — SUPER ADMIN ONLY. Requires the literal confirmation "DELETE".
+  // Nulls out references where the FK is nullable, deletes child rows where it
+  // isn't, then removes the record. Fully audited with the impact summary.
+  app.post(`${P}/crud/:module/:id/force-delete`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (u.role !== "super_admin") return sendError(res, 403, "Force Delete is available only to the Super Admin.");
+    if (String((req.body as Record<string, unknown>).confirm) !== "DELETE")
+      return sendError(res, 400, 'Type DELETE to confirm this high-risk action.');
+    const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM ${m.table} WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Record not found.");
+    const impact = await crudDeps(m, id);
+    const cleaned: Record<string, string> = {};
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const d of m.deps) {
+        // Nullable FK → references become NULL; NOT NULL → referencing rows are removed.
+        const nullable = (await client.query(
+          `SELECT is_nullable FROM information_schema.columns WHERE table_name=$1 AND column_name=$2`,
+          [d.table, d.fk])).rows[0]?.is_nullable === "YES";
+        if (nullable) {
+          await client.query(`UPDATE ${d.table} SET ${d.fk}=NULL WHERE ${d.fk}=$1`, [id]);
+          cleaned[d.label] = "references set to NULL";
+        } else {
+          await client.query(`DELETE FROM ${d.table} WHERE ${d.fk}=$1`, [id]);
+          cleaned[d.label] = "referencing rows deleted";
+        }
+      }
+      await client.query(`DELETE FROM ${m.table} WHERE id=$1`, [id]);
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+      return sendError(res, 409, `Force delete failed — a deeper reference blocks it: ${(e as Error).message}`);
+    }
+    client.release();
+    await audit(u, "crud.force_deleted", m.key, id, cur, { impact, cleaned, confirmed: true }, req);
+    res.json({ ok: true, impact, cleaned });
+  }));
+
   // Bulk — enable / disable / archive / delete across a selection.
   app.post(`${P}/crud/:module/bulk`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
@@ -1837,6 +1905,10 @@ function addDays(iso: string, n: number): string {
 // ═══════════════════════════════════════════════════════════════════════════
 export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; notified: number }> {
   let notified = 0;
+  // Admin-configurable rules (NFR-10): each block below is gated on its rule's
+  // is_enabled toggle — editing a rule in Settings changes behaviour immediately.
+  const ruleRows = await pool.query(`SELECT rule_key, is_enabled FROM mo_automation_rules`);
+  const ruleOn = (k: string) => { const r = ruleRows.rows.find((x) => x.rule_key === k); return r ? !!r.is_enabled : true; };
   // BR-4 / D2 — reports auto-approve 48 h after submission unless flagged.
   const aa = await pool.query(
     `UPDATE mo_daily_reports SET status='auto_approved', reviewed_at=NOW()
@@ -1860,21 +1932,21 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
   };
 
   // AUTO-2 — overdue deliverables → owner.
-  for (const d of (await pool.query(
+  if (ruleOn("AUTO-2")) for (const d of (await pool.query(
     `SELECT id, title, owner_id, due_date FROM mo_deliverables
       WHERE deleted_at IS NULL AND due_date < CURRENT_DATE
         AND status NOT IN ('delivered','not_required','cancelled') AND owner_id IS NOT NULL`)).rows)
     await notify(d.owner_id, "overdue", "Deliverable overdue", `“${d.title}” was due ${String(d.due_date).slice(0, 10)}`, "deliverable", d.id);
 
-  // Review pending → the project PM.
-  for (const d of (await pool.query(
+  // Review pending → the project PM (escalation family AUTO-4).
+  if (ruleOn("AUTO-4")) for (const d of (await pool.query(
     `SELECT d.id, d.title, a.user_id AS pm FROM mo_deliverables d
        JOIN mo_project_assignments a ON a.project_id=d.project_id AND a.is_project_manager AND a.removed_at IS NULL
       WHERE d.status='in_review'`)).rows)
     await notify(d.pm, "approval", "Awaiting your review", `“${d.title}” has a version pending`, "deliverable", d.id);
 
   // AUTO-3 — overdue equipment → current holder.
-  for (const t of (await pool.query(
+  if (ruleOn("AUTO-3")) for (const t of (await pool.query(
     `SELECT DISTINCT ON (t.equipment_item_id) t.equipment_item_id AS id, t.holder_id, t.expected_return_at, e.asset_tag
        FROM mo_equipment_transactions t JOIN mo_equipment_items e ON e.id=t.equipment_item_id
       WHERE e.status='checked_out'
@@ -1883,7 +1955,7 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
       await notify(t.holder_id, "overdue", "Equipment overdue", `${t.asset_tag} is past its return date`, "equipment", t.id);
 
   // AUTO-1 — today's report not submitted (working day, not on leave) → nudge the member.
-  if (new Date().getDay() !== 0)
+  if (ruleOn("AUTO-1") && new Date().getDay() !== 0)
     for (const p of (await pool.query(
       `SELECT u.id FROM users u
         WHERE u.team='media' AND COALESCE(u.role,'user') <> 'admin'

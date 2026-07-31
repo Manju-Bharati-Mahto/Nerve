@@ -130,7 +130,7 @@ export async function bootstrapMediaOpsDatabase() {
   // uniformly so the generic CRUD engine can treat all config modules the same.
   for (const t of ["mo_project_types", "mo_deliverable_types", "mo_task_categories", "mo_equipment_categories",
                    "mo_leave_types", "mo_skills", "mo_capacity_roles", "mo_vendors", "mo_tags", "mo_duty_flags",
-                   "mo_academic_years", "mo_campuses", "mo_holidays", "mo_project_templates", "mo_automation_rules"]) {
+                   "mo_academic_years", "mo_campuses", "mo_holidays", "mo_project_templates", "mo_template_deliverables", "mo_automation_rules"]) {
     await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true`);
     await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS created_by TEXT`);
