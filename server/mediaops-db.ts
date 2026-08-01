@@ -190,6 +190,12 @@ export async function bootstrapMediaOpsDatabase() {
       status TEXT NOT NULL DEFAULT 'planned' CHECK (status IN ('planned','confirmed','done','cancelled'))
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_shoots_date ON mo_shoots(shoot_date)`);
+  // BR-13: shoots are soft-deletable too (A2).
+  await pool.query(`ALTER TABLE mo_shoots ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`);
+  // G1/A1 self-heal: soft-delete any deliverable whose parent project is already
+  // soft-deleted (orphans created before the cascade existed). Idempotent.
+  await pool.query(`UPDATE mo_deliverables d SET deleted_at=NOW() WHERE d.deleted_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM mo_projects p WHERE p.id=d.project_id AND p.deleted_at IS NULL)`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_shoot_crew (
       shoot_id BIGINT NOT NULL REFERENCES mo_shoots(id) ON DELETE CASCADE,
