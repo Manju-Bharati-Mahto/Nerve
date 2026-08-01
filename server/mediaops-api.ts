@@ -64,7 +64,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       await pool.query(
         `INSERT INTO mo_audit_logs (actor_id, actor_role, action, entity_type, entity_id, before, after, ip, user_agent)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [actor.id, actor.role, action, entityType, entityId,
+        [actor.id, moRoleOf(actor) ?? actor.role /* D4: one role vocabulary in the trail */, action, entityType, entityId,
          before ? JSON.stringify(before) : null, after ? JSON.stringify(after) : null,
          req.ip ?? null, (req.headers["user-agent"] as string) ?? null],
       );
@@ -104,7 +104,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   const STATE: [string, string, string | null, string[]][] = [
     ["projects", "mo_projects", "deleted_at IS NULL", ["owner_id", "created_by"]],
     ["project_assignments", "mo_project_assignments", "removed_at IS NULL", ["user_id", "assigned_by"]],
-    ["deliverables", "mo_deliverables", "deleted_at IS NULL", ["owner_id"]],
+    // Orphan guard (G1): never ship deliverables whose parent project is deleted.
+    ["deliverables", "mo_deliverables", "deleted_at IS NULL AND project_id IN (SELECT id FROM mo_projects WHERE deleted_at IS NULL)", ["owner_id"]],
     ["deliverable_versions", "mo_deliverable_versions", null, ["submitted_by", "reviewed_by"]],
     ["drive_links", "mo_drive_links", null, ["added_by"]],
     ["daily_reports", "mo_daily_reports", null, ["user_id", "reviewed_by"]],
@@ -118,7 +119,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["equipment_bookings", "mo_equipment_bookings", null, ["user_id", "created_by"]],
     ["equipment_transactions", "mo_equipment_transactions", null, ["holder_id", "recorded_by"]],
     ["maintenance_records", "mo_maintenance_records", null, ["reported_by"]],
-    ["shoots", "mo_shoots", null, []],
+    ["shoots", "mo_shoots", "deleted_at IS NULL", []],
     ["shoot_crew", "mo_shoot_crew", null, ["user_id", "replaced_user_id"]],
     ["leave_types", "mo_leave_types", "archived_at IS NULL", []],
     ["leave_requests", "mo_leave_requests", null, ["user_id", "decided_by"]],
@@ -220,6 +221,44 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       };
     });
     out.me = idMap.get(u.id);
+    // ── §16 / AC-10 scoping (server-side, not just UI) ─────────────────────
+    // HR-ish data is scoped by role: employee = own only, team_lead = own +
+    // members of teams they lead, admin = all. Production data (projects,
+    // deliverables, equipment) stays departmental per §16 note 1.
+    const myRole = moRoleOf(u);
+    if (myRole !== "admin") {
+      const visReal = new Set<string>([u.id]);
+      if (myRole === "team_lead") {
+        const tm = await pool.query(
+          `SELECT user_id FROM mo_team_members WHERE team_id IN (SELECT id FROM mo_teams WHERE lead_user_id=$1 AND is_active)`, [u.id]);
+        tm.rows.forEach((r) => visReal.add(String(r.user_id)));
+      }
+      const vis = new Set<number>();
+      visReal.forEach((rid) => { const n = idMap.get(rid); if (n !== undefined) vis.add(n); });
+      const arr = (k: string) => out[k] as Array<Record<string, unknown>>;
+      out.daily_reports = arr("daily_reports").filter((r) => vis.has(Number(r.user_id)));
+      const visReports = new Set(arr("daily_reports").map((r) => Number(r.id)));
+      out.report_tasks = arr("report_tasks").filter((t) => visReports.has(Number(t.daily_report_id)));
+      out.leave_requests = arr("leave_requests").filter((r) => vis.has(Number(r.user_id)));
+      const visLeaves = new Set(arr("leave_requests").map((r) => Number(r.id)));
+      out.leave_replacements = arr("leave_replacements").filter((r) => visLeaves.has(Number(r.leave_request_id)));
+      out.kras = arr("kras").filter((r) => vis.has(Number(r.user_id)));
+      const visKras = new Set(arr("kras").map((r) => Number(r.id)));
+      out.kra_reviews = arr("kra_reviews").filter((r) => visKras.has(Number(r.kra_id)));
+      out.performance_snapshots = arr("performance_snapshots").filter((r) => vis.has(Number(r.user_id)));
+    }
+    // D1 — real "fires / 30d" counters per automation rule, from execution records.
+    const fireRows = await pool.query(`
+      SELECT CASE WHEN kind='reminder' THEN 'AUTO-1'
+                  WHEN kind='overdue' AND entity_type='deliverable' THEN 'AUTO-2'
+                  WHEN kind='overdue' AND entity_type='equipment' THEN 'AUTO-3'
+                  WHEN kind='approval' THEN 'AUTO-4' END AS rk, COUNT(*)::int c
+        FROM mo_notifications WHERE created_at > NOW() - INTERVAL '30 days' GROUP BY 1`);
+    const flagged30 = (await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_daily_reports WHERE status='flagged' AND submitted_at > NOW() - INTERVAL '30 days'`)).rows[0].c;
+    const fires: Record<string, number> = { "AUTO-13": flagged30 };
+    for (const r of fireRows.rows) if (r.rk) fires[r.rk] = r.c;
+    for (const ar of (out.automation_rules as Array<Record<string, unknown>>)) ar.fires_30d = fires[String(ar.rule_key)] ?? 0;
     // Server-persisted notifications for this user (written by the automation engine).
     const notifs = await pool.query(`SELECT * FROM mo_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, [u.id]);
     out.notifications = notifs.rows.map((n) => ({ ...n, user_id: idMap.get(u.id) }));
@@ -234,7 +273,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     proposed: ["approved", "cancelled"], approved: ["planning", "in_production", "on_hold", "cancelled"],
     planning: ["in_production", "on_hold", "cancelled"], in_production: ["in_review", "delivered", "on_hold", "cancelled"],
     in_review: ["in_production", "delivered", "on_hold", "cancelled"], delivered: ["completed", "in_review"],
-    completed: ["archived"], archived: [], on_hold: ["planning", "in_production", "cancelled"], cancelled: [],
+    completed: ["archived"], archived: ["completed"] /* un-archive: Admin only (BR-12) */,
+    on_hold: ["planning", "in_production", "cancelled"], cancelled: [],
   };
 
   app.get(`${P}/projects`, asyncHandler(async (_req, res) => {
@@ -260,8 +300,53 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ project: rows[0], assignments: assignments.rows, deliverables: deliverables.rows, shoots: shoots.rows });
   }));
 
+  // FR-1.10 — Recent Activity for the Home dashboard, scoped per §16: admin sees the
+  // department stream; others see their own actions + activity on projects they are
+  // assigned to (never department-wide).
+  app.get(`${P}/activity/recent`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    let rows;
+    if (isMoAdmin(u)) {
+      rows = (await pool.query(
+        `SELECT a.action, a.entity_type, a.entity_id, a.occurred_at, us.full_name AS actor
+           FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
+          ORDER BY a.occurred_at DESC LIMIT 20`)).rows;
+    } else {
+      rows = (await pool.query(
+        `WITH my_projects AS (
+           SELECT p.id FROM mo_projects p WHERE p.deleted_at IS NULL AND (p.owner_id=$1
+             OR EXISTS (SELECT 1 FROM mo_project_assignments a WHERE a.project_id=p.id AND a.user_id=$1 AND a.removed_at IS NULL)))
+         SELECT a.action, a.entity_type, a.entity_id, a.occurred_at, us.full_name AS actor
+           FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
+          WHERE a.actor_id=$1
+             OR (a.entity_type='project' AND a.entity_id IN (SELECT id FROM my_projects))
+             OR (a.entity_type='deliverable' AND a.entity_id IN (SELECT d.id FROM mo_deliverables d WHERE d.project_id IN (SELECT id FROM my_projects)))
+          ORDER BY a.occurred_at DESC LIMIT 20`, [u.id])).rows;
+    }
+    res.json({ activity: rows });
+  }));
+
+  // FR-3.5 / FR-13.3 — per-object activity feed (the non-admin subset of the audit
+  // trail): the project's own events + its deliverables' events. Any media member.
+  app.get(`${P}/projects/:id/activity`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const { rows } = await pool.query(
+      `SELECT a.action, a.entity_type, a.entity_id, a.before, a.after, a.occurred_at, us.full_name AS actor
+         FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
+        WHERE (a.entity_type='project' AND a.entity_id=$1)
+           OR (a.entity_type IN ('deliverable','shoot','assignment')
+               AND a.entity_id IN (
+                 SELECT d.id FROM mo_deliverables d WHERE d.project_id=$1
+                 UNION SELECT s.id FROM mo_shoots s WHERE s.project_id=$1
+                 UNION SELECT g.id FROM mo_assignments g WHERE g.project_id=$1))
+        ORDER BY a.occurred_at DESC LIMIT 60`, [id]);
+    res.json({ activity: rows });
+  }));
+
   app.post(`${P}/projects`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
+    if (!(await requireModule(res, u, "projects"))) return;   // Group I: API half of module gating
     const b = req.body as Record<string, unknown>;
     const name = String(b.name ?? "").trim();
     if (name.length < 3 || name.length > 120) return sendError(res, 400, "VR-6: name must be 3–120 characters.");
@@ -269,6 +354,26 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!typeId) return sendError(res, 400, "Project type is required.");
     const start = (b.start_date as string) || null, end = (b.end_date as string) || null;
     if (start && end && end < start) return sendError(res, 400, "VR-6: end date must be on or after start date.");
+    // VR-6 / AUTO-6: block EXACT duplicates (same name + type + academic year, live).
+    // Fuzzy near-duplicates only warn (client dupCheck + /ai/duplicates), per spec.
+    const dup = await pool.query(
+      `SELECT code FROM mo_projects WHERE deleted_at IS NULL AND lower(name)=lower($1) AND project_type_id=$2 LIMIT 1`,
+      [name, typeId]);
+    if (dup.rows[0] && b.force_duplicate !== true)
+      return sendError(res, 409, `AUTO-6/VR-6: an identical project already exists (${dup.rows[0].code}). Rename it, or merge into the existing project.`);
+    // 4.2.1: an employee sending OTHER users is rejected loudly (403 naming the
+    // field), never silently overridden — and BEFORE any row is written.
+    if (!(isMoAdmin(u) || isMoTL(u))) {
+      const asg = Array.isArray(b.assignees) ? (b.assignees as unknown[]).map(String) : [];
+      if (asg.some((a) => a !== u.id))
+        return sendError(res, 403, "Employees may only assign a project to themselves (§16: assignees).");
+      if (Array.isArray(b.template_config) &&
+          (b.template_config as Array<Record<string, unknown>>).some((c) =>
+            Array.isArray(c.owners) && (c.owners as unknown[]).some((o) => String(o) !== u.id)))
+        return sendError(res, 403, "Employees may only own deliverables themselves (§16: template_config.owners).");
+      if (b.owner_id && String(b.owner_id) !== u.id)
+        return sendError(res, 403, "Employees may only set themselves as owner (§16: owner_id).");
+    }
     // BR-11: employees create into 'proposed'; TL/Admin create active immediately.
     const gated = !(isMoAdmin(u) || isMoTL(u));
     const ay = await pool.query(`SELECT id FROM mo_academic_years WHERE is_current LIMIT 1`);
@@ -324,6 +429,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
            RETURNING id, title`,
           [id, it.deliverable_type_id, String(it.title_pattern).replace("{project}", name),
            c?.owners[0] || u.id, due, it.default_weight]);
+        if (!dl.rows[0]) continue;   // template item points at a deleted type — skip, don't crash
         made++;
         // One assignment per owner (independent status per person).
         for (const owner of (c?.owners ?? [])) {
@@ -353,10 +459,20 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       return sendError(res, 400, `BR-1: ${from} → ${to} is not a valid transition.`);
     // §16: TL/Admin (or PM/owner) may move status; only Admin may archive.
     const isOwnerPM = cur.rows[0].owner_id === u.id;
+    // BR-11 / FR-3.6 — the approval gate is its OWN capability: an employee may move
+    // their own project through production states, but NEVER approve a proposal
+    // (that would let them approve their own gated project — audit finding 9.1).
+    if (from === "proposed" && to === "approved" && !(isMoAdmin(u) || isMoTL(u)))
+      return sendError(res, 403, "BR-11: only a Team Lead or Admin may approve a proposed project.");
     if (to === "archived" && !isMoAdmin(u)) return sendError(res, 403, "Only Admin may archive (BR-1).");
+    if (from === "archived" && !isMoAdmin(u)) return sendError(res, 403, "BR-12: only Admin may un-archive.");
     if (!(isMoAdmin(u) || isMoTL(u) || isOwnerPM)) return sendError(res, 403, "You cannot change this project's status.");
-    await pool.query(`UPDATE mo_projects SET status=$1, archived_at=CASE WHEN $1='archived' THEN NOW() ELSE archived_at END, updated_at=NOW() WHERE id=$2`, [to, id]);
-    await audit(u, "project.status_changed", "project", id, { status: from }, { status: to }, req);
+    await pool.query(
+      `UPDATE mo_projects SET status=$1,
+         archived_at=CASE WHEN $1='archived' THEN NOW() WHEN $3 THEN NULL ELSE archived_at END,
+         updated_at=NOW() WHERE id=$2`, [to, id, from === "archived"]);
+    await audit(u, from === "archived" ? "project.unarchived" : (to === "archived" ? "project.archived" : "project.status_changed"),
+      "project", id, { status: from }, { status: to }, req);
     res.json({ ok: true, status: to });
   }));
 
@@ -365,6 +481,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may assign crew.");
     const id = parseInt(getSingleParam(req.params.id), 10);
     const b = req.body as Record<string, unknown>;
+    // A4: clean 400s instead of FK-violation 500s.
+    if (!b.user_id || typeof b.user_id !== "string") return sendError(res, 400, "user_id is required.");
+    const target = (await pool.query(`SELECT 1 FROM users WHERE id=$1 AND team='media'`, [b.user_id])).rows[0];
+    if (!target) return sendError(res, 400, "user_id does not match a media crew member.");
+    if (!(await pool.query(`SELECT 1 FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [id])).rows[0])
+      return sendError(res, 404, "Project not found.");
     await pool.query(
       `INSERT INTO mo_project_assignments (project_id, user_id, capacity_role_id, is_project_manager, assigned_by)
        VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
@@ -383,6 +505,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   app.post(`${P}/projects/:id/deliverables`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const pid = parseInt(getSingleParam(req.params.id), 10);
+    // §16: "Create/edit deliverables — Employee: on own projects." Owner or PM only.
+    if (!(isMoAdmin(u) || isMoTL(u))) {
+      const own = await pool.query(
+        `SELECT 1 FROM mo_projects p WHERE p.id=$1 AND (p.owner_id=$2
+            OR EXISTS (SELECT 1 FROM mo_project_assignments a WHERE a.project_id=p.id AND a.user_id=$2 AND a.is_project_manager AND a.removed_at IS NULL))`,
+        [pid, u.id]);
+      if (!own.rows[0]) return sendError(res, 403, "§16: employees may create deliverables only on their own projects (owner or PM).");
+    }
     const b = req.body as Record<string, unknown>;
     const title = String(b.title ?? "").trim();
     if (!title) return sendError(res, 400, "Title is required.");
@@ -393,6 +523,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        FROM mo_deliverable_types dt WHERE dt.id=$2 RETURNING *`,
       [pid, typeId, title, (b.owner_id as string) || u.id, (b.due_date as string) || null,
        b.quantity_target ? Number(b.quantity_target) : null, String(b.spec_notes ?? "")]);
+    // Robustness: the INSERT…SELECT yields no row when the type id doesn't exist —
+    // answer 400, not a crash (found via a deleted lookup type).
+    if (!ins.rows[0]) return sendError(res, 400, "Invalid deliverable type.");
     // #7: optional Drive link attached to the new deliverable.
     const url = String(b.drive_url ?? "").trim();
     if (url && /^https:\/\/(drive|docs)\.google\.com\//.test(url))
@@ -505,6 +638,10 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const start = String(b.start_time ?? ""), end = String(b.end_time ?? "");
     const mins = t2m(end) - t2m(start);
     if (mins <= 0) return sendError(res, 400, "VR-1: end must be after start.");
+    if (mins > 16 * 60) return sendError(res, 400, "VR-1: a single task cannot exceed 16 hours — split it.");
+    if (String(b.description ?? "").trim().length < 3) return sendError(res, 400, "Describe the task (min 3 characters).");
+    for (const k of ["progress_before", "progress_after"] as const)
+      if (b[k] != null && (Number(b[k]) < 0 || Number(b[k]) > 100)) return sendError(res, 400, "VR-2: progress must be 0–100.");
     if (b.quantity && !b.unit) return sendError(res, 400, "VR-3: unit is required when quantity is present.");
     if (b.status === "blocked" && !String(b.blocker_note ?? "").trim()) return sendError(res, 400, "FR-2.8: a blocker note is required.");
     let r = await pool.query(`SELECT * FROM mo_daily_reports WHERE user_id=$1 AND report_date=$2`, [u.id, date]);
@@ -586,6 +723,20 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   }));
 
   // TL/Admin review a report — approve / return / flag.
+  // BR-9 / §16 #4 — unlock a past report for editing (TL/Admin, logged). Sets the
+  // report back to 'returned' so its tasks become editable by the owner again.
+  app.post(`${P}/reports/:id/unlock`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may unlock a report (BR-9).");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM mo_daily_reports WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Report not found.");
+    if (cur.status === "draft") return sendError(res, 400, "Report is already editable (draft).");
+    await pool.query(`UPDATE mo_daily_reports SET status='returned', reviewed_by=$1, reviewed_at=NOW() WHERE id=$2`, [u.id, id]);
+    await audit(u, "report.unlocked", "daily_report", id, { status: cur.status }, { status: "returned" }, req);
+    res.json({ ok: true, status: "returned" });
+  }));
+
   app.post(`${P}/reports/:id/review`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Team Lead or Admin only.");
@@ -630,8 +781,19 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.status(201).json({ shoot });
   }));
 
+  // A2 — soft-delete a shoot (BR-13). TL/Admin.
+  app.delete(`${P}/shoots/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may delete a shoot.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    await pool.query(`UPDATE mo_shoots SET deleted_at=NOW(), status='cancelled' WHERE id=$1`, [id]);
+    await audit(u, "shoot.deleted", "shoot", id, null, null, req);
+    res.json({ ok: true });
+  }));
+
   app.patch(`${P}/shoots/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may edit a shoot.");
     const id = parseInt(getSingleParam(req.params.id), 10);
     const b = req.body as Record<string, unknown>;
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
@@ -654,6 +816,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const s = b.starts_at as string, e = b.ends_at as string;
     if (!s || !e) return sendError(res, 400, "Booking start and end are required.");
     if (e < s) return sendError(res, 400, "Booking end must be on or after the start.");
+    // VR-8: bookings are capped at 30 days.
+    if ((new Date(e).getTime() - new Date(s).getTime()) / 86400000 > 30)
+      return sendError(res, 400, "VR-8: a booking cannot exceed 30 days.");
     try {
       const ins = await pool.query(
         `INSERT INTO mo_equipment_bookings (equipment_item_id, user_id, shoot_id, project_id, starts_at, ends_at, status, created_by)
@@ -875,6 +1040,22 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   }));
 
   // ═════════════════════════ PHASE 3 — BOARDS / COMMENTS ══════════════════
+  // FR-14 — create a management board (+ default columns). TL/Admin.
+  app.post(`${P}/boards`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Management boards are for Team Leads and Admins (FR-14.1).");
+    const b = req.body as Record<string, unknown>;
+    const name = String(b.name ?? "").trim();
+    if (!name) return sendError(res, 400, "Board name is required.");
+    const ins = await pool.query(
+      `INSERT INTO mo_boards (department_id, name, is_management, created_by, is_active) VALUES (1,$1,true,$2,true) RETURNING *`, [name, u.id]);
+    const cols = Array.isArray(b.columns) && b.columns.length ? (b.columns as unknown[]).map(String) : ["To do", "Doing", "Review", "Done"];
+    for (let i = 0; i < cols.length; i++)
+      await pool.query(`INSERT INTO mo_board_columns (board_id, name, sort_order) VALUES ($1,$2,$3)`, [ins.rows[0].id, cols[i], i]);
+    await audit(u, "board.created", "board", ins.rows[0].id, null, { name, columns: cols }, req);
+    res.status(201).json({ board: ins.rows[0] });
+  }));
+
   app.post(`${P}/boards/:id/cards`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Boards are Admin/Team-Lead only (FR-14.1).");
@@ -981,8 +1162,13 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const u = requireMedia(res); if (!u) return;
     if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may delete a project.");
     const id = parseInt(getSingleParam(req.params.id), 10);
+    // G1: cascade the soft-delete so no orphans pollute the Library/Workload.
     await pool.query(`UPDATE mo_projects SET deleted_at=NOW() WHERE id=$1`, [id]);
-    await audit(u, "project.deleted", "project", id, null, null, req);
+    await pool.query(`UPDATE mo_deliverables SET deleted_at=NOW() WHERE project_id=$1 AND deleted_at IS NULL`, [id]);
+    await pool.query(`UPDATE mo_project_assignments SET removed_at=NOW() WHERE project_id=$1 AND removed_at IS NULL`, [id]);
+    await pool.query(`UPDATE mo_shoots SET status='cancelled' WHERE project_id=$1 AND status IN ('planned','confirmed')`, [id]);
+    await pool.query(`UPDATE mo_assignments SET status='cancelled' WHERE project_id=$1 AND status NOT IN ('done','cancelled')`, [id]);
+    await audit(u, "project.deleted", "project", id, null, { cascade: "deliverables, assignments, shoots, tasks" }, req);
     res.json({ ok: true });
   }));
 
@@ -1011,6 +1197,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!role) return sendError(res, 400, "Invalid role.");
     if (realId === u.id) return sendError(res, 400, "You cannot change your own role.");
     await pool.query(`UPDATE users SET role=$1 WHERE id=$2 AND team='media'`, [role, realId]);
+    // Group I rule: module access may only REMOVE what the role grants, never add.
+    // Demoting to employee drops role-exclusive module grants (audited via the row diff).
+    if (role === "user")
+      await pool.query(
+        `UPDATE mo_user_profiles SET allowed_modules = (
+           SELECT COALESCE(jsonb_agg(m), '[]'::jsonb) FROM jsonb_array_elements_text(allowed_modules) m
+            WHERE m NOT IN ('admin','settings'))
+         WHERE user_id=$1 AND allowed_modules IS NOT NULL`, [realId]);
     await audit(u, "crew.role_changed", "user", null, null, { id: realId, role }, req);
     res.json({ ok: true, role });
   }));
@@ -1169,7 +1363,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const email = String(b.email ?? "").trim().toLowerCase();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendError(res, 400, "A valid email is required.");
     if (String(b.password ?? "").length < 6) return sendError(res, 400, "Password must be at least 6 characters.");
-    if (!String(b.avatar_url ?? "").trim()) return sendError(res, 400, "A profile photo is required.");
+    // H2: photo is optional — initials avatar is the fallback (bulk onboarding).
     const role = ({ admin: "admin", team_lead: "sub_admin", employee: "user" } as Record<string, string>)[String(b.role)] ?? "user";
     const exists = await pool.query(`SELECT 1 FROM users WHERE email=$1`, [email]);
     if (exists.rows[0]) return sendError(res, 409, "A user with that email already exists.");
@@ -1179,11 +1373,63 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       `INSERT INTO users (id, full_name, email, department, role, team, password_hash, email_verified, avatar_url)
        VALUES ($1,$2,$3,'Media Crew',$4,'media',$5,true,$6)`,
       [id, String(b.full_name ?? "New Member").trim() || "New Member", email, role, pw, (b.avatar_url as string) || null]);
-    const mods = Array.isArray(b.allowed_modules) ? JSON.stringify(b.allowed_modules) : null;
-    await pool.query(`INSERT INTO mo_user_profiles (user_id, designation, mo_role, allowed_modules) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
-      [id, String(b.designation ?? ""), ({ admin: "admin", sub_admin: "team_lead", user: "employee" } as Record<string, string>)[role], mods]);
+    // 1.2 — default module sets per role, applied when no explicit selection is
+    // made: onboarding must not depend on remembering ten checkboxes, and a missed
+    // tick must never silently remove a right §16 grants.
+    const ROLE_DEFAULT_MODULES: Record<string, string[] | null> = {
+      user: ["dashboard", "reporting", "projects", "library", "equipment", "leave", "performance"],
+      sub_admin: ["dashboard", "reporting", "projects", "library", "equipment", "leave", "performance", "ai", "admin"],
+      admin: null,   // unrestricted
+    };
+    const mods = Array.isArray(b.allowed_modules) && (b.allowed_modules as unknown[]).length
+      ? JSON.stringify(b.allowed_modules)
+      : (ROLE_DEFAULT_MODULES[role] ? JSON.stringify(ROLE_DEFAULT_MODULES[role]) : null);
+    await pool.query(`INSERT INTO mo_user_profiles (user_id, designation, mo_role, allowed_modules, campus_id) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
+      [id, String(b.designation ?? ""), ({ admin: "admin", sub_admin: "team_lead", user: "employee" } as Record<string, string>)[role], mods,
+       b.campus_id ? Number(b.campus_id) : null]);
+    // H3: optional primary team (lead) + skills at creation.
+    if (b.lead_user_id) {
+      const leadId = String(b.lead_user_id);
+      let team = (await pool.query(`SELECT id FROM mo_teams WHERE lead_user_id=$1 AND is_active LIMIT 1`, [leadId])).rows[0];
+      if (!team) {
+        const lead = (await pool.query(`SELECT full_name FROM users WHERE id=$1`, [leadId])).rows[0];
+        team = (await pool.query(`INSERT INTO mo_teams (department_id, name, lead_user_id, is_active) VALUES (1,$1,$2,true) RETURNING id`,
+          [`${lead?.full_name ?? "Team"}'s team`, leadId])).rows[0];
+      }
+      await pool.query(`INSERT INTO mo_team_members (team_id, user_id, is_primary) VALUES ($1,$2,true) ON CONFLICT DO NOTHING`, [team.id, id]);
+    }
+    if (Array.isArray(b.skills))
+      for (const s of b.skills as Array<Record<string, unknown>>)
+        if (s.skill_id) await pool.query(
+          `INSERT INTO mo_user_skills (user_id, skill_id, proficiency, certified_until) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+          [id, Number(s.skill_id), Math.min(5, Math.max(1, Number(s.proficiency) || 3)), (s.certified_until as string) || null]);
     await audit(u, "crew.added", "user", null, null, { email, role, allowed_modules: b.allowed_modules ?? null }, req);
     res.status(201).json({ ok: true, id, email, role });
+  }));
+
+  // H4 — edit an existing member (name, email, designation, campus). Admin only.
+  app.patch(`${P}/crew/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may edit members.");
+    const realId = getSingleParam(req.params.id);
+    const b = req.body as Record<string, unknown>;
+    const cur = (await pool.query(`SELECT id, full_name, email FROM users WHERE id=$1 AND team='media'`, [realId])).rows[0];
+    if (!cur) return sendError(res, 404, "Member not found.");
+    if (typeof b.full_name === "string" && b.full_name.trim())
+      await pool.query(`UPDATE users SET full_name=$1 WHERE id=$2`, [b.full_name.trim(), realId]);
+    if (typeof b.email === "string" && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(b.email.trim())) {
+      const clash = await pool.query(`SELECT 1 FROM users WHERE email=$1 AND id<>$2`, [b.email.trim().toLowerCase(), realId]);
+      if (clash.rows[0]) return sendError(res, 409, "That email is already in use.");
+      await pool.query(`UPDATE users SET email=$1 WHERE id=$2`, [b.email.trim().toLowerCase(), realId]);
+    }
+    if ("designation" in b || "campus_id" in b)
+      await pool.query(
+        `INSERT INTO mo_user_profiles (user_id, designation, campus_id) VALUES ($1,$2,$3)
+         ON CONFLICT (user_id) DO UPDATE SET designation=COALESCE(NULLIF($2,''), mo_user_profiles.designation),
+           campus_id=COALESCE($3, mo_user_profiles.campus_id)`,
+        [realId, String(b.designation ?? ""), b.campus_id ? Number(b.campus_id) : null]);
+    await audit(u, "crew.edited", "user", null, cur, b, req);
+    res.json({ ok: true });
   }));
 
   // Update a user's module access (edit an existing member). Admin only.
@@ -1931,12 +2177,23 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
     notified += r.rowCount ?? 0;
   };
 
-  // AUTO-2 — overdue deliverables → owner.
-  if (ruleOn("AUTO-2")) for (const d of (await pool.query(
-    `SELECT id, title, owner_id, due_date FROM mo_deliverables
-      WHERE deleted_at IS NULL AND due_date < CURRENT_DATE
-        AND status NOT IN ('delivered','not_required','cancelled') AND owner_id IS NOT NULL`)).rows)
-    await notify(d.owner_id, "overdue", "Deliverable overdue", `“${d.title}” was due ${String(d.due_date).slice(0, 10)}`, "deliverable", d.id);
+  // AUTO-2 — overdue deliverables → owner; escalation: +PM at 3 days, +Admins at 7 (§17).
+  if (ruleOn("AUTO-2")) {
+    const admins = (await pool.query(`SELECT id FROM users WHERE team='media' AND role='admin'`)).rows.map((r) => r.id as string);
+    for (const d of (await pool.query(
+      `SELECT d.id, d.title, d.owner_id, d.due_date, (CURRENT_DATE - d.due_date) AS days_over,
+              (SELECT a.user_id FROM mo_project_assignments a WHERE a.project_id=d.project_id AND a.is_project_manager AND a.removed_at IS NULL LIMIT 1) AS pm
+         FROM mo_deliverables d
+        WHERE d.deleted_at IS NULL AND d.due_date < CURRENT_DATE
+          AND d.status NOT IN ('delivered','not_required','cancelled') AND d.owner_id IS NOT NULL`)).rows) {
+      const msg = `“${d.title}” was due ${String(d.due_date).slice(0, 10)}`;
+      await notify(d.owner_id, "overdue", "Deliverable overdue", msg, "deliverable", d.id);
+      if (Number(d.days_over) >= 3 && d.pm && d.pm !== d.owner_id)
+        await notify(d.pm, "overdue", "Escalation: deliverable 3+ days overdue", msg, "deliverable", d.id);
+      if (Number(d.days_over) >= 7)
+        for (const a of admins) if (a !== d.owner_id) await notify(a, "overdue", "Escalation: deliverable 7+ days overdue", msg, "deliverable", d.id);
+    }
+  }
 
   // Review pending → the project PM (escalation family AUTO-4).
   if (ruleOn("AUTO-4")) for (const d of (await pool.query(
@@ -1953,6 +2210,17 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
       ORDER BY t.equipment_item_id, t.occurred_at DESC`)).rows)
     if (t.expected_return_at && new Date(t.expected_return_at) < new Date())
       await notify(t.holder_id, "overdue", "Equipment overdue", `${t.asset_tag} is past its return date`, "equipment", t.id);
+
+  // AUTO-10 — shoot within 24h → remind each crew member (call time + location).
+  if (ruleOn("AUTO-10"))
+    for (const s of (await pool.query(
+      `SELECT s.id, s.title, s.shoot_date, s.call_time, s.location FROM mo_shoots s
+        WHERE s.deleted_at IS NULL AND s.status IN ('planned','confirmed')
+          AND s.shoot_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 1`)).rows)
+      for (const c of (await pool.query(`SELECT user_id FROM mo_shoot_crew WHERE shoot_id=$1`, [s.id])).rows)
+        await notify(c.user_id, "shoot", "Shoot tomorrow — be ready",
+          `“${s.title}” · ${String(s.shoot_date).slice(0, 10)}${s.call_time ? " · call " + s.call_time : ""}${s.location ? " · " + s.location : ""}`,
+          "shoot", s.id);
 
   // AUTO-1 — today's report not submitted (working day, not on leave) → nudge the member.
   if (ruleOn("AUTO-1") && new Date().getDay() !== 0)

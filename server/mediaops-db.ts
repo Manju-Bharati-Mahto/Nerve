@@ -190,6 +190,12 @@ export async function bootstrapMediaOpsDatabase() {
       status TEXT NOT NULL DEFAULT 'planned' CHECK (status IN ('planned','confirmed','done','cancelled'))
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_shoots_date ON mo_shoots(shoot_date)`);
+  // BR-13: shoots are soft-deletable too (A2).
+  await pool.query(`ALTER TABLE mo_shoots ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`);
+  // G1/A1 self-heal: soft-delete any deliverable whose parent project is already
+  // soft-deleted (orphans created before the cascade existed). Idempotent.
+  await pool.query(`UPDATE mo_deliverables d SET deleted_at=NOW() WHERE d.deleted_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM mo_projects p WHERE p.id=d.project_id AND p.deleted_at IS NULL)`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_shoot_crew (
       shoot_id BIGINT NOT NULL REFERENCES mo_shoots(id) ON DELETE CASCADE,
@@ -547,6 +553,20 @@ export async function bootstrapMediaOpsDatabase() {
       entity_type TEXT, entity_id BIGINT, before JSONB, after JSONB, ip TEXT, user_agent TEXT,
       occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
+  // D4 / §11.1 — ONE role vocabulary in the audit trail: migrate historical rows
+  // written with the platform's raw roles, then constrain so a 4th value can
+  // never be written. (users.role stays platform-wide — it is shared with the
+  // other Nerve departments and is mapped via moRoleOf at the media boundary.)
+  await pool.query(`UPDATE mo_audit_logs SET actor_role = CASE actor_role
+      WHEN 'sub_admin' THEN 'team_lead' WHEN 'user' THEN 'employee' WHEN 'super_admin' THEN 'admin'
+      ELSE actor_role END
+    WHERE actor_role IN ('sub_admin','user','super_admin')`);
+  await pool.query(`DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='mo_audit_actor_role_chk') THEN
+      ALTER TABLE mo_audit_logs ADD CONSTRAINT mo_audit_actor_role_chk
+        CHECK (actor_role IS NULL OR actor_role IN ('admin','team_lead','employee','system'));
+    END IF;
+  END $$`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_audit_entity ON mo_audit_logs(entity_type, entity_id, occurred_at DESC)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_audit_actor ON mo_audit_logs(actor_id, occurred_at DESC)`);
   await pool.query(`
@@ -677,6 +697,18 @@ async function seedMediaOpsLookups() {
   await tmpl("social", "Social Media — reel pack", [["reel", "Reels — {project}", 2, 5]]);
   await tmpl("deputation", "Deputation — minimal pack", [
     ["photos-edited", "Edited Photos — {project}", 3, 4], ["raw-archive", "Raw Archive — {project}", 1, 2]]);
+
+  // Self-heal FR-3.1 type data (idempotent — runs on every boot):
+  // E1: undo the accidental "July 2026" rename of Monthly Campaign.
+  await pool.query(`UPDATE mo_project_types SET name='Monthly Campaign' WHERE slug='campaign' AND name='July 2026'`);
+  // E2: ensure the four FR-3.1 types exist even on DBs seeded before they were added.
+  await pool.query(`
+    INSERT INTO mo_project_types (department_id, name, slug, color, icon, sort_order)
+    SELECT 1, x.name, x.slug, x.color, x.icon, x.so FROM (VALUES
+      ('Deputation','deputation','#f59e0b','✈',6), ('Social Media','social','#ec4899','♪',7),
+      ('Internal','internal','#64748b','■',8), ('Other','other','#94a3b8','◇',9)
+    ) AS x(name, slug, color, icon, so)
+    WHERE NOT EXISTS (SELECT 1 FROM mo_project_types t WHERE t.slug = x.slug)`);
 
   // eslint-disable-next-line no-console
   console.log("Media Ops lookups + templates seeded (§11).");
