@@ -901,9 +901,11 @@ html[data-theme=dark] .cal-cell.today{background:var(--brand-50)}
    the DB would run, implemented in trg*() functions in the core engine.
    ========================================================================== */
 
-const TODAY = '2026-07-28';                       // env date — Tuesday
-const NOW   = new Date('2026-07-28T14:20:00+05:30');
-const rtoday=()=>new Date().toISOString().slice(0,10);   // real current date (for new-record date pickers)
+/* G4: the system date is the REAL current date. (The prototype used a frozen demo
+   date, which skewed overdue flags, "due today", report dates and AUTO-1 timing.) */
+const NOW   = new Date();
+const TODAY = new Date(NOW.getTime()-NOW.getTimezoneOffset()*60000).toISOString().slice(0,10);
+const rtoday=()=>TODAY;   // alias kept for older call sites
 
 /* ---------- date helpers ---------- */
 const D = {
@@ -2180,7 +2182,7 @@ const PROJ_TRANSITIONS = {
   proposed:['approved','cancelled'], approved:['planning','in_production','on_hold','cancelled'],
   planning:['in_production','on_hold','cancelled'], in_production:['in_review','delivered','on_hold','cancelled'],
   in_review:['in_production','delivered','on_hold','cancelled'], delivered:['completed','in_review'],
-  completed:['archived'], archived:[], on_hold:['planning','in_production','cancelled'], cancelled:[]
+  completed:['archived'], archived:['completed'] /* un-archive: Admin only (BR-12) */, on_hold:['planning','in_production','cancelled'], cancelled:[]
 };
 const DELIV_TRANSITIONS = {
   not_started:['in_progress','not_required','cancelled'], in_progress:['in_review','not_required','cancelled'],
@@ -3605,7 +3607,7 @@ function reportsQueue(){
       <span class="stat-meta">no action required</span></div>
     <div class="stat"><span class="stat-label">Returned, awaiting resubmit</span><span class="stat-val">${q.filter(x=>x.r.status==='returned').length}</span>
       <span class="stat-meta">with the author</span></div>
-    <div class="stat"><span class="stat-label">Review load saved</span><span class="stat-val">${Math.round((1-flagged.length/Math.max(1,q.length))*100)}%</span>
+    <div class="stat"><span class="stat-label">Review load saved</span><span class="stat-val">${q.length?Math.round((1-flagged.length/q.length)*100)+'%':'—'}</span>
       <span class="stat-meta">vs approving everything</span></div>
   </div>
   <div class="card"><div class="card-head"><h3>Queue</h3>${reqid('FR-2.6','Flagged reports require explicit TL action: Approve / Comment &amp; Return')}
@@ -5981,7 +5983,7 @@ function admAutomations(){
       ${DB.automation_rules.map(r=>`<div style="padding:14px 16px;border-bottom:1px solid var(--border)">
         <div class="between mb2">
           <div class="f ac gap2"><span class="reqid">${r.rule_key}</span><b>${esc(r.name)}</b>
-            <span class="chip">${r.fires_30d} fires / 30d</span></div>
+            <span class="chip">${r.fires_30d??'—'} fires / 30d</span></div>
           <span class="switch ${r.is_enabled?'on':''}" data-act="toggleRule" data-rid="${r.id}"></span></div>
         <div class="grid g2" style="gap:8px">
           <div><div class="xsmall mut3 b">TRIGGER</div><div class="small">${esc(r.trigger)}</div></div>
@@ -5999,7 +6001,7 @@ function admUsers(){
       <div class="ca"><button class="btn xs primary" data-act="addUser">＋ Add member</button></div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Person</th><th>Nerve ID</th><th>Role</th><th>Primary team</th><th>Duties</th>
-        <th>Campus</th><th class="num">Holds gear</th><th>Status</th><th class="num"></th></tr></thead>
+        <th>Modules</th><th>Campus</th><th class="num">Holds gear</th><th>Status</th><th class="num"></th></tr></thead>
       <tbody>${DB.users.map(u=>{
         const held=DB.equipment_items.filter(e=>{const h=eqHolder(e.id);return h&&h.holder_id===u.id;}).length;
         return `<tr><td><div class="f ac gap2">${avatar(u.id,'sm')}<div><div class="t-main">${esc(u.full_name)}</div>
@@ -6008,10 +6010,12 @@ function admUsers(){
         <td><span class="chip ${u.role==='admin'?'sel':''}">${({admin:'★ Admin',team_lead:'▲ Team Lead',employee:'● Employee'})[u.role]}</span></td>
         <td class="small">${esc((DB.teams.find(t=>DB.team_members.some(m=>m.team_id===t.id&&m.user_id===u.id))||{name:'—'}).name)}</td>
         <td>${DB.user_duties.filter(d=>d.user_id===u.id).map(d=>`<span class="chip sel">⚑ ${esc(DB.duty_flags.find(f=>f.id===d.duty_flag_id).name)}</span>`).join(' ')||'<span class="mut3">—</span>'}</td>
+        <td class="small">${Array.isArray(u.allowed_modules)?`<button class="chip" onclick="ACTIONS.editModules({uid:${u.id}})" title="${esc(u.allowed_modules.join(', '))}">⚿ ${u.allowed_modules.length}</button>`:`<button class="chip" onclick="ACTIONS.editModules({uid:${u.id}})">All (role)</button>`}</td>
         <td class="small">${esc((DB.campuses.find(c=>c.id===u.campus_id)||{code:'—'}).code)}</td>
         <td class="num">${held||'—'}</td>
         <td>${u.is_active?'<span class="status st-success"><span class="si">✓</span>Active</span>':'<span class="status st-neutral"><span class="si">—</span>Inactive</span>'}</td>
-        <td class="num nowrap"><button class="btn xs" data-act="manageDuties" data-uid="${u.id}">Duties</button>
+        <td class="num nowrap"><button class="btn xs" data-act="editCrew" data-uid="${u.id}">Edit</button>
+          <button class="btn xs" data-act="manageDuties" data-uid="${u.id}">Duties</button>
           <button class="btn xs ghost" data-act="deactivateUser" data-uid="${u.id}">Deactivate</button></td></tr>`;}).join('')}
       </tbody></table></div></div>
     <div class="card-foot">Deactivation is blocked while a user holds equipment — the error lists the items (VR-10 / AC-15).</div></div>
@@ -7447,9 +7451,11 @@ const ACTIONS = {
     moSync(MO_API.post('/reports/'+d.rid+'/review',{action:'return',comment:r.review_comment}));
   },
   unlockReport:(d)=>{
-    const r=DB.daily_reports.find(x=>x.id===+d.rid);
+    const r=DB.daily_reports.find(x=>x.id===+d.rid); if(!r)return;
+    r.status='returned';
     audit(S.me,'report.unlocked','daily_report',r.id,{locked:true},{locked:false,by:S.me});
-    toast('Unlocked for edit — the action is logged and versioned in the audit trail (BR-9)','ok');
+    render();
+    moSync(MO_API.post('/reports/'+r.id+'/unlock'),()=>{render();toast('Unlocked — the report is back in “returned”, editable by its owner (BR-9, audited)','ok');});
   },
   bulkApprove:()=>{
     const list=visibleReports().filter(r=>r.status==='flagged');
@@ -8150,28 +8156,62 @@ const ACTIONS = {
         <div class="field"><label class="lbl">Email <span class="req">*</span></label><input class="inp" id="au-email" type="email" placeholder="name@paruluniversity.ac.in"></div>
         <div class="row">
           <div class="field"><label class="lbl">Temp password <span class="req">*</span></label><input class="inp" id="au-pass" placeholder="min 6 characters"></div>
-          <div class="field"><label class="lbl">Role</label><select class="inp" id="au-role">
+          <div class="field"><label class="lbl">Role</label><select class="inp" id="au-role" onchange="ACTIONS.auRoleSync()">
             <option value="employee">Employee</option><option value="team_lead">Team Lead</option><option value="admin">Admin</option></select></div></div>
         <div class="row">
           <div class="field"><label class="lbl">Designation</label><input class="inp" id="au-desig" placeholder="e.g. Video Editor"></div>
-          <div class="field"><label class="lbl">Photo <span class="req">*</span></label>
+          <div class="field"><label class="lbl">Photo <span class="mut3">(optional)</span></label>
             <input class="inp" type="file" id="au-photo" accept="image/*" onchange="ACTIONS.uploadCrewPhoto(this)">
-            <input type="hidden" id="au-avatar"><div id="au-photo-status" class="hint">Upload a photo (required).</div></div></div>
+            <input type="hidden" id="au-avatar"><div id="au-photo-status" class="hint">Optional — initials avatar is the fallback.</div></div></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Campus</label><select class="inp" id="au-campus"><option value="">—</option>
+            ${DB.campuses.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></div>
+          <div class="field"><label class="lbl">Primary team (lead)</label><select class="inp" id="au-lead"><option value="">— none —</option>
+            ${DB.users.filter(x=>x.is_active&&x.role==='team_lead').map(x=>`<option value="${x.id}">${esc(x.full_name)}</option>`).join('')}</select></div></div>
+        <div class="field"><label class="lbl">Skills <span class="mut3">(tap to toggle · default proficiency 3)</span></label>
+          <div class="f wrap gap1">${DB.skills.map(s=>`<button type="button" class="chip au-skill" data-sid="${s.id}"
+            style="height:24px;font-size:11px;padding:0 8px" onclick="this.classList.toggle('sel')">${esc(s.name)}</button>`).join('')}</div></div>
         <div class="field"><label class="lbl">Module Access <span class="mut3">(select one or more)</span></label>
-          <div class="grid g2" style="gap:4px 16px">${MODULES.map(m=>`<label class="chk"><input type="checkbox" class="au-mod" value="${m.key}"> ${m.label}</label>`).join('')}</div>
-          <div class="hint">The member sees only the modules you grant — sidebar, routes and API are gated to these. No selection = no access.</div></div></div>
+          <div class="f gap2 mb2">
+            <button type="button" class="btn xs" onclick="ACTIONS.auPreset({p:'employee'})">Employee set</button>
+            <button type="button" class="btn xs" onclick="ACTIONS.auPreset({p:'lead'})">Lead set</button>
+            <button type="button" class="btn xs" onclick="ACTIONS.auPreset({p:'all'})">All allowed</button>
+            <button type="button" class="btn xs ghost" onclick="ACTIONS.auPreset({p:'none'})">Clear</button></div>
+          <div class="grid g2" style="gap:4px 16px">${MODULES.map(m=>`<label class="chk"><input type="checkbox" class="au-mod" value="${m.key}"> <span data-modlbl="${m.key}">${m.label}</span></label>`).join('')}</div>
+          <div class="hint">Module access can only <b>remove</b> what the role grants, never add — role-exclusive modules grey out for lower roles.
+            Sidebar, routes and API are all gated. No selection = no access.</div></div></div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" data-act="createCrew">Create member</button></div>`);
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  auRoleSync:()=>{
+    /* Group I: role-exclusive modules grey out — module access never ADDS. */
+    const role=($('#au-role')||{}).value||'employee';
+    $$('.au-mod').forEach(cb=>{
+      const adminOnly=['admin','settings'].includes(cb.value);
+      cb.disabled=adminOnly&&role!=='admin';
+      if(cb.disabled)cb.checked=false;
+      const lbl=$('[data-modlbl="'+cb.value+'"]'); if(lbl)lbl.style.opacity=cb.disabled?'.4':'1';
+    });
+  },
+  auPreset:(d)=>{
+    const sets={employee:['dashboard','reporting','projects','library','leave'],
+      lead:['dashboard','reporting','projects','library','leave','equipment','performance','ai'],
+      all:MODULES.map(m=>m.key),none:[]};
+    const want=new Set(sets[d.p]||[]);
+    $$('.au-mod').forEach(cb=>{cb.checked=want.has(cb.value)&&!cb.disabled;});
+    ACTIONS.auRoleSync();
   },
   createCrew:()=>{
     const name=$('#au-name').value.trim(), email=$('#au-email').value.trim(), pass=$('#au-pass').value;
     if(!name){toast('Name is required','bad');return;}
     if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){toast('A valid email is required','bad');return;}
     if(pass.length<6){toast('Password must be at least 6 characters','bad');return;}
-    if(!$('#au-avatar').value.trim()){toast('A profile photo URL is required','bad');return;}
     const payload={full_name:name,email,password:pass,role:$('#au-role').value,designation:$('#au-desig').value.trim(),
-      avatar_url:$('#au-avatar').value.trim(),
+      avatar_url:$('#au-avatar').value.trim()||null,
+      campus_id:($('#au-campus')||{}).value||null,
+      lead_user_id:(($('#au-lead')||{}).value)?ruid(+$('#au-lead').value):null,
+      skills:$$('.au-skill.sel').map(c=>({skill_id:+c.dataset.sid,proficiency:3})),
       allowed_modules:$$('.au-mod:checked').map(c=>c.value)};
     closeModal();
     moSync(MO_API.post('/crew',payload), ()=>{render();toast(name+' added to the crew','ok');});
@@ -8217,10 +8257,64 @@ const ACTIONS = {
   },
   resolveIssue:(d)=>{const i=DB.import_issues.find(x=>x.id===+d.iid);i.status='resolved';
     render();toast('Import row resolved — zero silent drops (AC-11)','ok');},
-  runPolicyTests:()=>{
-    const total=Object.keys(CAPS).length*3;
-    toast('Running '+total+' capability × role assertions against every endpoint…','ok');
-    setTimeout(()=>toast(total+' policy assertions passed — AC-10 green','ok'),1400);
+  runPolicyTests:async()=>{
+    /* §26: REAL probes — each capability fires an actual HTTP request and asserts
+       on the status. A missing route (Express "Cannot POST …" 404) is a LOUD FAIL,
+       never a pass. Probes use invalid ids / empty bodies so nothing mutates:
+       route-exists = JSON error (400/403/404-record/409); route-missing = non-JSON. */
+    const probes=[
+      ['Report review',        'POST','/reports/999999/review',{}],
+      ['Report unlock (BR-9)', 'POST','/reports/999999/unlock',{}],
+      ['Project create',       'POST','/projects',{}],
+      ['Project status (BR-1)','POST','/projects/999999/status',{}],
+      ['Project edit',         'PATCH','/projects/999999',{}],
+      ['Project assign',       'POST','/projects/999999/assignments',{}],
+      ['Project archive path', 'POST','/projects/999999/status',{status:'archived'}],
+      ['Deliverable create',   'POST','/projects/999999/deliverables',{}],
+      ['Version review (BR-5)','POST','/deliverables/999999/review',{}],
+      ['Deliver (BR-6)',       'POST','/deliverables/999999/deliver',{}],
+      ['Task assign',          'POST','/projects/999999/tasks',{}],
+      ['Equipment checkout',   'POST','/equipment/999999/checkout',{}],
+      ['Equipment booking',    'POST','/equipment/bookings',{}],
+      ['Leave decide',         'POST','/leave/999999/decision',{}],
+      ['Leave replacement',    'POST','/leave/999999/replacements',{}],
+      ['KRA cycle',            'POST','/kra/cycles',{}],
+      ['KRA review',           'POST','/kra/items/999999/review',{}],
+      ['Board create (FR-14)', 'POST','/boards',{}],
+      ['Card create',          'POST','/boards/999999/cards',{}],
+      ['Crew add',             'POST','/crew',{}],
+      ['Duty grant',           'POST','/crew/x/duties',{}],
+      ['Team assign',          'POST','/crew/x/team',{}],
+      ['Audit browser',        'GET','/audit',null],
+      ['Config CRUD',          'POST','/crud/project_types',{}],
+      ['Force delete gate',    'POST','/crud/project_types/999999/force-delete',{}],
+      ['Notifications',        'GET','/notifications',null],
+    ];
+    toast('Probing '+probes.length+' capabilities with real HTTP calls…','ok');
+    const fails=[]; let enforced=0, allowed=0;
+    for(const [name,m,p,body] of probes){
+      try{
+        const r=await fetch(MO_API.base+p,{method:m,credentials:'same-origin',
+          headers:{'Content-Type':'application/json'},body:body!=null?JSON.stringify(body):undefined});
+        const txt=await r.text(); let json=null; try{json=JSON.parse(txt);}catch(_){}
+        if(!json||(r.status===404&&!/found|exist/i.test(json.message||'')))
+          fails.push(name+' — ROUTE MISSING ('+r.status+')');
+        else if(r.status===403){enforced++;}
+        else allowed++;
+      }catch(e){fails.push(name+' — network: '+e.message);}
+    }
+    modal(`<div class="mo-head"><div><h2>${fails.length?'⚠ Policy probe: FAILURES':'Policy probe passed'}</h2>
+        <p>${probes.length} capabilities probed with real HTTP calls (§26 — a 404 route is a failure, never a pass).</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="grid g3 mb3">
+          <div class="stat"><span class="stat-label">Routes present</span><span class="stat-val">${probes.length-fails.length}</span></div>
+          <div class="stat"><span class="stat-label">Denied (403) for this role</span><span class="stat-val">${enforced}</span></div>
+          <div class="stat ${fails.length?'alert':''}"><span class="stat-label">Missing / failed</span><span class="stat-val">${fails.length}</span></div></div>
+        ${fails.length?fails.map(f=>`<div class="note danger mb1">✗ ${esc(f)}</div>`).join(''):
+          '<div class="note">Every §16 capability endpoint exists and answered with an enforced JSON status for your role.</div>'}
+        <div class="small mut3 mt2">Probes use invalid ids/empty bodies — nothing is created. Per-role matrices need one run per signed-in role.</div></div>
+      <div class="mo-foot"><button class="btn primary ml-auto" onclick="closeModal()">Close</button></div>`,{size:'wide'});
   },
   runACs:()=>{toast('15 acceptance criteria — each links to the screen where it can be exercised','ok');},
   metricDefs:()=>{
@@ -8307,6 +8401,30 @@ const ACTIONS = {
   deleteCrew:(d)=>{
     if(!confirm('Remove '+(d.name||'this member')+' from the Media crew? This deletes their Nerve account.'))return;
     moSync(MO_API.del('/crew/'+ruid(+d.uid)), ()=>{render();toast('Member removed','ok');});
+  },
+  editCrew:(d)=>{
+    const u=user(+d.uid);
+    modal(`<div class="mo-head"><div><h2>Edit member — ${esc(u.full_name)}</h2></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="row">
+          <div class="field"><label class="lbl">Full name</label><input class="inp" id="ec-name" value="${esc(u.full_name)}"></div>
+          <div class="field"><label class="lbl">Email</label><input class="inp" id="ec-email" value="${esc(u.email||'')}"></div></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Designation</label><input class="inp" id="ec-desig" value="${esc(u.designation||'')}"></div>
+          <div class="field"><label class="lbl">Campus</label><select class="inp" id="ec-campus"><option value="">—</option>
+            ${DB.campuses.map(c=>`<option value="${c.id}" ${u.campus_id===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div></div>
+        <div class="hint">Role, team, duties and module access have their own controls on this row / in the Team directory.</div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary ml-auto" data-act="saveCrewEdit" data-uid="${u.id}">Save changes</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  saveCrewEdit:(d)=>{
+    const name=$('#ec-name').value.trim(); if(name.length<2){toast('Name is required','bad');return;}
+    const payload={full_name:name,email:$('#ec-email').value.trim(),designation:$('#ec-desig').value.trim(),
+      campus_id:$('#ec-campus').value||null};
+    closeModal();
+    moSync(MO_API.patch('/crew/'+ruid(+d.uid),payload),()=>{render();toast('Member updated','ok');});
   },
   changeRole:(d)=>{
     if(!d.role)return;
