@@ -817,10 +817,10 @@ html[data-theme=dark] .cal-cell.today{background:var(--brand-50)}
     </div>
     <nav class="nav" id="nav"></nav>
     <div class="nav-foot" style="flex-direction:column;align-items:stretch">
-      <button class="nav-item" id="btn-logout" title="Log out" style="color:var(--danger)">
+      <button class="nav-item" id="btn-logout" title="Log out" aria-label="Log out" style="color:var(--danger)">
         <span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg></span><span class="nav-label">Log out</span></button>
       <div class="f gap2 ac">
-        <button class="nav-item" id="btn-kiosk" title="Launch equipment kiosk (FR-6.6)" style="flex:1">
+        <button class="nav-item" id="btn-kiosk" title="Launch equipment kiosk (FR-6.6)" aria-label="Launch equipment kiosk" style="flex:1">
           <span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4.6" y="2.6" width="14.8" height="18.8" rx="2.2"/><path d="M9.6 18.4h4.8"/><circle cx="12" cy="10" r="3.2"/></svg></span><span class="nav-label">Kiosk mode</span></button>
         <button class="collapse-btn" id="btn-collapse" title="Collapse sidebar" aria-label="Collapse sidebar">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14.6 6-6 6 6 6"/></svg></button>
@@ -853,7 +853,7 @@ html[data-theme=dark] .cal-cell.today{background:var(--brand-50)}
       <button class="icon-btn" id="btn-bell" title="Notifications (§18)" aria-label="Notifications">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8.6a6 6 0 1 0-12 0c0 6.4-2.6 8.2-2.6 8.2h17.2S18 15 18 8.6"/><path d="M13.7 20.4a2 2 0 0 1-3.4 0"/></svg>
         <span class="dot-badge" id="bell-count">0</span></button>
-      <button class="role-switch" id="btn-role" title="Switch user / role — demo control">
+      <button class="role-switch" id="btn-role" title="My profile" aria-label="Open profile menu">
         <span class="av" id="me-av"></span>
         <span class="who" id="me-name">Rahul J.</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9.4 6 6 6-6"/></svg>
@@ -2076,6 +2076,8 @@ function myTeamIds(uid=S.me){
   return [uid];
 }
 const isPMof = (pid,uid=S.me)=>DB.project_assignments.some(a=>a.project_id===pid&&a.user_id===uid&&a.is_project_manager&&!a.removed_at);
+/* §16: projects on which the current user may CREATE deliverables (employee = owner/PM only). */
+const canOwnProjects=()=>visibleProjects().filter(p=>!['archived','cancelled','completed'].includes(p.status)&&(!isEmp()||p.owner_id===S.me||isPMof(p.id)));
 const isOnProject = (pid,uid=S.me)=>DB.project_assignments.some(a=>a.project_id===pid&&a.user_id===uid&&!a.removed_at);
 
 /* ---------- §16 PERMISSION MATRIX — server-side equivalent, deny by default ---------- */
@@ -2893,7 +2895,7 @@ function viewDashboard(){
     </div>
     <div class="page-actions">
       <button class="btn" data-menu="periodPick">${ic('calendar')} ${D.month(TODAY).replace("'"," 20")} ${ic('down')}</button>
-      <button class="btn primary" data-act="exportOpen" data-what="pack">${ic('download')} Download Report</button>
+      <button class="btn primary" data-act="exportOpen" data-what="pack">${ic("download")} ${isEmp()?"Download my report":"Download Report"}</button>
     </div>
   </div>
 
@@ -2935,7 +2937,7 @@ function viewDashboard(){
 
   <div class="grid g2 sec">
     ${upcomingShootsWidget()}
-    ${pendingApprovalsWidget()}
+    ${(!isEmp()||DB.project_assignments.some(a=>a.user_id===S.me&&a.is_project_manager&&!a.removed_at))?pendingApprovalsWidget():""}
   </div>
 
   <div class="grid g21 sec">
@@ -2974,7 +2976,8 @@ function velocityWidget(){
     const rs=DB.daily_reports.filter(r=>r.report_date>=start&&r.report_date<=end&&users.includes(r.user_id)&&r.status!=='draft');
     const ids=rs.map(r=>r.id);
     const v = which==='deliverables'
-      ? DB.deliverables.filter(x=>x.completed_at&&x.completed_at>=start&&x.completed_at<=end).length*4+rint(2,6)
+      /* 2.1: REAL delivered count only — no multipliers, no random noise (OBJ-3). */
+      ? DB.deliverables.filter(x=>x.status==='delivered'&&x.completed_at&&String(x.completed_at).slice(0,10)>=start&&String(x.completed_at).slice(0,10)<=end).length
       : which==='hours'
       ? +(DB.report_tasks.filter(t=>ids.includes(t.daily_report_id)).reduce((a,t)=>a+t.minutes,0)/60).toFixed(0)
       : rs.length;
@@ -2997,7 +3000,10 @@ function velocityWidget(){
         <button class="btn sm" data-menu="velRange">Last ${rangeKey==='1M'?'month':rangeKey==='3M'?'3 months':'6 months'} ${ic('down')}</button>
       </div></div>
     <div class="card-body pad" style="padding-top:4px">
-      ${chartLine([{c:'var(--brand-500)',data}],{area:true,h:250,pb:36})}
+      ${tot===0?`<div class="empty" style="padding:56px 20px"><div class="e-ico">◌</div>
+        <h4>${which==='deliverables'?'No deliverables completed yet':which==='hours'?'No hours logged yet':'No reports submitted yet'}</h4>
+        <p>This chart plots real ${which} — it fills in as work is ${which==='deliverables'?'delivered':'logged'}.</p></div>`
+      :chartLine([{c:'var(--brand-500)',data}],{area:true,h:250,pb:36})}
       <div class="f gap4 wrap mt3" style="padding-top:14px;border-top:1px solid var(--border)">
         <span class="small mut">Total <b class="mut" style="color:var(--text)">${tot}</b></span>
         <span class="small mut">Weekly average <b style="color:var(--text)">${avg}</b></span>
@@ -3035,6 +3041,26 @@ function activityWidget(){
     'report.submitted':'submitted','report.approved':'approved','deliverable.created':'created',
     'report.task_logged':'logged a task on','deliverable.delivered':'delivered',
     'shoot.created':'scheduled','equipment.booked':'booked'})[a.action]||a.action.split('.').pop().replace(/_/g,' ');
+  /* FR-1.10: live mode reads the SERVER's scoped activity feed (own actions +
+     assigned-project activity; admin = department stream). */
+  if(window.__MO_LIVE__&&!S._recentAct){
+    S._recentAct={rows:null};
+    MO_API.get('/activity/recent').then(r=>{S._recentAct={rows:r.activity};render();}).catch(()=>{S._recentAct={rows:[]};});
+  }
+  if(window.__MO_LIVE__){
+    const rows=(S._recentAct&&S._recentAct.rows)||[];
+    return `<div class="card">
+      <div class="card-head"><h3>Recent Activity</h3>${reqid('FR-1.10','Scoped activity stream — assigned work, never department-wide for employees')}</div>
+      <div class="card-body flush">
+        ${rows.slice(0,7).map(a=>`<div class="act-row" style="cursor:default">
+          <span class="lr-main"><b class="small">${esc(a.actor||'system')}</b>
+            <span class="small mut">${esc(String(a.action).replace(/[._]/g,' '))} · ${esc(a.entity_type||'')}${a.entity_id?' #'+a.entity_id:''}</span></span>
+          <span class="xsmall mut3 nowrap">${esc(String(a.occurred_at).replace('T',' ').slice(5,16))}</span></div>`).join('')
+          ||'<div class="empty" style="padding:24px"><p>No activity on your projects yet.</p></div>'}
+      </div>
+      ${can('admin.audit')?`<button class="card-link" data-go="#/media/admin/audit">View all activity ${ic('right')}</button>`:''}
+    </div>`;
+  }
   const acts=DB.audit_logs.slice(0,7);
   return `<div class="card">
     <div class="card-head"><h3>Recent Activity</h3></div>
@@ -3081,7 +3107,10 @@ function upcomingShootsWidget(){
 
 /* Pending approvals — FR-1.7 */
 function pendingApprovalsWidget(){
-  const revs=pendingVersionReviews().slice(0,4);
+  /* §16/FR-1.7: TL/Admin see all; an employee sees this ONLY as PM, scoped to their PM projects. */
+  let _revs=pendingVersionReviews();
+  if(isEmp())_revs=_revs.filter(({d})=>isPMof(d.project_id));
+  const revs=_revs.slice(0,4);
   const TINT={5:'v',6:'v',4:'v',7:'v',2:'t',1:'t',11:'t',12:'a',8:'a',10:'b',3:'b',9:'b',13:'g',14:'g'};
   return `<div class="card">
     <div class="card-head"><h3>Pending Approvals</h3>
@@ -3383,8 +3412,23 @@ function viewMyDay(){
         '<span class="status st-warn"><span class="si">◐</span>On leave</span>'}
     </div>
 
+    <div class="card mb4"><div class="card-head"><h3>Today’s shoot</h3>${reqid('W2 §1','Event, call time, location with map link, crew, assigned kit')}</div>
+      <div class="card-body flush">${myShoots.length?myShoots.map(s=>{
+        const kit=DB.equipment_bookings.filter(b2=>b2.shoot_id===s.id).map(b2=>DB.equipment_items.find(e=>e.id===b2.equipment_item_id)).filter(Boolean);
+        const mapUrl=s.location_url||('https://maps.google.com/?q='+encodeURIComponent(s.location||''));
+        return `<div class="list-row" style="cursor:default">
+          <span style="font-size:18px;color:var(--info);flex:0 0 auto">◉</span>
+          <span class="lr-main"><b>${esc(s.title)}</b>
+            <span>${esc(s.call_time||'')}${s.end_time?'–'+esc(s.end_time):''} call · ${esc(s.location||'TBC')}
+              ${s.location?` · <a href="${esc(mapUrl)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">map ↗</a>`:''}</span>
+            ${kit.length?`<span class="f wrap gap1 mt1">${kit.map(e=>`<span class="chip" title="${esc(e.make+' '+(e.model||''))}">${esc(e.asset_tag)}</span>`).join('')}</span>`:''}</span>
+          <span>${avStack(DB.shoot_crew.filter(c=>c.shoot_id===s.id).map(c=>c.user_id),5)}</span>
+          <button class="btn xs" style="flex:0 0 auto" data-drawer="shoot:${s.id}">Details</button>
+        </div>`;}).join(''):`<div class="empty" style="padding:20px"><p>No shoot today — desk work.</p></div>`}
+      </div></div>
+
     <div class="card mb4"><div class="card-head"><h3>Today’s assignments</h3>
-      <div class="ca"><span class="chip">${myAssigns.length+myShoots.length}</span></div></div>
+      <div class="ca"><span class="chip">${myAssigns.length}</span></div></div>
       <div class="card-body flush">
         ${myAssigns.map(a=>`<div class="list-row" style="cursor:default">
           <span style="width:8px;height:8px;border-radius:50%;flex:0 0 auto;background:${({urgent:'var(--danger)',high:'var(--warn)',normal:'var(--info)',low:'var(--text-3)'})[a.priority]||'var(--info)'}" title="${esc(a.priority)} priority"></span>
@@ -3394,11 +3438,7 @@ function viewMyDay(){
           <select class="inp" style="height:28px;font-size:12px;width:auto;flex:0 0 auto" onchange="ACTIONS.setAssignStatus({aid:${a.id},status:this.value})">
             ${['not_started','in_progress','done','blocked'].map(s=>`<option value="${s}" ${a.status===s?'selected':''}>${s.replace('_',' ')}</option>`).join('')}</select>
         </div>`).join('')}
-        ${myShoots.map(s=>`<button class="list-row" data-drawer="shoot:${s.id}"><span style="font-size:16px;color:var(--info);flex:0 0 auto">◉</span>
-          <span class="lr-main"><b>${esc(s.title)} <span class="chip">shoot</span></b>
-            <span>${esc(s.call_time)} call · ${esc(s.location)}</span></span>
-          <span>${avStack(DB.shoot_crew.filter(c=>c.shoot_id===s.id).map(c=>c.user_id),4)}</span></button>`).join('')}
-        ${(!myAssigns.length&&!myShoots.length)?`<div class="empty" style="padding:20px"><p>No assignments scheduled for today.</p></div>`:''}
+        ${!myAssigns.length?`<div class="empty" style="padding:20px"><p>No assignments scheduled for today.</p></div>`:''}
       </div></div>
 
     <div class="card mb4"><div class="card-head"><h3>My projects</h3>
@@ -3546,7 +3586,6 @@ function reportsMine(){
           <div class="between mb3"><span class="small">Connection</span><span class="status st-success"><span class="si">●</span>Online</span></div>
           <div class="between mb3"><span class="small">Queued locally</span><b>0 tasks</b></div>
           <div class="small mut3">Tours are a core scenario, not an edge case. Conflicts resolve last-write-wins with an audit entry (FR-2.10).</div>
-          <button class="btn sm block mt3" data-act="simulateOffline">Simulate airplane mode</button>
         </div></div>
     </div></div>`;
 }
@@ -3892,7 +3931,7 @@ function viewProject(id,tab){
           <span class="small b">${esc(user(p.owner_id).full_name)}</span></span>
         <button class="btn sm" data-act="watchProject" data-pid="${p.id}">◔ Watch</button>
         ${can('project.assign')?`<button class="btn sm" data-act="newAssignment" data-pid="${p.id}">＋ Assign task</button>`:''}
-        <button class="btn sm" data-act="newDeliverable" data-pid="${p.id}">＋ Deliverable</button>
+        ${(!isEmp()||p.owner_id===S.me||isPMof(p.id))?`<button class="btn sm" data-act="newDeliverable" data-pid="${p.id}">＋ Deliverable</button>`:""}
         <button class="btn sm primary" data-act="newShoot" data-pid="${p.id}" ${can('project.assign')?'':'disabled'}>＋ Shoot</button>
         <button class="btn sm" data-menu="projMore" data-pid="${p.id}">⋯</button>
       </div></div>
@@ -4023,7 +4062,7 @@ function projDeliverablesTab(p,dls){
       ${reqid('FR-4.1','Typed outputs with a status machine and delivery metadata')}
       <div class="ca">
         <button class="btn xs" data-act="applyTemplate" data-pid="${p.id}">Apply template</button>
-        <button class="btn xs primary" data-act="newDeliverable" data-pid="${p.id}">＋ Deliverable</button></div></div>
+        ${(!isEmp()||p.owner_id===S.me||isPMof(p.id))?`<button class="btn xs primary" data-act="newDeliverable" data-pid="${p.id}">＋ Deliverable</button>`:""}</div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Type</th><th>Title</th><th>Owner</th><th>Due</th><th>Qty</th><th>Versions</th>
         <th>Social</th><th>Mail</th><th>Status</th><th class="num">Actions</th></tr></thead>
@@ -4166,7 +4205,8 @@ function projCommentsTab(p){
 function viewPipeline(){
   const f=S.filters.pipe||(S.filters.pipe={type:[],owner:[],faculty:[],ptype:[],q:''});
   let ds=DB.deliverables.filter(d=>!d.deleted_at);
-  if(isEmp())ds=ds.filter(d=>d.owner_id===S.me||isOnProject(d.project_id));
+  /* §16: "View pipeline board — Employee: OWN ITEMS" — owner or PM of the parent. */
+  if(isEmp())ds=ds.filter(d=>d.owner_id===S.me||isPMof(d.project_id));
   if(f.q){const q=f.q.toLowerCase();ds=ds.filter(d=>(d.title+' '+proj(d.project_id).name).toLowerCase().includes(q));}
   if(f.type.length)ds=ds.filter(d=>f.type.includes(d.deliverable_type_id));
   if(f.owner.length)ds=ds.filter(d=>f.owner.includes(d.owner_id));
@@ -4175,12 +4215,12 @@ function viewPipeline(){
   const cols=['not_started','in_progress','in_review','changes_requested','approved','delivered'];
   const over=ds.filter(d=>d.due_date&&d.due_date<TODAY&&!['delivered','not_required','cancelled'].includes(d.status));
   return `<div class="page-head">
-      <div><div class="crumb">Module 4 · §7.4 · wireframe W6</div><h1 class="page-title">Production Board</h1>
-      <div class="page-sub">Department-wide Kanban of every deliverable ${reqid('FR-4.6','The production pipeline visualisation')}.
+      <div><div class="crumb">Module 4 · §7.4 · wireframe W6</div><h1 class="page-title">Production Pipeline</h1>
+      <div class="page-sub">${isEmp()?'Your deliverables (§16: own items)':'Department-wide Kanban of every deliverable'} ${reqid('FR-4.6','The production pipeline visualisation')}.
         This board is what replaces the Excel workbook — the unit is the <b>deliverable</b>, not a spreadsheet row.</div></div>
       <div class="page-actions">
         <button class="btn" data-act="exportOpen" data-what="pipeline">⇩ Export</button>
-        <button class="btn primary" data-act="newDeliverable">＋ Deliverable</button></div></div>
+        ${(!isEmp()||canOwnProjects().length)?`<button class="btn primary" data-act="newDeliverable">＋ Deliverable</button>`:''}</div></div>
 
     <div class="grid g4 sec">
       <div class="stat"><span class="stat-label">In flight</span><span class="stat-val">${ds.filter(d=>!['delivered','not_required','cancelled'].includes(d.status)).length}</span>
@@ -7108,7 +7148,8 @@ function openNewProject(){
   ACTIONS.templatePreview({},$('#np-type'));
 }
 function openNewDeliverable(pid){
-  const ps=visibleProjects().filter(p=>!['archived','cancelled'].includes(p.status));
+  const ps=canOwnProjects();
+  if(!ps.length){toast('§16: you can create deliverables only on projects you own or manage','warn');return;}
   modal(`<div class="mo-head"><div><h2>New deliverable</h2><p>The unit that replaces the Excel row.</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
     <div class="mo-body">
@@ -8278,8 +8319,8 @@ const ACTIONS = {
     });
   },
   auPreset:(d)=>{
-    const sets={employee:['dashboard','reporting','projects','library','leave'],
-      lead:['dashboard','reporting','projects','library','leave','equipment','performance','ai'],
+    const sets={employee:['dashboard','reporting','projects','library','equipment','leave','performance'],
+      lead:['dashboard','reporting','projects','library','equipment','leave','performance','ai','admin'],
       all:MODULES.map(m=>m.key),none:[]};
     const want=new Set(sets[d.p]||[]);
     $$('.au-mod').forEach(cb=>{cb.checked=want.has(cb.value)&&!cb.disabled;});
@@ -8755,6 +8796,12 @@ const MENUS = {
   columnConfig:()=>['Project','Code','Type','Faculty','Status','Priority','Progress','Owner','Start','End']
     .map(c=>({label:c,on:true,fn:()=>toast('Column config persists per saved view','ok')})),
   projStatus:(d)=>{
+    /* §16: status changes = owner/PM (employee) or TL/Admin — others get a static explanation. */
+    if(!can('project.status',{project_id:+d.pid})&&!isAdmin()&&!isTL()){
+      const p0=proj(+d.pid);
+      if(!(p0&&(p0.owner_id===S.me||isPMof(p0.id))))
+        return [{label_only:'Status changes: project owner/PM, Team Lead or Admin only (§16)'}];
+    }
     const p=proj(+d.pid);
     const allowed=PROJ_TRANSITIONS[p.status]||[];
     return [{label_only:'BR-1 — allowed transitions from '+PROJ_STATUS[p.status].l},
@@ -8976,6 +9023,7 @@ async function hydrateFromServer(){
   // Notifications are now server-persisted (written by the automation engine) and
   // arrive via /state; only synthesize client-side if the server didn't send any.
   DB.audit_logs=[]; DB.activity=[];
+  S._recentAct=null; S._projAct=null;   // re-fetch scoped activity feeds after writes
   if(!Array.isArray(st.notifications)) genNotifications();
   window.__MO_LIVE__=true;
   return {projects:(st.projects||[]).length, reports:(st.daily_reports||[]).length};

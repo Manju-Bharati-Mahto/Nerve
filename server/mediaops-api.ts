@@ -300,6 +300,32 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ project: rows[0], assignments: assignments.rows, deliverables: deliverables.rows, shoots: shoots.rows });
   }));
 
+  // FR-1.10 — Recent Activity for the Home dashboard, scoped per §16: admin sees the
+  // department stream; others see their own actions + activity on projects they are
+  // assigned to (never department-wide).
+  app.get(`${P}/activity/recent`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    let rows;
+    if (isMoAdmin(u)) {
+      rows = (await pool.query(
+        `SELECT a.action, a.entity_type, a.entity_id, a.occurred_at, us.full_name AS actor
+           FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
+          ORDER BY a.occurred_at DESC LIMIT 20`)).rows;
+    } else {
+      rows = (await pool.query(
+        `WITH my_projects AS (
+           SELECT p.id FROM mo_projects p WHERE p.deleted_at IS NULL AND (p.owner_id=$1
+             OR EXISTS (SELECT 1 FROM mo_project_assignments a WHERE a.project_id=p.id AND a.user_id=$1 AND a.removed_at IS NULL)))
+         SELECT a.action, a.entity_type, a.entity_id, a.occurred_at, us.full_name AS actor
+           FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
+          WHERE a.actor_id=$1
+             OR (a.entity_type='project' AND a.entity_id IN (SELECT id FROM my_projects))
+             OR (a.entity_type='deliverable' AND a.entity_id IN (SELECT d.id FROM mo_deliverables d WHERE d.project_id IN (SELECT id FROM my_projects)))
+          ORDER BY a.occurred_at DESC LIMIT 20`, [u.id])).rows;
+    }
+    res.json({ activity: rows });
+  }));
+
   // FR-3.5 / FR-13.3 — per-object activity feed (the non-admin subset of the audit
   // trail): the project's own events + its deliverables' events. Any media member.
   app.get(`${P}/projects/:id/activity`, asyncHandler(async (req, res) => {
@@ -335,6 +361,19 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       [name, typeId]);
     if (dup.rows[0] && b.force_duplicate !== true)
       return sendError(res, 409, `AUTO-6/VR-6: an identical project already exists (${dup.rows[0].code}). Rename it, or merge into the existing project.`);
+    // 4.2.1: an employee sending OTHER users is rejected loudly (403 naming the
+    // field), never silently overridden — and BEFORE any row is written.
+    if (!(isMoAdmin(u) || isMoTL(u))) {
+      const asg = Array.isArray(b.assignees) ? (b.assignees as unknown[]).map(String) : [];
+      if (asg.some((a) => a !== u.id))
+        return sendError(res, 403, "Employees may only assign a project to themselves (§16: assignees).");
+      if (Array.isArray(b.template_config) &&
+          (b.template_config as Array<Record<string, unknown>>).some((c) =>
+            Array.isArray(c.owners) && (c.owners as unknown[]).some((o) => String(o) !== u.id)))
+        return sendError(res, 403, "Employees may only own deliverables themselves (§16: template_config.owners).");
+      if (b.owner_id && String(b.owner_id) !== u.id)
+        return sendError(res, 403, "Employees may only set themselves as owner (§16: owner_id).");
+    }
     // BR-11: employees create into 'proposed'; TL/Admin create active immediately.
     const gated = !(isMoAdmin(u) || isMoTL(u));
     const ay = await pool.query(`SELECT id FROM mo_academic_years WHERE is_current LIMIT 1`);
@@ -420,6 +459,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       return sendError(res, 400, `BR-1: ${from} → ${to} is not a valid transition.`);
     // §16: TL/Admin (or PM/owner) may move status; only Admin may archive.
     const isOwnerPM = cur.rows[0].owner_id === u.id;
+    // BR-11 / FR-3.6 — the approval gate is its OWN capability: an employee may move
+    // their own project through production states, but NEVER approve a proposal
+    // (that would let them approve their own gated project — audit finding 9.1).
+    if (from === "proposed" && to === "approved" && !(isMoAdmin(u) || isMoTL(u)))
+      return sendError(res, 403, "BR-11: only a Team Lead or Admin may approve a proposed project.");
     if (to === "archived" && !isMoAdmin(u)) return sendError(res, 403, "Only Admin may archive (BR-1).");
     if (from === "archived" && !isMoAdmin(u)) return sendError(res, 403, "BR-12: only Admin may un-archive.");
     if (!(isMoAdmin(u) || isMoTL(u) || isOwnerPM)) return sendError(res, 403, "You cannot change this project's status.");
@@ -461,6 +505,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   app.post(`${P}/projects/:id/deliverables`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const pid = parseInt(getSingleParam(req.params.id), 10);
+    // §16: "Create/edit deliverables — Employee: on own projects." Owner or PM only.
+    if (!(isMoAdmin(u) || isMoTL(u))) {
+      const own = await pool.query(
+        `SELECT 1 FROM mo_projects p WHERE p.id=$1 AND (p.owner_id=$2
+            OR EXISTS (SELECT 1 FROM mo_project_assignments a WHERE a.project_id=p.id AND a.user_id=$2 AND a.is_project_manager AND a.removed_at IS NULL))`,
+        [pid, u.id]);
+      if (!own.rows[0]) return sendError(res, 403, "§16: employees may create deliverables only on their own projects (owner or PM).");
+    }
     const b = req.body as Record<string, unknown>;
     const title = String(b.title ?? "").trim();
     if (!title) return sendError(res, 400, "Title is required.");
@@ -1321,7 +1373,17 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       `INSERT INTO users (id, full_name, email, department, role, team, password_hash, email_verified, avatar_url)
        VALUES ($1,$2,$3,'Media Crew',$4,'media',$5,true,$6)`,
       [id, String(b.full_name ?? "New Member").trim() || "New Member", email, role, pw, (b.avatar_url as string) || null]);
-    const mods = Array.isArray(b.allowed_modules) ? JSON.stringify(b.allowed_modules) : null;
+    // 1.2 — default module sets per role, applied when no explicit selection is
+    // made: onboarding must not depend on remembering ten checkboxes, and a missed
+    // tick must never silently remove a right §16 grants.
+    const ROLE_DEFAULT_MODULES: Record<string, string[] | null> = {
+      user: ["dashboard", "reporting", "projects", "library", "equipment", "leave", "performance"],
+      sub_admin: ["dashboard", "reporting", "projects", "library", "equipment", "leave", "performance", "ai", "admin"],
+      admin: null,   // unrestricted
+    };
+    const mods = Array.isArray(b.allowed_modules) && (b.allowed_modules as unknown[]).length
+      ? JSON.stringify(b.allowed_modules)
+      : (ROLE_DEFAULT_MODULES[role] ? JSON.stringify(ROLE_DEFAULT_MODULES[role]) : null);
     await pool.query(`INSERT INTO mo_user_profiles (user_id, designation, mo_role, allowed_modules, campus_id) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
       [id, String(b.designation ?? ""), ({ admin: "admin", sub_admin: "team_lead", user: "employee" } as Record<string, string>)[role], mods,
        b.campus_id ? Number(b.campus_id) : null]);
