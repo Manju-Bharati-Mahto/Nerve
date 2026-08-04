@@ -2698,7 +2698,6 @@ $('#btn-theme').onclick=()=>toggleTheme();
 function toggleTheme(){S.theme=S.theme==='light'?'dark':'light';
   document.documentElement.dataset.theme=S.theme;
   toast('Theme: '+S.theme+' — token-swapped, no per-feature cost (NFR-13)','ok');}
-if(matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches){S.theme='dark';document.documentElement.dataset.theme='dark';}
 
 $('#btn-help').onclick=()=>showShortcuts();
 $('#btn-bell').onclick=()=>{location.hash='#/media/notifications';};
