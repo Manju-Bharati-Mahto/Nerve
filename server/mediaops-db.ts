@@ -81,6 +81,22 @@ export async function bootstrapMediaOpsDatabase() {
     )`);
   // One primary team per user (§11.1).
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_primary_team ON mo_team_members(user_id) WHERE is_primary`);
+  // Organization Management: teams are Admin-managed master data, not fixtures.
+  // Presentation lives on the row so every consumer renders a team identically.
+  // A project converted from an intake request is a third provenance, alongside
+  // hand-created and Excel-imported.
+  await pool.query(`ALTER TABLE mo_projects DROP CONSTRAINT IF EXISTS mo_projects_source_check`);
+  await pool.query(`ALTER TABLE mo_projects ADD CONSTRAINT mo_projects_source_check
+                    CHECK (source IN ('app','excel_import','request'))`);
+  await pool.query(`ALTER TABLE mo_teams ADD COLUMN IF NOT EXISTS description TEXT`);
+  await pool.query(`ALTER TABLE mo_teams ADD COLUMN IF NOT EXISTS color TEXT`);
+  await pool.query(`ALTER TABLE mo_teams ADD COLUMN IF NOT EXISTS icon TEXT`);
+  await pool.query(`ALTER TABLE mo_teams ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE mo_teams ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ`);
+  // Seed a stable order for teams that predate sort_order (all default to 0).
+  await pool.query(`UPDATE mo_teams t SET sort_order = s.rn
+                      FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS rn FROM mo_teams) s
+                     WHERE s.id = t.id AND t.sort_order = 0`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_duty_flags (
@@ -122,21 +138,34 @@ export async function bootstrapMediaOpsDatabase() {
     )`);
   // Existing DBs: add the column if it predates the module-access feature.
   await pool.query(`ALTER TABLE mo_user_profiles ADD COLUMN IF NOT EXISTS allowed_modules JSONB`);
-
-  // ── CRUD Engine lifecycle columns ─────────────────────────────────────────
-  // Every Admin-configurable table carries the same lifecycle: is_active
-  // (enable/disable — VR-11 deactivate-never-delete), archived_at (hidden from
-  // future use, history intact), created_by/updated_at (audit filters). Applied
-  // uniformly so the generic CRUD engine can treat all config modules the same.
-  for (const t of ["mo_project_types", "mo_deliverable_types", "mo_task_categories", "mo_equipment_categories",
-                   "mo_leave_types", "mo_skills", "mo_capacity_roles", "mo_vendors", "mo_tags", "mo_duty_flags",
-                   "mo_academic_years", "mo_campuses", "mo_holidays", "mo_project_templates", "mo_template_deliverables", "mo_automation_rules"]) {
-    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true`);
-    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ`);
-    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS created_by TEXT`);
-    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
-    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
-  }
+  // Module keys now mirror the sidebar one-for-one (key = route minus '#/media/'),
+  // replacing the old coarse grouping. Expand any legacy key into the sidebar
+  // entries it used to cover so nobody silently loses access. Idempotent: the new
+  // keys contain no legacy names, so a second run matches nothing.
+  await pool.query(`
+    WITH legacy(old, new) AS (VALUES
+      ('dashboard',   ARRAY['home']),
+      ('reporting',   ARRAY['my-day','reports']),
+      ('projects',    ARRAY['projects','pipeline','boards','calendar']),
+      ('performance', ARRAY['performance','kra']),
+      ('admin',       ARRAY['team','analytics','spec','admin/automations','admin/audit','admin/users']),
+      ('settings',    ARRAY['admin/settings'])
+      -- 'library', 'ai', 'equipment' and 'leave' keep their keys unchanged
+    ),
+    expanded AS (
+      SELECT p.user_id,
+             jsonb_agg(DISTINCT k) AS mods
+        FROM mo_user_profiles p
+        CROSS JOIN LATERAL jsonb_array_elements_text(p.allowed_modules) AS m(key)
+        CROSS JOIN LATERAL unnest(COALESCE((SELECT l.new FROM legacy l WHERE l.old = m.key),
+                                           ARRAY[m.key])) AS k
+       WHERE p.allowed_modules IS NOT NULL
+         AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(p.allowed_modules) x(k)
+                      WHERE x.k IN (SELECT old FROM legacy))
+       GROUP BY p.user_id
+    )
+    UPDATE mo_user_profiles p SET allowed_modules = e.mods
+      FROM expanded e WHERE e.user_id = p.user_id`);
 
   // ── §11.2 Projects & production ──────────────────────────────────────────
   await pool.query(`
@@ -146,6 +175,18 @@ export async function bootstrapMediaOpsDatabase() {
       color TEXT, icon TEXT, sort_order INTEGER NOT NULL DEFAULT 0, is_active BOOLEAN NOT NULL DEFAULT true,
       default_template_id BIGINT
     )`);
+  // Academic Units (faculties / schools / university-wide) — Admin-configurable
+  // master data, replacing the old hard-coded `faculty_served` free-text field.
+  // Referenced by projects; archived units stay referencable so historical
+  // projects keep rendering correctly (VR-11 deactivate-never-delete).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_academic_units (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      department_id BIGINT REFERENCES mo_departments(id),
+      name TEXT NOT NULL, slug TEXT, short_name TEXT, notes TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0, is_active BOOLEAN NOT NULL DEFAULT true
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_academic_units_name ON mo_academic_units(lower(name))`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_projects (
       id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -153,17 +194,45 @@ export async function bootstrapMediaOpsDatabase() {
       academic_year_id BIGINT REFERENCES mo_academic_years(id),
       project_type_id BIGINT NOT NULL REFERENCES mo_project_types(id),
       code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
-      faculty_served TEXT,
+      academic_unit_id BIGINT REFERENCES mo_academic_units(id),
       status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN
         ('proposed','approved','planning','in_production','in_review','delivered','completed','archived','on_hold','cancelled')),
       priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('urgent','high','normal','low')),
       owner_id TEXT NOT NULL REFERENCES users(id), created_by TEXT NOT NULL REFERENCES users(id),
       start_date DATE, end_date DATE, cover_image_url TEXT, type_meta JSONB NOT NULL DEFAULT '{}'::JSONB,
-      source TEXT NOT NULL DEFAULT 'app' CHECK (source IN ('app','excel_import')),
+      source TEXT NOT NULL DEFAULT 'app' CHECK (source IN ('app','excel_import','request')),
       archived_at TIMESTAMPTZ, deleted_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
+  // ── Migration: faculty_served (free text) → mo_academic_units FK ──────────
+  // Idempotent and lossless: every distinct legacy value becomes a unit, every
+  // project is re-pointed at it, and only then is the old column dropped.
+  await pool.query(`ALTER TABLE mo_projects ADD COLUMN IF NOT EXISTS academic_unit_id BIGINT REFERENCES mo_academic_units(id)`);
+  await pool.query(`DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_name='mo_projects' AND column_name='faculty_served') THEN
+      INSERT INTO mo_academic_units (department_id, name, slug, is_active, sort_order)
+        SELECT 1, TRIM(p.faculty_served),
+               regexp_replace(lower(TRIM(p.faculty_served)), '[^a-z0-9]+', '-', 'g'), true, 0
+          FROM (SELECT DISTINCT faculty_served FROM mo_projects
+                 WHERE faculty_served IS NOT NULL AND TRIM(faculty_served) <> '') p
+         WHERE NOT EXISTS (SELECT 1 FROM mo_academic_units a
+                            WHERE lower(a.name) = lower(TRIM(p.faculty_served)));
+      UPDATE mo_projects p SET academic_unit_id = a.id
+        FROM mo_academic_units a
+       WHERE p.academic_unit_id IS NULL
+         AND p.faculty_served IS NOT NULL
+         AND lower(a.name) = lower(TRIM(p.faculty_served));
+      -- Only drop once nothing is left unmapped.
+      IF NOT EXISTS (SELECT 1 FROM mo_projects
+                      WHERE faculty_served IS NOT NULL AND TRIM(faculty_served) <> ''
+                        AND academic_unit_id IS NULL) THEN
+        ALTER TABLE mo_projects DROP COLUMN faculty_served;
+      END IF;
+    END IF;
+  END $$`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_projects_status ON mo_projects(department_id, status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_projects_unit ON mo_projects(academic_unit_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_projects_deadline ON mo_projects(end_date)
                     WHERE status NOT IN ('completed','archived','cancelled')`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_projects_fts ON mo_projects
@@ -181,6 +250,21 @@ export async function bootstrapMediaOpsDatabase() {
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_assign_unique ON mo_project_assignments(project_id, user_id) WHERE removed_at IS NULL`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_one_pm ON mo_project_assignments(project_id) WHERE is_project_manager AND removed_at IS NULL`);
 
+  // ── Work Types (unified "Assign Work") ───────────────────────────────────
+  // Admin-configurable catalogue of the kinds of work that can be assigned.
+  // form_template drives which form the UI renders and which record the API
+  // writes — never a hard-coded name check.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_work_types (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      department_id BIGINT REFERENCES mo_departments(id),
+      name TEXT NOT NULL, slug TEXT, icon TEXT,
+      form_template TEXT NOT NULL DEFAULT 'standard_task'
+        CHECK (form_template IN ('standard_task','shoot')),
+      sort_order INTEGER NOT NULL DEFAULT 0, is_active BOOLEAN NOT NULL DEFAULT true
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_work_types_name ON mo_work_types(lower(name))`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_shoots (
       id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -192,10 +276,6 @@ export async function bootstrapMediaOpsDatabase() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_shoots_date ON mo_shoots(shoot_date)`);
   // BR-13: shoots are soft-deletable too (A2).
   await pool.query(`ALTER TABLE mo_shoots ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`);
-  // G1/A1 self-heal: soft-delete any deliverable whose parent project is already
-  // soft-deleted (orphans created before the cascade existed). Idempotent.
-  await pool.query(`UPDATE mo_deliverables d SET deleted_at=NOW() WHERE d.deleted_at IS NULL
-    AND NOT EXISTS (SELECT 1 FROM mo_projects p WHERE p.id=d.project_id AND p.deleted_at IS NULL)`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_shoot_crew (
       shoot_id BIGINT NOT NULL REFERENCES mo_shoots(id) ON DELETE CASCADE,
@@ -240,11 +320,33 @@ export async function bootstrapMediaOpsDatabase() {
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_assign_sched ON mo_assignments(start_date, due_date)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_assign_user ON mo_assignment_users(user_id)`);
-  // Deliverable-backed assignments (auto-generated at project creation): link the
-  // assignment to its deliverable + carry an effort estimate. Existing rows keep NULLs.
-  await pool.query(`ALTER TABLE mo_assignments ADD COLUMN IF NOT EXISTS deliverable_id BIGINT REFERENCES mo_deliverables(id) ON DELETE CASCADE`);
-  await pool.query(`ALTER TABLE mo_assignments ADD COLUMN IF NOT EXISTS estimated_hours NUMERIC(5,1)`);
-
+  // ── Unified Assign Work: both record kinds carry their work type ─────────
+  await pool.query(`ALTER TABLE mo_shoots ADD COLUMN IF NOT EXISTS work_type_id BIGINT REFERENCES mo_work_types(id)`);
+  await pool.query(`ALTER TABLE mo_assignments ADD COLUMN IF NOT EXISTS work_type_id BIGINT REFERENCES mo_work_types(id)`);
+  // Attribution. Every row in an employee's Today's Assignments shows who assigned
+  // it, so a shoot must carry the same attribution a standard task already has.
+  await pool.query(`ALTER TABLE mo_shoots ADD COLUMN IF NOT EXISTS created_by TEXT REFERENCES users(id)`);
+  // Seed the starter catalogue once (Admin can edit/extend it from Settings).
+  await pool.query(`
+    INSERT INTO mo_work_types (department_id, name, slug, icon, form_template, sort_order, is_active)
+    SELECT (SELECT id FROM mo_departments ORDER BY id LIMIT 1), x.name, x.slug, x.icon, x.tpl, x.so, true FROM (VALUES
+      ('General Task','general-task','◆','standard_task',1),
+      ('Shoot','shoot','◉','shoot',2),
+      ('Drone Shoot','drone-shoot','✈','shoot',3),
+      ('Podcast Recording','podcast-recording','♪','shoot',4),
+      ('Editing','editing','✂','standard_task',5),
+      ('Photography','photography','▣','standard_task',6),
+      ('Videography','videography','▶','standard_task',7),
+      ('Animation','animation','◈','standard_task',8),
+      ('Meeting','meeting','☎','standard_task',9)
+    ) AS x(name, slug, icon, tpl, so)
+    WHERE NOT EXISTS (SELECT 1 FROM mo_work_types w WHERE lower(w.name)=lower(x.name))`);
+  // Migrate legacy records: every shoot is a 'Shoot'; every pre-existing
+  // assignment becomes a 'General Task' (neutral — we don't invent a category).
+  await pool.query(`UPDATE mo_shoots SET work_type_id=(SELECT id FROM mo_work_types WHERE slug='shoot')
+                     WHERE work_type_id IS NULL`);
+  await pool.query(`UPDATE mo_assignments SET work_type_id=(SELECT id FROM mo_work_types WHERE slug='general-task')
+                     WHERE work_type_id IS NULL`);
   // ── §11.3 Deliverables & assets ──────────────────────────────────────────
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_deliverable_types (
@@ -267,12 +369,81 @@ export async function bootstrapMediaOpsDatabase() {
       social_status TEXT NOT NULL DEFAULT 'na' CHECK (social_status IN ('na','scheduled','posted')),
       social_post_url TEXT, social_posted_at DATE,
       mail_status TEXT NOT NULL DEFAULT 'na' CHECK (mail_status IN ('na','pending','sent')), mail_sent_at DATE,
+      -- Scheduling: a deliverable is project scope, NOT today's work. It only
+      -- surfaces in an assignee's Today's Assignments once a TL/PM schedules it
+      -- for a date. NULL scheduled_date = backlog (project page only).
+      scheduled_date DATE,
+      priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('urgent','high','normal','low')),
+      estimated_hours NUMERIC(5,1),
+      approval_status TEXT NOT NULL DEFAULT 'pending' CHECK (approval_status IN ('pending','approved','changes_requested','rejected')),
       deleted_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
+  // Existing DBs: add the scheduling/model columns if they predate this feature.
+  // Admin-configurable default: how many days after the project end date this
+  // type is normally due. Pre-fills project creation; never overwritten by a
+  // project-level override (PRD §3/§6).
+  await pool.query(`ALTER TABLE mo_deliverable_types ADD COLUMN IF NOT EXISTS default_due_offset_days INTEGER NOT NULL DEFAULT 5`);
+  // Three values kept SEPARATE (PRD §6):
+  //   mo_template_deliverables.days_offset_due → template default
+  //   mo_deliverables.due_offset_days          → this project's override
+  //   mo_deliverables.due_date                 → the actual date
+  // due_date_source records whether the date still tracks the offset ('offset')
+  // or was hand-picked ('manual'); manual dates are never auto-recalculated (§9).
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS due_offset_days INTEGER`);
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS due_date_source TEXT NOT NULL DEFAULT 'offset'
+                    CHECK (due_date_source IN ('offset','manual'))`);
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS scheduled_date DATE`);
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'normal'`);
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS estimated_hours NUMERIC(5,1)`);
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS approval_status TEXT NOT NULL DEFAULT 'pending'`);
+  // Who marked it Delivered, and when the approval state last moved — shown on
+  // the Delivered Outputs cards and used by the Team Lead review queue.
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS delivered_by TEXT REFERENCES users(id)`);
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS approved_by TEXT REFERENCES users(id)`);
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+  // Back-fill: seed each type's default offset from its most common template
+  // value so existing installs keep the numbers people already expect.
+  await pool.query(`
+    UPDATE mo_deliverable_types dt SET default_due_offset_days = src.d
+      FROM (SELECT deliverable_type_id, MODE() WITHIN GROUP (ORDER BY days_offset_due) AS d
+              FROM mo_template_deliverables GROUP BY deliverable_type_id) src
+     WHERE src.deliverable_type_id = dt.id AND dt.default_due_offset_days = 5 AND src.d IS NOT NULL`);
+  // Back-fill existing deliverables so their stored offset matches reality.
+  await pool.query(`
+    UPDATE mo_deliverables d SET due_offset_days = GREATEST(0, (d.due_date - p.end_date))
+      FROM mo_projects p
+     WHERE p.id = d.project_id AND d.due_offset_days IS NULL
+       AND d.due_date IS NOT NULL AND p.end_date IS NOT NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_deliv_scheduled ON mo_deliverables(scheduled_date, owner_id)
+                    WHERE scheduled_date IS NOT NULL`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_deliv_project ON mo_deliverables(project_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_deliv_owner ON mo_deliverables(owner_id, status)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_deliv_overdue ON mo_deliverables(due_date)
                     WHERE status NOT IN ('delivered','not_required','cancelled')`);
+
+  // G1/A1 self-heal: soft-delete any deliverable whose parent project is already
+  // soft-deleted (orphans created before the cascade existed). Idempotent.
+  await pool.query(`UPDATE mo_deliverables d SET deleted_at=NOW() WHERE d.deleted_at IS NULL
+    AND NOT EXISTS (SELECT 1 FROM mo_projects p WHERE p.id=d.project_id AND p.deleted_at IS NULL)`);
+  await pool.query(`ALTER TABLE mo_assignments ADD COLUMN IF NOT EXISTS deliverable_id BIGINT REFERENCES mo_deliverables(id) ON DELETE CASCADE`);
+  await pool.query(`ALTER TABLE mo_assignments ADD COLUMN IF NOT EXISTS estimated_hours NUMERIC(5,1)`);
+  // ── Migration: deliverable-backed assignments → deliverable scheduling ────
+  // Project creation used to auto-generate one mo_assignments row per deliverable
+  // owner, which pushed un-scheduled project scope straight into Today's
+  // Assignments. Deliverables now carry their own schedule, so fold those rows
+  // back into the deliverable and drop them. Idempotent: it only ever matches
+  // assignments that still have a deliverable_id.
+  await pool.query(`
+    UPDATE mo_deliverables d SET
+      scheduled_date  = COALESCE(d.scheduled_date, a.start_date),
+      estimated_hours = COALESCE(d.estimated_hours, a.estimated_hours),
+      priority        = CASE WHEN d.priority='normal' THEN COALESCE(a.priority, d.priority) ELSE d.priority END,
+      owner_id        = COALESCE(d.owner_id, (SELECT au.user_id FROM mo_assignment_users au WHERE au.assignment_id=a.id LIMIT 1))
+    FROM mo_assignments a
+    WHERE a.deliverable_id = d.id`);
+  await pool.query(`DELETE FROM mo_assignment_users WHERE assignment_id IN (SELECT id FROM mo_assignments WHERE deliverable_id IS NOT NULL)`);
+  await pool.query(`DELETE FROM mo_assignments WHERE deliverable_id IS NOT NULL`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_drive_links (
@@ -330,8 +501,18 @@ export async function bootstrapMediaOpsDatabase() {
       total_minutes INTEGER NOT NULL DEFAULT 0, late BOOLEAN NOT NULL DEFAULT false,
       auto_approved BOOLEAN NOT NULL DEFAULT false, flag_rules JSONB NOT NULL DEFAULT '[]'::JSONB,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      -- Re-review trail: any content change after submission invalidates the
+      -- approval and sends the report back to the reviewer (never silently).
+      last_edited_at TIMESTAMPTZ, last_edited_by TEXT REFERENCES users(id),
+      edited_after_submit BOOLEAN NOT NULL DEFAULT false,
+      revision INTEGER NOT NULL DEFAULT 0,
       UNIQUE (user_id, report_date)  -- BR-3: one report per user per calendar day
     )`);
+  // Existing DBs: add the re-review columns if they predate this feature.
+  await pool.query(`ALTER TABLE mo_daily_reports ADD COLUMN IF NOT EXISTS last_edited_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE mo_daily_reports ADD COLUMN IF NOT EXISTS last_edited_by TEXT REFERENCES users(id)`);
+  await pool.query(`ALTER TABLE mo_daily_reports ADD COLUMN IF NOT EXISTS edited_after_submit BOOLEAN NOT NULL DEFAULT false`);
+  await pool.query(`ALTER TABLE mo_daily_reports ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 0`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_reports_queue ON mo_daily_reports(status) WHERE status IN ('submitted','flagged')`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_report_tasks (
@@ -345,6 +526,11 @@ export async function bootstrapMediaOpsDatabase() {
       blocker_note TEXT NOT NULL DEFAULT '', sort_order INTEGER NOT NULL DEFAULT 0,
       evidence JSONB NOT NULL DEFAULT '[]'::JSONB
     )`);
+  // Task-log rows carry their own timestamps so My Day can show "last updated"
+  // and tell a still-running task from a finished one.
+  await pool.query(`ALTER TABLE mo_report_tasks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+  await pool.query(`ALTER TABLE mo_report_tasks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_tasks_deliv ON mo_report_tasks(deliverable_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_tasks_report ON mo_report_tasks(daily_report_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_tasks_project ON mo_report_tasks(project_id)`);
 
@@ -462,20 +648,44 @@ export async function bootstrapMediaOpsDatabase() {
       card_id BIGINT NOT NULL REFERENCES mo_cards(id) ON DELETE CASCADE, text TEXT NOT NULL,
       is_done BOOLEAN NOT NULL DEFAULT false, sort_order INTEGER NOT NULL DEFAULT 0
     )`);
+  // Operational leave categories only (Casual/Sick/Comp-off/...) — no HR quota
+  // data. This module tracks availability + approval, not leave balances; the
+  // university's separate HR system owns quotas, credits, and payroll.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_leave_types (
       id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name TEXT NOT NULL,
-      annual_quota NUMERIC(4,1) NOT NULL DEFAULT 0, is_active BOOLEAN NOT NULL DEFAULT true, notes TEXT
+      is_active BOOLEAN NOT NULL DEFAULT true, notes TEXT
     )`);
+  // Existing DBs: drop the HR-style quota column if it predates this change.
+  await pool.query(`ALTER TABLE mo_leave_types DROP COLUMN IF EXISTS annual_quota`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_leave_requests (
       id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       leave_type_id BIGINT NOT NULL REFERENCES mo_leave_types(id), starts_on DATE NOT NULL, ends_on DATE NOT NULL,
-      half_day BOOLEAN NOT NULL DEFAULT false, reason TEXT NOT NULL DEFAULT '',
+      day_type TEXT NOT NULL DEFAULT 'full' CHECK (day_type IN ('full','half_morning','half_afternoon')),
+      reason TEXT NOT NULL DEFAULT '',
+      replacement_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      affected_project_id BIGINT REFERENCES mo_projects(id) ON DELETE SET NULL,
+      remarks TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','cancelled')),
-      decided_by TEXT REFERENCES users(id), decided_at DATE, decision_note TEXT NOT NULL DEFAULT ''
+      decided_by TEXT REFERENCES users(id), decided_at DATE, decision_note TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
+  // Existing DBs: migrate the old boolean into the new three-way day_type,
+  // then add the newer optional fields.
+  await pool.query(`ALTER TABLE mo_leave_requests ADD COLUMN IF NOT EXISTS day_type TEXT NOT NULL DEFAULT 'full'`);
+  await pool.query(`DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mo_leave_requests' AND column_name='half_day') THEN
+      UPDATE mo_leave_requests SET day_type = 'half_morning' WHERE half_day = true AND day_type = 'full';
+      ALTER TABLE mo_leave_requests DROP COLUMN half_day;
+    END IF;
+  END $$`);
+  await pool.query(`ALTER TABLE mo_leave_requests ADD COLUMN IF NOT EXISTS replacement_user_id TEXT REFERENCES users(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE mo_leave_requests ADD COLUMN IF NOT EXISTS affected_project_id BIGINT REFERENCES mo_projects(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE mo_leave_requests ADD COLUMN IF NOT EXISTS remarks TEXT NOT NULL DEFAULT ''`);
+  await pool.query(`ALTER TABLE mo_leave_requests ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+  await pool.query(`ALTER TABLE mo_leave_requests ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_leave_replacements (
       leave_request_id BIGINT NOT NULL REFERENCES mo_leave_requests(id) ON DELETE CASCADE,
@@ -546,6 +756,25 @@ export async function bootstrapMediaOpsDatabase() {
       trigger TEXT, action TEXT, is_enabled BOOLEAN NOT NULL DEFAULT true, config JSONB NOT NULL DEFAULT '{}'::JSONB,
       updated_by TEXT REFERENCES users(id)
     )`);
+
+  // ── CRUD Engine lifecycle columns ─────────────────────────────────────────
+  // Every Admin-configurable table carries the same lifecycle: is_active
+  // (enable/disable — VR-11 deactivate-never-delete), archived_at (hidden from
+  // future use, history intact), created_by/updated_at (audit filters). Applied
+  // uniformly so the generic CRUD engine can treat all config modules the same.
+  // Runs after all target tables are created (they already define these
+  // columns for fresh DBs) — this is the migration path for pre-existing DBs.
+  for (const t of ["mo_project_types", "mo_deliverable_types", "mo_task_categories", "mo_equipment_categories",
+                   "mo_leave_types", "mo_skills", "mo_capacity_roles", "mo_vendors", "mo_tags", "mo_duty_flags",
+                   "mo_academic_years", "mo_academic_units", "mo_work_types", "mo_campuses", "mo_holidays", "mo_project_templates",
+                   "mo_template_deliverables", "mo_automation_rules"]) {
+    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true`);
+    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ`);
+    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS created_by TEXT`);
+    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+    await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+  }
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_audit_logs (
       id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -589,6 +818,139 @@ export async function bootstrapMediaOpsDatabase() {
       status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved'))
     )`);
 
+  // ═══════════ MEDIA OPERATIONS COORDINATOR (§ operations role) ═════════════
+  // A dedicated media-department role that owns the first and last stages of a
+  // project: intake → clarification → conversion, then dispatch → archive.
+  // Nerve-wide three-role parity is preserved — users.role stays admin/sub_admin/
+  // user; the coordinator is a MEDIA role held in mo_user_profiles.mo_role.
+  await pool.query(`ALTER TABLE mo_user_profiles DROP CONSTRAINT IF EXISTS mo_user_profiles_mo_role_check`);
+  await pool.query(`ALTER TABLE mo_user_profiles ADD CONSTRAINT mo_user_profiles_mo_role_check
+                    CHECK (mo_role IN ('admin','team_lead','employee','coordinator'))`);
+
+  // ── Request intake. A coordinator never creates a project directly: every job
+  // enters as a request and is CONVERTED once it has the information it needs.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_requests (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      code TEXT,
+      institute TEXT NOT NULL DEFAULT '',
+      academic_unit_id BIGINT REFERENCES mo_academic_units(id),
+      stakeholder TEXT NOT NULL DEFAULT '',
+      contact TEXT NOT NULL DEFAULT '',
+      event_name TEXT NOT NULL,
+      project_type_id BIGINT REFERENCES mo_project_types(id),
+      venue TEXT,
+      event_date DATE,
+      event_time TEXT,
+      end_date DATE,
+      description TEXT NOT NULL DEFAULT '',
+      deliverables_requested JSONB NOT NULL DEFAULT '[]'::jsonb,
+      attachments JSONB NOT NULL DEFAULT '[]'::jsonb,
+      priority TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('urgent','high','normal','low')),
+      budget NUMERIC(12,2),
+      notes TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'new'
+        CHECK (status IN ('new','needs_clarification','ready','converted','closed','rejected')),
+      project_id BIGINT REFERENCES mo_projects(id) ON DELETE SET NULL,
+      lead_user_id TEXT REFERENCES users(id),
+      received_by TEXT REFERENCES users(id),
+      converted_by TEXT REFERENCES users(id),
+      converted_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_requests_status ON mo_requests(status)`);
+  // Intake detail the coordinator actually collects on the phone.
+  await pool.query(`ALTER TABLE mo_requests ADD COLUMN IF NOT EXISTS contact_email TEXT`);
+  await pool.query(`ALTER TABLE mo_requests ADD COLUMN IF NOT EXISTS contact_phone TEXT`);
+  await pool.query(`ALTER TABLE mo_requests ADD COLUMN IF NOT EXISTS requirement TEXT`);
+  await pool.query(`ALTER TABLE mo_requests ADD COLUMN IF NOT EXISTS meeting_required BOOLEAN NOT NULL DEFAULT false`);
+  await pool.query(`ALTER TABLE mo_requests ADD COLUMN IF NOT EXISTS vendor_required BOOLEAN NOT NULL DEFAULT false`);
+  await pool.query(`ALTER TABLE mo_requests ADD COLUMN IF NOT EXISTS team_id BIGINT REFERENCES mo_teams(id)`);
+  // Venue travels with the work: request → project → shoot → calendar → filters.
+  await pool.query(`ALTER TABLE mo_projects ADD COLUMN IF NOT EXISTS venue TEXT`);
+  // §18 — a project converted from a request before a team is chosen has NO
+  // production owner yet. That "Needs assignment" state must be representable,
+  // otherwise the coordinator ends up owning production work by default.
+  await pool.query(`ALTER TABLE mo_projects ALTER COLUMN owner_id DROP NOT NULL`);
+
+  // ── Coordination logs. Deliberately light: they record that contact happened,
+  // they do not become a CRM.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_meetings (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      kind TEXT NOT NULL DEFAULT 'stakeholder' CHECK (kind IN ('stakeholder','vendor','internal')),
+      stakeholder TEXT NOT NULL DEFAULT '',
+      vendor_id BIGINT REFERENCES mo_vendors(id),
+      project_id BIGINT REFERENCES mo_projects(id) ON DELETE SET NULL,
+      request_id BIGINT REFERENCES mo_requests(id) ON DELETE SET NULL,
+      purpose TEXT NOT NULL DEFAULT '',
+      meet_date DATE NOT NULL,
+      meet_time TEXT,
+      duration_min INTEGER,
+      location TEXT,
+      outcome TEXT NOT NULL DEFAULT '',
+      next_action TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      attachments JSONB NOT NULL DEFAULT '[]'::jsonb,
+      status TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','completed','cancelled')),
+      logged_by TEXT REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_meetings_date ON mo_meetings(meet_date)`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_vendor_activities (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      vendor_id BIGINT REFERENCES mo_vendors(id) ON DELETE CASCADE,
+      project_id BIGINT REFERENCES mo_projects(id) ON DELETE SET NULL,
+      kind TEXT NOT NULL DEFAULT 'call' CHECK (kind IN ('quotation','purchase','meeting','call','email')),
+      purpose TEXT NOT NULL DEFAULT '',
+      amount NUMERIC(12,2),
+      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','awaiting_reply','closed','cancelled')),
+      notes TEXT NOT NULL DEFAULT '',
+      activity_date DATE NOT NULL DEFAULT CURRENT_DATE,
+      logged_by TEXT REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_followups (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      request_id BIGINT REFERENCES mo_requests(id) ON DELETE CASCADE,
+      project_id BIGINT REFERENCES mo_projects(id) ON DELETE SET NULL,
+      vendor_id BIGINT REFERENCES mo_vendors(id) ON DELETE SET NULL,
+      stakeholder TEXT NOT NULL DEFAULT '',
+      contact TEXT NOT NULL DEFAULT '',
+      subject TEXT NOT NULL DEFAULT '',
+      pending_since DATE NOT NULL DEFAULT CURRENT_DATE,
+      reminder_date DATE,
+      last_contact_at TIMESTAMPTZ,
+      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','awaiting_reply','resolved','cancelled')),
+      notes TEXT NOT NULL DEFAULT '',
+      owner_id TEXT REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_followups_status ON mo_followups(status)`);
+
+  // ── Dispatch trail. Approval is a CREATIVE verdict (Team Lead); dispatch is an
+  // OPERATIONAL one (coordinator). Keeping them on separate columns means an
+  // approved deliverable is never silently treated as delivered.
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS dispatch_status TEXT NOT NULL DEFAULT 'none'
+                    CHECK (dispatch_status IN ('none','queued','sent','delivered','archived'))`);
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS dispatch_recipient TEXT`);
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS dispatch_subject TEXT`);
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS dispatch_notes TEXT`);
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS dispatched_by TEXT REFERENCES users(id)`);
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS dispatched_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS queued_at TIMESTAMPTZ`);
+  // Anything already approved enters the queue, so the first coordinator to sign
+  // in inherits a correct backlog rather than an empty one.
+  await pool.query(`UPDATE mo_deliverables SET dispatch_status='queued', queued_at=NOW()
+                     WHERE dispatch_status='none' AND deleted_at IS NULL
+                       AND id IN (SELECT deliverable_id FROM mo_deliverable_versions
+                                   WHERE review_status='approved')`);
+
   await seedMediaOpsLookups();
 }
 
@@ -605,6 +967,21 @@ async function seedMediaOpsLookups() {
     ('2024-25','2024-06-01','2025-05-31',false),
     ('2025-26','2025-06-01','2026-05-31',false),
     ('2026-27','2026-06-01','2027-05-31',true)`);
+  // Starter Academic Units — Admin-editable from Settings, not hard-coded anywhere.
+  await pool.query(`INSERT INTO mo_academic_units (department_id, name, short_name, slug, sort_order, is_active) VALUES
+    (1,'University-wide','University-wide','university-wide',1,true),
+    (1,'Faculty of Engineering & Technology','Engineering','faculty-of-engineering-technology',2,true),
+    (1,'Faculty of Medicine','Medicine','faculty-of-medicine',3,true),
+    (1,'Faculty of Management Studies','Management','faculty-of-management-studies',4,true),
+    (1,'Faculty of Pharmacy','Pharmacy','faculty-of-pharmacy',5,true),
+    (1,'Faculty of Design','Design','faculty-of-design',6,true),
+    (1,'Faculty of Law','Law','faculty-of-law',7,true),
+    (1,'Faculty of Applied Sciences','Applied Sciences','faculty-of-applied-sciences',8,true),
+    (1,'Faculty of Agriculture','Agriculture','faculty-of-agriculture',9,true),
+    (1,'Faculty of Physiotherapy','Physiotherapy','faculty-of-physiotherapy',10,true),
+    (1,'Faculty of IT & Computer Science','IT & CS','faculty-of-it-computer-science',11,true),
+    (1,'Faculty of Nursing','Nursing','faculty-of-nursing',12,true),
+    (1,'Faculty of Arts','Arts','faculty-of-arts',13,true)`);
   await pool.query(`INSERT INTO mo_capacity_roles (name) VALUES
     ('Photographer'),('Videographer'),('Editor'),('Drone Operator'),('Coordinator'),('Sound'),('Motion Designer')`);
   await pool.query(`INSERT INTO mo_duty_flags (code, name, description) VALUES
@@ -629,29 +1006,29 @@ async function seedMediaOpsLookups() {
     (1,'Shooting','◆',true,1),(1,'Editing','◐',true,2),(1,'Colour Grading','◑',true,3),(1,'Sound','◪',true,4),
     (1,'Animation','◈',true,5),(1,'Coordination','◇',true,6),(1,'Travel','➤',true,7),(1,'Meeting','◎',true,8),
     (1,'Upload / Backup','◪',true,9),(1,'Review','◔',true,10),(1,'Equipment Prep','▣',true,11),(1,'Scripting','◇',true,12)`);
-  await pool.query(`INSERT INTO mo_deliverable_types (department_id, name, slug, icon, default_weight, default_unit, review_exempt, is_active, sort_order) VALUES
-    (1,'Photos — Raw','photos-raw','◈',1,'photos',false,true,1),
-    (1,'Photos — Edited','photos-edited','◉',3,'photos',false,true,2),
-    (1,'Video — Raw','video-raw','▤',1,'clips',true,true,3),
-    (1,'Video — Edited','video-edited','▶',4,'videos',false,true,4),
-    (1,'Aftermovie','aftermovie','★',8,'minutes',false,true,5),
-    (1,'Highlight Reel','highlight-reel','◧',5,'minutes',false,true,6),
-    (1,'Reel / Short','reel','◔',2,'reels',false,true,7),
-    (1,'Outreach Content','outreach','◇',2,'posts',false,true,8),
-    (1,'Continuous Recording','continuous','◺',3,'hours',true,true,9),
-    (1,'Drone Footage','drone','◆',3,'clips',false,true,10),
-    (1,'Album Design','album','◈',4,'spreads',false,true,11),
-    (1,'Story / Post','story','◔',1,'posts',false,true,12),
-    (1,'Raw Archive','raw-archive','◫',1,'GB',true,true,13),
-    (1,'Other','other','◇',1,'items',false,true,14)`);
+  await pool.query(`INSERT INTO mo_deliverable_types (department_id, name, slug, icon, default_weight, default_unit, review_exempt, is_active, sort_order, default_due_offset_days) VALUES
+    (1,'Photos — Raw','photos-raw','◈',1,'photos',false,true,1,2),
+    (1,'Photos — Edited','photos-edited','◉',3,'photos',false,true,2,5),
+    (1,'Video — Raw','video-raw','▤',1,'clips',true,true,3,2),
+    (1,'Video — Edited','video-edited','▶',4,'videos',false,true,4,10),
+    (1,'Aftermovie','aftermovie','★',8,'minutes',false,true,5,12),
+    (1,'Highlight Reel','highlight-reel','◧',5,'minutes',false,true,6,8),
+    (1,'Reel / Short','reel','◔',2,'reels',false,true,7,5),
+    (1,'Outreach Content','outreach','◇',2,'posts',false,true,8,9),
+    (1,'Continuous Recording','continuous','◺',3,'hours',true,true,9,3),
+    (1,'Drone Footage','drone','◆',3,'clips',false,true,10,5),
+    (1,'Album Design','album','◈',4,'spreads',false,true,11,14),
+    (1,'Story / Post','story','◔',1,'posts',false,true,12,3),
+    (1,'Raw Archive','raw-archive','◫',1,'GB',true,true,13,2),
+    (1,'Other','other','◇',1,'items',false,true,14,5)`);
   await pool.query(`INSERT INTO mo_equipment_categories (department_id, name, tracking_mode, icon, sort_order) VALUES
     (1,'Camera Body','individual','▣',1),(1,'Lens','individual','◎',2),(1,'Drone','individual','◆',3),
     (1,'Gimbal','individual','◇',4),(1,'Light','individual','◔',5),(1,'Microphone','individual','◪',6),
     (1,'Audio Recorder','individual','▤',7),(1,'Tripod / Support','individual','◇',8),
     (1,'Memory Card','pooled','◭',9),(1,'Battery','pooled','◮',10),(1,'Accessory','pooled','◇',11)`);
-  await pool.query(`INSERT INTO mo_leave_types (name, annual_quota, is_active, notes) VALUES
-    ('Casual Leave',12,true,''),('Sick Leave',8,true,''),('Comp-off',0,true,'Earned against Sunday / festival shoots'),
-    ('Earned Leave',15,true,''),('Loss of Pay',0,true,'')`);
+  await pool.query(`INSERT INTO mo_leave_types (name, is_active, notes) VALUES
+    ('Casual Leave',true,''),('Sick Leave',true,''),('Comp-off',true,'Earned against Sunday / festival shoots'),
+    ('Earned Leave',true,''),('Unpaid Leave',true,'')`);
   // §17 automation rules (Admin-tunable, no deploy — NFR-10).
   await pool.query(`INSERT INTO mo_automation_rules (department_id, rule_key, name, trigger, action, is_enabled, config) VALUES
     (1,'AUTO-1','Missing daily report reminder','17:30 daily (working days) — report not submitted','Push + in-app nudge → 20:00 second nudge → next morning TL dashboard gap list',true,'{"first_nudge":"17:30","second_nudge":"20:00","working_days_only":true}'),
