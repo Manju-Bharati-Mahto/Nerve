@@ -132,13 +132,13 @@ function ManageCategoriesTab() {
       {/* Add-new-category panel — same as before, kept as a wide bar above
           the grid so it's discoverable. */}
       <div className="rounded-2xl border-2 border-green-700 bg-gradient-to-br from-white to-green-50/40 p-5">
-        <h2 className="text-sm font-extrabold font-serif mb-3" style={{ color: '#1a472a' }}>Add New Category</h2>
+        <h2 className="text-sm font-extrabold font-serif mb-3" style={{ color: 'hsl(var(--brand-700))' }}>Add New Category</h2>
         <div className="flex gap-2">
           <input value={newCatName} onChange={e => setNewCatName(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') void addCategory() }}
             placeholder="Category name…" className={INP + ' flex-1'} />
           <button onClick={() => void addCategory()}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#1a472a] text-white text-sm font-medium hover:bg-[#143620] transition-colors">
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[hsl(var(--brand-700))] text-white text-sm font-medium hover:bg-[#143620] transition-colors">
             <Plus className="w-4 h-4" /> Add
           </button>
         </div>
@@ -195,7 +195,7 @@ function ManageCategoriesTab() {
                       </div>
                     ) : (
                       <>
-                        <h3 className="text-base font-extrabold font-serif flex-1 truncate" style={{ color: '#1a472a' }}>{cat.name}</h3>
+                        <h3 className="text-base font-extrabold font-serif flex-1 truncate" style={{ color: 'hsl(var(--brand-700))' }}>{cat.name}</h3>
                         <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                           <button onClick={() => setEditingCat({ id: cat.id, name: cat.name })}
                             className="p-1.5 rounded-lg text-green-700 hover:bg-green-100" title="Rename">
@@ -210,7 +210,7 @@ function ManageCategoriesTab() {
                     )}
                   </div>
                   <button onClick={() => setExpanded(p => { const s = new Set(p); if (s.has(cat.id)) s.delete(cat.id); else s.add(cat.id); return s })}
-                    className="mt-2 ml-5 flex items-center gap-1 text-[11px] font-semibold hover:underline" style={{ color: '#52b788' }}>
+                    className="mt-2 ml-5 flex items-center gap-1 text-[11px] font-semibold hover:underline" style={{ color: 'hsl(var(--brand-400))' }}>
                     {cat.sub_categories.length} sub-categor{cat.sub_categories.length === 1 ? 'y' : 'ies'}
                     {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                   </button>
@@ -240,7 +240,7 @@ function ManageCategoriesTab() {
                           </div>
                         ) : (
                           <>
-                            <span className="text-sm flex-1 truncate" style={{ color: '#1a472a' }}>{sub.name}</span>
+                            <span className="text-sm flex-1 truncate" style={{ color: 'hsl(var(--brand-700))' }}>{sub.name}</span>
                             {sub.is_others ? (
                               <span className="text-[10px] text-muted-foreground bg-muted px-2 py-0.5 rounded-full shrink-0">default</span>
                             ) : (
@@ -520,7 +520,7 @@ function KraManagementTab({ designUsers }: { designUsers: { id: string; full_nam
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-bold font-serif" style={{ color: '#1a472a' }}>Peer Marking:</span>
+            <span className="text-sm font-bold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Peer Marking:</span>
             <button onClick={() => void togglePeer(!peerEnabled)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${peerEnabled ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-muted text-muted-foreground hover:bg-accent'}`}>
               {peerEnabled ? <ToggleRight className="w-4 h-4" /> : <ToggleLeft className="w-4 h-4" />}
@@ -546,7 +546,7 @@ function KraManagementTab({ designUsers }: { designUsers: { id: string; full_nam
               column. Selected cube has a strong ring; clicking populates
               the scoring panel on the right. */}
           <div>
-            <h3 className="text-base font-extrabold font-serif mb-3" style={{ color: '#1a472a' }}>Team Members</h3>
+            <h3 className="text-base font-extrabold font-serif mb-3" style={{ color: 'hsl(var(--brand-700))' }}>Team Members</h3>
             {/* Restrict KRA cubes to people in `designUsers` so the
                 team-admin / reports-admin entries the API may return
                 don't get scored — they aren't graded employees. */}
@@ -576,17 +576,17 @@ function KraManagementTab({ designUsers }: { designUsers: { id: string; full_nam
                         <span className="text-sm font-bold text-green-800">{r.user_name[0]?.toUpperCase()}</span>
                       </div>
                     )}
-                    <p className="text-xs font-bold font-serif leading-tight line-clamp-2" style={{ color: '#1a472a' }}>{r.user_name}</p>
+                    <p className="text-xs font-bold font-serif leading-tight line-clamp-2" style={{ color: 'hsl(var(--brand-700))' }}>{r.user_name}</p>
                     <div className="flex items-baseline gap-1">
                       {composite !== null ? (
                         <>
                           {final !== null && final !== composite ? (
                             <>
                               <span className="line-through text-gray-400 text-[10px]">{composite}</span>
-                              <span className="text-base font-extrabold" style={{ color: '#1a472a' }}>{final}</span>
+                              <span className="text-base font-extrabold" style={{ color: 'hsl(var(--brand-700))' }}>{final}</span>
                             </>
                           ) : (
-                            <span className="text-base font-extrabold" style={{ color: '#1a472a' }}>{composite}</span>
+                            <span className="text-base font-extrabold" style={{ color: 'hsl(var(--brand-700))' }}>{composite}</span>
                           )}
                           <span className="text-[10px] text-gray-400 font-semibold">/5</span>
                         </>
@@ -594,7 +594,7 @@ function KraManagementTab({ designUsers }: { designUsers: { id: string; full_nam
                         <span className="text-[10px] text-gray-400 italic">No score</span>
                       )}
                     </div>
-                    <p className="text-[10px] font-semibold" style={{ color: '#52b788' }}>
+                    <p className="text-[10px] font-semibold" style={{ color: 'hsl(var(--brand-400))' }}>
                       {r.self_appraisal ? '✓' : '○'} Self · {r.peer_count > 0 ? `✓ ${r.peer_count}` : '○'} Peers
                       {(r.total_penalty_percent ?? 0) > 0 && (
                         <span className="ml-1 text-red-600">· −{r.total_penalty_percent}%</span>
@@ -609,7 +609,7 @@ function KraManagementTab({ designUsers }: { designUsers: { id: string; full_nam
           {/* KRA Scoring Panel — sits to the right of the cube grid */}
           <div>
             {!selectedUser ? (
-              <div className="hub-card flex items-center justify-center h-full min-h-[300px] text-sm font-semibold" style={{ color: '#52b788' }}>
+              <div className="hub-card flex items-center justify-center h-full min-h-[300px] text-sm font-semibold" style={{ color: 'hsl(var(--brand-400))' }}>
                 Select a team member to view and edit their KRA
               </div>
             ) : selectedReport && (
@@ -628,9 +628,9 @@ function KraManagementTab({ designUsers }: { designUsers: { id: string; full_nam
                       )
                     })()}
                     <div>
-                      <h3 className="text-xl font-extrabold font-serif" style={{ color: '#1a472a' }}>{selectedReport.user_name}</h3>
+                      <h3 className="text-xl font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>{selectedReport.user_name}</h3>
                       {selectedReport.team_joined_at && (
-                        <p className="text-[11px] font-semibold mt-0.5" style={{ color: '#52b788' }}>
+                        <p className="text-[11px] font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>
                           Member since {new Date(selectedReport.team_joined_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
                         </p>
                       )}
@@ -728,8 +728,8 @@ function KraManagementTab({ designUsers }: { designUsers: { id: string; full_nam
                         detailTab === t.key ? 'bg-white shadow-sm' : 'hover:text-gray-700'
                       }`}
                       style={detailTab === t.key
-                        ? { color: '#1a472a' }
-                        : { color: '#52b788' }}>
+                        ? { color: 'hsl(var(--brand-700))' }
+                        : { color: 'hsl(var(--brand-400))' }}>
                       {t.label}
                     </button>
                   ))}
@@ -930,7 +930,7 @@ function KraManagementTab({ designUsers }: { designUsers: { id: string; full_nam
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
           <div className="bg-card border border-border rounded-2xl shadow-xl max-w-2xl w-full max-h-[80vh] flex flex-col">
             <div className="flex items-center justify-between p-4 border-b border-border">
-              <h3 className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>Peer Markings — {MONTHS[month - 1]} {year}</h3>
+              <h3 className="text-base font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Peer Markings — {MONTHS[month - 1]} {year}</h3>
               <button onClick={() => setShowPeerMarkings(false)} className="p-1 rounded-lg hover:bg-accent">
                 <X className="w-4 h-4" />
               </button>
@@ -1123,7 +1123,7 @@ function LeaveManagementTab() {
     <div className="space-y-5">
       {/* Filter bar */}
       <div className="bg-white rounded-2xl border border-gray-100 p-4 flex items-center gap-3 flex-wrap">
-        <span className="text-sm font-extrabold font-serif flex items-center gap-2" style={{ color: '#1a472a' }}>
+        <span className="text-sm font-extrabold font-serif flex items-center gap-2" style={{ color: 'hsl(var(--brand-700))' }}>
           <CalendarOff className="w-4 h-4" /> Leave Requests
         </span>
         <div className="flex gap-1 bg-gray-50 p-1 rounded-xl ml-auto">
@@ -1132,7 +1132,7 @@ function LeaveManagementTab() {
               className={`px-3 py-1.5 rounded-lg text-xs font-bold capitalize transition-all ${
                 statusFilter === s ? 'text-white shadow-sm' : 'text-gray-500 hover:text-gray-700'
               }`}
-              style={statusFilter === s ? { background: '#1a472a' } : {}}>
+              style={statusFilter === s ? { background: 'hsl(var(--brand-700))' } : {}}>
               {s === 'all' ? 'All' : s}
             </button>
           ))}
@@ -1156,7 +1156,7 @@ function LeaveManagementTab() {
               <div key={lv.id} className="rounded-2xl border border-gray-100 bg-white p-5 flex flex-col gap-3 relative overflow-hidden">
                 {/* Subtle top stripe colored by status */}
                 <div className="absolute top-0 left-0 right-0 h-1" style={{
-                  background: lv.status === 'approved' ? '#1a472a'
+                  background: lv.status === 'approved' ? 'hsl(var(--brand-700))'
                     : lv.status === 'rejected' ? '#dc2626' : '#f59e0b'
                 }} />
 
@@ -1166,7 +1166,7 @@ function LeaveManagementTab() {
                     {initials}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold font-serif truncate" style={{ color: '#1a472a' }}>{name}</p>
+                    <p className="text-sm font-bold font-serif truncate" style={{ color: 'hsl(var(--brand-700))' }}>{name}</p>
                     <p className="text-[11px] text-gray-400 truncate">{lv.user_email}</p>
                   </div>
                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${statusBadgeCls(lv.status)}`}>
@@ -1175,8 +1175,8 @@ function LeaveManagementTab() {
                 </div>
 
                 {/* Date + half-day */}
-                <div className="text-xs font-semibold flex items-center gap-1.5 flex-wrap" style={{ color: '#52b788' }}>
-                  <span className="font-bold" style={{ color: '#1a472a' }}>{lv.leave_date}</span>
+                <div className="text-xs font-semibold flex items-center gap-1.5 flex-wrap" style={{ color: 'hsl(var(--brand-400))' }}>
+                  <span className="font-bold" style={{ color: 'hsl(var(--brand-700))' }}>{lv.leave_date}</span>
                   {lv.is_half_day && lv.half_day_period && (
                     <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700">
                       {lv.half_day_period === 'first' ? 'First half' : 'Second half'}
@@ -1192,13 +1192,13 @@ function LeaveManagementTab() {
 
                 {/* Reason */}
                 <div className="rounded-xl bg-gray-50 p-3">
-                  <p className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: '#52b788' }}>Reason</p>
+                  <p className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: 'hsl(var(--brand-400))' }}>Reason</p>
                   <p className="text-xs text-gray-700">{lv.reason || '—'}</p>
                 </div>
 
                 {/* Transfer day */}
                 <div className="flex items-center gap-2 text-xs">
-                  <span className="font-bold" style={{ color: '#52b788' }}>Transfer day:</span>
+                  <span className="font-bold" style={{ color: 'hsl(var(--brand-400))' }}>Transfer day:</span>
                   {transferEdit === lv.id ? (
                     <div className="flex items-center gap-1.5 flex-1">
                       <input type="date" value={transferVal} min={today}
@@ -1210,7 +1210,7 @@ function LeaveManagementTab() {
                         className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
                     </div>
                   ) : (
-                    <span className="text-xs font-bold flex-1" style={{ color: '#1a472a' }}>
+                    <span className="text-xs font-bold flex-1" style={{ color: 'hsl(var(--brand-700))' }}>
                       {lv.transfer_date || <span className="text-gray-400 font-normal">Not set</span>}
                       <button onClick={() => { setTransferEdit(lv.id); setTransferVal(lv.transfer_date || '') }}
                         className="ml-2 text-[10px] text-gray-400 underline hover:text-gray-600 font-normal">edit</button>
@@ -1223,7 +1223,7 @@ function LeaveManagementTab() {
                   <div className="flex gap-2 mt-auto pt-2 border-t border-gray-50">
                     <button onClick={() => void handleReview(lv.id, 'approved')}
                       className="flex-1 px-3 py-2 text-xs font-bold text-white rounded-lg transition-colors hover:opacity-90"
-                      style={{ background: '#1a472a' }}>
+                      style={{ background: 'hsl(var(--brand-700))' }}>
                       Approve
                     </button>
                     <button onClick={() => void handleReview(lv.id, 'rejected')}
@@ -1280,8 +1280,8 @@ export default function DesignAdminDashboard() {
   return (
     <DesignAdminShell>
       <div>
-        <h1 className="text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>{meta.title}</h1>
-        <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>{meta.subtitle}</p>
+        <h1 className="text-3xl font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>{meta.title}</h1>
+        <p className="text-sm font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>{meta.subtitle}</p>
       </div>
       {section === 'reports'    && <DesignAdminOverview designUsers={designUsers} />}
       {section === 'kra'        && <KraManagementTab   designUsers={designUsers} />}
@@ -1389,11 +1389,11 @@ function LeaveCalendarTab() {
     <div className="space-y-4">
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
         <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-          <h2 className="text-sm font-bold" style={{ color: '#1a472a' }}>{monthLabel}</h2>
+          <h2 className="text-sm font-bold" style={{ color: 'hsl(var(--brand-700))' }}>{monthLabel}</h2>
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-3 text-[11px] text-gray-500">
-              <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ background: '#1a472a' }} /> {monthTotals.submitted} submitted</span>
-              <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ background: '#52b788' }} /> {monthTotals.approved} approved</span>
+              <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ background: 'hsl(var(--brand-700))' }} /> {monthTotals.submitted} submitted</span>
+              <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ background: 'hsl(var(--brand-400))' }} /> {monthTotals.approved} approved</span>
             </div>
             <div className="flex items-center gap-1">
               <button onClick={() => shift(-1)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500"><ChevronLeft className="w-4 h-4" /></button>
@@ -1418,15 +1418,15 @@ function LeaveCalendarTab() {
                 onClick={() => c.date && setSelectedDay(c.date === selectedDay ? null : c.date)}
                 className={`rounded-lg border p-1.5 text-left flex flex-col transition-colors ${
                   c.date === null ? 'border-transparent'
-                    : isSel ? 'border-[#1a472a] bg-green-50'
+                    : isSel ? 'border-[hsl(var(--brand-700))] bg-green-50'
                     : c.isToday ? 'border-green-300 bg-green-50/40'
                     : 'border-gray-100 hover:bg-gray-50'
                 }`}>
                 {c.date && <span className="text-[11px] font-medium text-gray-600">{parseInt(c.date.slice(8, 10), 10)}</span>}
                 {e && (
                   <div className="mt-auto space-y-0.5">
-                    <span className="block text-[10px] font-semibold text-white rounded px-1 py-0.5" style={{ background: '#1a472a' }}>{e.submitted} leave{e.submitted === 1 ? '' : 's'}</span>
-                    {e.approved > 0 && <span className="block text-[10px] font-semibold rounded px-1 py-0.5" style={{ background: '#e6f4ea', color: '#1a472a' }}>{e.approved} approved</span>}
+                    <span className="block text-[10px] font-semibold text-white rounded px-1 py-0.5" style={{ background: 'hsl(var(--brand-700))' }}>{e.submitted} leave{e.submitted === 1 ? '' : 's'}</span>
+                    {e.approved > 0 && <span className="block text-[10px] font-semibold rounded px-1 py-0.5" style={{ background: 'hsl(var(--brand-50))', color: 'hsl(var(--brand-700))' }}>{e.approved} approved</span>}
                   </div>
                 )}
               </button>
@@ -1437,7 +1437,7 @@ function LeaveCalendarTab() {
 
       {selectedDay && (
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
-          <h3 className="text-sm font-bold mb-3" style={{ color: '#1a472a' }}>
+          <h3 className="text-sm font-bold mb-3" style={{ color: 'hsl(var(--brand-700))' }}>
             {new Date(selectedDay + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
             {' · '}{selected?.submitted ?? 0} submitted, {selected?.approved ?? 0} approved
           </h3>
@@ -1452,7 +1452,7 @@ function LeaveCalendarTab() {
                     <p className="text-[11px] text-gray-500 truncate">{l.is_half_day ? 'Half day' : 'Full day'}{l.reason ? ` — ${l.reason}` : ''}</p>
                   </div>
                   <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0"
-                    style={l.status === 'approved' ? { background: '#e6f4ea', color: '#1a472a' }
+                    style={l.status === 'approved' ? { background: 'hsl(var(--brand-50))', color: 'hsl(var(--brand-700))' }
                       : l.status === 'rejected' ? { background: '#fde8e8', color: '#b91c1c' }
                       : { background: '#fef3c7', color: '#92400e' }}>
                     {l.status}

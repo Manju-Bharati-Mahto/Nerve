@@ -20,7 +20,7 @@ function todayLocal(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
-const GREEN = '#1a472a'
+const GREEN = 'hsl(var(--brand-700))'
 
 export default function DesignProjectsAssign() {
   const { user, role } = useAuth()
@@ -242,7 +242,7 @@ function ProjectStatusColumn({ title, empty, items, nameById }: {
                 <div className="flex items-start justify-between gap-2">
                   <p className="text-sm font-semibold text-gray-800">{p.name}</p>
                   <span className="text-[10px] px-2 py-0.5 rounded-full shrink-0"
-                    style={{ background: p.status === 'completed' ? '#e6f4ea' : p.status === 'on_hold' ? '#fef3c7' : '#e8f0eb', color: p.status === 'on_hold' ? '#92400e' : GREEN }}>
+                    style={{ background: p.status === 'completed' ? 'hsl(var(--brand-50))' : p.status === 'on_hold' ? '#fef3c7' : 'hsl(var(--brand-50))', color: p.status === 'on_hold' ? '#92400e' : GREEN }}>
                     {p.status.replace('_', ' ')}
                   </span>
                 </div>
@@ -265,7 +265,7 @@ function ProjectStatusColumn({ title, empty, items, nameById }: {
                   <div className="mt-1.5 flex flex-wrap gap-1">
                     {p.assignments.map(a => (
                       <span key={a.user_id} className="text-[10px] px-1.5 py-0.5 rounded-full inline-flex items-center gap-1"
-                        style={a.status === 'completed' ? { background: '#e6f4ea', color: GREEN } : { background: '#f3f4f6', color: '#6b7280' }}>
+                        style={a.status === 'completed' ? { background: 'hsl(var(--brand-50))', color: GREEN } : { background: '#f3f4f6', color: '#6b7280' }}>
                         {a.status === 'completed' && <Check className="w-2.5 h-2.5" />}
                         {nameById.get(a.user_id) ?? 'Unknown'}
                       </span>
