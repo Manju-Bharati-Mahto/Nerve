@@ -32,7 +32,9 @@ const USER_REF = new Set([
 // prototype DB key → mo_ table, in FK-safe order. Lookups first, then transactional.
 const PLAN: [string, string][] = [
   ["departments", "mo_departments"], ["campuses", "mo_campuses"], ["academic_years", "mo_academic_years"],
-  ["teams", "mo_teams"], ["duty_flags", "mo_duty_flags"], ["skills", "mo_skills"],
+  ["academic_units", "mo_academic_units"], ["work_types", "mo_work_types"],
+  ["teams", "mo_teams"], ["team_members", "mo_team_members"],
+  ["duty_flags", "mo_duty_flags"], ["skills", "mo_skills"],
   ["capacity_roles", "mo_capacity_roles"], ["deliverable_types", "mo_deliverable_types"],
   ["task_categories", "mo_task_categories"], ["tags", "mo_tags"], ["automation_rules", "mo_automation_rules"],
   ["project_types", "mo_project_types"], ["project_templates", "mo_project_templates"],

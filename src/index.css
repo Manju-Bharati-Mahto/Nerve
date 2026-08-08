@@ -6,78 +6,124 @@
 
 @layer base {
   :root {
-    --background: 30 20% 97%;
-    --foreground: 0 0% 12%;
+    /* ── BRAND RAMP — single source of truth (mirrors public/media-ops) ─────
+       Re-brand the whole app by editing these ten values (and the .dark
+       overrides below). Nothing below references a raw colour. */
+    --brand-50: 214 100% 97%;   /* #EFF6FF */
+    --brand-100: 214 95% 93%;   /* #DBEAFE */
+    --brand-200: 213 97% 87%;   /* #BFDBFE */
+    --brand-300: 212 96% 78%;   /* #93C5FD */
+    --brand-400: 213 94% 68%;   /* #60A5FA */
+    --brand-500: 217 91% 60%;   /* #3B82F6  ← primary brand */
+    --brand-600: 221 83% 53%;   /* #2563EB */
+    --brand-700: 224 76% 48%;   /* #1D4ED8 */
+    --brand-800: 226 71% 40%;   /* #1E40AF */
+    --brand-900: 224 64% 33%;   /* #1E3A8A */
+
+    /* Blue-grey neutrals so the brand lives in one colour family */
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
 
     --card: 0 0% 100%;
-    --card-foreground: 0 0% 12%;
+    --card-foreground: 222 47% 11%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 12%;
+    --popover-foreground: 222 47% 11%;
 
-    --primary: 0 68% 32%;
+    /* Filled controls carry white text → brand-600 (5.17:1), not brand-500 */
+    --primary: var(--brand-600);
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 0 15% 95%;
-    --secondary-foreground: 0 0% 12%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222 47% 11%;
 
-    --muted: 30 10% 94%;
-    --muted-foreground: 0 0% 40%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 42%;
 
-    --accent: 0 15% 95%;
-    --accent-foreground: 0 68% 32%;
+    --accent: var(--brand-50);
+    --accent-foreground: var(--brand-700);
 
-    --destructive: 0 84% 60%;
+    --destructive: 0 72% 45%;
     --destructive-foreground: 0 0% 100%;
 
-    --border: 30 10% 90%;
-    --input: 30 10% 90%;
-    --ring: 0 68% 32%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: var(--brand-500);
 
     --radius: 0.75rem;
 
-    --brand: 0 68% 32%;
-    --brand-light: 0 40% 96%;
-    --brand-dark: 0 68% 24%;
+    /* Semantic — independent of the brand (success stays green) */
+    --success: 142 71% 30%;
+    --success-foreground: 0 0% 100%;
+    --warning: 32 81% 37%;
+    --warning-foreground: 0 0% 100%;
+    --info: var(--brand-600);
+    --info-foreground: 0 0% 100%;
+
+    --brand: var(--brand-500);
+    --brand-light: var(--brand-50);
+    --brand-dark: var(--brand-700);
 
     --sidebar-background: 0 0% 100%;
-    --sidebar-foreground: 0 0% 30%;
-    --sidebar-primary: 0 68% 32%;
+    --sidebar-foreground: 215 16% 35%;
+    --sidebar-primary: var(--brand-600);
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 0 15% 95%;
-    --sidebar-accent-foreground: 0 68% 32%;
-    --sidebar-border: 30 10% 92%;
-    --sidebar-ring: 0 68% 32%;
+    --sidebar-accent: var(--brand-50);
+    --sidebar-accent-foreground: var(--brand-700);
+    --sidebar-border: 214 32% 91%;
+    --sidebar-ring: var(--brand-500);
   }
 
+  /* ── DARK — purpose-built, not inverted. Deep blue-grey surfaces that step
+     up in elevation; brand peaks at 400/300 so nothing glows. */
   .dark {
-    --background: 0 0% 7%;
-    --foreground: 30 10% 92%;
-    --card: 0 0% 10%;
-    --card-foreground: 30 10% 92%;
-    --popover: 0 0% 10%;
-    --popover-foreground: 30 10% 92%;
-    --primary: 0 60% 45%;
+    --brand-50: 220 46% 12%;
+    --brand-100: 220 48% 16%;
+    --brand-200: 219 51% 23%;
+    --brand-300: 212 96% 78%;
+    --brand-400: 213 94% 68%;
+    --brand-500: 217 91% 60%;
+    --brand-600: 221 83% 53%;
+    --brand-700: 224 76% 48%;
+    --brand-800: 226 71% 40%;
+    --brand-900: 224 64% 33%;
+
+    --background: 215 40% 6%;
+    --foreground: 213 40% 94%;
+    --card: 216 33% 11%;
+    --card-foreground: 213 40% 94%;
+    --popover: 216 33% 11%;
+    --popover-foreground: 213 40% 94%;
+    --primary: var(--brand-600);
     --primary-foreground: 0 0% 100%;
-    --secondary: 0 5% 18%;
-    --secondary-foreground: 30 10% 92%;
-    --muted: 0 5% 18%;
-    --muted-foreground: 30 5% 55%;
-    --accent: 0 5% 18%;
-    --accent-foreground: 0 60% 45%;
-    --destructive: 0 62% 30%;
+    --secondary: 215 28% 15%;
+    --secondary-foreground: 213 40% 94%;
+    --muted: 215 28% 15%;
+    --muted-foreground: 215 18% 65%;
+    --accent: var(--brand-50);
+    --accent-foreground: var(--brand-300);
+    --destructive: 0 72% 60%;
     --destructive-foreground: 0 0% 100%;
-    --border: 0 5% 18%;
-    --input: 0 5% 18%;
-    --ring: 0 60% 45%;
-    --sidebar-background: 0 0% 8%;
-    --sidebar-foreground: 30 10% 90%;
-    --sidebar-primary: 0 60% 45%;
+    --border: 216 28% 18%;
+    --input: 216 28% 18%;
+    --ring: var(--brand-400);
+    --success: 142 69% 58%;
+    --success-foreground: 215 40% 6%;
+    --warning: 43 96% 56%;
+    --warning-foreground: 215 40% 6%;
+    --info: var(--brand-300);
+    --info-foreground: 215 40% 6%;
+    --brand: var(--brand-400);
+    --brand-light: var(--brand-50);
+    --brand-dark: var(--brand-700);
+    --sidebar-background: 216 36% 9%;
+    --sidebar-foreground: 213 30% 88%;
+    --sidebar-primary: var(--brand-600);
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 0 5% 15%;
-    --sidebar-accent-foreground: 0 60% 45%;
-    --sidebar-border: 0 5% 15%;
-    --sidebar-ring: 0 60% 45%;
+    --sidebar-accent: var(--brand-50);
+    --sidebar-accent-foreground: var(--brand-300);
+    --sidebar-border: 216 28% 16%;
+    --sidebar-ring: var(--brand-400);
   }
 }
 

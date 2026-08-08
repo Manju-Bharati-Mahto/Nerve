@@ -257,10 +257,10 @@ function GaugeChart({ completed, inProgress, pending }: {
   const half = sw / 2
 
   // Left endpoint color (start of arc)
-  const leftFill = completed > 0 ? '#52b788' : inProgress > 0 ? '#1a472a' : '#dce8e0'
+  const leftFill = completed > 0 ? 'hsl(var(--brand-400))' : inProgress > 0 ? 'hsl(var(--brand-700))' : 'hsl(var(--brand-100))'
   // Right endpoint: hatched if pending exists
   const rightHatched = pending > 0
-  const rightFill = !rightHatched ? (inProgress > 0 ? '#1a472a' : '#52b788') : null
+  const rightFill = !rightHatched ? (inProgress > 0 ? 'hsl(var(--brand-700))' : 'hsl(var(--brand-400))') : null
 
   return (
     <svg width="180" height="134" viewBox="0 0 180 134">
@@ -275,18 +275,18 @@ function GaugeChart({ completed, inProgress, pending }: {
 
       {/* Completed — light green */}
       {completed > 0 && cA > 0.2 && (
-        <path d={arc(S, a1)} fill="none" stroke="#52b788" strokeWidth={sw} strokeLinecap="butt" />
+        <path d={arc(S, a1)} fill="none" stroke="hsl(var(--brand-400))" strokeWidth={sw} strokeLinecap="butt" />
       )}
 
       {/* In-progress — dark green */}
       {inProgress > 0 && iA > 0.2 && (
-        <path d={arc(a1, a2)} fill="none" stroke="#1a472a" strokeWidth={sw} strokeLinecap="butt" />
+        <path d={arc(a1, a2)} fill="none" stroke="hsl(var(--brand-700))" strokeWidth={sw} strokeLinecap="butt" />
       )}
 
       {/* Pending — hatched (base fill + hatch overlay) */}
       {pending > 0 && pA > 0.2 && (
         <>
-          <path d={arc(a2, a3)} fill="none" stroke="#dce8e0" strokeWidth={sw} strokeLinecap="butt" />
+          <path d={arc(a2, a3)} fill="none" stroke="hsl(var(--brand-100))" strokeWidth={sw} strokeLinecap="butt" />
           <path d={arc(a2, a3)} fill="none" stroke="url(#gauge-hatch)" strokeWidth={sw} strokeLinecap="butt" />
         </>
       )}
@@ -297,7 +297,7 @@ function GaugeChart({ completed, inProgress, pending }: {
       {/* Round cap — arc end */}
       {rightHatched ? (
         <>
-          <circle cx={pt(a3).x} cy={pt(a3).y} r={half} fill="#dce8e0" />
+          <circle cx={pt(a3).x} cy={pt(a3).y} r={half} fill="hsl(var(--brand-100))" />
           <circle cx={pt(a3).x} cy={pt(a3).y} r={half} fill="url(#gauge-hatch)" />
         </>
       ) : rightFill ? (
@@ -305,7 +305,7 @@ function GaugeChart({ completed, inProgress, pending }: {
       ) : null}
 
       {/* Center label */}
-      <text x={cx} y={cy - 3} textAnchor="middle" fontSize="28" fontWeight="700" fill="#1a472a">{pct}%</text>
+      <text x={cx} y={cy - 3} textAnchor="middle" fontSize="28" fontWeight="700" fill="hsl(var(--brand-700))">{pct}%</text>
       <text x={cx} y={cy + 16} textAnchor="middle" fontSize="10" fill="#6b7280">Project Ended</text>
     </svg>
   )
@@ -439,7 +439,7 @@ function WorkAnalyticsChart({ data, onBarClick, loading }: {
 
   if (data.length === 0) {
     return (
-      <div className="flex items-center justify-center h-40 text-sm font-semibold" style={{ color: '#52b788' }}>
+      <div className="flex items-center justify-center h-40 text-sm font-semibold" style={{ color: 'hsl(var(--brand-400))' }}>
         No data for this period
       </div>
     )
@@ -452,11 +452,11 @@ function WorkAnalyticsChart({ data, onBarClick, loading }: {
   }) => {
     if (!active || !payload?.length) return null
     const d = payload[0].payload
-    const statusColor = d.hours === 0 ? '#9ca3af' : d.submitted ? '#1a472a' : '#52b788'
+    const statusColor = d.hours === 0 ? '#9ca3af' : d.submitted ? 'hsl(var(--brand-700))' : 'hsl(var(--brand-400))'
     const statusLabel = d.hours === 0 ? 'No data' : d.submitted ? 'Submitted' : 'Saved draft'
     return (
       <div className="bg-white border border-gray-100 rounded-xl px-3 py-2.5 shadow-lg text-xs min-w-[100px]">
-        <p className="font-bold mb-1" style={{ color: '#1a472a' }}>{label}</p>
+        <p className="font-bold mb-1" style={{ color: 'hsl(var(--brand-700))' }}>{label}</p>
         {d.hours > 0 && <p className="font-semibold text-gray-700 mb-0.5">{d.hours} hrs logged</p>}
         <p className="font-semibold" style={{ color: statusColor }}>{statusLabel}</p>
       </div>
@@ -472,10 +472,10 @@ function WorkAnalyticsChart({ data, onBarClick, loading }: {
       <g>
         <defs>
           <pattern id={WA_HATCH_ID} patternUnits="userSpaceOnUse" width="8" height="8" patternTransform="rotate(45)">
-            <line x1="0" y1="0" x2="0" y2="8" stroke="#a8c5a8" strokeWidth="2.5" />
+            <line x1="0" y1="0" x2="0" y2="8" stroke="hsl(var(--brand-200))" strokeWidth="2.5" />
           </pattern>
         </defs>
-        <path d={roundedTopPath(x, y, width, height, r)} fill="#eaf3ea" />
+        <path d={roundedTopPath(x, y, width, height, r)} fill="hsl(var(--brand-50))" />
         <path d={roundedTopPath(x, y, width, height, r)} fill={`url(#${WA_HATCH_ID})`} />
       </g>
     )
@@ -489,7 +489,7 @@ function WorkAnalyticsChart({ data, onBarClick, loading }: {
     const { x = 0, y = 0, width = 0, height = 0, submitted, hours, date } = props
     if (!hours || hours <= 0 || height <= 0) return null
     const r = width / 2  // full capsule radius
-    const fill = submitted ? '#1a472a' : '#74c69d'
+    const fill = submitted ? 'hsl(var(--brand-700))' : 'hsl(var(--brand-300))'
     return (
       <g
         onClick={() => { if (submitted && date) onBarClick?.(date) }}
@@ -566,7 +566,7 @@ function LiquidGlassPie({ data, title }: {
       }}>
         <div className="flex items-center gap-2 mb-1">
           <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}99` }} />
-          <span className="text-xs font-bold" style={{ color: '#1a472a' }}>{payload[0].name}</span>
+          <span className="text-xs font-bold" style={{ color: 'hsl(var(--brand-700))' }}>{payload[0].name}</span>
         </div>
         <p className="text-base font-extrabold" style={{ color }}>{payload[0].value}h</p>
         <p className="text-[10px] font-semibold text-gray-400">{total > 0 ? Math.round((payload[0].value / total) * 100) : 0}% of total</p>
@@ -593,7 +593,7 @@ function LiquidGlassPie({ data, title }: {
 
   return (
     <div>
-      <h3 className="text-sm font-extrabold font-serif mb-4" style={{ color: '#1a472a' }}>{title}</h3>
+      <h3 className="text-sm font-extrabold font-serif mb-4" style={{ color: 'hsl(var(--brand-700))' }}>{title}</h3>
       <div className="flex flex-col sm:flex-row items-center gap-5">
         {/* Glass card wrapper for the pie */}
         <div className="relative shrink-0" style={{ width: 220, height: 200 }}>
@@ -617,12 +617,12 @@ function LiquidGlassPie({ data, title }: {
                   style={{ color: PIE_COLORS[activeIndex! % PIE_COLORS.length] }}>
                   {active.name}
                 </span>
-                <span className="text-lg font-extrabold mt-0.5" style={{ color: '#1a472a' }}>{active.value}h</span>
+                <span className="text-lg font-extrabold mt-0.5" style={{ color: 'hsl(var(--brand-700))' }}>{active.value}h</span>
               </>
             ) : (
               <>
                 <span className="text-[10px] font-semibold text-gray-400">Total</span>
-                <span className="text-xl font-extrabold" style={{ color: '#1a472a' }}>{total}h</span>
+                <span className="text-xl font-extrabold" style={{ color: 'hsl(var(--brand-700))' }}>{total}h</span>
               </>
             )}
           </div>
@@ -694,10 +694,10 @@ function LiquidGlassPie({ data, title }: {
                   boxShadow: isActive ? `0 0 8px ${color}cc` : 'none',
                   transform: isActive ? 'scale(1.3)' : 'scale(1)',
                 }} />
-                <span className="text-xs font-semibold" style={{ color: isActive ? '#1a472a' : '#52b788' }}>
+                <span className="text-xs font-semibold" style={{ color: isActive ? 'hsl(var(--brand-700))' : 'hsl(var(--brand-400))' }}>
                   {entry.name}
                 </span>
-                <span className="text-xs font-bold" style={{ color: '#1a472a' }}>{entry.value}h</span>
+                <span className="text-xs font-bold" style={{ color: 'hsl(var(--brand-700))' }}>{entry.value}h</span>
               </button>
             )
           })}
@@ -722,7 +722,7 @@ function StatCard({ title, value, sub, badge, dark, onClick }: {
       onClick={onClick}
       className={`rounded-2xl p-4 sm:p-5 flex flex-col justify-between min-h-[110px] sm:min-h-[130px] relative overflow-hidden ${onClick ? 'cursor-pointer' : ''}`}
       style={dark ? {
-        background: 'linear-gradient(135deg, #1a472a 0%, #2d6a4f 45%, #40916c 100%)',
+        background: 'linear-gradient(135deg, hsl(var(--brand-700)) 0%, hsl(var(--brand-600)) 45%, #40916c 100%)',
         color: 'white',
       } : { background: 'white', border: '1px solid #f3f4f6' }}
     >
@@ -1081,14 +1081,14 @@ function DashboardPage({
       {/* Page heading */}
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Dashboard</h1>
-          <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>Plan, prioritize, and accomplish your tasks with ease.</p>
+          <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Dashboard</h1>
+          <p className="text-sm font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>Plan, prioritize, and accomplish your tasks with ease.</p>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => onNavigate('daily-reports')}
             className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white"
-            style={{ background: '#1a472a' }}
+            style={{ background: 'hsl(var(--brand-700))' }}
           >
             <Plus className="w-4 h-4" /> Submit Report
           </button>
@@ -1115,24 +1115,24 @@ function DashboardPage({
         <div className="lg:col-span-3 bg-white rounded-2xl border border-gray-100 p-5">
           <div className="flex items-center justify-between mb-3">
             <div>
-              <h3 className="text-lg font-bold" style={{ color: '#1a472a' }}>Work Analytics</h3>
-              <p className="text-xs font-semibold mt-0.5" style={{ color: '#52b788' }}>Hours logged per day from your reports</p>
+              <h3 className="text-lg font-bold" style={{ color: 'hsl(var(--brand-700))' }}>Work Analytics</h3>
+              <p className="text-xs font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>Hours logged per day from your reports</p>
             </div>
-            <div className="flex items-center gap-3 text-xs font-semibold" style={{ color: '#52b788' }}>
+            <div className="flex items-center gap-3 text-xs font-semibold" style={{ color: 'hsl(var(--brand-400))' }}>
               <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: '#1a472a' }} />Submitted
+                <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: 'hsl(var(--brand-700))' }} />Submitted
               </span>
               <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: '#74c69d' }} />Draft
+                <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: 'hsl(var(--brand-300))' }} />Draft
               </span>
               <span className="flex items-center gap-1.5">
                 <svg width="10" height="10" style={{ display: 'inline-block', verticalAlign: 'middle' }}>
                   <defs>
                     <pattern id="legend-hatch" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)">
-                      <line x1="0" y1="0" x2="0" y2="4" stroke="#a8c5a8" strokeWidth="1.5" />
+                      <line x1="0" y1="0" x2="0" y2="4" stroke="hsl(var(--brand-200))" strokeWidth="1.5" />
                     </pattern>
                   </defs>
-                  <rect width="10" height="10" rx="2" fill="#eaf3ea" />
+                  <rect width="10" height="10" rx="2" fill="hsl(var(--brand-50))" />
                   <rect width="10" height="10" rx="2" fill="url(#legend-hatch)" />
                 </svg>
                 No data
@@ -1148,7 +1148,7 @@ function DashboardPage({
                 className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
                   chartFilter === f ? 'text-white' : 'text-gray-500 bg-gray-100 hover:bg-gray-200'
                 }`}
-                style={chartFilter === f ? { background: '#1a472a' } : {}}
+                style={chartFilter === f ? { background: 'hsl(var(--brand-700))' } : {}}
               >
                 {f === 'week' ? '1 Week' : f === 'month' ? '1 Month' : f === '6months' ? '6 Months' : 'Custom'}
               </button>
@@ -1165,7 +1165,7 @@ function DashboardPage({
           </div>
           <WorkAnalyticsChart data={weeklyData} onBarClick={handleBarClick} loading={chartLoading} />
           {chartFilter === 'week' && !chartLoading && weeklyData.some(d => d.submitted) && (
-            <p className="text-[10px] font-semibold text-center mt-1" style={{ color: '#52b788' }}>Click a submitted bar to view the report</p>
+            <p className="text-[10px] font-semibold text-center mt-1" style={{ color: 'hsl(var(--brand-400))' }}>Click a submitted bar to view the report</p>
           )}
         </div>
 
@@ -1182,7 +1182,7 @@ function DashboardPage({
           {/* Light frosted overlay so text stays readable */}
           <div className="absolute inset-0 pointer-events-none rounded-2xl" style={{ background: 'rgba(255,255,255,0.50)' }} />
           {/* Content */}
-          <h3 className="relative z-10 text-lg font-bold mb-4" style={{ color: '#1a472a' }}>Reminders</h3>
+          <h3 className="relative z-10 text-lg font-bold mb-4" style={{ color: 'hsl(var(--brand-700))' }}>Reminders</h3>
           <div className="relative z-10 space-y-3 flex-1">
             {!todaySubmitted && (
               <div className="rounded-xl bg-amber-50/90 border border-amber-100 p-4">
@@ -1208,7 +1208,7 @@ function DashboardPage({
           <button
             onClick={() => onNavigate('daily-reports')}
             className="relative z-10 mt-4 w-full py-2.5 rounded-xl text-sm font-semibold text-white flex items-center justify-center gap-2"
-            style={{ background: '#1a472a' }}
+            style={{ background: 'hsl(var(--brand-700))' }}
           >
             <Send className="w-4 h-4" /> Submit Today's Report
           </button>
@@ -1220,11 +1220,11 @@ function DashboardPage({
         {/* Team Collaboration */}
         <div className="lg:col-span-2 bg-white rounded-2xl border border-gray-100 p-5">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-lg font-bold" style={{ color: '#1a472a' }}>Team Collaboration</h3>
+            <h3 className="text-lg font-bold" style={{ color: 'hsl(var(--brand-700))' }}>Team Collaboration</h3>
             <button
               onClick={() => setShowAddCollab(true)}
               className="flex items-center gap-1 text-xs font-semibold text-white px-2.5 py-1.5 rounded-lg transition-colors"
-              style={{ background: '#1a472a' }}
+              style={{ background: 'hsl(var(--brand-700))' }}
             >
               <Plus className="w-3 h-3" /> Add Member
             </button>
@@ -1268,8 +1268,8 @@ function DashboardPage({
                     }
                     {/* Info */}
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-bold font-serif leading-tight" style={{ color: '#1a472a' }}>{member.full_name || member.email}</p>
-                      <p className="text-xs font-semibold truncate mt-0.5" style={{ color: '#52b788' }}>Working on {workLabel}</p>
+                      <p className="text-sm font-bold font-serif leading-tight" style={{ color: 'hsl(var(--brand-700))' }}>{member.full_name || member.email}</p>
+                      <p className="text-xs font-semibold truncate mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>Working on {workLabel}</p>
                     </div>
                     {/* Status badge */}
                     <span className={`text-[11px] font-semibold px-2.5 py-1 rounded-full shrink-0 ${badgeStyle}`}>
@@ -1283,7 +1283,7 @@ function DashboardPage({
                   type="button"
                   onClick={() => setShowAllMembers(v => !v)}
                   className="w-full mt-2 py-2 text-xs font-semibold rounded-lg hover:bg-green-50 transition-colors"
-                  style={{ color: '#1a472a' }}
+                  style={{ color: 'hsl(var(--brand-700))' }}
                 >
                   {showAllMembers
                     ? 'Show less'
@@ -1306,7 +1306,7 @@ function DashboardPage({
           {/* Frosted overlay for readability */}
           <div className="absolute inset-0" style={{ background: 'rgba(255,255,255,0.60)' }} />
           <div className="flex items-center justify-between mb-3 relative z-10">
-            <h3 className="text-lg font-bold" style={{ color: '#1a472a' }}>Project Progress</h3>
+            <h3 className="text-lg font-bold" style={{ color: 'hsl(var(--brand-700))' }}>Project Progress</h3>
             <div className="flex items-center gap-1">
               {(['month', 'quarter', 'all'] as const).map(f => (
                 <button
@@ -1315,7 +1315,7 @@ function DashboardPage({
                   className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors ${
                     gaugeFilter === f ? 'text-white' : 'text-gray-400 hover:bg-gray-100'
                   }`}
-                  style={gaugeFilter === f ? { background: '#1a472a' } : {}}
+                  style={gaugeFilter === f ? { background: 'hsl(var(--brand-700))' } : {}}
                 >
                   {f === 'month' ? 'Month' : f === 'quarter' ? 'Quarter' : 'All'}
                 </button>
@@ -1328,16 +1328,16 @@ function DashboardPage({
           {/* Legend */}
           <div className="flex items-center justify-center gap-4 mt-1 text-xs text-gray-500 relative z-10">
             <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: '#52b788' }} />
+              <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: 'hsl(var(--brand-400))' }} />
               Completed
             </span>
             <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: '#1a472a' }} />
+              <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: 'hsl(var(--brand-700))' }} />
               In Progress
             </span>
             <span className="flex items-center gap-1.5">
               <svg width="10" height="10" className="inline-block">
-                <rect width="10" height="10" fill="#dce8e0" />
+                <rect width="10" height="10" fill="hsl(var(--brand-100))" />
                 <rect width="10" height="10" fill="url(#gauge-hatch-legend)" />
                 <defs>
                   <pattern id="gauge-hatch-legend" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
@@ -1363,8 +1363,8 @@ function DashboardPage({
           <div className="absolute inset-0 pointer-events-none" style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.62) 0%, rgba(0,0,0,0.18) 55%, rgba(0,0,0,0.05) 100%)' }} />
           {/* Content */}
           <div className="relative z-10 flex items-center gap-2">
-            <Timer className="w-4 h-4" style={{ color: '#1a472a' }} />
-            <span className="text-sm font-bold" style={{ color: '#1a472a' }}>Today's Hours</span>
+            <Timer className="w-4 h-4" style={{ color: 'hsl(var(--brand-700))' }} />
+            <span className="text-sm font-bold" style={{ color: 'hsl(var(--brand-700))' }}>Today's Hours</span>
           </div>
           <div className="relative z-10">
             <p className="text-3xl font-bold tracking-wider mt-3 drop-shadow-md">
@@ -1402,8 +1402,8 @@ function DashboardPage({
             {/* Modal header */}
             <div className="flex items-center justify-between px-6 pt-5">
               <div>
-                <h2 className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>Log Collaboration</h2>
-                <p className="text-xs font-semibold mt-0.5" style={{ color: '#52b788' }}>Adds an entry to today's draft report.</p>
+                <h2 className="text-base font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Log Collaboration</h2>
+                <p className="text-xs font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>Adds an entry to today's draft report.</p>
               </div>
               <button onClick={() => setShowAddCollab(false)} className="text-gray-400 hover:text-gray-600 transition-colors">
                 <X className="w-4 h-4" />
@@ -1413,7 +1413,7 @@ function DashboardPage({
             <div className="px-6 space-y-3">
               {/* Colleague */}
               <div>
-                <label className="text-xs font-bold block mb-1" style={{ color: '#1a472a' }}>Team Member *</label>
+                <label className="text-xs font-bold block mb-1" style={{ color: 'hsl(var(--brand-700))' }}>Team Member *</label>
                 <select value={collabColleague} onChange={e => setCollabColleague(e.target.value)} className={SEL}>
                   <option value="">Select colleague…</option>
                   {designMembers.map(m => (
@@ -1424,7 +1424,7 @@ function DashboardPage({
 
               {/* Work type */}
               <div>
-                <label className="text-xs font-bold block mb-1" style={{ color: '#1a472a' }}>Type of Work *</label>
+                <label className="text-xs font-bold block mb-1" style={{ color: 'hsl(var(--brand-700))' }}>Type of Work *</label>
                 <select value={collabWorkType} onChange={e => { setCollabWorkType(e.target.value); setCollabSubCat('') }} className={SEL}>
                   <option value="">Select type…</option>
                   {categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
@@ -1434,7 +1434,7 @@ function DashboardPage({
               {/* Sub category (if available) */}
               {collabSubCatOptions.length > 0 && (
                 <div>
-                  <label className="text-xs font-bold block mb-1" style={{ color: '#1a472a' }}>Sub Category</label>
+                  <label className="text-xs font-bold block mb-1" style={{ color: 'hsl(var(--brand-700))' }}>Sub Category</label>
                   <select value={collabSubCat} onChange={e => setCollabSubCat(e.target.value)} className={SEL}>
                     <option value="">Select sub-category…</option>
                     {collabSubCatOptions.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
@@ -1444,7 +1444,7 @@ function DashboardPage({
 
               {/* Description */}
               <div>
-                <label className="text-xs font-bold block mb-1" style={{ color: '#1a472a' }}>Work Description *</label>
+                <label className="text-xs font-bold block mb-1" style={{ color: 'hsl(var(--brand-700))' }}>Work Description *</label>
                 <input
                   value={collabNote}
                   onChange={e => setCollabNote(e.target.value)}
@@ -1455,7 +1455,7 @@ function DashboardPage({
 
               {/* Time taken */}
               <div>
-                <label className="text-xs font-bold block mb-1" style={{ color: '#1a472a' }}>Time Taken *</label>
+                <label className="text-xs font-bold block mb-1" style={{ color: 'hsl(var(--brand-700))' }}>Time Taken *</label>
                 <select value={collabTime} onChange={e => setCollabTime(e.target.value)} className={SEL}>
                   <option value="">Select duration…</option>
                   {TIME_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}
@@ -1476,7 +1476,7 @@ function DashboardPage({
                 onClick={() => void logCollaboration()}
                 disabled={collabSaving || todayReport?.is_locked}
                 className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50 transition-colors"
-                style={{ background: '#1a472a' }}
+                style={{ background: 'hsl(var(--brand-700))' }}
               >
                 {collabSaving ? 'Saving…' : 'Log Collaboration'}
               </button>
@@ -1504,10 +1504,10 @@ function DashboardPage({
             {/* Header */}
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
               <div>
-                <h2 className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>
+                <h2 className="text-base font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>
                   Report — {new Date(reportPopup.report_date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
                 </h2>
-                <p className="text-xs font-semibold mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: '#52b788' }}>
+                <p className="text-xs font-semibold mt-0.5 flex items-center gap-1.5 flex-wrap" style={{ color: 'hsl(var(--brand-400))' }}>
                   {reportPopup.is_locked
                     ? <><Lock className="w-3 h-3 text-green-600" /><span className="text-green-600 font-medium">Submitted</span></>
                     : <><AlertCircle className="w-3 h-3 text-amber-500" /><span className="text-amber-600 font-medium">Draft</span></>
@@ -1551,7 +1551,7 @@ function DashboardPage({
               ) : (
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="text-xs border-b border-gray-100" style={{ color: '#1a472a' }}>
+                    <tr className="text-xs border-b border-gray-100" style={{ color: 'hsl(var(--brand-700))' }}>
                       <th className="text-left pb-2 font-bold w-8 pr-3">#</th>
                       <th className="text-left pb-2 font-bold pr-3">Type of Work</th>
                       <th className="text-left pb-2 font-bold pr-3">Specific Work</th>
@@ -1695,8 +1695,8 @@ function AnalyticsPage({ userId, users }: { userId: string; users: ReturnType<ty
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Analytics</h1>
-        <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>Track your work hours and collaboration patterns.</p>
+        <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Analytics</h1>
+        <p className="text-sm font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>Track your work hours and collaboration patterns.</p>
       </div>
 
       {/* Filter bar */}
@@ -1704,7 +1704,7 @@ function AnalyticsPage({ userId, users }: { userId: string; users: ReturnType<ty
         {(['week', 'month', '3months', 'custom'] as DateFilter[]).map(f => (
           <button key={f} onClick={() => setFilter(f)}
             className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${filter === f ? 'text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
-            style={filter === f ? { background: '#1a472a' } : {}}>
+            style={filter === f ? { background: 'hsl(var(--brand-700))' } : {}}>
             {f === 'week' ? 'This Week' : f === 'month' ? 'This Month' : f === '3months' ? 'Last 3 Months' : 'Custom'}
           </button>
         ))}
@@ -1725,7 +1725,7 @@ function AnalyticsPage({ userId, users }: { userId: string; users: ReturnType<ty
           <div className="bg-white rounded-2xl border border-gray-100 p-5">
             {pieData.length === 0
               ? <>
-                  <h3 className="text-sm font-extrabold font-serif mb-4" style={{ color: '#1a472a' }}>Time Distribution</h3>
+                  <h3 className="text-sm font-extrabold font-serif mb-4" style={{ color: 'hsl(var(--brand-700))' }}>Time Distribution</h3>
                   <p className="text-sm text-gray-400 text-center py-10">No data for this period.</p>
                 </>
               : <LiquidGlassPie data={pieData} title="Time Distribution" />
@@ -1748,8 +1748,8 @@ function AnalyticsPage({ userId, users }: { userId: string; users: ReturnType<ty
               WebkitBackdropFilter: 'blur(2px)',
             }} />
             <div className="relative z-10">
-              <h3 className="text-sm font-extrabold font-serif mb-4 flex items-center gap-2" style={{ color: '#1a472a' }}>
-                <Users className="w-4 h-4" style={{ color: '#1a472a' }} /> Collaboration Hours
+              <h3 className="text-sm font-extrabold font-serif mb-4 flex items-center gap-2" style={{ color: 'hsl(var(--brand-700))' }}>
+                <Users className="w-4 h-4" style={{ color: 'hsl(var(--brand-700))' }} /> Collaboration Hours
               </h3>
               {collabData.length === 0
                 ? <p className="text-sm text-gray-400 text-center py-10">No collaboration data.</p>
@@ -1791,17 +1791,17 @@ function AnalyticsPage({ userId, users }: { userId: string; users: ReturnType<ty
           {/* Category Breakdown */}
           {Object.keys(analytics.subCatHours).length > 0 && (
             <div className="bg-white rounded-2xl border border-gray-100 p-5 lg:col-span-2">
-              <h3 className="text-sm font-extrabold font-serif mb-4 flex items-center gap-2" style={{ color: '#1a472a' }}>
-                <TrendingUp className="w-4 h-4" style={{ color: '#1a472a' }} /> Category Breakdown
+              <h3 className="text-sm font-extrabold font-serif mb-4 flex items-center gap-2" style={{ color: 'hsl(var(--brand-700))' }}>
+                <TrendingUp className="w-4 h-4" style={{ color: 'hsl(var(--brand-700))' }} /> Category Breakdown
               </h3>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-gray-100 text-left">
-                      <th className="pb-2 pr-4 text-xs font-bold" style={{ color: '#1a472a' }}>Category</th>
-                      <th className="pb-2 pr-4 text-xs font-bold" style={{ color: '#1a472a' }}>Sub Category</th>
-                      <th className="pb-2 pr-4 text-xs font-bold text-right" style={{ color: '#1a472a' }}>Hours</th>
-                      <th className="pb-2 text-xs font-bold text-right" style={{ color: '#1a472a' }}>Projects</th>
+                      <th className="pb-2 pr-4 text-xs font-bold" style={{ color: 'hsl(var(--brand-700))' }}>Category</th>
+                      <th className="pb-2 pr-4 text-xs font-bold" style={{ color: 'hsl(var(--brand-700))' }}>Sub Category</th>
+                      <th className="pb-2 pr-4 text-xs font-bold text-right" style={{ color: 'hsl(var(--brand-700))' }}>Hours</th>
+                      <th className="pb-2 text-xs font-bold text-right" style={{ color: 'hsl(var(--brand-700))' }}>Projects</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1816,7 +1816,7 @@ function AnalyticsPage({ userId, users }: { userId: string; users: ReturnType<ty
                             <td className="py-2 pr-4 text-gray-800">{si === 0 ? cat : ''}</td>
                             <td className="py-2 pr-4 text-gray-500">{sub || '—'}</td>
                             <td className="py-2 pr-4 text-right font-semibold text-green-800">{Math.round(hrs * 10) / 10}h</td>
-                            <td className="py-2 text-right font-semibold" style={{ color: '#1a472a' }}>
+                            <td className="py-2 text-right font-semibold" style={{ color: 'hsl(var(--brand-700))' }}>
                               {projCount}
                             </td>
                           </tr>
@@ -1831,8 +1831,8 @@ function AnalyticsPage({ userId, users }: { userId: string; users: ReturnType<ty
 
           {/* AI Suggestions */}
           <div className="bg-white rounded-2xl border border-gray-100 p-5 lg:col-span-2">
-            <h3 className="text-sm font-extrabold font-serif mb-4 flex items-center gap-2" style={{ color: '#1a472a' }}>
-              <Info className="w-4 h-4" style={{ color: '#1a472a' }} /> AI-Based Insights
+            <h3 className="text-sm font-extrabold font-serif mb-4 flex items-center gap-2" style={{ color: 'hsl(var(--brand-700))' }}>
+              <Info className="w-4 h-4" style={{ color: 'hsl(var(--brand-700))' }} /> AI-Based Insights
             </h3>
             <div className="space-y-2">
               {aiSuggestions.map((s, i) => (
@@ -2297,8 +2297,8 @@ function DailyReportsPage({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Daily Reports</h1>
-        <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>Log your daily work and track collaboration.</p>
+        <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Daily Reports</h1>
+        <p className="text-sm font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>Log your daily work and track collaboration.</p>
       </div>
 
       {/* ── Projects section — two cards ───────────────────────────────── */}
@@ -2307,11 +2307,11 @@ function DailyReportsPage({
         {/* Card 1: Project List */}
         <div className="bg-white rounded-2xl border border-gray-100 p-5 flex flex-col">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-extrabold font-serif" style={{ color: '#1a472a' }}>Project</h2>
+            <h2 className="text-lg font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Project</h2>
             <button
               onClick={() => setShowAddProject(true)}
               className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-sm font-semibold transition-colors hover:bg-green-50"
-              style={{ border: '2px solid #1a472a', color: '#1a472a' }}
+              style={{ border: '2px solid hsl(var(--brand-700))', color: 'hsl(var(--brand-700))' }}
             >
               <Plus className="w-3.5 h-3.5" /> New
             </button>
@@ -2340,8 +2340,8 @@ function DailyReportsPage({
                           <div key={p.id} className="flex items-start gap-3 p-2 rounded-xl hover:bg-gray-50 transition-colors">
                             <ProjectIcon index={i} />
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm font-bold font-serif truncate" style={{ color: '#1a472a' }}>{p.name}</p>
-                              <p className="text-xs font-semibold" style={{ color: '#52b788' }}>
+                              <p className="text-sm font-bold font-serif truncate" style={{ color: 'hsl(var(--brand-700))' }}>{p.name}</p>
+                              <p className="text-xs font-semibold" style={{ color: 'hsl(var(--brand-400))' }}>
                                 {p.deadline
                                   ? `Due date: ${new Date(p.deadline).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
                                   : 'No deadline set'}
@@ -2360,7 +2360,7 @@ function DailyReportsPage({
                               {section.label === 'Pending' && mine && (
                                 <button onClick={() => void markProjectComplete(p.id)}
                                   className="text-[10px] font-semibold px-2 py-1 rounded-lg text-white hover:opacity-90"
-                                  style={{ background: '#1a472a' }}>
+                                  style={{ background: 'hsl(var(--brand-700))' }}>
                                   Mark complete
                                 </button>
                               )}
@@ -2380,7 +2380,7 @@ function DailyReportsPage({
         <div className="rounded-2xl border border-gray-100 p-5 flex flex-col relative overflow-hidden" style={{ background: '#fff' }}>
           <img src="/snail-progress.jpeg" alt="" className="absolute inset-0 w-full h-full object-cover" style={{ opacity: 0.22 }} />
           <div className="absolute inset-0" style={{ background: 'rgba(255,255,255,0.60)' }} />
-          <h2 className="text-lg font-extrabold font-serif mb-2 relative z-10" style={{ color: '#1a472a' }}>Project Progress</h2>
+          <h2 className="text-lg font-extrabold font-serif mb-2 relative z-10" style={{ color: 'hsl(var(--brand-700))' }}>Project Progress</h2>
           <div className="flex-1 flex items-center justify-center relative z-10">
             <GaugeChart
               completed={projects.filter(p => p.status === 'completed').length}
@@ -2388,18 +2388,18 @@ function DailyReportsPage({
               pending={projects.filter(p => p.status === 'on_hold').length}
             />
           </div>
-          <div className="flex items-center justify-center gap-4 mt-1 text-xs font-semibold relative z-10" style={{ color: '#52b788' }}>
+          <div className="flex items-center justify-center gap-4 mt-1 text-xs font-semibold relative z-10" style={{ color: 'hsl(var(--brand-400))' }}>
             <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: '#52b788' }} />
+              <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: 'hsl(var(--brand-400))' }} />
               Completed
             </span>
             <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: '#1a472a' }} />
+              <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: 'hsl(var(--brand-700))' }} />
               In Progress
             </span>
             <span className="flex items-center gap-1.5">
               <svg width="10" height="10" className="inline-block">
-                <rect width="10" height="10" fill="#dce8e0" />
+                <rect width="10" height="10" fill="hsl(var(--brand-100))" />
                 <rect width="10" height="10" fill="url(#rpt-hatch-legend)" />
                 <defs>
                   <pattern id="rpt-hatch-legend" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
@@ -2418,7 +2418,7 @@ function DailyReportsPage({
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.45)' }}>
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>New Project</h3>
+              <h3 className="text-base font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>New Project</h3>
               <button
                 onClick={() => { setShowAddProject(false); resetProjectForm() }}
                 className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 transition-colors"
@@ -2428,7 +2428,7 @@ function DailyReportsPage({
             </div>
             <div className="space-y-3 max-h-[70vh] overflow-y-auto">
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>Project Name *</label>
+                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: 'hsl(var(--brand-700))' }}>Project Name *</label>
                 <input
                   placeholder="e.g. Brand Campaign Q2"
                   value={projName}
@@ -2438,7 +2438,7 @@ function DailyReportsPage({
                 />
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>Type of Work *</label>
+                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: 'hsl(var(--brand-700))' }}>Type of Work *</label>
                 <select
                   value={projType}
                   onChange={e => { setProjType(e.target.value); setProjSubCat('') }}
@@ -2449,7 +2449,7 @@ function DailyReportsPage({
                 </select>
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>Sub-category *</label>
+                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: 'hsl(var(--brand-700))' }}>Sub-category *</label>
                 <select
                   value={projSubCat}
                   onChange={e => setProjSubCat(e.target.value)}
@@ -2463,7 +2463,7 @@ function DailyReportsPage({
                 </select>
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>Specific Work *</label>
+                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: 'hsl(var(--brand-700))' }}>Specific Work *</label>
                 <input
                   placeholder="e.g. Poster design for launch event"
                   value={projSpecific}
@@ -2472,7 +2472,7 @@ function DailyReportsPage({
                 />
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>Deadline</label>
+                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: 'hsl(var(--brand-700))' }}>Deadline</label>
                 <input
                   type="date"
                   value={projDeadline}
@@ -2481,7 +2481,7 @@ function DailyReportsPage({
                 />
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>Description</label>
+                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: 'hsl(var(--brand-700))' }}>Description</label>
                 <textarea
                   placeholder="Optional description…"
                   value={projDesc}
@@ -2496,7 +2496,7 @@ function DailyReportsPage({
                 onClick={() => void addProject()}
                 disabled={projSaving}
                 className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50 transition-opacity"
-                style={{ background: '#1a472a' }}
+                style={{ background: 'hsl(var(--brand-700))' }}
               >
                 {projSaving ? 'Creating…' : 'Create Project'}
               </button>
@@ -2515,7 +2515,7 @@ function DailyReportsPage({
       <div className="bg-white rounded-2xl border border-gray-100 p-4 flex items-center gap-3 flex-wrap">
         <Calendar className="w-4 h-4 text-green-700 shrink-0" />
         <div className="flex items-center gap-2">
-          <span className="text-sm font-bold font-serif" style={{ color: '#1a472a' }}>Today</span>
+          <span className="text-sm font-bold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Today</span>
           <span className="text-sm font-semibold text-gray-500">
             {new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
           </span>
@@ -2534,7 +2534,7 @@ function DailyReportsPage({
           ? <span className="flex items-center gap-1.5 text-xs font-medium text-amber-700 bg-amber-50 px-3 py-1.5 rounded-full">
               <Lock className="w-3 h-3" /> Submitted — read only
             </span>
-          : <span className="text-xs font-semibold bg-green-50 px-3 py-1.5 rounded-full" style={{ color: '#52b788' }}>
+          : <span className="text-xs font-semibold bg-green-50 px-3 py-1.5 rounded-full" style={{ color: 'hsl(var(--brand-400))' }}>
               Draft — not yet submitted
             </span>
         }
@@ -2569,7 +2569,7 @@ function DailyReportsPage({
       {todayLeave?.status === 'approved' && (
         <div className="bg-blue-50 border border-blue-100 rounded-2xl p-6 text-center space-y-2">
           <p className="text-2xl">🏖️</p>
-          <p className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>
+          <p className="text-base font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>
             {isHalfDayApprovedLeave
               ? `You are on approved ${todayLeave.half_day_period === 'first' ? 'first-half' : 'second-half'} leave today`
               : 'You are on approved leave today'}
@@ -2581,7 +2581,7 @@ function DailyReportsPage({
           </p>
           {todayLeave.transfer_date && (
             <p className="text-xs font-semibold text-gray-500 mt-1">
-              Transfer day: <span className="font-bold" style={{ color: '#1a472a' }}>{todayLeave.transfer_date}</span>
+              Transfer day: <span className="font-bold" style={{ color: 'hsl(var(--brand-700))' }}>{todayLeave.transfer_date}</span>
             </p>
           )}
           <p className="text-xs text-gray-400 mt-2 italic">Reason: {todayLeave.reason || '—'}</p>
@@ -2607,7 +2607,7 @@ function DailyReportsPage({
             <thead>
               <tr className="bg-gray-50 border-b border-gray-100">
                 {['Sr.', 'Type of Work *', 'Sub Category *', 'Specific Work *', 'Time Tracker *', 'Collaborative Work'].map(h => (
-                  <th key={h} className="text-left text-[11px] font-bold uppercase tracking-wider px-3 py-3 first:text-center first:w-12" style={{ color: '#1a472a' }}>{h}</th>
+                  <th key={h} className="text-left text-[11px] font-bold uppercase tracking-wider px-3 py-3 first:text-center first:w-12" style={{ color: 'hsl(var(--brand-700))' }}>{h}</th>
                 ))}
                 {!report?.is_locked && <th className="w-10" />}
               </tr>
@@ -2691,11 +2691,11 @@ function DailyReportsPage({
                     <tr className={`border-b border-gray-50 ${i % 2 === 1 ? 'bg-gray-50/30' : ''}`}>
                       <td colSpan={colCount} className="px-3 pb-3 pt-0">
                         <div className="flex items-start gap-2 ml-9">
-                          <MessageCircle className="w-3.5 h-3.5 mt-1 shrink-0" style={{ color: '#52b788' }} />
+                          <MessageCircle className="w-3.5 h-3.5 mt-1 shrink-0" style={{ color: 'hsl(var(--brand-400))' }} />
                           <ul className="flex-1 space-y-1.5">
                             {rowComments.map(c => (
                               <li key={c.id} className="rounded-lg px-3 py-1.5" style={{ background: 'rgba(82,183,136,0.10)' }}>
-                                <p className="text-[11px] font-semibold" style={{ color: '#1a472a' }}>
+                                <p className="text-[11px] font-semibold" style={{ color: 'hsl(var(--brand-700))' }}>
                                   {c.author_name}
                                   <span className="text-gray-400 font-normal ml-1.5">
                                     {new Date(c.created_at).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}
@@ -2717,7 +2717,7 @@ function DailyReportsPage({
         </div>
 
         <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between flex-wrap gap-2">
-          <span className="text-xs font-semibold" style={{ color: '#52b788' }}>
+          <span className="text-xs font-semibold" style={{ color: 'hsl(var(--brand-400))' }}>
             {displayRows.length} {displayRows.length === 1 ? 'row' : 'rows'}
             {totalHours > 0 && ` · ${Math.round(totalHours * 10) / 10} hrs total`}
           </span>
@@ -2739,18 +2739,18 @@ function DailyReportsPage({
           </button>
           <button onClick={() => void submitReport()} disabled={submitting}
             className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50 transition-colors"
-            style={{ background: '#1a472a' }}>
+            style={{ background: 'hsl(var(--brand-700))' }}>
             <Send className="w-4 h-4" />
             {submitting ? 'Submitting…' : 'Submit Report'}
           </button>
-          <p className="text-xs font-semibold" style={{ color: '#52b788' }}>Once submitted, the report cannot be edited.</p>
+          <p className="text-xs font-semibold" style={{ color: 'hsl(var(--brand-400))' }}>Once submitted, the report cannot be edited.</p>
         </div>
       )}
 
       {/* ── My Leave Requests ──────────────────────────────────────────────── */}
       <div className="bg-white rounded-2xl border border-gray-100 p-5">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>My Leave Requests</h3>
+          <h3 className="text-base font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>My Leave Requests</h3>
           <button
             onClick={() => { setLeaveStart(`${today()}T09:00`); setLeaveEnd(`${today()}T17:00`); setShowLeaveModal(true) }}
             className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition-colors hover:bg-red-50"
@@ -2761,7 +2761,7 @@ function DailyReportsPage({
         </div>
 
         {leaves.length === 0 ? (
-          <p className="text-sm text-center py-6" style={{ color: '#52b788' }}>No leave requests yet.</p>
+          <p className="text-sm text-center py-6" style={{ color: 'hsl(var(--brand-400))' }}>No leave requests yet.</p>
         ) : (
           <div className="space-y-3">
             {leaves.map(lv => (
@@ -2789,7 +2789,7 @@ function DailyReportsPage({
                   </p>
                   <p className="text-xs text-gray-500 mt-0.5">{lv.reason || '—'}</p>
                   {lv.transfer_date && (
-                    <p className="text-xs mt-0.5" style={{ color: '#1a472a' }}>
+                    <p className="text-xs mt-0.5" style={{ color: 'hsl(var(--brand-700))' }}>
                       Transfer day: <span className="font-semibold">{lv.transfer_date}</span>
                     </p>
                   )}
@@ -2811,20 +2811,20 @@ function DailyReportsPage({
           onClick={() => setShowLeaveModal(false)}>
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between">
-              <h3 className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>Apply for Leave</h3>
+              <h3 className="text-base font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Apply for Leave</h3>
               <button onClick={() => setShowLeaveModal(false)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400"><X className="w-4 h-4" /></button>
             </div>
 
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>From *</label>
+                  <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: 'hsl(var(--brand-700))' }}>From *</label>
                   <input type="datetime-local" value={leaveStart} min={`${today()}T00:00`}
                     onChange={e => setLeaveStart(e.target.value)}
                     className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-green-200" />
                 </div>
                 <div>
-                  <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>To *</label>
+                  <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: 'hsl(var(--brand-700))' }}>To *</label>
                   <input type="datetime-local" value={leaveEnd} min={leaveStart || `${today()}T00:00`}
                     onChange={e => setLeaveEnd(e.target.value)}
                     className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-green-200" />
@@ -2846,13 +2846,13 @@ function DailyReportsPage({
                 Half-day rules: <span className="font-semibold">First half</span> = 9:00 AM – 1:00 PM, <span className="font-semibold">Second half</span> = 2:00 PM – 5:00 PM.
               </p>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>Reason *</label>
+                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: 'hsl(var(--brand-700))' }}>Reason *</label>
                 <textarea value={leaveReason} onChange={e => setLeaveReason(e.target.value)}
                   placeholder="Brief reason for leave…" rows={3}
                   className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-green-200 resize-none" />
               </div>
               <div>
-                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: '#1a472a' }}>Transfer Leave to (optional)</label>
+                <label className="text-xs font-bold uppercase tracking-wide mb-1 block" style={{ color: 'hsl(var(--brand-700))' }}>Transfer Leave to (optional)</label>
                 <input type="date" value={leaveTransferDate} min={today()}
                   onChange={e => setLeaveTransferDate(e.target.value)}
                   className="w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-green-200" />
@@ -2863,7 +2863,7 @@ function DailyReportsPage({
             <div className="flex gap-3 pt-1">
               <button onClick={() => void applyForLeave()} disabled={leaveSubmitting}
                 className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50"
-                style={{ background: '#1a472a' }}>
+                style={{ background: 'hsl(var(--brand-700))' }}>
                 {leaveSubmitting ? 'Submitting…' : 'Submit Leave Request'}
               </button>
               <button onClick={() => setShowLeaveModal(false)}
@@ -2887,8 +2887,8 @@ function DailyReportsPage({
 
         <div className="relative z-10 p-5">
           <div className="flex items-start justify-between gap-3 mb-1 flex-wrap">
-            <h3 className="text-base font-extrabold font-serif flex items-center gap-2" style={{ color: '#1a472a' }}>
-              <Users className="w-4 h-4" style={{ color: '#1a472a' }} /> Collaboration Graph
+            <h3 className="text-base font-extrabold font-serif flex items-center gap-2" style={{ color: 'hsl(var(--brand-700))' }}>
+              <Users className="w-4 h-4" style={{ color: 'hsl(var(--brand-700))' }} /> Collaboration Graph
             </h3>
             {/* Filter buttons */}
             <div className="flex items-center gap-1.5 flex-wrap">
@@ -2897,10 +2897,10 @@ function DailyReportsPage({
                   key={f}
                   onClick={() => setCollabFilter(f)}
                   className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all ${
-                    collabFilter === f ? 'text-[#1a472a]' : 'text-gray-400 hover:bg-white/60'
+                    collabFilter === f ? 'text-[hsl(var(--brand-700))]' : 'text-gray-400 hover:bg-white/60'
                   }`}
                   style={collabFilter === f ? {
-                    border: '1.5px solid #1a472a',
+                    border: '1.5px solid hsl(var(--brand-700))',
                     background: 'linear-gradient(135deg, rgba(255,255,255,0.75) 0%, rgba(210,240,220,0.60) 100%)',
                     backdropFilter: 'blur(8px)',
                     WebkitBackdropFilter: 'blur(8px)',
@@ -2917,21 +2917,21 @@ function DailyReportsPage({
             <div className="flex items-center gap-2 mt-2 mb-3">
               <input type="date" value={collabCustomFrom} onChange={e => setCollabCustomFrom(e.target.value)}
                 className="text-xs px-2 py-1.5 rounded-lg border border-gray-200 bg-white/80 focus:outline-none focus:border-green-600" />
-              <span className="text-xs font-semibold" style={{ color: '#52b788' }}>to</span>
+              <span className="text-xs font-semibold" style={{ color: 'hsl(var(--brand-400))' }}>to</span>
               <input type="date" value={collabCustomTo} onChange={e => setCollabCustomTo(e.target.value)}
                 className="text-xs px-2 py-1.5 rounded-lg border border-gray-200 bg-white/80 focus:outline-none focus:border-green-600" />
             </div>
           )}
-          <p className="text-xs font-semibold mb-4" style={{ color: '#52b788' }}>
+          <p className="text-xs font-semibold mb-4" style={{ color: 'hsl(var(--brand-400))' }}>
             {collabFilter === 'day' ? "Today's collaboration hours." :
              collabFilter === 'week' ? 'Last 7 days collaboration hours.' :
              collabFilter === 'month' ? "This month's collaboration hours." :
              'Custom range collaboration hours.'}
           </p>
           {collabLoading
-            ? <p className="text-sm text-center py-8 animate-pulse" style={{ color: '#52b788' }}>Loading…</p>
+            ? <p className="text-sm text-center py-8 animate-pulse" style={{ color: 'hsl(var(--brand-400))' }}>Loading…</p>
             : collabBarData.length === 0
-            ? <p className="text-sm text-center py-8" style={{ color: '#52b788' }}>No collaboration data for this period.</p>
+            ? <p className="text-sm text-center py-8" style={{ color: 'hsl(var(--brand-400))' }}>No collaboration data for this period.</p>
             : (
               <ResponsiveContainer width="100%" height={200}>
                 <BarChart data={collabBarData} margin={{ top: 4, right: 0, left: -24, bottom: 0 }} barCategoryGap="35%">
@@ -3058,8 +3058,8 @@ function SettingsPage({ profile }: { profile: ReturnType<typeof useAuth>['profil
   return (
     <div className="max-w-2xl space-y-6">
       <div>
-        <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Settings</h1>
-        <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>Manage your profile and account preferences.</p>
+        <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Settings</h1>
+        <p className="text-sm font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>Manage your profile and account preferences.</p>
       </div>
 
       {/* Section tabs */}
@@ -3092,15 +3092,15 @@ function SettingsPage({ profile }: { profile: ReturnType<typeof useAuth>['profil
                 <label className={`absolute -bottom-1.5 -right-1.5 w-7 h-7 rounded-full bg-white border border-gray-200 shadow flex items-center justify-center cursor-pointer hover:bg-green-50 transition-colors ${avatarUploading ? 'opacity-60 pointer-events-none' : ''}`}>
                   {avatarUploading
                     ? <div className="w-3.5 h-3.5 border-2 border-green-700 border-t-transparent rounded-full animate-spin" />
-                    : <Camera className="w-3.5 h-3.5" style={{ color: '#1a472a' }} />
+                    : <Camera className="w-3.5 h-3.5" style={{ color: 'hsl(var(--brand-700))' }} />
                   }
                   <input type="file" accept="image/*" className="hidden" onChange={handleAvatarChange} disabled={avatarUploading} />
                 </label>
               </div>
               <div>
-                <p className="font-bold font-serif" style={{ color: '#1a472a' }}>{profile?.full_name || 'Your Name'}</p>
-                <p className="text-sm font-semibold" style={{ color: '#52b788' }}>{profile?.email}</p>
-                <p className="text-xs font-semibold mt-1" style={{ color: '#52b788' }}>Click the camera icon to change your photo</p>
+                <p className="font-bold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>{profile?.full_name || 'Your Name'}</p>
+                <p className="text-sm font-semibold" style={{ color: 'hsl(var(--brand-400))' }}>{profile?.email}</p>
+                <p className="text-xs font-semibold mt-1" style={{ color: 'hsl(var(--brand-400))' }}>Click the camera icon to change your photo</p>
               </div>
             </div>
             {/* Edit / Cancel toggle */}
@@ -3108,7 +3108,7 @@ function SettingsPage({ profile }: { profile: ReturnType<typeof useAuth>['profil
               <button
                 onClick={() => setEditMode(true)}
                 className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold border-2 transition-colors hover:bg-green-50"
-                style={{ borderColor: '#1a472a', color: '#1a472a' }}
+                style={{ borderColor: 'hsl(var(--brand-700))', color: 'hsl(var(--brand-700))' }}
               >
                 <ArrowUpRight className="w-3.5 h-3.5" /> Edit Profile
               </button>
@@ -3132,8 +3132,8 @@ function SettingsPage({ profile }: { profile: ReturnType<typeof useAuth>['profil
                 { label: 'Phone Number', value: phone || '—' },
               ].map(item => (
                 <div key={item.label} className="rounded-xl bg-gray-50 border border-gray-100 p-3">
-                  <p className="text-xs font-bold mb-0.5" style={{ color: '#52b788' }}>{item.label}</p>
-                  <p className="text-sm font-semibold truncate" style={{ color: '#1a472a' }}>{item.value}</p>
+                  <p className="text-xs font-bold mb-0.5" style={{ color: 'hsl(var(--brand-400))' }}>{item.label}</p>
+                  <p className="text-sm font-semibold truncate" style={{ color: 'hsl(var(--brand-700))' }}>{item.value}</p>
                 </div>
               ))}
             </div>
@@ -3144,22 +3144,22 @@ function SettingsPage({ profile }: { profile: ReturnType<typeof useAuth>['profil
             <>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-xs font-bold block mb-1" style={{ color: '#1a472a' }}>Full Name</label>
+                  <label className="text-xs font-bold block mb-1" style={{ color: 'hsl(var(--brand-700))' }}>Full Name</label>
                   <input value={fullName} onChange={e => setFullName(e.target.value)} className={INP} placeholder="Your full name" autoFocus />
                 </div>
                 <div>
-                  <label className="text-xs font-bold block mb-1" style={{ color: '#1a472a' }}>Designation / Role</label>
+                  <label className="text-xs font-bold block mb-1" style={{ color: 'hsl(var(--brand-700))' }}>Designation / Role</label>
                   <input value={designation} onChange={e => setDesignation(e.target.value)} className={INP} placeholder="e.g. Graphic Designer" />
                 </div>
                 <div>
-                  <label className="text-xs font-bold block mb-1" style={{ color: '#1a472a' }}>Email Address</label>
+                  <label className="text-xs font-bold block mb-1" style={{ color: 'hsl(var(--brand-700))' }}>Email Address</label>
                   <div className="relative">
                     <input value={profile?.email || ''} readOnly className={`${INP} bg-gray-50 cursor-not-allowed text-gray-400 pr-24`} />
                     <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded font-medium">Contact admin</span>
                   </div>
                 </div>
                 <div>
-                  <label className="text-xs font-bold block mb-1" style={{ color: '#1a472a' }}>
+                  <label className="text-xs font-bold block mb-1" style={{ color: 'hsl(var(--brand-700))' }}>
                     <span className="flex items-center gap-1"><Phone className="w-3 h-3" /> Phone Number</span>
                   </label>
                   <input value={phone} onChange={e => setPhone(e.target.value)} className={INP} placeholder="+91 98765 43210" type="tel" />
@@ -3167,7 +3167,7 @@ function SettingsPage({ profile }: { profile: ReturnType<typeof useAuth>['profil
               </div>
               <button onClick={() => void saveProfile()} disabled={saving}
                 className="px-6 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50 transition-colors"
-                style={{ background: '#1a472a' }}>
+                style={{ background: 'hsl(var(--brand-700))' }}>
                 {saving ? 'Saving…' : 'Save Changes'}
               </button>
             </>
@@ -3178,19 +3178,19 @@ function SettingsPage({ profile }: { profile: ReturnType<typeof useAuth>['profil
       {section === 'security' && (
         <div className="bg-white rounded-2xl border border-gray-100 p-6 space-y-5">
           <div>
-            <h3 className="text-sm font-extrabold font-serif flex items-center gap-2" style={{ color: '#1a472a' }}>
-              <Shield className="w-4 h-4" style={{ color: '#1a472a' }} /> Change Password
+            <h3 className="text-sm font-extrabold font-serif flex items-center gap-2" style={{ color: 'hsl(var(--brand-700))' }}>
+              <Shield className="w-4 h-4" style={{ color: 'hsl(var(--brand-700))' }} /> Change Password
             </h3>
-            <p className="text-xs font-semibold mt-0.5" style={{ color: '#52b788' }}>Use at least 8 characters with a mix of letters and numbers.</p>
+            <p className="text-xs font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>Use at least 8 characters with a mix of letters and numbers.</p>
           </div>
           <div className="space-y-3">
             <div>
-              <label className="text-xs font-bold block mb-1" style={{ color: '#1a472a' }}>New Password</label>
+              <label className="text-xs font-bold block mb-1" style={{ color: 'hsl(var(--brand-700))' }}>New Password</label>
               <input type="password" value={newPwd} onChange={e => setNewPwd(e.target.value)}
                 className={INP} placeholder="Min. 8 characters" />
             </div>
             <div>
-              <label className="text-xs font-bold block mb-1" style={{ color: '#1a472a' }}>Confirm New Password</label>
+              <label className="text-xs font-bold block mb-1" style={{ color: 'hsl(var(--brand-700))' }}>Confirm New Password</label>
               <input type="password" value={confirmPwd} onChange={e => setConfirmPwd(e.target.value)}
                 className={INP} placeholder="Repeat new password" />
             </div>
@@ -3203,7 +3203,7 @@ function SettingsPage({ profile }: { profile: ReturnType<typeof useAuth>['profil
           <button onClick={() => void changePassword()}
             disabled={pwdSaving || !newPwd || !confirmPwd || newPwd !== confirmPwd}
             className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50 transition-colors"
-            style={{ background: '#1a472a' }}>
+            style={{ background: 'hsl(var(--brand-700))' }}>
             <Shield className="w-4 h-4" /> {pwdSaving ? 'Updating…' : 'Update Password'}
           </button>
         </div>
@@ -3211,7 +3211,7 @@ function SettingsPage({ profile }: { profile: ReturnType<typeof useAuth>['profil
 
       {section === 'team' && (
         <div className="bg-white rounded-2xl border border-gray-100 p-6 space-y-4">
-          <h3 className="text-sm font-extrabold font-serif" style={{ color: '#1a472a' }}>Team Information</h3>
+          <h3 className="text-sm font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Team Information</h3>
           <div className="grid grid-cols-2 gap-3">
             {[
               { label: 'Team', value: 'Design Team' },
@@ -3220,8 +3220,8 @@ function SettingsPage({ profile }: { profile: ReturnType<typeof useAuth>['profil
               { label: 'Account ID', value: profile?.id?.slice(0, 8).toUpperCase() + '…' || '—' },
             ].map(item => (
               <div key={item.label} className="rounded-xl bg-gray-50 border border-gray-100 p-4">
-                <p className="text-xs font-semibold mb-1" style={{ color: '#52b788' }}>{item.label}</p>
-                <p className="text-sm font-bold" style={{ color: '#1a472a' }}>{item.value}</p>
+                <p className="text-xs font-semibold mb-1" style={{ color: 'hsl(var(--brand-400))' }}>{item.label}</p>
+                <p className="text-sm font-bold" style={{ color: 'hsl(var(--brand-700))' }}>{item.value}</p>
               </div>
             ))}
           </div>
@@ -3270,8 +3270,8 @@ function HelpPage({ onNavigate }: { onNavigate: (p: NavPage) => void }) {
   return (
     <div className="max-w-2xl space-y-6">
       <div>
-        <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Help & Support</h1>
-        <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>Learn how to use the Design Portal and find answers fast.</p>
+        <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Help & Support</h1>
+        <p className="text-sm font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>Learn how to use the Design Portal and find answers fast.</p>
       </div>
 
       {/* Quick navigation cards */}
@@ -3284,8 +3284,8 @@ function HelpPage({ onNavigate }: { onNavigate: (p: NavPage) => void }) {
               <item.icon className="w-4 h-4" style={{ color: item.color }} />
             </div>
             <div>
-              <p className="text-sm font-bold font-serif" style={{ color: '#1a472a' }}>{item.title}</p>
-              <p className="text-xs font-semibold mt-0.5" style={{ color: '#52b788' }}>{item.desc}</p>
+              <p className="text-sm font-bold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>{item.title}</p>
+              <p className="text-xs font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>{item.desc}</p>
             </div>
           </button>
         ))}
@@ -3294,8 +3294,8 @@ function HelpPage({ onNavigate }: { onNavigate: (p: NavPage) => void }) {
       {/* FAQ accordion */}
       <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
         <div className="px-5 py-4 border-b border-gray-50 flex items-center gap-2">
-          <BookOpen className="w-4 h-4" style={{ color: '#1a472a' }} />
-          <h3 className="text-sm font-extrabold font-serif" style={{ color: '#1a472a' }}>Frequently Asked Questions</h3>
+          <BookOpen className="w-4 h-4" style={{ color: 'hsl(var(--brand-700))' }} />
+          <h3 className="text-sm font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Frequently Asked Questions</h3>
         </div>
         <div className="divide-y divide-gray-50">
           {faqs.map((faq, i) => (
@@ -3304,12 +3304,12 @@ function HelpPage({ onNavigate }: { onNavigate: (p: NavPage) => void }) {
                 onClick={() => setOpenFaq(openFaq === i ? null : i)}
                 className="w-full flex items-center justify-between px-5 py-3.5 text-left hover:bg-gray-50 transition-colors gap-4"
               >
-                <span className="text-sm font-bold" style={{ color: '#1a472a' }}>{faq.q}</span>
+                <span className="text-sm font-bold" style={{ color: 'hsl(var(--brand-700))' }}>{faq.q}</span>
                 <ChevronDown className={`w-4 h-4 text-gray-400 shrink-0 transition-transform duration-200 ${openFaq === i ? 'rotate-180' : ''}`} />
               </button>
               {openFaq === i && (
                 <div className="px-5 pb-4">
-                  <p className="text-sm font-semibold leading-relaxed" style={{ color: '#52b788' }}>{faq.a}</p>
+                  <p className="text-sm font-semibold leading-relaxed" style={{ color: 'hsl(var(--brand-400))' }}>{faq.a}</p>
                 </div>
               )}
             </div>
@@ -3320,13 +3320,13 @@ function HelpPage({ onNavigate }: { onNavigate: (p: NavPage) => void }) {
       {/* Keyboard shortcuts */}
       <div className="bg-white rounded-2xl border border-gray-100 p-5">
         <div className="flex items-center gap-2 mb-4">
-          <Keyboard className="w-4 h-4" style={{ color: '#1a472a' }} />
-          <h3 className="text-sm font-extrabold font-serif" style={{ color: '#1a472a' }}>Keyboard Shortcuts</h3>
+          <Keyboard className="w-4 h-4" style={{ color: 'hsl(var(--brand-700))' }} />
+          <h3 className="text-sm font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Keyboard Shortcuts</h3>
         </div>
         <div className="space-y-2.5">
           {shortcuts.map(s => (
             <div key={s.keys} className="flex items-center justify-between">
-              <span className="text-sm font-semibold" style={{ color: '#52b788' }}>{s.desc}</span>
+              <span className="text-sm font-semibold" style={{ color: 'hsl(var(--brand-400))' }}>{s.desc}</span>
               <kbd className="px-2.5 py-1 rounded-lg bg-gray-100 text-xs font-mono font-bold text-gray-700 border border-gray-200">{s.keys}</kbd>
             </div>
           ))}
@@ -3336,8 +3336,8 @@ function HelpPage({ onNavigate }: { onNavigate: (p: NavPage) => void }) {
       {/* Feature overview */}
       <div className="bg-white rounded-2xl border border-gray-100 p-5">
         <div className="flex items-center gap-2 mb-4">
-          <MessageCircle className="w-4 h-4" style={{ color: '#1a472a' }} />
-          <h3 className="text-sm font-extrabold font-serif" style={{ color: '#1a472a' }}>Portal Features</h3>
+          <MessageCircle className="w-4 h-4" style={{ color: 'hsl(var(--brand-700))' }} />
+          <h3 className="text-sm font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Portal Features</h3>
         </div>
         <div className="grid grid-cols-2 gap-3">
           {[
@@ -3349,8 +3349,8 @@ function HelpPage({ onNavigate }: { onNavigate: (p: NavPage) => void }) {
             { title: 'Team Collaboration', desc: 'Tag colleagues in your daily reports.' },
           ].map(f => (
             <div key={f.title} className="rounded-xl bg-gray-50 p-3">
-              <p className="text-xs font-bold font-serif" style={{ color: '#1a472a' }}>{f.title}</p>
-              <p className="text-[11px] font-semibold mt-0.5 leading-snug" style={{ color: '#52b788' }}>{f.desc}</p>
+              <p className="text-xs font-bold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>{f.title}</p>
+              <p className="text-[11px] font-semibold mt-0.5 leading-snug" style={{ color: 'hsl(var(--brand-400))' }}>{f.desc}</p>
             </div>
           ))}
         </div>
@@ -3359,11 +3359,11 @@ function HelpPage({ onNavigate }: { onNavigate: (p: NavPage) => void }) {
       {/* Support footer */}
       <div className="bg-white rounded-2xl border border-gray-100 p-5 flex items-center justify-between flex-wrap gap-3">
         <div>
-          <p className="text-sm font-bold font-serif" style={{ color: '#1a472a' }}>Nerve — Design Portal</p>
-          <p className="text-xs font-semibold mt-0.5" style={{ color: '#52b788' }}>Parul University Knowledge Hub · v1.0</p>
+          <p className="text-sm font-bold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Nerve — Design Portal</p>
+          <p className="text-xs font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>Parul University Knowledge Hub · v1.0</p>
         </div>
         <div className="text-xs text-gray-500">
-          Need help? <span className="font-semibold" style={{ color: '#1a472a' }}>admin@paruluniversity.ac.in</span>
+          Need help? <span className="font-semibold" style={{ color: 'hsl(var(--brand-700))' }}>admin@paruluniversity.ac.in</span>
         </div>
       </div>
     </div>
@@ -3463,14 +3463,14 @@ function SelfAppraisalPage({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Self Appraisal</h1>
-        <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>Submit your monthly KRA self-evaluation. One submission per month.</p>
+        <h1 className="text-2xl sm:text-3xl font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Self Appraisal</h1>
+        <p className="text-sm font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>Submit your monthly KRA self-evaluation. One submission per month.</p>
       </div>
 
       {/* Period selector */}
       <div className="bg-white rounded-2xl border border-gray-100 p-4 flex items-center gap-4 flex-wrap">
         <Calendar className="w-4 h-4 text-green-700 shrink-0" />
-        <label className="text-sm font-bold font-serif" style={{ color: '#1a472a' }}>Period:</label>
+        <label className="text-sm font-bold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Period:</label>
         <select value={appraisalMonth} onChange={e => setAppraisalMonth(parseInt(e.target.value))}
           className="text-sm border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none">
           {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
@@ -3500,9 +3500,9 @@ function SelfAppraisalPage({
               className={`rounded-2xl p-4 text-left border transition-all hover:shadow-sm ${active ? 'border-green-700 bg-green-50' : 'bg-white border-gray-100'}`}>
               <div className="flex items-center gap-2 mb-1">
                 <Icon className={`w-5 h-5 ${active ? 'text-green-800' : 'text-gray-400'}`} />
-                <span className={`text-sm font-bold font-serif ${active ? '' : ''}`} style={{ color: active ? '#1a472a' : '#52b788' }}>{s.label}</span>
+                <span className={`text-sm font-bold font-serif ${active ? '' : ''}`} style={{ color: active ? 'hsl(var(--brand-700))' : 'hsl(var(--brand-400))' }}>{s.label}</span>
               </div>
-              <p className="text-xs font-semibold" style={{ color: '#52b788' }}>{s.desc}</p>
+              <p className="text-xs font-semibold" style={{ color: 'hsl(var(--brand-400))' }}>{s.desc}</p>
             </button>
           )
         })}
@@ -3512,7 +3512,7 @@ function SelfAppraisalPage({
       {section === 'self' && (
         <div className="bg-white rounded-2xl border border-gray-100 p-6 space-y-5">
           <div className="flex items-center justify-between">
-            <h2 className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>
+            <h2 className="text-base font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>
               Self Appraisal — {MONTHS[appraisalMonth - 1]} {appraisalYear}
             </h2>
             {selfAppraisal && (
@@ -3538,7 +3538,7 @@ function SelfAppraisalPage({
                 {!selfAppraisal && !confirmSubmit && (
                   <button onClick={() => setConfirmSubmit(true)}
                     className="w-full py-2.5 rounded-xl text-sm font-semibold text-white transition-colors"
-                    style={{ background: '#1a472a' }}>
+                    style={{ background: 'hsl(var(--brand-700))' }}>
                     Submit Self Appraisal
                   </button>
                 )}
@@ -3552,7 +3552,7 @@ function SelfAppraisalPage({
                     <div className="flex gap-3">
                       <button onClick={() => void submitSelfAppraisal()} disabled={selfLoading}
                         className="flex-1 py-2 rounded-xl text-sm font-semibold text-white disabled:opacity-50"
-                        style={{ background: '#1a472a' }}>
+                        style={{ background: 'hsl(var(--brand-700))' }}>
                         Yes, submit now
                       </button>
                       <button onClick={() => setConfirmSubmit(false)}
@@ -3571,7 +3571,7 @@ function SelfAppraisalPage({
       {/* Peer KRA Marking */}
       {section === 'peer' && (
         <div className="bg-white rounded-2xl border border-gray-100 p-6 space-y-5">
-          <h2 className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>
+          <h2 className="text-base font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>
             Staff KRA Marking — {MONTHS[appraisalMonth - 1]} {appraisalYear}
           </h2>
           {!peerEnabled
@@ -3582,7 +3582,7 @@ function SelfAppraisalPage({
             : (
               <>
                 <div>
-                  <label className="text-sm font-bold font-serif block mb-2" style={{ color: '#1a472a' }}>Select Colleague</label>
+                  <label className="text-sm font-bold font-serif block mb-2" style={{ color: 'hsl(var(--brand-700))' }}>Select Colleague</label>
                   <select value={peerColleague}
                     onChange={e => { setPeerColleague(e.target.value); setPeerScores(Object.fromEntries(kraParams.map(p => [p.id, 5]))) }}
                     className="text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none max-w-xs w-full">
@@ -3603,7 +3603,7 @@ function SelfAppraisalPage({
                     <KraForm params={kraParams} scores={peerScores} onChange={setPeerScores} />
                     <button onClick={() => void submitPeerMarking()} disabled={peerSubmitting}
                       className="w-full py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50"
-                      style={{ background: '#1a472a' }}>
+                      style={{ background: 'hsl(var(--brand-700))' }}>
                       {peerSubmitting ? 'Submitting…' : 'Submit Peer Marking'}
                     </button>
                   </>
@@ -3623,15 +3623,15 @@ function SelfAppraisalPage({
       {/* Download KRA Report */}
       {section === 'download' && (
         <div className="bg-white rounded-2xl border border-gray-100 p-6 space-y-5">
-          <h2 className="text-base font-extrabold font-serif" style={{ color: '#1a472a' }}>
+          <h2 className="text-base font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>
             KRA Report — {MONTHS[appraisalMonth - 1]} {appraisalYear}
           </h2>
           {!kraReport?.is_final_pushed
             ? <div className="flex items-start gap-3 p-4 bg-gray-50 rounded-xl">
                 <Lock className="w-5 h-5 text-gray-400 shrink-0 mt-0.5" />
                 <div>
-                  <p className="text-sm font-bold font-serif" style={{ color: '#1a472a' }}>Report not available yet</p>
-                  <p className="text-sm font-semibold" style={{ color: '#52b788' }}>Your KRA is pending Admin review and approval.</p>
+                  <p className="text-sm font-bold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Report not available yet</p>
+                  <p className="text-sm font-semibold" style={{ color: 'hsl(var(--brand-400))' }}>Your KRA is pending Admin review and approval.</p>
                 </div>
               </div>
             : kraReport && kraParams.length > 0
@@ -3649,11 +3649,11 @@ function SelfAppraisalPage({
                     </div>
                   ))}
                 </div>
-                <h3 className="text-sm font-extrabold font-serif" style={{ color: '#1a472a' }}>Parameter Breakdown</h3>
+                <h3 className="text-sm font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Parameter Breakdown</h3>
                 <KraForm params={kraParams} scores={kraReport.self_appraisal?.scores || {}} readOnly />
                 <button onClick={() => window.print()}
                   className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-white"
-                  style={{ background: '#1a472a' }}>
+                  style={{ background: 'hsl(var(--brand-700))' }}>
                   <Download className="w-4 h-4" /> Download / Print PDF
                 </button>
               </div>
@@ -3758,7 +3758,7 @@ export default function DesignUserDashboard() {
   ]
 
   return (
-    <div className="-mx-6 -mt-8 -mb-8 flex bg-[#f4f7f4] h-screen overflow-hidden">
+    <div className="-mx-6 -mt-8 -mb-8 flex bg-[hsl(var(--brand-50))] h-screen overflow-hidden">
       {/* Mobile backdrop — only rendered when the drawer is open on phones */}
       {sidebarOpen && (
         <div
@@ -3781,7 +3781,7 @@ export default function DesignUserDashboard() {
         {/* Logo */}
         <div className="px-5 pt-6 pb-4 border-b border-gray-50 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: '#1a472a' }}>
+            <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: 'hsl(var(--brand-700))' }}>
               <Palette className="w-4 h-4 text-white" />
             </div>
             <span className="font-bold text-[16px] text-gray-800 tracking-tight">Nerve</span>
@@ -3806,10 +3806,10 @@ export default function DesignUserDashboard() {
             return (
               <button key={item.key} onClick={() => gotoPage(item.key)}
                 className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all text-left relative ${
-                  active ? 'text-[#1a472a]' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'
+                  active ? 'text-[hsl(var(--brand-700))]' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'
                 }`}
                 style={active ? {
-                  border: '1.5px solid #1a472a',
+                  border: '1.5px solid hsl(var(--brand-700))',
                   background: 'linear-gradient(135deg, rgba(255,255,255,0.72) 0%, rgba(210,240,220,0.55) 100%)',
                   backdropFilter: 'blur(10px)',
                   WebkitBackdropFilter: 'blur(10px)',
@@ -3869,10 +3869,10 @@ export default function DesignUserDashboard() {
                 <button key={key}
                   onClick={() => gotoPage(key)}
                   className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all text-left mb-0.5 ${
-                    active ? 'text-[#1a472a]' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'
+                    active ? 'text-[hsl(var(--brand-700))]' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'
                   }`}
                   style={active ? {
-                    border: '1.5px solid #1a472a',
+                    border: '1.5px solid hsl(var(--brand-700))',
                     background: 'linear-gradient(135deg, rgba(255,255,255,0.72) 0%, rgba(210,240,220,0.55) 100%)',
                     backdropFilter: 'blur(10px)',
                     WebkitBackdropFilter: 'blur(10px)',
@@ -3891,7 +3891,7 @@ export default function DesignUserDashboard() {
         </nav>
 
         {/* Bottom promo card */}
-        <div className="mx-3 mb-4 p-4 rounded-2xl text-white" style={{ background: 'linear-gradient(135deg, #1a472a 0%, #2d6a4f 100%)' }}>
+        <div className="mx-3 mb-4 p-4 rounded-2xl text-white" style={{ background: 'linear-gradient(135deg, hsl(var(--brand-700)) 0%, hsl(var(--brand-600)) 100%)' }}>
           <p className="text-[12px] font-bold leading-tight">Design Portal</p>
           <p className="text-[11px] opacity-70 mt-1 leading-snug">Log your work daily and track your growth.</p>
         </div>
@@ -3929,7 +3929,7 @@ export default function DesignUserDashboard() {
                 className="w-9 h-9 rounded-full bg-gray-50 border border-gray-100 flex items-center justify-center text-gray-400 hover:bg-gray-100 transition-colors relative"
               >
                 <Bell className="w-4 h-4" />
-                <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full text-[9px] font-bold text-white flex items-center justify-center" style={{ background: '#1a472a' }}>
+                <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full text-[9px] font-bold text-white flex items-center justify-center" style={{ background: 'hsl(var(--brand-700))' }}>
                   {notifications.length}
                 </span>
               </button>
@@ -3956,7 +3956,7 @@ export default function DesignUserDashboard() {
                     <button
                       onClick={() => { setNotifOpen(false); setActivePage('daily-reports') }}
                       className="w-full py-2 rounded-xl text-xs font-semibold text-white"
-                      style={{ background: '#1a472a' }}
+                      style={{ background: 'hsl(var(--brand-700))' }}
                     >
                       Submit Today's Report
                     </button>

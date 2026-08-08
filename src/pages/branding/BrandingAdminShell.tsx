@@ -77,13 +77,13 @@ export default function BrandingAdminShell({ children }: { children: React.React
   const isActive = (p: string) => location.pathname === p
 
   return (
-    <div className="-mx-6 -mt-8 -mb-8 flex bg-[#f4f7f4] h-screen overflow-hidden">
+    <div className="-mx-6 -mt-8 -mb-8 flex bg-[hsl(var(--brand-50))] h-screen overflow-hidden">
       {/* ── Left Sidebar ──────────────────────────────────────────── */}
       <aside className="w-52 bg-white border-r border-gray-100 flex flex-col shrink-0 h-full overflow-y-auto">
         {/* Logo */}
         <div className="px-5 pt-6 pb-4 border-b border-gray-50">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: '#1a472a' }}>
+            <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: 'hsl(var(--brand-700))' }}>
               <Palette className="w-4 h-4 text-white" />
             </div>
             <span className="font-bold text-[16px] text-gray-800 tracking-tight">Nerve</span>
@@ -128,7 +128,7 @@ export default function BrandingAdminShell({ children }: { children: React.React
           </div>
         </nav>
 
-        <div className="mx-3 mb-4 p-4 rounded-2xl text-white" style={{ background: 'linear-gradient(135deg, #1a472a 0%, #2d6a4f 100%)' }}>
+        <div className="mx-3 mb-4 p-4 rounded-2xl text-white" style={{ background: 'linear-gradient(135deg, hsl(var(--brand-700)) 0%, hsl(var(--brand-600)) 100%)' }}>
           <p className="text-[12px] font-bold leading-tight">Branding {isReportsAdmin ? 'Reports Admin' : 'Admin'}</p>
           <p className="text-[11px] opacity-70 mt-1 leading-snug">Review reports, scores and team activity.</p>
         </div>
@@ -154,10 +154,10 @@ function NavLinkButton({ item, active }: { item: NavLink; active: boolean }) {
   return (
     <Link to={item.path}
       className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all text-left relative ${
-        active ? 'text-[#1a472a]' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'
+        active ? 'text-[hsl(var(--brand-700))]' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-700'
       }`}
       style={active ? {
-        border: '1.5px solid #1a472a',
+        border: '1.5px solid hsl(var(--brand-700))',
         background: 'linear-gradient(135deg, rgba(255,255,255,0.72) 0%, rgba(210,240,220,0.55) 100%)',
         backdropFilter: 'blur(10px)',
         WebkitBackdropFilter: 'blur(10px)',
@@ -234,7 +234,7 @@ function AdminTopHeader({
               className="w-9 h-9 rounded-full bg-gray-50 border border-gray-100 flex items-center justify-center text-gray-400 hover:bg-gray-100 transition-colors relative">
               <Bell className="w-4 h-4" />
               {(leaveCount > 0 || appraisalDue) && (
-                <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full text-[9px] font-bold text-white flex items-center justify-center" style={{ background: '#1a472a' }}>
+                <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full text-[9px] font-bold text-white flex items-center justify-center" style={{ background: 'hsl(var(--brand-700))' }}>
                   {leaveCount + (appraisalDue ? 1 : 0)}
                 </span>
               )}

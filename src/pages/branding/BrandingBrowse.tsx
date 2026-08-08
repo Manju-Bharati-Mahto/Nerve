@@ -595,15 +595,15 @@ export default function BrandingBrowse() {
       {/* Header */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>Design Gallery</h1>
-          <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>
+          <h1 className="text-3xl font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Design Gallery</h1>
+          <p className="text-sm font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>
             {designs.length} design{designs.length === 1 ? '' : 's'} from the branding team
           </p>
         </div>
         <button
           onClick={() => setShowUpload(true)}
           className="flex items-center gap-2 px-4 py-2 text-white rounded-xl text-sm hover:opacity-90 transition-opacity shadow-sm"
-          style={{ background: '#1a472a' }}
+          style={{ background: 'hsl(var(--brand-700))' }}
         >
           <Upload className="w-4 h-4" />Upload Design
         </button>

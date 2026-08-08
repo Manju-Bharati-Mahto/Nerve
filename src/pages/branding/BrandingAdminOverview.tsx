@@ -57,10 +57,10 @@ function rowHours(
 
 // ── Color tokens (match user dashboard) ──────────────────────────────────
 
-const GREEN_DARK = '#1a472a'
-const GREEN_MID = '#52b788'
-const GREEN_LIGHT = '#74c69d'
-const GREEN_BG = '#f4f7f4'
+const GREEN_DARK = 'hsl(var(--brand-700))'
+const GREEN_MID = 'hsl(var(--brand-400))'
+const GREEN_LIGHT = 'hsl(var(--brand-300))'
+const GREEN_BG = 'hsl(var(--brand-50))'
 const HATCH_ID = 'admin-bar-hatch'
 const FUTURE_HATCH_ID = 'admin-bar-future-hatch'
 const TEAM_HATCH_ID = 'admin-team-hatch'
@@ -88,7 +88,7 @@ function StatCard({ title, value, sub, badge, dark, onClick }: {
       onClick={onClick}
       className={`rounded-2xl p-5 flex flex-col justify-between min-h-[130px] relative overflow-hidden ${onClick ? 'cursor-pointer' : ''}`}
       style={dark ? {
-        background: 'linear-gradient(135deg, #1a472a 0%, #2d6a4f 45%, #40916c 100%)',
+        background: 'linear-gradient(135deg, hsl(var(--brand-700)) 0%, hsl(var(--brand-600)) 45%, #40916c 100%)',
         color: 'white',
       } : { background: 'white', border: '1px solid #f3f4f6' }}
     >
@@ -363,7 +363,7 @@ function SubmittersChart({ data, onBarClick, onMissingClick, loading, total }: {
       const patternId = payload.isHoliday ? HATCH_ID : FUTURE_HATCH_ID
       return (
         <g>
-          <path d={fullPath} fill="#eaf3ea" opacity={0.6} />
+          <path d={fullPath} fill="hsl(var(--brand-50))" opacity={0.6} />
           <path d={fullPath} fill={`url(#${patternId})`} />
         </g>
       )
@@ -412,7 +412,7 @@ function SubmittersChart({ data, onBarClick, onMissingClick, loading, total }: {
       <BarChart data={data} margin={{ top: 10, right: 4, left: -20, bottom: 0 }} barCategoryGap="28%">
         <defs>
           <pattern id={HATCH_ID} patternUnits="userSpaceOnUse" width="8" height="8" patternTransform="rotate(45)">
-            <line x1="0" y1="0" x2="0" y2="8" stroke="#a8c5a8" strokeWidth="2.5" />
+            <line x1="0" y1="0" x2="0" y2="8" stroke="hsl(var(--brand-200))" strokeWidth="2.5" />
           </pattern>
           <pattern id={FUTURE_HATCH_ID} patternUnits="userSpaceOnUse" width="8" height="8" patternTransform="rotate(45)">
             <line x1="0" y1="0" x2="0" y2="8" stroke="#cdd6cd" strokeWidth="2.5" />
@@ -807,10 +807,10 @@ export default function BrandingAdminOverview({ brandingUsers }: { brandingUsers
                 <svg width="10" height="10" style={{ display: 'inline-block' }}>
                   <defs>
                     <pattern id="admin-legend-hatch" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)">
-                      <line x1="0" y1="0" x2="0" y2="4" stroke="#a8c5a8" strokeWidth="1.5" />
+                      <line x1="0" y1="0" x2="0" y2="4" stroke="hsl(var(--brand-200))" strokeWidth="1.5" />
                     </pattern>
                   </defs>
-                  <rect width="10" height="10" rx="2" fill="#eaf3ea" />
+                  <rect width="10" height="10" rx="2" fill="hsl(var(--brand-50))" />
                   <rect width="10" height="10" rx="2" fill="url(#admin-legend-hatch)" />
                 </svg>
                 Holiday
@@ -822,7 +822,7 @@ export default function BrandingAdminOverview({ brandingUsers }: { brandingUsers
                       <line x1="0" y1="0" x2="0" y2="4" stroke="#cdd6cd" strokeWidth="1.5" />
                     </pattern>
                   </defs>
-                  <rect width="10" height="10" rx="2" fill="#eaf3ea" opacity="0.6" />
+                  <rect width="10" height="10" rx="2" fill="hsl(var(--brand-50))" opacity="0.6" />
                   <rect width="10" height="10" rx="2" fill="url(#admin-legend-future)" />
                 </svg>
                 Upcoming

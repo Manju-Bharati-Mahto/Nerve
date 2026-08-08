@@ -194,7 +194,7 @@ function MemberDialog({ mode, initial, canManageCapabilities, onSave, onClose }:
               Cancel
             </button>
             <button type="submit" disabled={saving}
-              className="px-4 py-2 text-sm rounded-lg text-white disabled:opacity-50" style={{ background: '#1a472a' }}>
+              className="px-4 py-2 text-sm rounded-lg text-white disabled:opacity-50" style={{ background: 'hsl(var(--brand-700))' }}>
               {saving ? 'Saving…' : mode === 'add' ? 'Add Member' : 'Save Changes'}
             </button>
           </div>
@@ -360,7 +360,7 @@ function ProjectDialog({ mode, initial, members, onSave, onClose }: ProjectDialo
               Cancel
             </button>
             <button type="submit" disabled={saving}
-              className="px-4 py-2 text-sm rounded-lg text-white disabled:opacity-50" style={{ background: '#1a472a' }}>
+              className="px-4 py-2 text-sm rounded-lg text-white disabled:opacity-50" style={{ background: 'hsl(var(--brand-700))' }}>
               {saving ? 'Saving…' : mode === 'add' ? 'Create Project' : 'Save Changes'}
             </button>
           </div>
@@ -543,10 +543,10 @@ export default function BrandingTeamPanel() {
     <div className="animate-fade-in space-y-6">
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-3xl font-extrabold font-serif" style={{ color: '#1a472a' }}>
+          <h1 className="text-3xl font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>
             {isLead ? 'My Team' : 'Team Management'}
           </h1>
-          <p className="text-sm font-semibold mt-0.5" style={{ color: '#52b788' }}>
+          <p className="text-sm font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>
             {isLead ? 'Branding team — members & daily report status' : 'Branding team — members & projects'}
           </p>
         </div>
@@ -554,7 +554,7 @@ export default function BrandingTeamPanel() {
           <button
             onClick={() => setMemberDialog('add')}
             className="flex items-center gap-2 px-4 py-2 text-white rounded-xl text-sm font-semibold"
-            style={{ background: '#1a472a' }}
+            style={{ background: 'hsl(var(--brand-700))' }}
           >
             <UserPlus className="w-4 h-4" />
             Add Member
@@ -564,7 +564,7 @@ export default function BrandingTeamPanel() {
           <button
             onClick={() => setProjDialog('add')}
             className="flex items-center gap-2 px-4 py-2 text-white rounded-xl text-sm font-semibold"
-            style={{ background: '#1a472a' }}
+            style={{ background: 'hsl(var(--brand-700))' }}
           >
             <Plus className="w-4 h-4" />
             New Project
@@ -577,7 +577,7 @@ export default function BrandingTeamPanel() {
         <button
           onClick={() => setTab('members')}
           className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-            tab === 'members' ? 'border-[#1a472a] text-[#1a472a]' : 'border-transparent text-muted-foreground hover:text-foreground'
+            tab === 'members' ? 'border-[hsl(var(--brand-700))] text-[hsl(var(--brand-700))]' : 'border-transparent text-muted-foreground hover:text-foreground'
           }`}
         >
           <Users className="w-4 h-4" />
@@ -587,7 +587,7 @@ export default function BrandingTeamPanel() {
           <button
             onClick={() => setTab('live')}
             className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-              tab === 'live' ? 'border-[#1a472a] text-[#1a472a]' : 'border-transparent text-muted-foreground hover:text-foreground'
+              tab === 'live' ? 'border-[hsl(var(--brand-700))] text-[hsl(var(--brand-700))]' : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
           >
             <Radio className="w-4 h-4" />
@@ -598,7 +598,7 @@ export default function BrandingTeamPanel() {
           <button
             onClick={() => setTab('projects')}
             className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-              tab === 'projects' ? 'border-[#1a472a] text-[#1a472a]' : 'border-transparent text-muted-foreground hover:text-foreground'
+              tab === 'projects' ? 'border-[hsl(var(--brand-700))] text-[hsl(var(--brand-700))]' : 'border-transparent text-muted-foreground hover:text-foreground'
             }`}
           >
             <FolderKanban className="w-4 h-4" />
@@ -613,14 +613,14 @@ export default function BrandingTeamPanel() {
           {/* Date filter + summary */}
           <div className="flex items-center gap-3 flex-wrap">
             <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-2">
-              <CalendarDays className="w-4 h-4 shrink-0" style={{ color: '#52b788' }} />
+              <CalendarDays className="w-4 h-4 shrink-0" style={{ color: 'hsl(var(--brand-400))' }} />
               <input
                 type="date"
                 max={todayIso()}
                 value={filterDate}
                 onChange={e => setFilterDate(e.target.value)}
                 className="text-sm bg-transparent outline-none cursor-pointer"
-                style={{ color: '#1a472a' }}
+                style={{ color: 'hsl(var(--brand-700))' }}
               />
             </div>
             {statusLoading ? (
@@ -832,7 +832,7 @@ function MemberGroup({
   if (items.length === 0) return null
   return (
     <div>
-      <p className="text-[11px] font-bold uppercase tracking-widest mb-4 px-1" style={{ color: '#52b788' }}>{label}</p>
+      <p className="text-[11px] font-bold uppercase tracking-widest mb-4 px-1" style={{ color: 'hsl(var(--brand-400))' }}>{label}</p>
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
         {items.map(m => {
           const status = statuses.find(s => s.user_id === m.id)
@@ -840,7 +840,7 @@ function MemberGroup({
           const isSelf = m.id === currentUserId
           const initials = (m.full_name || m.email).slice(0, 2).toUpperCase()
           return (
-            <div key={m.id} className={`bg-white rounded-2xl border shadow-sm overflow-hidden flex flex-col ${isSelf ? 'border-[#1a472a] ring-2 ring-[#1a472a]/10' : 'border-gray-100'}`}>
+            <div key={m.id} className={`bg-white rounded-2xl border shadow-sm overflow-hidden flex flex-col ${isSelf ? 'border-[hsl(var(--brand-700))] ring-2 ring-[hsl(var(--brand-700))]/10' : 'border-gray-100'}`}>
               {/* Avatar area — full-width cover */}
               <div className="h-56 overflow-hidden rounded-t-2xl">
                 {m.avatar_url ? (
@@ -848,7 +848,7 @@ function MemberGroup({
                 ) : (
                   <div
                     className="w-full h-full flex items-center justify-center text-3xl font-bold text-white"
-                    style={{ background: isLead ? 'linear-gradient(135deg, #1a472a, #2d6a4f)' : 'linear-gradient(135deg, #2d6a4f, #52b788)' }}
+                    style={{ background: isLead ? 'linear-gradient(135deg, hsl(var(--brand-700)), hsl(var(--brand-600)))' : 'linear-gradient(135deg, hsl(var(--brand-600)), hsl(var(--brand-400)))' }}
                   >
                     {initials}
                   </div>
@@ -864,7 +864,7 @@ function MemberGroup({
                     <Check className="w-2.5 h-2.5 text-white" />
                   </span>
                   {isSelf && (
-                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md text-white shrink-0" style={{ background: '#1a472a' }}>You</span>
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md text-white shrink-0" style={{ background: 'hsl(var(--brand-700))' }}>You</span>
                   )}
                 </div>
 
@@ -880,7 +880,7 @@ function MemberGroup({
                       defaultValue={m.managed_by ?? ''}
                       onChange={e => void onAssign(m.id, e.target.value || null)}
                       className="w-full text-[11px] px-2 py-1 rounded-lg border border-gray-200 bg-gray-50 focus:border-green-600 focus:outline-none cursor-pointer"
-                      style={{ color: m.managed_by ? '#1a472a' : '#9ca3af' }}
+                      style={{ color: m.managed_by ? 'hsl(var(--brand-700))' : '#9ca3af' }}
                     >
                       <option value="">Unassigned</option>
                       {teamLeads.map(lead => (
@@ -1007,9 +1007,9 @@ function ProjectCard({
             <div className="flex flex-wrap gap-2">
               {assignedMembers.map(m => (
                 <div key={m.id} className="flex items-center gap-1.5 px-2.5 py-1 rounded-full" style={{ background: 'rgba(26,71,42,0.08)' }}>
-                  <Check className="w-3 h-3" style={{ color: '#1a472a' }} />
-                  <span className="text-xs font-medium" style={{ color: '#1a472a' }}>{m.full_name || m.email}</span>
-                  <span className="text-[10px]" style={{ color: '#52b788' }}>
+                  <Check className="w-3 h-3" style={{ color: 'hsl(var(--brand-700))' }} />
+                  <span className="text-xs font-medium" style={{ color: 'hsl(var(--brand-700))' }}>{m.full_name || m.email}</span>
+                  <span className="text-[10px]" style={{ color: 'hsl(var(--brand-400))' }}>
                     {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : m.role === 'task_manager' ? 'Task Manager' : 'Member'}
                   </span>
                 </div>
@@ -1140,20 +1140,20 @@ function LiveReportsView({
       {/* Date + live indicator */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-2">
-          <CalendarDays className="w-4 h-4 shrink-0" style={{ color: '#52b788' }} />
+          <CalendarDays className="w-4 h-4 shrink-0" style={{ color: 'hsl(var(--brand-400))' }} />
           <input
             type="date"
             max={todayIso()}
             value={date}
             onChange={e => setDate(e.target.value)}
             className="text-sm bg-transparent outline-none cursor-pointer"
-            style={{ color: '#1a472a' }}
+            style={{ color: 'hsl(var(--brand-700))' }}
           />
         </div>
-        <span className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full" style={{ background: 'rgba(82,183,136,0.15)', color: '#1a472a' }}>
+        <span className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full" style={{ background: 'rgba(82,183,136,0.15)', color: 'hsl(var(--brand-700))' }}>
           <span className="relative inline-flex w-2 h-2">
-            <span className="absolute inline-flex w-full h-full rounded-full opacity-75 animate-ping" style={{ background: '#52b788' }} />
-            <span className="relative inline-flex w-2 h-2 rounded-full" style={{ background: '#52b788' }} />
+            <span className="absolute inline-flex w-full h-full rounded-full opacity-75 animate-ping" style={{ background: 'hsl(var(--brand-400))' }} />
+            <span className="relative inline-flex w-2 h-2 rounded-full" style={{ background: 'hsl(var(--brand-400))' }} />
           </span>
           Live · refreshes every 30s
         </span>
@@ -1164,7 +1164,7 @@ function LiveReportsView({
         )}
         <button
           onClick={() => void refresh()}
-          className="text-xs font-semibold px-3 py-1.5 rounded-full border border-gray-200 hover:border-[#52b788] hover:text-[#1a472a] transition-colors"
+          className="text-xs font-semibold px-3 py-1.5 rounded-full border border-gray-200 hover:border-[hsl(var(--brand-400))] hover:text-[hsl(var(--brand-700))] transition-colors"
         >
           Refresh now
         </button>
@@ -1191,11 +1191,11 @@ function LiveReportsView({
                   className="w-full flex items-center justify-between gap-3 text-left"
                 >
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold shrink-0" style={{ background: '#1a472a' }}>
+                    <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold shrink-0" style={{ background: 'hsl(var(--brand-700))' }}>
                       {(m.full_name || m.email)[0]?.toUpperCase() ?? '?'}
                     </div>
                     <div className="min-w-0">
-                      <p className="text-sm font-semibold truncate" style={{ color: '#1a472a' }}>
+                      <p className="text-sm font-semibold truncate" style={{ color: 'hsl(var(--brand-700))' }}>
                         {m.full_name || m.email}
                       </p>
                       <p className="text-xs text-muted-foreground truncate">{m.email}</p>
@@ -1203,8 +1203,8 @@ function LiveReportsView({
                   </div>
                   <div className="flex items-center gap-3 shrink-0">
                     <span className={`hub-badge ${status.cls}`}>{status.label}</span>
-                    <span className="flex items-center gap-1 text-xs font-semibold" style={{ color: '#1a472a' }}>
-                      <Clock className="w-3.5 h-3.5" style={{ color: '#52b788' }} />
+                    <span className="flex items-center gap-1 text-xs font-semibold" style={{ color: 'hsl(var(--brand-700))' }}>
+                      <Clock className="w-3.5 h-3.5" style={{ color: 'hsl(var(--brand-400))' }} />
                       {hrs} hrs
                     </span>
                     <span className="text-xs text-muted-foreground">
@@ -1223,7 +1223,7 @@ function LiveReportsView({
                     ) : (
                       <table className="w-full text-sm">
                         <thead>
-                          <tr className="text-xs border-b border-gray-100" style={{ color: '#1a472a' }}>
+                          <tr className="text-xs border-b border-gray-100" style={{ color: 'hsl(var(--brand-700))' }}>
                             <th className="text-left pb-2 font-bold w-8 pr-2">#</th>
                             <th className="text-left pb-2 font-bold pr-2">Type</th>
                             <th className="text-left pb-2 font-bold pr-2">Specific Work</th>
@@ -1314,7 +1314,7 @@ function CommentThread({
             <li key={c.id} className="rounded-lg px-2.5 py-1.5" style={{ background: 'rgba(82,183,136,0.10)' }}>
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="text-[11px] font-semibold" style={{ color: '#1a472a' }}>
+                  <p className="text-[11px] font-semibold" style={{ color: 'hsl(var(--brand-700))' }}>
                     {c.author_name}
                     <span className="text-gray-400 font-normal ml-1.5">
                       {new Date(c.created_at).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}
@@ -1345,14 +1345,14 @@ function CommentThread({
           value={draft}
           onChange={e => setDraft(e.target.value)}
           placeholder="Leave feedback…"
-          className="flex-1 min-w-0 text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 outline-none focus:border-[#52b788]"
+          className="flex-1 min-w-0 text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 outline-none focus:border-[hsl(var(--brand-400))]"
           aria-label={`Comment on row ${rowId}`}
         />
         <button
           type="submit"
           disabled={!draft.trim() || sending}
           className="p-1.5 rounded-lg text-white disabled:opacity-40"
-          style={{ background: '#1a472a' }}
+          style={{ background: 'hsl(var(--brand-700))' }}
           title="Post comment"
         >
           {sending ? <Clock className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
