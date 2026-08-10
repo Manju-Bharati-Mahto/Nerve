@@ -74,7 +74,7 @@ import {
   POST_TYPES as OUTREACH_POST_TYPES,
   POST_STATUSES as OUTREACH_POST_STATUSES,
 } from "./outreach-db.js";
-import { syncOutreach, addLivePosts, maybeRunScheduledSync, refreshLivePostMetrics } from "./outreach-sync.js";
+import { syncOutreach, addLivePosts, refreshLivePostMetrics } from "./outreach-sync.js";
 import { verifyPassword } from "./password.js";
 import {
   bootstrapBrandingDatabase,
@@ -2812,12 +2812,6 @@ bootstrapDatabase()
       autoPauseRunningStopwatches()
         .then(n => { if (n > 0) console.log(`Auto-paused ${n} overdue running stopwatch(es).`); })
         .catch(e => console.error('Periodic auto-pause failed:', e));
-      // Outreach metrics auto-refresh at 9:00 AM and 5:00 PM IST. Self-gated so
-      // it fires at most once per slot per day; the manual "Sync now" button is
-      // unaffected. (Spec: Data & Sync Behaviour → Automatic Data Refresh.)
-      maybeRunScheduledSync()
-        .then(r => { if (r) console.log(`Outreach auto-sync (${r.slot} IST): ${r.result.synced_pages} pages, ${r.result.upserted_posts} posts, ${r.result.refreshed_live_posts} live posts refreshed.`); })
-        .catch(e => console.error('Outreach auto-sync failed:', e));
       runMediaOpsAutomations()
         .then(r => { if (r.autoApproved || r.notified) console.log(`Media Ops automations: ${r.autoApproved} report(s) auto-approved, ${r.notified} notification(s) queued.`); })
         .catch(e => console.error('Media Ops automations failed:', e));

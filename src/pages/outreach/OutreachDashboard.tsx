@@ -61,7 +61,8 @@ export default function OutreachDashboard() {
     try {
       const result = await syncNow()
       // Manual sync re-pulls profile data (followers + recent posts). The paid
-      // per-post live-post re-scrape runs only on the 9AM/5PM scheduled syncs.
+      // per-post live-post re-scrape has its own manual trigger (refresh-reach);
+      // there is no scheduled auto-sync — syncing is manual only.
       setSyncMsg(`Synced ${result.synced_pages} page${result.synced_pages === 1 ? '' : 's'}`)
     } catch (err) {
       setSyncErr(err instanceof Error ? err.message : 'Sync failed.')
@@ -236,7 +237,6 @@ export default function OutreachDashboard() {
                 ? `Last synced ${formatRelative(mostRecentSync)}`
                 : 'Not synced yet'}
             {syncMsg && !syncErr && <span className="text-emerald-600"> · {syncMsg}</span>}
-            <span className="hidden sm:inline"> · auto-syncs 9 AM & 5 PM IST</span>
           </span>
         </div>
       </div>
