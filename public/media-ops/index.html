@@ -2270,7 +2270,7 @@ const hasDuty = (code,uid=S.me)=>duties(uid).includes(code);
 /* team scope: users a TL owns */
 function myTeamIds(uid=S.me){
   const u=user(uid);
-  if(u.role==='admin') return DB.users.map(x=>x.id);
+  if(u.role==='admin') return DB.users.filter(x=>x.is_active).map(x=>x.id);
   if(u.role==='team_lead'){
     /* A lead normally runs one team, but Admin may override that (§7), so gather
        every team they lead rather than just the first. */
@@ -6533,6 +6533,80 @@ function roleGroups(users){
     .sort((a,b)=>a.meta.rank-b.meta.rank||a.meta.p.localeCompare(b.meta.p));
 }
 
+/* The removal confirmation. Two shapes, decided by whether the member is
+   actually holding anything:
+     · nothing active  → a plain confirm
+     · active work     → the work is itemised, reassignment is offered, and
+                         removal requires the word REMOVE to be typed
+   Either way the Admin can proceed: active work informs the decision, it never
+   blocks it. */
+function renderRemoveModal(uid,impact){
+  const u=user(uid);
+  const a=(impact&&impact.active)||{projects:0,deliverables:0,reviews:0,assignments:0};
+  const hist=(impact&&impact.history)||{reports:0,audit_entries:0};
+  const led=(impact&&impact.leads_teams)||[];
+  const hot=!!(impact&&impact.has_active_work);
+  /* Anyone still active is a candidate to take the work on. */
+  const others=DB.users.filter(x=>x.is_active&&x.id!==uid)
+    .sort((x,y)=>x.full_name.localeCompare(y.full_name));
+  const leadPool=others.filter(x=>['team_lead','admin'].includes(x.role));
+  const row=(l,n)=>`<div class="between small" style="padding:3px 0">
+    <span>${esc(l)}</span><span class="chip ${n?'warnchip':''}">${n}</span></div>`;
+
+  modal(`<div class="mo-head"><div>
+      <h2>${hot?'Force remove':'Remove'} ${esc(u.full_name)}?</h2>
+      <p>This removes their account and access to Nerve.
+        ${hist.reports||hist.audit_entries?`Their history stays: <b>${hist.reports}</b> daily report(s)
+          and <b>${hist.audit_entries}</b> audit entr${hist.audit_entries===1?'y':'ies'} remain, and their name keeps
+          rendering on everything they did.`:'They have no historical records yet.'}</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      ${hot?`<div class="note warn mb3"><b>This member has active work.</b>
+        Removing the account does not delete any of it — but nobody will own it unless you reassign it first.</div>
+        <div class="card mb3"><div class="card-head"><h3>Active work</h3></div><div class="card-body">
+          ${row('Projects owned',a.projects)}
+          ${row('Open deliverables',a.deliverables)}
+          ${row('Versions awaiting review',a.reviews)}
+          ${row('Upcoming assignments',a.assignments)}
+        </div></div>
+        <div class="field"><label class="lbl">Reassign active work to <span class="mut3">(optional)</span></label>
+          <select class="inp" id="rm-reassign"><option value="">— leave it unassigned —</option>
+            ${others.map(x=>`<option value="${x.id}">${esc(x.full_name)} · ${esc(roleMeta(x.role).l)}</option>`).join('')}</select>
+          <div class="hint">Moves their open projects and deliverables. Completed work is never touched.</div></div>`
+        :`<div class="note mb3">Nothing active is assigned to ${esc(u.full_name.split(' ')[0])}, so nothing needs reassigning.</div>`}
+
+      ${led.length?`<div class="card mb3" style="border-color:var(--warn)">
+        <div class="card-head"><h3>This user is currently a Team Lead</h3></div>
+        <div class="card-body">
+          ${led.map(t=>`<div class="between small" style="padding:3px 0">
+            <span><b>${esc(t.name)}</b> · ${t.members} member(s) · ${t.projects} project(s)</span></div>`).join('')}
+          <div class="field mt3"><label class="lbl">Hand the team to <span class="mut3">(optional)</span></label>
+            <select class="inp" id="rm-newlead"><option value="">— leave the team without a lead —</option>
+              ${leadPool.map(x=>`<option value="${x.id}">${esc(x.full_name)}</option>`).join('')}</select>
+            <div class="hint">The team, its members and its projects all survive either way. Without a replacement
+              it simply shows as <b>Lead unassigned</b> until you pick one.</div></div>
+        </div></div>`:''}
+
+      <div class="card"><div class="card-body">
+        <b class="small">What removal does</b>
+        <ul class="small mut" style="margin:6px 0 0 16px;line-height:1.7">
+          <li>revokes their sign-in immediately, including any open session</li>
+          <li>takes them out of the directory, team membership and every assignment picker</li>
+          <li><b>preserves all historical records</b> — reports, deliverables, reviews, comments, dispatch and audit</li>
+          <li>leaves their name on past work exactly as it reads today</li>
+        </ul>
+      </div></div>
+
+      ${hot?`<div class="field mt3"><label class="lbl">Type <b>REMOVE</b> to confirm <span class="req">*</span></label>
+        <input class="inp" id="rm-confirm" placeholder="REMOVE" autocomplete="off"
+          oninput="document.querySelector('[data-act=removeGo]').disabled=this.value.trim().toUpperCase()!=='REMOVE'"></div>`:''}
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn danger" data-act="removeGo" data-uid="${uid}" data-force="${hot?'1':'0'}" ${hot?'disabled':''}>
+        ${hot?'Force remove member':'Remove member'}</button></div>`,{size:'wide'});
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+}
+
 /* ── Directory — hierarchical organization view ─────────────────────────────
    Grouped by role, with the team each person belongs to read from Organization
    Management (teamOf), so a role or team change in the admin panel shows here
@@ -6540,11 +6614,15 @@ function roleGroups(users){
 function teamDirectory(){
   const f=S.filters.dir||(S.filters.dir={q:'',role:'all'});
   const q=f.q.trim().toLowerCase();
-  let people=DB.users.filter(u=>u.is_active);
+  /* The directory is a list of people you can work with, so it shows ACTIVE
+     members by default. Removed accounts stay reachable behind their own filter
+     — their history still references them and an Admin may want to restore one. */
+  const removed=DB.users.filter(u=>!u.is_active);
+  let people=f.role==='removed'?removed:DB.users.filter(u=>u.is_active);
   /* Quick filters: a role slug, or one of the two presence filters. */
   if(f.role==='unavailable') people=people.filter(u=>['leave','half_day'].includes(presence(u.id)));
   else if(f.role==='available') people=people.filter(u=>!['leave','half_day'].includes(presence(u.id)));
-  else if(f.role!=='all') people=people.filter(u=>u.role===f.role);
+  else if(f.role!=='all'&&f.role!=='removed') people=people.filter(u=>u.role===f.role);
   if(q) people=people.filter(u=>{
     const t=teamOf(u.id);
     return (u.full_name+' '+(u.designation||'')+' '+(u.email||'')+' '+(t?t.name:'')).toLowerCase().includes(q);
@@ -6556,7 +6634,8 @@ function teamDirectory(){
   const chips=[['all','All',DB.users.filter(u=>u.is_active).length],
     ...allRoles.map(g=>[g.role,g.meta.p,g.users.length]),
     ['available','Available',DB.users.filter(u=>u.is_active&&!['leave','half_day'].includes(presence(u.id))).length],
-    ['unavailable','Unavailable',DB.users.filter(u=>u.is_active&&['leave','half_day'].includes(presence(u.id))).length]];
+    ['unavailable','Unavailable',DB.users.filter(u=>u.is_active&&['leave','half_day'].includes(presence(u.id))).length],
+    ...(removed.length?[['removed','Removed',removed.length]]:[])];
 
   return `<div class="dir-bar">
       <div class="search-wrap dir-search">
@@ -6632,14 +6711,17 @@ function dirCard(u){
                <span class="${leads?'b':'mut3'}">${esc(t.name)}</span>
                ${leads?'<span class="chip" style="height:17px;padding:0 6px;font-size:9.5px">Lead</span>':''}`
             : '<span class="mut3">Unassigned</span>'}</span></div>
-        ${(can('admin.users')&&u.id!==S.me)?`<span class="icon-btn ml-auto" role="button" title="Remove member" style="color:var(--danger)"
+        ${(can('admin.users')&&u.id!==S.me&&u.is_active)?`<span class="icon-btn ml-auto" role="button" title="Remove member" style="color:var(--danger)"
           onclick="event.stopPropagation();event.preventDefault();ACTIONS.deleteCrew({uid:${u.id},name:'${esc((u.full_name||'').replace(/'/g,''))}'})">🗑</span>`:''}</div>
+      ${!u.is_active?`<div class="note mb2" style="padding:7px 10px;font-size:11.5px">
+        <b>Removed${u.deactivated_at?' '+D.fmt(u.deactivated_at):''}.</b> No access; their past work is unchanged.
+        ${can('admin.users')?`<button class="btn xs mt2" onclick="event.stopPropagation();event.preventDefault();ACTIONS.restoreCrew({uid:${u.id}})">Restore</button>`:''}</div>`:''}
       <div class="f wrap gap2 mb2">${sk.slice(0,3).map(s=>`<span class="tag">${esc((DB.skills.find(k=>k.id===s.skill_id)||{}).name)} ${'●'.repeat(s.proficiency)}</span>`).join('')}</div>
       ${dt.length?`<div class="f wrap gap2">${dt.map(d=>`<span class="chip sel">⚑ ${esc(DB.duty_flags.find(f=>f.id===d.duty_flag_id).name)}</span>`).join('')}</div>`:''}
       <div class="divider"></div>
       <div class="between small mut3"><span>${activeProjectsOf(u.id).length} projects</span>
         <span>${openDeliverables(u.id).length} open ◆</span><span>${consistency(u.id)}% consistency</span></div>
-      ${(can('admin.users')&&u.id!==S.me)?`<div class="mt3" onclick="event.stopPropagation();event.preventDefault()">
+      ${(can('admin.users')&&u.id!==S.me&&u.is_active)?`<div class="mt3" onclick="event.stopPropagation();event.preventDefault()">
         <div class="f gap2 ac"><select class="inp" style="height:32px;font-size:12px;flex:1" onchange="ACTIONS.changeRole({uid:${u.id},role:this.value})">
           ${ROLE_OPTIONS(u.role)}</select>
         <button class="btn xs" title="Module access" onclick="ACTIONS.editModules({uid:${u.id}})">⚿ Modules${Array.isArray(u.allowed_modules)?' ('+u.allowed_modules.length+')':''}</button></div></div>`:''}
@@ -7997,18 +8079,23 @@ function admUsers(){
         return `<tr><td><div class="f ac gap2">${avatar(u.id,'sm')}<div><div class="t-main">${esc(u.full_name)}</div>
           <div class="t-sub">${esc(u.email)}</div></div></div></td>
         <td class="mono small">${esc(u.nerve_user_id)}</td>
-        <td><span class="chip ${u.role==='admin'?'sel':''}">${({admin:'★ Admin',team_lead:'▲ Team Lead',employee:'● Employee'})[u.role]}</span></td>
+        <td><span class="chip ${u.role==='admin'?'sel':''}">${roleMeta(u.role).i} ${esc(roleMeta(u.role).l)}</span></td>
         <td class="small">${(()=>{const t=teamOf(u.id);return t?esc(t.name)+(t.lead_user_id===u.id?' · lead':''):'<span class="mut3">—</span>';})()}</td>
         <td>${DB.user_duties.filter(d=>d.user_id===u.id).map(d=>`<span class="chip sel">⚑ ${esc(DB.duty_flags.find(f=>f.id===d.duty_flag_id).name)}</span>`).join(' ')||'<span class="mut3">—</span>'}</td>
         <td class="small">${Array.isArray(u.allowed_modules)?`<button class="chip" onclick="ACTIONS.editModules({uid:${u.id}})" title="${esc(u.allowed_modules.join(', '))}">⚿ ${u.allowed_modules.length}</button>`:`<button class="chip" onclick="ACTIONS.editModules({uid:${u.id}})">All (role)</button>`}</td>
         <td class="small">${esc((DB.campuses.find(c=>c.id===u.campus_id)||{code:'—'}).code)}</td>
         <td class="num">${held||'—'}</td>
-        <td>${u.is_active?'<span class="status st-success"><span class="si">✓</span>Active</span>':'<span class="status st-neutral"><span class="si">—</span>Inactive</span>'}</td>
+        <td>${u.is_active?'<span class="status st-success"><span class="si">✓</span>Active</span>'
+          :`<span class="status st-neutral"><span class="si">⛁</span>${esc(titleCase(u.status||'inactive'))}</span>`}</td>
         <td class="num nowrap"><button class="btn xs" data-act="editCrew" data-uid="${u.id}">Edit</button>
           <button class="btn xs" data-act="manageDuties" data-uid="${u.id}">Duties</button>
-          <button class="btn xs ghost" data-act="deactivateUser" data-uid="${u.id}">Deactivate</button></td></tr>`;}).join('')}
+          ${u.is_active
+            ? `<button class="btn xs ghost" data-act="deleteCrew" data-uid="${u.id}" data-name="${esc(u.full_name)}">Remove</button>`
+            : `<button class="btn xs" data-act="restoreCrew" data-uid="${u.id}">Restore</button>`}</td></tr>`;}).join('')}
       </tbody></table></div></div>
-    <div class="card-foot">Deactivation is blocked while a user holds equipment — the error lists the items (VR-10 / AC-15).</div></div>
+    <div class="card-foot">Removing a member revokes their access and takes them out of every active list.
+      Their history — reports, deliverables, reviews and audit entries — is kept, and their name keeps rendering on it.
+      A removed account can be restored, but its password is not: they get a fresh one.</div></div>
 
   <div class="grid g2">
     <div class="card"><div class="card-head"><h3>Duty flags</h3>${reqid('D4','Not a fourth role')}</div>
@@ -11069,9 +11156,45 @@ const ACTIONS = {
       .then(()=>{closeModal();toast('Password updated — use it next sign-in','ok');})
       .catch(e=>toast('Could not update: '+e.message,'bad'));
   },
+  /* ---- Remove a member ---------------------------------------------------
+     Removal takes the ACCOUNT out of service; it never deletes the person's
+     work. Active work is shown so the Admin decides with the facts in front of
+     them, and reassigning it is offered but never required. */
   deleteCrew:(d)=>{
-    if(!confirm('Remove '+(d.name||'this member')+' from the Media crew? This deletes their Nerve account.'))return;
-    moSync(MO_API.del('/crew/'+ruid(+d.uid)), ()=>{render();toast('Member removed','ok');});
+    const uid=+d.uid, u=user(uid);
+    modal(`<div class="mo-head"><div><h2>Remove ${esc(u.full_name)}?</h2>
+        <p>Checking what they currently hold…</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><div class="empty" style="padding:26px"><p>Loading…</p></div></div>`);
+    MO_API.get('/crew/'+ruid(uid)+'/impact')
+      .then(i=>renderRemoveModal(uid,i))
+      .catch(()=>renderRemoveModal(uid,null));
+  },
+  removeGo:(d)=>{
+    const uid=+d.uid;
+    const name=user(uid).full_name;
+    /* Force removal requires the word to be typed — the guard exists so a
+       members-with-active-work removal cannot happen on a mis-click. */
+    if(d.force==='1'){
+      const typed=($('#rm-confirm')||{}).value||'';
+      if(typed.trim().toUpperCase()!=='REMOVE'){toast('Type REMOVE to confirm','bad');return;}
+    }
+    const body={force:d.force==='1'};
+    const re=$('#rm-reassign'); if(re&&re.value)body.reassign_to=ruid(+re.value);
+    const nl=$('#rm-newlead');  if(nl&&nl.value)body.new_lead=ruid(+nl.value);
+    closeModal();
+    moSync(MO_API.req('DELETE','/crew/'+ruid(uid),body).then(()=>hydrateFromServer()),
+      (r)=>{render();
+        const bits=[name+' removed'];
+        if(r&&r.reassigned)bits.push(r.reassigned+' item(s) reassigned');
+        if(r&&r.teams_unassigned&&r.teams_unassigned.length&&!(r&&r.new_lead))
+          bits.push(r.teams_unassigned.map(t=>t.name).join(', ')+' now has no lead');
+        toast(bits.join(' · '),'ok');});
+  },
+  restoreCrew:(d)=>{
+    const uid=+d.uid;
+    moSync(MO_API.post('/crew/'+ruid(uid)+'/restore',{}).then(()=>hydrateFromServer()),
+      ()=>{render();toast(user(uid).full_name+' restored — they will need a new password','ok');});
   },
   editCrew:(d)=>{
     const u=user(+d.uid);

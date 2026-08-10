@@ -818,6 +818,29 @@ export async function bootstrapMediaOpsDatabase() {
       status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved'))
     )`);
 
+  // ═══════════ ACCOUNT LIFECYCLE — removal without data loss ════════════════
+  // 93 foreign keys point at users(id): reports, deliverable versions, reviews,
+  // comments, audit rows, dispatch records. A hard DELETE is therefore rejected
+  // by the database, which is why removing a member used to fail with
+  // "reassign their work first".
+  //
+  // Keeping the row and moving the ACCOUNT through a lifecycle solves that
+  // properly: every historical reference still resolves, so "Delivered by Manav
+  // Trivedi" keeps rendering the real name for ever. Nulling those FKs and
+  // snapshotting names would lose exactly that, across 93 relationships.
+  //
+  //   active   — normal account
+  //   inactive — removed from operational use, could be restored
+  //   archived — removed by an Admin; cannot log in, history retained
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'`);
+  await pool.query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_check`);
+  await pool.query(`ALTER TABLE users ADD CONSTRAINT users_status_check
+                    CHECK (status IN ('active','inactive','archived'))`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivated_by TEXT REFERENCES users(id)`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivation_reason TEXT`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_status ON users(status) WHERE status <> 'active'`);
+
   // ═══════════ MEDIA OPERATIONS COORDINATOR (§ operations role) ═════════════
   // A dedicated media-department role that owns the first and last stages of a
   // project: intake → clarification → conversion, then dispatch → archive.

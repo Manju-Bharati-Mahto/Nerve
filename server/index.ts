@@ -350,7 +350,11 @@ const otpVerifyLimiter = rateLimit({
 
 async function getSessionUser(req: SessionRequest) {
   if (!req.session.userId) return null;
-  return getUserById(req.session.userId);
+  const u = await getUserById(req.session.userId);
+  // Removal takes effect immediately, not at next sign-in: an Admin who removes
+  // someone mid-session must not leave that session usable.
+  if (u && (u as { status?: string }).status && (u as { status?: string }).status !== "active") return null;
+  return u;
 }
 
 function isBrandingManager(role: AppRole, team: string | null) {
@@ -387,6 +391,12 @@ app.post("/api/auth/login", loginLimiter, asyncHandler(async (req, res) => {
 
   const valid = await verifyPassword(parsed.data.password, user.password_hash);
   if (!valid) return sendError(res, 401, "Invalid email or password.");
+
+  // A removed account cannot sign in. Deliberately the same generic message as a
+  // bad password: whether an account still exists is not something an anonymous
+  // caller should be able to probe.
+  if ((user as { status?: string }).status && (user as { status?: string }).status !== "active")
+    return sendError(res, 401, "Invalid email or password.");
 
   // Check email verification if enabled
   const emailVerificationRequired = (await getSetting("auth.email_verification")) === "true";

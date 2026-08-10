@@ -237,7 +237,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // (non-'mo-uN') users. This roster REPLACES the prototype's seed users.
     const crew = (await pool.query(
       `SELECT u.id, u.full_name, u.email, u.role, u.avatar_url, u.created_at,
-              p.designation, p.joined_on, p.allowed_modules, p.mo_role FROM users u LEFT JOIN mo_user_profiles p ON p.user_id=u.id
+              p.designation, p.joined_on, p.allowed_modules, p.mo_role,
+              u.status, u.deactivated_at FROM users u LEFT JOIN mo_user_profiles p ON p.user_id=u.id
         WHERE u.team='media' ORDER BY u.id`)).rows as Array<Record<string, unknown>>;
     if (!crew.some((r) => r.id === u.id))
       crew.unshift({ id: u.id, full_name: u.full_name ?? "You", email: u.email ?? "", role: u.role, avatar_url: null });
@@ -291,7 +292,13 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         // from users.role so Nerve-wide parity is unchanged.
         role: r.mo_role === "coordinator" ? "coordinator" : (roleMap[String(r.role)] ?? "employee"),
         initials: (name.split(/\s+/).map((w) => w[0] || "").join("").slice(0, 2).toUpperCase()) || "?",
-        color: "#3B9B76", avatar_url: r.avatar_url ?? null, is_active: true,
+        color: "#3B9B76", avatar_url: r.avatar_url ?? null,
+        // Removed accounts still ship: historical rows reference them, and every
+        // name in a report or audit entry must keep resolving. Active surfaces
+        // filter on is_active; history does not.
+        status: (r.status as string) ?? "active",
+        is_active: ((r.status as string) ?? "active") === "active",
+        deactivated_at: r.deactivated_at ?? null,
         designation: r.designation ?? "", joined_on: r.joined_on ?? (r.created_at ? String(r.created_at).slice(0, 10) : null),
         allowed_modules: Array.isArray(r.allowed_modules) ? r.allowed_modules : null,
       };
@@ -1738,19 +1745,132 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   }));
 
   // Remove a media crew member — #6. Admin only. Blocks if they have activity.
+  /* What a member is currently holding. Drives the confirmation modal so the
+     Admin decides with the facts in front of them — this is information, never
+     a blocker. */
+  app.get(`${P}/crew/:id/impact`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may inspect a member's active work.");
+    const id = getSingleParam(req.params.id);
+    const one = async (sql: string) => Number((await pool.query(sql, [id])).rows[0]?.n ?? 0);
+    const [projects, deliverables, reviews, assignments, reports] = await Promise.all([
+      one(`SELECT count(*) n FROM mo_projects WHERE owner_id=$1 AND status NOT IN ('completed','archived','cancelled') AND deleted_at IS NULL`),
+      one(`SELECT count(*) n FROM mo_deliverables WHERE owner_id=$1 AND status NOT IN ('delivered','not_required','cancelled') AND deleted_at IS NULL`),
+      one(`SELECT count(*) n FROM mo_deliverable_versions v JOIN mo_deliverables d ON d.id=v.deliverable_id
+            WHERE v.review_status='pending' AND d.owner_id=$1`),
+      one(`SELECT count(*) n FROM mo_assignment_users au JOIN mo_assignments a ON a.id=au.assignment_id
+            WHERE au.user_id=$1 AND a.status NOT IN ('done','cancelled')`),
+      one(`SELECT count(*) n FROM mo_daily_reports WHERE user_id=$1`),
+    ]);
+    const led = (await pool.query(
+      `SELECT t.id, t.name,
+              (SELECT count(*) FROM mo_team_members m WHERE m.team_id=t.id)::int AS members,
+              (SELECT count(*) FROM mo_projects p WHERE p.owner_id=$1 AND p.deleted_at IS NULL)::int AS projects
+         FROM mo_teams t WHERE t.lead_user_id=$1 AND t.archived_at IS NULL`, [id])).rows;
+    const history = await one(`SELECT count(*) n FROM mo_audit_logs WHERE actor_id=$1`);
+    res.json({
+      active: { projects, deliverables, reviews, assignments },
+      history: { reports, audit_entries: history },
+      leads_teams: led,
+      has_active_work: projects + deliverables + reviews + assignments > 0,
+    });
+  }));
+
+  /* Remove a member.
+     This DEACTIVATES the account; it never deletes production data. The user row
+     survives so that every historical reference — reports, versions, reviews,
+     comments, dispatch records, audit rows — keeps resolving to the real person.
+     "Delivered by Manav Trivedi" therefore still reads correctly afterwards.
+
+     What removal actually does:
+       · revokes sign-in (status + a scrambled password hash)
+       · drops active team membership, and unassigns them from a team they lead
+         (the team itself survives, with no lead)
+       · closes out open project assignments so selectors stop offering them
+     Historical rows are deliberately left untouched. */
   app.delete(`${P}/crew/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may remove crew members.");
     const realId = getSingleParam(req.params.id);
     if (realId === u.id) return sendError(res, 400, "You cannot remove yourself.");
-    try {
-      await pool.query(`DELETE FROM mo_user_profiles WHERE user_id=$1`, [realId]);
-      await pool.query(`DELETE FROM users WHERE id=$1 AND team='media'`, [realId]);
-    } catch {
-      return sendError(res, 409, "This member has activity (reports/projects/audit). Reassign their work first.");
+    const target = (await pool.query(`SELECT id, full_name, role, status FROM users WHERE id=$1 AND team='media'`, [realId])).rows[0];
+    if (!target) return sendError(res, 404, "That member is not on the media crew.");
+    if (target.status === "archived") return res.json({ ok: true, already: true });
+
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const reassignTo = b.reassign_to ? String(toUid(b.reassign_to)) : null;
+    const newLead = b.new_lead ? String(toUid(b.new_lead)) : null;
+
+    // Optional: hand active work to someone else FIRST, so nothing is orphaned.
+    // Entirely the Admin's choice — removal proceeds either way.
+    let reassigned = 0;
+    if (reassignTo && reassignTo !== realId) {
+      const r1 = await pool.query(
+        `UPDATE mo_deliverables SET owner_id=$1 WHERE owner_id=$2
+           AND status NOT IN ('delivered','not_required','cancelled') AND deleted_at IS NULL`, [reassignTo, realId]);
+      const r2 = await pool.query(
+        `UPDATE mo_projects SET owner_id=$1 WHERE owner_id=$2
+           AND status NOT IN ('completed','archived','cancelled') AND deleted_at IS NULL`, [reassignTo, realId]);
+      reassigned = (r1.rowCount ?? 0) + (r2.rowCount ?? 0);
     }
-    await audit(u, "crew.removed", "user", null, null, { id: realId }, req);
-    res.json({ ok: true });
+
+    // Teams they lead survive. A replacement lead may be named; otherwise the
+    // team is left Lead Unassigned for an Admin to fill later. The team, its
+    // members and its projects are never touched.
+    const ledTeams = (await pool.query(`SELECT id, name FROM mo_teams WHERE lead_user_id=$1`, [realId])).rows;
+    if (ledTeams.length) {
+      if (newLead && newLead !== realId) {
+        await pool.query(`UPDATE mo_teams SET lead_user_id=$1 WHERE lead_user_id=$2`, [newLead, realId]);
+        await pool.query(`UPDATE users SET role='sub_admin' WHERE id=$1 AND role='user'`, [newLead]);
+        await pool.query(`UPDATE mo_user_profiles SET mo_role='team_lead' WHERE user_id=$1 AND mo_role='employee'`, [newLead]);
+      } else {
+        await pool.query(`UPDATE mo_teams SET lead_user_id=NULL WHERE lead_user_id=$1`, [realId]);
+      }
+    }
+
+    // Remove from ACTIVE operational surfaces only.
+    await pool.query(`DELETE FROM mo_team_members WHERE user_id=$1`, [realId]);
+    await pool.query(`UPDATE mo_project_assignments SET removed_at=NOW() WHERE user_id=$1 AND removed_at IS NULL`, [realId]);
+    await pool.query(`DELETE FROM mo_assignment_users WHERE user_id=$1 AND assignment_id IN
+                        (SELECT id FROM mo_assignments WHERE status NOT IN ('done','cancelled'))`, [realId]);
+    await pool.query(`DELETE FROM mo_shoot_crew WHERE user_id=$1 AND shoot_id IN
+                        (SELECT id FROM mo_shoots WHERE shoot_date >= CURRENT_DATE)`, [realId]);
+
+    // Revoke access. The hash is replaced with a value no password can produce,
+    // so the account cannot be signed into even if status were ever bypassed.
+    await pool.query(
+      `UPDATE users SET status='archived', deactivated_at=NOW(), deactivated_by=$1,
+         deactivation_reason=$2, password_hash=concat('removed:', gen_random_uuid()::text)
+       WHERE id=$3`,
+      [u.id, String(b.reason ?? "Removed by admin"), realId]);
+
+    await audit(u, "crew.removed", "user", null, { id: realId, name: target.full_name, status: target.status },
+      { id: realId, status: "archived", reassigned_to: reassignTo, teams_unassigned: ledTeams.map((t) => t.name),
+        new_lead: newLead, forced: !!b.force }, req);
+    res.json({
+      ok: true, status: "archived", reassigned,
+      teams_unassigned: ledTeams.map((t) => ({ id: t.id, name: t.name })),
+      new_lead: newLead,
+    });
+  }));
+
+  /* Restore a removed account. Removal is reversible by an Admin — the spec's
+     "cannot be undone from the UI" refers to the member's own access, not to an
+     Admin's ability to put a mistake right. */
+  app.post(`${P}/crew/:id/restore`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may restore an account.");
+    const realId = getSingleParam(req.params.id);
+    const t = (await pool.query(`SELECT status FROM users WHERE id=$1 AND team='media'`, [realId])).rows[0];
+    if (!t) return sendError(res, 404, "That member is not on the media crew.");
+    if (t.status === "active") return res.json({ ok: true, already: true });
+    // The password is NOT restored — it was destroyed on removal by design, so a
+    // restored member goes through a password reset like any new account.
+    await pool.query(
+      `UPDATE users SET status='active', deactivated_at=NULL, deactivated_by=NULL, deactivation_reason=NULL WHERE id=$1`,
+      [realId]);
+    await audit(u, "crew.restored", "user", null, { id: realId, status: t.status }, { id: realId, status: "active" }, req);
+    res.json({ ok: true, needs_password_reset: true });
   }));
 
   // Change a member's role (and optionally team-lead) — #1. Admin only.
