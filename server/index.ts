@@ -220,6 +220,12 @@ app.get("/casting/register/:token", (_req, res) => {
   res.setHeader("X-Frame-Options", "DENY");
   res.sendFile(path.resolve("public/casting/index.html"));
 });
+// External media request portal — same pattern, same guarantees.
+app.use("/request", express.static(path.resolve("public/request")));
+app.get("/request/new/:token", (_req, res) => {
+  res.setHeader("X-Frame-Options", "DENY");
+  res.sendFile(path.resolve("public/request/index.html"));
+});
 
 app.use(express.json());
 

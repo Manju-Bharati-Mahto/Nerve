@@ -1200,6 +1200,57 @@ export async function bootstrapMediaOpsDatabase() {
                     REFERENCES mo_casting_requests(id) ON DELETE SET NULL`);
   await pool.query(`ALTER TABLE mo_casting_records ADD COLUMN IF NOT EXISTS applicant_email TEXT`);
 
+  // ═════════ EXTERNAL MEDIA REQUEST INTAKE (§ external intake door) ═════════
+  // The same intake door pattern as external casting, pointed at Request Intake.
+  // Critically ONE database (§51): an external submission is an ordinary
+  // mo_requests row with source='external'. Manual "+ New Request" is unchanged
+  // and writes the same table, so conversion, filtering, reporting and audit
+  // never fragment.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_request_links (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      token TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      allowed_domain TEXT NOT NULL DEFAULT 'paruluniversity.ac.in',
+      active_from DATE,
+      expires_on DATE,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_by TEXT REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_request_links_token ON mo_request_links(token)`);
+
+  const REQ_EXT: Array<[string, string]> = [
+    ["source", "TEXT NOT NULL DEFAULT 'manual'"],
+    ["link_id", "BIGINT REFERENCES mo_request_links(id) ON DELETE SET NULL"],
+    // The VERIFIED Google identity, kept apart from the editable contact fields
+    // so the person who actually submitted can never be edited away.
+    ["requester_email", "TEXT"],
+    ["requester_name", "TEXT"],
+    ["requirement_types", "JSONB NOT NULL DEFAULT '[]'::jsonb"],
+    ["end_time", "TEXT"],
+    ["meeting_date", "DATE"],
+    ["meeting_time", "TEXT"],
+    ["meeting_notes", "TEXT"],
+    ["vendor_details", "TEXT"],
+    ["additional_notes", "TEXT"],
+    ["review_note", "TEXT"],
+    // When Operations first touched it — drives the overdue flag (§48).
+    ["first_touched_at", "TIMESTAMPTZ"],
+    ["submitted_ip", "TEXT"],
+  ];
+  for (const [c, t] of REQ_EXT)
+    await pool.query(`ALTER TABLE mo_requests ADD COLUMN IF NOT EXISTS "${c}" ${t}`);
+  await pool.query(`ALTER TABLE mo_requests DROP CONSTRAINT IF EXISTS mo_requests_source_check`);
+  await pool.query(`ALTER TABLE mo_requests ADD CONSTRAINT mo_requests_source_check
+                    CHECK (source IN ('manual','external'))`);
+  // §24 adds an explicit "under review" step between arrival and readiness.
+  await pool.query(`ALTER TABLE mo_requests DROP CONSTRAINT IF EXISTS mo_requests_status_check`);
+  await pool.query(`ALTER TABLE mo_requests ADD CONSTRAINT mo_requests_status_check
+                    CHECK (status IN ('new','under_review','needs_clarification','ready','converted','closed','rejected'))`);
+
   await seedMediaOpsLookups();
 }
 

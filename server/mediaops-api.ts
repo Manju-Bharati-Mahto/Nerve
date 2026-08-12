@@ -200,6 +200,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["saved_views", "mo_saved_views", null, ["user_id"]],
     // Operations Coordinator: intake + coordination logs.
     ["requests", "mo_requests", null, ["received_by", "converted_by", "lead_user_id"]],
+    ["request_links", "mo_request_links", null, ["created_by"]],
     ["meetings", "mo_meetings", null, ["logged_by"]],
     ["vendor_activities", "mo_vendor_activities", null, ["logged_by"]],
     ["followups", "mo_followups", null, ["owner_id"]],
@@ -2469,6 +2470,209 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   };
 
   // ── Request intake ────────────────────────────────────────────────────────
+  // ═════════ EXTERNAL MEDIA REQUEST INTAKE — the intake door ════════════════
+  // Identity verification, domain rules and abuse protection are the SAME layer
+  // the casting portal uses (verifyGoogleIdToken / devIdentity above) — one
+  // implementation, so the security story cannot diverge between the two doors.
+
+  const reqLinkOpen = (l: Record<string, unknown>): { ok: boolean; why?: string } => {
+    if (!l.is_active) return { ok: false, why: "This media request portal is currently unavailable. Please contact the Media Operations team for assistance." };
+    const today = new Date().toISOString().slice(0, 10);
+    if (l.active_from && String(l.active_from).slice(0, 10) > today)
+      return { ok: false, why: "This media request portal has not opened yet." };
+    if (l.expires_on && String(l.expires_on).slice(0, 10) < today)
+      return { ok: false, why: "This media request portal has closed." };
+    return { ok: true };
+  };
+
+  // ── PUBLIC: what the requester needs to render the form. Nothing internal.
+  app.get(`/api/v1/public/request/:token`, asyncHandler(async (req, res) => {
+    const token = getSingleParam(req.params.token);
+    const l = (await pool.query(`SELECT * FROM mo_request_links WHERE token=$1`, [token])).rows[0];
+    if (!l) return sendError(res, 404, "This media request link is not valid.");
+    const st = reqLinkOpen(l);
+    // The taxonomies come from the SAME master data the internal form uses (§9,
+    // §15) — no second, incompatible vocabulary for external requesters.
+    const units = (await pool.query(
+      `SELECT id, name FROM mo_academic_units WHERE is_active AND archived_at IS NULL ORDER BY sort_order, name`)).rows;
+    const delivTypes = (await pool.query(
+      `SELECT id, name FROM mo_deliverable_types WHERE archived_at IS NULL ORDER BY name`)).rows;
+    const workTypes = (await pool.query(
+      `SELECT id, name FROM mo_work_types WHERE is_active AND archived_at IS NULL ORDER BY sort_order, name`)).rows;
+    res.json({
+      portal: { name: l.name, description: l.description, allowed_domain: l.allowed_domain },
+      open: st.ok, message: st.why ?? null,
+      units, deliverable_types: delivTypes, work_types: workTypes,
+      google_client_id: process.env.GOOGLE_OAUTH_CLIENT_ID ?? null,
+      dev_identity: process.env.NODE_ENV !== "production" && process.env.ALLOW_DEV_CASTING_IDENTITY === "1"
+        && !process.env.GOOGLE_OAUTH_CLIENT_ID,
+    });
+  }));
+
+  /* PUBLIC: who am I, and what have I already asked for? Powers both the
+     prefilled contact details and the "My requests" list (§38) — which shows the
+     requester their OWN submissions and nothing else. */
+  app.post(`/api/v1/public/request/:token/me`, asyncHandler(async (req, res) => {
+    const token = getSingleParam(req.params.token);
+    const l = (await pool.query(`SELECT * FROM mo_request_links WHERE token=$1`, [token])).rows[0];
+    if (!l) return sendError(res, 404, "This media request link is not valid.");
+    const b = req.body as Record<string, unknown>;
+    const who = await verifyGoogleIdToken(String(b.id_token ?? "")) ?? devIdentity(b);
+    if (!who) return sendError(res, 401, "We could not verify that Google account. Please sign in again.");
+    const domain = String(l.allowed_domain).replace(/^@/, "");
+    if (!who.email.endsWith("@" + domain))
+      return sendError(res, 403, `Please sign in using your official @${domain} account to submit a media request.`);
+    // Deliberately narrow: id, title, date and a SIMPLIFIED status (§39). No
+    // internal notes, no team, no assignments, no reviewer.
+    const mine = (await pool.query(
+      `SELECT code, event_name, event_date, status, created_at, project_id
+         FROM mo_requests WHERE lower(requester_email)=lower($1) ORDER BY created_at DESC LIMIT 25`,
+      [who.email])).rows.map((r) => ({
+        code: r.code, event_name: r.event_name, event_date: r.event_date, created_at: r.created_at,
+        // Internal vocabulary is not the requester's business.
+        status: ({ new: "Submitted", under_review: "Under review", needs_clarification: "Clarification required",
+          ready: "Under review", converted: "Scheduled / in production", closed: "Closed",
+          rejected: "Closed" } as Record<string, string>)[String(r.status)] ?? "Submitted",
+      }));
+    res.json({ email: who.email, name: who.name, requests: mine });
+  }));
+
+  // ── PUBLIC: submit a media requirement.
+  app.post(`/api/v1/public/request/:token/submit`, asyncHandler(async (req, res) => {
+    const token = getSingleParam(req.params.token);
+    const l = (await pool.query(`SELECT * FROM mo_request_links WHERE token=$1`, [token])).rows[0];
+    if (!l) return sendError(res, 404, "This media request link is not valid.");
+    const st = reqLinkOpen(l);
+    if (!st.ok) return sendError(res, 403, st.why!);
+
+    const b = req.body as Record<string, unknown>;
+    const who = await verifyGoogleIdToken(String(b.id_token ?? "")) ?? devIdentity(b);
+    if (!who) return sendError(res, 401, "We could not verify that Google account. Please sign in again.");
+    const domain = String(l.allowed_domain).replace(/^@/, "");
+    if (!who.email.endsWith("@" + domain))
+      return sendError(res, 403, `Please sign in using your official @${domain} account to submit a media request.`);
+
+    const institute = String(b.institute ?? "").trim();
+    const event = String(b.event_name ?? "").trim();
+    const stakeholder = String(b.stakeholder ?? who.name ?? "").trim();
+    const requirement = String(b.requirement ?? "").trim();
+    if (!institute) return sendError(res, 400, "Please tell us which institute or faculty this is for.");
+    if (!event) return sendError(res, 400, "Please give the event or requirement a name.");
+    if (!stakeholder) return sendError(res, 400, "Please give a point of contact.");
+    if (!b.event_date) return sendError(res, 400, "Please give the date this is needed for.");
+    if (!requirement) return sendError(res, 400, "Please summarise what you need.");
+
+    /* §20 — a duplicate is a SIGNAL, not a hard block: same person, same event,
+       same date. We surface the existing request and let them decide, because a
+       genuine second request for the same event is legitimate. */
+    if (!b.confirm_duplicate) {
+      const dup = (await pool.query(
+        `SELECT code, status FROM mo_requests
+          WHERE lower(requester_email)=lower($1) AND lower(event_name)=lower($2)
+            AND (event_date IS NOT DISTINCT FROM $3::date) AND status <> 'closed' LIMIT 1`,
+        [who.email, event, (b.event_date as string) || null])).rows[0];
+      if (dup) return res.status(409).json({
+        duplicate: true, existing_code: dup.code, existing_status: dup.status,
+        message: "A similar request may already exist.",
+      });
+    }
+
+    const n = (await pool.query(
+      `SELECT COALESCE(MAX(NULLIF(regexp_replace(code,'\\D','','g'),'')::int),0) AS n FROM mo_requests`)).rows[0].n;
+    const code = `REQ-${String(Math.max(Number(n), 1000) + 1).padStart(5, "0")}`;
+    const ins = await pool.query(
+      `INSERT INTO mo_requests (code, source, link_id, requester_email, requester_name,
+         institute, academic_unit_id, stakeholder, contact, contact_email, contact_phone,
+         event_name, venue, event_date, event_time, end_date, end_time,
+         requirement, description, requirement_types, deliverables_requested,
+         priority, budget, meeting_required, meeting_date, meeting_time, meeting_notes,
+         vendor_required, vendor_details, additional_notes, notes, status, submitted_ip)
+       VALUES ($1,'external',$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+               $20,$21,$22,$23,$24,$25,$26,$27,$28,'','new',$29) RETURNING *`,
+      [code, l.id, who.email, who.name,
+       institute, b.academic_unit_id ? Number(b.academic_unit_id) : null, stakeholder,
+       String(b.contact_email ?? who.email), String(b.contact_phone ?? "") || null,
+       event, (b.venue as string) || null, (b.event_date as string) || null, (b.event_time as string) || null,
+       (b.end_date as string) || null, (b.end_time as string) || null,
+       requirement, String(b.description ?? ""),
+       JSON.stringify(Array.isArray(b.requirement_types) ? b.requirement_types : []),
+       JSON.stringify(Array.isArray(b.deliverables_requested) ? b.deliverables_requested : []),
+       ["urgent", "high", "normal", "low"].includes(String(b.priority)) ? String(b.priority) : "normal",
+       b.budget != null && b.budget !== "" ? Number(b.budget) : null,
+       !!b.meeting_required, (b.meeting_date as string) || null, (b.meeting_time as string) || null,
+       String(b.meeting_notes ?? "") || null,
+       !!b.vendor_required, String(b.vendor_details ?? "") || null,
+       String(b.additional_notes ?? "") || null,
+       (req.headers["x-forwarded-for"] as string) || req.ip || null]);
+
+    // No NERVE actor — the requester has no account, by design (§6).
+    await pool.query(
+      `INSERT INTO mo_audit_logs (actor_id, actor_role, action, entity_type, entity_id, before, after, ip)
+       VALUES (NULL,'system','request.submitted_external','request',$1,NULL,$2,$3)`,
+      [ins.rows[0].id,
+       JSON.stringify({ code, portal: l.name, requester: who.email, event, institute }),
+       (req.ip ?? null)]);
+
+    // A meeting request becomes a real follow-up for the coordinator (§12) —
+    // never a silently scheduled meeting.
+    if (b.meeting_required)
+      await pool.query(
+        `INSERT INTO mo_followups (request_id, stakeholder, contact, subject, reminder_date, notes, status)
+         VALUES ($1,$2,$3,$4,$5,$6,'open')`,
+        [ins.rows[0].id, stakeholder, who.email, `Meeting requested for ${event}`,
+         (b.meeting_date as string) || null, String(b.meeting_notes ?? "")]);
+
+    // Tell the coordinators. Anyone holding the coordinator media role.
+    const coords = (await pool.query(
+      `SELECT user_id FROM mo_user_profiles WHERE mo_role='coordinator'`)).rows;
+    for (const c of coords)
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'request',$2,$3,'request',$4)`,
+        [c.user_id, "New media request", `${code} — ${event} (${institute})`, ins.rows[0].id]);
+
+    res.status(201).json({ code, event_name: event, submitted_at: ins.rows[0].created_at });
+  }));
+
+  // ── Request portal links (Operations Coordinator / Admin) ─────────────────
+  app.post(`${P}/request-links`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await coordOnly(res, u))) return;
+    const b = req.body as Record<string, unknown>;
+    const name = String(b.name ?? "").trim();
+    if (!name) return sendError(res, 400, "Give the portal a name.");
+    const domain = String(b.allowed_domain ?? "paruluniversity.ac.in").replace(/^@/, "");
+    if (domain !== "paruluniversity.ac.in" && !isMoAdmin(u))
+      return sendError(res, 403, "Only an Admin may allow a domain other than the university's.");
+    const token = randomUUID().replace(/-/g, "");
+    const ins = await pool.query(
+      `INSERT INTO mo_request_links (token, name, description, allowed_domain, active_from, expires_on, is_active, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,true,$7) RETURNING *`,
+      [token, name, String(b.description ?? ""), domain,
+       (b.active_from as string) || null, (b.expires_on as string) || null, u.id]);
+    await audit(u, "request_link.created", "request_link", ins.rows[0].id, null, { name, domain }, req);
+    res.status(201).json({ link: ins.rows[0] });
+  }));
+
+  app.patch(`${P}/request-links/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await coordOnly(res, u))) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM mo_request_links WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Request portal not found.");
+    const b = req.body as Record<string, unknown>;
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    for (const c of ["name", "description", "active_from", "expires_on"])
+      if (b[c] !== undefined) { fields.push(`${c}=$${i++}`); vals.push(b[c] === "" ? null : b[c]); }
+    if (b.is_active !== undefined) { fields.push(`is_active=$${i++}`); vals.push(!!b.is_active); }
+    if (!fields.length) return res.json({ link: cur });
+    fields.push(`updated_at=NOW()`); vals.push(id);
+    const l = (await pool.query(`UPDATE mo_request_links SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals)).rows[0];
+    await audit(u, b.is_active === false ? "request_link.deactivated" : "request_link.updated",
+      "request_link", id, { is_active: cur.is_active }, { name: l.name, is_active: l.is_active }, req);
+    res.json({ link: l });
+  }));
+
   app.post(`${P}/requests`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     if (!(await coordOnly(res, u))) return;
@@ -2518,11 +2722,15 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     for (const c of ["deliverables_requested", "attachments"]) if (b[c] !== undefined) { fields.push(`${c}=$${i++}`); vals.push(JSON.stringify(b[c])); }
     if (b.status !== undefined) {
       const to = String(b.status);
+      // First move off 'new' is the moment Operations picked it up.
+      if (cur.status === "new" && to !== "new" && !cur.first_touched_at)
+        fields.push(`first_touched_at=NOW()`);
       // 'converted' is reached only through /convert, never by editing the status.
       const FLOW: Record<string, string[]> = {
-        new: ["needs_clarification", "ready", "rejected"],
-        needs_clarification: ["new", "ready", "rejected"],
-        ready: ["needs_clarification", "rejected"],
+        new: ["under_review", "needs_clarification", "ready", "closed", "rejected"],
+        under_review: ["needs_clarification", "ready", "closed", "rejected"],
+        needs_clarification: ["under_review", "ready", "closed", "rejected"],
+        ready: ["under_review", "needs_clarification", "closed", "rejected"],
         converted: ["closed"], closed: [], rejected: ["new"],
       };
       if (!(FLOW[cur.status] ?? []).includes(to))
@@ -2569,7 +2777,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const r = (await pool.query(`SELECT * FROM mo_requests WHERE id=$1`, [id])).rows[0];
     if (!r) return sendError(res, 404, "Request not found.");
     if (r.status === "converted") return sendError(res, 409, "This request has already been converted.");
-    if (r.status !== "ready") return sendError(res, 400, "Only a request marked Ready for conversion can become a project.");
+    if (!["ready", "under_review"].includes(String(r.status)))
+      return sendError(res, 400, "Review the request first — only one marked Under review or Ready can become a project.");
     const b = req.body as Record<string, unknown>;
     const typeId = Number(b.project_type_id ?? r.project_type_id);
     if (!typeId) return sendError(res, 400, "Pick a project type — it decides which template is applied.");

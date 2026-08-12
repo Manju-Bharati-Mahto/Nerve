@@ -4228,6 +4228,22 @@ function castingStyles(){
    and nothing inferred from appearance. */
 /* Straight after creating a link, put it in front of the user — the whole point
    is to copy it somewhere. */
+function showReqLink(l){
+  const url=location.origin+'/request/new/'+l.token;
+  modal(`<div class="mo-head"><div><h2>Request portal ready</h2>
+      <p>${esc(l.name)} — circulate this to institutes and departments.</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <div class="field"><label class="lbl">Portal link</label>
+        <input class="inp mono" value="${esc(url)}" readonly onclick="this.select()"></div>
+      <div class="note">Anyone with the link can open the form, but only <b>@${esc(l.allowed_domain)}</b>
+        accounts can submit. Requesters never get a NERVE account.</div>
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Done</button>
+      <a class="btn" href="${esc(url)}" target="_blank" rel="noopener">Open portal</a>
+      <button class="btn primary" data-act="copyReqLink" data-url="${esc(url)}">⧉ Copy link</button></div>`);
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+}
 function showCastLink(l){
   const url=location.origin+'/casting/register/'+l.token;
   modal(`<div class="mo-head"><div><h2>Registration link ready</h2>
@@ -4319,6 +4335,7 @@ function openCastingForm(cid){
    ══════════════════════════════════════════════════════════════════════════ */
 const REQ_STATUS={
   new:{l:'New request',c:'st-info',i:'✦'},
+  under_review:{l:'Under review',c:'st-warn',i:'◔'},
   needs_clarification:{l:'Needs clarification',c:'st-warn',i:'?'},
   ready:{l:'Ready for conversion',c:'st-brand',i:'✓'},
   converted:{l:'Converted',c:'st-success',i:'⤴'},
@@ -4354,6 +4371,140 @@ const overdueFollowups= ()=>openFollowups().filter(f=>f.reminder_date&&dOf(f.rem
 const needsAssignment = ()=>reqs().filter(r=>r.status==='converted'&&r.project_id&&!proj(r.project_id).owner_id);
 
 /* ── Home: operational metrics instead of production metrics ─────────────── */
+/* External request portals (§40) + intake helpers. */
+const reqLinks   = ()=>(DB.request_links||[]).sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
+const reqLink    = id=>(DB.request_links||[]).find(l=>l.id===id)||null;
+const linkReqs   = id=>reqs().filter(r=>r.link_id===id);
+const reqLinkOpen= l=>{
+  if(!l.is_active)return false;
+  if(l.active_from&&dOf(l.active_from)>TODAY)return false;
+  if(l.expires_on&&dOf(l.expires_on)<TODAY)return false;
+  return true;
+};
+const requestUrl = l=>location.origin+'/request/new/'+l.token;
+/* §48 — arrived and nobody has touched it. Deliberately measured from FIRST
+   TOUCH, not from any later edit, so a request cannot look attended-to because
+   somebody glanced at it. */
+const REQ_SLA_DAYS=2;
+const reqOverdue = r=>r.status==='new'&&!r.first_touched_at&&D.diff(TODAY,dOf(r.created_at))>=REQ_SLA_DAYS;
+const overdueRequests = ()=>reqs().filter(reqOverdue);
+
+function requestLinksSection(){
+  const links=reqLinks();
+  return `<div class="card"><div class="card-head"><h3>External request portals</h3>
+      ${reqid('§40','Share one link — submissions arrive straight in this queue')}
+      <div class="ca"><span class="chip">${links.filter(reqLinkOpen).length} open</span>
+        <button class="btn sm primary" data-act="newReqLink">＋ Create request link</button></div></div>
+    <div class="card-body flush">
+      ${links.length?links.map(l=>{
+        const all=linkReqs(l.id);
+        const open=all.filter(r=>['new','under_review','needs_clarification','ready'].includes(r.status));
+        const conv=all.filter(r=>r.status==='converted');
+        const last=all.map(r=>r.created_at).sort().slice(-1)[0];
+        const live=reqLinkOpen(l);
+        return `<div class="dc">
+        <div class="dc-head"><span class="dc-ico">◆</span>
+          <b class="dc-title">${esc(l.name)}</b>
+          ${live?'<span class="status st-success"><span class="si">●</span>Active</span>'
+                :`<span class="status st-neutral"><span class="si">○</span>${l.is_active?(l.expires_on&&dOf(l.expires_on)<TODAY?'Expired':'Not open yet'):'Deactivated'}</span>`}</div>
+        <div class="dc-grid">
+          <div class="dc-kv"><span class="dc-k">Submissions</span><span class="dc-v">
+            <button class="btn xs" data-act="reqLinkFilter" data-lid="${l.id}" data-st="">${all.length}</button></span></div>
+          <div class="dc-kv"><span class="dc-k">Open</span><span class="dc-v">
+            <button class="btn xs" data-act="reqLinkFilter" data-lid="${l.id}" data-st="open">${open.length}</button></span></div>
+          <div class="dc-kv"><span class="dc-k">Converted</span><span class="dc-v">
+            <button class="btn xs" data-act="reqLinkFilter" data-lid="${l.id}" data-st="converted">${conv.length}</button></span></div>
+          <div class="dc-kv"><span class="dc-k">Created</span><span class="dc-v">${D.fmt(l.created_at)}${l.created_by?' · '+esc((user(l.created_by)||{full_name:'—'}).full_name.split(' ')[0]):''}</span></div>
+          <div class="dc-kv"><span class="dc-k">Last submission</span><span class="dc-v">${last?D.fmt(last):'—'}</span></div>
+          <div class="dc-kv"><span class="dc-k">Expires</span><span class="dc-v">${l.expires_on?D.fmt(l.expires_on):'no expiry'}</span></div>
+        </div>
+        ${l.description?`<div class="dc-grid"><div class="dc-kv"><span class="dc-k">About</span><span class="dc-v">${esc(l.description)}</span></div></div>`:''}
+        <div class="dc-foot"><span class="chip">@${esc(l.allowed_domain)} only</span>
+          <div class="dc-acts">
+            <button class="dc-btn" title="Copy link" data-act="copyReqLink" data-url="${esc(requestUrl(l))}"><span>⧉</span></button>
+            <a class="dc-btn" title="Open the request portal" href="${esc(requestUrl(l))}" target="_blank" rel="noopener" data-stop><span>↗</span></a>
+            <button class="dc-btn" title="${l.is_active?'Deactivate':'Reactivate'}" data-act="toggleReqLink" data-lid="${l.id}" data-on="${l.is_active?'0':'1'}">
+              <span>${l.is_active?'⏸':'▶'}</span></button>
+          </div></div>
+      </div>`;}).join('')
+        :`<div class="empty" style="padding:32px"><div class="e-ico">◎</div>
+          <h4>No request portals yet</h4>
+          <p>Create a link and circulate it to institutes and departments. They sign in with their
+            university account and their requirement arrives here — no more chasing email threads.</p>
+          <button class="btn primary mt3" data-act="newReqLink">＋ Create request link</button></div>`}
+    </div></div>`;
+}
+/* The full request drawer (§26) — one place showing everything submitted. */
+function drawerRequest(id){
+  const r=reqs().find(x=>x.id===id); if(!r)return;
+  const st=REQ_STATUS[r.status]||REQ_STATUS.new;
+  const l=r.link_id?reqLink(r.link_id):null;
+  const p=r.project_id?proj(r.project_id):null;
+  const wt=id=>((DB.work_types||[]).find(w=>w.id===id)||{}).name;
+  const dt=id=>((DB.deliverable_types||[]).find(t=>t.id===id)||{}).name;
+  openDrawer(`
+    <div class="dr-head"><div class="dh-txt">
+      <div class="f ac gap2 mb1">${statusPill(REQ_STATUS,r.status)}
+        <span class="chip">${r.source==='external'?'External':'Manual entry'}</span>
+        ${reqOverdue(r)?'<span class="status st-danger"><span class="si">⚑</span>Overdue</span>':''}</div>
+      <h2>${esc(r.event_name)}</h2>
+      <div class="dh-meta"><span class="code">${esc(r.code||'')}</span>
+        <span>·</span><span>${esc(r.institute||'—')}</span>
+        <span>·</span><span>received ${D.fmt(r.created_at)}</span></div></div>
+      <button class="icon-btn" onclick="closeDrawer()">✕</button></div>
+    <div class="dr-body">
+      <h4 class="small b mb2">Requester</h4>
+      <dl class="kv mb4">
+        <dt>Contact</dt><dd>${esc(r.stakeholder||'—')}</dd>
+        <dt>Email</dt><dd class="mono">${esc(r.contact_email||r.requester_email||'—')}</dd>
+        <dt>Phone</dt><dd>${esc(r.contact_phone||'—')}</dd>
+        <dt>Institute</dt><dd>${esc(r.institute||'—')}</dd>
+        <dt>Department</dt><dd>${esc(r.academic_unit_id?aunitName(r.academic_unit_id):'—')}</dd>
+        ${r.source==='external'?`<dt>Verified account</dt><dd class="mono">${esc(r.requester_email||'—')}</dd>`:''}
+      </dl>
+      <h4 class="small b mb2">Event</h4>
+      <dl class="kv mb4">
+        <dt>Venue</dt><dd>${esc(r.venue||'—')}</dd>
+        <dt>Date</dt><dd>${r.event_date?D.fmt(r.event_date):'—'}${r.event_time?' · '+esc(r.event_time):''}</dd>
+        <dt>Ends</dt><dd>${r.end_date?D.fmt(r.end_date):'—'}${r.end_time?' · '+esc(r.end_time):''}</dd>
+      </dl>
+      <h4 class="small b mb2">Requirement</h4>
+      <dl class="kv mb4">
+        <dt>Summary</dt><dd>${esc(r.requirement||r.need||'—')}</dd>
+        <dt>Needs</dt><dd>${(r.requirement_types||[]).map(x=>`<span class="chip">${esc(wt(x)||x)}</span>`).join(' ')||'—'}</dd>
+        <dt>Deliverables</dt><dd>${(r.deliverables_requested||[]).map(x=>`<span class="chip">${esc(dt(x)||x)}</span>`).join(' ')||'—'}</dd>
+        <dt>Priority</dt><dd>${esc(r.priority||'normal')}</dd>
+        ${r.budget?`<dt>Budget</dt><dd>${money(r.budget)}</dd>`:''}
+      </dl>
+      ${r.description?`<h4 class="small b mb2">Description</h4><div class="note mb4">${esc(r.description)}</div>`:''}
+      ${r.additional_notes?`<h4 class="small b mb2">Additional requirements</h4><div class="note mb4">${esc(r.additional_notes)}</div>`:''}
+      ${(r.meeting_required||r.vendor_required)?`<h4 class="small b mb2">Coordination</h4>
+        <dl class="kv mb4">
+          ${r.meeting_required?`<dt>Meeting</dt><dd>Requested${r.meeting_date?' for '+D.fmt(r.meeting_date):''}${r.meeting_time?' '+esc(r.meeting_time):''}
+            ${r.meeting_notes?`<div class="xsmall mut3">${esc(r.meeting_notes)}</div>`:''}</dd>`:''}
+          ${r.vendor_required?`<dt>Vendor</dt><dd>Needed${r.vendor_details?` — ${esc(r.vendor_details)}`:''}</dd>`:''}
+        </dl>`:''}
+      <h4 class="small b mb2">Workflow</h4>
+      <dl class="kv mb4">
+        <dt>Source</dt><dd>${r.source==='external'?`External request link${l?` — ${esc(l.name)}`:''}`:'Manual entry'}</dd>
+        <dt>Status</dt><dd>${statusPill(REQ_STATUS,r.status)}</dd>
+        ${p?`<dt>Converted to</dt><dd><a href="#/media/projects/${p.id}" onclick="closeDrawer()">
+          <span class="code">${esc(p.code||'')}</span> ${esc(p.name)}</a></dd>`:''}
+        ${r.lead_user_id?`<dt>Team Lead</dt><dd>${esc((user(r.lead_user_id)||{full_name:'—'}).full_name)}</dd>`:''}
+      </dl>
+      ${r.review_note?`<div class="note warn mb4"><b>Internal note.</b> ${esc(r.review_note)}
+        <div class="xsmall mut3 mt2">Internal only — not shown to the requester.</div></div>`:''}
+    </div>
+    <div class="dr-foot">
+      ${r.status==='new'?`<button class="btn primary" data-act="reqStatus2" data-rid="${r.id}" data-to="under_review">Start review</button>`:''}
+      ${['under_review','needs_clarification'].includes(r.status)?`
+        <button class="btn primary" data-act="convertRequest" data-rid="${r.id}">⤴ Convert to project</button>
+        <button class="btn" data-act="clarifyRequest" data-rid="${r.id}">? Clarification</button>`:''}
+      ${r.status==='ready'?`<button class="btn primary" data-act="convertRequest" data-rid="${r.id}">⤴ Convert to project</button>`:''}
+      <button class="btn ghost ml-auto" data-act="openRequest" data-rid="${r.id}">✎ Edit</button>
+    </div>`);
+  wirePage();
+}
 /* ── Request Intake page ─────────────────────────────────────────────────── */
 /* The intake form (§6). One definition for create and edit, so a request has a
    single shape wherever it is touched. Nothing here creates a project — that is
@@ -4427,114 +4578,117 @@ const VENUES=['Convention Hall','Auditorium','Main Ground','Civil Hospital','Onl
 
 function viewRequests(){
   if(!(isCoord()||isAdmin()))return roleDenied('Request intake belongs to the Operations Coordinator.');
-  const f=S.filters.req||(S.filters.req={when:'all'});
-  const tab=S.tab.req||'open';
+  const f=S.filters.req||(S.filters.req={when:'all',status:'',source:'',team:'',priority:'',q:'',link:''});
+  const tab=S.tab.req||'queue';
   const all=reqs();
-  const open=all.filter(r=>['new','needs_clarification','ready'].includes(r.status));
+  const open=all.filter(r=>['new','under_review','needs_clarification','ready'].includes(r.status));
   const conv=all.filter(r=>r.status==='converted');
   const shut=all.filter(r=>['closed','rejected'].includes(r.status));
-  let list=tab==='open'?open:tab==='converted'?conv:shut;
-  /* Quick filters narrow the queue without leaving it — the coordinator works
-     out of this one screen all morning. */
-  const week=D.add(TODAY,-7);
+  /* Actionable counts (§47): each one is a filter, not a decoration. */
+  const stat=(l,n,k,tone)=>`<button class="stat ${tone||''}" data-act="reqStat" data-k="${k}">
+    <span class="stat-main"><span class="stat-label">${esc(l)}</span><span class="stat-val">${n}</span></span></button>`;
+  const counts=`<div class="grid g5 sec">
+      ${stat('New requests',all.filter(r=>r.status==='new').length,'new',all.filter(r=>r.status==='new').length?'':'')}
+      ${stat('Needs clarification',all.filter(r=>r.status==='needs_clarification').length,'needs_clarification')}
+      ${stat('Ready to convert',all.filter(r=>r.status==='ready').length,'ready',all.filter(r=>r.status==='ready').length?'alert':'')}
+      ${stat('Converted today',all.filter(r=>r.status==='converted'&&dOf(r.converted_at)===TODAY).length,'converted_today')}
+      ${stat('Overdue',overdueRequests().length,'overdue',overdueRequests().length?'alert':'')}
+    </div>`;
+
+  if(tab==='links')return `${requestsHead()}${counts}${requestsTabs(tab,open,conv,shut)}${requestLinksSection()}`;
+
+  let list=tab==='queue'?open:tab==='converted'?conv:shut;
+  const week=D.add(TODAY,-7), month=D.add(TODAY,-30);
   if(f.when==='today')list=list.filter(r=>dOf(r.created_at)===TODAY);
   else if(f.when==='week')list=list.filter(r=>dOf(r.created_at)>=week);
-  else if(f.when==='pending')list=list.filter(r=>r.status==='new');
-  else if(f.when==='clarify')list=list.filter(r=>r.status==='needs_clarification');
-  else if(f.when==='ready')list=list.filter(r=>r.status==='ready');
-  const chips=[['all','All',(tab==='open'?open:tab==='converted'?conv:shut).length],
-    ['today','Today',all.filter(r=>dOf(r.created_at)===TODAY).length],
-    ['week','This week',all.filter(r=>dOf(r.created_at)>=week).length],
-    ['pending','New',all.filter(r=>r.status==='new').length],
-    ['clarify','Needs clarification',all.filter(r=>r.status==='needs_clarification').length],
-    ['ready','Ready',all.filter(r=>r.status==='ready').length]];
-  const tabs=[['open','Open',open.length],['converted','Converted',conv.length],['closed','Closed',shut.length]];
-  return `<div class="page-head">
-      <div><div class="crumb">Operations · intake</div><h1 class="page-title">Request Intake</h1>
-      <div class="page-sub">Every job enters here first. A request becomes a project only once it has what production
-        needs — that is what <b>Convert to project</b> checks, and it is the only way a coordinator creates a project.</div></div>
-      <div class="page-actions"><button class="btn primary" data-act="newRequest">＋ New request</button></div></div>
-    <div class="tabs">${tabs.map(([k,l,c])=>`<button data-tab="${k}" data-tabkey="req" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>
-    <div class="f wrap gap1 mb3">${chips.map(([k,l,n])=>`<button class="chip ${f.when===k?'sel':''}"
-      onclick="S.filters.req.when='${k}';render()">${esc(l)} <span class="mut3">${n}</span></button>`).join('')}</div>
+  else if(f.when==='month')list=list.filter(r=>dOf(r.created_at)>=month);
+  else if(f.when==='overdue')list=list.filter(reqOverdue);
+  if(f.status)list=list.filter(r=>r.status===f.status);
+  if(f.source)list=list.filter(r=>(r.source||'manual')===f.source);
+  if(f.priority)list=list.filter(r=>r.priority===f.priority);
+  if(f.link)list=list.filter(r=>String(r.link_id)===String(f.link));
+  if(f.team)list=list.filter(r=>String(r.team_id)===String(f.team)
+    ||(r.lead_user_id&&String((team(+f.team)||{}).lead_user_id)===String(r.lead_user_id)));
+  if(f.q){const q=f.q.toLowerCase();
+    list=list.filter(r=>[r.code,r.event_name,r.institute,r.stakeholder,r.contact_email,r.requester_email,
+      r.academic_unit_id?aunitName(r.academic_unit_id):'',
+      r.project_id?proj(r.project_id).code:'',
+      r.lead_user_id?(user(r.lead_user_id)||{}).full_name:''].filter(Boolean).join(' ').toLowerCase().includes(q));}
+  list=[...list].sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
+
+  const chip=(k,v,l,n)=>`<button class="chip ${f[k]===v?'sel':''}"
+    onclick="S.filters.req.${k}=S.filters.req.${k}==='${v}'?'':'${v}';render()">${esc(l)}${n!=null?` <span class="mut3">${n}</span>`:''}</button>`;
+  return `${requestsHead()}${counts}${requestsTabs(tab,open,conv,shut)}
+    <div class="cast-bar">
+      <div class="search-wrap cast-search"><input class="inp" value="${esc(f.q)}"
+        placeholder="Search request ID, project, event, institute, stakeholder, email, team lead…"
+        oninput="S.filters.req.q=this.value;render()"></div>
+      <div class="f wrap gap1">
+        ${chip('when','','Any time')}${chip('when','today','Today')}${chip('when','week','This week')}
+        ${chip('when','month','This month')}${chip('when','overdue','Overdue',overdueRequests().length)}
+      </div>
+    </div>
+    <div class="f wrap gap1 mb3">
+      ${['new','under_review','needs_clarification','ready'].map(k=>chip('status',k,(REQ_STATUS[k]||{l:k}).l,all.filter(r=>r.status===k).length)).join('')}
+      ${chip('source','external','External',all.filter(r=>r.source==='external').length)}
+      ${chip('source','manual','Manual',all.filter(r=>(r.source||'manual')==='manual').length)}
+      ${['urgent','high','normal','low'].map(p=>chip('priority',p,p[0].toUpperCase()+p.slice(1))).join('')}
+      ${activeTeams().map(t=>chip('team',String(t.id),t.name)).join('')}
+    </div>
     <div class="card"><div class="card-body flush">
-      ${list.length?list.map(r=>`<div class="dsp">
-        <div class="dsp-top">
-          <span class="code">${esc(r.code||'')}</span>
-          <b class="dsp-title">${esc(r.event_name)}</b>
-          ${statusPill(REQ_STATUS,r.status)}
-          ${r.priority!=='normal'?`<span class="chip">${esc(r.priority)}</span>`:''}
-        </div>
-        <div class="dsp-meta">
-          <span>${esc(r.institute||'—')}</span>
-          ${r.stakeholder?`<span>${esc(r.stakeholder)}</span>`:''}
-          ${r.contact?`<span>${esc(r.contact)}</span>`:''}
-          ${r.event_date?`<span>${D.fmt(r.event_date)}${r.event_time?' '+esc(r.event_time):''}</span>`:''}
-          ${r.venue?`<span>◈ ${esc(r.venue)}</span>`:''}
-          <span>received ${esc(String(r.created_at||'').slice(0,10))}${r.received_by?' by '+esc((user(r.received_by)||{full_name:'—'}).full_name.split(' ')[0]):''}</span>
-          ${(r.deliverables_requested||[]).length?`<span>${(r.deliverables_requested||[]).length} deliverable(s) requested</span>`:''}
-          ${r.project_id?`<span>→ <span class="code">${esc(proj(r.project_id).code||'')}</span></span>`:''}
-        </div>
-        ${r.description?`<div class="dsp-meta"><span>${esc(String(r.description).slice(0,160))}</span></div>`:''}
-        <div class="dsp-acts">
-          <button class="btn xs" data-act="openRequest" data-rid="${r.id}">✎ Open / edit</button>
-          ${r.status!=='converted'?`<button class="btn xs" data-act="clarifyRequest" data-rid="${r.id}">? Clarify</button>
-            <button class="btn xs" data-act="logMeeting" data-rid="${r.id}">◷ Meeting</button>`:''}
-          ${['new','needs_clarification'].includes(r.status)?`<button class="btn xs" data-act="reqStatus" data-rid="${r.id}" data-to="ready">✓ Mark ready</button>`:''}
-          ${r.status==='ready'?`<button class="btn xs primary" data-act="convertRequest" data-rid="${r.id}">⤴ Convert to project</button>`:''}
-          ${r.project_id?`<button class="btn xs" data-go="#/media/projects/${r.project_id}">Open project</button>`:''}
-          <button class="btn xs ghost" data-act="requestHistory" data-rid="${r.id}">◷ History</button>
-        </div>
-      </div>`).join(''):`<div class="empty" style="padding:30px"><div class="e-ico">◎</div>
-        <p>Nothing here. New requests appear as soon as they are logged.</p>
-        <button class="btn primary mt3" data-act="newRequest">＋ New request</button></div>`}
+      ${list.length?list.map(requestRow).join(''):`<div class="empty" style="padding:32px"><div class="e-ico">◎</div>
+        <h4>Nothing here</h4>
+        <p>${reqLinks().length?'New requests arrive from the request portal automatically.'
+          :'Create a request portal link so institutes can submit their requirements directly.'}</p>
+        <div class="f gap2 mt3" style="justify-content:center">
+          <button class="btn primary" data-act="newRequest">＋ New request</button>
+          ${!reqLinks().length?`<button class="btn" onclick="S.tab.req='links';render()">Create request link</button>`:''}
+        </div></div>`}
     </div></div>`;
 }
-
-/* ── Follow-up queue (§13) ────────────────────────────────────────────────
-   Clarifications waiting on somebody. Overdue ones also surface on Home so a
-   stalled request cannot sit unnoticed. */
-function viewFollowups(){
-  if(!(isCoord()||isAdmin()))return roleDenied('The follow-up queue belongs to the Operations Coordinator.');
-  const tab=S.tab.fu||'open';
-  const all=followups();
-  const open=all.filter(f=>['open','awaiting_reply'].includes(f.status));
-  const done=all.filter(f=>f.status==='resolved');
-  const list=(tab==='open'?open:done).sort((a,b)=>String(a.reminder_date||'9').localeCompare(String(b.reminder_date||'9')));
+function requestsHead(){
   return `<div class="page-head">
-      <div><div class="crumb">Operations · follow-ups</div><h1 class="page-title">Follow-ups</h1>
-      <div class="page-sub">Every clarification you send opens one of these, so a pending question is tracked
-        rather than remembered. Overdue items also appear on your Home dashboard.</div></div></div>
-    <div class="tabs">${[['open','Open',open.length],['resolved','Resolved',done.length]].map(([k,l,c])=>
-      `<button data-tab="${k}" data-tabkey="fu" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>
-    <div class="card"><div class="card-body flush">
-      ${list.length?list.map(f=>{
-        const age=D.diff(TODAY,dOf(f.pending_since));
-        const overdue=f.reminder_date&&dOf(f.reminder_date)<TODAY&&f.status!=='resolved';
-        const r=f.request_id?reqs().find(x=>x.id===f.request_id):null;
-        return `<div class="dc ${overdue?'late':''}">
-        <div class="dc-head"><span class="dc-ico">↩</span>
-          <b class="dc-title">${esc(f.subject||'Follow-up')}</b>
-          ${overdue?`<span class="status st-danger"><span class="si">⚑</span>Overdue</span>`
-                   :`<span class="status ${f.status==='resolved'?'st-success':'st-warn'}"><span class="si">${f.status==='resolved'?'✔':'◔'}</span>${String(f.status).replace('_',' ')}</span>`}</div>
-        <div class="dc-grid">
-          <div class="dc-kv"><span class="dc-k">Stakeholder</span><span class="dc-v">${esc(f.stakeholder||'—')}</span></div>
-          <div class="dc-kv"><span class="dc-k">Contact</span><span class="dc-v">${esc(f.contact||'—')}</span></div>
-          <div class="dc-kv"><span class="dc-k">Request</span><span class="dc-v">${r?esc(r.code+' · '+r.event_name):'—'}</span></div>
-          <div class="dc-kv"><span class="dc-k">Pending</span><span class="dc-v">${age}d</span></div>
-          <div class="dc-kv"><span class="dc-k">Reminder</span><span class="dc-v">${f.reminder_date?D.fmt(f.reminder_date):'—'}</span></div>
-          <div class="dc-kv"><span class="dc-k">Last contact</span><span class="dc-v">${f.last_contact_at?D.fmt(f.last_contact_at):'—'}</span></div>
-        </div>
-        <div class="dc-foot"><span class="chip">${esc(String(f.notes||'').slice(0,60)||'no notes')}</span>
-          <div class="dc-acts">
-            ${f.contact?`<a class="dc-btn" title="Call" href="tel:${esc(f.contact)}" data-stop><span>✆</span></a>
-                         <a class="dc-btn" title="Email" href="mailto:${esc(f.contact)}" data-stop><span>✉</span></a>`:''}
-            <button class="dc-btn" title="Reschedule the reminder" data-act="followupSnooze" data-fid="${f.id}"><span>◷</span></button>
-            ${f.status!=='resolved'?`<button class="dc-btn go" title="Mark resolved" data-act="followupDone" data-fid="${f.id}"><span>✓</span></button>`:''}
-          </div></div>
-      </div>`;}).join(''):`<div class="empty" style="padding:30px"><div class="e-ico">✔</div>
-        <p>Nothing ${tab==='open'?'outstanding — every clarification has come back':'resolved yet'}.</p></div>`}
-    </div></div>`;
+      <div><div class="crumb">Operations · intake</div><h1 class="page-title">Request Intake</h1>
+      <div class="page-sub">Every requirement enters here — submitted through a request portal or logged by you.
+        A request becomes a project only when you convert it and hand it to a team.</div></div>
+      <div class="page-actions">
+        <button class="btn" onclick="S.tab.req='links';render()">◆ Request links</button>
+        <button class="btn primary" data-act="newRequest">＋ New request</button></div></div>`;
+}
+function requestsTabs(tab,open,conv,shut){
+  const tabs=[['queue','Queue',open.length],['converted','Converted',conv.length],
+    ['closed','Closed',shut.length],['links','Request links',reqLinks().filter(reqLinkOpen).length]];
+  return `<div class="tabs">${tabs.map(([k,l,c])=>`<button data-tab="${k}" data-tabkey="req" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>`;
+}
+/* One request row — everything the coordinator triages on, at a glance (§23). */
+function requestRow(r){
+  const l=r.link_id?reqLink(r.link_id):null;
+  const wt=id=>((DB.work_types||[]).find(w=>w.id===id)||{}).name;
+  const needs=(r.requirement_types||[]).map(wt).filter(Boolean);
+  return `<div class="dc ${reqOverdue(r)?'late':''}" data-drawer="request:${r.id}" style="cursor:pointer">
+    <div class="dc-head"><span class="code">${esc(r.code||'')}</span>
+      <b class="dc-title">${esc(r.event_name)}</b>
+      ${statusPill(REQ_STATUS,r.status)}
+      ${r.source==='external'?'<span class="chip">External</span>':''}
+      ${r.priority&&r.priority!=='normal'?`<span class="chip">${esc(r.priority)}</span>`:''}
+      ${reqOverdue(r)?`<span class="status st-danger"><span class="si">⚑</span>Overdue</span>`:''}</div>
+    <div class="dc-grid">
+      <div class="dc-kv"><span class="dc-k">Institute</span><span class="dc-v">${esc(r.institute||'—')}</span></div>
+      <div class="dc-kv"><span class="dc-k">Contact</span><span class="dc-v">${esc(r.stakeholder||'—')}</span></div>
+      <div class="dc-kv"><span class="dc-k">Date</span><span class="dc-v">${r.event_date?D.fmt(r.event_date):'—'}${r.event_time?' · '+esc(r.event_time):''}</span></div>
+      <div class="dc-kv"><span class="dc-k">Venue</span><span class="dc-v">${esc(r.venue||'—')}</span></div>
+      <div class="dc-kv"><span class="dc-k">Needs</span><span class="dc-v">${needs.length?esc(needs.join(', ')):'—'}</span></div>
+      <div class="dc-kv"><span class="dc-k">${r.project_id?'Project':'Portal'}</span><span class="dc-v">${
+        r.project_id?`<span class="code">${esc(proj(r.project_id).code||'')}</span>`:(l?esc(l.name):'manual entry')}</span></div>
+    </div>
+    <div class="dc-foot"><span class="chip">received ${D.fmt(r.created_at)}</span>
+      <div class="dc-acts">
+        ${r.status==='new'?`<button class="dc-btn" title="Start review" data-act="reqStatus2" data-rid="${r.id}" data-to="under_review"><span>◔</span></button>`:''}
+        ${['new','under_review','needs_clarification'].includes(r.status)?`<button class="dc-btn" title="Request clarification" data-act="clarifyRequest" data-rid="${r.id}"><span>?</span></button>`:''}
+        ${['under_review','ready','needs_clarification'].includes(r.status)?`<button class="dc-btn go" title="Convert to project" data-act="convertRequest" data-rid="${r.id}"><span>⤴</span></button>`:''}
+        ${r.project_id?`<button class="dc-btn" title="Open project" data-go="#/media/projects/${r.project_id}"><span>↗</span></button>`:''}
+      </div></div>
+  </div>`;
 }
 
 /* ── Dispatch queue + archive ────────────────────────────────────────────── */
@@ -9573,6 +9727,7 @@ function drawerFor(kind,id){
   if(kind==='person')return drawerPerson(id);
   if(kind==='casting')return drawerCasting(id);
   if(kind==='castreq')return drawerCastRequest(id);
+  if(kind==='request')return drawerRequest(id);
 }
 /* W5 — Deliverable drawer */
 function drawerDeliverable(id){
@@ -10605,6 +10760,70 @@ const ACTIONS = {
     /* Re-rendering replaces the input, so restore focus and caret — otherwise
        typing a second character would be lost. */
     const el=$('#dir-q'); if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);}
+  },
+  /* ---- external request portals ---- */
+  newReqLink:()=>{
+    modal(`<div class="mo-head"><div><h2>Create request link</h2>
+        <p>Circulate this to institutes, departments and event coordinators. They sign in with their
+          university account and their requirement lands straight in this queue.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Link name <span class="req">*</span></label>
+          <input class="inp" id="rl-name" placeholder="e.g. University Media Request Portal"></div>
+        <div class="field"><label class="lbl">Description</label>
+          <textarea class="inp" id="rl-desc" placeholder="Shown to requesters on the portal"></textarea></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Opens</label><input class="inp" type="date" id="rl-from"></div>
+          <div class="field"><label class="lbl">Expiry</label><input class="inp" type="date" id="rl-until">
+            <div class="hint">After this date the portal closes itself. Submitted requests are untouched.</div></div>
+        </div>
+        <div class="field"><label class="lbl">Allowed domain</label>
+          <input class="inp" id="rl-domain" value="paruluniversity.ac.in" ${isAdmin()?'':'readonly'}>
+          <div class="hint">${isAdmin()?'Only change this if a portal genuinely needs a different domain.'
+            :'Locked to the university domain — only an Admin can change it.'}</div></div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="newReqLinkGo">Create link</button></div>`,{size:'wide'});
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  newReqLinkGo:()=>{
+    const name=$('#rl-name').value.trim();
+    if(!name){toast('Give the portal a name','bad');return;}
+    const body={name,description:$('#rl-desc').value.trim(),active_from:$('#rl-from').value||null,
+      expires_on:$('#rl-until').value||null,allowed_domain:$('#rl-domain').value.trim()||'paruluniversity.ac.in'};
+    closeModal();
+    moSync(MO_API.post('/request-links',body).then(r=>hydrateFromServer().then(()=>r)),
+      (r)=>{loadMyActivity(true);render(); if(r&&r.link)showReqLink(r.link);});
+  },
+  copyReqLink:(d,n)=>{
+    const url=n?n.dataset.url:'';
+    if(navigator.clipboard&&url)navigator.clipboard.writeText(url).catch(()=>{});
+    toast('Request portal link copied','ok');
+  },
+  toggleReqLink:(d)=>{
+    const on=d.on==='1';
+    moSync(MO_API.patch('/request-links/'+d.lid,{is_active:on}).then(()=>hydrateFromServer()),
+      ()=>{loadMyActivity(true);render();
+        toast(on?'Portal reopened':'Portal closed — submitted requests are untouched','ok');});
+  },
+  reqLinkFilter:(d)=>{
+    S.tab.req=d.st==='converted'?'converted':'queue';
+    const f=S.filters.req||(S.filters.req={});
+    f.link=String(d.lid); f.status=''; f.when='all';
+    render();
+  },
+  reqStat:(d)=>{
+    const f=S.filters.req||(S.filters.req={});
+    f.when='all'; f.status=''; f.source=''; f.link='';
+    if(d.k==='overdue'){S.tab.req='queue';f.when='overdue';}
+    else if(d.k==='converted_today'){S.tab.req='converted';f.when='today';}
+    else {S.tab.req='queue';f.status=d.k;}
+    render();
+  },
+  reqStatus2:(d)=>{
+    moSync(MO_API.patch('/requests/'+d.rid,{status:d.to}).then(()=>hydrateFromServer()),
+      ()=>{loadMyActivity(true);closeDrawer();render();
+        toast('Request marked '+String(d.to).replace('_',' '),'ok');});
   },
   /* ---- external casting registration ---- */
   newCastLink:()=>{
@@ -12828,7 +13047,8 @@ async function hydrateFromServer(){
     'academic_units','work_types','campuses','capacity_roles','tags','users',
     'requests','meetings','vendor_activities','followups',
     'casting_records','casting_tags','casting_collections','casting_record_tags',
-    'casting_record_collections','casting_requests','project_casting'];
+    'casting_record_collections','casting_requests','project_casting',
+    'casting_links','request_links'];
   const st=await MO_API.get('/state');
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
   // Bind identity to the real logged-in Nerve user (server sends its prototype int id).
