@@ -3620,6 +3620,27 @@ const CAST_CATEGORIES=['Profession','Student','Faculty','Staff','Family','Senior
   'Professional','Athlete','Community','Other'];
 const TAG_CATEGORIES=[['profession','Profession'],['production_type','Production type'],
   ['age_group','Age group'],['language','Language'],['requirement','Casting requirement'],['other','Other']];
+/* Review states. The green/amber/red system is carried by the badge colour AND
+   the label — never colour alone (§18). */
+const CR_REVIEW={
+  new:{l:'New',c:'st-info',i:'✦'},
+  under_review:{l:'Under review',c:'st-warn',i:'◔'},
+  clarification:{l:'Clarification required',c:'st-warn',i:'?'},
+  approved:{l:'Approved',c:'st-success',i:'✔'},
+  rejected:{l:'Rejected',c:'st-danger',i:'✕'},
+  archived:{l:'Archived',c:'st-neutral',i:'⛁'}
+};
+const castLinks = ()=>(DB.casting_links||[]).sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
+const castLink  = id=>(DB.casting_links||[]).find(l=>l.id===id)||null;
+const extRequests = ()=>castRequests().filter(r=>r.source==='external');
+const linkSubmissions = id=>extRequests().filter(r=>r.link_id===id);
+const linkIsOpen = l=>{
+  if(!l.is_active)return false;
+  if(l.active_from&&String(l.active_from).slice(0,10)>TODAY)return false;
+  if(l.expires_on&&String(l.expires_on).slice(0,10)<TODAY)return false;
+  return true;
+};
+const registrationUrl = l=>location.origin+'/casting/register/'+l.token;
 const CR_STATUS={
   new:{l:'New',c:'st-info',i:'✦'}, reviewing:{l:'Reviewing',c:'st-warn',i:'◔'},
   searching:{l:'Searching',c:'st-warn',i:'⌕'}, candidate_found:{l:'Candidate found',c:'st-brand',i:'◆'},
@@ -3747,6 +3768,110 @@ function castCard(r){
         <button class="btn xs">View casting</button></div>
     </div></div>`;
 }
+/* ── Registration links (§3/§32) ─────────────────────────────────────────── */
+const pendingReview = ()=>castRequests().filter(r=>['new','under_review','clarification','reviewing','searching','candidate_found'].includes(r.status));
+function castAdminLinks(){
+  const links=castLinks();
+  return `<div class="card"><div class="card-head"><h3>Casting registration links</h3>
+      <div class="ca"><span class="chip">${links.filter(linkIsOpen).length} open</span>
+        <button class="btn sm primary" data-act="newCastLink">＋ Create registration link</button></div></div>
+    <div class="card-body flush">
+      ${links.length?links.map(l=>{
+        const subs=linkSubmissions(l.id);
+        const open=linkIsOpen(l);
+        const last=subs.map(r=>r.created_at).sort().slice(-1)[0];
+        return `<div class="dc">
+        <div class="dc-head"><span class="dc-ico">◆</span>
+          <b class="dc-title">${esc(l.name)}</b>
+          ${open?'<span class="status st-success"><span class="si">●</span>Active</span>'
+                :`<span class="status st-neutral"><span class="si">○</span>${l.is_active?(l.expires_on&&String(l.expires_on).slice(0,10)<TODAY?'Expired':'Not open yet'):'Deactivated'}</span>`}</div>
+        <div class="dc-grid">
+          <div class="dc-kv"><span class="dc-k">Submissions</span><span class="dc-v">
+            <button class="btn xs" data-act="castLinkSubs" data-lid="${l.id}">${subs.length}</button></span></div>
+          <div class="dc-kv"><span class="dc-k">Created</span><span class="dc-v">${D.fmt(l.created_at)}${l.created_by?' · '+esc((user(l.created_by)||{full_name:'—'}).full_name.split(' ')[0]):''}</span></div>
+          <div class="dc-kv"><span class="dc-k">Last submission</span><span class="dc-v">${last?D.fmt(last):'—'}</span></div>
+          <div class="dc-kv"><span class="dc-k">Allowed domain</span><span class="dc-v">@${esc(l.allowed_domain)}</span></div>
+          <div class="dc-kv"><span class="dc-k">Expires</span><span class="dc-v">${l.expires_on?D.fmt(l.expires_on):'no expiry'}</span></div>
+          <div class="dc-kv"><span class="dc-k">Link</span><span class="dc-v mono" style="font-size:10.5px">/casting/register/${esc(String(l.token).slice(0,10))}…</span></div>
+        </div>
+        ${l.description?`<div class="dc-grid"><div class="dc-kv"><span class="dc-k">About</span><span class="dc-v">${esc(l.description)}</span></div></div>`:''}
+        <div class="dc-foot"><span class="chip">${subs.filter(r=>r.status==='approved').length} approved</span>
+          <div class="dc-acts">
+            <button class="dc-btn" title="Copy link" data-act="copyCastLink" data-url="${esc(registrationUrl(l))}"><span>⧉</span></button>
+            <a class="dc-btn" title="Open registration page" href="${esc(registrationUrl(l))}" target="_blank" rel="noopener" data-stop><span>↗</span></a>
+            <button class="dc-btn" title="${l.is_active?'Deactivate':'Reactivate'}" data-act="toggleCastLink" data-lid="${l.id}" data-on="${l.is_active?'0':'1'}">
+              <span>${l.is_active?'⏸':'▶'}</span></button>
+          </div></div>
+      </div>`;}).join('')
+        :`<div class="empty" style="padding:34px"><div class="e-ico">◎</div>
+          <h4>No registration links yet</h4>
+          <p>Create a link and share it with the university. People sign in with their
+            @paruluniversity.ac.in Google account and their submission arrives in Requests.</p>
+          <button class="btn primary mt3" data-act="newCastLink">＋ Create registration link</button></div>`}
+    </div></div>`;
+}
+/* ── Request review drawer (§19/§20) ─────────────────────────────────────── */
+function drawerCastRequest(id){
+  const q=castRequests().find(x=>x.id===id); if(!q)return;
+  const rv=CR_REVIEW[q.status]||CR_STATUS[q.status]||CR_REVIEW.new;
+  const l=q.link_id?castLink(q.link_id):null;
+  const rec=q.matched_record_id?castRec(q.matched_record_id):null;
+  const ext=q.source==='external';
+  openDrawer(`
+    <div class="dr-head"><div class="dh-txt">
+      <div class="f ac gap2 mb1"><span class="status ${rv.c}"><span class="si">${rv.i}</span>${rv.l}</span>
+        ${ext?'<span class="chip">External registration</span>':'<span class="chip">Internal request</span>'}</div>
+      <h2>${esc(q.applicant_name||q.need)}</h2>
+      <div class="dh-meta"><span class="code">${esc(q.request_id||'')}</span>
+        ${l?`<span>·</span><span>${esc(l.name)}</span>`:''}
+        <span>·</span><span>submitted ${D.fmt(q.created_at)}</span></div></div>
+      <button class="icon-btn" onclick="closeDrawer()">✕</button></div>
+    <div class="dr-body">
+      ${ext?`<h4 class="small b mb2">Applicant</h4>
+        <dl class="kv mb4">
+          <dt>Name</dt><dd>${esc(q.applicant_name||'—')}</dd>
+          <dt>University email</dt><dd class="mono">${esc(q.applicant_email||'—')}</dd>
+          <dt>Type</dt><dd>${esc(q.applicant_type||'—')}</dd>
+          <dt>Department</dt><dd>${esc(q.department||'—')}</dd>
+          <dt>Designation / course</dt><dd>${esc(q.designation||'—')}</dd>
+        </dl>`:''}
+      <h4 class="small b mb2">Casting information</h4>
+      <dl class="kv mb4">
+        <dt>Category</dt><dd>${esc(q.category||'—')}</dd>
+        <dt>Age group</dt><dd>${esc((AGE_GROUPS.find(a=>a[0]===q.age_group)||[])[1]||'—')}</dd>
+        ${q.gender?`<dt>Gender</dt><dd>${esc(q.gender)}</dd>`:''}
+        <dt>Languages</dt><dd>${(q.languages||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join(' ')||'—'}</dd>
+        <dt>Suitable roles</dt><dd>${(q.interests||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join(' ')||'—'}</dd>
+        <dt>Availability</dt><dd>${esc(q.availability||'—')}</dd>
+        <dt>Location</dt><dd>${esc(q.location||'—')}</dd>
+        ${q.due_date?`<dt>Needed by</dt><dd>${D.fmt(q.due_date)}</dd>`:''}
+        ${q.project_id?`<dt>Project</dt><dd>${esc(proj(q.project_id).name)}</dd>`:''}
+      </dl>
+      ${q.intro?`<h4 class="small b mb2">Introduction</h4><div class="note mb4">${esc(q.intro)}</div>`:''}
+      ${ext?`<h4 class="small b mb2">Submission</h4>
+        <dl class="kv mb4">
+          <dt>Campaign</dt><dd>${l?esc(l.name):'—'}</dd>
+          <dt>Consent</dt><dd>${q.consent_given
+            ?`<span class="status st-success"><span class="si">✔</span>Given ${q.consent_at?D.fmt(q.consent_at):''}</span>`
+            :'<span class="status st-warn"><span class="si">◔</span>Not recorded</span>'}</dd>
+        </dl>`:''}
+      ${rec?`<div class="note ok mb4"><b>Approved.</b> Casting record
+        <span class="code">${esc(rec.cast_id)}</span> was created from this request.
+        <button class="btn xs mt2" data-drawer="casting:${rec.id}">Open record</button></div>`:''}
+      ${q.review_note?`<h4 class="small b mb2">Internal review notes</h4>
+        <div class="note warn mb4">${esc(q.review_note)}
+        <div class="xsmall mut3 mt2">Internal only — not shown to the applicant.</div></div>`:''}
+    </div>
+    <div class="dr-foot">
+      ${q.status==='new'?`<button class="btn primary" data-act="reviewReq" data-rid="${q.id}" data-to="under_review">Start review</button>`:''}
+      ${['under_review','clarification'].includes(q.status)?`
+        <button class="btn primary" data-act="reviewReq" data-rid="${q.id}" data-to="approved">🟢 Approve</button>
+        <button class="btn" data-act="reviewReq" data-rid="${q.id}" data-to="clarification">🟡 Clarification</button>
+        <button class="btn danger" data-act="reviewReq" data-rid="${q.id}" data-to="rejected">🔴 Reject</button>`:''}
+      ${['approved','rejected'].includes(q.status)?`<button class="btn ghost ml-auto" data-act="reviewReq" data-rid="${q.id}" data-to="archived">Archive</button>`:''}
+    </div>`);
+  wirePage();
+}
 /* ── Casting detail drawer — read-only from Preview (§9) ─────────────────── */
 function drawerCasting(id){
   const r=castRec(id); if(!r)return;
@@ -3807,7 +3932,8 @@ function viewCastingAdmin(){
   const f=S.filters.castadmin||(S.filters.castadmin={q:'',category:'',age:'',avail:'',consent:'',tag:'',collection:'',view:'all'});
   const all=castRecords();
   const active=all.filter(r=>!r.archived_at);
-  const tabs=[['records','Records',active.length],['requests','Requests',openCastingRequests().length],
+  const tabs=[['records','Records',active.length],['requests','Requests',pendingReview().length],
+    ['external','External registration',castLinks().filter(linkIsOpen).length],
     ['tags','Tags',castTags().length],['collections','Collections',castColls().length],
     ['activity','Activity',0],['work','My casting work',0]];
   return `<div class="page-head">
@@ -3823,6 +3949,7 @@ function viewCastingAdmin(){
 
     <div class="tabs">${tabs.map(([k,l,c])=>`<button data-tab="${k}" data-tabkey="castadmin" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>
     ${tab==='records'?castAdminRecords(f)
+      :tab==='external'?castAdminLinks()
       :tab==='requests'?castAdminRequests()
       :tab==='tags'?castAdminTags()
       :tab==='collections'?castAdminCollections()
@@ -3843,9 +3970,10 @@ function castAdminStats(all,active){
       ${cell('Needs review',castStale().length,'stale',castStale().length?'alert':'')}
     </div>
     <div class="grid g4 sec">
-      ${cell('Collections',castColls().length,'collections')}
-      ${cell('Added this month',all.filter(r=>String(r.created_at||'').slice(0,10)>=month).length,'recent')}
-      ${cell('Updated today',all.filter(r=>String(r.updated_at||'').slice(0,10)===TODAY).length,'today')}
+      ${cell('Registration links',castLinks().filter(linkIsOpen).length,'links')}
+      ${cell('Pending review',castRequests().filter(r=>['new','under_review','clarification'].includes(r.status)).length,'pending',
+        castRequests().filter(r=>['new','under_review'].includes(r.status)).length?'alert':'')}
+      ${cell('Approved requests',castRequests().filter(r=>r.status==='approved').length,'approved')}
       ${cell('My actions today',castAudit(TODAY).length,'work')}
     </div>`;
 }
@@ -3896,34 +4024,71 @@ function castAdminRecords(f){
     </div></div>`;
 }
 function castAdminRequests(){
-  const list=[...castRequests()].sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
-  return `<div class="card"><div class="card-body flush">
+  const f=S.filters.castreq||(S.filters.castreq={q:'',status:'',link:'',type:'',sort:'newest'});
+  let list=castRequests().filter(r=>!r.archived_at||f.status==='archived');
+  if(f.status)list=list.filter(r=>r.status===f.status);
+  if(f.link)list=list.filter(r=>String(r.link_id)===String(f.link));
+  if(f.type)list=list.filter(r=>r.applicant_type===f.type);
+  if(f.q){const q=f.q.toLowerCase();
+    list=list.filter(r=>[r.request_id,r.applicant_name,r.applicant_email,r.department,r.need,
+      r.link_id?(castLink(r.link_id)||{}).name:'',
+      r.matched_record_id?(castRec(r.matched_record_id)||{}).cast_id:''].filter(Boolean).join(' ').toLowerCase().includes(q));}
+  const SORTS={newest:(a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')),
+    oldest:(a,b)=>String(a.created_at||'').localeCompare(String(b.created_at||'')),
+    status:(a,b)=>String(a.status).localeCompare(String(b.status)),
+    applicant:(a,b)=>String(a.applicant_name||a.need||'').localeCompare(String(b.applicant_name||b.need||'')),
+    due:(a,b)=>String(a.due_date||'9').localeCompare(String(b.due_date||'9'))};
+  list=[...list].sort(SORTS[f.sort]||SORTS.newest);
+  const chip=(k,v,l,n)=>`<button class="chip ${f[k]===v?'sel':''}"
+    onclick="S.filters.castreq.${k}=S.filters.castreq.${k}==='${v}'?'':'${v}';render()">${esc(l)}${n!=null?` <span class="mut3">${n}</span>`:''}</button>`;
+  const byStatus=k=>castRequests().filter(r=>r.status===k).length;
+  return `<div class="cast-bar">
+      <div class="search-wrap cast-search"><input class="inp" value="${esc(f.q)}"
+        placeholder="Search request ID, applicant, email, department, campaign, CAST ID…"
+        oninput="S.filters.castreq.q=this.value;render()"></div>
+      <select class="inp" style="height:34px;font-size:12.5px;width:auto"
+        onchange="S.filters.castreq.sort=this.value;render()">
+        ${[['newest','Newest first'],['oldest','Oldest first'],['status','By status'],
+           ['applicant','By applicant'],['due','By needed-by date']].map(([k,l])=>
+          `<option value="${k}" ${f.sort===k?'selected':''}>${l}</option>`).join('')}
+      </select>
+    </div>
+    <div class="f wrap gap1 mb3">
+      ${chip('status','','All')}
+      ${['new','under_review','clarification','approved','rejected','archived'].map(k=>
+        chip('status',k,(CR_REVIEW[k]||{l:k}).l,byStatus(k))).join('')}
+      ${castLinks().length?castLinks().map(l=>chip('link',String(l.id),l.name,linkSubmissions(l.id).length)).join(''):''}
+      ${['Student','Faculty','Staff','Researcher','Alumni','Other'].filter(t=>castRequests().some(r=>r.applicant_type===t))
+        .map(t=>chip('type',t,t)).join('')}
+    </div>
+    <div class="card"><div class="card-body flush">
     ${list.length?list.map(q=>{
+      const rv=CR_REVIEW[q.status]||CR_STATUS[q.status]||CR_REVIEW.new;
+      const l=q.link_id?castLink(q.link_id):null;
       const rec=q.matched_record_id?castRec(q.matched_record_id):null;
-      return `<div class="dc">
+      return `<div class="dc" data-drawer="castreq:${q.id}" style="cursor:pointer">
       <div class="dc-head"><span class="code">${esc(q.request_id||'')}</span>
-        <b class="dc-title">${esc(q.need)}</b>${statusPill(CR_STATUS,q.status)}</div>
+        <b class="dc-title">${esc(q.applicant_name||q.need)}</b>
+        <span class="status ${rv.c}"><span class="si">${rv.i}</span>${rv.l}</span></div>
       <div class="dc-grid">
-        <div class="dc-kv"><span class="dc-k">Requested by</span><span class="dc-v">${esc((user(q.requested_by)||{full_name:'—'}).full_name)}</span></div>
-        <div class="dc-kv"><span class="dc-k">Project</span><span class="dc-v">${q.project_id?esc(proj(q.project_id).name):'—'}</span></div>
-        <div class="dc-kv"><span class="dc-k">Needed by</span><span class="dc-v">${q.due_date?D.fmt(q.due_date):'—'}</span></div>
-        <div class="dc-kv"><span class="dc-k">Age group</span><span class="dc-v">${esc((AGE_GROUPS.find(a=>a[0]===q.age_group)||[])[1]||'—')}</span></div>
+        <div class="dc-kv"><span class="dc-k">${q.source==='external'?'Applicant':'Requested by'}</span>
+          <span class="dc-v">${esc(q.source==='external'?(q.applicant_type||'—'):(user(q.requested_by)||{full_name:'—'}).full_name)}</span></div>
+        <div class="dc-kv"><span class="dc-k">Department</span><span class="dc-v">${esc(q.department||'—')}</span></div>
         <div class="dc-kv"><span class="dc-k">Languages</span><span class="dc-v">${(q.languages||[]).join(', ')||'—'}</span></div>
-        <div class="dc-kv"><span class="dc-k">Matched</span><span class="dc-v">${rec?esc(rec.cast_id+' · '+rec.name):'—'}</span></div>
+        <div class="dc-kv"><span class="dc-k">Campaign</span><span class="dc-v">${l?esc(l.name):(q.source==='external'?'—':'Internal request')}</span></div>
+        <div class="dc-kv"><span class="dc-k">Submitted</span><span class="dc-v">${D.fmt(q.created_at)}</span></div>
+        <div class="dc-kv"><span class="dc-k">Casting record</span><span class="dc-v">${rec?`<span class="code">${esc(rec.cast_id)}</span>`:'—'}</span></div>
       </div>
-      ${q.notes?`<div class="dc-grid"><div class="dc-kv"><span class="dc-k">Notes</span><span class="dc-v">${esc(q.notes)}</span></div></div>`:''}
-      <div class="dc-foot"><span class="chip">${esc(String(q.created_at||'').slice(0,10))}</span>
-        <div class="dc-acts">
-          <select class="inp" style="height:28px;font-size:12px;width:auto;padding:0 24px 0 8px"
-            onchange="ACTIONS.castReqStatus({rid:${q.id},status:this.value})">
-            ${Object.keys(CR_STATUS).map(k=>`<option value="${k}" ${q.status===k?'selected':''}>${CR_STATUS[k].l}</option>`).join('')}
-          </select>
-          <button class="btn xs" data-act="matchCastReq" data-rid="${q.id}">Match a record</button>
-        </div></div>
+      <div class="dc-foot"><span class="chip">${q.source==='external'?'External registration':'Internal'}</span>
+        <div class="dc-acts"><button class="dc-btn" title="Open request" data-drawer="castreq:${q.id}"><span>↗</span></button></div></div>
     </div>`;}).join('')
-      :`<div class="empty" style="padding:30px"><div class="e-ico">✔</div>
-        <h4>No casting requests</h4><p>When someone cannot find what they need, their request appears here.</p></div>`}
-  </div></div>`;
+      :`<div class="empty" style="padding:30px"><div class="e-ico">◎</div>
+        <h4>No casting requests${f.q||f.status||f.link?' match those filters':''}</h4>
+        <p>${castLinks().length?'External submissions arrive here automatically.'
+          :'Create a registration link and share it with the university to start collecting submissions.'}</p>
+        ${!castLinks().length?`<button class="btn primary mt3" onclick="S.tab.castadmin='external';render()">Go to External registration</button>`:''}
+      </div>`}
+    </div></div>`;
 }
 function castAdminTags(){
   const byCat={};
@@ -4061,6 +4226,24 @@ function castingStyles(){
 /* Add / edit casting. One form for both, so a record has a single definition.
    Only production-relevant attributes are collected — no sensitive personal data,
    and nothing inferred from appearance. */
+/* Straight after creating a link, put it in front of the user — the whole point
+   is to copy it somewhere. */
+function showCastLink(l){
+  const url=location.origin+'/casting/register/'+l.token;
+  modal(`<div class="mo-head"><div><h2>Registration link ready</h2>
+      <p>${esc(l.name)} — share this with the university.</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <div class="field"><label class="lbl">Registration link</label>
+        <input class="inp mono" id="nl-url" value="${esc(url)}" readonly onclick="this.select()"></div>
+      <div class="note">Anyone with this link can open the form, but only
+        <b>@${esc(l.allowed_domain)}</b> Google accounts can submit. Applicants never get a NERVE account.</div>
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Done</button>
+      <a class="btn" href="${esc(url)}" target="_blank" rel="noopener">Open registration</a>
+      <button class="btn primary" data-act="copyCastLink" data-url="${esc(url)}">⧉ Copy link</button></div>`);
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+}
 function openCastingForm(cid){
   const r=cid?castRec(+cid):null;
   const v=(k,d)=>esc(r&&r[k]!=null?r[k]:(d??''));
@@ -9389,6 +9572,7 @@ function drawerFor(kind,id){
   if(kind==='card')return drawerCard(id);
   if(kind==='person')return drawerPerson(id);
   if(kind==='casting')return drawerCasting(id);
+  if(kind==='castreq')return drawerCastRequest(id);
 }
 /* W5 — Deliverable drawer */
 function drawerDeliverable(id){
@@ -10422,6 +10606,93 @@ const ACTIONS = {
        typing a second character would be lost. */
     const el=$('#dir-q'); if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);}
   },
+  /* ---- external casting registration ---- */
+  newCastLink:()=>{
+    modal(`<div class="mo-head"><div><h2>Create registration link</h2>
+        <p>Share this with the university. People sign in with their official Google account —
+          they never get a NERVE account, and their submission arrives in Requests.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Campaign name <span class="req">*</span></label>
+          <input class="inp" id="cl-name" placeholder="e.g. University Casting Drive 2026"></div>
+        <div class="field"><label class="lbl">Description</label>
+          <textarea class="inp" id="cl-desc" placeholder="Shown to applicants on the registration page"></textarea></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Opens</label><input class="inp" type="date" id="cl-from"></div>
+          <div class="field"><label class="lbl">Expires</label><input class="inp" type="date" id="cl-until">
+            <div class="hint">After this date the page closes itself. Submissions already made are untouched.</div></div>
+        </div>
+        <div class="field"><label class="lbl">Allowed domain</label>
+          <input class="inp" id="cl-domain" value="paruluniversity.ac.in" ${isAdmin()?'':'readonly'}>
+          <div class="hint">${isAdmin()?'Only change this if a campaign genuinely needs a different domain.'
+            :'Locked to the university domain — only an Admin can change it.'}</div></div>
+        <label class="chk"><input type="checkbox" id="cl-dept"> Require department / institute</label>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="newCastLinkGo">Create registration link</button></div>`,{size:'wide'});
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  newCastLinkGo:()=>{
+    const name=$('#cl-name').value.trim();
+    if(!name){toast('Give the campaign a name','bad');return;}
+    const body={name,description:$('#cl-desc').value.trim(),
+      active_from:$('#cl-from').value||null,expires_on:$('#cl-until').value||null,
+      allowed_domain:$('#cl-domain').value.trim()||'paruluniversity.ac.in',
+      require_department:$('#cl-dept').checked};
+    closeModal();
+    moSync(MO_API.post('/casting-links',body).then(r=>hydrateFromServer().then(()=>r)),
+      (r)=>{loadMyActivity(true);render();
+        if(r&&r.link)showCastLink(r.link);});
+  },
+  copyCastLink:(d,n)=>{
+    const url=n?n.dataset.url:'';
+    if(navigator.clipboard&&url)navigator.clipboard.writeText(url).catch(()=>{});
+    toast('Registration link copied','ok');
+  },
+  toggleCastLink:(d)=>{
+    const on=d.on==='1';
+    moSync(MO_API.patch('/casting-links/'+d.lid,{is_active:on}).then(()=>hydrateFromServer()),
+      ()=>{loadMyActivity(true);render();
+        toast(on?'Registration reopened':'Registration closed — existing submissions are untouched','ok');});
+  },
+  castLinkSubs:(d)=>{
+    S.tab.castadmin='requests';
+    (S.filters.castreq||(S.filters.castreq={})).link=String(d.lid);
+    render();
+  },
+  reviewReq:(d)=>{
+    const q=castRequests().find(x=>x.id===+d.rid); if(!q)return;
+    const to=d.to;
+    const LABEL={under_review:'Start review',approved:'Approve',clarification:'Mark clarification required',
+      rejected:'Reject',archived:'Archive'};
+    modal(`<div class="mo-head"><div><h2>${esc(LABEL[to]||to)}</h2>
+        <p><span class="code">${esc(q.request_id||'')}</span> — ${esc(q.applicant_name||q.need)}</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        ${to==='approved'?`<div class="note mb3"><b>This creates a real casting record.</b>
+          A permanent CAST ID is generated and the person becomes searchable in Casting Preview.
+          The request stays linked as the source.</div>`:''}
+        ${to==='rejected'?`<div class="note warn mb3">No CAST ID is created and nothing enters the casting
+          library. The request stays in history for audit.</div>`:''}
+        ${to==='clarification'?`<div class="note warn mb3">The request stays pending. There is no applicant
+          messaging yet, so follow up with them yourself — this only records that it is needed.</div>`:''}
+        <div class="field"><label class="lbl">Internal note ${to==='clarification'?'<span class="req">*</span>':'<span class="mut3">(optional)</span>'}</label>
+          <textarea class="inp" id="rv-note" placeholder="Internal only — never shown to the applicant">${esc(q.review_note||'')}</textarea></div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn ${to==='rejected'?'danger':'primary'}" data-act="reviewReqGo" data-rid="${q.id}" data-to="${to}">${esc(LABEL[to]||to)}</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  reviewReqGo:(d)=>{
+    const note=($('#rv-note')||{}).value||'';
+    if(d.to==='clarification'&&!note.trim()){toast('Say what needs clarifying','bad');return;}
+    closeModal();
+    moSync(MO_API.post('/casting-requests/'+d.rid+'/review',{status:d.to,note:note.trim()})
+      .then(r=>hydrateFromServer().then(()=>r)),
+      (r)=>{loadMyActivity(true);closeDrawer();render();
+        toast(r&&r.cast_id?('Approved — '+r.cast_id+' created and added to the casting library')
+          :('Request marked '+String(d.to).replace('_',' ')),'ok');});
+  },
   /* ---- Casting library ---------------------------------------------------
      Preview is discovery; management writes through the API and re-reads the
      audit trail so the work log and daily report stay honest. */
@@ -10440,7 +10711,12 @@ const ACTIONS = {
     S.tab.castadmin='records';
     const f=S.filters.castadmin||(S.filters.castadmin={});
     if(d.k==='collections'){S.tab.castadmin='collections';}
+    else if(d.k==='links'){S.tab.castadmin='external';}
     else if(d.k==='work'){S.tab.castadmin='work';}
+    else if(d.k==='pending'){S.tab.castadmin='requests';
+      (S.filters.castreq||(S.filters.castreq={})).status='under_review';}
+    else if(d.k==='approved'){S.tab.castadmin='requests';
+      (S.filters.castreq||(S.filters.castreq={})).status='approved';}
     else {f.view=d.k==='all'?'all':d.k;}
     render();
   },

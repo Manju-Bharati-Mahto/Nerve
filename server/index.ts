@@ -211,6 +211,16 @@ app.use(
   express.static(path.resolve("public/media-ops")),
 );
 
+// ── External casting registration (public, no NERVE account) ───────────────
+// A standalone page: no admin bundle, no session. Every /casting/register/<token>
+// serves the same shell, which reads the token from the URL and authorises each
+// call server-side against a verified Google identity.
+app.use("/casting", express.static(path.resolve("public/casting")));
+app.get("/casting/register/:token", (_req, res) => {
+  res.setHeader("X-Frame-Options", "DENY");
+  res.sendFile(path.resolve("public/casting/index.html"));
+});
+
 app.use(express.json());
 
 // ── Security headers (VAPT TDL-003: missing headers, TDL-005: clickjacking) ─
@@ -527,6 +537,10 @@ app.get("/api/auth/verify-email", asyncHandler(async (req, res) => {
 
 app.use("/api", asyncHandler(async (req, res, next) => {
   if (req.path === "/health" || req.path.startsWith("/auth/")) return next();
+  // The external casting registration is opened by university people who have no
+  // NERVE account (§7). Identity is proven per-request by a verified Google token
+  // inside the handler — never by a session — so these routes bypass the guard.
+  if (req.path.startsWith("/v1/public/")) return next();
   const user = await getSessionUser(req as SessionRequest);
   if (!user) return sendError(res, 401, "Authentication required.");
   res.locals.currentUser = user;

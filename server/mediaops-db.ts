@@ -1129,6 +1129,77 @@ export async function bootstrapMediaOpsDatabase() {
     ) AS x(n,d,o)
     WHERE NOT EXISTS (SELECT 1 FROM mo_casting_collections c WHERE lower(c.name)=lower(x.n))`);
 
+  // ═════════ EXTERNAL CASTING REGISTRATION (§ external intake layer) ════════
+  // A shareable campaign link that university people open WITHOUT a NERVE
+  // account. It is an intake layer on the existing casting system, not a
+  // separate one: a submission becomes an ordinary CR-xxxxx in the same
+  // Requests queue the Casting Manager already works.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_casting_links (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      token TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      -- Locked to the university domain by default; only an Admin should widen it.
+      allowed_domain TEXT NOT NULL DEFAULT 'paruluniversity.ac.in',
+      active_from DATE,
+      expires_on DATE,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      require_department BOOLEAN NOT NULL DEFAULT false,
+      created_by TEXT REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_casting_links_token ON mo_casting_links(token)`);
+
+  // The same requests table carries external submissions — §16 asks for one
+  // review queue, not two. Internal requests simply leave these columns null.
+  const REQ_COLS: Array<[string, string]> = [
+    ["link_id", "BIGINT REFERENCES mo_casting_links(id) ON DELETE SET NULL"],
+    ["source", "TEXT NOT NULL DEFAULT 'internal'"],
+    ["applicant_email", "TEXT"],
+    ["applicant_name", "TEXT"],
+    ["applicant_type", "TEXT"],           // Student / Faculty / Staff / Researcher / Alumni / Other
+    ["department", "TEXT"],
+    ["designation", "TEXT"],
+    ["campus_id", "BIGINT REFERENCES mo_campuses(id)"],
+    ["location", "TEXT"],
+    ["interests", "JSONB NOT NULL DEFAULT '[]'::jsonb"],
+    ["availability", "TEXT"],
+    ["intro", "TEXT"],
+    ["photo_url", "TEXT"],
+    ["consent_given", "BOOLEAN NOT NULL DEFAULT false"],
+    ["consent_at", "TIMESTAMPTZ"],
+    ["review_note", "TEXT"],
+    ["reviewed_at", "TIMESTAMPTZ"],
+    ["archived_at", "TIMESTAMPTZ"],
+    ["submitted_ip", "TEXT"],
+  ];
+  for (const [c, t] of REQ_COLS)
+    await pool.query(`ALTER TABLE mo_casting_requests ADD COLUMN IF NOT EXISTS "${c}" ${t}`);
+  // The external workflow needs review states the internal one never had.
+  await pool.query(`ALTER TABLE mo_casting_requests DROP CONSTRAINT IF EXISTS mo_casting_requests_status_check`);
+  await pool.query(`ALTER TABLE mo_casting_requests ADD CONSTRAINT mo_casting_requests_status_check
+                    CHECK (status IN ('new','reviewing','searching','candidate_found','completed','rejected',
+                                      'under_review','clarification','approved','archived'))`);
+  await pool.query(`ALTER TABLE mo_casting_requests DROP CONSTRAINT IF EXISTS mo_casting_requests_source_check`);
+  await pool.query(`ALTER TABLE mo_casting_requests ADD CONSTRAINT mo_casting_requests_source_check
+                    CHECK (source IN ('internal','external'))`);
+  // One submission per account per campaign — §14. Partial so internal requests
+  // (which have neither) are unaffected.
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_casting_req_once
+                    ON mo_casting_requests(link_id, lower(applicant_email))
+                    WHERE link_id IS NOT NULL AND applicant_email IS NOT NULL`);
+
+  // Traceability both ways: a record knows the request it came from (§23/§29).
+  await pool.query(`ALTER TABLE mo_casting_records ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual'`);
+  await pool.query(`ALTER TABLE mo_casting_records DROP CONSTRAINT IF EXISTS mo_casting_records_source_check`);
+  await pool.query(`ALTER TABLE mo_casting_records ADD CONSTRAINT mo_casting_records_source_check
+                    CHECK (source IN ('manual','external_registration'))`);
+  await pool.query(`ALTER TABLE mo_casting_records ADD COLUMN IF NOT EXISTS source_request_id BIGINT
+                    REFERENCES mo_casting_requests(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE mo_casting_records ADD COLUMN IF NOT EXISTS applicant_email TEXT`);
+
   await seedMediaOpsLookups();
 }
 
