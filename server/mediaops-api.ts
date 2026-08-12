@@ -202,6 +202,15 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["meetings", "mo_meetings", null, ["logged_by"]],
     ["vendor_activities", "mo_vendor_activities", null, ["logged_by"]],
     ["followups", "mo_followups", null, ["owner_id"]],
+    // Casting library. Records ship in full; the preview filters client-side on
+    // consent + archive so an employee never sees a record that is not cleared.
+    ["casting_records", "mo_casting_records", null, ["created_by", "updated_by"]],
+    ["casting_tags", "mo_casting_tags", null, ["created_by"]],
+    ["casting_collections", "mo_casting_collections", null, ["created_by"]],
+    ["casting_record_tags", "mo_casting_record_tags", null, []],
+    ["casting_record_collections", "mo_casting_record_collections", null, []],
+    ["casting_requests", "mo_casting_requests", null, ["requested_by", "handled_by"]],
+    ["project_casting", "mo_project_casting", null, ["linked_by"]],
     ["automation_rules", "mo_automation_rules", null, ["updated_by"]],
     // Admin configuration (CRUD engine) — the DB is the source of truth for every
     // picker/template in the operational UI. Archived rows are excluded (cannot be
@@ -1903,6 +1912,274 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ ok: true, role });
   }));
 
+  // ═══════════════════════ CASTING LIBRARY ══════════════════════════════════
+  // Maintaining the library is a DUTY (D4), not a role: an ordinary employee
+  // carrying the casting_manager flag manages it and stays an employee
+  // everywhere else. Admin always has access.
+  async function canManageCasting(u: CurrentUser): Promise<boolean> {
+    if (isMoAdmin(u)) return true;
+    const r = await pool.query(
+      `SELECT 1 FROM mo_user_duties d JOIN mo_duty_flags f ON f.id=d.duty_flag_id
+        WHERE d.user_id=$1 AND f.code='casting_manager'`, [u.id]);
+    return !!r.rows[0];
+  }
+  const castingAdmin = async (res: express.Response, u: CurrentUser): Promise<boolean> => {
+    if (await canManageCasting(u)) return true;
+    sendError(res, 403, "Only the Casting Manager or an Admin may maintain the casting library.");
+    return false;
+  };
+  /* A Drive folder link, validated rather than trusted — a malformed URL in the
+     library is a dead end for whoever needs the media on a shoot day. */
+  const DRIVE_RE = /^https:\/\/(drive|docs)\.google\.com\/[^\s]+$/i;
+  const nextCastId = async (): Promise<string> => {
+    const { rows } = await pool.query(
+      `SELECT COALESCE(MAX(NULLIF(regexp_replace(cast_id,'\\D','','g'),'')::int),0) AS n FROM mo_casting_records`);
+    return `CAST-${String(Number(rows[0].n) + 1).padStart(5, "0")}`;
+  };
+
+  /* Records the ordinary crew may see: active, and cleared for production use.
+     Consent is the gate — pending/restricted/expired records stay with the
+     Casting Manager until sorted out. */
+  const PREVIEW_WHERE = `archived_at IS NULL AND availability <> 'archived' AND consent_status = 'confirmed'`;
+
+  app.get(`${P}/casting`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const manage = await canManageCasting(u);
+    const q = req.query as Record<string, unknown>;
+    // Management sees everything; everyone else sees only usable records.
+    const all = manage && String(q.scope ?? "") === "all";
+    const conds: string[] = [all ? "1=1" : PREVIEW_WHERE], vals: unknown[] = []; let i = 1;
+    if (q.q) {
+      // One search box across everything a caster would think to type.
+      conds.push(`(r.name ILIKE $${i} OR r.cast_id ILIKE $${i} OR r.profession ILIKE $${i}
+        OR r.category ILIKE $${i} OR r.location ILIKE $${i} OR r.languages::text ILIKE $${i}
+        OR replace(r.age_group,'_',' ') ILIKE $${i} OR r.availability ILIKE $${i}
+        OR EXISTS (SELECT 1 FROM mo_casting_record_tags rt JOIN mo_casting_tags t ON t.id=rt.tag_id
+                    WHERE rt.record_id=r.id AND t.name ILIKE $${i})
+        OR EXISTS (SELECT 1 FROM mo_casting_record_collections rc JOIN mo_casting_collections c ON c.id=rc.collection_id
+                    WHERE rc.record_id=r.id AND c.name ILIKE $${i}))`);
+      vals.push(`%${String(q.q)}%`); i++;
+    }
+    for (const [k, col] of [["category", "r.category"], ["age_group", "r.age_group"],
+      ["availability", "r.availability"], ["consent_status", "r.consent_status"], ["gender", "r.gender"]] as const)
+      if (q[k]) { conds.push(`${col}=$${i++}`); vals.push(String(q[k])); }
+    if (q.tag) { conds.push(`EXISTS (SELECT 1 FROM mo_casting_record_tags rt WHERE rt.record_id=r.id AND rt.tag_id=$${i++})`); vals.push(Number(q.tag)); }
+    if (q.collection) { conds.push(`EXISTS (SELECT 1 FROM mo_casting_record_collections rc WHERE rc.record_id=r.id AND rc.collection_id=$${i++})`); vals.push(Number(q.collection)); }
+    if (q.language) { conds.push(`r.languages::text ILIKE $${i++}`); vals.push(`%${String(q.language)}%`); }
+    const { rows } = await pool.query(
+      `SELECT to_jsonb(r) || jsonb_build_object(
+         'tags', COALESCE((SELECT jsonb_agg(rt.tag_id) FROM mo_casting_record_tags rt WHERE rt.record_id=r.id),'[]'::jsonb),
+         'collections', COALESCE((SELECT jsonb_agg(rc.collection_id) FROM mo_casting_record_collections rc WHERE rc.record_id=r.id),'[]'::jsonb)
+       ) AS row FROM mo_casting_records r WHERE ${conds.join(" AND ")} ORDER BY r.updated_at DESC LIMIT 500`, vals);
+    res.json({ records: rows.map((x) => x.row), can_manage: manage });
+  }));
+
+  app.post(`${P}/casting`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const b = req.body as Record<string, unknown>;
+    const name = String(b.name ?? "").trim();
+    if (!name) return sendError(res, 400, "A casting name or reference is required.");
+    if (!String(b.category ?? "").trim()) return sendError(res, 400, "Pick a primary category.");
+    const drive = String(b.drive_url ?? "").trim();
+    if (!DRIVE_RE.test(drive)) return sendError(res, 400, "Please enter a valid Google Drive folder link.");
+    const castId = await nextCastId();
+    const ins = await pool.query(
+      `INSERT INTO mo_casting_records (cast_id, name, category, profession, age_group, gender, languages,
+         campus_id, location, availability, consent_status, consent_date, consent_scope, review_date,
+         drive_url, notes, created_by, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17) RETURNING *`,
+      [castId, name, String(b.category), (b.profession as string) || null, (b.age_group as string) || null,
+       (b.gender as string) || null, JSON.stringify(b.languages ?? []),
+       b.campus_id ? Number(b.campus_id) : null, (b.location as string) || null,
+       String(b.availability ?? "available"), String(b.consent_status ?? "pending"),
+       (b.consent_date as string) || null, (b.consent_scope as string) || null, (b.review_date as string) || null,
+       drive, String(b.notes ?? ""), u.id]);
+    const rec = ins.rows[0];
+    await setCastingLinks(Number(rec.id), b);
+    await audit(u, "casting.created", "casting_record", rec.id, null,
+      { cast_id: castId, name, category: rec.category, consent_status: rec.consent_status }, req);
+    res.status(201).json({ record: rec });
+  }));
+
+  /* Tag + collection membership, rewritten as a set. Kept in one place so create
+     and update cannot drift apart. */
+  async function setCastingLinks(recordId: number, b: Record<string, unknown>): Promise<void> {
+    if (Array.isArray(b.tags)) {
+      await pool.query(`DELETE FROM mo_casting_record_tags WHERE record_id=$1`, [recordId]);
+      for (const t of b.tags as unknown[])
+        await pool.query(`INSERT INTO mo_casting_record_tags (record_id, tag_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+          [recordId, Number(t)]);
+    }
+    if (Array.isArray(b.collections)) {
+      await pool.query(`DELETE FROM mo_casting_record_collections WHERE record_id=$1`, [recordId]);
+      for (const c of b.collections as unknown[])
+        await pool.query(`INSERT INTO mo_casting_record_collections (record_id, collection_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+          [recordId, Number(c)]);
+    }
+  }
+
+  app.patch(`${P}/casting/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM mo_casting_records WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Casting record not found.");
+    const b = req.body as Record<string, unknown>;
+    if (b.drive_url !== undefined && !DRIVE_RE.test(String(b.drive_url).trim()))
+      return sendError(res, 400, "Please enter a valid Google Drive folder link.");
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    for (const c of ["name", "category", "profession", "age_group", "gender", "location", "availability",
+      "consent_status", "consent_date", "consent_scope", "review_date", "drive_url", "notes"])
+      if (b[c] !== undefined) { fields.push(`${c}=$${i++}`); vals.push(b[c] === "" ? null : b[c]); }
+    if (b.languages !== undefined) { fields.push(`languages=$${i++}`); vals.push(JSON.stringify(b.languages)); }
+    if (b.campus_id !== undefined) { fields.push(`campus_id=$${i++}`); vals.push(b.campus_id ? Number(b.campus_id) : null); }
+    fields.push(`updated_by=$${i++}`); vals.push(u.id);
+    fields.push(`updated_at=NOW()`);
+    vals.push(id);
+    const rec = (await pool.query(`UPDATE mo_casting_records SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals)).rows[0];
+    await setCastingLinks(id, b);
+    // Consent and Drive changes are the ones worth seeing on their own in the log.
+    const action = b.consent_status !== undefined && b.consent_status !== cur.consent_status ? "casting.consent_changed"
+      : b.drive_url !== undefined && b.drive_url !== cur.drive_url ? "casting.drive_changed"
+      : Array.isArray(b.tags) && b.name === undefined ? "casting.tagged" : "casting.updated";
+    await audit(u, action, "casting_record", id,
+      { cast_id: cur.cast_id, consent_status: cur.consent_status, availability: cur.availability, drive_url: cur.drive_url },
+      { cast_id: rec.cast_id, consent_status: rec.consent_status, availability: rec.availability, drive_url: rec.drive_url }, req);
+    res.json({ record: rec });
+  }));
+
+  /* Archive, never hard-delete: a record referenced by past projects or requests
+     must stay readable. Admin force-delete lives behind ?purge=1. */
+  app.delete(`${P}/casting/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM mo_casting_records WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Casting record not found.");
+    const purge = String((req.query as Record<string, unknown>).purge ?? "") === "1";
+    if (purge) {
+      if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may permanently delete a casting record.");
+      await pool.query(`DELETE FROM mo_casting_records WHERE id=$1`, [id]);
+      await audit(u, "casting.deleted", "casting_record", id, { cast_id: cur.cast_id, name: cur.name }, null, req);
+      return res.json({ ok: true, purged: true });
+    }
+    await pool.query(`UPDATE mo_casting_records SET archived_at=NOW(), availability='archived', updated_by=$1 WHERE id=$2`, [u.id, id]);
+    await audit(u, "casting.archived", "casting_record", id, { cast_id: cur.cast_id, availability: cur.availability },
+      { availability: "archived" }, req);
+    res.json({ ok: true });
+  }));
+
+  app.post(`${P}/casting/:id/restore`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const rec = (await pool.query(
+      `UPDATE mo_casting_records SET archived_at=NULL, availability='available', updated_by=$1 WHERE id=$2 RETURNING *`,
+      [u.id, id])).rows[0];
+    if (!rec) return sendError(res, 404, "Casting record not found.");
+    await audit(u, "casting.restored", "casting_record", id, { availability: "archived" }, { cast_id: rec.cast_id, availability: "available" }, req);
+    res.json({ record: rec });
+  }));
+
+  /* Drive link check. HEAD tells us whether the URL still resolves; it cannot see
+     inside a private folder, which is why the result is recorded as "reachable"
+     rather than claimed as verified access. */
+  app.post(`${P}/casting/:id/check-drive`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const rec = (await pool.query(`SELECT drive_url, cast_id FROM mo_casting_records WHERE id=$1`, [id])).rows[0];
+    if (!rec) return sendError(res, 404, "Casting record not found.");
+    let ok = false;
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 6000);
+      const r = await fetch(String(rec.drive_url), { method: "HEAD", redirect: "follow", signal: ctl.signal });
+      clearTimeout(t);
+      ok = r.status < 400;
+    } catch { ok = false; }
+    await pool.query(`UPDATE mo_casting_records SET drive_ok=$1, drive_checked_at=NOW() WHERE id=$2`, [ok, id]);
+    await audit(u, "casting.drive_checked", "casting_record", id, null, { cast_id: rec.cast_id, reachable: ok }, req);
+    res.json({ ok, checked_at: new Date().toISOString() });
+  }));
+
+  // ── Casting requests ──────────────────────────────────────────────────────
+  app.post(`${P}/casting-requests`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;               // anyone on the crew may ask
+    const b = req.body as Record<string, unknown>;
+    const need = String(b.need ?? "").trim();
+    if (!need) return sendError(res, 400, "Describe the casting you need.");
+    const n = (await pool.query(
+      `SELECT COALESCE(MAX(NULLIF(regexp_replace(request_id,'\\D','','g'),'')::int),0) AS n FROM mo_casting_requests`)).rows[0].n;
+    const code = `CR-${String(Number(n) + 1).padStart(5, "0")}`;
+    const ins = await pool.query(
+      `INSERT INTO mo_casting_requests (request_id, requested_by, project_id, need, category, age_group, gender,
+         languages, due_date, notes, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'new') RETURNING *`,
+      [code, u.id, b.project_id ? Number(b.project_id) : null, need, (b.category as string) || null,
+       (b.age_group as string) || null, (b.gender as string) || null, JSON.stringify(b.languages ?? []),
+       (b.due_date as string) || null, String(b.notes ?? "")]);
+    await audit(u, "casting_request.created", "casting_request", ins.rows[0].id, null, { request_id: code, need }, req);
+    // Tell whoever holds the duty, so a request cannot sit unseen.
+    const managers = (await pool.query(
+      `SELECT d.user_id FROM mo_user_duties d JOIN mo_duty_flags f ON f.id=d.duty_flag_id WHERE f.code='casting_manager'`)).rows;
+    for (const m of managers)
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'casting',$2,$3,'casting_request',$4)`,
+        [m.user_id, "New casting request", `${code}: ${need}`, ins.rows[0].id]);
+    res.status(201).json({ request: ins.rows[0] });
+  }));
+
+  app.patch(`${P}/casting-requests/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM mo_casting_requests WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Casting request not found.");
+    const b = req.body as Record<string, unknown>;
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    if (b.status !== undefined) { fields.push(`status=$${i++}`); vals.push(String(b.status)); }
+    if (b.matched_record_id !== undefined) {
+      fields.push(`matched_record_id=$${i++}`); vals.push(b.matched_record_id ? Number(b.matched_record_id) : null);
+    }
+    if (b.notes !== undefined) { fields.push(`notes=$${i++}`); vals.push(String(b.notes)); }
+    fields.push(`handled_by=$${i++}`); vals.push(u.id);
+    fields.push(`updated_at=NOW()`);
+    vals.push(id);
+    const r = (await pool.query(`UPDATE mo_casting_requests SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals)).rows[0];
+    await audit(u, r.status === "completed" ? "casting_request.completed" : "casting_request.updated",
+      "casting_request", id, { status: cur.status }, { request_id: r.request_id, status: r.status, matched: r.matched_record_id }, req);
+    if (r.status === "completed" && cur.requested_by)
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'casting',$2,$3,'casting_request',$4)`,
+        [cur.requested_by, "Your casting request is ready", `${r.request_id} has been completed.`, id]);
+    res.json({ request: r });
+  }));
+
+  // ── §33 link casting to a project ─────────────────────────────────────────
+  app.post(`${P}/projects/:id/casting`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const pid = parseInt(getSingleParam(req.params.id), 10);
+    const recId = Number((req.body as Record<string, unknown>).record_id);
+    if (!recId) return sendError(res, 400, "record_id is required.");
+    await pool.query(
+      `INSERT INTO mo_project_casting (project_id, record_id, linked_by) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+      [pid, recId, u.id]);
+    await audit(u, "casting.linked_to_project", "casting_record", recId, null, { project_id: pid }, req);
+    res.json({ ok: true });
+  }));
+  app.delete(`${P}/projects/:id/casting/:recordId`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const pid = parseInt(getSingleParam(req.params.id), 10);
+    const recId = parseInt(getSingleParam(req.params.recordId), 10);
+    await pool.query(`DELETE FROM mo_project_casting WHERE project_id=$1 AND record_id=$2`, [pid, recId]);
+    await audit(u, "casting.unlinked_from_project", "casting_record", recId, { project_id: pid }, null, req);
+    res.json({ ok: true });
+  }));
+
   // ═══════════ OPERATIONS COORDINATOR — intake → conversion → dispatch ══════
   // The coordinator owns the first and last stage of a project. Everything in
   // between (assignment, production, review, approval) stays in the modules that
@@ -3003,6 +3280,25 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         { name: "is_current", label: "Current year", type: "switch", def: false }],
       cols: ["label", "start_date", "end_date", "is_current"],
       deps: [{ table: "mo_projects", fk: "academic_year_id", label: "Projects" }] },
+    casting_tags: { key: "casting_tags", label: "Casting Tags", table: "mo_casting_tags",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "category", label: "Category", type: "select",
+          options: ["profession", "production_type", "age_group", "language", "requirement", "other"],
+          def: "other", required: true },
+        { name: "description", label: "Description", type: "text" },
+        { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
+      cols: ["name", "category", "description", "sort_order"],
+      // A tag already on a record is archived, never deleted — historical casting
+      // records must keep reading the same way.
+      deps: [{ table: "mo_casting_record_tags", fk: "tag_id", label: "Casting records" }] },
+    casting_collections: { key: "casting_collections", label: "Casting Collections", table: "mo_casting_collections",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "description", label: "Description", type: "text" },
+        { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
+      cols: ["name", "description", "sort_order"],
+      deps: [{ table: "mo_casting_record_collections", fk: "collection_id", label: "Casting records" }] },
     work_types: { key: "work_types", label: "Work Types", table: "mo_work_types",
       fields: [
         { name: "name", label: "Name", type: "text", required: true },
