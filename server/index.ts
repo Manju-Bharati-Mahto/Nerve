@@ -221,8 +221,11 @@ app.get("/casting/register/:token", (_req, res) => {
   res.sendFile(path.resolve("public/casting/index.html"));
 });
 // External media request portal — same pattern, same guarantees.
+// Canonical path is /request/register/:token so both portals share one public
+// convention (/<portal>/register/<token>). /request/new/:token is kept as an
+// alias because links may already have been circulated under it.
 app.use("/request", express.static(path.resolve("public/request")));
-app.get("/request/new/:token", (_req, res) => {
+app.get(["/request/register/:token", "/request/new/:token"], (_req, res) => {
   res.setHeader("X-Frame-Options", "DENY");
   res.sendFile(path.resolve("public/request/index.html"));
 });
