@@ -119,6 +119,15 @@ systemctl reload nginx
 bash /srv/nerve/app/deploy/scripts/deploy.sh
 ```
 
+> **The `cp` line above is first-install only — do not re-run it on a live host.**
+> Once certbot has issued a certificate it edits the vhost in place, so the live
+> file terminates TLS, speaks HTTP/2 and sets HSTS/CSP. `nginx/nerve.conf` in this
+> repo has none of that and listens on plain `:80`; copying it over a live vhost
+> drops TLS and takes the site down. To change routing on a running host, patch the
+> live file instead — `deploy/scripts/add-portal-routes.sh` does exactly that for the
+> public portals: it backs up, inserts, runs `nginx -t`, and restores the backup if
+> validation fails.
+
 What changed
 - Built the frontend and published it into `/srv/nerve/releases/current`.
 - Configured Nginx to serve the SPA and proxy `/api` to the local API container.
