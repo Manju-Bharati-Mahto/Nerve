@@ -2270,7 +2270,7 @@ const hasDuty = (code,uid=S.me)=>duties(uid).includes(code);
 /* team scope: users a TL owns */
 function myTeamIds(uid=S.me){
   const u=user(uid);
-  if(u.role==='admin') return DB.users.map(x=>x.id);
+  if(u.role==='admin') return DB.users.filter(x=>x.is_active).map(x=>x.id);
   if(u.role==='team_lead'){
     /* A lead normally runs one team, but Admin may override that (§7), so gather
        every team they lead rather than just the first. */
@@ -2360,6 +2360,13 @@ const CAPS = {
   'boards.manage':          {employee:'-',team_lead:'A',admin:'A'},
   'equipment.book':         {employee:'S',team_lead:'S',admin:'S',coordinator:'S'},
   'equipment.manage':       {employee:'CUSTODIAN',team_lead:'-',admin:'A'},
+  /* Casting. Everyone may browse the library and raise a request; maintaining it
+     is a DUTY (D4) rather than a role, so an ordinary employee carrying the
+     Casting Manager flag gets management rights without changing what they are
+     anywhere else in Nerve. */
+  'casting.view':           {employee:'A',team_lead:'A',admin:'A',coordinator:'A'},
+  'casting.request':        {employee:'A',team_lead:'A',admin:'A',coordinator:'A'},
+  'casting.manage':         {employee:'CASTING',team_lead:'CASTING',admin:'A',coordinator:'CASTING'},
   'equipment.analytics':    {employee:'-',team_lead:'A',admin:'A'},
   'leave.request':          {employee:'S',team_lead:'S',admin:'S',coordinator:'S'},
   'leave.approve':          {employee:'-',team_lead:'T',admin:'A'},
@@ -2387,6 +2394,7 @@ function can(cap,ctx={}){
     case 'OWNER': return ctx.owner_id===S.me;
     case 'PM': return ctx.project_id!==undefined && isPMof(ctx.project_id);
     case 'CUSTODIAN': return hasDuty('equipment_custodian');
+    case 'CASTING': return hasDuty('casting_manager');
     default: return false;
   }
 }
@@ -2908,6 +2916,11 @@ const NAV = [
     {r:'#/media/reports', i:'file',  l:'Daily Reports',       badge:()=>reviewQueueCount()||''},
     {r:'#/media/boards',  i:'board', l:'Production Board',    cap:'boards.manage'}
   ]},
+  {group:'Casting',items:[
+    {r:'#/media/casting',i:'users', l:'Casting Preview',    cap:'casting.view'},
+    {r:'#/media/casting-admin',i:'layers',l:'Casting Management', cap:'casting.manage',
+      badge:()=>(typeof openCastingRequests==='function'?openCastingRequests().length:0)||''}
+  ]},
   {group:'Assets',items:[
     {r:'#/media/library', i:'layers',l:'Media Library'},
     {r:'#/media/equipment',i:'camera',l:'Equipment',          badge:()=>overdueEquipment().length||''}
@@ -2942,7 +2955,15 @@ function navShow(it,r){
      → admin ladder (the Operations Coordinator). */
   if(it.roles)return it.roles.includes(r);
   if(it.minRole&&(ROLE_RANK[r]??0)<ROLE_RANK[it.minRole])return false;
-  if(it.cap){const v=(CAPS[it.cap]||{})[r];return !!v&&v!=='-';}
+  if(it.cap){
+    /* For the signed-in user, ask can() — it resolves duty-conditional verdicts
+       like 'CASTING'/'CUSTODIAN', so someone without the duty does not see the
+       entry. For any OTHER role (the Module Access dialog) fall back to the raw
+       verdict, which answers the different question that dialog asks: could this
+       role ever hold this module? */
+    if(r===role())return can(it.cap);
+    const v=(CAPS[it.cap]||{})[r]; return !!v&&v!=='-';
+  }
   return true;
 }
 /* ── Per-user Module Access ────────────────────────────────────────────────
@@ -3066,6 +3087,8 @@ const ROUTES = [
   [/^#\/media\/requests$/,             ()=>viewRequests()],
   [/^#\/media\/dispatch$/,             ()=>viewDispatch()],
   [/^#\/media\/followups$/,            ()=>viewFollowups()],
+  [/^#\/media\/casting$/,              ()=>viewCasting()],
+  [/^#\/media\/casting-admin$/,        ()=>viewCastingAdmin()],
   [/^#\/media\/spec$/,                 ()=>viewSpec()]
 ];
 function render(){
@@ -3577,6 +3600,733 @@ function drawerPerson(uid){
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+   CASTING LIBRARY
+   Two surfaces over one dataset: Preview (everyone — discovery) and Management
+   (the Casting Manager duty — maintenance). NERVE stores metadata, consent and
+   relationships; the media itself stays in Drive, so this never becomes a second
+   Media Library.
+   ══════════════════════════════════════════════════════════════════════════ */
+const CAST_AVAIL={
+  available:{l:'Available',c:'st-success',i:'●'}, limited:{l:'Limited',c:'st-warn',i:'◐'},
+  unavailable:{l:'Unavailable',c:'st-neutral',i:'○'}, archived:{l:'Archived',c:'st-neutral',i:'⛁'}
+};
+const CAST_CONSENT={
+  confirmed:{l:'Consent confirmed',c:'st-success',i:'✔'}, pending:{l:'Consent pending',c:'st-warn',i:'◔'},
+  restricted:{l:'Restricted',c:'st-danger',i:'⚑'}, expired:{l:'Consent expired',c:'st-danger',i:'⌛'}
+};
+const AGE_GROUPS=[['child','Child'],['teen','Teen'],['young_adult','Young Adult'],
+  ['adult','Adult'],['middle_aged','Middle-aged'],['senior','Senior']];
+const CAST_CATEGORIES=['Profession','Student','Faculty','Staff','Family','Senior','Child',
+  'Professional','Athlete','Community','Other'];
+const TAG_CATEGORIES=[['profession','Profession'],['production_type','Production type'],
+  ['age_group','Age group'],['language','Language'],['requirement','Casting requirement'],['other','Other']];
+/* Review states. The green/amber/red system is carried by the badge colour AND
+   the label — never colour alone (§18). */
+const CR_REVIEW={
+  new:{l:'New',c:'st-info',i:'✦'},
+  under_review:{l:'Under review',c:'st-warn',i:'◔'},
+  clarification:{l:'Clarification required',c:'st-warn',i:'?'},
+  approved:{l:'Approved',c:'st-success',i:'✔'},
+  rejected:{l:'Rejected',c:'st-danger',i:'✕'},
+  archived:{l:'Archived',c:'st-neutral',i:'⛁'}
+};
+const castLinks = ()=>(DB.casting_links||[]).sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
+const castLink  = id=>(DB.casting_links||[]).find(l=>l.id===id)||null;
+const extRequests = ()=>castRequests().filter(r=>r.source==='external');
+const linkSubmissions = id=>extRequests().filter(r=>r.link_id===id);
+const linkIsOpen = l=>{
+  if(!l.is_active)return false;
+  if(l.active_from&&String(l.active_from).slice(0,10)>TODAY)return false;
+  if(l.expires_on&&String(l.expires_on).slice(0,10)<TODAY)return false;
+  return true;
+};
+const registrationUrl = l=>location.origin+'/casting/register/'+l.token;
+const CR_STATUS={
+  new:{l:'New',c:'st-info',i:'✦'}, reviewing:{l:'Reviewing',c:'st-warn',i:'◔'},
+  searching:{l:'Searching',c:'st-warn',i:'⌕'}, candidate_found:{l:'Candidate found',c:'st-brand',i:'◆'},
+  completed:{l:'Completed',c:'st-success',i:'✔'}, rejected:{l:'Rejected',c:'st-neutral',i:'✕'}
+};
+const castRecords = ()=>(DB.casting_records||[]);
+const castTags    = ()=>(DB.casting_tags||[]).filter(t=>t.is_active!==false&&!t.archived_at)
+  .sort((a,b)=>(a.sort_order||0)-(b.sort_order||0)||a.name.localeCompare(b.name));
+const castColls   = ()=>(DB.casting_collections||[]).filter(c=>c.is_active!==false&&!c.archived_at)
+  .sort((a,b)=>(a.sort_order||0)-(b.sort_order||0)||a.name.localeCompare(b.name));
+const castRequests= ()=>(DB.casting_requests||[]);
+const openCastingRequests = ()=>castRequests().filter(r=>!['completed','rejected'].includes(r.status));
+const tagsOf  = rid=>(DB.casting_record_tags||[]).filter(x=>x.record_id===rid).map(x=>x.tag_id);
+const collsOf = rid=>(DB.casting_record_collections||[]).filter(x=>x.record_id===rid).map(x=>x.collection_id);
+const castTag = id=>(DB.casting_tags||[]).find(t=>t.id===id)||{name:'—',category:'other'};
+const castColl= id=>(DB.casting_collections||[]).find(c=>c.id===id)||{name:'—'};
+const castRec = id=>castRecords().find(r=>r.id===id);
+/* Only records cleared for production reach the crew: active, not archived, and
+   consent confirmed. Everything else stays with the Casting Manager. */
+const previewRecords = ()=>castRecords().filter(r=>!r.archived_at&&r.availability!=='archived'&&r.consent_status==='confirmed');
+/* §31 — a record that needs the Casting Manager's attention. */
+function castNeedsReview(r){
+  if(r.consent_status==='pending'||r.consent_status==='expired')return true;
+  if(r.review_date&&String(r.review_date).slice(0,10)<=TODAY)return true;
+  if(r.drive_ok===false)return true;
+  const touched=String(r.updated_at||r.created_at||'').slice(0,10);
+  return !!touched&&D.diff(TODAY,touched)>180;
+}
+const castStale = ()=>castRecords().filter(r=>!r.archived_at&&castNeedsReview(r));
+
+/* One matcher for every search box, so Preview and Management agree on what a
+   query means. Covers name, CAST ID, profession, category, tags, collection,
+   language, age group and availability (§19). */
+function castMatches(r,q){
+  if(!q)return true;
+  q=q.toLowerCase();
+  const hay=[r.name,r.cast_id,r.profession,r.category,r.location,r.availability,
+    (AGE_GROUPS.find(a=>a[0]===r.age_group)||[])[1],
+    ...(r.languages||[]),
+    ...tagsOf(r.id).map(t=>castTag(t).name),
+    ...collsOf(r.id).map(c=>castColl(c).name)].filter(Boolean).join(' ').toLowerCase();
+  return hay.includes(q);
+}
+function castFilter(list,f){
+  let out=list.filter(r=>castMatches(r,(f.q||'').trim()));
+  if(f.category)   out=out.filter(r=>r.category===f.category);
+  if(f.age)        out=out.filter(r=>r.age_group===f.age);
+  if(f.avail)      out=out.filter(r=>r.availability===f.avail);
+  if(f.consent)    out=out.filter(r=>r.consent_status===f.consent);
+  if(f.gender)     out=out.filter(r=>String(r.gender||'').toLowerCase()===f.gender.toLowerCase());
+  if(f.language)   out=out.filter(r=>(r.languages||[]).some(l=>String(l).toLowerCase()===f.language.toLowerCase()));
+  if(f.tag)        out=out.filter(r=>tagsOf(r.id).includes(+f.tag));
+  if(f.collection) out=out.filter(r=>collsOf(r.id).includes(+f.collection));
+  return out;
+}
+const castLanguages = ()=>[...new Set(castRecords().flatMap(r=>r.languages||[]))].sort();
+
+/* ── Casting Preview — discovery for the whole crew ───────────────────────── */
+function viewCasting(){
+  if(!can('casting.view'))return roleDenied('You do not have access to the casting library.');
+  const f=S.filters.cast||(S.filters.cast={q:'',category:'',age:'',avail:'',gender:'',language:'',tag:'',collection:''});
+  const all=previewRecords();
+  const list=castFilter(all,f);
+  const chip=(k,v,l)=>`<button class="chip ${f[k]===v?'sel':''}" onclick="ACTIONS.castFilter({k:'${k}',v:'${esc(v)}'})">${esc(l)}</button>`;
+  return `<div class="page-head">
+      <div><div class="crumb">Casting library</div><h1 class="page-title">Casting</h1>
+      <div class="page-sub">Find people and casting references for upcoming productions.
+        Media stays in Drive — this is the index over it.</div></div>
+      <div class="page-actions">
+        ${can('casting.request')?`<button class="btn primary" data-act="newCastRequest">＋ Request casting</button>`:''}
+        ${can('casting.manage')?`<a class="btn" href="#/media/casting-admin">Casting Management</a>`:''}</div></div>
+
+    <div class="cast-bar">
+      <div class="search-wrap cast-search">
+        <input class="inp" id="cast-q" value="${esc(f.q)}" placeholder="Search people, professions, tags, categories…"
+          oninput="ACTIONS.castSearch({q:this.value})">
+      </div>
+      <div class="f wrap gap1">
+        ${chip('category','','All categories')}
+        ${CAST_CATEGORIES.filter(c=>all.some(r=>r.category===c)).map(c=>chip('category',c,c)).join('')}
+      </div>
+    </div>
+    <div class="f wrap gap1 mb3">
+      ${AGE_GROUPS.filter(([k])=>all.some(r=>r.age_group===k)).map(([k,l])=>chip('age',k,l)).join('')}
+      ${['available','limited','unavailable'].filter(k=>all.some(r=>r.availability===k)).map(k=>chip('avail',k,CAST_AVAIL[k].l)).join('')}
+      ${castLanguages().map(l=>chip('language',l,l)).join('')}
+      ${castColls().filter(c=>all.some(r=>collsOf(r.id).includes(c.id))).map(c=>chip('collection',String(c.id),c.name)).join('')}
+      ${(f.q||f.category||f.age||f.avail||f.language||f.collection||f.tag||f.gender)
+        ? `<button class="chip" onclick="ACTIONS.castClear()">✕ Clear filters</button>`:''}
+    </div>
+
+    ${list.length?`<div class="grid g3">${list.map(castCard).join('')}</div>`
+      :`<div class="card"><div class="empty" style="padding:34px"><div class="e-ico">◎</div>
+        <h4>${all.length?'No matching casting found':'No casting records yet'}</h4>
+        <p>${all.length?'Nothing in the library matches that search. Tell the Casting Manager what you need and they will look.'
+          :'The casting library is empty. Once the Casting Manager adds records they will appear here.'}</p>
+        ${can('casting.request')?`<button class="btn primary mt3" data-act="newCastRequest">Request casting</button>`:''}
+      </div></div>`}
+    ${castingStyles()}`;
+}
+/* A casting card. Deliberately shows only production-relevant attributes — this
+   is a casting index, not a personal directory. */
+function castCard(r){
+  const av=CAST_AVAIL[r.availability]||CAST_AVAIL.available;
+  const tags=tagsOf(r.id).slice(0,3);
+  return `<div class="card cast-card" data-drawer="casting:${r.id}" style="cursor:pointer">
+    <div class="card-body">
+      <div class="cast-thumb">${r.drive_url&&r.drive_ok!==false
+        ? `<span class="cast-ph">⛁<span>Media in Drive</span></span>`
+        : `<span class="cast-ph mut">◌<span>No preview</span></span>`}</div>
+      <div class="between mt3">
+        <b class="trunc" style="font-size:14.5px">${esc(r.name)}</b>
+        ${statusPill(CAST_AVAIL,r.availability)}
+      </div>
+      <div class="f wrap gap1 mt1">
+        <span class="code">${esc(r.cast_id||'')}</span>
+        <span class="chip">${esc(r.category)}</span>
+        ${r.age_group?`<span class="chip">${esc((AGE_GROUPS.find(a=>a[0]===r.age_group)||[])[1]||r.age_group)}</span>`:''}
+      </div>
+      ${r.profession?`<div class="small mut mt2">${esc(r.profession)}</div>`:''}
+      ${tags.length?`<div class="f wrap gap1 mt2">${tags.map(t=>`<span class="tag">${esc(castTag(t).name)}</span>`).join('')}
+        ${tagsOf(r.id).length>3?`<span class="tag mut3">+${tagsOf(r.id).length-3}</span>`:''}</div>`:''}
+      <div class="divider"></div>
+      <div class="between"><span class="small mut3">${(r.languages||[]).join(', ')||'—'}</span>
+        <button class="btn xs">View casting</button></div>
+    </div></div>`;
+}
+/* ── Registration links (§3/§32) ─────────────────────────────────────────── */
+const pendingReview = ()=>castRequests().filter(r=>['new','under_review','clarification','reviewing','searching','candidate_found'].includes(r.status));
+function castAdminLinks(){
+  const links=castLinks();
+  return `<div class="card"><div class="card-head"><h3>Casting registration links</h3>
+      <div class="ca"><span class="chip">${links.filter(linkIsOpen).length} open</span>
+        <button class="btn sm primary" data-act="newCastLink">＋ Create registration link</button></div></div>
+    <div class="card-body flush">
+      ${links.length?links.map(l=>{
+        const subs=linkSubmissions(l.id);
+        const open=linkIsOpen(l);
+        const last=subs.map(r=>r.created_at).sort().slice(-1)[0];
+        return `<div class="dc">
+        <div class="dc-head"><span class="dc-ico">◆</span>
+          <b class="dc-title">${esc(l.name)}</b>
+          ${open?'<span class="status st-success"><span class="si">●</span>Active</span>'
+                :`<span class="status st-neutral"><span class="si">○</span>${l.is_active?(l.expires_on&&String(l.expires_on).slice(0,10)<TODAY?'Expired':'Not open yet'):'Deactivated'}</span>`}</div>
+        <div class="dc-grid">
+          <div class="dc-kv"><span class="dc-k">Submissions</span><span class="dc-v">
+            <button class="btn xs" data-act="castLinkSubs" data-lid="${l.id}">${subs.length}</button></span></div>
+          <div class="dc-kv"><span class="dc-k">Created</span><span class="dc-v">${D.fmt(l.created_at)}${l.created_by?' · '+esc((user(l.created_by)||{full_name:'—'}).full_name.split(' ')[0]):''}</span></div>
+          <div class="dc-kv"><span class="dc-k">Last submission</span><span class="dc-v">${last?D.fmt(last):'—'}</span></div>
+          <div class="dc-kv"><span class="dc-k">Allowed domain</span><span class="dc-v">@${esc(l.allowed_domain)}</span></div>
+          <div class="dc-kv"><span class="dc-k">Expires</span><span class="dc-v">${l.expires_on?D.fmt(l.expires_on):'no expiry'}</span></div>
+          <div class="dc-kv"><span class="dc-k">Link</span><span class="dc-v mono" style="font-size:10.5px">/casting/register/${esc(String(l.token).slice(0,10))}…</span></div>
+        </div>
+        ${l.description?`<div class="dc-grid"><div class="dc-kv"><span class="dc-k">About</span><span class="dc-v">${esc(l.description)}</span></div></div>`:''}
+        <div class="dc-foot"><span class="chip">${subs.filter(r=>r.status==='approved').length} approved</span>
+          <div class="dc-acts">
+            <button class="dc-btn" title="Copy link" data-act="copyCastLink" data-url="${esc(registrationUrl(l))}"><span>⧉</span></button>
+            <a class="dc-btn" title="Open registration page" href="${esc(registrationUrl(l))}" target="_blank" rel="noopener" data-stop><span>↗</span></a>
+            <button class="dc-btn" title="${l.is_active?'Deactivate':'Reactivate'}" data-act="toggleCastLink" data-lid="${l.id}" data-on="${l.is_active?'0':'1'}">
+              <span>${l.is_active?'⏸':'▶'}</span></button>
+          </div></div>
+      </div>`;}).join('')
+        :`<div class="empty" style="padding:34px"><div class="e-ico">◎</div>
+          <h4>No registration links yet</h4>
+          <p>Create a link and share it with the university. People sign in with their
+            @paruluniversity.ac.in Google account and their submission arrives in Requests.</p>
+          <button class="btn primary mt3" data-act="newCastLink">＋ Create registration link</button></div>`}
+    </div></div>`;
+}
+/* ── Request review drawer (§19/§20) ─────────────────────────────────────── */
+function drawerCastRequest(id){
+  const q=castRequests().find(x=>x.id===id); if(!q)return;
+  const rv=CR_REVIEW[q.status]||CR_STATUS[q.status]||CR_REVIEW.new;
+  const l=q.link_id?castLink(q.link_id):null;
+  const rec=q.matched_record_id?castRec(q.matched_record_id):null;
+  const ext=q.source==='external';
+  openDrawer(`
+    <div class="dr-head"><div class="dh-txt">
+      <div class="f ac gap2 mb1"><span class="status ${rv.c}"><span class="si">${rv.i}</span>${rv.l}</span>
+        ${ext?'<span class="chip">External registration</span>':'<span class="chip">Internal request</span>'}</div>
+      <h2>${esc(q.applicant_name||q.need)}</h2>
+      <div class="dh-meta"><span class="code">${esc(q.request_id||'')}</span>
+        ${l?`<span>·</span><span>${esc(l.name)}</span>`:''}
+        <span>·</span><span>submitted ${D.fmt(q.created_at)}</span></div></div>
+      <button class="icon-btn" onclick="closeDrawer()">✕</button></div>
+    <div class="dr-body">
+      ${ext?`<h4 class="small b mb2">Applicant</h4>
+        <dl class="kv mb4">
+          <dt>Name</dt><dd>${esc(q.applicant_name||'—')}</dd>
+          <dt>University email</dt><dd class="mono">${esc(q.applicant_email||'—')}</dd>
+          <dt>Type</dt><dd>${esc(q.applicant_type||'—')}</dd>
+          <dt>Department</dt><dd>${esc(q.department||'—')}</dd>
+          <dt>Designation / course</dt><dd>${esc(q.designation||'—')}</dd>
+        </dl>`:''}
+      <h4 class="small b mb2">Casting information</h4>
+      <dl class="kv mb4">
+        <dt>Category</dt><dd>${esc(q.category||'—')}</dd>
+        <dt>Age group</dt><dd>${esc((AGE_GROUPS.find(a=>a[0]===q.age_group)||[])[1]||'—')}</dd>
+        ${q.gender?`<dt>Gender</dt><dd>${esc(q.gender)}</dd>`:''}
+        <dt>Languages</dt><dd>${(q.languages||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join(' ')||'—'}</dd>
+        <dt>Suitable roles</dt><dd>${(q.interests||[]).map(x=>`<span class="chip">${esc(x)}</span>`).join(' ')||'—'}</dd>
+        <dt>Availability</dt><dd>${esc(q.availability||'—')}</dd>
+        <dt>Location</dt><dd>${esc(q.location||'—')}</dd>
+        ${q.due_date?`<dt>Needed by</dt><dd>${D.fmt(q.due_date)}</dd>`:''}
+        ${q.project_id?`<dt>Project</dt><dd>${esc(proj(q.project_id).name)}</dd>`:''}
+      </dl>
+      ${q.intro?`<h4 class="small b mb2">Introduction</h4><div class="note mb4">${esc(q.intro)}</div>`:''}
+      ${ext?`<h4 class="small b mb2">Submission</h4>
+        <dl class="kv mb4">
+          <dt>Campaign</dt><dd>${l?esc(l.name):'—'}</dd>
+          <dt>Consent</dt><dd>${q.consent_given
+            ?`<span class="status st-success"><span class="si">✔</span>Given ${q.consent_at?D.fmt(q.consent_at):''}</span>`
+            :'<span class="status st-warn"><span class="si">◔</span>Not recorded</span>'}</dd>
+        </dl>`:''}
+      ${rec?`<div class="note ok mb4"><b>Approved.</b> Casting record
+        <span class="code">${esc(rec.cast_id)}</span> was created from this request.
+        <button class="btn xs mt2" data-drawer="casting:${rec.id}">Open record</button></div>`:''}
+      ${q.review_note?`<h4 class="small b mb2">Internal review notes</h4>
+        <div class="note warn mb4">${esc(q.review_note)}
+        <div class="xsmall mut3 mt2">Internal only — not shown to the applicant.</div></div>`:''}
+    </div>
+    <div class="dr-foot">
+      ${q.status==='new'?`<button class="btn primary" data-act="reviewReq" data-rid="${q.id}" data-to="under_review">Start review</button>`:''}
+      ${['under_review','clarification'].includes(q.status)?`
+        <button class="btn primary" data-act="reviewReq" data-rid="${q.id}" data-to="approved">🟢 Approve</button>
+        <button class="btn" data-act="reviewReq" data-rid="${q.id}" data-to="clarification">🟡 Clarification</button>
+        <button class="btn danger" data-act="reviewReq" data-rid="${q.id}" data-to="rejected">🔴 Reject</button>`:''}
+      ${['approved','rejected'].includes(q.status)?`<button class="btn ghost ml-auto" data-act="reviewReq" data-rid="${q.id}" data-to="archived">Archive</button>`:''}
+    </div>`);
+  wirePage();
+}
+/* ── Casting detail drawer — read-only from Preview (§9) ─────────────────── */
+function drawerCasting(id){
+  const r=castRec(id); if(!r)return;
+  const manage=can('casting.manage');
+  const cs=CAST_CONSENT[r.consent_status]||CAST_CONSENT.pending;
+  const linkedProjects=(DB.project_casting||[]).filter(x=>x.record_id===r.id).map(x=>proj(x.project_id));
+  openDrawer(`
+    <div class="dr-head">
+      <div class="dh-txt"><div class="f ac gap2 mb1">${statusPill(CAST_AVAIL,r.availability)}
+        <span class="status ${cs.c}"><span class="si">${cs.i}</span>${cs.l}</span>
+        ${castNeedsReview(r)?'<span class="status st-warn"><span class="si">⚑</span>Needs review</span>':''}</div>
+        <h2>${esc(r.name)}</h2>
+        <div class="dh-meta"><span class="code">${esc(r.cast_id||'')}</span><span>·</span><span>${esc(r.category)}</span>
+          ${r.profession?`<span>·</span><span>${esc(r.profession)}</span>`:''}</div></div>
+      <button class="icon-btn" onclick="closeDrawer()">✕</button></div>
+    <div class="dr-body">
+      <dl class="kv mb4">
+        <dt>Age group</dt><dd>${esc((AGE_GROUPS.find(a=>a[0]===r.age_group)||[])[1]||'—')}</dd>
+        ${r.gender?`<dt>Gender</dt><dd>${esc(r.gender)}</dd>`:''}
+        <dt>Languages</dt><dd>${(r.languages||[]).map(l=>`<span class="chip">${esc(l)}</span>`).join(' ')||'—'}</dd>
+        <dt>Location</dt><dd>${esc(r.location||(r.campus_id?(DB.campuses.find(c=>c.id===r.campus_id)||{name:'—'}).name:'—'))}</dd>
+        <dt>Availability</dt><dd>${statusPill(CAST_AVAIL,r.availability)}</dd>
+        <dt>Consent</dt><dd><span class="status ${cs.c}"><span class="si">${cs.i}</span>${cs.l}</span>
+          ${r.consent_date?` <span class="mut3 small">since ${D.fmt(r.consent_date)}</span>`:''}</dd>
+        ${r.consent_scope?`<dt>Usage scope</dt><dd>${esc(r.consent_scope)}</dd>`:''}
+        ${r.review_date?`<dt>Review by</dt><dd>${D.fmt(r.review_date)}</dd>`:''}
+        <dt>Added</dt><dd>${D.fmt(r.created_at)}${r.created_by?' by '+esc((user(r.created_by)||{full_name:'—'}).full_name):''}</dd>
+        <dt>Updated</dt><dd>${D.fmt(r.updated_at)}</dd>
+      </dl>
+      ${tagsOf(r.id).length?`<h4 class="small b mb2">Casting tags</h4>
+        <div class="f wrap gap1 mb4">${tagsOf(r.id).map(t=>`<span class="chip">${esc(castTag(t).name)}</span>`).join('')}</div>`:''}
+      ${collsOf(r.id).length?`<h4 class="small b mb2">Collections</h4>
+        <div class="f wrap gap1 mb4">${collsOf(r.id).map(c=>`<span class="chip sel">${esc(castColl(c).name)}</span>`).join('')}</div>`:''}
+      ${linkedProjects.length?`<h4 class="small b mb2">Used on</h4>
+        <div class="card mb4"><div class="card-body flush">${linkedProjects.map(p=>`
+          <button class="list-row" data-go="#/media/projects/${p.id}" onclick="closeDrawer()">
+            <span class="lr-main"><b>${esc(p.name)}</b><span><span class="code">${esc(p.code||'')}</span></span></span>
+          </button>`).join('')}</div></div>`:''}
+      ${r.notes?`<h4 class="small b mb2">Production notes</h4><div class="note mb4">${esc(r.notes)}</div>`:''}
+      ${r.drive_ok===false?`<div class="note warn"><b>Drive link needs attention.</b>
+        The folder did not respond when it was last checked${r.drive_checked_at?' on '+D.fmt(r.drive_checked_at):''}.</div>`:''}
+    </div>
+    <div class="dr-foot">
+      ${r.drive_url?`<a class="btn primary" href="${esc(r.drive_url)}" target="_blank" rel="noopener">⛁ Open Drive</a>
+        <button class="btn" data-act="copyCastDrive" data-url="${esc(r.drive_url)}" data-cid="${r.id}">⧉ Copy Drive link</button>`
+        :'<span class="small mut3" style="align-self:center">No Drive folder linked yet.</span>'}
+      ${manage?`<button class="btn ghost ml-auto" data-act="editCasting" data-cid="${r.id}">✎ Edit</button>`:''}
+    </div>`);
+  wirePage();
+}
+
+/* ── Casting Management — the Casting Manager's workspace ─────────────────── */
+function viewCastingAdmin(){
+  loadMyActivity();      // work log + timeline read the server's audit trail
+  if(!can('casting.manage'))
+    return roleDenied('Casting Management is for the designated Casting Manager. You can browse the library from Casting Preview.');
+  const tab=S.tab.castadmin||'records';
+  const f=S.filters.castadmin||(S.filters.castadmin={q:'',category:'',age:'',avail:'',consent:'',tag:'',collection:'',view:'all'});
+  const all=castRecords();
+  const active=all.filter(r=>!r.archived_at);
+  const tabs=[['records','Records',active.length],['requests','Requests',pendingReview().length],
+    ['external','External registration',castLinks().filter(linkIsOpen).length],
+    ['tags','Tags',castTags().length],['collections','Collections',castColls().length],
+    ['activity','Activity',0],['work','My casting work',0]];
+  return `<div class="page-head">
+      <div><div class="crumb">Casting library · management</div><h1 class="page-title">Casting Management</h1>
+      <div class="page-sub">Maintain casting records, collections, tags, availability and production references.
+        Every action here is logged and lands in your daily report automatically.</div></div>
+      <div class="page-actions">
+        <button class="btn primary" data-act="newCasting">＋ Add casting</button>
+        <button class="btn" data-go="#/media/admin/lookups?m=casting_tags">Manage tags</button>
+        <button class="btn" data-go="#/media/admin/lookups?m=casting_collections">Manage categories</button></div></div>
+
+    ${castAdminStats(all,active)}
+
+    <div class="tabs">${tabs.map(([k,l,c])=>`<button data-tab="${k}" data-tabkey="castadmin" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>
+    ${tab==='records'?castAdminRecords(f)
+      :tab==='external'?castAdminLinks()
+      :tab==='requests'?castAdminRequests()
+      :tab==='tags'?castAdminTags()
+      :tab==='collections'?castAdminCollections()
+      :tab==='activity'?castActivityCard(40)
+      :castWorkLog()}
+    ${castingStyles()}`;
+}
+/* Actionable metrics — every card sets a filter rather than just showing a number. */
+function castAdminStats(all,active){
+  const month=D.add(TODAY,-30);
+  const cell=(l,n,act,tone)=>`<button class="stat ${tone||''}" data-act="castStat" data-k="${act}">
+    <span class="stat-main"><span class="stat-label">${esc(l)}</span><span class="stat-val">${n}</span></span></button>`;
+  return `<div class="grid g4 sec">
+      ${cell('Total records',all.length,'all')}
+      ${cell('Active records',active.length,'active')}
+      ${cell('Consent pending',all.filter(r=>r.consent_status==='pending').length,'consent',
+        all.filter(r=>r.consent_status==='pending').length?'alert':'')}
+      ${cell('Needs review',castStale().length,'stale',castStale().length?'alert':'')}
+    </div>
+    <div class="grid g4 sec">
+      ${cell('Registration links',castLinks().filter(linkIsOpen).length,'links')}
+      ${cell('Pending review',castRequests().filter(r=>['new','under_review','clarification'].includes(r.status)).length,'pending',
+        castRequests().filter(r=>['new','under_review'].includes(r.status)).length?'alert':'')}
+      ${cell('Approved requests',castRequests().filter(r=>r.status==='approved').length,'approved')}
+      ${cell('My actions today',castAudit(TODAY).length,'work')}
+    </div>`;
+}
+function castAdminRecords(f){
+  let list=castRecords();
+  if(f.view==='active')list=list.filter(r=>!r.archived_at);
+  else if(f.view==='archived')list=list.filter(r=>!!r.archived_at);
+  else if(f.view==='consent')list=list.filter(r=>r.consent_status==='pending');
+  else if(f.view==='stale')list=list.filter(r=>!r.archived_at&&castNeedsReview(r));
+  else if(f.view==='recent')list=list.filter(r=>String(r.created_at||'').slice(0,10)>=D.add(TODAY,-30));
+  else if(f.view==='today')list=list.filter(r=>String(r.updated_at||'').slice(0,10)===TODAY);
+  list=castFilter(list,f);
+  const views=[['all','All'],['active','Active'],['archived','Archived'],['consent','Consent pending'],['stale','Needs review']];
+  return `<div class="cast-bar">
+      <div class="search-wrap cast-search"><input class="inp" value="${esc(f.q)}"
+        placeholder="Search name, CAST ID, profession, tag, collection…"
+        oninput="S.filters.castadmin.q=this.value;render()"></div>
+      <div class="f wrap gap1">${views.map(([k,l])=>`<button class="chip ${f.view===k?'sel':''}"
+        onclick="S.filters.castadmin.view='${k}';render()">${esc(l)}</button>`).join('')}</div>
+    </div>
+    <div class="card"><div class="card-body flush">
+      ${list.length?`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>CAST ID</th><th>Name</th><th>Category</th><th>Age</th><th>Availability</th>
+          <th>Consent</th><th>Tags</th><th>Drive</th><th>Updated</th><th class="num"></th></tr></thead>
+        <tbody>${list.slice(0,200).map(r=>`<tr class="click" data-drawer="casting:${r.id}">
+          <td class="mono small">${esc(r.cast_id||'')}</td>
+          <td><div class="t-main">${esc(r.name)}</div>${r.profession?`<div class="t-sub">${esc(r.profession)}</div>`:''}</td>
+          <td class="small">${esc(r.category)}</td>
+          <td class="small">${esc((AGE_GROUPS.find(a=>a[0]===r.age_group)||[])[1]||'—')}</td>
+          <td>${statusPill(CAST_AVAIL,r.availability)}</td>
+          <td>${(()=>{const c=CAST_CONSENT[r.consent_status]||CAST_CONSENT.pending;
+            return `<span class="status ${c.c}"><span class="si">${c.i}</span>${c.l}</span>`;})()}</td>
+          <td class="small">${tagsOf(r.id).length}</td>
+          <td data-stop>${r.drive_url
+            ? `<a class="chip ${r.drive_ok===false?'warnchip':''}" href="${esc(r.drive_url)}" target="_blank" rel="noopener"
+                 title="${r.drive_ok===false?'Did not respond when last checked':'Open the Drive folder'}">⛁</a>`
+            : '<span class="mut3">—</span>'}</td>
+          <td class="small">${D.fmt(r.updated_at)}${castNeedsReview(r)?' <span class="status st-warn" style="font-size:9px"><span class="si">⚑</span>review</span>':''}</td>
+          <td class="num nowrap" data-stop>
+            <button class="btn xs" data-act="editCasting" data-cid="${r.id}">Edit</button>
+            ${r.archived_at?`<button class="btn xs" data-act="restoreCasting" data-cid="${r.id}">Restore</button>`
+              :`<button class="btn xs ghost" data-act="archiveCasting" data-cid="${r.id}">Archive</button>`}</td>
+        </tr>`).join('')}</tbody></table></div>`
+        :`<div class="empty" style="padding:34px"><div class="e-ico">◎</div>
+          <h4>No casting records yet</h4>
+          <p>Add your first casting record to start building the Media Crew casting library.</p>
+          <button class="btn primary mt3" data-act="newCasting">＋ Add casting</button></div>`}
+    </div></div>`;
+}
+function castAdminRequests(){
+  const f=S.filters.castreq||(S.filters.castreq={q:'',status:'',link:'',type:'',sort:'newest'});
+  let list=castRequests().filter(r=>!r.archived_at||f.status==='archived');
+  if(f.status)list=list.filter(r=>r.status===f.status);
+  if(f.link)list=list.filter(r=>String(r.link_id)===String(f.link));
+  if(f.type)list=list.filter(r=>r.applicant_type===f.type);
+  if(f.q){const q=f.q.toLowerCase();
+    list=list.filter(r=>[r.request_id,r.applicant_name,r.applicant_email,r.department,r.need,
+      r.link_id?(castLink(r.link_id)||{}).name:'',
+      r.matched_record_id?(castRec(r.matched_record_id)||{}).cast_id:''].filter(Boolean).join(' ').toLowerCase().includes(q));}
+  const SORTS={newest:(a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')),
+    oldest:(a,b)=>String(a.created_at||'').localeCompare(String(b.created_at||'')),
+    status:(a,b)=>String(a.status).localeCompare(String(b.status)),
+    applicant:(a,b)=>String(a.applicant_name||a.need||'').localeCompare(String(b.applicant_name||b.need||'')),
+    due:(a,b)=>String(a.due_date||'9').localeCompare(String(b.due_date||'9'))};
+  list=[...list].sort(SORTS[f.sort]||SORTS.newest);
+  const chip=(k,v,l,n)=>`<button class="chip ${f[k]===v?'sel':''}"
+    onclick="S.filters.castreq.${k}=S.filters.castreq.${k}==='${v}'?'':'${v}';render()">${esc(l)}${n!=null?` <span class="mut3">${n}</span>`:''}</button>`;
+  const byStatus=k=>castRequests().filter(r=>r.status===k).length;
+  return `<div class="cast-bar">
+      <div class="search-wrap cast-search"><input class="inp" value="${esc(f.q)}"
+        placeholder="Search request ID, applicant, email, department, campaign, CAST ID…"
+        oninput="S.filters.castreq.q=this.value;render()"></div>
+      <select class="inp" style="height:34px;font-size:12.5px;width:auto"
+        onchange="S.filters.castreq.sort=this.value;render()">
+        ${[['newest','Newest first'],['oldest','Oldest first'],['status','By status'],
+           ['applicant','By applicant'],['due','By needed-by date']].map(([k,l])=>
+          `<option value="${k}" ${f.sort===k?'selected':''}>${l}</option>`).join('')}
+      </select>
+    </div>
+    <div class="f wrap gap1 mb3">
+      ${chip('status','','All')}
+      ${['new','under_review','clarification','approved','rejected','archived'].map(k=>
+        chip('status',k,(CR_REVIEW[k]||{l:k}).l,byStatus(k))).join('')}
+      ${castLinks().length?castLinks().map(l=>chip('link',String(l.id),l.name,linkSubmissions(l.id).length)).join(''):''}
+      ${['Student','Faculty','Staff','Researcher','Alumni','Other'].filter(t=>castRequests().some(r=>r.applicant_type===t))
+        .map(t=>chip('type',t,t)).join('')}
+    </div>
+    <div class="card"><div class="card-body flush">
+    ${list.length?list.map(q=>{
+      const rv=CR_REVIEW[q.status]||CR_STATUS[q.status]||CR_REVIEW.new;
+      const l=q.link_id?castLink(q.link_id):null;
+      const rec=q.matched_record_id?castRec(q.matched_record_id):null;
+      return `<div class="dc" data-drawer="castreq:${q.id}" style="cursor:pointer">
+      <div class="dc-head"><span class="code">${esc(q.request_id||'')}</span>
+        <b class="dc-title">${esc(q.applicant_name||q.need)}</b>
+        <span class="status ${rv.c}"><span class="si">${rv.i}</span>${rv.l}</span></div>
+      <div class="dc-grid">
+        <div class="dc-kv"><span class="dc-k">${q.source==='external'?'Applicant':'Requested by'}</span>
+          <span class="dc-v">${esc(q.source==='external'?(q.applicant_type||'—'):(user(q.requested_by)||{full_name:'—'}).full_name)}</span></div>
+        <div class="dc-kv"><span class="dc-k">Department</span><span class="dc-v">${esc(q.department||'—')}</span></div>
+        <div class="dc-kv"><span class="dc-k">Languages</span><span class="dc-v">${(q.languages||[]).join(', ')||'—'}</span></div>
+        <div class="dc-kv"><span class="dc-k">Campaign</span><span class="dc-v">${l?esc(l.name):(q.source==='external'?'—':'Internal request')}</span></div>
+        <div class="dc-kv"><span class="dc-k">Submitted</span><span class="dc-v">${D.fmt(q.created_at)}</span></div>
+        <div class="dc-kv"><span class="dc-k">Casting record</span><span class="dc-v">${rec?`<span class="code">${esc(rec.cast_id)}</span>`:'—'}</span></div>
+      </div>
+      <div class="dc-foot"><span class="chip">${q.source==='external'?'External registration':'Internal'}</span>
+        <div class="dc-acts"><button class="dc-btn" title="Open request" data-drawer="castreq:${q.id}"><span>↗</span></button></div></div>
+    </div>`;}).join('')
+      :`<div class="empty" style="padding:30px"><div class="e-ico">◎</div>
+        <h4>No casting requests${f.q||f.status||f.link?' match those filters':''}</h4>
+        <p>${castLinks().length?'External submissions arrive here automatically.'
+          :'Create a registration link and share it with the university to start collecting submissions.'}</p>
+        ${!castLinks().length?`<button class="btn primary mt3" onclick="S.tab.castadmin='external';render()">Go to External registration</button>`:''}
+      </div>`}
+    </div></div>`;
+}
+function castAdminTags(){
+  const byCat={};
+  for(const t of castTags())(byCat[t.category]=byCat[t.category]||[]).push(t);
+  return `<div class="card"><div class="card-head"><h3>Casting tags</h3>
+      <div class="ca"><a class="btn xs" href="#/media/admin/lookups?m=casting_tags">Manage in Settings</a></div></div>
+    <div class="card-body">
+      <div class="note mb3">Tags are shared master data, maintained through the standard Settings CRUD —
+        the same engine every other lookup uses. A tag already on a record is archived, never deleted.</div>
+      ${TAG_CATEGORIES.filter(([k])=>byCat[k]).map(([k,l])=>`<div class="mb4">
+        <div class="between mb2"><b class="small">${esc(l)}</b><span class="chip">${byCat[k].length}</span></div>
+        <div class="f wrap gap1">${byCat[k].map(t=>{
+          const n=(DB.casting_record_tags||[]).filter(x=>x.tag_id===t.id).length;
+          return `<span class="chip" title="${n} casting record(s)">${esc(t.name)} <span class="mut3">${n}</span></span>`;}).join('')}</div>
+      </div>`).join('')}
+    </div></div>`;
+}
+function castAdminCollections(){
+  return `<div class="card"><div class="card-head"><h3>Collections</h3>
+      <div class="ca"><a class="btn xs" href="#/media/admin/lookups?m=casting_collections">Manage in Settings</a></div></div>
+    <div class="card-body flush">${castColls().map(c=>{
+      const n=(DB.casting_record_collections||[]).filter(x=>x.collection_id===c.id).length;
+      return `<div class="list-row" style="cursor:default">
+        <span class="lr-main"><b>${esc(c.name)}</b><span>${esc(c.description||'')}</span></span>
+        <span class="chip">${n} record${n===1?'':'s'}</span>
+        <button class="btn xs" onclick="S.tab.castadmin='records';S.filters.castadmin.collection='${c.id}';S.filters.castadmin.view='all';render()">View</button>
+      </div>`;}).join('')||`<div class="empty" style="padding:26px"><p>No collections yet.</p></div>`}
+    </div></div>`;
+}
+/* ── Casting activity → Daily Report ──────────────────────────────────────
+   Every management action already writes an audit row server-side. The work log
+   and the daily report are both READ from that same trail (via /my-activity),
+   so they can never disagree with what actually happened — and the system
+   entries stay immutable because nothing here writes them. */
+const CASTING_ACTIONS=['casting.created','casting.updated','casting.tagged','casting.archived',
+  'casting.restored','casting.consent_changed','casting.drive_changed','casting.drive_checked',
+  'casting.deleted','casting.linked_to_project','casting.unlinked_from_project',
+  'casting_request.created','casting_request.updated','casting_request.completed'];
+const CASTING_LABEL={
+  'casting.created':'Casting record created','casting.updated':'Casting record updated',
+  'casting.tagged':'Tags updated','casting.archived':'Casting archived','casting.restored':'Casting restored',
+  'casting.consent_changed':'Consent status changed','casting.drive_changed':'Drive link changed',
+  'casting.drive_checked':'Drive link checked','casting.deleted':'Casting deleted',
+  'casting.linked_to_project':'Linked to a project','casting.unlinked_from_project':'Unlinked from a project',
+  'casting_request.created':'Casting request raised','casting_request.updated':'Casting request updated',
+  'casting_request.completed':'Casting request completed'};
+function castAudit(day){
+  return (DB.my_activity||[]).filter(a=>CASTING_ACTIONS.includes(a.action)&&(!day||String(a.occurred_at||'').slice(0,10)===day))
+    .sort((a,b)=>String(b.occurred_at||'').localeCompare(String(a.occurred_at||'')));
+}
+/* The identifier that makes a log line auditable — CAST-000xx or CR-000xx,
+   clickable through to the record (§27). */
+function castRefOf(a){
+  const after=a.after||{}, before=a.before||{};
+  const id=after.cast_id||before.cast_id||after.request_id||before.request_id;
+  if(id)return {id,kind:String(id).startsWith('CR')?'request':'record'};
+  if(a.entity_type==='casting_record'){const r=castRec(+a.entity_id);return r?{id:r.cast_id,kind:'record'}:null;}
+  if(a.entity_type==='casting_request'){const q=castRequests().find(x=>x.id===+a.entity_id);return q?{id:q.request_id,kind:'request'}:null;}
+  return null;
+}
+function castActivityCard(limit){
+  const rows=castAudit(null).slice(0,limit||20);
+  return `<div class="card"><div class="card-head"><h3>Activity timeline</h3>
+      <div class="ca"><span class="chip">${castAudit(TODAY).length} today</span></div></div>
+    <div class="card-body flush">${rows.map(a=>{
+      const ref=castRefOf(a);
+      return `<div class="list-row" style="cursor:default">
+      <span class="tl-dot"></span>
+      <span class="lr-main"><b>${esc(CASTING_LABEL[a.action]||a.action)}</b>
+        <span>${ref?`<span class="code">${esc(ref.id)}</span>`:''}
+          ${esc((user(a.actor_id)||{full_name:'—'}).full_name.split(' ')[0])}</span></span>
+      ${ref&&ref.kind==='record'?`<button class="btn xs" data-drawer="casting:${a.entity_id}">Open</button>`:''}
+      <span class="chip">${esc(String(a.occurred_at||'').slice(11,16))}</span>
+    </div>`;}).join('')||`<div class="empty" style="padding:24px"><p>No casting activity recorded yet.</p></div>`}
+    </div>
+    <div class="card-foot">Written automatically as you work — these entries are system audit history and cannot be edited.</div></div>`;
+}
+/* §26 — today's casting work, assembled from the audit trail, with room for the
+   legitimate work a log cannot detect. */
+function castWorkLog(){
+  const today=castAudit(TODAY);
+  const n=k=>today.filter(a=>a.action===k).length;
+  const manual=(DB.report_tasks||[]).filter(t=>{
+    const r=(DB.daily_reports||[]).find(x=>x.id===t.daily_report_id);
+    return r&&r.user_id===S.me&&r.report_date===TODAY&&/^casting/i.test(t.description||'');
+  });
+  const summary=[['Casting records added',n('casting.created')],
+    ['Casting records updated',n('casting.updated')+n('casting.tagged')],
+    ['Consent reviews',n('casting.consent_changed')],
+    ['Drive links added or checked',n('casting.drive_changed')+n('casting.drive_checked')],
+    ['Records archived',n('casting.archived')],
+    ['Casting requests processed',n('casting_request.updated')+n('casting_request.completed')]];
+  return `<div class="grid g21">
+    <div class="card"><div class="card-head"><h3>Today’s casting work</h3>
+      <div class="ca"><span class="chip">${today.length} action${today.length===1?'':'s'}</span></div></div>
+      <div class="card-body flush">
+        ${summary.filter(([,v])=>v).map(([l,v])=>`<div class="list-row" style="cursor:default">
+          <span class="lr-main"><b>${esc(l)}</b></span><span class="chip sel">${v}</span></div>`).join('')
+          ||`<div class="empty" style="padding:24px"><p>Nothing logged yet today. Anything you do in Casting Management appears here automatically.</p></div>`}
+        ${today.slice(0,12).map(a=>{const ref=castRefOf(a);
+          return `<div class="list-row" style="cursor:default">
+            <span class="tl-dot"></span>
+            <span class="lr-main"><b>${esc(CASTING_LABEL[a.action]||a.action)}</b>
+              <span>${ref?`<span class="code">${esc(ref.id)}</span> · `:''}${esc(String(a.occurred_at||'').slice(11,16))}</span></span>
+            <span class="chip mut">system</span></div>`;}).join('')}
+      </div>
+      <div class="card-foot">System entries are immutable — they are the audit trail. Use a manual log for anything else.</div></div>
+
+    <div class="card"><div class="card-head"><h3>Manual log</h3>
+      <div class="ca"><button class="btn xs primary" data-act="castManualLog">＋ Add manual log</button></div></div>
+      <div class="card-body flush">
+        ${manual.length?manual.map(t=>`<div class="list-row" style="cursor:default">
+          <span class="lr-main"><b>${esc(t.description)}</b>
+            <span>${mins2h(t.minutes)}${t.project_id?' · '+esc(proj(t.project_id).name):''}</span></span>
+          <button class="btn xs" data-act="editTask" data-tid="${t.id}">✎</button>
+        </div>`).join('')
+          :`<div class="empty" style="padding:24px"><p>For work the system cannot see — a casting meeting,
+            a phone call with a participant, a location recce.</p></div>`}
+      </div>
+      <div class="card-foot"><button class="btn sm block" data-act="submitReport">Review &amp; submit today’s report</button></div></div>
+  </div>`;
+}
+function castingStyles(){
+  return `<style>
+    .cast-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+    .cast-search{flex:1;min-width:240px;max-width:420px}
+    .cast-card .cast-thumb{height:104px;border-radius:var(--r);background:var(--surface-2);
+      border:1px solid var(--border);display:grid;place-items:center}
+    .cast-ph{display:flex;flex-direction:column;align-items:center;gap:4px;font-size:22px;color:var(--text-3)}
+    .cast-ph span{font-size:10.5px;letter-spacing:.03em}
+    .cast-ph.mut{opacity:.55}
+    .cast-card:hover{border-color:var(--primary-border)}
+  </style>`;
+}
+/* Add / edit casting. One form for both, so a record has a single definition.
+   Only production-relevant attributes are collected — no sensitive personal data,
+   and nothing inferred from appearance. */
+/* Straight after creating a link, put it in front of the user — the whole point
+   is to copy it somewhere. */
+function showReqLink(l){
+  const url=location.origin+'/request/new/'+l.token;
+  modal(`<div class="mo-head"><div><h2>Request portal ready</h2>
+      <p>${esc(l.name)} — circulate this to institutes and departments.</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <div class="field"><label class="lbl">Portal link</label>
+        <input class="inp mono" value="${esc(url)}" readonly onclick="this.select()"></div>
+      <div class="note">Anyone with the link can open the form, but only <b>@${esc(l.allowed_domain)}</b>
+        accounts can submit. Requesters never get a NERVE account.</div>
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Done</button>
+      <a class="btn" href="${esc(url)}" target="_blank" rel="noopener">Open portal</a>
+      <button class="btn primary" data-act="copyReqLink" data-url="${esc(url)}">⧉ Copy link</button></div>`);
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+}
+function showCastLink(l){
+  const url=location.origin+'/casting/register/'+l.token;
+  modal(`<div class="mo-head"><div><h2>Registration link ready</h2>
+      <p>${esc(l.name)} — share this with the university.</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <div class="field"><label class="lbl">Registration link</label>
+        <input class="inp mono" id="nl-url" value="${esc(url)}" readonly onclick="this.select()"></div>
+      <div class="note">Anyone with this link can open the form, but only
+        <b>@${esc(l.allowed_domain)}</b> Google accounts can submit. Applicants never get a NERVE account.</div>
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Done</button>
+      <a class="btn" href="${esc(url)}" target="_blank" rel="noopener">Open registration</a>
+      <button class="btn primary" data-act="copyCastLink" data-url="${esc(url)}">⧉ Copy link</button></div>`);
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+}
+function openCastingForm(cid){
+  const r=cid?castRec(+cid):null;
+  const v=(k,d)=>esc(r&&r[k]!=null?r[k]:(d??''));
+  const myTags=r?tagsOf(r.id):[], myColls=r?collsOf(r.id):[];
+  const byCat={}; for(const t of castTags())(byCat[t.category]=byCat[t.category]||[]).push(t);
+  modal(`<div class="mo-head"><div><h2>${r?'Edit casting':'Add casting'}</h2>
+      <p>${r?`<span class="code">${esc(r.cast_id||'')}</span> — `:'A CAST ID is generated automatically. '}
+        The media itself stays in Drive; this record is the index over it.</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <div class="row">
+        <div class="field"><label class="lbl">Casting name / reference <span class="req">*</span></label>
+          <input class="inp" id="cf-name" value="${v('name')}" placeholder="e.g. Dr. Meera Joshi"></div>
+        <div class="field"><label class="lbl">Primary category <span class="req">*</span></label>
+          <select class="inp" id="cf-cat">${CAST_CATEGORIES.map(c=>`<option value="${esc(c)}" ${r&&r.category===c?'selected':''}>${esc(c)}</option>`).join('')}</select></div>
+      </div>
+      <div class="row">
+        <div class="field"><label class="lbl">Profession / role</label>
+          <input class="inp" id="cf-prof" value="${v('profession')}" placeholder="Doctor, Professor, Student…"></div>
+        <div class="field"><label class="lbl">Age group</label>
+          <select class="inp" id="cf-age"><option value="">—</option>
+            ${AGE_GROUPS.map(([k,l])=>`<option value="${k}" ${r&&r.age_group===k?'selected':''}>${esc(l)}</option>`).join('')}</select>
+          <div class="hint">Broad production ranges — exact ages are not collected.</div></div>
+        <div class="field"><label class="lbl">Gender <span class="mut3">(only where the production requires it)</span></label>
+          <input class="inp" id="cf-gender" value="${v('gender')}" placeholder="optional"></div>
+      </div>
+      <div class="row">
+        <div class="field"><label class="lbl">Languages</label>
+          <input class="inp" id="cf-langs" value="${esc((r&&r.languages||[]).join(', '))}" placeholder="Gujarati, Hindi, English"></div>
+        <div class="field"><label class="lbl">Campus</label>
+          <select class="inp" id="cf-campus"><option value="">—</option>
+            ${DB.campuses.map(c=>`<option value="${c.id}" ${r&&r.campus_id===c.id?'selected':''}>${esc(c.name)}</option>`).join('')}</select></div>
+        <div class="field"><label class="lbl">Location</label><input class="inp" id="cf-loc" value="${v('location')}"></div>
+      </div>
+      <div class="row">
+        <div class="field"><label class="lbl">Availability</label>
+          <select class="inp" id="cf-avail">${Object.keys(CAST_AVAIL).map(k=>`<option value="${k}" ${r&&r.availability===k?'selected':''}>${CAST_AVAIL[k].l}</option>`).join('')}</select></div>
+        <div class="field"><label class="lbl">Consent status <span class="req">*</span></label>
+          <select class="inp" id="cf-consent">${Object.keys(CAST_CONSENT).map(k=>`<option value="${k}" ${r&&r.consent_status===k?'selected':''}>${CAST_CONSENT[k].l}</option>`).join('')}</select>
+          <div class="hint">Only <b>confirmed</b> records appear in the crew's Casting Preview.</div></div>
+        <div class="field"><label class="lbl">Consent date</label><input class="inp" type="date" id="cf-cdate" value="${esc(String(r&&r.consent_date||'').slice(0,10))}"></div>
+        <div class="field"><label class="lbl">Review by</label><input class="inp" type="date" id="cf-review" value="${esc(String(r&&r.review_date||'').slice(0,10))}"></div>
+      </div>
+      <div class="field"><label class="lbl">Usage scope <span class="mut3">(what they agreed to appear in)</span></label>
+        <input class="inp" id="cf-scope" value="${v('consent_scope')}" placeholder="e.g. Institutional films and social media"></div>
+      <div class="field"><label class="lbl">Google Drive folder <span class="req">*</span></label>
+        <input class="inp" id="cf-drive" value="${v('drive_url')}" placeholder="https://drive.google.com/drive/folders/…">
+        <div class="hint">The folder holding the approved reference media. NERVE never stores the media itself.</div></div>
+      <div class="field"><label class="lbl">Casting tags</label>
+        <div id="cf-tags">${TAG_CATEGORIES.filter(([k])=>byCat[k]).map(([k,l])=>`
+          <div class="mb2"><div class="xsmall mut3 mb1">${esc(l)}</div>
+            <div class="f wrap gap1">${byCat[k].map(t=>`<button type="button" class="chip ${myTags.includes(t.id)?'sel':''}"
+              data-tid="${t.id}" onclick="this.classList.toggle('sel')">${esc(t.name)}</button>`).join('')}</div></div>`).join('')}
+        </div></div>
+      <div class="field"><label class="lbl">Collections</label>
+        <div class="f wrap gap1" id="cf-colls">${castColls().map(c=>`<button type="button" class="chip ${myColls.includes(c.id)?'sel':''}"
+          data-cid="${c.id}" onclick="this.classList.toggle('sel')">${esc(c.name)}</button>`).join('')}</div></div>
+      <div class="field"><label class="lbl">Production notes</label>
+        <textarea class="inp" id="cf-notes" placeholder="Casting-relevant notes only">${v('notes')}</textarea></div>
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+      ${r&&r.drive_url?`<button class="btn" data-act="checkCastDrive" data-cid="${r.id}">Check Drive link</button>`:''}
+      <button class="btn primary" data-act="saveCasting" ${r?`data-cid="${r.id}"`:''}>${r?'Save changes':'Add casting'}</button></div>`,{size:'wide'});
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
    MEDIA OPERATIONS COORDINATOR — operational surfaces
    The coordinator owns intake (request → clarification → conversion) and
    dispatch (approved → sent → delivered → archived). Production in between is
@@ -3585,6 +4335,7 @@ function drawerPerson(uid){
    ══════════════════════════════════════════════════════════════════════════ */
 const REQ_STATUS={
   new:{l:'New request',c:'st-info',i:'✦'},
+  under_review:{l:'Under review',c:'st-warn',i:'◔'},
   needs_clarification:{l:'Needs clarification',c:'st-warn',i:'?'},
   ready:{l:'Ready for conversion',c:'st-brand',i:'✓'},
   converted:{l:'Converted',c:'st-success',i:'⤴'},
@@ -3620,6 +4371,140 @@ const overdueFollowups= ()=>openFollowups().filter(f=>f.reminder_date&&dOf(f.rem
 const needsAssignment = ()=>reqs().filter(r=>r.status==='converted'&&r.project_id&&!proj(r.project_id).owner_id);
 
 /* ── Home: operational metrics instead of production metrics ─────────────── */
+/* External request portals (§40) + intake helpers. */
+const reqLinks   = ()=>(DB.request_links||[]).sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
+const reqLink    = id=>(DB.request_links||[]).find(l=>l.id===id)||null;
+const linkReqs   = id=>reqs().filter(r=>r.link_id===id);
+const reqLinkOpen= l=>{
+  if(!l.is_active)return false;
+  if(l.active_from&&dOf(l.active_from)>TODAY)return false;
+  if(l.expires_on&&dOf(l.expires_on)<TODAY)return false;
+  return true;
+};
+const requestUrl = l=>location.origin+'/request/new/'+l.token;
+/* §48 — arrived and nobody has touched it. Deliberately measured from FIRST
+   TOUCH, not from any later edit, so a request cannot look attended-to because
+   somebody glanced at it. */
+const REQ_SLA_DAYS=2;
+const reqOverdue = r=>r.status==='new'&&!r.first_touched_at&&D.diff(TODAY,dOf(r.created_at))>=REQ_SLA_DAYS;
+const overdueRequests = ()=>reqs().filter(reqOverdue);
+
+function requestLinksSection(){
+  const links=reqLinks();
+  return `<div class="card"><div class="card-head"><h3>External request portals</h3>
+      ${reqid('§40','Share one link — submissions arrive straight in this queue')}
+      <div class="ca"><span class="chip">${links.filter(reqLinkOpen).length} open</span>
+        <button class="btn sm primary" data-act="newReqLink">＋ Create request link</button></div></div>
+    <div class="card-body flush">
+      ${links.length?links.map(l=>{
+        const all=linkReqs(l.id);
+        const open=all.filter(r=>['new','under_review','needs_clarification','ready'].includes(r.status));
+        const conv=all.filter(r=>r.status==='converted');
+        const last=all.map(r=>r.created_at).sort().slice(-1)[0];
+        const live=reqLinkOpen(l);
+        return `<div class="dc">
+        <div class="dc-head"><span class="dc-ico">◆</span>
+          <b class="dc-title">${esc(l.name)}</b>
+          ${live?'<span class="status st-success"><span class="si">●</span>Active</span>'
+                :`<span class="status st-neutral"><span class="si">○</span>${l.is_active?(l.expires_on&&dOf(l.expires_on)<TODAY?'Expired':'Not open yet'):'Deactivated'}</span>`}</div>
+        <div class="dc-grid">
+          <div class="dc-kv"><span class="dc-k">Submissions</span><span class="dc-v">
+            <button class="btn xs" data-act="reqLinkFilter" data-lid="${l.id}" data-st="">${all.length}</button></span></div>
+          <div class="dc-kv"><span class="dc-k">Open</span><span class="dc-v">
+            <button class="btn xs" data-act="reqLinkFilter" data-lid="${l.id}" data-st="open">${open.length}</button></span></div>
+          <div class="dc-kv"><span class="dc-k">Converted</span><span class="dc-v">
+            <button class="btn xs" data-act="reqLinkFilter" data-lid="${l.id}" data-st="converted">${conv.length}</button></span></div>
+          <div class="dc-kv"><span class="dc-k">Created</span><span class="dc-v">${D.fmt(l.created_at)}${l.created_by?' · '+esc((user(l.created_by)||{full_name:'—'}).full_name.split(' ')[0]):''}</span></div>
+          <div class="dc-kv"><span class="dc-k">Last submission</span><span class="dc-v">${last?D.fmt(last):'—'}</span></div>
+          <div class="dc-kv"><span class="dc-k">Expires</span><span class="dc-v">${l.expires_on?D.fmt(l.expires_on):'no expiry'}</span></div>
+        </div>
+        ${l.description?`<div class="dc-grid"><div class="dc-kv"><span class="dc-k">About</span><span class="dc-v">${esc(l.description)}</span></div></div>`:''}
+        <div class="dc-foot"><span class="chip">@${esc(l.allowed_domain)} only</span>
+          <div class="dc-acts">
+            <button class="dc-btn" title="Copy link" data-act="copyReqLink" data-url="${esc(requestUrl(l))}"><span>⧉</span></button>
+            <a class="dc-btn" title="Open the request portal" href="${esc(requestUrl(l))}" target="_blank" rel="noopener" data-stop><span>↗</span></a>
+            <button class="dc-btn" title="${l.is_active?'Deactivate':'Reactivate'}" data-act="toggleReqLink" data-lid="${l.id}" data-on="${l.is_active?'0':'1'}">
+              <span>${l.is_active?'⏸':'▶'}</span></button>
+          </div></div>
+      </div>`;}).join('')
+        :`<div class="empty" style="padding:32px"><div class="e-ico">◎</div>
+          <h4>No request portals yet</h4>
+          <p>Create a link and circulate it to institutes and departments. They sign in with their
+            university account and their requirement arrives here — no more chasing email threads.</p>
+          <button class="btn primary mt3" data-act="newReqLink">＋ Create request link</button></div>`}
+    </div></div>`;
+}
+/* The full request drawer (§26) — one place showing everything submitted. */
+function drawerRequest(id){
+  const r=reqs().find(x=>x.id===id); if(!r)return;
+  const st=REQ_STATUS[r.status]||REQ_STATUS.new;
+  const l=r.link_id?reqLink(r.link_id):null;
+  const p=r.project_id?proj(r.project_id):null;
+  const wt=id=>((DB.work_types||[]).find(w=>w.id===id)||{}).name;
+  const dt=id=>((DB.deliverable_types||[]).find(t=>t.id===id)||{}).name;
+  openDrawer(`
+    <div class="dr-head"><div class="dh-txt">
+      <div class="f ac gap2 mb1">${statusPill(REQ_STATUS,r.status)}
+        <span class="chip">${r.source==='external'?'External':'Manual entry'}</span>
+        ${reqOverdue(r)?'<span class="status st-danger"><span class="si">⚑</span>Overdue</span>':''}</div>
+      <h2>${esc(r.event_name)}</h2>
+      <div class="dh-meta"><span class="code">${esc(r.code||'')}</span>
+        <span>·</span><span>${esc(r.institute||'—')}</span>
+        <span>·</span><span>received ${D.fmt(r.created_at)}</span></div></div>
+      <button class="icon-btn" onclick="closeDrawer()">✕</button></div>
+    <div class="dr-body">
+      <h4 class="small b mb2">Requester</h4>
+      <dl class="kv mb4">
+        <dt>Contact</dt><dd>${esc(r.stakeholder||'—')}</dd>
+        <dt>Email</dt><dd class="mono">${esc(r.contact_email||r.requester_email||'—')}</dd>
+        <dt>Phone</dt><dd>${esc(r.contact_phone||'—')}</dd>
+        <dt>Institute</dt><dd>${esc(r.institute||'—')}</dd>
+        <dt>Department</dt><dd>${esc(r.academic_unit_id?aunitName(r.academic_unit_id):'—')}</dd>
+        ${r.source==='external'?`<dt>Verified account</dt><dd class="mono">${esc(r.requester_email||'—')}</dd>`:''}
+      </dl>
+      <h4 class="small b mb2">Event</h4>
+      <dl class="kv mb4">
+        <dt>Venue</dt><dd>${esc(r.venue||'—')}</dd>
+        <dt>Date</dt><dd>${r.event_date?D.fmt(r.event_date):'—'}${r.event_time?' · '+esc(r.event_time):''}</dd>
+        <dt>Ends</dt><dd>${r.end_date?D.fmt(r.end_date):'—'}${r.end_time?' · '+esc(r.end_time):''}</dd>
+      </dl>
+      <h4 class="small b mb2">Requirement</h4>
+      <dl class="kv mb4">
+        <dt>Summary</dt><dd>${esc(r.requirement||r.need||'—')}</dd>
+        <dt>Needs</dt><dd>${(r.requirement_types||[]).map(x=>`<span class="chip">${esc(wt(x)||x)}</span>`).join(' ')||'—'}</dd>
+        <dt>Deliverables</dt><dd>${(r.deliverables_requested||[]).map(x=>`<span class="chip">${esc(dt(x)||x)}</span>`).join(' ')||'—'}</dd>
+        <dt>Priority</dt><dd>${esc(r.priority||'normal')}</dd>
+        ${r.budget?`<dt>Budget</dt><dd>${money(r.budget)}</dd>`:''}
+      </dl>
+      ${r.description?`<h4 class="small b mb2">Description</h4><div class="note mb4">${esc(r.description)}</div>`:''}
+      ${r.additional_notes?`<h4 class="small b mb2">Additional requirements</h4><div class="note mb4">${esc(r.additional_notes)}</div>`:''}
+      ${(r.meeting_required||r.vendor_required)?`<h4 class="small b mb2">Coordination</h4>
+        <dl class="kv mb4">
+          ${r.meeting_required?`<dt>Meeting</dt><dd>Requested${r.meeting_date?' for '+D.fmt(r.meeting_date):''}${r.meeting_time?' '+esc(r.meeting_time):''}
+            ${r.meeting_notes?`<div class="xsmall mut3">${esc(r.meeting_notes)}</div>`:''}</dd>`:''}
+          ${r.vendor_required?`<dt>Vendor</dt><dd>Needed${r.vendor_details?` — ${esc(r.vendor_details)}`:''}</dd>`:''}
+        </dl>`:''}
+      <h4 class="small b mb2">Workflow</h4>
+      <dl class="kv mb4">
+        <dt>Source</dt><dd>${r.source==='external'?`External request link${l?` — ${esc(l.name)}`:''}`:'Manual entry'}</dd>
+        <dt>Status</dt><dd>${statusPill(REQ_STATUS,r.status)}</dd>
+        ${p?`<dt>Converted to</dt><dd><a href="#/media/projects/${p.id}" onclick="closeDrawer()">
+          <span class="code">${esc(p.code||'')}</span> ${esc(p.name)}</a></dd>`:''}
+        ${r.lead_user_id?`<dt>Team Lead</dt><dd>${esc((user(r.lead_user_id)||{full_name:'—'}).full_name)}</dd>`:''}
+      </dl>
+      ${r.review_note?`<div class="note warn mb4"><b>Internal note.</b> ${esc(r.review_note)}
+        <div class="xsmall mut3 mt2">Internal only — not shown to the requester.</div></div>`:''}
+    </div>
+    <div class="dr-foot">
+      ${r.status==='new'?`<button class="btn primary" data-act="reqStatus2" data-rid="${r.id}" data-to="under_review">Start review</button>`:''}
+      ${['under_review','needs_clarification'].includes(r.status)?`
+        <button class="btn primary" data-act="convertRequest" data-rid="${r.id}">⤴ Convert to project</button>
+        <button class="btn" data-act="clarifyRequest" data-rid="${r.id}">? Clarification</button>`:''}
+      ${r.status==='ready'?`<button class="btn primary" data-act="convertRequest" data-rid="${r.id}">⤴ Convert to project</button>`:''}
+      <button class="btn ghost ml-auto" data-act="openRequest" data-rid="${r.id}">✎ Edit</button>
+    </div>`);
+  wirePage();
+}
 /* ── Request Intake page ─────────────────────────────────────────────────── */
 /* The intake form (§6). One definition for create and edit, so a request has a
    single shape wherever it is touched. Nothing here creates a project — that is
@@ -3693,114 +4578,117 @@ const VENUES=['Convention Hall','Auditorium','Main Ground','Civil Hospital','Onl
 
 function viewRequests(){
   if(!(isCoord()||isAdmin()))return roleDenied('Request intake belongs to the Operations Coordinator.');
-  const f=S.filters.req||(S.filters.req={when:'all'});
-  const tab=S.tab.req||'open';
+  const f=S.filters.req||(S.filters.req={when:'all',status:'',source:'',team:'',priority:'',q:'',link:''});
+  const tab=S.tab.req||'queue';
   const all=reqs();
-  const open=all.filter(r=>['new','needs_clarification','ready'].includes(r.status));
+  const open=all.filter(r=>['new','under_review','needs_clarification','ready'].includes(r.status));
   const conv=all.filter(r=>r.status==='converted');
   const shut=all.filter(r=>['closed','rejected'].includes(r.status));
-  let list=tab==='open'?open:tab==='converted'?conv:shut;
-  /* Quick filters narrow the queue without leaving it — the coordinator works
-     out of this one screen all morning. */
-  const week=D.add(TODAY,-7);
+  /* Actionable counts (§47): each one is a filter, not a decoration. */
+  const stat=(l,n,k,tone)=>`<button class="stat ${tone||''}" data-act="reqStat" data-k="${k}">
+    <span class="stat-main"><span class="stat-label">${esc(l)}</span><span class="stat-val">${n}</span></span></button>`;
+  const counts=`<div class="grid g5 sec">
+      ${stat('New requests',all.filter(r=>r.status==='new').length,'new',all.filter(r=>r.status==='new').length?'':'')}
+      ${stat('Needs clarification',all.filter(r=>r.status==='needs_clarification').length,'needs_clarification')}
+      ${stat('Ready to convert',all.filter(r=>r.status==='ready').length,'ready',all.filter(r=>r.status==='ready').length?'alert':'')}
+      ${stat('Converted today',all.filter(r=>r.status==='converted'&&dOf(r.converted_at)===TODAY).length,'converted_today')}
+      ${stat('Overdue',overdueRequests().length,'overdue',overdueRequests().length?'alert':'')}
+    </div>`;
+
+  if(tab==='links')return `${requestsHead()}${counts}${requestsTabs(tab,open,conv,shut)}${requestLinksSection()}`;
+
+  let list=tab==='queue'?open:tab==='converted'?conv:shut;
+  const week=D.add(TODAY,-7), month=D.add(TODAY,-30);
   if(f.when==='today')list=list.filter(r=>dOf(r.created_at)===TODAY);
   else if(f.when==='week')list=list.filter(r=>dOf(r.created_at)>=week);
-  else if(f.when==='pending')list=list.filter(r=>r.status==='new');
-  else if(f.when==='clarify')list=list.filter(r=>r.status==='needs_clarification');
-  else if(f.when==='ready')list=list.filter(r=>r.status==='ready');
-  const chips=[['all','All',(tab==='open'?open:tab==='converted'?conv:shut).length],
-    ['today','Today',all.filter(r=>dOf(r.created_at)===TODAY).length],
-    ['week','This week',all.filter(r=>dOf(r.created_at)>=week).length],
-    ['pending','New',all.filter(r=>r.status==='new').length],
-    ['clarify','Needs clarification',all.filter(r=>r.status==='needs_clarification').length],
-    ['ready','Ready',all.filter(r=>r.status==='ready').length]];
-  const tabs=[['open','Open',open.length],['converted','Converted',conv.length],['closed','Closed',shut.length]];
-  return `<div class="page-head">
-      <div><div class="crumb">Operations · intake</div><h1 class="page-title">Request Intake</h1>
-      <div class="page-sub">Every job enters here first. A request becomes a project only once it has what production
-        needs — that is what <b>Convert to project</b> checks, and it is the only way a coordinator creates a project.</div></div>
-      <div class="page-actions"><button class="btn primary" data-act="newRequest">＋ New request</button></div></div>
-    <div class="tabs">${tabs.map(([k,l,c])=>`<button data-tab="${k}" data-tabkey="req" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>
-    <div class="f wrap gap1 mb3">${chips.map(([k,l,n])=>`<button class="chip ${f.when===k?'sel':''}"
-      onclick="S.filters.req.when='${k}';render()">${esc(l)} <span class="mut3">${n}</span></button>`).join('')}</div>
+  else if(f.when==='month')list=list.filter(r=>dOf(r.created_at)>=month);
+  else if(f.when==='overdue')list=list.filter(reqOverdue);
+  if(f.status)list=list.filter(r=>r.status===f.status);
+  if(f.source)list=list.filter(r=>(r.source||'manual')===f.source);
+  if(f.priority)list=list.filter(r=>r.priority===f.priority);
+  if(f.link)list=list.filter(r=>String(r.link_id)===String(f.link));
+  if(f.team)list=list.filter(r=>String(r.team_id)===String(f.team)
+    ||(r.lead_user_id&&String((team(+f.team)||{}).lead_user_id)===String(r.lead_user_id)));
+  if(f.q){const q=f.q.toLowerCase();
+    list=list.filter(r=>[r.code,r.event_name,r.institute,r.stakeholder,r.contact_email,r.requester_email,
+      r.academic_unit_id?aunitName(r.academic_unit_id):'',
+      r.project_id?proj(r.project_id).code:'',
+      r.lead_user_id?(user(r.lead_user_id)||{}).full_name:''].filter(Boolean).join(' ').toLowerCase().includes(q));}
+  list=[...list].sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
+
+  const chip=(k,v,l,n)=>`<button class="chip ${f[k]===v?'sel':''}"
+    onclick="S.filters.req.${k}=S.filters.req.${k}==='${v}'?'':'${v}';render()">${esc(l)}${n!=null?` <span class="mut3">${n}</span>`:''}</button>`;
+  return `${requestsHead()}${counts}${requestsTabs(tab,open,conv,shut)}
+    <div class="cast-bar">
+      <div class="search-wrap cast-search"><input class="inp" value="${esc(f.q)}"
+        placeholder="Search request ID, project, event, institute, stakeholder, email, team lead…"
+        oninput="S.filters.req.q=this.value;render()"></div>
+      <div class="f wrap gap1">
+        ${chip('when','','Any time')}${chip('when','today','Today')}${chip('when','week','This week')}
+        ${chip('when','month','This month')}${chip('when','overdue','Overdue',overdueRequests().length)}
+      </div>
+    </div>
+    <div class="f wrap gap1 mb3">
+      ${['new','under_review','needs_clarification','ready'].map(k=>chip('status',k,(REQ_STATUS[k]||{l:k}).l,all.filter(r=>r.status===k).length)).join('')}
+      ${chip('source','external','External',all.filter(r=>r.source==='external').length)}
+      ${chip('source','manual','Manual',all.filter(r=>(r.source||'manual')==='manual').length)}
+      ${['urgent','high','normal','low'].map(p=>chip('priority',p,p[0].toUpperCase()+p.slice(1))).join('')}
+      ${activeTeams().map(t=>chip('team',String(t.id),t.name)).join('')}
+    </div>
     <div class="card"><div class="card-body flush">
-      ${list.length?list.map(r=>`<div class="dsp">
-        <div class="dsp-top">
-          <span class="code">${esc(r.code||'')}</span>
-          <b class="dsp-title">${esc(r.event_name)}</b>
-          ${statusPill(REQ_STATUS,r.status)}
-          ${r.priority!=='normal'?`<span class="chip">${esc(r.priority)}</span>`:''}
-        </div>
-        <div class="dsp-meta">
-          <span>${esc(r.institute||'—')}</span>
-          ${r.stakeholder?`<span>${esc(r.stakeholder)}</span>`:''}
-          ${r.contact?`<span>${esc(r.contact)}</span>`:''}
-          ${r.event_date?`<span>${D.fmt(r.event_date)}${r.event_time?' '+esc(r.event_time):''}</span>`:''}
-          ${r.venue?`<span>◈ ${esc(r.venue)}</span>`:''}
-          <span>received ${esc(String(r.created_at||'').slice(0,10))}${r.received_by?' by '+esc((user(r.received_by)||{full_name:'—'}).full_name.split(' ')[0]):''}</span>
-          ${(r.deliverables_requested||[]).length?`<span>${(r.deliverables_requested||[]).length} deliverable(s) requested</span>`:''}
-          ${r.project_id?`<span>→ <span class="code">${esc(proj(r.project_id).code||'')}</span></span>`:''}
-        </div>
-        ${r.description?`<div class="dsp-meta"><span>${esc(String(r.description).slice(0,160))}</span></div>`:''}
-        <div class="dsp-acts">
-          <button class="btn xs" data-act="openRequest" data-rid="${r.id}">✎ Open / edit</button>
-          ${r.status!=='converted'?`<button class="btn xs" data-act="clarifyRequest" data-rid="${r.id}">? Clarify</button>
-            <button class="btn xs" data-act="logMeeting" data-rid="${r.id}">◷ Meeting</button>`:''}
-          ${['new','needs_clarification'].includes(r.status)?`<button class="btn xs" data-act="reqStatus" data-rid="${r.id}" data-to="ready">✓ Mark ready</button>`:''}
-          ${r.status==='ready'?`<button class="btn xs primary" data-act="convertRequest" data-rid="${r.id}">⤴ Convert to project</button>`:''}
-          ${r.project_id?`<button class="btn xs" data-go="#/media/projects/${r.project_id}">Open project</button>`:''}
-          <button class="btn xs ghost" data-act="requestHistory" data-rid="${r.id}">◷ History</button>
-        </div>
-      </div>`).join(''):`<div class="empty" style="padding:30px"><div class="e-ico">◎</div>
-        <p>Nothing here. New requests appear as soon as they are logged.</p>
-        <button class="btn primary mt3" data-act="newRequest">＋ New request</button></div>`}
+      ${list.length?list.map(requestRow).join(''):`<div class="empty" style="padding:32px"><div class="e-ico">◎</div>
+        <h4>Nothing here</h4>
+        <p>${reqLinks().length?'New requests arrive from the request portal automatically.'
+          :'Create a request portal link so institutes can submit their requirements directly.'}</p>
+        <div class="f gap2 mt3" style="justify-content:center">
+          <button class="btn primary" data-act="newRequest">＋ New request</button>
+          ${!reqLinks().length?`<button class="btn" onclick="S.tab.req='links';render()">Create request link</button>`:''}
+        </div></div>`}
     </div></div>`;
 }
-
-/* ── Follow-up queue (§13) ────────────────────────────────────────────────
-   Clarifications waiting on somebody. Overdue ones also surface on Home so a
-   stalled request cannot sit unnoticed. */
-function viewFollowups(){
-  if(!(isCoord()||isAdmin()))return roleDenied('The follow-up queue belongs to the Operations Coordinator.');
-  const tab=S.tab.fu||'open';
-  const all=followups();
-  const open=all.filter(f=>['open','awaiting_reply'].includes(f.status));
-  const done=all.filter(f=>f.status==='resolved');
-  const list=(tab==='open'?open:done).sort((a,b)=>String(a.reminder_date||'9').localeCompare(String(b.reminder_date||'9')));
+function requestsHead(){
   return `<div class="page-head">
-      <div><div class="crumb">Operations · follow-ups</div><h1 class="page-title">Follow-ups</h1>
-      <div class="page-sub">Every clarification you send opens one of these, so a pending question is tracked
-        rather than remembered. Overdue items also appear on your Home dashboard.</div></div></div>
-    <div class="tabs">${[['open','Open',open.length],['resolved','Resolved',done.length]].map(([k,l,c])=>
-      `<button data-tab="${k}" data-tabkey="fu" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>
-    <div class="card"><div class="card-body flush">
-      ${list.length?list.map(f=>{
-        const age=D.diff(TODAY,dOf(f.pending_since));
-        const overdue=f.reminder_date&&dOf(f.reminder_date)<TODAY&&f.status!=='resolved';
-        const r=f.request_id?reqs().find(x=>x.id===f.request_id):null;
-        return `<div class="dc ${overdue?'late':''}">
-        <div class="dc-head"><span class="dc-ico">↩</span>
-          <b class="dc-title">${esc(f.subject||'Follow-up')}</b>
-          ${overdue?`<span class="status st-danger"><span class="si">⚑</span>Overdue</span>`
-                   :`<span class="status ${f.status==='resolved'?'st-success':'st-warn'}"><span class="si">${f.status==='resolved'?'✔':'◔'}</span>${String(f.status).replace('_',' ')}</span>`}</div>
-        <div class="dc-grid">
-          <div class="dc-kv"><span class="dc-k">Stakeholder</span><span class="dc-v">${esc(f.stakeholder||'—')}</span></div>
-          <div class="dc-kv"><span class="dc-k">Contact</span><span class="dc-v">${esc(f.contact||'—')}</span></div>
-          <div class="dc-kv"><span class="dc-k">Request</span><span class="dc-v">${r?esc(r.code+' · '+r.event_name):'—'}</span></div>
-          <div class="dc-kv"><span class="dc-k">Pending</span><span class="dc-v">${age}d</span></div>
-          <div class="dc-kv"><span class="dc-k">Reminder</span><span class="dc-v">${f.reminder_date?D.fmt(f.reminder_date):'—'}</span></div>
-          <div class="dc-kv"><span class="dc-k">Last contact</span><span class="dc-v">${f.last_contact_at?D.fmt(f.last_contact_at):'—'}</span></div>
-        </div>
-        <div class="dc-foot"><span class="chip">${esc(String(f.notes||'').slice(0,60)||'no notes')}</span>
-          <div class="dc-acts">
-            ${f.contact?`<a class="dc-btn" title="Call" href="tel:${esc(f.contact)}" data-stop><span>✆</span></a>
-                         <a class="dc-btn" title="Email" href="mailto:${esc(f.contact)}" data-stop><span>✉</span></a>`:''}
-            <button class="dc-btn" title="Reschedule the reminder" data-act="followupSnooze" data-fid="${f.id}"><span>◷</span></button>
-            ${f.status!=='resolved'?`<button class="dc-btn go" title="Mark resolved" data-act="followupDone" data-fid="${f.id}"><span>✓</span></button>`:''}
-          </div></div>
-      </div>`;}).join(''):`<div class="empty" style="padding:30px"><div class="e-ico">✔</div>
-        <p>Nothing ${tab==='open'?'outstanding — every clarification has come back':'resolved yet'}.</p></div>`}
-    </div></div>`;
+      <div><div class="crumb">Operations · intake</div><h1 class="page-title">Request Intake</h1>
+      <div class="page-sub">Every requirement enters here — submitted through a request portal or logged by you.
+        A request becomes a project only when you convert it and hand it to a team.</div></div>
+      <div class="page-actions">
+        <button class="btn" onclick="S.tab.req='links';render()">◆ Request links</button>
+        <button class="btn primary" data-act="newRequest">＋ New request</button></div></div>`;
+}
+function requestsTabs(tab,open,conv,shut){
+  const tabs=[['queue','Queue',open.length],['converted','Converted',conv.length],
+    ['closed','Closed',shut.length],['links','Request links',reqLinks().filter(reqLinkOpen).length]];
+  return `<div class="tabs">${tabs.map(([k,l,c])=>`<button data-tab="${k}" data-tabkey="req" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>`;
+}
+/* One request row — everything the coordinator triages on, at a glance (§23). */
+function requestRow(r){
+  const l=r.link_id?reqLink(r.link_id):null;
+  const wt=id=>((DB.work_types||[]).find(w=>w.id===id)||{}).name;
+  const needs=(r.requirement_types||[]).map(wt).filter(Boolean);
+  return `<div class="dc ${reqOverdue(r)?'late':''}" data-drawer="request:${r.id}" style="cursor:pointer">
+    <div class="dc-head"><span class="code">${esc(r.code||'')}</span>
+      <b class="dc-title">${esc(r.event_name)}</b>
+      ${statusPill(REQ_STATUS,r.status)}
+      ${r.source==='external'?'<span class="chip">External</span>':''}
+      ${r.priority&&r.priority!=='normal'?`<span class="chip">${esc(r.priority)}</span>`:''}
+      ${reqOverdue(r)?`<span class="status st-danger"><span class="si">⚑</span>Overdue</span>`:''}</div>
+    <div class="dc-grid">
+      <div class="dc-kv"><span class="dc-k">Institute</span><span class="dc-v">${esc(r.institute||'—')}</span></div>
+      <div class="dc-kv"><span class="dc-k">Contact</span><span class="dc-v">${esc(r.stakeholder||'—')}</span></div>
+      <div class="dc-kv"><span class="dc-k">Date</span><span class="dc-v">${r.event_date?D.fmt(r.event_date):'—'}${r.event_time?' · '+esc(r.event_time):''}</span></div>
+      <div class="dc-kv"><span class="dc-k">Venue</span><span class="dc-v">${esc(r.venue||'—')}</span></div>
+      <div class="dc-kv"><span class="dc-k">Needs</span><span class="dc-v">${needs.length?esc(needs.join(', ')):'—'}</span></div>
+      <div class="dc-kv"><span class="dc-k">${r.project_id?'Project':'Portal'}</span><span class="dc-v">${
+        r.project_id?`<span class="code">${esc(proj(r.project_id).code||'')}</span>`:(l?esc(l.name):'manual entry')}</span></div>
+    </div>
+    <div class="dc-foot"><span class="chip">received ${D.fmt(r.created_at)}</span>
+      <div class="dc-acts">
+        ${r.status==='new'?`<button class="dc-btn" title="Start review" data-act="reqStatus2" data-rid="${r.id}" data-to="under_review"><span>◔</span></button>`:''}
+        ${['new','under_review','needs_clarification'].includes(r.status)?`<button class="dc-btn" title="Request clarification" data-act="clarifyRequest" data-rid="${r.id}"><span>?</span></button>`:''}
+        ${['under_review','ready','needs_clarification'].includes(r.status)?`<button class="dc-btn go" title="Convert to project" data-act="convertRequest" data-rid="${r.id}"><span>⤴</span></button>`:''}
+        ${r.project_id?`<button class="dc-btn" title="Open project" data-go="#/media/projects/${r.project_id}"><span>↗</span></button>`:''}
+      </div></div>
+  </div>`;
 }
 
 /* ── Dispatch queue + archive ────────────────────────────────────────────── */
@@ -5602,6 +6490,29 @@ function projOverview(p,dls,crew,shoots,pr){
             `<dt>${esc(k.replace(/_/g,' '))}</dt><dd>${esc(Array.isArray(v)?v.join(', '):String(v))}</dd>`).join('')}</dl>`:''}
       </div></div>
 
+      ${(()=>{ /* §33 — the casting this production used, plus a way to ask for more. */
+        if(!can('casting.view'))return '';
+        const linked=(DB.project_casting||[]).filter(x=>x.project_id===p.id).map(x=>castRec(x.record_id)).filter(Boolean);
+        const creq=(DB.casting_requests||[]).filter(x=>x.project_id===p.id);
+        return `<div class="card"><div class="card-head"><h3>Casting</h3>
+          <div class="ca"><span class="chip">${linked.length}</span>
+            ${can('casting.request')?`<button class="btn xs" data-act="newCastRequest" data-pid="${p.id}">Request casting</button>`:''}
+            ${can('casting.manage')?`<button class="btn xs" data-act="linkCasting" data-pid="${p.id}">＋ Link</button>`:''}</div></div>
+          <div class="card-body flush">
+            ${linked.map(r=>`<div class="list-row" data-drawer="casting:${r.id}">
+              <span class="lr-main"><b>${esc(r.name)}</b>
+                <span><span class="code">${esc(r.cast_id||'')}</span> ${esc(r.category)}${r.profession?' · '+esc(r.profession):''}</span></span>
+              ${statusPill(CAST_AVAIL,r.availability)}
+              ${can('casting.manage')?`<button class="btn xs ghost" data-stop
+                onclick="event.stopPropagation();ACTIONS.unlinkCasting({pid:${p.id},cid:${r.id}})">✕</button>`:''}
+            </div>`).join('')}
+            ${creq.map(q=>`<div class="list-row" style="cursor:default">
+              <span class="lr-main"><b>${esc(q.need)}</b>
+                <span><span class="code">${esc(q.request_id||'')}</span> casting request</span></span>
+              ${statusPill(CR_STATUS,q.status)}</div>`).join('')}
+            ${!linked.length&&!creq.length?`<div class="empty" style="padding:20px">
+              <p>No casting linked yet.${can('casting.request')?' Raise a casting request and the Casting Manager will find someone.':''}</p></div>`:''}
+          </div></div>`;})()}
       <div class="card"><div class="card-head"><h3>Deliverable board</h3>
         <div class="ca"><a class="btn xs" href="#/media/projects/${p.id}/deliverables">All ${dls.length}</a></div></div>
         <div class="card-body flush">${dls.slice(0,8).map(d=>delivRow(d)).join('')||'<div class="empty" style="padding:20px"><p>No deliverables yet — apply a template.</p></div>'}</div>
@@ -6533,6 +7444,80 @@ function roleGroups(users){
     .sort((a,b)=>a.meta.rank-b.meta.rank||a.meta.p.localeCompare(b.meta.p));
 }
 
+/* The removal confirmation. Two shapes, decided by whether the member is
+   actually holding anything:
+     · nothing active  → a plain confirm
+     · active work     → the work is itemised, reassignment is offered, and
+                         removal requires the word REMOVE to be typed
+   Either way the Admin can proceed: active work informs the decision, it never
+   blocks it. */
+function renderRemoveModal(uid,impact){
+  const u=user(uid);
+  const a=(impact&&impact.active)||{projects:0,deliverables:0,reviews:0,assignments:0};
+  const hist=(impact&&impact.history)||{reports:0,audit_entries:0};
+  const led=(impact&&impact.leads_teams)||[];
+  const hot=!!(impact&&impact.has_active_work);
+  /* Anyone still active is a candidate to take the work on. */
+  const others=DB.users.filter(x=>x.is_active&&x.id!==uid)
+    .sort((x,y)=>x.full_name.localeCompare(y.full_name));
+  const leadPool=others.filter(x=>['team_lead','admin'].includes(x.role));
+  const row=(l,n)=>`<div class="between small" style="padding:3px 0">
+    <span>${esc(l)}</span><span class="chip ${n?'warnchip':''}">${n}</span></div>`;
+
+  modal(`<div class="mo-head"><div>
+      <h2>${hot?'Force remove':'Remove'} ${esc(u.full_name)}?</h2>
+      <p>This removes their account and access to Nerve.
+        ${hist.reports||hist.audit_entries?`Their history stays: <b>${hist.reports}</b> daily report(s)
+          and <b>${hist.audit_entries}</b> audit entr${hist.audit_entries===1?'y':'ies'} remain, and their name keeps
+          rendering on everything they did.`:'They have no historical records yet.'}</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      ${hot?`<div class="note warn mb3"><b>This member has active work.</b>
+        Removing the account does not delete any of it — but nobody will own it unless you reassign it first.</div>
+        <div class="card mb3"><div class="card-head"><h3>Active work</h3></div><div class="card-body">
+          ${row('Projects owned',a.projects)}
+          ${row('Open deliverables',a.deliverables)}
+          ${row('Versions awaiting review',a.reviews)}
+          ${row('Upcoming assignments',a.assignments)}
+        </div></div>
+        <div class="field"><label class="lbl">Reassign active work to <span class="mut3">(optional)</span></label>
+          <select class="inp" id="rm-reassign"><option value="">— leave it unassigned —</option>
+            ${others.map(x=>`<option value="${x.id}">${esc(x.full_name)} · ${esc(roleMeta(x.role).l)}</option>`).join('')}</select>
+          <div class="hint">Moves their open projects and deliverables. Completed work is never touched.</div></div>`
+        :`<div class="note mb3">Nothing active is assigned to ${esc(u.full_name.split(' ')[0])}, so nothing needs reassigning.</div>`}
+
+      ${led.length?`<div class="card mb3" style="border-color:var(--warn)">
+        <div class="card-head"><h3>This user is currently a Team Lead</h3></div>
+        <div class="card-body">
+          ${led.map(t=>`<div class="between small" style="padding:3px 0">
+            <span><b>${esc(t.name)}</b> · ${t.members} member(s) · ${t.projects} project(s)</span></div>`).join('')}
+          <div class="field mt3"><label class="lbl">Hand the team to <span class="mut3">(optional)</span></label>
+            <select class="inp" id="rm-newlead"><option value="">— leave the team without a lead —</option>
+              ${leadPool.map(x=>`<option value="${x.id}">${esc(x.full_name)}</option>`).join('')}</select>
+            <div class="hint">The team, its members and its projects all survive either way. Without a replacement
+              it simply shows as <b>Lead unassigned</b> until you pick one.</div></div>
+        </div></div>`:''}
+
+      <div class="card"><div class="card-body">
+        <b class="small">What removal does</b>
+        <ul class="small mut" style="margin:6px 0 0 16px;line-height:1.7">
+          <li>revokes their sign-in immediately, including any open session</li>
+          <li>takes them out of the directory, team membership and every assignment picker</li>
+          <li><b>preserves all historical records</b> — reports, deliverables, reviews, comments, dispatch and audit</li>
+          <li>leaves their name on past work exactly as it reads today</li>
+        </ul>
+      </div></div>
+
+      ${hot?`<div class="field mt3"><label class="lbl">Type <b>REMOVE</b> to confirm <span class="req">*</span></label>
+        <input class="inp" id="rm-confirm" placeholder="REMOVE" autocomplete="off"
+          oninput="document.querySelector('[data-act=removeGo]').disabled=this.value.trim().toUpperCase()!=='REMOVE'"></div>`:''}
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn danger" data-act="removeGo" data-uid="${uid}" data-force="${hot?'1':'0'}" ${hot?'disabled':''}>
+        ${hot?'Force remove member':'Remove member'}</button></div>`,{size:'wide'});
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+}
+
 /* ── Directory — hierarchical organization view ─────────────────────────────
    Grouped by role, with the team each person belongs to read from Organization
    Management (teamOf), so a role or team change in the admin panel shows here
@@ -6540,11 +7525,15 @@ function roleGroups(users){
 function teamDirectory(){
   const f=S.filters.dir||(S.filters.dir={q:'',role:'all'});
   const q=f.q.trim().toLowerCase();
-  let people=DB.users.filter(u=>u.is_active);
+  /* The directory is a list of people you can work with, so it shows ACTIVE
+     members by default. Removed accounts stay reachable behind their own filter
+     — their history still references them and an Admin may want to restore one. */
+  const removed=DB.users.filter(u=>!u.is_active);
+  let people=f.role==='removed'?removed:DB.users.filter(u=>u.is_active);
   /* Quick filters: a role slug, or one of the two presence filters. */
   if(f.role==='unavailable') people=people.filter(u=>['leave','half_day'].includes(presence(u.id)));
   else if(f.role==='available') people=people.filter(u=>!['leave','half_day'].includes(presence(u.id)));
-  else if(f.role!=='all') people=people.filter(u=>u.role===f.role);
+  else if(f.role!=='all'&&f.role!=='removed') people=people.filter(u=>u.role===f.role);
   if(q) people=people.filter(u=>{
     const t=teamOf(u.id);
     return (u.full_name+' '+(u.designation||'')+' '+(u.email||'')+' '+(t?t.name:'')).toLowerCase().includes(q);
@@ -6556,7 +7545,8 @@ function teamDirectory(){
   const chips=[['all','All',DB.users.filter(u=>u.is_active).length],
     ...allRoles.map(g=>[g.role,g.meta.p,g.users.length]),
     ['available','Available',DB.users.filter(u=>u.is_active&&!['leave','half_day'].includes(presence(u.id))).length],
-    ['unavailable','Unavailable',DB.users.filter(u=>u.is_active&&['leave','half_day'].includes(presence(u.id))).length]];
+    ['unavailable','Unavailable',DB.users.filter(u=>u.is_active&&['leave','half_day'].includes(presence(u.id))).length],
+    ...(removed.length?[['removed','Removed',removed.length]]:[])];
 
   return `<div class="dir-bar">
       <div class="search-wrap dir-search">
@@ -6632,14 +7622,17 @@ function dirCard(u){
                <span class="${leads?'b':'mut3'}">${esc(t.name)}</span>
                ${leads?'<span class="chip" style="height:17px;padding:0 6px;font-size:9.5px">Lead</span>':''}`
             : '<span class="mut3">Unassigned</span>'}</span></div>
-        ${(can('admin.users')&&u.id!==S.me)?`<span class="icon-btn ml-auto" role="button" title="Remove member" style="color:var(--danger)"
+        ${(can('admin.users')&&u.id!==S.me&&u.is_active)?`<span class="icon-btn ml-auto" role="button" title="Remove member" style="color:var(--danger)"
           onclick="event.stopPropagation();event.preventDefault();ACTIONS.deleteCrew({uid:${u.id},name:'${esc((u.full_name||'').replace(/'/g,''))}'})">🗑</span>`:''}</div>
+      ${!u.is_active?`<div class="note mb2" style="padding:7px 10px;font-size:11.5px">
+        <b>Removed${u.deactivated_at?' '+D.fmt(u.deactivated_at):''}.</b> No access; their past work is unchanged.
+        ${can('admin.users')?`<button class="btn xs mt2" onclick="event.stopPropagation();event.preventDefault();ACTIONS.restoreCrew({uid:${u.id}})">Restore</button>`:''}</div>`:''}
       <div class="f wrap gap2 mb2">${sk.slice(0,3).map(s=>`<span class="tag">${esc((DB.skills.find(k=>k.id===s.skill_id)||{}).name)} ${'●'.repeat(s.proficiency)}</span>`).join('')}</div>
       ${dt.length?`<div class="f wrap gap2">${dt.map(d=>`<span class="chip sel">⚑ ${esc(DB.duty_flags.find(f=>f.id===d.duty_flag_id).name)}</span>`).join('')}</div>`:''}
       <div class="divider"></div>
       <div class="between small mut3"><span>${activeProjectsOf(u.id).length} projects</span>
         <span>${openDeliverables(u.id).length} open ◆</span><span>${consistency(u.id)}% consistency</span></div>
-      ${(can('admin.users')&&u.id!==S.me)?`<div class="mt3" onclick="event.stopPropagation();event.preventDefault()">
+      ${(can('admin.users')&&u.id!==S.me&&u.is_active)?`<div class="mt3" onclick="event.stopPropagation();event.preventDefault()">
         <div class="f gap2 ac"><select class="inp" style="height:32px;font-size:12px;flex:1" onchange="ACTIONS.changeRole({uid:${u.id},role:this.value})">
           ${ROLE_OPTIONS(u.role)}</select>
         <button class="btn xs" title="Module access" onclick="ACTIONS.editModules({uid:${u.id}})">⚿ Modules${Array.isArray(u.allowed_modules)?' ('+u.allowed_modules.length+')':''}</button></div></div>`:''}
@@ -7997,18 +8990,23 @@ function admUsers(){
         return `<tr><td><div class="f ac gap2">${avatar(u.id,'sm')}<div><div class="t-main">${esc(u.full_name)}</div>
           <div class="t-sub">${esc(u.email)}</div></div></div></td>
         <td class="mono small">${esc(u.nerve_user_id)}</td>
-        <td><span class="chip ${u.role==='admin'?'sel':''}">${({admin:'★ Admin',team_lead:'▲ Team Lead',employee:'● Employee'})[u.role]}</span></td>
+        <td><span class="chip ${u.role==='admin'?'sel':''}">${roleMeta(u.role).i} ${esc(roleMeta(u.role).l)}</span></td>
         <td class="small">${(()=>{const t=teamOf(u.id);return t?esc(t.name)+(t.lead_user_id===u.id?' · lead':''):'<span class="mut3">—</span>';})()}</td>
         <td>${DB.user_duties.filter(d=>d.user_id===u.id).map(d=>`<span class="chip sel">⚑ ${esc(DB.duty_flags.find(f=>f.id===d.duty_flag_id).name)}</span>`).join(' ')||'<span class="mut3">—</span>'}</td>
         <td class="small">${Array.isArray(u.allowed_modules)?`<button class="chip" onclick="ACTIONS.editModules({uid:${u.id}})" title="${esc(u.allowed_modules.join(', '))}">⚿ ${u.allowed_modules.length}</button>`:`<button class="chip" onclick="ACTIONS.editModules({uid:${u.id}})">All (role)</button>`}</td>
         <td class="small">${esc((DB.campuses.find(c=>c.id===u.campus_id)||{code:'—'}).code)}</td>
         <td class="num">${held||'—'}</td>
-        <td>${u.is_active?'<span class="status st-success"><span class="si">✓</span>Active</span>':'<span class="status st-neutral"><span class="si">—</span>Inactive</span>'}</td>
+        <td>${u.is_active?'<span class="status st-success"><span class="si">✓</span>Active</span>'
+          :`<span class="status st-neutral"><span class="si">⛁</span>${esc(titleCase(u.status||'inactive'))}</span>`}</td>
         <td class="num nowrap"><button class="btn xs" data-act="editCrew" data-uid="${u.id}">Edit</button>
           <button class="btn xs" data-act="manageDuties" data-uid="${u.id}">Duties</button>
-          <button class="btn xs ghost" data-act="deactivateUser" data-uid="${u.id}">Deactivate</button></td></tr>`;}).join('')}
+          ${u.is_active
+            ? `<button class="btn xs ghost" data-act="deleteCrew" data-uid="${u.id}" data-name="${esc(u.full_name)}">Remove</button>`
+            : `<button class="btn xs" data-act="restoreCrew" data-uid="${u.id}">Restore</button>`}</td></tr>`;}).join('')}
       </tbody></table></div></div>
-    <div class="card-foot">Deactivation is blocked while a user holds equipment — the error lists the items (VR-10 / AC-15).</div></div>
+    <div class="card-foot">Removing a member revokes their access and takes them out of every active list.
+      Their history — reports, deliverables, reviews and audit entries — is kept, and their name keeps rendering on it.
+      A removed account can be restored, but its password is not: they get a fresh one.</div></div>
 
   <div class="grid g2">
     <div class="card"><div class="card-head"><h3>Duty flags</h3>${reqid('D4','Not a fourth role')}</div>
@@ -8727,6 +9725,9 @@ function drawerFor(kind,id){
   if(kind==='shoot')return drawerShoot(id);
   if(kind==='card')return drawerCard(id);
   if(kind==='person')return drawerPerson(id);
+  if(kind==='casting')return drawerCasting(id);
+  if(kind==='castreq')return drawerCastRequest(id);
+  if(kind==='request')return drawerRequest(id);
 }
 /* W5 — Deliverable drawer */
 function drawerDeliverable(id){
@@ -9759,6 +10760,327 @@ const ACTIONS = {
     /* Re-rendering replaces the input, so restore focus and caret — otherwise
        typing a second character would be lost. */
     const el=$('#dir-q'); if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);}
+  },
+  /* ---- external request portals ---- */
+  newReqLink:()=>{
+    modal(`<div class="mo-head"><div><h2>Create request link</h2>
+        <p>Circulate this to institutes, departments and event coordinators. They sign in with their
+          university account and their requirement lands straight in this queue.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Link name <span class="req">*</span></label>
+          <input class="inp" id="rl-name" placeholder="e.g. University Media Request Portal"></div>
+        <div class="field"><label class="lbl">Description</label>
+          <textarea class="inp" id="rl-desc" placeholder="Shown to requesters on the portal"></textarea></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Opens</label><input class="inp" type="date" id="rl-from"></div>
+          <div class="field"><label class="lbl">Expiry</label><input class="inp" type="date" id="rl-until">
+            <div class="hint">After this date the portal closes itself. Submitted requests are untouched.</div></div>
+        </div>
+        <div class="field"><label class="lbl">Allowed domain</label>
+          <input class="inp" id="rl-domain" value="paruluniversity.ac.in" ${isAdmin()?'':'readonly'}>
+          <div class="hint">${isAdmin()?'Only change this if a portal genuinely needs a different domain.'
+            :'Locked to the university domain — only an Admin can change it.'}</div></div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="newReqLinkGo">Create link</button></div>`,{size:'wide'});
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  newReqLinkGo:()=>{
+    const name=$('#rl-name').value.trim();
+    if(!name){toast('Give the portal a name','bad');return;}
+    const body={name,description:$('#rl-desc').value.trim(),active_from:$('#rl-from').value||null,
+      expires_on:$('#rl-until').value||null,allowed_domain:$('#rl-domain').value.trim()||'paruluniversity.ac.in'};
+    closeModal();
+    moSync(MO_API.post('/request-links',body).then(r=>hydrateFromServer().then(()=>r)),
+      (r)=>{loadMyActivity(true);render(); if(r&&r.link)showReqLink(r.link);});
+  },
+  copyReqLink:(d,n)=>{
+    const url=n?n.dataset.url:'';
+    if(navigator.clipboard&&url)navigator.clipboard.writeText(url).catch(()=>{});
+    toast('Request portal link copied','ok');
+  },
+  toggleReqLink:(d)=>{
+    const on=d.on==='1';
+    moSync(MO_API.patch('/request-links/'+d.lid,{is_active:on}).then(()=>hydrateFromServer()),
+      ()=>{loadMyActivity(true);render();
+        toast(on?'Portal reopened':'Portal closed — submitted requests are untouched','ok');});
+  },
+  reqLinkFilter:(d)=>{
+    S.tab.req=d.st==='converted'?'converted':'queue';
+    const f=S.filters.req||(S.filters.req={});
+    f.link=String(d.lid); f.status=''; f.when='all';
+    render();
+  },
+  reqStat:(d)=>{
+    const f=S.filters.req||(S.filters.req={});
+    f.when='all'; f.status=''; f.source=''; f.link='';
+    if(d.k==='overdue'){S.tab.req='queue';f.when='overdue';}
+    else if(d.k==='converted_today'){S.tab.req='converted';f.when='today';}
+    else {S.tab.req='queue';f.status=d.k;}
+    render();
+  },
+  reqStatus2:(d)=>{
+    moSync(MO_API.patch('/requests/'+d.rid,{status:d.to}).then(()=>hydrateFromServer()),
+      ()=>{loadMyActivity(true);closeDrawer();render();
+        toast('Request marked '+String(d.to).replace('_',' '),'ok');});
+  },
+  /* ---- external casting registration ---- */
+  newCastLink:()=>{
+    modal(`<div class="mo-head"><div><h2>Create registration link</h2>
+        <p>Share this with the university. People sign in with their official Google account —
+          they never get a NERVE account, and their submission arrives in Requests.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Campaign name <span class="req">*</span></label>
+          <input class="inp" id="cl-name" placeholder="e.g. University Casting Drive 2026"></div>
+        <div class="field"><label class="lbl">Description</label>
+          <textarea class="inp" id="cl-desc" placeholder="Shown to applicants on the registration page"></textarea></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Opens</label><input class="inp" type="date" id="cl-from"></div>
+          <div class="field"><label class="lbl">Expires</label><input class="inp" type="date" id="cl-until">
+            <div class="hint">After this date the page closes itself. Submissions already made are untouched.</div></div>
+        </div>
+        <div class="field"><label class="lbl">Allowed domain</label>
+          <input class="inp" id="cl-domain" value="paruluniversity.ac.in" ${isAdmin()?'':'readonly'}>
+          <div class="hint">${isAdmin()?'Only change this if a campaign genuinely needs a different domain.'
+            :'Locked to the university domain — only an Admin can change it.'}</div></div>
+        <label class="chk"><input type="checkbox" id="cl-dept"> Require department / institute</label>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="newCastLinkGo">Create registration link</button></div>`,{size:'wide'});
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  newCastLinkGo:()=>{
+    const name=$('#cl-name').value.trim();
+    if(!name){toast('Give the campaign a name','bad');return;}
+    const body={name,description:$('#cl-desc').value.trim(),
+      active_from:$('#cl-from').value||null,expires_on:$('#cl-until').value||null,
+      allowed_domain:$('#cl-domain').value.trim()||'paruluniversity.ac.in',
+      require_department:$('#cl-dept').checked};
+    closeModal();
+    moSync(MO_API.post('/casting-links',body).then(r=>hydrateFromServer().then(()=>r)),
+      (r)=>{loadMyActivity(true);render();
+        if(r&&r.link)showCastLink(r.link);});
+  },
+  copyCastLink:(d,n)=>{
+    const url=n?n.dataset.url:'';
+    if(navigator.clipboard&&url)navigator.clipboard.writeText(url).catch(()=>{});
+    toast('Registration link copied','ok');
+  },
+  toggleCastLink:(d)=>{
+    const on=d.on==='1';
+    moSync(MO_API.patch('/casting-links/'+d.lid,{is_active:on}).then(()=>hydrateFromServer()),
+      ()=>{loadMyActivity(true);render();
+        toast(on?'Registration reopened':'Registration closed — existing submissions are untouched','ok');});
+  },
+  castLinkSubs:(d)=>{
+    S.tab.castadmin='requests';
+    (S.filters.castreq||(S.filters.castreq={})).link=String(d.lid);
+    render();
+  },
+  reviewReq:(d)=>{
+    const q=castRequests().find(x=>x.id===+d.rid); if(!q)return;
+    const to=d.to;
+    const LABEL={under_review:'Start review',approved:'Approve',clarification:'Mark clarification required',
+      rejected:'Reject',archived:'Archive'};
+    modal(`<div class="mo-head"><div><h2>${esc(LABEL[to]||to)}</h2>
+        <p><span class="code">${esc(q.request_id||'')}</span> — ${esc(q.applicant_name||q.need)}</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        ${to==='approved'?`<div class="note mb3"><b>This creates a real casting record.</b>
+          A permanent CAST ID is generated and the person becomes searchable in Casting Preview.
+          The request stays linked as the source.</div>`:''}
+        ${to==='rejected'?`<div class="note warn mb3">No CAST ID is created and nothing enters the casting
+          library. The request stays in history for audit.</div>`:''}
+        ${to==='clarification'?`<div class="note warn mb3">The request stays pending. There is no applicant
+          messaging yet, so follow up with them yourself — this only records that it is needed.</div>`:''}
+        <div class="field"><label class="lbl">Internal note ${to==='clarification'?'<span class="req">*</span>':'<span class="mut3">(optional)</span>'}</label>
+          <textarea class="inp" id="rv-note" placeholder="Internal only — never shown to the applicant">${esc(q.review_note||'')}</textarea></div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn ${to==='rejected'?'danger':'primary'}" data-act="reviewReqGo" data-rid="${q.id}" data-to="${to}">${esc(LABEL[to]||to)}</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  reviewReqGo:(d)=>{
+    const note=($('#rv-note')||{}).value||'';
+    if(d.to==='clarification'&&!note.trim()){toast('Say what needs clarifying','bad');return;}
+    closeModal();
+    moSync(MO_API.post('/casting-requests/'+d.rid+'/review',{status:d.to,note:note.trim()})
+      .then(r=>hydrateFromServer().then(()=>r)),
+      (r)=>{loadMyActivity(true);closeDrawer();render();
+        toast(r&&r.cast_id?('Approved — '+r.cast_id+' created and added to the casting library')
+          :('Request marked '+String(d.to).replace('_',' ')),'ok');});
+  },
+  /* ---- Casting library ---------------------------------------------------
+     Preview is discovery; management writes through the API and re-reads the
+     audit trail so the work log and daily report stay honest. */
+  castSearch:(d)=>{
+    const f=S.filters.cast||(S.filters.cast={q:''});
+    if(f.q===d.q)return;
+    f.q=d.q; render();
+    const el=$('#cast-q'); if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);}
+  },
+  castFilter:(d)=>{
+    const f=S.filters.cast||(S.filters.cast={});
+    f[d.k]=f[d.k]===d.v?'':d.v; render();
+  },
+  castClear:()=>{S.filters.cast={q:'',category:'',age:'',avail:'',gender:'',language:'',tag:'',collection:''};render();},
+  castStat:(d)=>{
+    S.tab.castadmin='records';
+    const f=S.filters.castadmin||(S.filters.castadmin={});
+    if(d.k==='collections'){S.tab.castadmin='collections';}
+    else if(d.k==='links'){S.tab.castadmin='external';}
+    else if(d.k==='work'){S.tab.castadmin='work';}
+    else if(d.k==='pending'){S.tab.castadmin='requests';
+      (S.filters.castreq||(S.filters.castreq={})).status='under_review';}
+    else if(d.k==='approved'){S.tab.castadmin='requests';
+      (S.filters.castreq||(S.filters.castreq={})).status='approved';}
+    else {f.view=d.k==='all'?'all':d.k;}
+    render();
+  },
+  copyCastDrive:(d,n)=>{
+    const url=n?n.dataset.url:'';
+    if(navigator.clipboard&&url)navigator.clipboard.writeText(url).catch(()=>{});
+    toast('Drive link copied','ok');
+  },
+  newCasting:()=>openCastingForm(null),
+  editCasting:(d)=>openCastingForm(+d.cid),
+  saveCasting:(d)=>{
+    const name=$('#cf-name').value.trim();
+    if(!name){toast('A casting name or reference is required','bad');return;}
+    const drive=$('#cf-drive').value.trim();
+    if(!/^https:\/\/(drive|docs)\.google\.com\//i.test(drive)){
+      toast('Please enter a valid Google Drive folder link','bad');return;}
+    const body={name,category:$('#cf-cat').value,profession:$('#cf-prof').value.trim(),
+      age_group:$('#cf-age').value||null,gender:$('#cf-gender').value.trim()||null,
+      languages:$('#cf-langs').value.split(',').map(s=>s.trim()).filter(Boolean),
+      location:$('#cf-loc').value.trim()||null,
+      campus_id:$('#cf-campus').value||null,
+      availability:$('#cf-avail').value,consent_status:$('#cf-consent').value,
+      consent_date:$('#cf-cdate').value||null,consent_scope:$('#cf-scope').value.trim()||null,
+      review_date:$('#cf-review').value||null,drive_url:drive,notes:$('#cf-notes').value.trim(),
+      tags:$$('#cf-tags .chip.sel').map(c=>+c.dataset.tid),
+      collections:$$('#cf-colls .chip.sel').map(c=>+c.dataset.cid)};
+    closeModal();
+    const req=d.cid?MO_API.patch('/casting/'+d.cid,body):MO_API.post('/casting',body);
+    moSync(req.then(()=>hydrateFromServer()),
+      ()=>{loadMyActivity(true);toast(d.cid?'Casting record updated':'Casting record added','ok');});
+  },
+  archiveCasting:(d)=>{
+    moSync(MO_API.del('/casting/'+d.cid).then(()=>hydrateFromServer()),
+      ()=>{loadMyActivity(true);toast('Casting archived — it stays available to you under the Archived filter','ok');});
+  },
+  restoreCasting:(d)=>{
+    moSync(MO_API.post('/casting/'+d.cid+'/restore',{}).then(()=>hydrateFromServer()),
+      ()=>{loadMyActivity(true);toast('Casting restored','ok');});
+  },
+  checkCastDrive:(d)=>{
+    moSync(MO_API.post('/casting/'+d.cid+'/check-drive',{}).then(r=>hydrateFromServer().then(()=>r)),
+      (r)=>{loadMyActivity(true);toast(r&&r.ok?'Drive link responded — looks healthy':'Drive link did not respond — needs attention',r&&r.ok?'ok':'warn');});
+  },
+  /* ---- casting requests ---- */
+  newCastRequest:(d)=>{
+    const ps=visibleProjects().filter(p=>!['archived','cancelled','completed'].includes(p.status));
+    modal(`<div class="mo-head"><div><h2>Request casting</h2>
+        <p>Tell the Casting Manager what the production needs. They will search the library, look further if
+          necessary, and come back with a match.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">What do you need? <span class="req">*</span></label>
+          <input class="inp" id="cq-need" placeholder="e.g. Doctor, professional appearance"></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Category</label>
+            <select class="inp" id="cq-cat"><option value="">— any —</option>
+              ${CAST_CATEGORIES.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select></div>
+          <div class="field"><label class="lbl">Age group</label>
+            <select class="inp" id="cq-age"><option value="">— any —</option>
+              ${AGE_GROUPS.map(([k,l])=>`<option value="${k}">${esc(l)}</option>`).join('')}</select></div>
+          <div class="field"><label class="lbl">Gender <span class="mut3">(only if the production requires it)</span></label>
+            <input class="inp" id="cq-gender" placeholder="optional"></div>
+        </div>
+        <div class="row">
+          <div class="field"><label class="lbl">Languages</label>
+            <input class="inp" id="cq-langs" placeholder="e.g. Gujarati, Hindi"></div>
+          <div class="field"><label class="lbl">Project</label>
+            <select class="inp" id="cq-proj"><option value="">— none —</option>
+              ${ps.slice(0,80).map(p=>`<option value="${p.id}" ${d&&+d.pid===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div>
+          <div class="field"><label class="lbl">Required by</label><input class="inp" type="date" id="cq-due"></div>
+        </div>
+        <div class="field"><label class="lbl">Notes</label>
+          <textarea class="inp" id="cq-notes" placeholder="Anything that would help identify the right person"></textarea></div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="saveCastRequest">Send request</button></div>`,{size:'wide'});
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  saveCastRequest:()=>{
+    const need=$('#cq-need').value.trim();
+    if(!need){toast('Say what casting you need','bad');return;}
+    const body={need,category:$('#cq-cat').value||null,age_group:$('#cq-age').value||null,
+      gender:$('#cq-gender').value.trim()||null,
+      languages:$('#cq-langs').value.split(',').map(s=>s.trim()).filter(Boolean),
+      project_id:$('#cq-proj').value||null,due_date:$('#cq-due').value||null,
+      notes:$('#cq-notes').value.trim()};
+    closeModal();
+    moSync(MO_API.post('/casting-requests',body).then(()=>hydrateFromServer()),
+      ()=>{render();toast('Request sent to the Casting Manager','ok');});
+  },
+  castReqStatus:(d)=>{
+    moSync(MO_API.patch('/casting-requests/'+d.rid,{status:d.status}).then(()=>hydrateFromServer()),
+      ()=>{loadMyActivity(true);toast('Request marked '+String(d.status).replace('_',' '),'ok');});
+  },
+  matchCastReq:(d)=>{
+    const q=castRequests().find(x=>x.id===+d.rid); if(!q)return;
+    const pool=previewRecords();
+    modal(`<div class="mo-head"><div><h2>Match a casting record</h2>
+        <p>${esc(q.request_id||'')} — ${esc(q.need)}</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Casting record</label>
+          <select class="inp" id="mc-rec"><option value="">— none —</option>
+            ${pool.map(r=>`<option value="${r.id}" ${q.matched_record_id===r.id?'selected':''}>${esc(r.cast_id)} · ${esc(r.name)} · ${esc(r.category)}</option>`).join('')}</select>
+          <div class="hint">Only records cleared for production use are listed.</div></div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="matchCastReqGo" data-rid="${q.id}">Attach &amp; mark candidate found</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  matchCastReqGo:(d)=>{
+    const rec=$('#mc-rec').value||null;
+    closeModal();
+    moSync(MO_API.patch('/casting-requests/'+d.rid,{matched_record_id:rec,status:rec?'candidate_found':'searching'})
+      .then(()=>hydrateFromServer()),
+      ()=>{loadMyActivity(true);toast(rec?'Candidate attached':'No record attached','ok');});
+  },
+  castManualLog:()=>{
+    /* Reuses the ordinary task-log modal — a manual casting entry is just a task
+       log entry, so it flows into the daily report like any other work. */
+    openTaskLog();
+    setTimeout(()=>{const d=$('#tl-desc'); if(d&&!d.value)d.value='Casting — ';},80);
+  },
+  /* ---- project ↔ casting (§33) ---- */
+  linkCasting:(d)=>{
+    const pool=previewRecords().filter(r=>!(DB.project_casting||[]).some(x=>x.project_id===+d.pid&&x.record_id===r.id));
+    modal(`<div class="mo-head"><div><h2>Link casting to this project</h2>
+        <p>Records the casting references this production actually used.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><div class="field"><label class="lbl">Casting record</label>
+        <select class="inp" id="lc-rec">${pool.map(r=>`<option value="${r.id}">${esc(r.cast_id)} · ${esc(r.name)} · ${esc(r.category)}</option>`).join('')
+          ||'<option value="">No further records available</option>'}</select></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="linkCastingGo" data-pid="${d.pid}">Link casting</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  linkCastingGo:(d)=>{
+    const rec=$('#lc-rec').value; if(!rec){closeModal();return;}
+    closeModal();
+    moSync(MO_API.post('/projects/'+d.pid+'/casting',{record_id:+rec}).then(()=>hydrateFromServer()),
+      ()=>{render();toast('Casting linked to the project','ok');});
+  },
+  unlinkCasting:(d)=>{
+    moSync(MO_API.del('/projects/'+d.pid+'/casting/'+d.cid).then(()=>hydrateFromServer()),
+      ()=>{render();toast('Casting unlinked','ok');});
   },
   /* ---- Organization Management (Team → Teams & duties) --------------------
      The one place org structure is written. Each action posts to the team API
@@ -11069,9 +12391,45 @@ const ACTIONS = {
       .then(()=>{closeModal();toast('Password updated — use it next sign-in','ok');})
       .catch(e=>toast('Could not update: '+e.message,'bad'));
   },
+  /* ---- Remove a member ---------------------------------------------------
+     Removal takes the ACCOUNT out of service; it never deletes the person's
+     work. Active work is shown so the Admin decides with the facts in front of
+     them, and reassigning it is offered but never required. */
   deleteCrew:(d)=>{
-    if(!confirm('Remove '+(d.name||'this member')+' from the Media crew? This deletes their Nerve account.'))return;
-    moSync(MO_API.del('/crew/'+ruid(+d.uid)), ()=>{render();toast('Member removed','ok');});
+    const uid=+d.uid, u=user(uid);
+    modal(`<div class="mo-head"><div><h2>Remove ${esc(u.full_name)}?</h2>
+        <p>Checking what they currently hold…</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><div class="empty" style="padding:26px"><p>Loading…</p></div></div>`);
+    MO_API.get('/crew/'+ruid(uid)+'/impact')
+      .then(i=>renderRemoveModal(uid,i))
+      .catch(()=>renderRemoveModal(uid,null));
+  },
+  removeGo:(d)=>{
+    const uid=+d.uid;
+    const name=user(uid).full_name;
+    /* Force removal requires the word to be typed — the guard exists so a
+       members-with-active-work removal cannot happen on a mis-click. */
+    if(d.force==='1'){
+      const typed=($('#rm-confirm')||{}).value||'';
+      if(typed.trim().toUpperCase()!=='REMOVE'){toast('Type REMOVE to confirm','bad');return;}
+    }
+    const body={force:d.force==='1'};
+    const re=$('#rm-reassign'); if(re&&re.value)body.reassign_to=ruid(+re.value);
+    const nl=$('#rm-newlead');  if(nl&&nl.value)body.new_lead=ruid(+nl.value);
+    closeModal();
+    moSync(MO_API.req('DELETE','/crew/'+ruid(uid),body).then(()=>hydrateFromServer()),
+      (r)=>{render();
+        const bits=[name+' removed'];
+        if(r&&r.reassigned)bits.push(r.reassigned+' item(s) reassigned');
+        if(r&&r.teams_unassigned&&r.teams_unassigned.length&&!(r&&r.new_lead))
+          bits.push(r.teams_unassigned.map(t=>t.name).join(', ')+' now has no lead');
+        toast(bits.join(' · '),'ok');});
+  },
+  restoreCrew:(d)=>{
+    const uid=+d.uid;
+    moSync(MO_API.post('/crew/'+ruid(uid)+'/restore',{}).then(()=>hydrateFromServer()),
+      ()=>{render();toast(user(uid).full_name+' restored — they will need a new password','ok');});
   },
   editCrew:(d)=>{
     const u=user(+d.uid);
@@ -11687,7 +13045,10 @@ async function hydrateFromServer(){
     'automation_rules','teams','team_members','duty_flags','user_duties','skills','user_skills','assignments','notifications',
     'project_types','deliverable_types','task_categories','project_templates','template_deliverables','academic_years',
     'academic_units','work_types','campuses','capacity_roles','tags','users',
-    'requests','meetings','vendor_activities','followups'];
+    'requests','meetings','vendor_activities','followups',
+    'casting_records','casting_tags','casting_collections','casting_record_tags',
+    'casting_record_collections','casting_requests','project_casting',
+    'casting_links','request_links'];
   const st=await MO_API.get('/state');
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
   // Bind identity to the real logged-in Nerve user (server sends its prototype int id).

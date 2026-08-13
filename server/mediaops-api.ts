@@ -13,6 +13,7 @@
 import type express from "express";
 import { pool } from "./db.js";
 import { hashPassword, verifyPassword } from "./password.js";
+import { randomUUID } from "node:crypto";
 
 type Handlers = {
   asyncHandler: (fn: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<unknown>) =>
@@ -199,9 +200,20 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["saved_views", "mo_saved_views", null, ["user_id"]],
     // Operations Coordinator: intake + coordination logs.
     ["requests", "mo_requests", null, ["received_by", "converted_by", "lead_user_id"]],
+    ["request_links", "mo_request_links", null, ["created_by"]],
     ["meetings", "mo_meetings", null, ["logged_by"]],
     ["vendor_activities", "mo_vendor_activities", null, ["logged_by"]],
     ["followups", "mo_followups", null, ["owner_id"]],
+    // Casting library. Records ship in full; the preview filters client-side on
+    // consent + archive so an employee never sees a record that is not cleared.
+    ["casting_records", "mo_casting_records", null, ["created_by", "updated_by"]],
+    ["casting_tags", "mo_casting_tags", null, ["created_by"]],
+    ["casting_collections", "mo_casting_collections", null, ["created_by"]],
+    ["casting_record_tags", "mo_casting_record_tags", null, []],
+    ["casting_record_collections", "mo_casting_record_collections", null, []],
+    ["casting_requests", "mo_casting_requests", null, ["requested_by", "handled_by"]],
+    ["casting_links", "mo_casting_links", null, ["created_by"]],
+    ["project_casting", "mo_project_casting", null, ["linked_by"]],
     ["automation_rules", "mo_automation_rules", null, ["updated_by"]],
     // Admin configuration (CRUD engine) — the DB is the source of truth for every
     // picker/template in the operational UI. Archived rows are excluded (cannot be
@@ -237,7 +249,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // (non-'mo-uN') users. This roster REPLACES the prototype's seed users.
     const crew = (await pool.query(
       `SELECT u.id, u.full_name, u.email, u.role, u.avatar_url, u.created_at,
-              p.designation, p.joined_on, p.allowed_modules, p.mo_role FROM users u LEFT JOIN mo_user_profiles p ON p.user_id=u.id
+              p.designation, p.joined_on, p.allowed_modules, p.mo_role,
+              u.status, u.deactivated_at FROM users u LEFT JOIN mo_user_profiles p ON p.user_id=u.id
         WHERE u.team='media' ORDER BY u.id`)).rows as Array<Record<string, unknown>>;
     if (!crew.some((r) => r.id === u.id))
       crew.unshift({ id: u.id, full_name: u.full_name ?? "You", email: u.email ?? "", role: u.role, avatar_url: null });
@@ -291,7 +304,13 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         // from users.role so Nerve-wide parity is unchanged.
         role: r.mo_role === "coordinator" ? "coordinator" : (roleMap[String(r.role)] ?? "employee"),
         initials: (name.split(/\s+/).map((w) => w[0] || "").join("").slice(0, 2).toUpperCase()) || "?",
-        color: "#3B9B76", avatar_url: r.avatar_url ?? null, is_active: true,
+        color: "#3B9B76", avatar_url: r.avatar_url ?? null,
+        // Removed accounts still ship: historical rows reference them, and every
+        // name in a report or audit entry must keep resolving. Active surfaces
+        // filter on is_active; history does not.
+        status: (r.status as string) ?? "active",
+        is_active: ((r.status as string) ?? "active") === "active",
+        deactivated_at: r.deactivated_at ?? null,
         designation: r.designation ?? "", joined_on: r.joined_on ?? (r.created_at ? String(r.created_at).slice(0, 10) : null),
         allowed_modules: Array.isArray(r.allowed_modules) ? r.allowed_modules : null,
       };
@@ -1738,19 +1757,132 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   }));
 
   // Remove a media crew member — #6. Admin only. Blocks if they have activity.
+  /* What a member is currently holding. Drives the confirmation modal so the
+     Admin decides with the facts in front of them — this is information, never
+     a blocker. */
+  app.get(`${P}/crew/:id/impact`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may inspect a member's active work.");
+    const id = getSingleParam(req.params.id);
+    const one = async (sql: string) => Number((await pool.query(sql, [id])).rows[0]?.n ?? 0);
+    const [projects, deliverables, reviews, assignments, reports] = await Promise.all([
+      one(`SELECT count(*) n FROM mo_projects WHERE owner_id=$1 AND status NOT IN ('completed','archived','cancelled') AND deleted_at IS NULL`),
+      one(`SELECT count(*) n FROM mo_deliverables WHERE owner_id=$1 AND status NOT IN ('delivered','not_required','cancelled') AND deleted_at IS NULL`),
+      one(`SELECT count(*) n FROM mo_deliverable_versions v JOIN mo_deliverables d ON d.id=v.deliverable_id
+            WHERE v.review_status='pending' AND d.owner_id=$1`),
+      one(`SELECT count(*) n FROM mo_assignment_users au JOIN mo_assignments a ON a.id=au.assignment_id
+            WHERE au.user_id=$1 AND a.status NOT IN ('done','cancelled')`),
+      one(`SELECT count(*) n FROM mo_daily_reports WHERE user_id=$1`),
+    ]);
+    const led = (await pool.query(
+      `SELECT t.id, t.name,
+              (SELECT count(*) FROM mo_team_members m WHERE m.team_id=t.id)::int AS members,
+              (SELECT count(*) FROM mo_projects p WHERE p.owner_id=$1 AND p.deleted_at IS NULL)::int AS projects
+         FROM mo_teams t WHERE t.lead_user_id=$1 AND t.archived_at IS NULL`, [id])).rows;
+    const history = await one(`SELECT count(*) n FROM mo_audit_logs WHERE actor_id=$1`);
+    res.json({
+      active: { projects, deliverables, reviews, assignments },
+      history: { reports, audit_entries: history },
+      leads_teams: led,
+      has_active_work: projects + deliverables + reviews + assignments > 0,
+    });
+  }));
+
+  /* Remove a member.
+     This DEACTIVATES the account; it never deletes production data. The user row
+     survives so that every historical reference — reports, versions, reviews,
+     comments, dispatch records, audit rows — keeps resolving to the real person.
+     "Delivered by Manav Trivedi" therefore still reads correctly afterwards.
+
+     What removal actually does:
+       · revokes sign-in (status + a scrambled password hash)
+       · drops active team membership, and unassigns them from a team they lead
+         (the team itself survives, with no lead)
+       · closes out open project assignments so selectors stop offering them
+     Historical rows are deliberately left untouched. */
   app.delete(`${P}/crew/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may remove crew members.");
     const realId = getSingleParam(req.params.id);
     if (realId === u.id) return sendError(res, 400, "You cannot remove yourself.");
-    try {
-      await pool.query(`DELETE FROM mo_user_profiles WHERE user_id=$1`, [realId]);
-      await pool.query(`DELETE FROM users WHERE id=$1 AND team='media'`, [realId]);
-    } catch {
-      return sendError(res, 409, "This member has activity (reports/projects/audit). Reassign their work first.");
+    const target = (await pool.query(`SELECT id, full_name, role, status FROM users WHERE id=$1 AND team='media'`, [realId])).rows[0];
+    if (!target) return sendError(res, 404, "That member is not on the media crew.");
+    if (target.status === "archived") return res.json({ ok: true, already: true });
+
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const reassignTo = b.reassign_to ? String(toUid(b.reassign_to)) : null;
+    const newLead = b.new_lead ? String(toUid(b.new_lead)) : null;
+
+    // Optional: hand active work to someone else FIRST, so nothing is orphaned.
+    // Entirely the Admin's choice — removal proceeds either way.
+    let reassigned = 0;
+    if (reassignTo && reassignTo !== realId) {
+      const r1 = await pool.query(
+        `UPDATE mo_deliverables SET owner_id=$1 WHERE owner_id=$2
+           AND status NOT IN ('delivered','not_required','cancelled') AND deleted_at IS NULL`, [reassignTo, realId]);
+      const r2 = await pool.query(
+        `UPDATE mo_projects SET owner_id=$1 WHERE owner_id=$2
+           AND status NOT IN ('completed','archived','cancelled') AND deleted_at IS NULL`, [reassignTo, realId]);
+      reassigned = (r1.rowCount ?? 0) + (r2.rowCount ?? 0);
     }
-    await audit(u, "crew.removed", "user", null, null, { id: realId }, req);
-    res.json({ ok: true });
+
+    // Teams they lead survive. A replacement lead may be named; otherwise the
+    // team is left Lead Unassigned for an Admin to fill later. The team, its
+    // members and its projects are never touched.
+    const ledTeams = (await pool.query(`SELECT id, name FROM mo_teams WHERE lead_user_id=$1`, [realId])).rows;
+    if (ledTeams.length) {
+      if (newLead && newLead !== realId) {
+        await pool.query(`UPDATE mo_teams SET lead_user_id=$1 WHERE lead_user_id=$2`, [newLead, realId]);
+        await pool.query(`UPDATE users SET role='sub_admin' WHERE id=$1 AND role='user'`, [newLead]);
+        await pool.query(`UPDATE mo_user_profiles SET mo_role='team_lead' WHERE user_id=$1 AND mo_role='employee'`, [newLead]);
+      } else {
+        await pool.query(`UPDATE mo_teams SET lead_user_id=NULL WHERE lead_user_id=$1`, [realId]);
+      }
+    }
+
+    // Remove from ACTIVE operational surfaces only.
+    await pool.query(`DELETE FROM mo_team_members WHERE user_id=$1`, [realId]);
+    await pool.query(`UPDATE mo_project_assignments SET removed_at=NOW() WHERE user_id=$1 AND removed_at IS NULL`, [realId]);
+    await pool.query(`DELETE FROM mo_assignment_users WHERE user_id=$1 AND assignment_id IN
+                        (SELECT id FROM mo_assignments WHERE status NOT IN ('done','cancelled'))`, [realId]);
+    await pool.query(`DELETE FROM mo_shoot_crew WHERE user_id=$1 AND shoot_id IN
+                        (SELECT id FROM mo_shoots WHERE shoot_date >= CURRENT_DATE)`, [realId]);
+
+    // Revoke access. The hash is replaced with a value no password can produce,
+    // so the account cannot be signed into even if status were ever bypassed.
+    await pool.query(
+      `UPDATE users SET status='archived', deactivated_at=NOW(), deactivated_by=$1,
+         deactivation_reason=$2, password_hash=concat('removed:', gen_random_uuid()::text)
+       WHERE id=$3`,
+      [u.id, String(b.reason ?? "Removed by admin"), realId]);
+
+    await audit(u, "crew.removed", "user", null, { id: realId, name: target.full_name, status: target.status },
+      { id: realId, status: "archived", reassigned_to: reassignTo, teams_unassigned: ledTeams.map((t) => t.name),
+        new_lead: newLead, forced: !!b.force }, req);
+    res.json({
+      ok: true, status: "archived", reassigned,
+      teams_unassigned: ledTeams.map((t) => ({ id: t.id, name: t.name })),
+      new_lead: newLead,
+    });
+  }));
+
+  /* Restore a removed account. Removal is reversible by an Admin — the spec's
+     "cannot be undone from the UI" refers to the member's own access, not to an
+     Admin's ability to put a mistake right. */
+  app.post(`${P}/crew/:id/restore`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may restore an account.");
+    const realId = getSingleParam(req.params.id);
+    const t = (await pool.query(`SELECT status FROM users WHERE id=$1 AND team='media'`, [realId])).rows[0];
+    if (!t) return sendError(res, 404, "That member is not on the media crew.");
+    if (t.status === "active") return res.json({ ok: true, already: true });
+    // The password is NOT restored — it was destroyed on removal by design, so a
+    // restored member goes through a password reset like any new account.
+    await pool.query(
+      `UPDATE users SET status='active', deactivated_at=NULL, deactivated_by=NULL, deactivation_reason=NULL WHERE id=$1`,
+      [realId]);
+    await audit(u, "crew.restored", "user", null, { id: realId, status: t.status }, { id: realId, status: "active" }, req);
+    res.json({ ok: true, needs_password_reset: true });
   }));
 
   // Change a member's role (and optionally team-lead) — #1. Admin only.
@@ -1783,6 +1915,550 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ ok: true, role });
   }));
 
+  // ═══════════════════════ CASTING LIBRARY ══════════════════════════════════
+  // Maintaining the library is a DUTY (D4), not a role: an ordinary employee
+  // carrying the casting_manager flag manages it and stays an employee
+  // everywhere else. Admin always has access.
+  async function canManageCasting(u: CurrentUser): Promise<boolean> {
+    if (isMoAdmin(u)) return true;
+    const r = await pool.query(
+      `SELECT 1 FROM mo_user_duties d JOIN mo_duty_flags f ON f.id=d.duty_flag_id
+        WHERE d.user_id=$1 AND f.code='casting_manager'`, [u.id]);
+    return !!r.rows[0];
+  }
+  const castingAdmin = async (res: express.Response, u: CurrentUser): Promise<boolean> => {
+    if (await canManageCasting(u)) return true;
+    sendError(res, 403, "Only the Casting Manager or an Admin may maintain the casting library.");
+    return false;
+  };
+  /* A Drive folder link, validated rather than trusted — a malformed URL in the
+     library is a dead end for whoever needs the media on a shoot day. */
+  const DRIVE_RE = /^https:\/\/(drive|docs)\.google\.com\/[^\s]+$/i;
+  const nextCastId = async (): Promise<string> => {
+    const { rows } = await pool.query(
+      `SELECT COALESCE(MAX(NULLIF(regexp_replace(cast_id,'\\D','','g'),'')::int),0) AS n FROM mo_casting_records`);
+    return `CAST-${String(Number(rows[0].n) + 1).padStart(5, "0")}`;
+  };
+
+  /* Records the ordinary crew may see: active, and cleared for production use.
+     Consent is the gate — pending/restricted/expired records stay with the
+     Casting Manager until sorted out. */
+  const PREVIEW_WHERE = `archived_at IS NULL AND availability <> 'archived' AND consent_status = 'confirmed'`;
+
+  app.get(`${P}/casting`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const manage = await canManageCasting(u);
+    const q = req.query as Record<string, unknown>;
+    // Management sees everything; everyone else sees only usable records.
+    const all = manage && String(q.scope ?? "") === "all";
+    const conds: string[] = [all ? "1=1" : PREVIEW_WHERE], vals: unknown[] = []; let i = 1;
+    if (q.q) {
+      // One search box across everything a caster would think to type.
+      conds.push(`(r.name ILIKE $${i} OR r.cast_id ILIKE $${i} OR r.profession ILIKE $${i}
+        OR r.category ILIKE $${i} OR r.location ILIKE $${i} OR r.languages::text ILIKE $${i}
+        OR replace(r.age_group,'_',' ') ILIKE $${i} OR r.availability ILIKE $${i}
+        OR EXISTS (SELECT 1 FROM mo_casting_record_tags rt JOIN mo_casting_tags t ON t.id=rt.tag_id
+                    WHERE rt.record_id=r.id AND t.name ILIKE $${i})
+        OR EXISTS (SELECT 1 FROM mo_casting_record_collections rc JOIN mo_casting_collections c ON c.id=rc.collection_id
+                    WHERE rc.record_id=r.id AND c.name ILIKE $${i}))`);
+      vals.push(`%${String(q.q)}%`); i++;
+    }
+    for (const [k, col] of [["category", "r.category"], ["age_group", "r.age_group"],
+      ["availability", "r.availability"], ["consent_status", "r.consent_status"], ["gender", "r.gender"]] as const)
+      if (q[k]) { conds.push(`${col}=$${i++}`); vals.push(String(q[k])); }
+    if (q.tag) { conds.push(`EXISTS (SELECT 1 FROM mo_casting_record_tags rt WHERE rt.record_id=r.id AND rt.tag_id=$${i++})`); vals.push(Number(q.tag)); }
+    if (q.collection) { conds.push(`EXISTS (SELECT 1 FROM mo_casting_record_collections rc WHERE rc.record_id=r.id AND rc.collection_id=$${i++})`); vals.push(Number(q.collection)); }
+    if (q.language) { conds.push(`r.languages::text ILIKE $${i++}`); vals.push(`%${String(q.language)}%`); }
+    const { rows } = await pool.query(
+      `SELECT to_jsonb(r) || jsonb_build_object(
+         'tags', COALESCE((SELECT jsonb_agg(rt.tag_id) FROM mo_casting_record_tags rt WHERE rt.record_id=r.id),'[]'::jsonb),
+         'collections', COALESCE((SELECT jsonb_agg(rc.collection_id) FROM mo_casting_record_collections rc WHERE rc.record_id=r.id),'[]'::jsonb)
+       ) AS row FROM mo_casting_records r WHERE ${conds.join(" AND ")} ORDER BY r.updated_at DESC LIMIT 500`, vals);
+    // §31 — an applicant's university email belongs to the people reviewing them,
+    // not to everyone browsing the library. Stripped from the payload itself, so
+    // it cannot leak through the network response even though no card renders it.
+    const records = rows.map((x) => {
+      const r = x.row as Record<string, unknown>;
+      if (!manage) { delete r.applicant_email; delete r.source_request_id; }
+      return r;
+    });
+    res.json({ records, can_manage: manage });
+  }));
+
+  app.post(`${P}/casting`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const b = req.body as Record<string, unknown>;
+    const name = String(b.name ?? "").trim();
+    if (!name) return sendError(res, 400, "A casting name or reference is required.");
+    if (!String(b.category ?? "").trim()) return sendError(res, 400, "Pick a primary category.");
+    const drive = String(b.drive_url ?? "").trim();
+    if (!DRIVE_RE.test(drive)) return sendError(res, 400, "Please enter a valid Google Drive folder link.");
+    const castId = await nextCastId();
+    const ins = await pool.query(
+      `INSERT INTO mo_casting_records (cast_id, name, category, profession, age_group, gender, languages,
+         campus_id, location, availability, consent_status, consent_date, consent_scope, review_date,
+         drive_url, notes, created_by, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17) RETURNING *`,
+      [castId, name, String(b.category), (b.profession as string) || null, (b.age_group as string) || null,
+       (b.gender as string) || null, JSON.stringify(b.languages ?? []),
+       b.campus_id ? Number(b.campus_id) : null, (b.location as string) || null,
+       String(b.availability ?? "available"), String(b.consent_status ?? "pending"),
+       (b.consent_date as string) || null, (b.consent_scope as string) || null, (b.review_date as string) || null,
+       drive, String(b.notes ?? ""), u.id]);
+    const rec = ins.rows[0];
+    await setCastingLinks(Number(rec.id), b);
+    await audit(u, "casting.created", "casting_record", rec.id, null,
+      { cast_id: castId, name, category: rec.category, consent_status: rec.consent_status }, req);
+    res.status(201).json({ record: rec });
+  }));
+
+  /* Tag + collection membership, rewritten as a set. Kept in one place so create
+     and update cannot drift apart. */
+  async function setCastingLinks(recordId: number, b: Record<string, unknown>): Promise<void> {
+    if (Array.isArray(b.tags)) {
+      await pool.query(`DELETE FROM mo_casting_record_tags WHERE record_id=$1`, [recordId]);
+      for (const t of b.tags as unknown[])
+        await pool.query(`INSERT INTO mo_casting_record_tags (record_id, tag_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+          [recordId, Number(t)]);
+    }
+    if (Array.isArray(b.collections)) {
+      await pool.query(`DELETE FROM mo_casting_record_collections WHERE record_id=$1`, [recordId]);
+      for (const c of b.collections as unknown[])
+        await pool.query(`INSERT INTO mo_casting_record_collections (record_id, collection_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+          [recordId, Number(c)]);
+    }
+  }
+
+  app.patch(`${P}/casting/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM mo_casting_records WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Casting record not found.");
+    const b = req.body as Record<string, unknown>;
+    if (b.drive_url !== undefined && !DRIVE_RE.test(String(b.drive_url).trim()))
+      return sendError(res, 400, "Please enter a valid Google Drive folder link.");
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    for (const c of ["name", "category", "profession", "age_group", "gender", "location", "availability",
+      "consent_status", "consent_date", "consent_scope", "review_date", "drive_url", "notes"])
+      if (b[c] !== undefined) { fields.push(`${c}=$${i++}`); vals.push(b[c] === "" ? null : b[c]); }
+    if (b.languages !== undefined) { fields.push(`languages=$${i++}`); vals.push(JSON.stringify(b.languages)); }
+    if (b.campus_id !== undefined) { fields.push(`campus_id=$${i++}`); vals.push(b.campus_id ? Number(b.campus_id) : null); }
+    fields.push(`updated_by=$${i++}`); vals.push(u.id);
+    fields.push(`updated_at=NOW()`);
+    vals.push(id);
+    const rec = (await pool.query(`UPDATE mo_casting_records SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals)).rows[0];
+    await setCastingLinks(id, b);
+    // Consent and Drive changes are the ones worth seeing on their own in the log.
+    const action = b.consent_status !== undefined && b.consent_status !== cur.consent_status ? "casting.consent_changed"
+      : b.drive_url !== undefined && b.drive_url !== cur.drive_url ? "casting.drive_changed"
+      : Array.isArray(b.tags) && b.name === undefined ? "casting.tagged" : "casting.updated";
+    await audit(u, action, "casting_record", id,
+      { cast_id: cur.cast_id, consent_status: cur.consent_status, availability: cur.availability, drive_url: cur.drive_url },
+      { cast_id: rec.cast_id, consent_status: rec.consent_status, availability: rec.availability, drive_url: rec.drive_url }, req);
+    res.json({ record: rec });
+  }));
+
+  /* Archive, never hard-delete: a record referenced by past projects or requests
+     must stay readable. Admin force-delete lives behind ?purge=1. */
+  app.delete(`${P}/casting/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM mo_casting_records WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Casting record not found.");
+    const purge = String((req.query as Record<string, unknown>).purge ?? "") === "1";
+    if (purge) {
+      if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may permanently delete a casting record.");
+      await pool.query(`DELETE FROM mo_casting_records WHERE id=$1`, [id]);
+      await audit(u, "casting.deleted", "casting_record", id, { cast_id: cur.cast_id, name: cur.name }, null, req);
+      return res.json({ ok: true, purged: true });
+    }
+    await pool.query(`UPDATE mo_casting_records SET archived_at=NOW(), availability='archived', updated_by=$1 WHERE id=$2`, [u.id, id]);
+    await audit(u, "casting.archived", "casting_record", id, { cast_id: cur.cast_id, availability: cur.availability },
+      { availability: "archived" }, req);
+    res.json({ ok: true });
+  }));
+
+  app.post(`${P}/casting/:id/restore`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const rec = (await pool.query(
+      `UPDATE mo_casting_records SET archived_at=NULL, availability='available', updated_by=$1 WHERE id=$2 RETURNING *`,
+      [u.id, id])).rows[0];
+    if (!rec) return sendError(res, 404, "Casting record not found.");
+    await audit(u, "casting.restored", "casting_record", id, { availability: "archived" }, { cast_id: rec.cast_id, availability: "available" }, req);
+    res.json({ record: rec });
+  }));
+
+  /* Drive link check. HEAD tells us whether the URL still resolves; it cannot see
+     inside a private folder, which is why the result is recorded as "reachable"
+     rather than claimed as verified access. */
+  app.post(`${P}/casting/:id/check-drive`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const rec = (await pool.query(`SELECT drive_url, cast_id FROM mo_casting_records WHERE id=$1`, [id])).rows[0];
+    if (!rec) return sendError(res, 404, "Casting record not found.");
+    let ok = false;
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 6000);
+      const r = await fetch(String(rec.drive_url), { method: "HEAD", redirect: "follow", signal: ctl.signal });
+      clearTimeout(t);
+      ok = r.status < 400;
+    } catch { ok = false; }
+    await pool.query(`UPDATE mo_casting_records SET drive_ok=$1, drive_checked_at=NOW() WHERE id=$2`, [ok, id]);
+    await audit(u, "casting.drive_checked", "casting_record", id, null, { cast_id: rec.cast_id, reachable: ok }, req);
+    res.json({ ok, checked_at: new Date().toISOString() });
+  }));
+
+  // ── Casting requests ──────────────────────────────────────────────────────
+  app.post(`${P}/casting-requests`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;               // anyone on the crew may ask
+    const b = req.body as Record<string, unknown>;
+    const need = String(b.need ?? "").trim();
+    if (!need) return sendError(res, 400, "Describe the casting you need.");
+    const n = (await pool.query(
+      `SELECT COALESCE(MAX(NULLIF(regexp_replace(request_id,'\\D','','g'),'')::int),0) AS n FROM mo_casting_requests`)).rows[0].n;
+    const code = `CR-${String(Number(n) + 1).padStart(5, "0")}`;
+    const ins = await pool.query(
+      `INSERT INTO mo_casting_requests (request_id, requested_by, project_id, need, category, age_group, gender,
+         languages, due_date, notes, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'new') RETURNING *`,
+      [code, u.id, b.project_id ? Number(b.project_id) : null, need, (b.category as string) || null,
+       (b.age_group as string) || null, (b.gender as string) || null, JSON.stringify(b.languages ?? []),
+       (b.due_date as string) || null, String(b.notes ?? "")]);
+    await audit(u, "casting_request.created", "casting_request", ins.rows[0].id, null, { request_id: code, need }, req);
+    // Tell whoever holds the duty, so a request cannot sit unseen.
+    const managers = (await pool.query(
+      `SELECT d.user_id FROM mo_user_duties d JOIN mo_duty_flags f ON f.id=d.duty_flag_id WHERE f.code='casting_manager'`)).rows;
+    for (const m of managers)
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'casting',$2,$3,'casting_request',$4)`,
+        [m.user_id, "New casting request", `${code}: ${need}`, ins.rows[0].id]);
+    res.status(201).json({ request: ins.rows[0] });
+  }));
+
+  app.patch(`${P}/casting-requests/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM mo_casting_requests WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Casting request not found.");
+    const b = req.body as Record<string, unknown>;
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    if (b.status !== undefined) { fields.push(`status=$${i++}`); vals.push(String(b.status)); }
+    if (b.matched_record_id !== undefined) {
+      fields.push(`matched_record_id=$${i++}`); vals.push(b.matched_record_id ? Number(b.matched_record_id) : null);
+    }
+    if (b.notes !== undefined) { fields.push(`notes=$${i++}`); vals.push(String(b.notes)); }
+    fields.push(`handled_by=$${i++}`); vals.push(u.id);
+    fields.push(`updated_at=NOW()`);
+    vals.push(id);
+    const r = (await pool.query(`UPDATE mo_casting_requests SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals)).rows[0];
+    await audit(u, r.status === "completed" ? "casting_request.completed" : "casting_request.updated",
+      "casting_request", id, { status: cur.status }, { request_id: r.request_id, status: r.status, matched: r.matched_record_id }, req);
+    if (r.status === "completed" && cur.requested_by)
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'casting',$2,$3,'casting_request',$4)`,
+        [cur.requested_by, "Your casting request is ready", `${r.request_id} has been completed.`, id]);
+    res.json({ request: r });
+  }));
+
+  // ── §33 link casting to a project ─────────────────────────────────────────
+  app.post(`${P}/projects/:id/casting`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const pid = parseInt(getSingleParam(req.params.id), 10);
+    const recId = Number((req.body as Record<string, unknown>).record_id);
+    if (!recId) return sendError(res, 400, "record_id is required.");
+    await pool.query(
+      `INSERT INTO mo_project_casting (project_id, record_id, linked_by) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+      [pid, recId, u.id]);
+    await audit(u, "casting.linked_to_project", "casting_record", recId, null, { project_id: pid }, req);
+    res.json({ ok: true });
+  }));
+  app.delete(`${P}/projects/:id/casting/:recordId`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const pid = parseInt(getSingleParam(req.params.id), 10);
+    const recId = parseInt(getSingleParam(req.params.recordId), 10);
+    await pool.query(`DELETE FROM mo_project_casting WHERE project_id=$1 AND record_id=$2`, [pid, recId]);
+    await audit(u, "casting.unlinked_from_project", "casting_record", recId, { project_id: pid }, null, req);
+    res.json({ ok: true });
+  }));
+
+  // ═════════ EXTERNAL CASTING REGISTRATION — intake layer ═══════════════════
+  // A campaign link anyone at the university can open without a NERVE account.
+  // Submissions land in the SAME Requests queue the Casting Manager already
+  // works; approval turns one into an ordinary casting record with a CAST ID.
+
+  /* Identity verification happens HERE, on the server (§45). The browser tells us
+     nothing we trust: it hands over a Google ID token, and we ask Google who it
+     belongs to before believing any of it.
+
+     GOOGLE_OAUTH_CLIENT_ID must be set for this to accept real sign-ins. Without
+     it the endpoint refuses external submissions rather than pretending to have
+     verified anybody — see the DEV note below. */
+  type GoogleIdentity = { email: string; name: string; email_verified: boolean };
+  async function verifyGoogleIdToken(idToken: string): Promise<GoogleIdentity | null> {
+    if (!idToken) return null;
+    try {
+      // Google's tokeninfo endpoint validates the signature, issuer and expiry
+      // for us and returns the claims — full server-side verification without
+      // pulling in an OAuth dependency.
+      const r = await fetch("https://oauth2.googleapis.com/tokeninfo?id_token=" + encodeURIComponent(idToken));
+      if (!r.ok) return null;
+      const c = await r.json() as Record<string, unknown>;
+      const aud = String(c.aud ?? "");
+      const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID ?? "";
+      // The token must have been minted for OUR client, or anyone could present a
+      // token from any Google app and be believed.
+      if (!clientId || aud !== clientId) return null;
+      const iss = String(c.iss ?? "");
+      if (iss !== "accounts.google.com" && iss !== "https://accounts.google.com") return null;
+      const email = String(c.email ?? "").toLowerCase();
+      if (!email) return null;
+      return { email, name: String(c.name ?? email.split("@")[0]), email_verified: String(c.email_verified) === "true" };
+    } catch { return null; }
+  }
+  /* Local development has no Google client configured, so the flow would be
+     untestable. When ALLOW_DEV_CASTING_IDENTITY is explicitly enabled the server
+     accepts a plain email — never in production, and it is refused the moment a
+     real client id is configured. */
+  function devIdentity(body: Record<string, unknown>): GoogleIdentity | null {
+    if (process.env.NODE_ENV === "production") return null;
+    if (process.env.ALLOW_DEV_CASTING_IDENTITY !== "1") return null;
+    if (process.env.GOOGLE_OAUTH_CLIENT_ID) return null;
+    const email = String(body.dev_email ?? "").trim().toLowerCase();
+    if (!email) return null;
+    return { email, name: String(body.dev_name ?? email.split("@")[0]), email_verified: true };
+  }
+
+  const linkOpen = (l: Record<string, unknown>): { ok: boolean; why?: string } => {
+    if (!l.is_active) return { ok: false, why: "This casting registration is currently closed." };
+    const today = new Date().toISOString().slice(0, 10);
+    if (l.active_from && String(l.active_from).slice(0, 10) > today)
+      return { ok: false, why: "This casting registration has not opened yet." };
+    if (l.expires_on && String(l.expires_on).slice(0, 10) < today)
+      return { ok: false, why: "This casting registration has closed." };
+    return { ok: true };
+  };
+
+  // ── PUBLIC: campaign details. No NERVE session; deliberately reveals only what
+  //    an applicant needs to see, never submissions or internal data.
+  app.get(`/api/v1/public/casting/:token`, asyncHandler(async (req, res) => {
+    const token = getSingleParam(req.params.token);
+    const l = (await pool.query(`SELECT * FROM mo_casting_links WHERE token=$1`, [token])).rows[0];
+    if (!l) return sendError(res, 404, "This casting registration link is not valid.");
+    const st = linkOpen(l);
+    res.json({
+      campaign: { name: l.name, description: l.description, allowed_domain: l.allowed_domain,
+        require_department: l.require_department },
+      open: st.ok, message: st.why ?? null,
+      google_client_id: process.env.GOOGLE_OAUTH_CLIENT_ID ?? null,
+      dev_identity: process.env.NODE_ENV !== "production" && process.env.ALLOW_DEV_CASTING_IDENTITY === "1"
+        && !process.env.GOOGLE_OAUTH_CLIENT_ID,
+    });
+  }));
+
+  // ── PUBLIC: has this account already applied to this campaign? (§14)
+  app.post(`/api/v1/public/casting/:token/lookup`, asyncHandler(async (req, res) => {
+    const token = getSingleParam(req.params.token);
+    const l = (await pool.query(`SELECT * FROM mo_casting_links WHERE token=$1`, [token])).rows[0];
+    if (!l) return sendError(res, 404, "This casting registration link is not valid.");
+    const b = req.body as Record<string, unknown>;
+    const who = await verifyGoogleIdToken(String(b.id_token ?? "")) ?? devIdentity(b);
+    if (!who) return sendError(res, 401, "We could not verify that Google account. Please sign in again.");
+    if (!who.email.endsWith("@" + String(l.allowed_domain).replace(/^@/, "")))
+      return sendError(res, 403, `Please sign in using your official @${String(l.allowed_domain).replace(/^@/, "")} Google account to submit this casting form.`);
+    const ex = (await pool.query(
+      `SELECT request_id, status, created_at FROM mo_casting_requests
+        WHERE link_id=$1 AND lower(applicant_email)=lower($2)`, [l.id, who.email])).rows[0];
+    res.json({ email: who.email, name: who.name, existing: ex ?? null });
+  }));
+
+  // ── PUBLIC: submit. Verified identity + domain + consent + dedupe, all here.
+  app.post(`/api/v1/public/casting/:token/submit`, asyncHandler(async (req, res) => {
+    const token = getSingleParam(req.params.token);
+    const l = (await pool.query(`SELECT * FROM mo_casting_links WHERE token=$1`, [token])).rows[0];
+    if (!l) return sendError(res, 404, "This casting registration link is not valid.");
+    const st = linkOpen(l);
+    if (!st.ok) return sendError(res, 403, st.why!);
+
+    const b = req.body as Record<string, unknown>;
+    const who = await verifyGoogleIdToken(String(b.id_token ?? "")) ?? devIdentity(b);
+    if (!who) return sendError(res, 401, "We could not verify that Google account. Please sign in again.");
+    const domain = String(l.allowed_domain).replace(/^@/, "");
+    if (!who.email.endsWith("@" + domain))
+      return sendError(res, 403, `Please sign in using your official @${domain} Google account to submit this casting form.`);
+    if (!b.consent) return sendError(res, 400, "Please confirm the casting consent before submitting.");
+
+    const name = String(b.name ?? who.name ?? "").trim();
+    if (!name) return sendError(res, 400, "Please enter your full name.");
+    const type = String(b.applicant_type ?? "").trim();
+    if (!type) return sendError(res, 400, "Please tell us what best describes you.");
+    if (l.require_department && !String(b.department ?? "").trim())
+      return sendError(res, 400, "Please enter your department or institute.");
+
+    // §14 — one submission per account per campaign; an update is allowed while
+    // the request has not been decided.
+    const ex = (await pool.query(
+      `SELECT * FROM mo_casting_requests WHERE link_id=$1 AND lower(applicant_email)=lower($2)`,
+      [l.id, who.email])).rows[0];
+    const payload = {
+      applicant_name: name, applicant_type: type,
+      department: String(b.department ?? "") || null, designation: String(b.designation ?? "") || null,
+      age_group: String(b.age_group ?? "") || null, gender: String(b.gender ?? "") || null,
+      languages: JSON.stringify(Array.isArray(b.languages) ? b.languages : []),
+      category: String(b.category ?? type) || null,
+      interests: JSON.stringify(Array.isArray(b.interests) ? b.interests : []),
+      availability: String(b.availability ?? "") || null,
+      location: String(b.location ?? "") || null,
+      intro: String(b.intro ?? "") || null,
+      need: `${type} — ${name}`,
+    };
+    if (ex) {
+      if (["approved", "rejected"].includes(String(ex.status)))
+        return res.status(200).json({ duplicate: true, request_id: ex.request_id, status: ex.status,
+          message: "You have already submitted a casting request for this drive." });
+      await pool.query(
+        `UPDATE mo_casting_requests SET applicant_name=$1, applicant_type=$2, department=$3, designation=$4,
+           age_group=$5, gender=$6, languages=$7, category=$8, interests=$9, availability=$10, location=$11,
+           intro=$12, need=$13, updated_at=NOW() WHERE id=$14`,
+        [payload.applicant_name, payload.applicant_type, payload.department, payload.designation,
+         payload.age_group, payload.gender, payload.languages, payload.category, payload.interests,
+         payload.availability, payload.location, payload.intro, payload.need, ex.id]);
+      return res.json({ updated: true, request_id: ex.request_id, status: ex.status });
+    }
+
+    const n = (await pool.query(
+      `SELECT COALESCE(MAX(NULLIF(regexp_replace(request_id,'\\D','','g'),'')::int),0) AS n FROM mo_casting_requests`)).rows[0].n;
+    const code = `CR-${String(Number(n) + 1).padStart(5, "0")}`;
+    const ins = await pool.query(
+      `INSERT INTO mo_casting_requests (request_id, source, link_id, applicant_email, applicant_name, applicant_type,
+         department, designation, age_group, gender, languages, category, interests, availability, location, intro,
+         need, consent_given, consent_at, status, submitted_ip)
+       VALUES ($1,'external',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,true,NOW(),'new',$17) RETURNING *`,
+      [code, l.id, who.email, payload.applicant_name, payload.applicant_type, payload.department,
+       payload.designation, payload.age_group, payload.gender, payload.languages, payload.category,
+       payload.interests, payload.availability, payload.location, payload.intro, payload.need,
+       (req.headers["x-forwarded-for"] as string) || req.ip || null]);
+
+    // Audited without a NERVE actor — the applicant has no account, by design (§7).
+    await pool.query(
+      // No NERVE actor by design (§7) — the applicant has no account. Recorded as
+      // a 'system' event with the verified identity in the payload, which is the
+      // vocabulary mo_audit_logs already uses for non-user actors.
+      `INSERT INTO mo_audit_logs (actor_id, actor_role, action, entity_type, entity_id, before, after, ip)
+       VALUES (NULL,'system','casting_request.submitted','casting_request',$1,NULL,$2,$3)`,
+      [ins.rows[0].id, JSON.stringify({ request_id: code, campaign: l.name, applicant: who.email }),
+       (req.ip ?? null)]);
+    // Tell whoever holds the casting duty.
+    const managers = (await pool.query(
+      `SELECT d.user_id FROM mo_user_duties d JOIN mo_duty_flags f ON f.id=d.duty_flag_id WHERE f.code='casting_manager'`)).rows;
+    for (const m of managers)
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'casting',$2,$3,'casting_request',$4)`,
+        [m.user_id, "New casting registration", `${code} — ${name} (${type})`, ins.rows[0].id]);
+    res.status(201).json({ request_id: code });
+  }));
+
+  // ── Registration links (Casting Manager / Admin) ───────────────────────────
+  app.post(`${P}/casting-links`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const b = req.body as Record<string, unknown>;
+    const name = String(b.name ?? "").trim();
+    if (!name) return sendError(res, 400, "Give the campaign a name.");
+    // Only an Admin may widen the domain away from the university default.
+    const domain = String(b.allowed_domain ?? "paruluniversity.ac.in").replace(/^@/, "");
+    if (domain !== "paruluniversity.ac.in" && !isMoAdmin(u))
+      return sendError(res, 403, "Only an Admin may allow a domain other than the university's.");
+    const token = randomUUID().replace(/-/g, "");
+    const ins = await pool.query(
+      `INSERT INTO mo_casting_links (token, name, description, allowed_domain, active_from, expires_on,
+         require_department, is_active, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8) RETURNING *`,
+      [token, name, String(b.description ?? ""), domain, (b.active_from as string) || null,
+       (b.expires_on as string) || null, !!b.require_department, u.id]);
+    await audit(u, "casting_link.created", "casting_link", ins.rows[0].id, null, { name, domain }, req);
+    res.status(201).json({ link: ins.rows[0] });
+  }));
+
+  app.patch(`${P}/casting-links/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM mo_casting_links WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Registration link not found.");
+    const b = req.body as Record<string, unknown>;
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    for (const c of ["name", "description", "active_from", "expires_on"])
+      if (b[c] !== undefined) { fields.push(`${c}=$${i++}`); vals.push(b[c] === "" ? null : b[c]); }
+    if (b.is_active !== undefined) { fields.push(`is_active=$${i++}`); vals.push(!!b.is_active); }
+    if (b.require_department !== undefined) { fields.push(`require_department=$${i++}`); vals.push(!!b.require_department); }
+    if (!fields.length) return res.json({ link: cur });
+    fields.push(`updated_at=NOW()`); vals.push(id);
+    const l = (await pool.query(`UPDATE mo_casting_links SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals)).rows[0];
+    await audit(u, b.is_active === false ? "casting_link.deactivated" : "casting_link.updated",
+      "casting_link", id, { is_active: cur.is_active }, { name: l.name, is_active: l.is_active }, req);
+    res.json({ link: l });
+  }));
+
+  // ── Review an external request, and approve it into a real casting record ──
+  app.post(`${P}/casting-requests/:id/review`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const r = (await pool.query(`SELECT * FROM mo_casting_requests WHERE id=$1`, [id])).rows[0];
+    if (!r) return sendError(res, 404, "Casting request not found.");
+    const b = req.body as Record<string, unknown>;
+    const to = String(b.status ?? "");
+    if (!["under_review", "clarification", "approved", "rejected", "archived"].includes(to))
+      return sendError(res, 400, "Unknown review decision.");
+    const note = String(b.note ?? "").trim() || null;
+
+    if (to !== "approved") {
+      await pool.query(
+        `UPDATE mo_casting_requests SET status=$1, review_note=COALESCE($2, review_note), handled_by=$3,
+           reviewed_at=NOW(), archived_at=CASE WHEN $1='archived' THEN NOW() ELSE archived_at END,
+           updated_at=NOW() WHERE id=$4`, [to, note, u.id, id]);
+      await audit(u, `casting_request.${to}`, "casting_request", id, { status: r.status },
+        { request_id: r.request_id, status: to, note }, req);
+      return res.json({ ok: true, status: to });
+    }
+
+    // §22 — approval is not a status change: it creates the casting record.
+    if (r.matched_record_id) return sendError(res, 409, "This request already has a casting record.");
+    const castId = await nextCastId();
+    const rec = (await pool.query(
+      `INSERT INTO mo_casting_records (cast_id, name, category, profession, age_group, gender, languages,
+         campus_id, location, availability, consent_status, consent_date, notes,
+         source, source_request_id, applicant_email, created_by, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'confirmed',CURRENT_DATE,$11,'external_registration',$12,$13,$14,$14)
+       RETURNING *`,
+      [castId, r.applicant_name ?? r.need, r.category ?? r.applicant_type ?? "Other", r.designation ?? null,
+       r.age_group ?? null, r.gender ?? null, JSON.stringify(r.languages ?? []),
+       r.campus_id ?? null, r.location ?? null,
+       ({ "Available regularly": "available", "Available occasionally": "limited",
+          "Available with advance notice": "limited", "Currently unavailable": "unavailable" } as Record<string, string>)[String(r.availability)] ?? "available",
+       [r.intro, r.department ? `Department: ${r.department}` : null].filter(Boolean).join("\n"),
+       id, r.applicant_email, u.id])).rows[0];
+    await pool.query(
+      `UPDATE mo_casting_requests SET status='approved', matched_record_id=$1, review_note=COALESCE($2, review_note),
+         handled_by=$3, reviewed_at=NOW(), updated_at=NOW() WHERE id=$4`, [rec.id, note, u.id, id]);
+    // §40 — ONE meaningful entry for the approval, not three technical ones. The
+    // individual writes are still visible in the audit log itself.
+    await audit(u, "casting_request.approved", "casting_request", id, { status: r.status },
+      { request_id: r.request_id, status: "approved", cast_id: castId, record_id: rec.id, note }, req);
+    res.json({ ok: true, status: "approved", cast_id: castId, record: rec });
+  }));
+
   // ═══════════ OPERATIONS COORDINATOR — intake → conversion → dispatch ══════
   // The coordinator owns the first and last stage of a project. Everything in
   // between (assignment, production, review, approval) stays in the modules that
@@ -1794,6 +2470,209 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   };
 
   // ── Request intake ────────────────────────────────────────────────────────
+  // ═════════ EXTERNAL MEDIA REQUEST INTAKE — the intake door ════════════════
+  // Identity verification, domain rules and abuse protection are the SAME layer
+  // the casting portal uses (verifyGoogleIdToken / devIdentity above) — one
+  // implementation, so the security story cannot diverge between the two doors.
+
+  const reqLinkOpen = (l: Record<string, unknown>): { ok: boolean; why?: string } => {
+    if (!l.is_active) return { ok: false, why: "This media request portal is currently unavailable. Please contact the Media Operations team for assistance." };
+    const today = new Date().toISOString().slice(0, 10);
+    if (l.active_from && String(l.active_from).slice(0, 10) > today)
+      return { ok: false, why: "This media request portal has not opened yet." };
+    if (l.expires_on && String(l.expires_on).slice(0, 10) < today)
+      return { ok: false, why: "This media request portal has closed." };
+    return { ok: true };
+  };
+
+  // ── PUBLIC: what the requester needs to render the form. Nothing internal.
+  app.get(`/api/v1/public/request/:token`, asyncHandler(async (req, res) => {
+    const token = getSingleParam(req.params.token);
+    const l = (await pool.query(`SELECT * FROM mo_request_links WHERE token=$1`, [token])).rows[0];
+    if (!l) return sendError(res, 404, "This media request link is not valid.");
+    const st = reqLinkOpen(l);
+    // The taxonomies come from the SAME master data the internal form uses (§9,
+    // §15) — no second, incompatible vocabulary for external requesters.
+    const units = (await pool.query(
+      `SELECT id, name FROM mo_academic_units WHERE is_active AND archived_at IS NULL ORDER BY sort_order, name`)).rows;
+    const delivTypes = (await pool.query(
+      `SELECT id, name FROM mo_deliverable_types WHERE archived_at IS NULL ORDER BY name`)).rows;
+    const workTypes = (await pool.query(
+      `SELECT id, name FROM mo_work_types WHERE is_active AND archived_at IS NULL ORDER BY sort_order, name`)).rows;
+    res.json({
+      portal: { name: l.name, description: l.description, allowed_domain: l.allowed_domain },
+      open: st.ok, message: st.why ?? null,
+      units, deliverable_types: delivTypes, work_types: workTypes,
+      google_client_id: process.env.GOOGLE_OAUTH_CLIENT_ID ?? null,
+      dev_identity: process.env.NODE_ENV !== "production" && process.env.ALLOW_DEV_CASTING_IDENTITY === "1"
+        && !process.env.GOOGLE_OAUTH_CLIENT_ID,
+    });
+  }));
+
+  /* PUBLIC: who am I, and what have I already asked for? Powers both the
+     prefilled contact details and the "My requests" list (§38) — which shows the
+     requester their OWN submissions and nothing else. */
+  app.post(`/api/v1/public/request/:token/me`, asyncHandler(async (req, res) => {
+    const token = getSingleParam(req.params.token);
+    const l = (await pool.query(`SELECT * FROM mo_request_links WHERE token=$1`, [token])).rows[0];
+    if (!l) return sendError(res, 404, "This media request link is not valid.");
+    const b = req.body as Record<string, unknown>;
+    const who = await verifyGoogleIdToken(String(b.id_token ?? "")) ?? devIdentity(b);
+    if (!who) return sendError(res, 401, "We could not verify that Google account. Please sign in again.");
+    const domain = String(l.allowed_domain).replace(/^@/, "");
+    if (!who.email.endsWith("@" + domain))
+      return sendError(res, 403, `Please sign in using your official @${domain} account to submit a media request.`);
+    // Deliberately narrow: id, title, date and a SIMPLIFIED status (§39). No
+    // internal notes, no team, no assignments, no reviewer.
+    const mine = (await pool.query(
+      `SELECT code, event_name, event_date, status, created_at, project_id
+         FROM mo_requests WHERE lower(requester_email)=lower($1) ORDER BY created_at DESC LIMIT 25`,
+      [who.email])).rows.map((r) => ({
+        code: r.code, event_name: r.event_name, event_date: r.event_date, created_at: r.created_at,
+        // Internal vocabulary is not the requester's business.
+        status: ({ new: "Submitted", under_review: "Under review", needs_clarification: "Clarification required",
+          ready: "Under review", converted: "Scheduled / in production", closed: "Closed",
+          rejected: "Closed" } as Record<string, string>)[String(r.status)] ?? "Submitted",
+      }));
+    res.json({ email: who.email, name: who.name, requests: mine });
+  }));
+
+  // ── PUBLIC: submit a media requirement.
+  app.post(`/api/v1/public/request/:token/submit`, asyncHandler(async (req, res) => {
+    const token = getSingleParam(req.params.token);
+    const l = (await pool.query(`SELECT * FROM mo_request_links WHERE token=$1`, [token])).rows[0];
+    if (!l) return sendError(res, 404, "This media request link is not valid.");
+    const st = reqLinkOpen(l);
+    if (!st.ok) return sendError(res, 403, st.why!);
+
+    const b = req.body as Record<string, unknown>;
+    const who = await verifyGoogleIdToken(String(b.id_token ?? "")) ?? devIdentity(b);
+    if (!who) return sendError(res, 401, "We could not verify that Google account. Please sign in again.");
+    const domain = String(l.allowed_domain).replace(/^@/, "");
+    if (!who.email.endsWith("@" + domain))
+      return sendError(res, 403, `Please sign in using your official @${domain} account to submit a media request.`);
+
+    const institute = String(b.institute ?? "").trim();
+    const event = String(b.event_name ?? "").trim();
+    const stakeholder = String(b.stakeholder ?? who.name ?? "").trim();
+    const requirement = String(b.requirement ?? "").trim();
+    if (!institute) return sendError(res, 400, "Please tell us which institute or faculty this is for.");
+    if (!event) return sendError(res, 400, "Please give the event or requirement a name.");
+    if (!stakeholder) return sendError(res, 400, "Please give a point of contact.");
+    if (!b.event_date) return sendError(res, 400, "Please give the date this is needed for.");
+    if (!requirement) return sendError(res, 400, "Please summarise what you need.");
+
+    /* §20 — a duplicate is a SIGNAL, not a hard block: same person, same event,
+       same date. We surface the existing request and let them decide, because a
+       genuine second request for the same event is legitimate. */
+    if (!b.confirm_duplicate) {
+      const dup = (await pool.query(
+        `SELECT code, status FROM mo_requests
+          WHERE lower(requester_email)=lower($1) AND lower(event_name)=lower($2)
+            AND (event_date IS NOT DISTINCT FROM $3::date) AND status <> 'closed' LIMIT 1`,
+        [who.email, event, (b.event_date as string) || null])).rows[0];
+      if (dup) return res.status(409).json({
+        duplicate: true, existing_code: dup.code, existing_status: dup.status,
+        message: "A similar request may already exist.",
+      });
+    }
+
+    const n = (await pool.query(
+      `SELECT COALESCE(MAX(NULLIF(regexp_replace(code,'\\D','','g'),'')::int),0) AS n FROM mo_requests`)).rows[0].n;
+    const code = `REQ-${String(Math.max(Number(n), 1000) + 1).padStart(5, "0")}`;
+    const ins = await pool.query(
+      `INSERT INTO mo_requests (code, source, link_id, requester_email, requester_name,
+         institute, academic_unit_id, stakeholder, contact, contact_email, contact_phone,
+         event_name, venue, event_date, event_time, end_date, end_time,
+         requirement, description, requirement_types, deliverables_requested,
+         priority, budget, meeting_required, meeting_date, meeting_time, meeting_notes,
+         vendor_required, vendor_details, additional_notes, notes, status, submitted_ip)
+       VALUES ($1,'external',$2,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+               $20,$21,$22,$23,$24,$25,$26,$27,$28,'','new',$29) RETURNING *`,
+      [code, l.id, who.email, who.name,
+       institute, b.academic_unit_id ? Number(b.academic_unit_id) : null, stakeholder,
+       String(b.contact_email ?? who.email), String(b.contact_phone ?? "") || null,
+       event, (b.venue as string) || null, (b.event_date as string) || null, (b.event_time as string) || null,
+       (b.end_date as string) || null, (b.end_time as string) || null,
+       requirement, String(b.description ?? ""),
+       JSON.stringify(Array.isArray(b.requirement_types) ? b.requirement_types : []),
+       JSON.stringify(Array.isArray(b.deliverables_requested) ? b.deliverables_requested : []),
+       ["urgent", "high", "normal", "low"].includes(String(b.priority)) ? String(b.priority) : "normal",
+       b.budget != null && b.budget !== "" ? Number(b.budget) : null,
+       !!b.meeting_required, (b.meeting_date as string) || null, (b.meeting_time as string) || null,
+       String(b.meeting_notes ?? "") || null,
+       !!b.vendor_required, String(b.vendor_details ?? "") || null,
+       String(b.additional_notes ?? "") || null,
+       (req.headers["x-forwarded-for"] as string) || req.ip || null]);
+
+    // No NERVE actor — the requester has no account, by design (§6).
+    await pool.query(
+      `INSERT INTO mo_audit_logs (actor_id, actor_role, action, entity_type, entity_id, before, after, ip)
+       VALUES (NULL,'system','request.submitted_external','request',$1,NULL,$2,$3)`,
+      [ins.rows[0].id,
+       JSON.stringify({ code, portal: l.name, requester: who.email, event, institute }),
+       (req.ip ?? null)]);
+
+    // A meeting request becomes a real follow-up for the coordinator (§12) —
+    // never a silently scheduled meeting.
+    if (b.meeting_required)
+      await pool.query(
+        `INSERT INTO mo_followups (request_id, stakeholder, contact, subject, reminder_date, notes, status)
+         VALUES ($1,$2,$3,$4,$5,$6,'open')`,
+        [ins.rows[0].id, stakeholder, who.email, `Meeting requested for ${event}`,
+         (b.meeting_date as string) || null, String(b.meeting_notes ?? "")]);
+
+    // Tell the coordinators. Anyone holding the coordinator media role.
+    const coords = (await pool.query(
+      `SELECT user_id FROM mo_user_profiles WHERE mo_role='coordinator'`)).rows;
+    for (const c of coords)
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'request',$2,$3,'request',$4)`,
+        [c.user_id, "New media request", `${code} — ${event} (${institute})`, ins.rows[0].id]);
+
+    res.status(201).json({ code, event_name: event, submitted_at: ins.rows[0].created_at });
+  }));
+
+  // ── Request portal links (Operations Coordinator / Admin) ─────────────────
+  app.post(`${P}/request-links`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await coordOnly(res, u))) return;
+    const b = req.body as Record<string, unknown>;
+    const name = String(b.name ?? "").trim();
+    if (!name) return sendError(res, 400, "Give the portal a name.");
+    const domain = String(b.allowed_domain ?? "paruluniversity.ac.in").replace(/^@/, "");
+    if (domain !== "paruluniversity.ac.in" && !isMoAdmin(u))
+      return sendError(res, 403, "Only an Admin may allow a domain other than the university's.");
+    const token = randomUUID().replace(/-/g, "");
+    const ins = await pool.query(
+      `INSERT INTO mo_request_links (token, name, description, allowed_domain, active_from, expires_on, is_active, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,true,$7) RETURNING *`,
+      [token, name, String(b.description ?? ""), domain,
+       (b.active_from as string) || null, (b.expires_on as string) || null, u.id]);
+    await audit(u, "request_link.created", "request_link", ins.rows[0].id, null, { name, domain }, req);
+    res.status(201).json({ link: ins.rows[0] });
+  }));
+
+  app.patch(`${P}/request-links/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await coordOnly(res, u))) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM mo_request_links WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Request portal not found.");
+    const b = req.body as Record<string, unknown>;
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    for (const c of ["name", "description", "active_from", "expires_on"])
+      if (b[c] !== undefined) { fields.push(`${c}=$${i++}`); vals.push(b[c] === "" ? null : b[c]); }
+    if (b.is_active !== undefined) { fields.push(`is_active=$${i++}`); vals.push(!!b.is_active); }
+    if (!fields.length) return res.json({ link: cur });
+    fields.push(`updated_at=NOW()`); vals.push(id);
+    const l = (await pool.query(`UPDATE mo_request_links SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals)).rows[0];
+    await audit(u, b.is_active === false ? "request_link.deactivated" : "request_link.updated",
+      "request_link", id, { is_active: cur.is_active }, { name: l.name, is_active: l.is_active }, req);
+    res.json({ link: l });
+  }));
+
   app.post(`${P}/requests`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     if (!(await coordOnly(res, u))) return;
@@ -1843,11 +2722,15 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     for (const c of ["deliverables_requested", "attachments"]) if (b[c] !== undefined) { fields.push(`${c}=$${i++}`); vals.push(JSON.stringify(b[c])); }
     if (b.status !== undefined) {
       const to = String(b.status);
+      // First move off 'new' is the moment Operations picked it up.
+      if (cur.status === "new" && to !== "new" && !cur.first_touched_at)
+        fields.push(`first_touched_at=NOW()`);
       // 'converted' is reached only through /convert, never by editing the status.
       const FLOW: Record<string, string[]> = {
-        new: ["needs_clarification", "ready", "rejected"],
-        needs_clarification: ["new", "ready", "rejected"],
-        ready: ["needs_clarification", "rejected"],
+        new: ["under_review", "needs_clarification", "ready", "closed", "rejected"],
+        under_review: ["needs_clarification", "ready", "closed", "rejected"],
+        needs_clarification: ["under_review", "ready", "closed", "rejected"],
+        ready: ["under_review", "needs_clarification", "closed", "rejected"],
         converted: ["closed"], closed: [], rejected: ["new"],
       };
       if (!(FLOW[cur.status] ?? []).includes(to))
@@ -1894,7 +2777,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const r = (await pool.query(`SELECT * FROM mo_requests WHERE id=$1`, [id])).rows[0];
     if (!r) return sendError(res, 404, "Request not found.");
     if (r.status === "converted") return sendError(res, 409, "This request has already been converted.");
-    if (r.status !== "ready") return sendError(res, 400, "Only a request marked Ready for conversion can become a project.");
+    if (!["ready", "under_review"].includes(String(r.status)))
+      return sendError(res, 400, "Review the request first — only one marked Under review or Ready can become a project.");
     const b = req.body as Record<string, unknown>;
     const typeId = Number(b.project_type_id ?? r.project_type_id);
     if (!typeId) return sendError(res, 400, "Pick a project type — it decides which template is applied.");
@@ -2883,6 +3767,25 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         { name: "is_current", label: "Current year", type: "switch", def: false }],
       cols: ["label", "start_date", "end_date", "is_current"],
       deps: [{ table: "mo_projects", fk: "academic_year_id", label: "Projects" }] },
+    casting_tags: { key: "casting_tags", label: "Casting Tags", table: "mo_casting_tags",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "category", label: "Category", type: "select",
+          options: ["profession", "production_type", "age_group", "language", "requirement", "other"],
+          def: "other", required: true },
+        { name: "description", label: "Description", type: "text" },
+        { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
+      cols: ["name", "category", "description", "sort_order"],
+      // A tag already on a record is archived, never deleted — historical casting
+      // records must keep reading the same way.
+      deps: [{ table: "mo_casting_record_tags", fk: "tag_id", label: "Casting records" }] },
+    casting_collections: { key: "casting_collections", label: "Casting Collections", table: "mo_casting_collections",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "description", label: "Description", type: "text" },
+        { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
+      cols: ["name", "description", "sort_order"],
+      deps: [{ table: "mo_casting_record_collections", fk: "collection_id", label: "Casting records" }] },
     work_types: { key: "work_types", label: "Work Types", table: "mo_work_types",
       fields: [
         { name: "name", label: "Name", type: "text", required: true },

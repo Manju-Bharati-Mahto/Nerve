@@ -211,6 +211,22 @@ app.use(
   express.static(path.resolve("public/media-ops")),
 );
 
+// ── External casting registration (public, no NERVE account) ───────────────
+// A standalone page: no admin bundle, no session. Every /casting/register/<token>
+// serves the same shell, which reads the token from the URL and authorises each
+// call server-side against a verified Google identity.
+app.use("/casting", express.static(path.resolve("public/casting")));
+app.get("/casting/register/:token", (_req, res) => {
+  res.setHeader("X-Frame-Options", "DENY");
+  res.sendFile(path.resolve("public/casting/index.html"));
+});
+// External media request portal — same pattern, same guarantees.
+app.use("/request", express.static(path.resolve("public/request")));
+app.get("/request/new/:token", (_req, res) => {
+  res.setHeader("X-Frame-Options", "DENY");
+  res.sendFile(path.resolve("public/request/index.html"));
+});
+
 app.use(express.json());
 
 // ── Security headers (VAPT TDL-003: missing headers, TDL-005: clickjacking) ─
@@ -350,7 +366,11 @@ const otpVerifyLimiter = rateLimit({
 
 async function getSessionUser(req: SessionRequest) {
   if (!req.session.userId) return null;
-  return getUserById(req.session.userId);
+  const u = await getUserById(req.session.userId);
+  // Removal takes effect immediately, not at next sign-in: an Admin who removes
+  // someone mid-session must not leave that session usable.
+  if (u && (u as { status?: string }).status && (u as { status?: string }).status !== "active") return null;
+  return u;
 }
 
 function isBrandingManager(role: AppRole, team: string | null) {
@@ -387,6 +407,12 @@ app.post("/api/auth/login", loginLimiter, asyncHandler(async (req, res) => {
 
   const valid = await verifyPassword(parsed.data.password, user.password_hash);
   if (!valid) return sendError(res, 401, "Invalid email or password.");
+
+  // A removed account cannot sign in. Deliberately the same generic message as a
+  // bad password: whether an account still exists is not something an anonymous
+  // caller should be able to probe.
+  if ((user as { status?: string }).status && (user as { status?: string }).status !== "active")
+    return sendError(res, 401, "Invalid email or password.");
 
   // Check email verification if enabled
   const emailVerificationRequired = (await getSetting("auth.email_verification")) === "true";
@@ -517,6 +543,10 @@ app.get("/api/auth/verify-email", asyncHandler(async (req, res) => {
 
 app.use("/api", asyncHandler(async (req, res, next) => {
   if (req.path === "/health" || req.path.startsWith("/auth/")) return next();
+  // The external casting registration is opened by university people who have no
+  // NERVE account (§7). Identity is proven per-request by a verified Google token
+  // inside the handler — never by a session — so these routes bypass the guard.
+  if (req.path.startsWith("/v1/public/")) return next();
   const user = await getSessionUser(req as SessionRequest);
   if (!user) return sendError(res, 401, "Authentication required.");
   res.locals.currentUser = user;

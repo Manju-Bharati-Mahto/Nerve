@@ -818,6 +818,29 @@ export async function bootstrapMediaOpsDatabase() {
       status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved'))
     )`);
 
+  // ═══════════ ACCOUNT LIFECYCLE — removal without data loss ════════════════
+  // 93 foreign keys point at users(id): reports, deliverable versions, reviews,
+  // comments, audit rows, dispatch records. A hard DELETE is therefore rejected
+  // by the database, which is why removing a member used to fail with
+  // "reassign their work first".
+  //
+  // Keeping the row and moving the ACCOUNT through a lifecycle solves that
+  // properly: every historical reference still resolves, so "Delivered by Manav
+  // Trivedi" keeps rendering the real name for ever. Nulling those FKs and
+  // snapshotting names would lose exactly that, across 93 relationships.
+  //
+  //   active   — normal account
+  //   inactive — removed from operational use, could be restored
+  //   archived — removed by an Admin; cannot log in, history retained
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'`);
+  await pool.query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_status_check`);
+  await pool.query(`ALTER TABLE users ADD CONSTRAINT users_status_check
+                    CHECK (status IN ('active','inactive','archived'))`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivated_by TEXT REFERENCES users(id)`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivation_reason TEXT`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_status ON users(status) WHERE status <> 'active'`);
+
   // ═══════════ MEDIA OPERATIONS COORDINATOR (§ operations role) ═════════════
   // A dedicated media-department role that owns the first and last stages of a
   // project: intake → clarification → conversion, then dispatch → archive.
@@ -950,6 +973,283 @@ export async function bootstrapMediaOpsDatabase() {
                      WHERE dispatch_status='none' AND deleted_at IS NULL
                        AND id IN (SELECT deliverable_id FROM mo_deliverable_versions
                                    WHERE review_status='approved')`);
+
+  // ═══════════════════ CASTING LIBRARY (§ casting module) ═══════════════════
+  // An internal casting reference library: who is available to appear in a
+  // production, with the approved media kept in Drive. NERVE stores metadata,
+  // consent and relationships only — never the media itself, so this stays
+  // lightweight and does not become a second Media Library.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_casting_tags (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'other'
+        CHECK (category IN ('profession','production_type','age_group','language','requirement','other')),
+      description TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      archived_at TIMESTAMPTZ,
+      created_by TEXT REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_casting_tag_name ON mo_casting_tags(lower(name))`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_casting_collections (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      archived_at TIMESTAMPTZ,
+      created_by TEXT REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_casting_coll_name ON mo_casting_collections(lower(name))`);
+
+  // The record itself. Only production-relevant attributes: nothing sensitive is
+  // collected, and nothing is inferred from someone's appearance.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_casting_records (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      cast_id TEXT UNIQUE,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'other',
+      profession TEXT,
+      age_group TEXT CHECK (age_group IN ('child','teen','young_adult','adult','middle_aged','senior')),
+      gender TEXT,                       -- optional, only where a production genuinely requires it
+      languages JSONB NOT NULL DEFAULT '[]'::jsonb,
+      campus_id BIGINT REFERENCES mo_campuses(id),
+      location TEXT,
+      availability TEXT NOT NULL DEFAULT 'available'
+        CHECK (availability IN ('available','limited','unavailable','archived')),
+      -- Consent is what decides whether a record may be used, so it is first-class
+      -- rather than a note. Only 'confirmed' reaches the employee-facing preview.
+      consent_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (consent_status IN ('confirmed','pending','restricted','expired')),
+      consent_date DATE,
+      consent_scope TEXT,
+      review_date DATE,
+      drive_url TEXT,
+      drive_checked_at TIMESTAMPTZ,
+      drive_ok BOOLEAN,
+      notes TEXT NOT NULL DEFAULT '',
+      created_by TEXT REFERENCES users(id),
+      updated_by TEXT REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      archived_at TIMESTAMPTZ
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_casting_avail ON mo_casting_records(availability) WHERE archived_at IS NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_casting_consent ON mo_casting_records(consent_status)`);
+
+  // Many-to-many: a record carries several tags and can sit in several collections.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_casting_record_tags (
+      record_id BIGINT NOT NULL REFERENCES mo_casting_records(id) ON DELETE CASCADE,
+      tag_id BIGINT NOT NULL REFERENCES mo_casting_tags(id) ON DELETE CASCADE,
+      PRIMARY KEY (record_id, tag_id)
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_casting_record_collections (
+      record_id BIGINT NOT NULL REFERENCES mo_casting_records(id) ON DELETE CASCADE,
+      collection_id BIGINT NOT NULL REFERENCES mo_casting_collections(id) ON DELETE CASCADE,
+      PRIMARY KEY (record_id, collection_id)
+    )`);
+
+  // A request is how the library becomes operational: anyone can ask for casting
+  // they could not find, and the Casting Manager works the queue.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_casting_requests (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      request_id TEXT UNIQUE,
+      requested_by TEXT REFERENCES users(id),
+      project_id BIGINT REFERENCES mo_projects(id) ON DELETE SET NULL,
+      need TEXT NOT NULL,
+      category TEXT,
+      age_group TEXT,
+      gender TEXT,
+      languages JSONB NOT NULL DEFAULT '[]'::jsonb,
+      due_date DATE,
+      notes TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'new'
+        CHECK (status IN ('new','reviewing','searching','candidate_found','completed','rejected')),
+      matched_record_id BIGINT REFERENCES mo_casting_records(id) ON DELETE SET NULL,
+      handled_by TEXT REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_casting_req_status ON mo_casting_requests(status)`);
+
+  // §33 — which casting a project actually used.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_project_casting (
+      project_id BIGINT NOT NULL REFERENCES mo_projects(id) ON DELETE CASCADE,
+      record_id BIGINT NOT NULL REFERENCES mo_casting_records(id) ON DELETE CASCADE,
+      linked_by TEXT REFERENCES users(id),
+      linked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (project_id, record_id)
+    )`);
+
+  // Casting Manager is a DUTY, not a role (D4): the person keeps their normal
+  // employee role everywhere else and simply carries this responsibility. That is
+  // also how the permission resolves — see CAPS 'casting.manage'.
+  await pool.query(`
+    INSERT INTO mo_duty_flags (code, name, description)
+    SELECT 'casting_manager','Casting Manager','Maintains the casting library: records, tags, collections, consent and casting requests.'
+     WHERE NOT EXISTS (SELECT 1 FROM mo_duty_flags WHERE code='casting_manager')`);
+
+  // Starter taxonomy so the library is usable on day one; the Casting Manager and
+  // Admin can edit or archive any of it from Settings.
+  await pool.query(`
+    INSERT INTO mo_casting_tags (name, category, sort_order)
+    SELECT x.n, x.c, x.o FROM (VALUES
+      ('Doctor','profession',1),('Engineer','profession',2),('Professor','profession',3),
+      ('Lawyer','profession',4),('Business Owner','profession',5),('Farmer','profession',6),
+      ('Artist','profession',7),('Athlete','profession',8),
+      ('Corporate','production_type',10),('Academic','production_type',11),('Lifestyle','production_type',12),
+      ('Emotional','production_type',13),('Family','production_type',14),('Event','production_type',15),
+      ('Promotional','production_type',16),
+      ('Gujarati','language',20),('Hindi','language',21),('English','language',22),
+      ('Formal','requirement',30),('Casual','requirement',31),('Traditional','requirement',32),
+      ('Professional','requirement',33),('Student-like','requirement',34),('Parent','requirement',35),
+      ('Authority Figure','requirement',36)
+    ) AS x(n,c,o)
+    WHERE NOT EXISTS (SELECT 1 FROM mo_casting_tags t WHERE lower(t.name)=lower(x.n))`);
+  await pool.query(`
+    INSERT INTO mo_casting_collections (name, description, sort_order)
+    SELECT x.n, x.d, x.o FROM (VALUES
+      ('Faculty Casting','Teaching staff available for production',1),
+      ('Student Casting','Students available for production',2),
+      ('Professional Casting','External professionals',3),
+      ('Senior Citizen Casting','Senior casting references',4),
+      ('Campaign Casting','Reserved for campaign shoots',5)
+    ) AS x(n,d,o)
+    WHERE NOT EXISTS (SELECT 1 FROM mo_casting_collections c WHERE lower(c.name)=lower(x.n))`);
+
+  // ═════════ EXTERNAL CASTING REGISTRATION (§ external intake layer) ════════
+  // A shareable campaign link that university people open WITHOUT a NERVE
+  // account. It is an intake layer on the existing casting system, not a
+  // separate one: a submission becomes an ordinary CR-xxxxx in the same
+  // Requests queue the Casting Manager already works.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_casting_links (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      token TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      -- Locked to the university domain by default; only an Admin should widen it.
+      allowed_domain TEXT NOT NULL DEFAULT 'paruluniversity.ac.in',
+      active_from DATE,
+      expires_on DATE,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      require_department BOOLEAN NOT NULL DEFAULT false,
+      created_by TEXT REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_casting_links_token ON mo_casting_links(token)`);
+
+  // The same requests table carries external submissions — §16 asks for one
+  // review queue, not two. Internal requests simply leave these columns null.
+  const REQ_COLS: Array<[string, string]> = [
+    ["link_id", "BIGINT REFERENCES mo_casting_links(id) ON DELETE SET NULL"],
+    ["source", "TEXT NOT NULL DEFAULT 'internal'"],
+    ["applicant_email", "TEXT"],
+    ["applicant_name", "TEXT"],
+    ["applicant_type", "TEXT"],           // Student / Faculty / Staff / Researcher / Alumni / Other
+    ["department", "TEXT"],
+    ["designation", "TEXT"],
+    ["campus_id", "BIGINT REFERENCES mo_campuses(id)"],
+    ["location", "TEXT"],
+    ["interests", "JSONB NOT NULL DEFAULT '[]'::jsonb"],
+    ["availability", "TEXT"],
+    ["intro", "TEXT"],
+    ["photo_url", "TEXT"],
+    ["consent_given", "BOOLEAN NOT NULL DEFAULT false"],
+    ["consent_at", "TIMESTAMPTZ"],
+    ["review_note", "TEXT"],
+    ["reviewed_at", "TIMESTAMPTZ"],
+    ["archived_at", "TIMESTAMPTZ"],
+    ["submitted_ip", "TEXT"],
+  ];
+  for (const [c, t] of REQ_COLS)
+    await pool.query(`ALTER TABLE mo_casting_requests ADD COLUMN IF NOT EXISTS "${c}" ${t}`);
+  // The external workflow needs review states the internal one never had.
+  await pool.query(`ALTER TABLE mo_casting_requests DROP CONSTRAINT IF EXISTS mo_casting_requests_status_check`);
+  await pool.query(`ALTER TABLE mo_casting_requests ADD CONSTRAINT mo_casting_requests_status_check
+                    CHECK (status IN ('new','reviewing','searching','candidate_found','completed','rejected',
+                                      'under_review','clarification','approved','archived'))`);
+  await pool.query(`ALTER TABLE mo_casting_requests DROP CONSTRAINT IF EXISTS mo_casting_requests_source_check`);
+  await pool.query(`ALTER TABLE mo_casting_requests ADD CONSTRAINT mo_casting_requests_source_check
+                    CHECK (source IN ('internal','external'))`);
+  // One submission per account per campaign — §14. Partial so internal requests
+  // (which have neither) are unaffected.
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_casting_req_once
+                    ON mo_casting_requests(link_id, lower(applicant_email))
+                    WHERE link_id IS NOT NULL AND applicant_email IS NOT NULL`);
+
+  // Traceability both ways: a record knows the request it came from (§23/§29).
+  await pool.query(`ALTER TABLE mo_casting_records ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual'`);
+  await pool.query(`ALTER TABLE mo_casting_records DROP CONSTRAINT IF EXISTS mo_casting_records_source_check`);
+  await pool.query(`ALTER TABLE mo_casting_records ADD CONSTRAINT mo_casting_records_source_check
+                    CHECK (source IN ('manual','external_registration'))`);
+  await pool.query(`ALTER TABLE mo_casting_records ADD COLUMN IF NOT EXISTS source_request_id BIGINT
+                    REFERENCES mo_casting_requests(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE mo_casting_records ADD COLUMN IF NOT EXISTS applicant_email TEXT`);
+
+  // ═════════ EXTERNAL MEDIA REQUEST INTAKE (§ external intake door) ═════════
+  // The same intake door pattern as external casting, pointed at Request Intake.
+  // Critically ONE database (§51): an external submission is an ordinary
+  // mo_requests row with source='external'. Manual "+ New Request" is unchanged
+  // and writes the same table, so conversion, filtering, reporting and audit
+  // never fragment.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_request_links (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      token TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      allowed_domain TEXT NOT NULL DEFAULT 'paruluniversity.ac.in',
+      active_from DATE,
+      expires_on DATE,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_by TEXT REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_request_links_token ON mo_request_links(token)`);
+
+  const REQ_EXT: Array<[string, string]> = [
+    ["source", "TEXT NOT NULL DEFAULT 'manual'"],
+    ["link_id", "BIGINT REFERENCES mo_request_links(id) ON DELETE SET NULL"],
+    // The VERIFIED Google identity, kept apart from the editable contact fields
+    // so the person who actually submitted can never be edited away.
+    ["requester_email", "TEXT"],
+    ["requester_name", "TEXT"],
+    ["requirement_types", "JSONB NOT NULL DEFAULT '[]'::jsonb"],
+    ["end_time", "TEXT"],
+    ["meeting_date", "DATE"],
+    ["meeting_time", "TEXT"],
+    ["meeting_notes", "TEXT"],
+    ["vendor_details", "TEXT"],
+    ["additional_notes", "TEXT"],
+    ["review_note", "TEXT"],
+    // When Operations first touched it — drives the overdue flag (§48).
+    ["first_touched_at", "TIMESTAMPTZ"],
+    ["submitted_ip", "TEXT"],
+  ];
+  for (const [c, t] of REQ_EXT)
+    await pool.query(`ALTER TABLE mo_requests ADD COLUMN IF NOT EXISTS "${c}" ${t}`);
+  await pool.query(`ALTER TABLE mo_requests DROP CONSTRAINT IF EXISTS mo_requests_source_check`);
+  await pool.query(`ALTER TABLE mo_requests ADD CONSTRAINT mo_requests_source_check
+                    CHECK (source IN ('manual','external'))`);
+  // §24 adds an explicit "under review" step between arrival and readiness.
+  await pool.query(`ALTER TABLE mo_requests DROP CONSTRAINT IF EXISTS mo_requests_status_check`);
+  await pool.query(`ALTER TABLE mo_requests ADD CONSTRAINT mo_requests_status_check
+                    CHECK (status IN ('new','under_review','needs_clarification','ready','converted','closed','rejected'))`);
 
   await seedMediaOpsLookups();
 }

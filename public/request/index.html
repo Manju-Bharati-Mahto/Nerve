@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Media Request — NERVE Media Ops</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=DM+Serif+Display&display=swap" rel="stylesheet">
+<style>
+/* Mobile-first: this form is opened on a phone far more often than a desktop.
+   Deliberately a plain page — it must not look like, or leak, the admin app. */
+:root{--bg:#F7F9FC;--surface:#fff;--border:#E3E9F2;--text:#0F172A;--text-2:#475569;--text-3:#64748B;
+  --primary:#2563EB;--primary-2:#1D4ED8;--ok:#15803D;--ok-bg:#DCFCE7;--warn:#B45309;--warn-bg:#FEF3C7;
+  --danger:#B91C1C;--danger-bg:#FEE2E2;--r:12px}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:'DM Sans',system-ui,sans-serif;
+  font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:640px;margin:0 auto;padding:20px 16px 96px}
+.brand{display:flex;align-items:center;gap:9px;margin-bottom:18px}
+.brand i{width:30px;height:30px;border-radius:8px;background:var(--primary);color:#fff;display:grid;
+  place-items:center;font-style:normal;font-weight:700}
+.brand b{font-size:13px;letter-spacing:.02em}
+.brand span{display:block;font-size:10px;color:var(--text-3);letter-spacing:.09em;text-transform:uppercase}
+h1{font-family:'DM Serif Display',serif;font-size:30px;font-weight:400;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:var(--text-2);margin:0 0 14px}
+.campaign{display:inline-flex;align-items:center;gap:7px;background:#EFF6FF;color:var(--primary-2);
+  border:1px solid #DBEAFE;border-radius:999px;padding:5px 12px;font-size:12.5px;font-weight:600;margin-bottom:18px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:18px;margin-bottom:14px}
+.card h2{font-size:14px;margin:0 0 12px;font-weight:700}
+label{display:block;font-size:12.5px;font-weight:600;color:var(--text-2);margin:0 0 5px}
+.req{color:var(--danger)}
+input[type=text],input[type=email],select,textarea{width:100%;padding:11px 12px;border:1px solid var(--border);
+  border-radius:10px;font:inherit;font-size:16px;background:#fff;color:var(--text)}
+textarea{min-height:88px;resize:vertical}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(37,99,235,.14)}
+.field{margin-bottom:14px}
+.hint{font-size:11.5px;color:var(--text-3);margin-top:4px}
+.chips{display:flex;flex-wrap:wrap;gap:7px}
+.chip{border:1px solid var(--border);background:#fff;border-radius:999px;padding:8px 13px;font-size:13px;
+  cursor:pointer;user-select:none;min-height:38px;display:inline-flex;align-items:center}
+.chip.on{background:#EFF6FF;border-color:#BFDBFE;color:var(--primary-2);font-weight:600}
+.btn{width:100%;min-height:48px;border:1px solid var(--border);background:#fff;border-radius:10px;
+  font:inherit;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:9px}
+.btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+.btn.primary:disabled{opacity:.5;cursor:not-allowed}
+.who{display:flex;align-items:center;gap:10px;background:var(--ok-bg);border:1px solid #BBF7D0;
+  border-radius:10px;padding:10px 12px;font-size:13px;color:var(--ok);font-weight:600}
+.note{border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.55;margin-bottom:14px}
+.note.warn{background:var(--warn-bg);color:var(--warn)}
+.note.bad{background:var(--danger-bg);color:var(--danger)}
+.note.ok{background:var(--ok-bg);color:var(--ok)}
+.consent{display:flex;gap:11px;align-items:flex-start;background:#F8FAFC;border:1px solid var(--border);
+  border-radius:10px;padding:13px}
+.consent input{width:20px;height:20px;margin:1px 0 0;flex:0 0 auto}
+.consent label{font-weight:500;color:var(--text-2);font-size:13px;margin:0}
+/* Sticky submit. Opaque with a hairline, so content scrolling underneath is
+   never half-visible through it; the page's bottom padding guarantees the last
+   field can always be scrolled clear of the bar. */
+.bar{position:sticky;bottom:0;background:var(--bg);border-top:1px solid var(--border);
+  padding:12px 0;margin:10px -16px 0;padding-left:16px;padding-right:16px}
+.done{text-align:center;padding:26px 12px}
+.done .tick{width:56px;height:56px;border-radius:50%;background:var(--ok-bg);color:var(--ok);
+  display:grid;place-items:center;font-size:26px;margin:0 auto 14px}
+.code{font-family:ui-monospace,Menlo,monospace;background:#F1F5F9;border-radius:7px;padding:3px 8px;font-size:15px;font-weight:600}
+.foot{text-align:center;color:var(--text-3);font-size:11.5px;margin-top:22px}
+.skel{background:linear-gradient(90deg,#EEF2F7,#F7FAFC,#EEF2F7);background-size:200% 100%;
+  animation:sh 1.2s infinite;border-radius:8px;height:14px;margin-bottom:9px}
+@keyframes sh{0%{background-position:200% 0}100%{background-position:-200% 0}}
+@media(min-width:680px){ .wrap{padding-top:36px} h1{font-size:34px} }
+</style></head>
+<body><div class="wrap" id="app">
+  <div class="brand"><i>N</i><div><b>NERVE Media Ops</b><span>Parul University</span></div></div>
+  <div class="card"><div class="skel" style="width:60%"></div><div class="skel" style="width:90%"></div>
+    <div class="skel" style="width:40%"></div></div>
+</div>
+<!-- absolute: the page is served from /casting/register/<token>, so a relative
+     src would resolve against that path and 404 -->
+<script src="/request/app.js"></script>
+</body></html>
