@@ -2,12 +2,20 @@
    Deliberately standalone: no NERVE session, no admin bundle, nothing about the
    internal system is reachable from here. The only thing this page can do is
    read one campaign and submit one form — everything is authorised server-side
-   against a verified Google identity. */
+   against an email address the server itself verified with a one-time code. */
 const $ = s => document.querySelector(s);
 const app = $('#app');
 const TOKEN = (location.pathname.match(/\/casting\/register\/([A-Za-z0-9]+)/) || [])[1]
   || new URLSearchParams(location.search).get('t') || '';
 const API = '/api/v1/public/casting/' + encodeURIComponent(TOKEN);
+
+/* The verified session survives a refresh but not a new tab or browser, and is
+   filed under this link's token so it can never be replayed against another. */
+const SKEY = 'nerve.portal.casting.' + TOKEN;
+const saveSession = t => { try { sessionStorage.setItem(SKEY, t); } catch (e) {} };
+const loadSession = () => { try { return sessionStorage.getItem(SKEY) || ''; } catch (e) { return ''; } };
+const dropSession = () => { try { sessionStorage.removeItem(SKEY); } catch (e) {} };
+
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 const AGE = ['Child','Teen','Young Adult','Adult','Middle-aged','Senior'];
@@ -18,7 +26,7 @@ const INTERESTS = ['Student role','Faculty role','Doctor role','Professional rol
   'Corporate role','Traditional role','Lifestyle role','Presenter','Background participant','Other'];
 const AVAIL = ['Available regularly','Available occasionally','Available with advance notice','Currently unavailable'];
 
-let campaign = null, identity = null, state = { languages: [], interests: [] };
+let campaign = null, identity = null, session = '', state = { languages: [], interests: [] };
 
 const brand = `<div class="brand"><i>N</i><div><b>NERVE Media Ops</b><span>Parul University</span></div></div>`;
 const shell = inner => { app.innerHTML = brand + inner + `<div class="foot">Parul University · Media Crew</div>`; };
@@ -47,71 +55,150 @@ async function api(path, body) {
     <h1>Casting Registration</h1>
     <div class="campaign">◆ ${esc(campaign.campaign.name)}</div>
     <div class="card">${note('warn','<b>' + esc(campaign.message || 'This casting registration is currently closed.') + '</b><br>Existing submissions are unaffected.')}</div>`);
-  renderSignIn();
+  // A stored session means this tab already verified for THIS link; the server
+  // still re-checks it on every call, so a stale or revoked one just drops back
+  // to step 1 rather than pretending to be signed in.
+  const saved = loadSession();
+  if (saved) { session = saved; try { return await checkIdentity(); } catch (e) { dropSession(); session = ''; } }
+  renderEmail();
 })();
 
-/* ---- step 1: prove who you are ---- */
-function renderSignIn() {
+/* ---- step 1: email → OTP → form ------------------------------------------
+   Three steps, one identity. The email is only ever a claim until the server
+   has redeemed a code for it; after that the browser holds an opaque session
+   token scoped to THIS link, and every later call carries it. The address is
+   never editable afterwards — it is whatever the verified session says. */
+const STEPS = ['Email verification', 'OTP verification', 'Form'];
+const steps = n => `<div class="steps">${STEPS.map((l, i) =>
+  `<span class="step${i === n ? ' on' : ''}${i < n ? ' done' : ''}">${i < n ? '✓' : (i + 1)} ${esc(l)}</span>`
+).join('<i>›</i>')}</div>`;
+
+let pending = { email: '', resendAt: 0, timer: null };
+
+function renderEmail(msg) {
   const dom = campaign.campaign.allowed_domain;
   shell(`
     <h1>Casting Registration</h1>
     <p class="sub">Join the university Media Crew's casting library for future video, photo and promotional productions.</p>
     <div class="campaign">◆ ${esc(campaign.campaign.name)}</div>
+    ${steps(0)}
     ${campaign.campaign.description ? `<div class="card"><p style="margin:0;color:var(--text-2)">${esc(campaign.campaign.description)}</p></div>` : ''}
     <div class="card">
-      <h2>Sign in to continue</h2>
+      <h2>Verify your email</h2>
       <p style="color:var(--text-2);margin:0 0 14px;font-size:13.5px">
-        Use your official <b>@${esc(dom)}</b> Google account. You do not need a NERVE account,
-        and signing in here does not create one.</p>
-      <div id="gbtn"></div>
-      ${campaign.dev_identity ? `
-        <div style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--border)">
-          <div class="hint" style="margin-bottom:8px"><b>Development mode</b> — Google sign-in is not configured on this
-            server, so identity can be entered directly. This is disabled in production.</div>
-          <input type="email" id="dev-email" placeholder="you@${esc(dom)}" style="margin-bottom:8px">
-          <button class="btn primary" id="dev-go">Continue</button>
-        </div>` : ''}
-      <div id="signin-msg"></div>
+        Enter your official Parul University email address to continue. You do not need a
+        NERVE account, and verifying here does not create one.</p>
+      <div class="field">
+        <label>Email <span class="req">*</span></label>
+        <input type="email" id="p-email" placeholder="name@${esc(dom)}" value="${esc(pending.email)}" autocomplete="email">
+      </div>
+      <button class="btn primary" id="p-send">Send OTP</button>
+      <div id="auth-msg">${msg || ''}</div>
     </div>`);
-
-  if (campaign.google_client_id) mountGoogle();
-  else if (!campaign.dev_identity) $('#signin-msg').innerHTML =
-    note('warn', '<b>Google sign-in is not configured yet.</b><br>Please contact the Media Crew — registration cannot accept submissions until it is set up.');
-
-  const dev = $('#dev-go');
-  if (dev) dev.onclick = () => {
-    const email = ($('#dev-email').value || '').trim();
-    if (!email) return;
-    checkIdentity({ dev_email: email });
-  };
+  const go = () => sendOtp();
+  $('#p-send').onclick = go;
+  $('#p-email').onkeydown = e => { if (e.key === 'Enter') go(); };
 }
-/* Google Identity Services, loaded only when a client id is actually configured. */
-function mountGoogle() {
-  const s = document.createElement('script');
-  s.src = 'https://accounts.google.com/gsi/client';
-  s.async = true;
-  s.onload = () => {
-    google.accounts.id.initialize({
-      client_id: campaign.google_client_id,
-      callback: r => checkIdentity({ id_token: r.credential }),
-    });
-    google.accounts.id.renderButton($('#gbtn'), { theme: 'outline', size: 'large', width: 320, text: 'continue_with' });
-  };
-  s.onerror = () => { $('#signin-msg').innerHTML = note('bad', 'Could not load Google sign-in. Please check your connection and reload.'); };
-  document.head.appendChild(s);
-}
-/* The domain rule is enforced on the SERVER — this call is what tells us whether
-   the account is acceptable, and whether it has already applied. */
-async function checkIdentity(auth) {
-  $('#signin-msg').innerHTML = `<div class="hint" style="margin-top:12px">Checking your account…</div>`;
+
+async function sendOtp(resend) {
+  const dom = campaign.campaign.allowed_domain;
+  const email = (resend ? pending.email : ($('#p-email').value || '')).trim().toLowerCase();
+  const box = $('#auth-msg');
+  /* Mirrors the server rule purely so the obvious mistake is caught without a
+     round trip. The server rejects the same thing independently — this check
+     is convenience, never the control. */
+  if (!email || !email.endsWith('@' + dom)) {
+    box.innerHTML = note('bad', `Please use your official @${esc(dom)} email address.`);
+    return;
+  }
+  const btn = $(resend ? '#p-resend' : '#p-send');
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
   try {
-    const r = await api('/lookup', auth);
-    identity = { ...auth, email: r.email, name: r.name };
+    const r = await api('/otp/send', { email });
+    pending.email = email;
+    pending.resendAt = Date.now() + (r.resend_after_seconds || 60) * 1000;
+    renderOtp(r.masked_email, note('ok', `<b>OTP sent.</b><br>We sent a verification code to ${esc(r.masked_email)}.`));
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = resend ? 'Resend OTP' : 'Send OTP'; }
+    const target = $('#auth-msg');
+    if (target) target.innerHTML = note('bad', esc(e.message));
+  }
+}
+
+function renderOtp(masked, msg) {
+  shell(`
+    <h1>Casting Registration</h1>
+    <div class="campaign">◆ ${esc(campaign.campaign.name)}</div>
+    ${steps(1)}
+    <div class="card">
+      <h2>Enter your code</h2>
+      <p style="color:var(--text-2);margin:0 0 14px;font-size:13.5px">
+        We sent a 6-digit code to <b>${esc(masked || pending.email)}</b>. It expires in
+        ${esc(String(campaign.otp_ttl_minutes || 10))} minutes.</p>
+      <div class="field">
+        <label>Verification code <span class="req">*</span></label>
+        <input id="p-otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6"
+               placeholder="000000" style="letter-spacing:8px;font-size:20px;text-align:center">
+      </div>
+      <button class="btn primary" id="p-verify">Verify OTP</button>
+      <button class="btn" id="p-resend" style="margin-top:8px">Resend OTP</button>
+      <button class="btn" id="p-back" style="margin-top:8px">Use a different email</button>
+      <div id="auth-msg">${msg || ''}</div>
+    </div>`);
+  const go = () => verifyOtp();
+  $('#p-verify').onclick = go;
+  $('#p-otp').onkeydown = e => { if (e.key === 'Enter') go(); };
+  $('#p-otp').focus();
+  $('#p-back').onclick = () => { clearInterval(pending.timer); renderEmail(); };
+  $('#p-resend').onclick = () => sendOtp(true);
+  tickResend();
+}
+
+/* The countdown is the server's cooldown, echoed back — the button is only a
+   courtesy, since the server refuses an early resend regardless. */
+function tickResend() {
+  clearInterval(pending.timer);
+  const paint = () => {
+    const btn = $('#p-resend');
+    if (!btn) return clearInterval(pending.timer);
+    const left = Math.ceil((pending.resendAt - Date.now()) / 1000);
+    if (left > 0) { btn.disabled = true; btn.textContent = `Resend OTP in ${left}s`; }
+    else { btn.disabled = false; btn.textContent = 'Resend OTP'; clearInterval(pending.timer); }
+  };
+  paint();
+  pending.timer = setInterval(paint, 1000);
+}
+
+async function verifyOtp() {
+  const otp = ($('#p-otp').value || '').trim();
+  const box = $('#auth-msg');
+  if (!/^\d{6}$/.test(otp)) { box.innerHTML = note('bad', 'Enter the 6-digit code from your email.'); return; }
+  const btn = $('#p-verify');
+  btn.disabled = true; btn.textContent = 'Verifying…';
+  try {
+    const v = await api('/otp/verify', { email: pending.email, otp });
+    clearInterval(pending.timer);
+    session = v.portal_session; saveSession(session);
+    await checkIdentity();
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Verify OTP';
+    const target = $('#auth-msg');
+    if (target) target.innerHTML = note('bad', esc(e.message));
+  }
+}
+
+/* The domain rule is enforced on the SERVER — this call is what tells us whether
+   the address is acceptable, and whether it has already applied. */
+async function checkIdentity() {
+  try {
+    const r = await api('/lookup', { portal_session: session });
+    identity = { email: r.email, name: r.name };
     if (r.existing && ['approved','rejected'].includes(r.existing.status)) return renderAlready(r.existing);
     if (r.existing) return renderForm(r.existing);
     renderForm(null);
   } catch (e) {
-    $('#signin-msg').innerHTML = note('bad', '<b>University account required</b><br>' + esc(e.message));
+    dropSession(); session = '';
+    renderEmail(note('bad', esc(e.message)));
   }
 }
 function renderAlready(ex) {
@@ -134,7 +221,7 @@ function renderForm(existing) {
     <h1>Casting Registration</h1>
     <div class="campaign">◆ ${esc(campaign.campaign.name)}</div>
     ${existing ? note('warn', `<b>You already have a submission for this drive.</b><br>Request <span class="code">${esc(existing.request_id)}</span> — saving will update it.`) : ''}
-    <div class="card"><div class="who">✓ Signed in as ${esc(identity.email)}</div></div>
+    <div class="card"><div class="who">✓ Email verified — ${esc(identity.email)}</div></div>
 
     <div class="card">
       <h2>About you</h2>
@@ -208,7 +295,7 @@ async function submit() {
   btn.disabled = true; btn.textContent = 'Submitting…';
   try {
     const r = await api('/submit', {
-      ...identity, name, applicant_type: type, department: dept,
+      portal_session: session, name, applicant_type: type, department: dept,
       designation: ($('#f-desig').value || '').trim(),
       age_group: AGE_KEY[picked('f-age')[0]] || null,
       gender: ($('#f-gender').value || '').trim(),

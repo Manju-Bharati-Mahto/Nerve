@@ -11,15 +11,25 @@
 // sub_admin→team_lead, user→employee (super_admin sees everything).
 // ═══════════════════════════════════════════════════════════════════════════
 import type express from "express";
+import type { RequestHandler } from "express";
 import { pool } from "./db.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import { randomUUID } from "node:crypto";
+import { sendMail, portalOtpEmail } from "./mailer.js";
+import {
+  generateOtp, hashOtp, otpHashMatches, newSessionToken, maskEmail, emailInDomain,
+  OTP_TTL_MINUTES, OTP_RESEND_COOLDOWN_SECONDS, OTP_MAX_ATTEMPTS,
+} from "./otp.js";
 
 type Handlers = {
   asyncHandler: (fn: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<unknown>) =>
     (req: express.Request, res: express.Response, next: express.NextFunction) => void;
   sendError: (res: express.Response, status: number, message: string) => void;
   getSingleParam: (v: string | string[]) => string;
+  // The public portals reuse the very limiters the employee password-OTP
+  // endpoints are protected by, rather than declaring their own budget.
+  otpSendLimiter: RequestHandler;
+  otpVerifyLimiter: RequestHandler;
 };
 
 interface CurrentUser { id: string; role: string; team: string | null; full_name?: string; email?: string; }
@@ -2197,45 +2207,108 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // works; approval turns one into an ordinary casting record with a CAST ID.
 
   /* Identity verification happens HERE, on the server (§45). The browser tells us
-     nothing we trust: it hands over a Google ID token, and we ask Google who it
-     belongs to before believing any of it.
+     nothing we trust: it presents a portal session token, and only a token this
+     server issued — after a code it emailed was redeemed — means anything.
 
-     GOOGLE_OAUTH_CLIENT_ID must be set for this to accept real sign-ins. Without
-     it the endpoint refuses external submissions rather than pretending to have
-     verified anybody — see the DEV note below. */
-  type GoogleIdentity = { email: string; name: string; email_verified: boolean };
-  async function verifyGoogleIdToken(idToken: string): Promise<GoogleIdentity | null> {
-    if (!idToken) return null;
-    try {
-      // Google's tokeninfo endpoint validates the signature, issuer and expiry
-      // for us and returns the claims — full server-side verification without
-      // pulling in an OAuth dependency.
-      const r = await fetch("https://oauth2.googleapis.com/tokeninfo?id_token=" + encodeURIComponent(idToken));
-      if (!r.ok) return null;
-      const c = await r.json() as Record<string, unknown>;
-      const aud = String(c.aud ?? "");
-      const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID ?? "";
-      // The token must have been minted for OUR client, or anyone could present a
-      // token from any Google app and be believed.
-      if (!clientId || aud !== clientId) return null;
-      const iss = String(c.iss ?? "");
-      if (iss !== "accounts.google.com" && iss !== "https://accounts.google.com") return null;
-      const email = String(c.email ?? "").toLowerCase();
-      if (!email) return null;
-      return { email, name: String(c.name ?? email.split("@")[0]), email_verified: String(c.email_verified) === "true" };
-    } catch { return null; }
+     The applicant proves control of a university mailbox. That is the whole
+     eligibility test: the domain is the rule, and no NERVE account exists or is
+     created. Codes follow the shared policy in otp.ts, the same one the employee
+     password reset uses, and go out through the same sendMail(). */
+  type PortalIdentity = { email: string; name: string; email_verified: boolean };
+  type PortalKind = "casting" | "request";
+
+  /* A verified applicant holds a session naming the link it was earned on, so a
+     code obtained for one campaign cannot open another (§5) — this lookup is
+     scoped by kind AND link_token, never by email alone. */
+  async function portalIdentity(
+    kind: PortalKind, linkToken: string, body: Record<string, unknown>,
+  ): Promise<PortalIdentity | null> {
+    const st = String(body.portal_session ?? "").trim();
+    if (!st) return null;
+    const r = await pool.query(
+      `SELECT email FROM mo_portal_sessions
+        WHERE token=$1 AND kind=$2 AND link_token=$3 AND expires_at > NOW()`,
+      [st, kind, linkToken]);
+    if (!r.rows[0]) return null;
+    const email = String(r.rows[0].email).toLowerCase();
+    return { email, name: email.split("@")[0], email_verified: true };
   }
-  /* Local development has no Google client configured, so the flow would be
-     untestable. When ALLOW_DEV_CASTING_IDENTITY is explicitly enabled the server
-     accepts a plain email — never in production, and it is refused the moment a
-     real client id is configured. */
-  function devIdentity(body: Record<string, unknown>): GoogleIdentity | null {
-    if (process.env.NODE_ENV === "production") return null;
-    if (process.env.ALLOW_DEV_CASTING_IDENTITY !== "1") return null;
-    if (process.env.GOOGLE_OAUTH_CLIENT_ID) return null;
-    const email = String(body.dev_email ?? "").trim().toLowerCase();
-    if (!email) return null;
-    return { email, name: String(body.dev_name ?? email.split("@")[0]), email_verified: true };
+
+  /* Issue a code for (kind, link, email). `sent:false` means the caller is still
+     inside the resend cooldown. */
+  async function issuePortalOtp(
+    kind: PortalKind, linkToken: string, email: string, campaign: string,
+  ): Promise<{ sent: boolean; retryAfter: number }> {
+    const recent = await pool.query(
+      `SELECT CEIL(EXTRACT(EPOCH FROM (created_at + ($4 || ' seconds')::interval - NOW()))) AS wait
+         FROM mo_portal_otps
+        WHERE kind=$1 AND link_token=$2 AND lower(email)=lower($3)
+          AND created_at > NOW() - ($4 || ' seconds')::interval
+        ORDER BY created_at DESC LIMIT 1`,
+      [kind, linkToken, email, String(OTP_RESEND_COOLDOWN_SECONDS)]);
+    if (recent.rows[0])
+      return { sent: false, retryAfter: Math.max(1, Number(recent.rows[0].wait)) };
+
+    const otp = generateOtp();
+    // Any earlier live code for this subject dies now, so only the newest works.
+    await pool.query(
+      `UPDATE mo_portal_otps SET used=true
+        WHERE kind=$1 AND link_token=$2 AND lower(email)=lower($3) AND used=false`,
+      [kind, linkToken, email]);
+    await pool.query(
+      `INSERT INTO mo_portal_otps (kind, link_token, email, otp_hash, expires_at)
+       VALUES ($1,$2,$3,$4, NOW() + ($5 || ' minutes')::interval)`,
+      [kind, linkToken, email.toLowerCase(), hashOtp(otp), String(OTP_TTL_MINUTES)]);
+
+    // The same sendMail() the password flows use — one mail configuration (§11).
+    await sendMail({
+      to: email,
+      subject: "NERVE Media Ops — Your verification code",
+      html: portalOtpEmail(otp, campaign, OTP_TTL_MINUTES),
+    });
+    return { sent: true, retryAfter: OTP_RESEND_COOLDOWN_SECONDS };
+  }
+
+  /* Redeem a code: single-use, attempt-capped, scoped to the link. */
+  async function redeemPortalOtp(
+    kind: PortalKind, linkToken: string, email: string, otp: string,
+  ): Promise<{ ok: true; session: string } | { ok: false; why: string }> {
+    const BAD = "That code is incorrect or has expired. Please request a new one.";
+    const r = await pool.query(
+      `SELECT id, otp_hash, attempts FROM mo_portal_otps
+        WHERE kind=$1 AND link_token=$2 AND lower(email)=lower($3)
+          AND used=false AND expires_at > NOW()
+        ORDER BY created_at DESC LIMIT 1`,
+      [kind, linkToken, email]);
+    const row = r.rows[0];
+    if (!row) return { ok: false, why: BAD };
+
+    if (Number(row.attempts) >= OTP_MAX_ATTEMPTS) {
+      await pool.query(`UPDATE mo_portal_otps SET used=true WHERE id=$1`, [row.id]);
+      return { ok: false, why: "Too many incorrect attempts. Please request a new code." };
+    }
+    if (!otpHashMatches(String(row.otp_hash), hashOtp(otp))) {
+      await pool.query(`UPDATE mo_portal_otps SET attempts=attempts+1 WHERE id=$1`, [row.id]);
+      return { ok: false, why: BAD };
+    }
+
+    // Correct: burn the code before issuing anything, so it cannot be replayed.
+    await pool.query(`UPDATE mo_portal_otps SET used=true WHERE id=$1`, [row.id]);
+    const session = newSessionToken();
+    await pool.query(
+      `INSERT INTO mo_portal_sessions (token, kind, link_token, email, expires_at)
+       VALUES ($1,$2,$3,$4, NOW() + interval '2 hours')`,
+      [session, kind, linkToken, email.toLowerCase()]);
+    return { ok: true, session };
+  }
+
+  /* Audited without a NERVE actor — the applicant has no account, by design (§7).
+     Never records the code itself. */
+  async function portalAudit(action: string, detail: Record<string, unknown>, req: express.Request) {
+    await pool.query(
+      `INSERT INTO mo_audit_logs (actor_id, actor_role, action, entity_type, entity_id, before, after, ip)
+       VALUES (NULL,'system',$1,'portal',NULL,NULL,$2,$3)`,
+      [action, JSON.stringify(detail), (req.ip ?? null)]).catch(() => {});
   }
 
   const linkOpen = (l: Record<string, unknown>): { ok: boolean; why?: string } => {
@@ -2259,22 +2332,85 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       campaign: { name: l.name, description: l.description, allowed_domain: l.allowed_domain,
         require_department: l.require_department },
       open: st.ok, message: st.why ?? null,
-      google_client_id: process.env.GOOGLE_OAUTH_CLIENT_ID ?? null,
-      dev_identity: process.env.NODE_ENV !== "production" && process.env.ALLOW_DEV_CASTING_IDENTITY === "1"
-        && !process.env.GOOGLE_OAUTH_CLIENT_ID,
+      // The applicant verifies an email address; there is no OAuth client to
+      // hand out and no NERVE account involved.
+      auth: "email_otp", otp_ttl_minutes: OTP_TTL_MINUTES,
+      resend_after_seconds: OTP_RESEND_COOLDOWN_SECONDS,
     });
   }));
 
-  // ── PUBLIC: has this account already applied to this campaign? (§14)
+  /* ── PUBLIC: email verification, shared by both portals ──────────────────
+     One implementation mounted under both prefixes, so casting and request
+     cannot drift apart. Rate limiting reuses the same limiters as the employee
+     password OTP endpoints. */
+  const mountPortalOtp = (
+    kind: PortalKind, prefix: string, table: string,
+    linkState: (l: Record<string, unknown>) => { ok: boolean; why?: string },
+    invalidMsg: string,
+  ) => {
+    const loadLink = async (token: string) =>
+      (await pool.query(`SELECT * FROM ${table} WHERE token=$1`, [token])).rows[0];
+
+    app.post(`${prefix}/:token/otp/send`, h.otpSendLimiter, asyncHandler(async (req, res) => {
+      const token = getSingleParam(req.params.token);
+      const l = await loadLink(token);
+      if (!l) return sendError(res, 404, invalidMsg);
+      const st = linkState(l);
+      if (!st.ok) return sendError(res, 403, st.why!);
+
+      const domain = String(l.allowed_domain).replace(/^@/, "");
+      const email = String((req.body as Record<string, unknown>).email ?? "").trim().toLowerCase();
+      // The domain is the eligibility rule, checked here and never on the client.
+      // Nothing is sent to an address outside it.
+      if (!email || !emailInDomain(email, domain))
+        return sendError(res, 400, `Please use your official @${domain} email address.`);
+
+      const r = await issuePortalOtp(kind, token, email, String(l.name ?? ""));
+      await portalAudit("portal.otp_requested",
+        { kind, campaign: l.name, link_token: token, email, sent: r.sent }, req);
+      if (!r.sent)
+        return res.status(429).json({ message: `Please wait ${r.retryAfter}s before requesting another code.`, retry_after: r.retryAfter });
+      res.json({ ok: true, masked_email: maskEmail(email),
+        expires_in_minutes: OTP_TTL_MINUTES, resend_after_seconds: r.retryAfter });
+    }));
+
+    app.post(`${prefix}/:token/otp/verify`, h.otpVerifyLimiter, asyncHandler(async (req, res) => {
+      const token = getSingleParam(req.params.token);
+      const l = await loadLink(token);
+      if (!l) return sendError(res, 404, invalidMsg);
+      const st = linkState(l);
+      if (!st.ok) return sendError(res, 403, st.why!);
+
+      const b = req.body as Record<string, unknown>;
+      const domain = String(l.allowed_domain).replace(/^@/, "");
+      const email = String(b.email ?? "").trim().toLowerCase();
+      const otp = String(b.otp ?? "").trim();
+      if (!email || !emailInDomain(email, domain))
+        return sendError(res, 400, `Please use your official @${domain} email address.`);
+      if (!/^\d{6}$/.test(otp)) return sendError(res, 400, "Enter the 6-digit code from your email.");
+
+      const out = await redeemPortalOtp(kind, token, email, otp);
+      if (!out.ok) {
+        await portalAudit("portal.otp_failed", { kind, link_token: token, email }, req);
+        return sendError(res, 400, out.why);
+      }
+      await portalAudit("portal.otp_verified", { kind, campaign: l.name, link_token: token, email }, req);
+      res.json({ ok: true, portal_session: out.session, email });
+    }));
+  };
+
+  mountPortalOtp("casting", "/api/v1/public/casting", "mo_casting_links", linkOpen,
+    "This casting registration link is not valid.");
+
+  // ── PUBLIC: has this address already applied to this campaign? (§14)
   app.post(`/api/v1/public/casting/:token/lookup`, asyncHandler(async (req, res) => {
     const token = getSingleParam(req.params.token);
     const l = (await pool.query(`SELECT * FROM mo_casting_links WHERE token=$1`, [token])).rows[0];
     if (!l) return sendError(res, 404, "This casting registration link is not valid.");
-    const b = req.body as Record<string, unknown>;
-    const who = await verifyGoogleIdToken(String(b.id_token ?? "")) ?? devIdentity(b);
-    if (!who) return sendError(res, 401, "We could not verify that Google account. Please sign in again.");
-    if (!who.email.endsWith("@" + String(l.allowed_domain).replace(/^@/, "")))
-      return sendError(res, 403, `Please sign in using your official @${String(l.allowed_domain).replace(/^@/, "")} Google account to submit this casting form.`);
+    const who = await portalIdentity("casting", token, req.body as Record<string, unknown>);
+    if (!who) return sendError(res, 401, "Please verify your email address to continue.");
+    if (!emailInDomain(who.email, String(l.allowed_domain)))
+      return sendError(res, 403, `Please use your official @${String(l.allowed_domain).replace(/^@/, "")} email address.`);
     const ex = (await pool.query(
       `SELECT request_id, status, created_at FROM mo_casting_requests
         WHERE link_id=$1 AND lower(applicant_email)=lower($2)`, [l.id, who.email])).rows[0];
@@ -2290,11 +2426,13 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!st.ok) return sendError(res, 403, st.why!);
 
     const b = req.body as Record<string, unknown>;
-    const who = await verifyGoogleIdToken(String(b.id_token ?? "")) ?? devIdentity(b);
-    if (!who) return sendError(res, 401, "We could not verify that Google account. Please sign in again.");
+    // The identity comes from the verified session, never from the body — the
+    // client cannot nominate whose submission this is (§6).
+    const who = await portalIdentity("casting", token, b);
+    if (!who) return sendError(res, 401, "Please verify your email address to continue.");
     const domain = String(l.allowed_domain).replace(/^@/, "");
-    if (!who.email.endsWith("@" + domain))
-      return sendError(res, 403, `Please sign in using your official @${domain} Google account to submit this casting form.`);
+    if (!emailInDomain(who.email, domain))
+      return sendError(res, 403, `Please use your official @${domain} email address.`);
     if (!b.consent) return sendError(res, 400, "Please confirm the casting consent before submitting.");
 
     const name = String(b.name ?? who.name ?? "").trim();
@@ -2472,7 +2610,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // ── Request intake ────────────────────────────────────────────────────────
   // ═════════ EXTERNAL MEDIA REQUEST INTAKE — the intake door ════════════════
   // Identity verification, domain rules and abuse protection are the SAME layer
-  // the casting portal uses (verifyGoogleIdToken / devIdentity above) — one
+  // the casting portal uses (portalIdentity / mountPortalOtp above) — one
   // implementation, so the security story cannot diverge between the two doors.
 
   const reqLinkOpen = (l: Record<string, unknown>): { ok: boolean; why?: string } => {
@@ -2503,11 +2641,13 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       portal: { name: l.name, description: l.description, allowed_domain: l.allowed_domain },
       open: st.ok, message: st.why ?? null,
       units, deliverable_types: delivTypes, work_types: workTypes,
-      google_client_id: process.env.GOOGLE_OAUTH_CLIENT_ID ?? null,
-      dev_identity: process.env.NODE_ENV !== "production" && process.env.ALLOW_DEV_CASTING_IDENTITY === "1"
-        && !process.env.GOOGLE_OAUTH_CLIENT_ID,
+      auth: "email_otp", otp_ttl_minutes: OTP_TTL_MINUTES,
+      resend_after_seconds: OTP_RESEND_COOLDOWN_SECONDS,
     });
   }));
+
+  mountPortalOtp("request", "/api/v1/public/request", "mo_request_links", reqLinkOpen,
+    "This media request link is not valid.");
 
   /* PUBLIC: who am I, and what have I already asked for? Powers both the
      prefilled contact details and the "My requests" list (§38) — which shows the
@@ -2517,11 +2657,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const l = (await pool.query(`SELECT * FROM mo_request_links WHERE token=$1`, [token])).rows[0];
     if (!l) return sendError(res, 404, "This media request link is not valid.");
     const b = req.body as Record<string, unknown>;
-    const who = await verifyGoogleIdToken(String(b.id_token ?? "")) ?? devIdentity(b);
-    if (!who) return sendError(res, 401, "We could not verify that Google account. Please sign in again.");
+    const who = await portalIdentity("request", token, b);
+    if (!who) return sendError(res, 401, "Please verify your email address to continue.");
     const domain = String(l.allowed_domain).replace(/^@/, "");
-    if (!who.email.endsWith("@" + domain))
-      return sendError(res, 403, `Please sign in using your official @${domain} account to submit a media request.`);
+    if (!emailInDomain(who.email, domain))
+      return sendError(res, 403, `Please use your official @${domain} email address.`);
     // Deliberately narrow: id, title, date and a SIMPLIFIED status (§39). No
     // internal notes, no team, no assignments, no reviewer.
     const mine = (await pool.query(
@@ -2546,11 +2686,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!st.ok) return sendError(res, 403, st.why!);
 
     const b = req.body as Record<string, unknown>;
-    const who = await verifyGoogleIdToken(String(b.id_token ?? "")) ?? devIdentity(b);
-    if (!who) return sendError(res, 401, "We could not verify that Google account. Please sign in again.");
+    const who = await portalIdentity("request", token, b);
+    if (!who) return sendError(res, 401, "Please verify your email address to continue.");
     const domain = String(l.allowed_domain).replace(/^@/, "");
-    if (!who.email.endsWith("@" + domain))
-      return sendError(res, 403, `Please sign in using your official @${domain} account to submit a media request.`);
+    if (!emailInDomain(who.email, domain))
+      return sendError(res, 403, `Please use your official @${domain} email address.`);
 
     const institute = String(b.institute ?? "").trim();
     const event = String(b.event_name ?? "").trim();

@@ -1,7 +1,7 @@
 /* External Media Request portal.
    Same intake-door pattern as the casting portal: standalone page, no NERVE
    session, no admin bundle. Everything is authorised server-side against a
-   verified Google identity. A submission becomes an ordinary request row —
+   verified email address. A submission becomes an ordinary request row —
    there is no second request system (§51). */
 const $ = s => document.querySelector(s);
 const app = $('#app');
@@ -10,12 +10,20 @@ const app = $('#app');
 const TOKEN = (location.pathname.match(/\/request\/(?:register|new)\/([A-Za-z0-9]+)/) || [])[1]
   || new URLSearchParams(location.search).get('t') || '';
 const API = '/api/v1/public/request/' + encodeURIComponent(TOKEN);
+
+/* The verified session survives a refresh but not a new tab or browser, and is
+   filed under this link's token so it can never be replayed against another. */
+const SKEY = 'nerve.portal.request.' + TOKEN;
+const saveSession = t => { try { sessionStorage.setItem(SKEY, t); } catch (e) {} };
+const loadSession = () => { try { return sessionStorage.getItem(SKEY) || ''; } catch (e) { return ''; } };
+const dropSession = () => { try { sessionStorage.removeItem(SKEY); } catch (e) {} };
+
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 /* What Media Ops can be asked for. Rendered from the server's own work types
    and deliverable types, so this never becomes a second taxonomy (§9/§15). */
 const PRIORITIES = [['low','Low'],['normal','Normal'],['high','High'],['urgent','Urgent']];
-let portal = null, identity = null, pendingDuplicate = null;
+let portal = null, identity = null, session = '', pendingDuplicate = null;
 
 const brand = `<div class="brand"><i>N</i><div><b>NERVE Media Ops</b><span>Parul University</span></div></div>`;
 const shell = inner => { app.innerHTML = brand + inner + `<div class="foot">Parul University · Media Operations</div>`; };
@@ -40,57 +48,131 @@ async function api(path, body) {
     <h1>Media Request</h1>
     <div class="campaign">◆ ${esc(portal.portal.name)}</div>
     <div class="card">${note('warn','<b>' + esc(portal.message) + '</b><br>Requests already submitted are unaffected.')}</div>`);
-  renderSignIn();
+  // Same as the casting portal: resume a verified session for THIS link only.
+  const saved = loadSession();
+  if (saved) {
+    session = saved;
+    try {
+      const r = await api('/me', { portal_session: session });
+      identity = { email: r.email, name: r.name, requests: r.requests || [] };
+      return renderForm();
+    } catch (e) { dropSession(); session = ''; }
+  }
+  renderEmail();
 })();
 
-function renderSignIn() {
+/* ---- step 1: email → OTP → form ------------------------------------------
+   Identical shape to the casting portal, deliberately: the two public doors
+   share one server-side implementation, so their client flows match too. */
+const STEPS = ['Email verification', 'OTP verification', 'Form'];
+const steps = n => `<div class="steps">${STEPS.map((l, i) =>
+  `<span class="step${i === n ? ' on' : ''}${i < n ? ' done' : ''}">${i < n ? '✓' : (i + 1)} ${esc(l)}</span>`
+).join('<i>›</i>')}</div>`;
+
+let pending = { email: '', resendAt: 0, timer: null };
+
+function renderEmail(msg) {
   const dom = portal.portal.allowed_domain;
   shell(`
     <h1>Media Request</h1>
     <p class="sub">Submit your photography, videography, event coverage or other media requirements to the
       Media Operations team.</p>
     <div class="campaign">◆ ${esc(portal.portal.name)}</div>
+    ${steps(0)}
     ${portal.portal.description ? `<div class="card"><p style="margin:0;color:var(--text-2)">${esc(portal.portal.description)}</p></div>` : ''}
     <div class="card">
-      <h2>Sign in to continue</h2>
+      <h2>Verify your email</h2>
       <p style="color:var(--text-2);margin:0 0 14px;font-size:13.5px">
-        Use your official <b>@${esc(dom)}</b> account. You do not need a NERVE account, and signing in
-        here does not create one.</p>
-      <div id="gbtn"></div>
-      ${portal.dev_identity ? `
-        <div style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--border)">
-          <div class="hint" style="margin-bottom:8px"><b>Development mode</b> — Google sign-in is not configured
-            on this server. Disabled in production.</div>
-          <input type="email" id="dev-email" placeholder="you@${esc(dom)}" style="margin-bottom:8px">
-          <button class="btn primary" id="dev-go">Continue</button>
-        </div>` : ''}
-      <div id="signin-msg"></div>
+        Enter your official Parul University email address to continue. You do not need a
+        NERVE account, and verifying here does not create one.</p>
+      <div class="field">
+        <label>Email <span class="req">*</span></label>
+        <input type="email" id="p-email" placeholder="name@${esc(dom)}" value="${esc(pending.email)}" autocomplete="email">
+      </div>
+      <button class="btn primary" id="p-send">Send OTP</button>
+      <div id="auth-msg">${msg || ''}</div>
     </div>`);
-  if (portal.google_client_id) mountGoogle();
-  else if (!portal.dev_identity) $('#signin-msg').innerHTML =
-    note('warn','<b>Google sign-in is not configured yet.</b><br>Please contact the Media Operations team — the portal cannot accept requests until it is set up.');
-  const dev = $('#dev-go');
-  if (dev) dev.onclick = () => { const e = ($('#dev-email').value||'').trim(); if (e) signIn({ dev_email: e }); };
+  $('#p-send').onclick = () => sendOtp();
+  $('#p-email').onkeydown = e => { if (e.key === 'Enter') sendOtp(); };
 }
-function mountGoogle() {
-  const s = document.createElement('script');
-  s.src = 'https://accounts.google.com/gsi/client'; s.async = true;
-  s.onload = () => {
-    google.accounts.id.initialize({ client_id: portal.google_client_id,
-      callback: r => signIn({ id_token: r.credential }) });
-    google.accounts.id.renderButton($('#gbtn'), { theme:'outline', size:'large', width:320, text:'continue_with' });
-  };
-  s.onerror = () => { $('#signin-msg').innerHTML = note('bad','Could not load Google sign-in. Please check your connection and reload.'); };
-  document.head.appendChild(s);
-}
-async function signIn(auth) {
-  $('#signin-msg').innerHTML = `<div class="hint" style="margin-top:12px">Checking your account…</div>`;
+
+async function sendOtp(resend) {
+  const dom = portal.portal.allowed_domain;
+  const email = (resend ? pending.email : ($('#p-email').value || '')).trim().toLowerCase();
+  /* Convenience only — the server applies the same rule independently. */
+  if (!email || !email.endsWith('@' + dom)) {
+    $('#auth-msg').innerHTML = note('bad', `Please use your official @${esc(dom)} email address.`);
+    return;
+  }
+  const btn = $(resend ? '#p-resend' : '#p-send');
+  if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
   try {
-    const r = await api('/me', auth);
-    identity = { ...auth, email: r.email, name: r.name, requests: r.requests || [] };
+    const r = await api('/otp/send', { email });
+    pending.email = email;
+    pending.resendAt = Date.now() + (r.resend_after_seconds || 60) * 1000;
+    renderOtp(r.masked_email, note('ok', `<b>OTP sent.</b><br>We sent a verification code to ${esc(r.masked_email)}.`));
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = resend ? 'Resend OTP' : 'Send OTP'; }
+    const t = $('#auth-msg'); if (t) t.innerHTML = note('bad', esc(e.message));
+  }
+}
+
+function renderOtp(masked, msg) {
+  shell(`
+    <h1>Media Request</h1>
+    <div class="campaign">◆ ${esc(portal.portal.name)}</div>
+    ${steps(1)}
+    <div class="card">
+      <h2>Enter your code</h2>
+      <p style="color:var(--text-2);margin:0 0 14px;font-size:13.5px">
+        We sent a 6-digit code to <b>${esc(masked || pending.email)}</b>. It expires in
+        ${esc(String(portal.otp_ttl_minutes || 10))} minutes.</p>
+      <div class="field">
+        <label>Verification code <span class="req">*</span></label>
+        <input id="p-otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6"
+               placeholder="000000" style="letter-spacing:8px;font-size:20px;text-align:center">
+      </div>
+      <button class="btn primary" id="p-verify">Verify OTP</button>
+      <button class="btn" id="p-resend" style="margin-top:8px">Resend OTP</button>
+      <button class="btn" id="p-back" style="margin-top:8px">Use a different email</button>
+      <div id="auth-msg">${msg || ''}</div>
+    </div>`);
+  $('#p-verify').onclick = () => verifyOtp();
+  $('#p-otp').onkeydown = e => { if (e.key === 'Enter') verifyOtp(); };
+  $('#p-otp').focus();
+  $('#p-back').onclick = () => { clearInterval(pending.timer); renderEmail(); };
+  $('#p-resend').onclick = () => sendOtp(true);
+  tickResend();
+}
+
+function tickResend() {
+  clearInterval(pending.timer);
+  const paint = () => {
+    const btn = $('#p-resend');
+    if (!btn) return clearInterval(pending.timer);
+    const left = Math.ceil((pending.resendAt - Date.now()) / 1000);
+    if (left > 0) { btn.disabled = true; btn.textContent = `Resend OTP in ${left}s`; }
+    else { btn.disabled = false; btn.textContent = 'Resend OTP'; clearInterval(pending.timer); }
+  };
+  paint();
+  pending.timer = setInterval(paint, 1000);
+}
+
+async function verifyOtp() {
+  const otp = ($('#p-otp').value || '').trim();
+  if (!/^\d{6}$/.test(otp)) { $('#auth-msg').innerHTML = note('bad', 'Enter the 6-digit code from your email.'); return; }
+  const btn = $('#p-verify');
+  btn.disabled = true; btn.textContent = 'Verifying…';
+  try {
+    const v = await api('/otp/verify', { email: pending.email, otp });
+    clearInterval(pending.timer);
+    session = v.portal_session; saveSession(session);
+    const r = await api('/me', { portal_session: session });
+    identity = { email: r.email, name: r.name, requests: r.requests || [] };
     renderForm();
   } catch (e) {
-    $('#signin-msg').innerHTML = note('bad','<b>University account required</b><br>' + esc(e.message));
+    btn.disabled = false; btn.textContent = 'Verify OTP';
+    const t = $('#auth-msg'); if (t) t.innerHTML = note('bad', esc(e.message));
   }
 }
 
@@ -100,7 +182,7 @@ function renderForm() {
   shell(`
     <h1>Media Request</h1>
     <div class="campaign">◆ ${esc(portal.portal.name)}</div>
-    <div class="card"><div class="who">✓ Signed in as ${esc(identity.email)}</div></div>
+    <div class="card"><div class="who">✓ Email verified — ${esc(identity.email)}</div></div>
 
     ${identity.requests.length ? `<div class="card">
       <h2>Your previous requests</h2>
@@ -212,7 +294,7 @@ async function submit(confirmDuplicate) {
   btn.disabled = true; btn.textContent = 'Submitting…';
   try {
     const r = await api('/submit', {
-      ...identity, confirm_duplicate: !!confirmDuplicate,
+      portal_session: session, confirm_duplicate: !!confirmDuplicate,
       institute: v('f-inst'), academic_unit_id: v('f-unit') || null,
       stakeholder: v('f-stake'), contact_email: identity.email, contact_phone: v('f-phone'),
       event_name: v('f-event'), venue: v('f-venue'),

@@ -572,7 +572,9 @@ const mediaApiLimiter = rateLimit({
 });
 app.use("/api/v1/media", mediaApiLimiter);
 
-registerMediaOpsApi(app, { asyncHandler, sendError, getSingleParam });
+// The portals' email-verification endpoints reuse the same limiters that guard
+// the employee password-OTP endpoints, rather than declaring a second budget.
+registerMediaOpsApi(app, { asyncHandler, sendError, getSingleParam, otpSendLimiter, otpVerifyLimiter });
 
 // ── App settings (super admin) ─────────────────────────────────────────────
 

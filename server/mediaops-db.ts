@@ -1222,6 +1222,46 @@ export async function bootstrapMediaOpsDatabase() {
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_request_links_token ON mo_request_links(token)`);
 
+  /* ── Public-portal email verification ───────────────────────────────────
+     The employee password OTP lives in password_otps, whose user_id is NOT
+     NULL and references users(id). An external applicant must never get a
+     users row (§8), so their codes cannot go there. Same policy (otp.ts),
+     different subject: these are keyed by email + the specific public link,
+     which is what binds a verified session to one campaign and stops a code
+     earned on one link from opening another.
+
+     Codes are stored hashed; the raw value never touches the database. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_portal_otps (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      kind TEXT NOT NULL CHECK (kind IN ('casting','request')),
+      link_token TEXT NOT NULL,
+      email TEXT NOT NULL,
+      otp_hash TEXT NOT NULL,
+      attempts INT NOT NULL DEFAULT 0,
+      used BOOLEAN NOT NULL DEFAULT false,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_mo_portal_otps_lookup
+       ON mo_portal_otps(kind, link_token, lower(email), used)`);
+
+  /* A verified applicant holds one of these instead of a NERVE session. It
+     carries no privileges beyond the single link it names. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_portal_sessions (
+      token TEXT PRIMARY KEY,
+      kind TEXT NOT NULL CHECK (kind IN ('casting','request')),
+      link_token TEXT NOT NULL,
+      email TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_mo_portal_sessions_scope
+       ON mo_portal_sessions(kind, link_token, lower(email))`);
+
   const REQ_EXT: Array<[string, string]> = [
     ["source", "TEXT NOT NULL DEFAULT 'manual'"],
     ["link_id", "BIGINT REFERENCES mo_request_links(id) ON DELETE SET NULL"],
