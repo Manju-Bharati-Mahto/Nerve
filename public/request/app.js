@@ -5,7 +5,9 @@
    there is no second request system (§51). */
 const $ = s => document.querySelector(s);
 const app = $('#app');
-const TOKEN = (location.pathname.match(/\/request\/new\/([A-Za-z0-9]+)/) || [])[1]
+/* Canonical /request/register/<token>; /request/new/<token> still accepted so
+   links circulated before the rename keep working. */
+const TOKEN = (location.pathname.match(/\/request\/(?:register|new)\/([A-Za-z0-9]+)/) || [])[1]
   || new URLSearchParams(location.search).get('t') || '';
 const API = '/api/v1/public/request/' + encodeURIComponent(TOKEN);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));

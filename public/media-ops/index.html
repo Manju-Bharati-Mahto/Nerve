@@ -4229,7 +4229,7 @@ function castingStyles(){
 /* Straight after creating a link, put it in front of the user — the whole point
    is to copy it somewhere. */
 function showReqLink(l){
-  const url=location.origin+'/request/new/'+l.token;
+  const url=location.origin+'/request/register/'+l.token;
   modal(`<div class="mo-head"><div><h2>Request portal ready</h2>
       <p>${esc(l.name)} — circulate this to institutes and departments.</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
@@ -4381,7 +4381,7 @@ const reqLinkOpen= l=>{
   if(l.expires_on&&dOf(l.expires_on)<TODAY)return false;
   return true;
 };
-const requestUrl = l=>location.origin+'/request/new/'+l.token;
+const requestUrl = l=>location.origin+'/request/register/'+l.token;
 /* §48 — arrived and nobody has touched it. Deliberately measured from FIRST
    TOUCH, not from any later edit, so a request cannot look attended-to because
    somebody glanced at it. */
