@@ -174,6 +174,53 @@ Rollback steps
 - Restore the previous Nginx config and env values
 - Reload Nginx and redeploy
 
+## Phase 5: Google Sign-In for the Public Portals
+
+The external casting and media-request portals authenticate applicants with Google
+Identity Services. Verification is server-side: the browser hands over an ID token
+and the API checks it against Google before believing anything, so no client secret
+exists and none is needed.
+
+In Google Cloud Console, inside the university Workspace organisation:
+
+1. Configure the OAuth consent screen — user type **Internal** (only
+   `@paruluniversity.ac.in` accounts are admitted, and Internal avoids Google's
+   verification review). Set the app name, a monitored support email, a developer
+   contact, and authorized domain `paruluniversity.ac.in`.
+2. Create credentials → OAuth client ID → application type **Web application**.
+3. Authorized JavaScript origins: the site origin only, e.g.
+   `https://nerve.paruluniversity.ac.in` — no path, no trailing slash.
+4. Authorized redirect URIs: **leave empty**. The portals use the ID-token
+   callback, never a redirect, so no redirect URI is involved.
+
+Then on the server:
+
+```bash
+# 1. the client id — note this must ALSO be listed in docker-compose.yml's
+#    api.environment block, or Compose will not inject it into the container
+echo 'GOOGLE_OAUTH_CLIENT_ID=<id>.apps.googleusercontent.com' >> /srv/nerve/shared/env/.env
+
+# 2. redeploy so the API picks it up
+bash /srv/nerve/app/deploy/scripts/deploy.sh
+
+# 3. let Google's script through the Content-Security-Policy
+sudo bash /srv/nerve/app/deploy/scripts/enable-google-signin-csp.sh
+```
+
+Step 3 is not optional: the hardened policy is `script-src 'self' 'unsafe-inline'`,
+which blocks `https://accounts.google.com/gsi/client`, so the sign-in button never
+renders however the client id is set.
+
+Never set `ALLOW_DEV_CASTING_IDENTITY` in production. It is already inert there —
+it is refused when `NODE_ENV=production` and again whenever a real client id is
+configured — but leave it unset regardless.
+
+How to verify
+- `curl -sI https://your-domain.example/casting/register/<token> | grep -i content-security`
+  shows `accounts.google.com`
+- The Google button renders on a fresh casting link
+- A `@gmail.com` sign-in is refused with HTTP 403 and creates no record
+
 ## Local Development
 
 Use the current checkout for feature work and deployment testing instead of pulling into `/srv/nerve/app`.

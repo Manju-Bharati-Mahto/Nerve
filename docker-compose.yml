@@ -34,6 +34,11 @@ services:
       SESSION_SECRET: ${SESSION_SECRET}
       SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-super@parul.ac.in}
       SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD}
+      # The public casting/request portals verify Google ID tokens against this
+      # client id. Compose injects only what is listed here, so leaving it out
+      # keeps the portals reporting "Google sign-in is not configured yet" no
+      # matter what /srv/nerve/shared/env/.env says.
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}

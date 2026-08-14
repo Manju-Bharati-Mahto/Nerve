@@ -2222,7 +2222,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       if (iss !== "accounts.google.com" && iss !== "https://accounts.google.com") return null;
       const email = String(c.email ?? "").toLowerCase();
       if (!email) return null;
-      return { email, name: String(c.name ?? email.split("@")[0]), email_verified: String(c.email_verified) === "true" };
+      // An unverified address proves nothing about who is holding it, and the
+      // domain rule below is only meaningful on an address Google has confirmed.
+      // Workspace accounts are always verified, so this rejects nothing genuine.
+      if (String(c.email_verified) !== "true") return null;
+      return { email, name: String(c.name ?? email.split("@")[0]), email_verified: true };
     } catch { return null; }
   }
   /* Local development has no Google client configured, so the flow would be
