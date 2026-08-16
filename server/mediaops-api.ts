@@ -50,6 +50,21 @@ async function isCoordinator(u: CurrentUser): Promise<boolean> {
   return r?.mo_role === "coordinator";
 }
 
+/* Has an administrator explicitly granted this user a module?
+
+   allowed_modules is NULL for "role based" and an array once an admin has set it
+   explicitly, so a grant only exists in the array case. This is the API half of
+   the same rule the client applies in grantedByModule(): an explicit grant ADDS
+   a capability on top of the role. Before this existed, module access could only
+   ever subtract, so ticking a box for a module the role did not already imply
+   changed nothing — the sidebar stayed hidden and the API kept answering 403. */
+async function hasModuleGrant(u: CurrentUser, key: string): Promise<boolean> {
+  const row = (await pool.query(
+    `SELECT allowed_modules FROM mo_user_profiles WHERE user_id=$1`, [u.id])).rows[0];
+  const am = row?.allowed_modules;
+  return Array.isArray(am) && am.includes(key);
+}
+
 /* ── SMC — Social Media Council ────────────────────────────────────────────
    An SMC member is an institute student on the coverage network, not Media
    Crew. They are stored with team='smc', which means moRoleOf() returns null
@@ -69,6 +84,9 @@ async function isSmcMember(u: CurrentUser): Promise<boolean> {
    without inventing a role (§15). Admins always qualify. */
 async function isSmcManager(u: CurrentUser): Promise<boolean> {
   if (isMoAdmin(u)) return true;
+  // An explicit Module Access grant is sufficient on its own — the duty is one
+  // way to hold this, not the only way (§ Module Access).
+  if (await hasModuleGrant(u, "smc")) return true;
   if (u.team !== "media") return false;
   const r = (await pool.query(
     `SELECT 1 FROM mo_user_duties d JOIN mo_duty_flags f ON f.id=d.duty_flag_id
@@ -1974,6 +1992,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // everywhere else. Admin always has access.
   async function canManageCasting(u: CurrentUser): Promise<boolean> {
     if (isMoAdmin(u)) return true;
+    if (await hasModuleGrant(u, "casting-admin")) return true;   // explicit grant adds it
     const r = await pool.query(
       `SELECT 1 FROM mo_user_duties d JOIN mo_duty_flags f ON f.id=d.duty_flag_id
         WHERE d.user_id=$1 AND f.code='casting_manager'`, [u.id]);

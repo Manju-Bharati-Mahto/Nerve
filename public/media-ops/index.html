@@ -2384,8 +2384,22 @@ const CAPS = {
   'admin.users':            {employee:'-',team_lead:'-',admin:'A'},
   'admin.audit':            {employee:'-',team_lead:'-',admin:'A'}
 };
+/* Has an administrator explicitly granted this user the module that `cap` gates?
+   allowed_modules is null for "role based" and an array once an admin has set it
+   explicitly, so a grant only exists in the array case. Derived from MODULES, so
+   it holds for every cap-gated module — casting, boards, SMC and anything added
+   later — with nothing named here. */
+function grantedByModule(cap){
+  const am=(me()||{}).allowed_modules;
+  if(!Array.isArray(am)) return false;
+  return MODULES.some(m=>m.cap===cap&&am.includes(m.key));
+}
 function can(cap,ctx={}){
   const rule=CAPS[cap]; if(!rule) return false;
+  /* An explicit grant ADDS the module's capability on top of the role. Without
+     this, module access could only ever subtract, so ticking a box that the role
+     does not already imply silently did nothing. */
+  if(grantedByModule(cap)) return true;
   const v=rule[role()];
   switch(v){
     case 'A': return true;
@@ -12626,8 +12640,8 @@ const ACTIONS = {
   editModules:(d)=>{
     const u=user(+d.uid), am=Array.isArray(u.allowed_modules)?u.allowed_modules:null;
     modal(`<div class="mo-head"><div><h2>Module access — ${esc(u.full_name)}</h2>
-        <p>Exactly the sidebar this member will see. Groups their role cannot reach are hidden —
-          module access only <b>removes</b> what the role grants, never adds.</p></div>
+        <p>Exactly the sidebar this member will see. Ticking a module <b>grants</b> it on
+          top of their role, and unticking one removes it.</p></div>
         <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
       <div class="mo-body">
         <label class="chk mb3"><input type="checkbox" id="em-unrestricted" ${am==null?'checked':''}
