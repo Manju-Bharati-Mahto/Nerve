@@ -268,6 +268,33 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["user_skills", "mo_user_skills", null, ["user_id"]],
   ];
   app.get(`${P}/state`, asyncHandler(async (_req, res) => {
+    /* An SMC member boots the same SPA but must never receive the crew payload:
+       no roster, no projects, no deliverables, no other members' work (§42). The
+       server decides what they get rather than trusting the client to ignore it,
+       so this stays a data-scoping decision, not a UI one. They are the only
+       person in their own users array, which is all me() needs. */
+    const cu = res.locals.currentUser as CurrentUser;
+    if (await isSmcMember(cu)) {
+      const prof = (await pool.query(
+        `SELECT p.*, un.name AS institute FROM mo_smc_profiles p
+           LEFT JOIN mo_academic_units un ON un.id = p.academic_unit_id
+          WHERE p.user_id=$1`, [cu.id])).rows[0] ?? null;
+      const units = (await pool.query(
+        `SELECT id, name FROM mo_academic_units WHERE is_active AND archived_at IS NULL ORDER BY name`)).rows;
+      const notes = (await pool.query(
+        `SELECT id, kind, title, body, entity_type, entity_id, is_read, created_at
+           FROM mo_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, [cu.id])).rows;
+      const ME = 900;
+      return res.json({
+        me: ME,
+        users: [{ id: ME, real_id: cu.id, full_name: cu.full_name ?? "SMC Member",
+                  email: cu.email ?? "", role: "smc_member", avatar_url: null,
+                  designation: prof?.designation ?? "SMC Member" }],
+        academic_units: units,
+        notifications: notes.map((n) => ({ ...n, user_id: ME })),
+        smc_profile: prof,
+      });
+    }
     const u = requireMedia(res); if (!u) return;
     // Stable {real user id → prototype integer id} map for the media crew (+ the
     // current user if they aren't on the media team, e.g. super_admin). Used for
@@ -4205,7 +4232,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   /* One shared SELECT so member and management views can never disagree about
      what an assignment is. Event data is joined from the project — never copied. */
   const SMC_SELECT = `
-    SELECT a.id, a.title, a.priority, a.start_date, a.start_time, a.end_time, a.venue,
+    SELECT a.id, a.title, a.priority,
+           -- A DATE becomes local midnight in the driver and then serialises to
+           -- UTC, which moves it to the previous day anywhere east of Greenwich.
+           -- Send the calendar date as text so the client reads what was stored.
+           to_char(a.start_date,'YYYY-MM-DD') AS start_date,
+           a.start_time, a.end_time, a.venue,
            a.coverage_requirements, a.deliverables_required, a.submission_deadline,
            a.smc_status, a.notes, a.accepted_at, a.started_at, a.cancelled_at, a.cancel_reason,
            a.escalated_at, a.escalation_reason, a.escalation_status, a.assigned_by,
@@ -4701,6 +4733,20 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         LEFT JOIN mo_academic_units un ON un.id=pr.academic_unit_id
        WHERE pr.is_active ORDER BY u.full_name`)).rows;
     res.json({ events, members });
+  }));
+
+  /* §29 — recent SMC activity, read from the shared audit trail. The SPA clears
+     its local audit copy at hydrate, so the trail is served rather than guessed;
+     this is a read of mo_audit_logs, not a second log. */
+  app.get(`${P}/smc/activity`, asyncHandler(async (_req, res) => {
+    if (!(await requireSmcManager(res))) return;
+    const { rows } = await pool.query(`
+      SELECT l.id, l.action, l.entity_type, l.entity_id, l.after, l.occurred_at,
+             u.full_name AS actor_name
+        FROM mo_audit_logs l LEFT JOIN users u ON u.id = l.actor_id
+       WHERE l.action LIKE 'smc.%'
+       ORDER BY l.occurred_at DESC LIMIT 60`);
+    res.json({ activity: rows });
   }));
 
   /* §23 — set an event's level. The only change SMC makes to an existing event. */

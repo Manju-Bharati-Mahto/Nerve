@@ -2367,6 +2367,10 @@ const CAPS = {
   'casting.view':           {employee:'A',team_lead:'A',admin:'A',coordinator:'A'},
   'casting.request':        {employee:'A',team_lead:'A',admin:'A',coordinator:'A'},
   'casting.manage':         {employee:'CASTING',team_lead:'CASTING',admin:'A',coordinator:'CASTING'},
+  /* SMC Management is a DUTY, not a tier — same shape as casting.manage, so an
+     Admin, a Team Lead or the Coordinator can run the network without a new role.
+     SMC members themselves are never management. */
+  'smc.manage':             {employee:'SMC',team_lead:'SMC',admin:'A',coordinator:'SMC',smc_member:'-'},
   'equipment.analytics':    {employee:'-',team_lead:'A',admin:'A'},
   'leave.request':          {employee:'S',team_lead:'S',admin:'S',coordinator:'S'},
   'leave.approve':          {employee:'-',team_lead:'T',admin:'A'},
@@ -2395,6 +2399,7 @@ function can(cap,ctx={}){
     case 'PM': return ctx.project_id!==undefined && isPMof(ctx.project_id);
     case 'CUSTODIAN': return hasDuty('equipment_custodian');
     case 'CASTING': return hasDuty('casting_manager');
+    case 'SMC': return hasDuty('smc_manager');
     default: return false;
   }
 }
@@ -2899,7 +2904,13 @@ function legend(items){return `<div class="legend">${items.map(i=>`<span><i styl
 const NAV = [
   {group:'Main',items:[
     {r:'#/media/home',   i:'home',  l:'Home'},
-    {r:'#/media/my-day', i:'myday', l:'My Day'}
+    {r:'#/media/my-day', i:'myday', l:'My Day'},
+    /* The SMC member's own My Day — a different page from the crew's, not the
+       same one with buttons removed. */
+    {r:'#/media/smc/my-day', i:'myday', l:'My Day', roles:['smc_member']}
+  ]},
+  {group:'SMC Network',items:[
+    {r:'#/media/smc',i:'users',l:'SMC Management', cap:'smc.manage', pfx:['#/media/smc']}
   ]},
   {group:'Operations',items:[
     /* The coordinator's two owned stages. Admin sees them too — they oversee the
@@ -2951,6 +2962,11 @@ const ROLE_RANK={employee:0,team_lead:1,admin:2};
    with an explicit role, for the Module Access dialog (user being edited). */
 function navShow(it,r){
   r=r||role();
+  /* An SMC member is not a junior employee — they are outside the ladder. They
+     see only entries that name them explicitly, so any module added later is
+     invisible to them unless someone deliberately opts them in. This mirrors the
+     server, where team='smc' makes moRoleOf() null and every crew route refuses. */
+  if(r==='smc_member')return Array.isArray(it.roles)&&it.roles.includes('smc_member');
   /* roles — an explicit allow-list, for a role outside the employee → team lead
      → admin ladder (the Operations Coordinator). */
   if(it.roles)return it.roles.includes(r);
@@ -3059,6 +3075,9 @@ function renderNav(){
 }
 
 const ROUTES = [
+  [/^#\/media\/smc\/my-day$/,           ()=>viewSmcMyDay()],
+  [/^#\/media\/smc$/,                  ()=>viewSmcManagement()],
+  [/^#\/media\/smc\/members\/([\w-]+)$/, m=>viewSmcMember(m[1])],
   [/^#\/media\/home$/,                 ()=>viewDashboard()],
   [/^#\/media\/my-day$/,               ()=>viewMyDay()],
   [/^#\/media\/projects$/,             ()=>viewProjects()],
@@ -3092,7 +3111,14 @@ const ROUTES = [
   [/^#\/media\/spec$/,                 ()=>viewSpec()]
 ];
 function render(){
-  const hash=location.hash||'#/media/home';
+  let hash=location.hash||'#/media/home';
+  /* An SMC member's home IS their My Day (§5). Any crew route they land on —
+     by habit, a stale link or the address bar — bounces here; the server would
+     refuse the data anyway, so this only spares them a dead end. */
+  if(role()==='smc_member'&&!hash.startsWith('#/media/smc/my-day')){
+    hash='#/media/smc/my-day';
+    if(location.hash!==hash){location.hash=hash;return;}
+  }
   S.route=hash;
   let html='';
   // Module-access guard (§ Module Access): bounce to the user's first allowed
@@ -10416,6 +10442,144 @@ function evaluateFlags(r,ts){
    ACTIONS — every mutation goes through here so the audit log stays honest
    ========================================================================== */
 const ACTIONS = {
+  /* ---- SMC management actions -------------------------------------------- */
+  smcMgmtReload:()=>{ SMC.mgmt.overview=null; smcMgmtLoad(true); },
+  smcJump:(d)=>{ S.tab.smc=d.tab;
+    if(d.status){ if(d.tab==='submissions') S.tab.smcsub=d.status==='revision_required'?'revision_required':'submitted';
+                  else (S.filters.smca=S.filters.smca||{}).status=d.status; }
+    render(); },
+  smcFilter:(d)=>{ const f=S.filters.smca||(S.filters.smca={}); f[d.k]=d.v||''; render();
+    if(d.k==='q'){const el=document.querySelector('.smc-filters .inp');if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);}} },
+  smcClearFilters:()=>{ S.filters.smca={}; render(); },
+  smcMemberSearch:(d)=>{ S.filters.smcm=d.q; render();
+    const el=$('#smc-mq'); if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);} },
+
+  smcAddMember:()=>smcMemberForm(null),
+  smcEditMember:(d)=>smcMemberForm(d.id),
+  smcMemberOpen:(d)=>smcMemberDetail(d.id),
+  smcInstituteOpen:(d)=>smcInstituteDetail(+d.id),
+  smcAssignmentOpen:(d)=>smcMgmtDetail(+d.id),
+  smcReviewOpen:(d)=>smcReviewForm(+d.id),
+
+  smcSaveMember:async(d,n)=>{
+    const v=id=>(($('#'+id)||{}).value||'').trim();
+    const body={full_name:v('sm-name'), phone:v('sm-phone'),
+      academic_unit_id:v('sm-unit')||null, designation:v('sm-desig')||'SMC Member',
+      joining_date:v('sm-join')||null, coverage_area:v('sm-area')||null,
+      is_active:!!($('#sm-active')||{}).checked};
+    if(!body.full_name){ toast("Enter the member's full name.",'bad'); return; }
+    if(!body.academic_unit_id){ toast('Choose the institute this member covers.','bad'); return; }
+    if(!d.id){ body.email=v('sm-email'); body.password=v('sm-pass');
+      if(!body.email){ toast('Enter an email address.','bad'); return; }
+      if((body.password||'').length<6){ toast('The temporary password must be at least 6 characters.','bad'); return; } }
+    if(n){ n.disabled=true; n.textContent='Saving…'; }
+    try{
+      if(d.id) await MO_API.patch('/smc/members/'+d.id, body);
+      else     await MO_API.post('/smc/members', body);
+      closeModal(); toast(d.id?'Member updated':'SMC member created — they can sign in now','ok');
+      smcMgmtLoad(true);
+    }catch(e){ if(n){n.disabled=false;n.textContent='Save';} toast(smcError(e),'bad'); }
+  },
+  smcToggleMember:async(d,n)=>{
+    const on=String(d.active)==='1';
+    if(n){ n.disabled=true; }
+    try{
+      await MO_API.patch('/smc/members/'+d.id,{is_active:!on});
+      toast(on?'Member deactivated — their history is kept':'Member activated','ok');
+      smcMgmtLoad(true);
+    }catch(e){ if(n)n.disabled=false; toast(smcError(e),'bad'); }
+  },
+
+  smcNewAssignment:()=>smcAssignForm(),
+  smcCreateAssignment:async(d,n)=>{
+    const v=id=>(($('#'+id)||{}).value||'').trim();
+    const body={project_id:v('sa-event'), member_id:v('sa-member'), title:v('sa-title')||undefined,
+      start_date:v('sa-date')||null, start_time:v('sa-start')||null, end_time:v('sa-end')||null,
+      venue:v('sa-venue'), coverage_requirements:v('sa-cov'), deliverables_required:v('sa-deliv'),
+      priority:v('sa-prio')||'normal', instructions:v('sa-notes'),
+      submission_deadline:v('sa-deadline')?new Date(v('sa-deadline')).toISOString():null};
+    if(!body.project_id){ toast('Choose the event this coverage is for.','bad'); return; }
+    if(!body.member_id){ toast('Choose an SMC member to assign.','bad'); return; }
+    if(n){ n.disabled=true; n.textContent='Creating…'; }
+    try{
+      const r=await MO_API.post('/smc/assignments', body);
+      closeModal();
+      /* The server reports overlaps rather than blocking them (§31) — surface it
+         so the decision stays a human one. */
+      if(r&&r.conflicts&&r.conflicts.length)
+        toast(`Assigned — note this member already has ${r.conflicts.length} other assignment(s) that day.`,'warn');
+      else toast('Assignment created','ok');
+      smcMgmtLoad(true);
+    }catch(e){ if(n){n.disabled=false;n.textContent='Create assignment';} toast(smcError(e),'bad'); }
+  },
+
+  smcReassign:(d)=>smcReassignForm(+d.id),
+  smcReassignGo:async(d,n)=>{
+    const to=(($('#sr-member')||{}).value||'').trim();
+    const reason=(($('#sr-reason')||{}).value||'').trim();
+    if(!to){ toast('Choose the member to reassign to.','bad'); return; }
+    if(n){ n.disabled=true; n.textContent='Reassigning…'; }
+    try{ await MO_API.post('/smc/assignments/'+d.id+'/reassign',{member_id:to,reason});
+      closeModal(); toast('Assignment reassigned','ok'); smcMgmtLoad(true);
+    }catch(e){ if(n){n.disabled=false;n.textContent='Reassign';} toast(smcError(e),'bad'); }
+  },
+
+  smcEscalate:(d)=>smcEscalateForm(+d.id),
+  smcEscalateGo:async(d,n)=>{
+    const reason=(($('#se-reason')||{}).value||'').trim();
+    if(!reason){ toast('Give a reason so Central Media knows what is needed.','bad'); return; }
+    if(n){ n.disabled=true; n.textContent='Escalating…'; }
+    try{ await MO_API.post('/smc/assignments/'+d.id+'/escalate',{reason});
+      closeModal(); toast('Escalated to Central Media','ok'); smcMgmtLoad(true);
+    }catch(e){ if(n){n.disabled=false;n.textContent='Escalate';} toast(smcError(e),'bad'); }
+  },
+
+  smcCancelAsg:async(d)=>{
+    // Native confirm(), as every other destructive action in this app uses.
+    if(!confirm('Cancel this assignment? The member is notified and the record is kept, not deleted.'))return;
+    try{ await MO_API.post('/smc/assignments/'+d.id+'/cancel',{reason:''});
+      closeModal(); toast('Assignment cancelled','ok'); smcMgmtLoad(true);
+    }catch(e){ toast(smcError(e),'bad'); }
+  },
+
+  smcReviewGo:async(d,n)=>{
+    const decision=d.decision;
+    const feedback=(($('#rv-feedback')||{}).value||'').trim();
+    if(decision==='revision_required'&&!feedback){
+      toast('Say what needs to change so the member can act on it.','bad'); return; }
+    if(n){ n.disabled=true; n.textContent='Saving…'; }
+    try{ await MO_API.post('/smc/assignments/'+d.id+'/review',{decision,feedback});
+      closeModal(); toast(decision==='reviewed'?'Submission reviewed':'Revision requested','ok');
+      smcMgmtLoad(true);
+    }catch(e){ if(n){n.disabled=false;n.textContent='Save';} toast(smcError(e),'bad'); }
+  },
+
+  /* ---- SMC member actions ------------------------------------------------
+     Each posts to the real endpoint and re-reads My Day, so the card's state is
+     whatever the server says it is — never optimistic guesswork. */
+  smcReload:()=>{ SMC.myday=null; SMC.err=null; smcLoadMyDay(); },
+  smcOpen:(d)=>smcDetail(+d.id),
+  smcAccept:(d,n)=>smcLifecycle(+d.id,'accept',n,'Assignment accepted'),
+  smcStart:(d,n)=>smcLifecycle(+d.id,'start',n,'Coverage started'),
+  smcSubmit:(d)=>{ closeModal(); smcSubmitForm(+d.id); },
+  smcSubmitGo:async(d,n)=>{
+    const v=id=>($('#'+id)||{}).value||'';
+    const drive=v('sf-drive').trim(), photos=v('sf-photos').trim();
+    if(!drive&&!photos){ toast('Add at least one link to your work.','bad'); return; }
+    if(n){ n.disabled=true; n.textContent='Submitting…'; }
+    try{
+      await MO_API.post('/smc/assignments/'+d.id+'/submit',{
+        drive_url:drive, photos_url:photos, reference_url:v('sf-ref').trim(),
+        note:v('sf-note').trim(),
+        photo_count:Number(v('sf-photoc'))||0, video_count:Number(v('sf-videoc'))||0});
+      closeModal(); toast('Work submitted — the Media Crew will review it.','ok');
+      SMC.myday=null; smcLoadMyDay();
+    }catch(e){
+      if(n){ n.disabled=false; n.textContent='Submit work'; }
+      toast(smcError(e),'bad');
+    }
+  },
+
   /* ---- Operations Coordinator ------------------------------------------
      Intake, coordination logs and dispatch. Each posts to its endpoint and
      re-hydrates, so the audit log (and therefore the daily report) is always
@@ -13037,6 +13201,851 @@ function genNotifications(){
   DB.project_assignments.filter(a=>a.user_id===S.me&&!a.removed_at&&!a.is_project_manager).slice(0,6)
     .forEach(a=>{const p=proj(a.project_id);if(p&&p.id)add('review','Assigned to a project','You were assigned to “'+p.name+'”','project',p.id);});
 }
+/* ==========================================================================
+   SMC — Social Media Council
+   The member's own workspace and the management console. Both read the real
+   /smc/* API; nothing here keeps its own copy of the truth.
+   ========================================================================== */
+
+/* Fetched state, kept beside DB rather than inside it: SMC data is scoped to the
+   caller server-side, so it is not part of the shared prototype dataset. */
+const SMC = { myday:null, loading:false, err:null,
+              mgmt:{overview:null,members:null,institutes:null,assignments:null,perf:null,activity:null,loading:false,err:null} };
+
+const SMC_STATUS = {
+  assigned:         {l:'Assigned',          c:'chip'},
+  accepted:         {l:'Accepted',          c:'chip sel'},
+  in_progress:      {l:'In progress',       c:'chip warn'},
+  submitted:        {l:'Submitted',         c:'chip ok'},
+  reviewed:         {l:'Reviewed',          c:'chip ok'},
+  revision_required:{l:'Revision required', c:'chip bad'},
+  cancelled:        {l:'Cancelled',         c:'chip mut'},
+};
+const smcChip = st => { const s=SMC_STATUS[st||'assigned']||SMC_STATUS.assigned;
+  return `<span class="${s.c}">${esc(s.l)}</span>`; };
+
+const smcTime = a => [a.start_time,a.end_time].filter(Boolean).join(' – ') || '—';
+const smcDate = d => d ? D.fmt(String(d).slice(0,10)) : '—';
+const smcDeadline = d => { if(!d) return null;
+  const dt=new Date(d); return dt.toLocaleString(undefined,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}); };
+const isToday = d => String(d||'').slice(0,10) === TODAY;
+
+/* Friendly, non-technical messages. The API's own message is shown when it is
+   already user-facing; status codes never leak (§35). */
+function smcError(e){
+  const m = String((e&&e.message)||'');
+  if(/\b403\b|permission|not yours|access only/i.test(m)) return "You don't have permission to do that.";
+  if(/\b404\b|could not be found/i.test(m))               return 'That assignment could not be found.';
+  if(/\b409\b|already|cannot be/i.test(m))                return m || 'This has changed since you loaded the page. Refresh and try again.';
+  if(/\b5\d\d\b|Internal/i.test(m))                       return 'Something went wrong. Please try again.';
+  return m || 'Something went wrong. Please try again.';
+}
+
+async function smcLoadMyDay(){
+  SMC.loading=true; SMC.err=null;
+  try { SMC.myday = await MO_API.get('/smc/my-day'); }
+  catch(e){ SMC.err = smcError(e); }
+  finally { SMC.loading=false; render(); }
+}
+
+/* ---- the member's page (§7, PART 2–13) --------------------------------- */
+function viewSmcMyDay(){
+  if(SMC.loading && !SMC.myday) return smcSkeleton('Loading your coverage…');
+  if(SMC.err && !SMC.myday) return `<div class="empty"><div class="e-ico">⚠</div>
+    <h4>We could not load your assignments</h4><p>${esc(SMC.err)}</p>
+    <button class="btn primary" data-act="smcReload">Try again</button></div>`;
+  if(!SMC.myday){ smcLoadMyDay(); return smcSkeleton('Loading your coverage…'); }
+
+  const all = SMC.myday.assignments||[];
+  const live = all.filter(a=>a.smc_status!=='cancelled');
+  const today    = live.filter(a=>isToday(a.start_date) && a.smc_status!=='reviewed');
+  const revision = live.filter(a=>a.smc_status==='revision_required');
+  const upcoming = live.filter(a=>String(a.start_date||'')>TODAY && a.smc_status!=='reviewed');
+  const overdue  = live.filter(a=>String(a.start_date||'')<TODAY
+    && !['reviewed','submitted'].includes(a.smc_status||'') && !isToday(a.start_date));
+  const done     = live.filter(a=>a.smc_status==='reviewed');
+  const awaiting = live.filter(a=>a.smc_status==='submitted');
+  const prof = SMC.myday.profile||{};
+
+  const hour=new Date().getHours();
+  const greet = hour<12?'Good morning':hour<17?'Good afternoon':'Good evening';
+
+  return `${smcStyles()}
+  <div class="smc-day">
+    <div class="page-head">
+      <div><h1 class="page-title">${greet}, ${esc((me().full_name||'').split(' ')[0]||'there')}</h1>
+        <p class="page-sub">Your institute coverage for today${prof.institute?` · ${esc(prof.institute)}`:''}</p></div>
+      <div class="ca"><button class="btn sm" data-act="smcReload">Refresh</button></div>
+    </div>
+
+    <div class="smc-sum">
+      ${smcSum('Today', today.length, 'today')}
+      ${smcSum('Awaiting review', awaiting.length, 'wait')}
+      ${smcSum('Revision required', revision.length, revision.length?'bad':'ok')}
+    </div>
+
+    ${revision.length?`<section class="smc-sec">
+      <h3 class="smc-h">Needs your attention</h3>
+      ${revision.map(a=>smcCard(a,true)).join('')}
+    </section>`:''}
+
+    <section class="smc-sec">
+      <h3 class="smc-h">Today's coverage</h3>
+      ${today.length ? today.map(a=>smcCard(a)).join('')
+        : `<div class="smc-empty"><div class="e-ico">☀</div><h4>You're clear for today.</h4>
+             <p>No institute coverage has been assigned to you.</p></div>`}
+    </section>
+
+    ${overdue.length?`<section class="smc-sec">
+      <h3 class="smc-h">Overdue</h3>${overdue.map(a=>smcCard(a)).join('')}</section>`:''}
+
+    <section class="smc-sec">
+      <h3 class="smc-h">Upcoming</h3>
+      ${upcoming.length ? upcoming.slice(0,6).map(a=>smcRow(a)).join('')
+        : `<div class="smc-empty sm"><p>No upcoming coverage.</p></div>`}
+    </section>
+
+    ${done.length?`<section class="smc-sec">
+      <h3 class="smc-h">Completed</h3>${done.slice(0,6).map(a=>smcRow(a)).join('')}</section>`:''}
+  </div>`;
+}
+
+const smcSum = (label,n,tone) => `<div class="smc-sum-c ${tone||''}">
+  <b>${n}</b><span>${esc(label)}</span></div>`;
+
+function smcSkeleton(msg){
+  return `${smcStyles()}<div class="smc-day">
+    <div class="page-head"><div><h1 class="page-title">My Day</h1>
+      <p class="page-sub">${esc(msg)}</p></div></div>
+    ${[1,2].map(()=>`<div class="smc-card skel"><div class="sk-l w60"></div>
+      <div class="sk-l w40"></div><div class="sk-l w80"></div></div>`).join('')}
+  </div>`;
+}
+
+/* The action offered is derived from the server's status, so an impossible
+   action is never rendered (PART 4). */
+function smcAction(a){
+  const st=a.smc_status||'assigned';
+  if(st==='assigned')          return `<button class="btn primary block lg" data-act="smcAccept" data-id="${a.id}">Accept assignment</button>`;
+  if(st==='accepted')          return `<button class="btn primary block lg" data-act="smcStart"  data-id="${a.id}">Start coverage</button>`;
+  if(st==='in_progress')       return `<button class="btn primary block lg" data-act="smcSubmit" data-id="${a.id}">Submit work</button>`;
+  if(st==='revision_required') return `<button class="btn primary block lg" data-act="smcSubmit" data-id="${a.id}">Edit &amp; resubmit</button>`;
+  if(st==='submitted')         return `<div class="smc-note ok">Submitted — awaiting review.</div>`;
+  if(st==='reviewed')          return `<div class="smc-note ok">Reviewed${a.reviewed_by_name?` by ${esc(a.reviewed_by_name)}`:''}.</div>`;
+  return '';
+}
+
+function smcCard(a,flag){
+  const dl=smcDeadline(a.submission_deadline);
+  return `<article class="smc-card${flag?' flag':''}" data-act="smcOpen" data-id="${a.id}">
+    <div class="smc-card-top">
+      <div><h4>${esc(a.event_name||a.title||'Coverage')}</h4>
+        <p class="smc-inst">${esc(a.institute||'—')}</p></div>
+      ${smcChip(a.smc_status)}
+    </div>
+    <dl class="smc-meta">
+      <div><dt>When</dt><dd>${esc(smcDate(a.start_date))} · ${esc(smcTime(a))}</dd></div>
+      <div><dt>Venue</dt><dd>${esc(a.venue||'—')}</dd></div>
+      ${a.coverage_requirements?`<div><dt>Coverage</dt><dd>${esc(a.coverage_requirements)}</dd></div>`:''}
+      ${a.priority&&a.priority!=='normal'?`<div><dt>Priority</dt><dd>${esc(a.priority)}</dd></div>`:''}
+      ${dl?`<div><dt>Submit by</dt><dd>${esc(dl)}</dd></div>`:''}
+    </dl>
+    ${a.smc_status==='revision_required'&&a.review_feedback?`
+      <div class="smc-note bad"><b>Revision requested</b><span>${esc(a.review_feedback)}</span></div>`:''}
+    <div data-stop>${smcAction(a)}</div>
+  </article>`;
+}
+
+const smcRow = a => `<div class="smc-row" data-act="smcOpen" data-id="${a.id}">
+  <div class="smc-row-m"><b>${esc(a.event_name||a.title||'Coverage')}</b>
+    <span>${esc(a.institute||'—')} · ${esc(smcDate(a.start_date))} · ${esc(smcTime(a))}${a.venue?' · '+esc(a.venue):''}</span></div>
+  ${smcChip(a.smc_status)}</div>`;
+
+/* ---- assignment detail (PART 5) ---------------------------------------- */
+function smcDetail(id){
+  const a=(SMC.myday&&SMC.myday.assignments||[]).find(x=>+x.id===+id);
+  if(!a){ toast('That assignment could not be found.','bad'); return; }
+  const dl=smcDeadline(a.submission_deadline);
+  /* History built from the timestamps the server already records — no separate
+     activity store (§39). */
+  const hist=[
+    ['Assigned',   a.start_date?null:null, true],
+    ['Accepted',   a.accepted_at],
+    ['Started',    a.started_at],
+    ['Submitted',  a.submitted_at],
+    [a.review_status==='revision_required'?'Revision requested':'Reviewed', a.reviewed_at],
+  ].filter(([,t],i)=>i===0||t);
+  modal(`<div class="mo-head"><div><h2>${esc(a.event_name||a.title||'Coverage')}</h2>
+      <p>${esc(a.institute||'—')} · ${esc(smcDate(a.start_date))}</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <div class="f ac gap2 mb3">${smcChip(a.smc_status)}
+        ${a.priority&&a.priority!=='normal'?`<span class="chip">${esc(a.priority)}</span>`:''}</div>
+      <dl class="kv mb4">
+        <dt>Event</dt><dd>${esc(a.event_name||'—')}</dd>
+        <dt>Institute</dt><dd>${esc(a.institute||'—')}</dd>
+        <dt>Venue</dt><dd>${esc(a.venue||'—')}</dd>
+        <dt>Date</dt><dd>${esc(smcDate(a.start_date))}</dd>
+        <dt>Time</dt><dd>${esc(smcTime(a))}</dd>
+        <dt>Coverage</dt><dd>${esc(a.coverage_requirements||'—')}</dd>
+        ${a.deliverables_required?`<dt>Deliverables</dt><dd>${esc(a.deliverables_required)}</dd>`:''}
+        <dt>Submit by</dt><dd>${esc(dl||'—')}</dd>
+        <dt>Assigned by</dt><dd>${esc(a.assigned_by_name||'—')}</dd>
+        ${a.notes?`<dt>Instructions</dt><dd>${esc(a.notes)}</dd>`:''}
+      </dl>
+      ${a.submission_id?`<div class="divider"></div>
+        <div class="small b mb2">Your submission (attempt ${esc(String(a.attempt||1))})</div>
+        <dl class="kv mb3">
+          ${a.drive_url?`<dt>Drive</dt><dd><a href="${esc(a.drive_url)}" target="_blank" rel="noopener">Open</a></dd>`:''}
+          ${a.photos_url?`<dt>Photos</dt><dd><a href="${esc(a.photos_url)}" target="_blank" rel="noopener">Open</a></dd>`:''}
+          ${a.reference_url?`<dt>Reference</dt><dd><a href="${esc(a.reference_url)}" target="_blank" rel="noopener">Open</a></dd>`:''}
+          <dt>Captured</dt><dd>${esc(String(a.photo_count||0))} photos · ${esc(String(a.video_count||0))} videos</dd>
+          ${a.submission_note?`<dt>Note</dt><dd>${esc(a.submission_note)}</dd>`:''}
+        </dl>`:''}
+      ${a.review_feedback?`<div class="smc-note ${a.review_status==='revision_required'?'bad':'ok'}">
+        <b>${a.review_status==='revision_required'?'Revision requested':'Reviewer feedback'}</b>
+        <span>${esc(a.review_feedback)}</span></div>`:''}
+      <div class="divider"></div>
+      <div class="small b mb2">Activity</div>
+      <div class="smc-hist">${hist.map(([l,t])=>`<div class="smc-hist-i">
+        <span class="tl-dot"></span><b>${esc(l)}</b>
+        <span>${t?esc(new Date(t).toLocaleString()):esc(smcDate(a.start_date))}</span></div>`).join('')}</div>
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Close</button>
+      <span data-stop>${smcAction(a).replace('block lg','')}</span></div>`,{size:'wide'});
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+}
+
+/* ---- submission form (PART 8/9) ---------------------------------------- */
+function smcSubmitForm(id){
+  const a=(SMC.myday&&SMC.myday.assignments||[]).find(x=>+x.id===+id);
+  if(!a){ toast('That assignment could not be found.','bad'); return; }
+  const redo=a.smc_status==='revision_required';
+  modal(`<div class="mo-head"><div><h2>${redo?'Edit &amp; resubmit':'Submit work'}</h2>
+      <p>${esc(a.event_name||a.title||'Coverage')} · ${esc(a.institute||'')}</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      ${redo&&a.review_feedback?`<div class="smc-note bad"><b>Revision requested</b>
+        <span>${esc(a.review_feedback)}</span></div>`:''}
+      <div class="field"><label class="lbl">Google Drive link</label>
+        <input class="inp" id="sf-drive" inputmode="url" placeholder="https://drive.google.com/…"
+               value="${esc(a.drive_url||'')}"></div>
+      <div class="field"><label class="lbl">Google Photos link</label>
+        <input class="inp" id="sf-photos" inputmode="url" placeholder="https://photos.google.com/…"
+               value="${esc(a.photos_url||'')}"></div>
+      <div class="hint mb3">Add at least one of the two links above.</div>
+      <div class="field"><label class="lbl">Additional work link <span class="mut3">(optional)</span></label>
+        <input class="inp" id="sf-ref" inputmode="url" placeholder="https://…" value="${esc(a.reference_url||'')}"></div>
+      <div class="row">
+        <div class="field"><label class="lbl">Photos captured</label>
+          <input class="inp" id="sf-photoc" type="number" min="0" inputmode="numeric" value="${esc(String(a.photo_count||0))}"></div>
+        <div class="field"><label class="lbl">Videos / clips</label>
+          <input class="inp" id="sf-videoc" type="number" min="0" inputmode="numeric" value="${esc(String(a.video_count||0))}"></div>
+      </div>
+      <div class="field"><label class="lbl">Submission note</label>
+        <textarea class="inp" id="sf-note" placeholder="Anything the reviewer should know">${esc(a.submission_note||'')}</textarea></div>
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn primary" data-act="smcSubmitGo" data-id="${a.id}">${redo?'Resubmit':'Submit work'}</button></div>`,
+    {size:'wide'});
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+}
+
+/* Accept / start share one path: post, then re-read. The button is disabled
+   while in flight so a double tap cannot fire twice (PART 6/7). */
+async function smcLifecycle(id,verb,btn,okMsg){
+  if(btn){ btn.disabled=true; btn.textContent='Working…'; }
+  try{
+    await MO_API.post('/smc/assignments/'+id+'/'+verb,{});
+    closeModal(); toast(okMsg,'ok');
+    SMC.myday=null; smcLoadMyDay();
+  }catch(e){
+    if(btn){ btn.disabled=false; }
+    toast(smcError(e),'bad');
+    SMC.myday=null; smcLoadMyDay();   // resync: the server's state is authoritative
+  }
+}
+
+/* Mobile-first: SMC members are students on phones (PART 13/48). Cards stack,
+   targets are large, nothing relies on a wide table. Tokens are NERVE's own. */
+function smcStyles(){ return `<style>
+  .smc-day{max-width:820px}
+  .smc-sum{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:0 0 20px}
+  .smc-sum-c{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r);
+    padding:12px 14px;display:flex;flex-direction:column;gap:2px}
+  .smc-sum-c b{font-size:22px;line-height:1.1}
+  .smc-sum-c span{font-size:11.5px;color:var(--text-3)}
+  .smc-sum-c.bad b{color:var(--bad)} .smc-sum-c.ok b{color:var(--ok)}
+  .smc-sec{margin:0 0 22px}
+  .smc-h{font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3);margin:0 0 10px}
+  .smc-card{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r);
+    padding:16px;margin-bottom:12px;cursor:pointer;transition:border-color .15s}
+  .smc-card:hover{border-color:var(--primary-border)}
+  .smc-card.flag{border-left:3px solid var(--bad)}
+  .smc-card-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px}
+  .smc-card-top h4{margin:0;font-size:15.5px;line-height:1.3}
+  .smc-inst{margin:3px 0 0;font-size:12.5px;color:var(--text-3)}
+  .smc-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 16px;margin:0 0 14px}
+  .smc-meta div{min-width:0}
+  .smc-meta dt{font-size:10.5px;letter-spacing:.03em;text-transform:uppercase;color:var(--text-3);margin:0 0 2px}
+  .smc-meta dd{margin:0;font-size:13px;overflow-wrap:anywhere}
+  .smc-note{border-radius:var(--r);padding:11px 13px;margin:0 0 13px;font-size:12.5px;
+    display:flex;flex-direction:column;gap:3px}
+  .smc-note b{font-size:12px}
+  .smc-note.bad{background:var(--bad-bg);border:1px solid var(--bad-border,#FECACA);color:var(--bad)}
+  .smc-note.ok{background:var(--ok-bg);border:1px solid #BBF7D0;color:#15803D}
+  .btn.block{width:100%} .btn.lg{padding:12px 16px;font-size:14px;min-height:44px}
+  .smc-row{display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--surface-1);
+    border:1px solid var(--border);border-radius:var(--r);margin-bottom:8px;cursor:pointer}
+  .smc-row:hover{border-color:var(--primary-border)}
+  .smc-row-m{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+  .smc-row-m b{font-size:13.5px} .smc-row-m span{font-size:11.5px;color:var(--text-3)}
+  .smc-empty{text-align:center;padding:34px 20px;background:var(--surface-1);
+    border:1px dashed var(--border);border-radius:var(--r)}
+  .smc-empty .e-ico{font-size:26px;opacity:.5;margin-bottom:8px}
+  .smc-empty h4{margin:0 0 4px;font-size:14.5px}
+  .smc-empty p{margin:0;font-size:12.5px;color:var(--text-3)}
+  .smc-empty.sm{padding:20px}
+  .smc-hist{display:flex;flex-direction:column;gap:9px}
+  .smc-hist-i{display:flex;align-items:center;gap:9px;font-size:12.5px}
+  .smc-hist-i b{min-width:120px}
+  .smc-hist-i span:last-child{color:var(--text-3);font-size:11.5px}
+  .smc-card.skel .sk-l{height:11px;border-radius:5px;background:var(--surface-2);margin-bottom:10px;
+    animation:skp 1.2s ease-in-out infinite}
+  .sk-l.w60{width:60%}.sk-l.w40{width:40%}.sk-l.w80{width:80%}
+  @keyframes skp{0%,100%{opacity:.5}50%{opacity:.9}}
+  @media(max-width:640px){
+    .smc-sum{grid-template-columns:1fr;gap:8px}
+    .smc-sum-c{flex-direction:row;align-items:baseline;justify-content:space-between}
+    .smc-meta{grid-template-columns:1fr}
+    .smc-card{padding:14px}
+    .smc-hist-i b{min-width:96px}
+  }
+</style>`; }
+
+
+/* ==========================================================================
+   SMC MANAGEMENT (PART 15–29)
+   Every figure and row here is read from /smc/*; nothing is computed twice.
+   ========================================================================== */
+const SMC_TABS=[['overview','Overview'],['members','Members'],['institutes','Institutes'],
+  ['assignments','Assignments'],['submissions','Submissions'],['coverage','Coverage'],['activity','Activity']];
+
+async function smcMgmtLoad(force){
+  const M=SMC.mgmt;
+  if(M.loading) return;
+  if(M.overview && !force) return;
+  M.loading=true; M.err=null;
+  try{
+    const [ov,mem,inst,asg,perf,act]=await Promise.all([
+      MO_API.get('/smc/overview'), MO_API.get('/smc/members'), MO_API.get('/smc/institutes'),
+      MO_API.get('/smc/assignments'), MO_API.get('/smc/performance'), MO_API.get('/smc/activity')]);
+    M.overview=ov; M.members=mem.members||[]; M.institutes=inst.institutes||[];
+    M.assignments=asg.assignments||[]; M.perf=perf; M.activity=act.activity||[];
+  }catch(e){ M.err=smcError(e); }
+  finally{ M.loading=false; render(); }
+}
+
+function viewSmcManagement(){
+  if(!can('smc.manage')) return roleDenied("You don't have permission to view SMC Management.");
+  const M=SMC.mgmt;
+  if(M.loading && !M.overview) return smcSkeleton('Loading SMC data…');
+  if(M.err && !M.overview) return `<div class="empty"><div class="e-ico">⚠</div>
+    <h4>We could not load SMC data</h4><p>${esc(M.err)}</p>
+    <button class="btn primary" data-act="smcMgmtReload">Try again</button></div>`;
+  if(!M.overview){ smcMgmtLoad(); return smcSkeleton('Loading SMC data…'); }
+
+  const tab=S.tab.smc||'overview';
+  const o=M.overview;
+  return `${smcStyles()}${smcMgmtStyles()}
+  <div class="page-head">
+    <div><h1 class="page-title">SMC Management</h1>
+      <p class="page-sub">Manage institute coverage, members, assignments and submissions.</p></div>
+    <div class="ca"><button class="btn sm" data-act="smcMgmtReload">Refresh</button>
+      <button class="btn sm primary" data-act="smcNewAssignment">＋ New assignment</button></div>
+  </div>
+
+  <div class="smc-stats">
+    ${smcStat('Total members',o.members,'members')}
+    ${smcStat('Active',o.active_members,'members')}
+    ${smcStat('Institutes covered',o.institutes_covered,'institutes')}
+    ${smcStat("Today's assignments",o.assignments_today,'coverage')}
+    ${smcStat('Unaccepted',o.unaccepted,'assignments','assigned',o.unaccepted?'bad':'')}
+    ${smcStat('In progress',o.in_progress,'assignments','in_progress')}
+    ${smcStat('Submitted',o.submitted,'submissions','submitted',o.submitted?'warn':'')}
+    ${smcStat('Revision required',o.revision_required,'submissions','revision_required',o.revision_required?'bad':'')}
+    ${smcStat('Missed',o.missed,'assignments','missed',o.missed?'bad':'')}
+  </div>
+
+  <div class="tabs mb4">${SMC_TABS.map(([k,l])=>
+    `<button class="tab${tab===k?' on':''}" data-tab="${k}" data-tabkey="smc">${esc(l)}</button>`).join('')}</div>
+
+  ${tab==='overview'    ? smcTabOverview()    : ''}
+  ${tab==='members'     ? smcTabMembers()     : ''}
+  ${tab==='institutes'  ? smcTabInstitutes()  : ''}
+  ${tab==='assignments' ? smcTabAssignments() : ''}
+  ${tab==='submissions' ? smcTabSubmissions() : ''}
+  ${tab==='coverage'    ? smcTabCoverage()    : ''}
+  ${tab==='activity'    ? smcTabActivity()    : ''}`;
+}
+
+/* Cards are filters, not decoration (§16): each opens the tab it summarises. */
+const smcStat=(label,n,tab,status,tone)=>`<button class="smc-stat ${tone||''}"
+  data-act="smcJump" data-tab="${tab}"${status?` data-status="${status}"`:''}>
+  <b>${esc(String(n??0))}</b><span>${esc(label)}</span></button>`;
+
+function smcTabOverview(){
+  const M=SMC.mgmt, gaps=M.assignments.filter(a=>
+    (a.smc_status==='revision_required') ||
+    (['assigned','accepted','in_progress'].includes(a.smc_status||'assigned')
+      && a.submission_deadline && new Date(a.submission_deadline)<new Date()) ||
+    (String(a.start_date||'')<=TODAY && (a.smc_status||'assigned')==='assigned'));
+  const today=M.assignments.filter(a=>String(a.start_date||'').slice(0,10)===TODAY);
+  return `<div class="g2">
+    <div class="card"><div class="card-head"><h3>What needs attention</h3>
+      <span class="chip${gaps.length?' bad':''}">${gaps.length}</span></div>
+      <div class="card-body flush">${gaps.length?gaps.slice(0,10).map(a=>smcMgmtRow(a)).join('')
+        :`<div class="smc-empty sm"><p>Nothing outstanding — all coverage is on track.</p></div>`}</div></div>
+    <div class="card"><div class="card-head"><h3>Today's coverage</h3>
+      <span class="chip">${today.length}</span></div>
+      <div class="card-body flush">${today.length?today.map(a=>smcMgmtRow(a)).join('')
+        :`<div class="smc-empty sm"><p>No institute coverage scheduled today.</p></div>`}</div></div>
+  </div>`;
+}
+
+function smcTabMembers(){
+  const M=SMC.mgmt, perf=(M.perf&&M.perf.members)||[];
+  const byId={}; perf.forEach(p=>byId[p.id]=p);
+  const q=(S.filters.smcm||'').toLowerCase();
+  const rows=M.members.filter(m=>!q||`${m.full_name} ${m.email} ${m.institute||''}`.toLowerCase().includes(q));
+  return `<div class="card"><div class="card-head"><h3>SMC members</h3>
+      <div class="ca"><input class="inp sm" id="smc-mq" placeholder="Search name, email, institute"
+          value="${esc(S.filters.smcm||'')}" oninput="ACTIONS.smcMemberSearch({q:this.value})" style="max-width:260px">
+        <button class="btn sm primary" data-act="smcAddMember">＋ Add SMC member</button></div></div>
+    <div class="card-body flush">
+      ${rows.length?`<div class="tbl-wrap"><table class="tbl"><thead><tr>
+        <th>Name</th><th>Institute</th><th>Email</th><th>Status</th>
+        <th class="num">Assignments</th><th class="num">Reviewed</th><th class="num">Revision</th><th></th></tr></thead>
+        <tbody>${rows.map(m=>{const p=byId[m.id]||{};
+          return `<tr data-act="smcMemberOpen" data-id="${esc(m.id)}" style="cursor:pointer">
+            <td><b>${esc(m.full_name)}</b><div class="xsmall mut3">${esc(m.designation||'')}</div></td>
+            <td>${esc(m.institute||'—')}</td>
+            <td class="mono xsmall">${esc(m.email)}</td>
+            <td>${m.is_active?'<span class="chip ok">Active</span>':'<span class="chip mut">Inactive</span>'}</td>
+            <td class="num">${esc(String(p.total??0))}</td>
+            <td class="num">${esc(String(p.reviewed??0))}</td>
+            <td class="num">${Number(p.revision_required)?`<span class="chip bad">${esc(String(p.revision_required))}</span>`:'0'}</td>
+            <td data-stop><button class="btn xs" data-act="smcEditMember" data-id="${esc(m.id)}">Edit</button>
+              <button class="btn xs" data-act="smcToggleMember" data-id="${esc(m.id)}" data-active="${m.is_active?1:0}">
+                ${m.is_active?'Deactivate':'Activate'}</button></td></tr>`;}).join('')}
+        </tbody></table></div>`
+        :`<div class="smc-empty"><div class="e-ico">◌</div><h4>No SMC members yet.</h4>
+            <p>Add a member to start assigning institute coverage.</p>
+            <button class="btn primary mt3" data-act="smcAddMember">＋ Add SMC member</button></div>`}
+    </div></div>`;
+}
+
+function smcTabInstitutes(){
+  const M=SMC.mgmt;
+  const load=(id)=>M.assignments.filter(a=>+a.unit_id===+id);
+  return `<div class="card"><div class="card-head"><h3>Institutes</h3>
+      <span class="chip">${M.institutes.length}</span></div>
+    <div class="card-body flush">
+      ${M.institutes.length?`<div class="tbl-wrap"><table class="tbl"><thead><tr>
+        <th>Institute</th><th class="num">Active SMC members</th><th class="num">Today</th>
+        <th class="num">Total coverage</th><th>Status</th></tr></thead><tbody>
+        ${M.institutes.map(i=>{const all=load(i.id);
+          return `<tr data-act="smcInstituteOpen" data-id="${i.id}" style="cursor:pointer">
+          <td><b>${esc(i.name)}</b></td>
+          <td class="num">${Number(i.active_members)?esc(String(i.active_members)):'<span class="mut3">0</span>'}</td>
+          <td class="num">${all.filter(a=>String(a.start_date||'').slice(0,10)===TODAY).length}</td>
+          <td class="num">${all.length}</td>
+          <td>${i.is_active?'<span class="chip ok">Active</span>':'<span class="chip mut">Inactive</span>'}</td>
+        </tr>`;}).join('')}</tbody></table></div>`
+        :`<div class="smc-empty sm"><p>No institutes available.</p></div>`}
+    </div>
+    <div class="card-foot">Institutes come from the university's academic units — SMC does not keep its own list.</div></div>`;
+}
+
+function smcTabAssignments(){
+  const M=SMC.mgmt, f=S.filters.smca||(S.filters.smca={});
+  let rows=M.assignments;
+  if(f.status==='missed') rows=rows.filter(a=>['assigned','accepted','in_progress'].includes(a.smc_status||'assigned')
+    && a.submission_deadline && new Date(a.submission_deadline)<new Date());
+  else if(f.status) rows=rows.filter(a=>(a.smc_status||'assigned')===f.status);
+  if(f.unit)   rows=rows.filter(a=>String(a.unit_id)===String(f.unit));
+  if(f.member) rows=rows.filter(a=>String(a.member_id)===String(f.member));
+  if(f.level)  rows=rows.filter(a=>a.event_level===f.level);
+  if(f.q){const q=f.q.toLowerCase();
+    rows=rows.filter(a=>`${a.event_name||''} ${a.title||''} ${a.institute||''} ${a.member_name||''}`.toLowerCase().includes(q));}
+  return `<div class="card"><div class="card-head"><h3>Assignments</h3><span class="chip">${rows.length}</span></div>
+    <div class="card-body">
+      <div class="smc-filters">
+        <input class="inp sm" placeholder="Search event, institute, member" value="${esc(f.q||'')}"
+               oninput="ACTIONS.smcFilter({k:'q',v:this.value})">
+        <select class="inp sm" onchange="ACTIONS.smcFilter({k:'status',v:this.value})">
+          <option value="">All statuses</option>
+          ${Object.keys(SMC_STATUS).map(k=>`<option value="${k}" ${f.status===k?'selected':''}>${esc(SMC_STATUS[k].l)}</option>`).join('')}
+          <option value="missed" ${f.status==='missed'?'selected':''}>Missed</option></select>
+        <select class="inp sm" onchange="ACTIONS.smcFilter({k:'unit',v:this.value})">
+          <option value="">All institutes</option>
+          ${SMC.mgmt.institutes.map(i=>`<option value="${i.id}" ${String(f.unit)===String(i.id)?'selected':''}>${esc(i.name)}</option>`).join('')}</select>
+        <select class="inp sm" onchange="ACTIONS.smcFilter({k:'member',v:this.value})">
+          <option value="">All members</option>
+          ${SMC.mgmt.members.map(m=>`<option value="${esc(m.id)}" ${String(f.member)===String(m.id)?'selected':''}>${esc(m.full_name)}</option>`).join('')}</select>
+        <select class="inp sm" onchange="ACTIONS.smcFilter({k:'level',v:this.value})">
+          <option value="">All levels</option>
+          <option value="institute" ${f.level==='institute'?'selected':''}>Institute</option>
+          <option value="major_institute" ${f.level==='major_institute'?'selected':''}>Major institute</option>
+          <option value="university" ${f.level==='university'?'selected':''}>University</option></select>
+        ${Object.values(f).some(Boolean)?`<button class="btn sm" data-act="smcClearFilters">Clear</button>`:''}
+      </div></div>
+    <div class="card-body flush">${rows.length?rows.map(a=>smcMgmtRow(a,true)).join('')
+      :`<div class="smc-empty sm"><p>No assignments match these filters.</p></div>`}</div></div>`;
+}
+
+function smcTabSubmissions(){
+  const M=SMC.mgmt, sub=S.tab.smcsub||'submitted';
+  const pool=M.assignments.filter(a=>a.submission_id);
+  const rows=sub==='all'?pool:pool.filter(a=>(a.review_status||'submitted')===sub);
+  return `<div class="card"><div class="card-head"><h3>Submissions</h3>
+      <div class="ca">${[['submitted','Awaiting review'],['revision_required','Revision required'],
+        ['reviewed','Reviewed'],['all','All']].map(([k,l])=>
+        `<button class="btn xs${sub===k?' primary':''}" data-tab="${k}" data-tabkey="smcsub">${esc(l)}</button>`).join('')}</div></div>
+    <div class="card-body flush">${rows.length?rows.map(a=>`
+      <div class="list-row" data-act="smcReviewOpen" data-id="${a.id}" style="cursor:pointer">
+        <span class="lr-main"><b>${esc(a.event_name||a.title||'Coverage')}</b>
+          <span>${esc(a.institute||'—')} · ${esc(a.member_name||'—')} · submitted ${esc(a.submitted_at?new Date(a.submitted_at).toLocaleString():'—')}
+            · attempt ${esc(String(a.attempt||1))}</span></span>
+        ${smcChip(a.smc_status)}
+        <button class="btn xs primary" data-stop data-act="smcReviewOpen" data-id="${a.id}">Review</button>
+      </div>`).join('')
+      :`<div class="smc-empty sm"><p>No submissions here.</p></div>`}</div></div>`;
+}
+
+function smcTabCoverage(){
+  const M=SMC.mgmt;
+  const today=M.assignments.filter(a=>String(a.start_date||'').slice(0,10)===TODAY)
+    .sort((a,b)=>String(a.start_time||'').localeCompare(String(b.start_time||'')));
+  return `<div class="card"><div class="card-head"><h3>Today's coverage</h3>
+      <span class="chip">${today.length}</span></div>
+    <div class="card-body flush">
+      ${today.length?`<div class="tbl-wrap"><table class="tbl"><thead><tr>
+        <th>Time</th><th>Institute</th><th>Event</th><th>SMC member</th><th>Venue</th><th>Status</th></tr></thead>
+        <tbody>${today.map(a=>`<tr data-act="smcAssignmentOpen" data-id="${a.id}" style="cursor:pointer">
+          <td class="mono">${esc(a.start_time||'—')}</td><td>${esc(a.institute||'—')}</td>
+          <td><b>${esc(a.event_name||a.title||'—')}</b></td><td>${esc(a.member_name||'—')}</td>
+          <td>${esc(a.venue||'—')}</td>
+          <td>${smcChip(a.smc_status)}${a.escalated_at?' <span class="chip warn">Escalated</span>':''}</td>
+        </tr>`).join('')}</tbody></table></div>`
+        :`<div class="smc-empty"><div class="e-ico">☀</div><h4>No coverage scheduled today.</h4>
+            <p>Institute events assigned to SMC will appear here.</p></div>`}
+    </div></div>`;
+}
+
+function smcTabActivity(){
+  const acts=SMC.mgmt.activity||[];
+  const LBL={'smc.member_created':'SMC member created','smc.member_edited':'SMC member edited',
+    'smc.member_activated':'Member activated','smc.member_deactivated':'Member deactivated',
+    'smc.assignment_created':'Assignment created','smc.assignment_accepted':'Assignment accepted',
+    'smc.assignment_started':'Coverage started','smc.submission_created':'Submission received',
+    'smc.submission_resubmitted':'Work resubmitted','smc.submission_reviewed':'Submission reviewed',
+    'smc.revision_requested':'Revision requested','smc.assignment_reassigned':'Assignment reassigned',
+    'smc.assignment_escalated':'Escalated to Central Media','smc.assignment_cancelled':'Assignment cancelled',
+    'smc.event_level_changed':'Event level changed'};
+  return `<div class="card"><div class="card-head"><h3>Recent SMC activity</h3></div>
+    <div class="card-body flush">${acts.length?acts.slice(0,40).map(a=>`
+      <div class="list-row" style="cursor:default"><span class="tl-dot"></span>
+        <span class="lr-main"><b>${esc(LBL[a.action]||a.action)}</b>
+          <span>${esc(a.actor_name||'System')}</span></span>
+        <span class="chip">${esc(a.occurred_at?new Date(a.occurred_at).toLocaleString():'')}</span></div>`).join('')
+      :`<div class="smc-empty sm"><p>No SMC activity recorded yet. Actions appear here as they happen.</p></div>`}
+    </div>
+    <div class="card-foot">Written automatically to the shared audit trail — SMC keeps no separate log.</div></div>`;
+}
+
+const smcMgmtRow=(a,acts)=>`<div class="list-row" data-act="smcAssignmentOpen" data-id="${a.id}" style="cursor:pointer">
+  <span class="lr-main"><b>${esc(a.event_name||a.title||'Coverage')}</b>
+    <span>${esc(a.institute||'—')} · ${esc(a.member_name||'Unassigned')} · ${esc(smcDate(a.start_date))} ${esc(smcTime(a))}${a.venue?' · '+esc(a.venue):''}</span></span>
+  ${a.escalated_at?'<span class="chip warn">Escalated</span>':''}
+  ${smcChip(a.smc_status)}
+  ${acts?`<span data-stop><button class="btn xs" data-act="smcReassign" data-id="${a.id}">Reassign</button>
+    <button class="btn xs" data-act="smcEscalate" data-id="${a.id}">Escalate</button></span>`:''}
+</div>`;
+
+function smcMgmtStyles(){ return `<style>
+  .smc-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin:0 0 20px}
+  .smc-stat{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--r);
+    padding:12px 14px;display:flex;flex-direction:column;gap:2px;text-align:left;cursor:pointer;
+    font:inherit;color:inherit;transition:border-color .15s}
+  .smc-stat:hover{border-color:var(--primary-border)}
+  .smc-stat b{font-size:21px;line-height:1.1}
+  .smc-stat span{font-size:11px;color:var(--text-3)}
+  .smc-stat.bad b{color:var(--bad)} .smc-stat.warn b{color:var(--warn,#B45309)}
+  .smc-filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .smc-filters .inp.sm{max-width:200px}
+  .tbl-wrap{overflow-x:auto}
+  @media(max-width:640px){ .smc-stats{grid-template-columns:repeat(2,1fr)} .smc-filters .inp.sm{max-width:100%;flex:1 1 100%} }
+</style>`; }
+
+
+/* ---- SMC management modals (PART 19, 20, 23, 24, 26) -------------------- */
+const smcUnitOptions=(sel)=>(SMC.mgmt.institutes||[]).map(i=>
+  `<option value="${i.id}" ${String(sel)===String(i.id)?'selected':''}>${esc(i.name)}</option>`).join('');
+
+function smcMemberForm(id){
+  const m=id?(SMC.mgmt.members||[]).find(x=>String(x.id)===String(id)):null;
+  modal(`<div class="mo-head"><div><h2>${m?'Edit SMC member':'Add SMC member'}</h2>
+      <p>${m?esc(m.email):'Creates a real NERVE account on the SMC network — they can sign in immediately.'}</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <div class="row">
+        <div class="field"><label class="lbl">Full name <span class="req">*</span></label>
+          <input class="inp" id="sm-name" value="${esc(m?m.full_name:'')}"></div>
+        <div class="field"><label class="lbl">Phone</label>
+          <input class="inp" id="sm-phone" inputmode="tel" value="${esc(m?(m.phone||''):'')}"></div>
+      </div>
+      ${m?'':`<div class="row">
+        <div class="field"><label class="lbl">Email <span class="req">*</span></label>
+          <input class="inp" id="sm-email" type="email" placeholder="name@paruluniversity.ac.in"></div>
+        <div class="field"><label class="lbl">Temporary password <span class="req">*</span></label>
+          <input class="inp" id="sm-pass" type="text" placeholder="At least 6 characters">
+          <div class="hint">Share it with the member; they sign in with this.</div></div>
+      </div>`}
+      <div class="row">
+        <div class="field"><label class="lbl">Institute <span class="req">*</span></label>
+          <select class="inp" id="sm-unit"><option value="">— choose —</option>
+            ${smcUnitOptions(m?m.academic_unit_id:'')}</select></div>
+        <div class="field"><label class="lbl">Designation</label>
+          <input class="inp" id="sm-desig" value="${esc(m?(m.designation||'SMC Member'):'SMC Member')}"></div>
+      </div>
+      <div class="row">
+        <div class="field"><label class="lbl">Joining date</label>
+          <input class="inp" id="sm-join" type="date" value="${esc(m&&m.joining_date?String(m.joining_date).slice(0,10):'')}"></div>
+        <div class="field"><label class="lbl">Coverage area</label>
+          <input class="inp" id="sm-area" value="${esc(m?(m.coverage_area||''):'')}" placeholder="e.g. Seminars and student activities"></div>
+      </div>
+      <label class="chk"><input type="checkbox" id="sm-active" ${!m||m.is_active?'checked':''}> Active
+        <span class="hint" style="display:block">Inactive members keep their history but receive no new assignments.</span></label>
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn primary" data-act="smcSaveMember" ${m?`data-id="${esc(m.id)}"`:''}>${m?'Save':'Create member'}</button></div>`,
+    {size:'wide'});
+  smcWire();
+}
+
+async function smcMemberDetail(id){
+  const m=(SMC.mgmt.members||[]).find(x=>String(x.id)===String(id));
+  const p=((SMC.mgmt.perf||{}).members||[]).find(x=>String(x.id)===String(id))||{};
+  modal(`<div class="mo-head"><div><h2>${esc(m?m.full_name:'SMC member')}</h2>
+      <p>${esc(m?(m.institute||'—'):'')} · ${esc(m?m.email:'')}</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body"><div id="smc-md">Loading history…</div></div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Close</button>
+      <button class="btn" data-act="smcEditMember" data-id="${esc(id)}">Edit</button></div>`,{size:'wide'});
+  smcWire();
+  try{
+    const h=await MO_API.get('/smc/members/'+encodeURIComponent(id)+'/history');
+    const asg=h.assignments||[];
+    const el=$('#smc-md'); if(!el) return;
+    el.innerHTML=`
+      <dl class="kv mb4"><dt>Institute</dt><dd>${esc(m?(m.institute||'—'):'—')}</dd>
+        <dt>Designation</dt><dd>${esc(m?(m.designation||'—'):'—')}</dd>
+        <dt>Status</dt><dd>${m&&m.is_active?'Active':'Inactive'}</dd>
+        ${m&&m.joining_date?`<dt>Joined</dt><dd>${esc(smcDate(m.joining_date))}</dd>`:''}
+        ${m&&m.coverage_area?`<dt>Coverage area</dt><dd>${esc(m.coverage_area)}</dd>`:''}</dl>
+      <div class="divider"></div>
+      <div class="small b mb2">Performance</div>
+      <div class="smc-stats mb4">
+        ${[['Total',p.total],['Accepted',p.accepted],['Submitted',p.submitted],['Reviewed',p.reviewed],
+           ['Revision',p.revision_required],['Missed',p.missed],['Late',p.late]]
+          .map(([l,v])=>`<div class="smc-stat" style="cursor:default"><b>${esc(String(v??0))}</b><span>${esc(l)}</span></div>`).join('')}
+      </div>
+      <div class="divider"></div>
+      <div class="small b mb2">Assignment history</div>
+      ${asg.length?asg.map(a=>`<div class="list-row" style="cursor:default">
+        <span class="lr-main"><b>${esc(a.event_name||a.title||'Coverage')}</b>
+          <span>${esc(a.institute||'—')} · ${esc(smcDate(a.start_date))}${a.submitted_at?' · submitted '+esc(new Date(a.submitted_at).toLocaleDateString()):''}
+            ${a.reviewed_by_name?' · reviewed by '+esc(a.reviewed_by_name):''}</span></span>
+        ${smcChip(a.smc_status)}</div>`).join('')
+        :`<div class="smc-empty sm"><p>No assignments yet.</p></div>`}`;
+  }catch(e){ const el=$('#smc-md'); if(el) el.innerHTML=`<div class="smc-note bad"><span>${esc(smcError(e))}</span></div>`; }
+}
+
+function smcInstituteDetail(id){
+  const i=(SMC.mgmt.institutes||[]).find(x=>+x.id===+id);
+  const mem=(SMC.mgmt.members||[]).filter(m=>+m.academic_unit_id===+id);
+  const asg=(SMC.mgmt.assignments||[]).filter(a=>+a.unit_id===+id);
+  modal(`<div class="mo-head"><div><h2>${esc(i?i.name:'Institute')}</h2>
+      <p>${mem.filter(m=>m.is_active).length} active SMC member(s) · ${asg.length} assignment(s)</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <div class="small b mb2">SMC members</div>
+      ${mem.length?mem.map(m=>`<div class="list-row" style="cursor:default">
+        <span class="lr-main"><b>${esc(m.full_name)}</b><span>${esc(m.designation||'')} · ${esc(m.email)}</span></span>
+        ${m.is_active?'<span class="chip ok">Active</span>':'<span class="chip mut">Inactive</span>'}</div>`).join('')
+        :`<div class="smc-empty sm"><p>No SMC members assigned to this institute.</p></div>`}
+      <div class="divider"></div>
+      <div class="small b mb2">Recent coverage</div>
+      ${asg.length?asg.slice(0,10).map(a=>smcMgmtRow(a)).join('')
+        :`<div class="smc-empty sm"><p>No coverage recorded for this institute yet.</p></div>`}
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Close</button></div>`,{size:'wide'});
+  smcWire();
+}
+
+async function smcAssignForm(){
+  modal(`<div class="mo-head"><div><h2>New SMC assignment</h2>
+      <p>Assign institute coverage from an existing NERVE event.</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body"><div id="smc-af">Loading events…</div></div>`,{size:'wide'});
+  let d;
+  try{ d=await MO_API.get('/smc/assignable-events'); }
+  catch(e){ const el=$('#smc-af'); if(el) el.innerHTML=`<div class="smc-note bad"><span>${esc(smcError(e))}</span></div>`; return; }
+  const el=$('#smc-af'); if(!el) return;
+  if(!(d.events||[]).length){
+    el.innerHTML=`<div class="smc-empty"><div class="e-ico">◌</div><h4>No institute-level events.</h4>
+      <p>Mark an event as Institute level before assigning SMC coverage.</p></div>`; return; }
+  el.innerHTML=`
+    <div class="field"><label class="lbl">Event <span class="req">*</span></label>
+      <select class="inp" id="sa-event"><option value="">— choose an event —</option>
+        ${d.events.map(e=>`<option value="${e.id}">${esc(e.name)}${e.institute?' — '+esc(e.institute):''}</option>`).join('')}</select></div>
+    <div class="field"><label class="lbl">SMC member <span class="req">*</span></label>
+      <select class="inp" id="sa-member"><option value="">— choose a member —</option>
+        ${(d.members||[]).map(m=>`<option value="${esc(m.id)}">${esc(m.full_name)}${m.institute?' — '+esc(m.institute):''}</option>`).join('')}</select>
+      <div class="hint">Members are listed with the institute they cover.</div></div>
+    <div class="field"><label class="lbl">Assignment title</label>
+      <input class="inp" id="sa-title" placeholder="Defaults to the event name"></div>
+    <div class="row">
+      <div class="field"><label class="lbl">Date</label><input class="inp" id="sa-date" type="date" value="${TODAY}"></div>
+      <div class="field"><label class="lbl">Start</label><input class="inp" id="sa-start" type="time"></div>
+      <div class="field"><label class="lbl">End</label><input class="inp" id="sa-end" type="time"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label class="lbl">Venue</label><input class="inp" id="sa-venue"></div>
+      <div class="field"><label class="lbl">Priority</label>
+        <select class="inp" id="sa-prio"><option value="normal">Normal</option>
+          <option value="high">High</option><option value="low">Low</option></select></div>
+      <div class="field"><label class="lbl">Submission deadline</label>
+        <input class="inp" id="sa-deadline" type="datetime-local"></div>
+    </div>
+    <div class="field"><label class="lbl">Coverage requirements</label>
+      <input class="inp" id="sa-cov" placeholder="e.g. Photography + short video clips"></div>
+    <div class="field"><label class="lbl">Required deliverables</label>
+      <input class="inp" id="sa-deliv" placeholder="e.g. 50 photos, 2 reels"></div>
+    <div class="field"><label class="lbl">Instructions</label>
+      <textarea class="inp" id="sa-notes" placeholder="Anything the member should know"></textarea></div>`;
+  const foot=document.createElement('div');
+  foot.className='mo-foot';
+  foot.innerHTML=`<button class="btn" onclick="closeModal()">Cancel</button>
+    <button class="btn primary" data-act="smcCreateAssignment">Create assignment</button>`;
+  el.closest('.mo-body').after(foot);
+  smcWire();
+}
+
+function smcMgmtDetail(id){
+  const a=(SMC.mgmt.assignments||[]).find(x=>+x.id===+id);
+  if(!a){ toast('That assignment could not be found.','bad'); return; }
+  modal(`<div class="mo-head"><div><h2>${esc(a.event_name||a.title||'Coverage')}</h2>
+      <p>${esc(a.institute||'—')} · ${esc(a.member_name||'Unassigned')}</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <div class="f ac gap2 mb3">${smcChip(a.smc_status)}
+        ${a.escalated_at?'<span class="chip warn">Escalated</span>':''}</div>
+      <dl class="kv mb4">
+        <dt>Institute</dt><dd>${esc(a.institute||'—')}</dd>
+        <dt>SMC member</dt><dd>${esc(a.member_name||'—')}</dd>
+        <dt>Date</dt><dd>${esc(smcDate(a.start_date))}</dd>
+        <dt>Time</dt><dd>${esc(smcTime(a))}</dd>
+        <dt>Venue</dt><dd>${esc(a.venue||'—')}</dd>
+        <dt>Coverage</dt><dd>${esc(a.coverage_requirements||'—')}</dd>
+        <dt>Deadline</dt><dd>${esc(smcDeadline(a.submission_deadline)||'—')}</dd>
+        <dt>Assigned by</dt><dd>${esc(a.assigned_by_name||'—')}</dd>
+        ${a.escalation_reason?`<dt>Escalation</dt><dd>${esc(a.escalation_reason)}</dd>`:''}
+      </dl>
+      ${a.submission_id?`<div class="divider"></div>
+        <div class="small b mb2">Submission (attempt ${esc(String(a.attempt||1))})</div>
+        <dl class="kv mb3">
+          ${a.drive_url?`<dt>Drive</dt><dd><a href="${esc(a.drive_url)}" target="_blank" rel="noopener">Open</a></dd>`:''}
+          ${a.photos_url?`<dt>Photos</dt><dd><a href="${esc(a.photos_url)}" target="_blank" rel="noopener">Open</a></dd>`:''}
+          <dt>Captured</dt><dd>${esc(String(a.photo_count||0))} photos · ${esc(String(a.video_count||0))} videos</dd>
+          ${a.submission_note?`<dt>Note</dt><dd>${esc(a.submission_note)}</dd>`:''}
+        </dl>`:`<div class="smc-empty sm"><p>No submission yet.</p></div>`}
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Close</button>
+      ${a.submission_id?`<button class="btn" data-act="smcReviewOpen" data-id="${a.id}">Review</button>`:''}
+      <button class="btn" data-act="smcReassign" data-id="${a.id}">Reassign</button>
+      <button class="btn" data-act="smcEscalate" data-id="${a.id}">Escalate</button>
+      <button class="btn bad" data-act="smcCancelAsg" data-id="${a.id}">Cancel</button></div>`,{size:'wide'});
+  smcWire();
+}
+
+function smcReassignForm(id){
+  const a=(SMC.mgmt.assignments||[]).find(x=>+x.id===+id);
+  const others=(SMC.mgmt.members||[]).filter(m=>m.is_active&&String(m.id)!==String(a&&a.member_id));
+  modal(`<div class="mo-head"><div><h2>Reassign coverage</h2>
+      <p>${esc(a?(a.event_name||a.title||''):'')} · currently ${esc(a?(a.member_name||'unassigned'):'')}</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <div class="field"><label class="lbl">Reassign to <span class="req">*</span></label>
+        <select class="inp" id="sr-member"><option value="">— choose a member —</option>
+          ${others.map(m=>`<option value="${esc(m.id)}">${esc(m.full_name)}${m.institute?' — '+esc(m.institute):''}</option>`).join('')}</select>
+        ${others.length?'':'<div class="hint">No other active members are available.</div>'}</div>
+      <div class="field"><label class="lbl">Reason</label>
+        <input class="inp" id="sr-reason" placeholder="e.g. Original member unavailable"></div>
+      <div class="hint">The new member starts from Assigned. The handover is recorded.</div>
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn primary" data-act="smcReassignGo" data-id="${id}">Reassign</button></div>`);
+  smcWire();
+}
+
+function smcEscalateForm(id){
+  const a=(SMC.mgmt.assignments||[]).find(x=>+x.id===+id);
+  modal(`<div class="mo-head"><div><h2>Escalate to Central Media</h2>
+      <p>${esc(a?(a.event_name||a.title||''):'')}</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <div class="field"><label class="lbl">Reason <span class="req">*</span></label>
+        <textarea class="inp" id="se-reason" placeholder="Why does this need the Central Media Team?"></textarea></div>
+      <div class="hint">The event is promoted so it appears in the Central Media workflow. SMC coverage is not deleted.</div>
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn primary" data-act="smcEscalateGo" data-id="${id}">Escalate</button></div>`);
+  smcWire();
+}
+
+function smcReviewForm(id){
+  const a=(SMC.mgmt.assignments||[]).find(x=>+x.id===+id);
+  if(!a||!a.submission_id){ toast('There is no submission to review yet.','bad'); return; }
+  modal(`<div class="mo-head"><div><h2>Review submission</h2>
+      <p>${esc(a.event_name||a.title||'')} · ${esc(a.member_name||'')} · attempt ${esc(String(a.attempt||1))}</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <dl class="kv mb3">
+        ${a.drive_url?`<dt>Drive</dt><dd><a href="${esc(a.drive_url)}" target="_blank" rel="noopener">Open link</a></dd>`:''}
+        ${a.photos_url?`<dt>Photos</dt><dd><a href="${esc(a.photos_url)}" target="_blank" rel="noopener">Open link</a></dd>`:''}
+        ${a.reference_url?`<dt>Reference</dt><dd><a href="${esc(a.reference_url)}" target="_blank" rel="noopener">Open link</a></dd>`:''}
+        <dt>Captured</dt><dd>${esc(String(a.photo_count||0))} photos · ${esc(String(a.video_count||0))} videos</dd>
+        ${a.submission_note?`<dt>Member's note</dt><dd>${esc(a.submission_note)}</dd>`:''}
+        <dt>Submitted</dt><dd>${esc(a.submitted_at?new Date(a.submitted_at).toLocaleString():'—')}</dd>
+      </dl>
+      <div class="field"><label class="lbl">Feedback <span class="mut3">(required when requesting a revision)</span></label>
+        <textarea class="inp" id="rv-feedback" placeholder="What should change?">${esc(a.review_feedback||'')}</textarea></div>
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn" data-act="smcReviewGo" data-id="${a.id}" data-decision="revision_required">Request revision</button>
+      <button class="btn primary" data-act="smcReviewGo" data-id="${a.id}" data-decision="reviewed">Mark reviewed</button></div>`,
+    {size:'wide'});
+  smcWire();
+}
+
+/* Modals are rendered outside the page, so their data-act handlers need wiring
+   the same way every other NERVE modal does. */
+function smcWire(){
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+}
+
 async function hydrateFromServer(){
   const keys=['projects','project_assignments','deliverables','deliverable_versions','drive_links','daily_reports','report_tasks',
     'vendors','equipment_categories','equipment_items','equipment_kits','kit_items','equipment_bookings','equipment_transactions',
