@@ -2267,7 +2267,13 @@ const user = id=>DB.users.find(u=>u.id===id)
   ||{full_name:'—',initials:'?',color:'#888',designation:''};
 /* Map a prototype integer user-id back to the REAL Nerve users.id for write payloads
    (the server keys users by text id; sending 'mo-u'+int breaks for non-mo-uN users). */
-const ruid = n=>{const u=DB.users.find(x=>x.id===n);return u&&u.real_id?u.real_id:('mo-u'+n);};
+/* Crew ids are prototype integers that map back to a real users.id; an SMC
+   member's id IS already the real one. Pass anything non-numeric straight
+   through so shared endpoints work for both. */
+const ruid = n=>{ if(typeof n==='string'&&!/^\d+$/.test(n)) return n;
+  const k=+n, u=DB.users.find(x=>x.id===k); return u&&u.real_id?u.real_id:('mo-u'+k); };
+/* data-* attributes are always strings; crew ids are numeric, SMC ids are not. */
+const uidOf = v=>(/^\d+$/.test(String(v))?+v:String(v));
 const role = ()=>me().role;
 const isAdmin = ()=>role()==='admin';
 /* Media Operations Coordinator — a media-department role (mo_role), not a Nerve
@@ -7529,6 +7535,7 @@ const ROLE_META={
   coordinator    :{l:'Operations Coordinator', p:'Operations Coordinators', i:'◎', rank:35},
   team_lead      :{l:'Team Lead',       p:'Team Leads',       i:'▲', rank:40},
   employee       :{l:'Employee',        p:'Employees',        i:'●', rank:50},
+  smc_member     :{l:'SMC Member',      p:'SMC Members',      i:'◈', rank:55},
   intern         :{l:'Intern',          p:'Interns',          i:'◔', rank:60},
   vendor         :{l:'Vendor',          p:'Vendors',          i:'⛁', rank:70},
   freelancer     :{l:'Freelancer',      p:'Freelancers',      i:'◇', rank:80}
@@ -7538,6 +7545,10 @@ const titleCase=s=>String(s||'').replace(/[_-]+/g,' ').replace(/\b\w/g,c=>c.toUp
    every role selector (Add member, Directory card, Users & Roles), so adding a
    role here surfaces it everywhere at once. */
 const ASSIGNABLE_ROLES=['employee','team_lead','coordinator','admin'];
+/* Add-member offers SMC Member too, but it is NOT an assignable crew role: an
+   existing member can never be switched into it from the role dropdown, because
+   that would move an account between teams behind an admin's back (§9). */
+const ADDABLE_ROLES=[...ASSIGNABLE_ROLES,'smc_member'];
 const ROLE_OPTIONS=(cur)=>ASSIGNABLE_ROLES.map(r=>{const m=roleMeta(r);
   return `<option value="${r}" ${cur===r?'selected':''}>${m.i} ${esc(m.l)}</option>`;}).join('');
 function roleMeta(r){
@@ -7637,24 +7648,29 @@ function teamDirectory(){
   /* The directory is a list of people you can work with, so it shows ACTIVE
      members by default. Removed accounts stay reachable behind their own filter
      — their history still references them and an Admin may want to restore one. */
-  const removed=DB.users.filter(u=>!u.is_active);
-  let people=f.role==='removed'?removed:DB.users.filter(u=>u.is_active);
+  /* Team Directory and SMC Management are two views of one population, so the
+     directory reads both rosters. DB.users stays crew-only for every picker. */
+  const dirAll=[...DB.users,...(DB.smc_people||[])];
+  const removed=dirAll.filter(u=>!u.is_active);
+  let people=f.role==='removed'?removed:dirAll.filter(u=>u.is_active);
   /* Quick filters: a role slug, or one of the two presence filters. */
   if(f.role==='unavailable') people=people.filter(u=>['leave','half_day'].includes(presence(u.id)));
   else if(f.role==='available') people=people.filter(u=>!['leave','half_day'].includes(presence(u.id)));
   else if(f.role!=='all'&&f.role!=='removed') people=people.filter(u=>u.role===f.role);
   if(q) people=people.filter(u=>{
-    const t=teamOf(u.id);
-    return (u.full_name+' '+(u.designation||'')+' '+(u.email||'')+' '+(t?t.name:'')).toLowerCase().includes(q);
+    const t=u.is_smc?null:teamOf(u.id);
+    return (u.full_name+' '+(u.designation||'')+' '+(u.email||'')+' '
+      +(t?t.name:'')+' '+(u.institute||'')+' '+(u.is_smc?'smc member':'')).toLowerCase().includes(q);
   });
   const groups=roleGroups(people);
   const total=people.length;
   /* Filter chips are generated from the roster too, so a new role gets a chip. */
-  const allRoles=roleGroups(DB.users.filter(u=>u.is_active));
-  const chips=[['all','All',DB.users.filter(u=>u.is_active).length],
+  const dirActive=dirAll.filter(u=>u.is_active);
+  const allRoles=roleGroups(dirActive);
+  const chips=[['all','All',dirActive.length],
     ...allRoles.map(g=>[g.role,g.meta.p,g.users.length]),
-    ['available','Available',DB.users.filter(u=>u.is_active&&!['leave','half_day'].includes(presence(u.id))).length],
-    ['unavailable','Unavailable',DB.users.filter(u=>u.is_active&&['leave','half_day'].includes(presence(u.id))).length],
+    ['available','Available',dirActive.filter(u=>!u.is_smc&&!['leave','half_day'].includes(presence(u.id))).length],
+    ['unavailable','Unavailable',dirActive.filter(u=>!u.is_smc&&['leave','half_day'].includes(presence(u.id))).length],
     ...(removed.length?[['removed','Removed',removed.length]]:[])];
 
   return `<div class="dir-bar">
@@ -7714,7 +7730,43 @@ function dirGroup(g,searching){
 }
 /* The existing person card, unchanged except for the team line the hierarchy
    view adds — team and lead badge both come from Organization Management. */
+function smcDirCard(u){
+  const rm=roleMeta('smc_member');
+  const q=JSON.stringify(String(u.id));
+  return `<div class="card" onclick='smcMemberDetail(${q})' style="cursor:pointer">
+    <div class="card-body">
+      <div class="f gap3 ac mb3">${avatar(u.id,'xl')}
+        <div style="min-width:0"><b class="trunc" style="display:block;font-size:15px">${esc(u.full_name)}</b>
+          <span class="small mut trunc" style="display:block">${esc(u.designation||'SMC Member')}</span>
+          <span class="xsmall mut3">${rm.i} ${esc(rm.l)}</span>
+          <span class="dir-team"><span class="mut3">·</span>
+            <span class="mut3">${esc(u.institute||'No institute')}</span></span></div>
+      </div>
+      ${!u.is_active?`<div class="note mb2" style="padding:7px 10px;font-size:11.5px">
+        <b>Inactive.</b> Receives no new assignments; their history is unchanged.</div>`:''}
+      <div class="f wrap gap2 mb2">
+        <span class="chip">${esc(u.email||'')}</span>
+        ${u.coverage_area?`<span class="tag">${esc(u.coverage_area)}</span>`:''}
+      </div>
+      <div class="divider"></div>
+      <div class="between small mut3">
+        <span>${u.assignment_count} assignment${u.assignment_count===1?'':'s'}</span>
+        <span>${u.is_active?'Active':'Inactive'}</span></div>
+      ${can('admin.users')?`<div class="mt3" onclick="event.stopPropagation();event.preventDefault()">
+        <div class="f gap2 ac">
+          <button class="btn xs" style="flex:1" onclick='ACTIONS.smcEditMember({id:${q}})'>Edit</button>
+          <button class="btn xs" onclick='ACTIONS.smcToggleMember({id:${q},active:${u.is_active?1:0}})'>
+            ${u.is_active?'Deactivate':'Activate'}</button>
+          <button class="btn xs" title="Module access" onclick='ACTIONS.editModules({uid:${q}})'>⚿ Modules${Array.isArray(u.allowed_modules)?' ('+u.allowed_modules.length+')':''}</button>
+        </div></div>`:''}
+    </div></div>`;
+}
+
 function dirCard(u){
+  /* Same card, SMC facts. They carry no crew skills, duties, team or presence,
+     and their detail lives in SMC Management — so this branch reuses the shell
+     and swaps only what genuinely differs, rather than forking the component. */
+  if(u.is_smc) return smcDirCard(u);
   const sk=DB.user_skills.filter(s=>s.user_id===u.id);
   const dt=DB.user_duties.filter(d=>d.user_id===u.id);
   const t=teamOf(u.id);
@@ -10567,9 +10619,9 @@ const ACTIONS = {
   smcMemberSearch:(d)=>{ S.filters.smcm=d.q; render();
     const el=$('#smc-mq'); if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);} },
 
-  smcAddMember:()=>smcMemberForm(null),
-  smcEditMember:(d)=>smcMemberForm(d.id),
-  smcMemberOpen:(d)=>smcMemberDetail(d.id),
+  smcAddMember:async()=>{ await smcEnsure(); smcMemberForm(null); },
+  smcEditMember:async(d)=>{ await smcEnsure(); smcMemberForm(d.id); },
+  smcMemberOpen:async(d)=>{ await smcEnsure(); smcMemberDetail(d.id); },
   smcInstituteOpen:(d)=>smcInstituteDetail(+d.id),
   smcAssignmentOpen:(d)=>smcMgmtDetail(+d.id),
   smcReviewOpen:(d)=>smcReviewForm(+d.id),
@@ -10590,7 +10642,7 @@ const ACTIONS = {
       if(d.id) await MO_API.patch('/smc/members/'+d.id, body);
       else     await MO_API.post('/smc/members', body);
       closeModal(); toast(d.id?'Member updated':'SMC member created — they can sign in now','ok');
-      smcMgmtLoad(true);
+      await smcRefreshBoth();
     }catch(e){ if(n){n.disabled=false;n.textContent='Save';} toast(smcError(e),'bad'); }
   },
   smcToggleMember:async(d,n)=>{
@@ -10599,7 +10651,7 @@ const ACTIONS = {
     try{
       await MO_API.patch('/smc/members/'+d.id,{is_active:!on});
       toast(on?'Member deactivated — their history is kept':'Member activated','ok');
-      smcMgmtLoad(true);
+      await smcRefreshBoth();
     }catch(e){ if(n)n.disabled=false; toast(smcError(e),'bad'); }
   },
 
@@ -12426,7 +12478,13 @@ const ACTIONS = {
         <div class="row">
           <div class="field"><label class="lbl">Temp password <span class="req">*</span></label><input class="inp" id="au-pass" placeholder="min 6 characters"></div>
           <div class="field"><label class="lbl">Role</label><select class="inp" id="au-role" onchange="ACTIONS.auRoleSync()">
-            ${ROLE_OPTIONS('employee')}</select></div></div>
+            ${ADDABLE_ROLES.map(r=>{const m=roleMeta(r);
+              return `<option value="${r}" ${r==='employee'?'selected':''}>${m.i} ${esc(m.l)}</option>`;}).join('')}</select></div></div>
+        <div class="field" id="au-smc-wrap" style="display:none">
+          <label class="lbl">Institute <span class="req">*</span></label>
+          <select class="inp" id="au-institute"><option value="">— choose —</option>
+            ${(DB.academic_units||[]).filter(x=>x.is_active!==false).map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>
+          <div class="hint">SMC members cover one institute. They are created on the SMC network, not the Media Crew.</div></div>
         <div class="row">
           <div class="field"><label class="lbl">Designation</label><input class="inp" id="au-desig" placeholder="e.g. Video Editor"></div>
           <div class="field"><label class="lbl">Photo <span class="mut3">(optional)</span></label>
@@ -12458,6 +12516,8 @@ const ACTIONS = {
        modules the role cannot reach simply are not offered. Ticks the user has
        already made are preserved wherever the new role still allows them. */
     const r=($('#au-role')||{}).value||'employee';
+    // The institute field only applies to SMC members.
+    const sw=$('#au-smc-wrap'); if(sw) sw.style.display=(r==='smc_member'?'':'none');
     const keep=$$('.au-mod:checked').map(c=>c.value);
     const wrap=$('#au-modwrap'); if(!wrap)return;
     const had=$$('.au-mod').length;
@@ -12474,6 +12534,21 @@ const ACTIONS = {
     if(!name){toast('Name is required','bad');return;}
     if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){toast('A valid email is required','bad');return;}
     if(pass.length<6){toast('Password must be at least 6 characters','bad');return;}
+    /* An SMC member is not crew, so this goes to the one SMC creation service —
+       the same endpoint SMC Management's "Add SMC member" calls. One service,
+       two entry points; the account and profile are created together there.
+       Checked before the crew payload is assembled, because none of its fields
+       (team lead, skills, capacity) apply to an SMC member. */
+    if(($('#au-role')||{}).value==='smc_member'){
+      const unit=($('#au-institute')||{}).value;
+      if(!unit){toast('Choose the institute this member covers','bad');return;}
+      closeModal();
+      moSync(MO_API.post('/smc/members',{full_name:name,email,password:pass,
+          academic_unit_id:unit,designation:(($('#au-desig')||{}).value||'').trim()||'SMC Member'})
+        .then(()=>smcRefreshBoth()),
+        ()=>toast(name+' added to the SMC network','ok'));
+      return;
+    }
     const payload={full_name:name,email,password:pass,role:$('#au-role').value,designation:$('#au-desig').value.trim(),
       avatar_url:$('#au-avatar').value.trim()||null,
       campus_id:($('#au-campus')||{}).value||null,
@@ -12737,7 +12812,7 @@ const ACTIONS = {
     moSync(MO_API.post('/crew/'+ruid(+d.uid)+'/role',{role:d.role}), ()=>{render();toast('Role updated to '+d.role.replace('_',' '),'ok');});
   },
   editModules:(d)=>{
-    const u=user(+d.uid), am=Array.isArray(u.allowed_modules)?u.allowed_modules:null;
+    const u=user(uidOf(d.uid)), am=Array.isArray(u.allowed_modules)?u.allowed_modules:null;
     modal(`<div class="mo-head"><div><h2>Module access — ${esc(u.full_name)}</h2>
         <p>Exactly the sidebar this member will see. Ticking a module <b>grants</b> it on
           top of their role, and unticking one removes it.</p></div>
@@ -12773,9 +12848,9 @@ const ACTIONS = {
   },
   saveModules:(d)=>{
     const mods=$('#em-unrestricted').checked?null:$$('.em-mod:checked').map(c=>c.value);
-    const u=user(+d.uid); if(u)u.allowed_modules=mods;
+    const u=user(uidOf(d.uid)); if(u)u.allowed_modules=mods;
     closeModal();render();
-    moSync(MO_API.post('/crew/'+ruid(+d.uid)+'/modules',{allowed_modules:mods}),()=>{render();toast('Module access updated','ok');});
+    moSync(MO_API.post('/crew/'+ruid(uidOf(d.uid))+'/modules',{allowed_modules:mods}),()=>{render();toast('Module access updated','ok');});
   },
   assignProject:(d)=>{
     const p=proj(+d.pid);
@@ -13657,6 +13732,25 @@ async function smcMgmtLoad(force){
     M.assignments=asg.assignments||[]; M.perf=perf; M.activity=act.activity||[];
   }catch(e){ M.err=smcError(e); }
   finally{ M.loading=false; render(); }
+}
+
+/* Team Directory can open the SMC member dialogs without ever visiting SMC
+   Management, so make sure the lists those dialogs read are present. */
+async function smcEnsure(){
+  if(SMC.mgmt.members && SMC.mgmt.institutes) return;
+  try{
+    const [m,i]=await Promise.all([MO_API.get('/smc/members'),MO_API.get('/smc/institutes')]);
+    SMC.mgmt.members=m.members||[]; SMC.mgmt.institutes=i.institutes||[];
+  }catch(e){ toast(smcError(e),'bad'); }
+}
+/* One write, both views: SMC Management reads /smc/*, the directory reads
+   smc_people from /state. Refresh both so they cannot disagree. */
+async function smcRefreshBoth(){
+  SMC.mgmt.members=null; SMC.mgmt.institutes=null;
+  await smcEnsure();
+  if(SMC.mgmt.overview) await smcMgmtLoad(true);
+  await hydrateFromServer();
+  render();
 }
 
 function viewSmcManagement(){

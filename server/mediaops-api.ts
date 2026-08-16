@@ -365,21 +365,40 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       o.assignees = (o.assignees as unknown[]).map(toInt);
       return o;
     });
-    /* SMC members who are assigned to something in this workspace. Deliberately
-       NOT merged into users: that array is the Media Crew roster and every
-       picker iterates it, so an SMC member appearing there would offer them as
-       crew. This is a lookup-only projection so their name and avatar resolve
-       on a deliverable they are assigned to. */
+    /* The SMC roster — the SAME population SMC Management lists, so Team
+       Directory and SMC Management can never disagree about who exists or how
+       many there are. Deliberately NOT merged into users: that array is the
+       Media Crew roster and every assignment picker iterates it, so an SMC
+       member landing there would be offered as crew. The directory concatenates
+       the two explicitly instead. */
     out.smc_people = (await pool.query(`
-      SELECT DISTINCT u.id, u.full_name, u.avatar_url, sp.designation, un.name AS institute
-        FROM mo_assignment_users au
-        JOIN mo_assignments a ON a.id = au.assignment_id AND a.is_smc
-        JOIN users u ON u.id = au.user_id
-        JOIN mo_smc_profiles sp ON sp.user_id = u.id
-        LEFT JOIN mo_academic_units un ON un.id = sp.academic_unit_id`)).rows
-      .map((r) => ({ id: r.id, full_name: r.full_name, avatar_url: r.avatar_url,
-                     designation: r.designation ?? "SMC Member",
-                     institute: r.institute ?? null, is_smc: true }));
+      SELECT u.id, u.full_name, u.email, u.avatar_url, COALESCE(u.status,'active') AS status,
+             sp.designation, sp.phone, sp.coverage_area, sp.joining_date,
+             sp.is_active, sp.academic_unit_id, un.name AS institute,
+             p.allowed_modules,
+             (SELECT COUNT(*) FROM mo_assignment_users au
+                JOIN mo_assignments a ON a.id = au.assignment_id AND a.is_smc
+               WHERE au.user_id = u.id) AS assignment_count
+        FROM mo_smc_profiles sp
+        JOIN users u ON u.id = sp.user_id
+        LEFT JOIN mo_user_profiles p ON p.user_id = u.id
+        LEFT JOIN mo_academic_units un ON un.id = sp.academic_unit_id
+       ORDER BY u.full_name`)).rows
+      .map((r) => ({
+        id: r.id, full_name: r.full_name, email: r.email, avatar_url: r.avatar_url,
+        designation: r.designation ?? "SMC Member",
+        institute: r.institute ?? null, academic_unit_id: r.academic_unit_id,
+        phone: r.phone ?? null, coverage_area: r.coverage_area ?? null,
+        joining_date: r.joining_date ?? null,
+        allowed_modules: Array.isArray(r.allowed_modules) ? r.allowed_modules : null,
+        assignment_count: Number(r.assignment_count ?? 0),
+        // The directory keys everything off role; this is what gives SMC members
+        // their own group without touching the grouping code.
+        role: "smc_member", team: "smc", is_smc: true,
+        // Deactivating the SMC profile removes them from the active directory
+        // exactly as a removed crew account is, using the same is_active flag.
+        is_active: !!r.is_active && String(r.status) !== "removed",
+      }));
 
     // Real roster (replaces the prototype's seed users) + the current identity.
     out.users = crew.map((r) => {
@@ -4536,8 +4555,18 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!/^\S+@\S+\.\S+$/.test(email)) return sendError(res, 400, "Please enter a valid email address.");
     if (password.length < 6) return sendError(res, 400, "The temporary password must be at least 6 characters.");
     if (!unit) return sendError(res, 400, "Please choose the institute this member covers.");
-    if ((await pool.query(`SELECT 1 FROM users WHERE lower(email)=lower($1)`, [email])).rows[0])
-      return sendError(res, 409, "An account already exists with that email address.");
+    /* One person, one account. An existing SMC member is named as such; an
+       account on another team is refused outright rather than being converted,
+       because silently moving someone between teams changes what they can see
+       and must be a deliberate administrative act (§9). */
+    const dup = (await pool.query(
+      `SELECT u.team, (sp.user_id IS NOT NULL) AS is_smc FROM users u
+         LEFT JOIN mo_smc_profiles sp ON sp.user_id = u.id
+        WHERE lower(u.email)=lower($1)`, [email])).rows[0];
+    if (dup)
+      return sendError(res, 409, dup.is_smc
+        ? "This email is already registered as an SMC member."
+        : `This email already belongs to a ${dup.team ?? "NERVE"} account. Ask an administrator to move it before adding them to SMC.`);
 
     // team='smc' is what makes the role real: moRoleOf() returns null for them,
     // so every non-SMC media route refuses them server-side (§4, §41).
