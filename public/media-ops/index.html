@@ -491,6 +491,13 @@ html[data-theme=dark] .st-brand{background:var(--brand-100)}
 .av.lg{width:44px;height:44px;font-size:16px}
 .av.xl{width:88px;height:88px;font-size:26px;box-shadow:0 0 0 3px var(--surface),var(--sh-2)}
 .av-ring{box-shadow:0 0 0 2px var(--surface),0 0 0 3.5px var(--brand-300)}
+.asg-chip{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.asg-chip b{font-size:11.5px;font-weight:600}
+.asg-set{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+.asg-k{font-size:9.5px;letter-spacing:.04em;text-transform:uppercase;font-weight:700;
+  padding:1px 5px;border-radius:4px;background:var(--surface-2);color:var(--text-3);border:1px solid var(--border)}
+.asg-k.smc{background:#F5F3FF;color:#6D28D9;border-color:#DDD6FE}
+@media(max-width:720px){ .asg-chip b{display:none} }
 .av-stack{display:flex}
 .av-stack .av{margin-left:-9px}
 .av-stack .av:first-child{margin-left:0}
@@ -2252,7 +2259,12 @@ const S = {
   dirOpen:{}, dirAll:{}
 };
 const me   = ()=>DB.users.find(u=>u.id===S.me)||{full_name:'—',role:'employee',initials:'?',color:'#888'};
-const user = id=>DB.users.find(u=>u.id===id)||{full_name:'—',initials:'?',color:'#888',designation:''};
+/* Crew first, then SMC members assigned to work here. DB.users stays the Media
+   Crew roster — every picker iterates it — so this only widens lookup by id,
+   which is what lets the existing avatar/name helpers render an SMC assignee. */
+const user = id=>DB.users.find(u=>u.id===id)
+  ||(DB.smc_people||[]).find(u=>u.id===id)
+  ||{full_name:'—',initials:'?',color:'#888',designation:''};
 /* Map a prototype integer user-id back to the REAL Nerve users.id for write payloads
    (the server keys users by text id; sending 'mo-u'+int breaks for non-mo-uN users). */
 const ruid = n=>{const u=DB.users.find(x=>x.id===n);return u&&u.real_id?u.real_id:('mo-u'+n);};
@@ -2741,7 +2753,13 @@ const HAIRC=['#171210','#241A14','#33241A','#0E0B09','#4A3524'];
 const SHIRT=['#31506B','#3C5C4B','#57466B','#6B4A3E','#3B4B57','#4E5D6B','#6B4548','#40566B','#5B5340','#334B4B'];
 const FEMALE=new Set(['Priya Shah','Sneha Desai','Meera Iyer','Ritu Parmar','Anjali Nair','Pooja Rathod','Kavya Menon']);
 function portraitSVG(u){
-  const i=u.id, fem=FEMALE.has(u.full_name);
+  /* Every colour below is picked by modulo on the id. Crew ids are numbers, but
+     an SMC member's is a text key — which yields NaN and paints a black circle.
+     Hash a non-numeric id to a stable number so the generated portrait works for
+     anyone, not just the seeded crew. */
+  const i=typeof u.id==='number'?u.id
+    :Math.abs([...String(u.id||'')].reduce((h,c)=>((h<<5)-h+c.charCodeAt(0))|0,0))%997;
+  const fem=FEMALE.has(u.full_name);
   const sk=SKIN[i%SKIN.length], hc=HAIRC[(i*3)%HAIRC.length], sh=SHIRT[(i*7)%SHIRT.length];
   const bg1=['#E9F0EC','#EAEFF5','#F2ECEA','#ECF1EA','#F0EDF4','#E9F1F2'][i%6];
   const bg2=['#D6E3DB','#D8E2EF','#E7DAD5','#DDE7D8','#E3DCEE','#D6E7E8'][i%6];
@@ -6562,12 +6580,17 @@ function projOverview(p,dls,crew,shoots,pr){
         ${reqid('FR-3.10','Real logged hours vs deliverable state, zero re-entry')}
         <div class="ca">${can('project.assign')?`<button class="btn xs" data-act="assignCrew" data-pid="${p.id}">＋ Assign</button>`:''}</div></div>
         <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
-          <thead><tr><th>Person</th><th>Capacity role</th><th class="num">Hours logged</th><th class="num">Deliverables owned</th><th></th></tr></thead>
-          <tbody>${crew.map(a=>`<tr class="click" data-go="#/media/team/${a.user_id}">
-            <td><div class="f ac gap2">${avatarP(a.user_id,'lg')}<div><div class="t-main">${esc(user(a.user_id).designation)}
-              ${a.is_project_manager?'<span class="chip sel" title="BR-2: at most one PM per project">PM</span>':''}</div>
-              <div class="t-sub">${esc(caprole(a.capacity_role_id))}</div></div></div></td>
-            <td><span class="chip">${esc(caprole(a.capacity_role_id))}</span></td>
+          <thead><tr><th>Person</th><th>Deliverables</th><th class="num">Hours logged</th><th class="num">Owned</th><th></th></tr></thead>
+          <tbody>${projectPeople(p.id,dls,crew).map(a=>`<tr class="click" data-go="#/media/team/${a.user_id}">
+            <td><div class="f ac gap2">${a.is_smc?avatar(a.user_id,'lg'):avatarP(a.user_id,'lg')}<div>
+              <div class="t-main">${esc(user(a.user_id).full_name)}
+              ${a.is_project_manager?'<span class="chip sel" title="BR-2: at most one PM per project">PM</span>':''}
+              ${a.is_smc?'<span class="asg-k smc">SMC</span>':''}</div>
+              <div class="t-sub">${esc(user(a.user_id).designation||(a.is_smc?'SMC Member':caprole(a.capacity_role_id)))}</div></div></div></td>
+            <td>${a.deliverables.length
+              ?`<span class="f wrap gap1">${a.deliverables.map(d=>
+                  `<span class="chip" title="${esc(d.title)}">${esc(d.title)}</span>`).join('')}</span>`
+              :'<span class="small mut3">No deliverables assigned</span>'}</td>
             <td class="num">${((perPerson[a.user_id]||0)/60).toFixed(1)}h</td>
             <td class="num">${dls.filter(d=>d.owner_id===a.user_id).length}</td>
             <td class="num">${statusPill(PRESENCE_MAP(),presence(a.user_id))}
@@ -6608,6 +6631,49 @@ function projOverview(p,dls,crew,shoots,pr){
 function PRESENCE_MAP(){return {present:{l:'Present',c:'st-success',i:'●'},shoot:{l:'On shoot',c:'st-info',i:'◉'},
   leave:{l:'On leave',c:'st-warn',i:'◐'},half_day:{l:'Half day',c:'st-warn',i:'◑'},tour:{l:'On tour',c:'st-brand',i:'✈'}};}
 
+/* The people to show under "Team & logged hours": everyone assigned to the
+   project (the existing crew assignment) plus anyone carrying a deliverable in
+   it — including SMC members, who are never on the project crew. Deliverables
+   are attached from the actual assignment records, so nothing here is inferred
+   from designation, team, capacity role, owner or creator. */
+function projectPeople(pid,dls,crew){
+  const byId=new Map();
+  (crew||[]).forEach(a=>byId.set(a.user_id,{...a,is_smc:false,deliverables:[]}));
+  (dls||[]).forEach(d=>delivAssignees(d.id).forEach(a=>{
+    if(!byId.has(a.uid))
+      byId.set(a.uid,{user_id:a.uid,capacity_role_id:null,is_project_manager:false,
+        is_smc:a.kind==='SMC',deliverables:[]});
+    const row=byId.get(a.uid);
+    if(a.kind==='SMC') row.is_smc=true;
+    if(!row.deliverables.some(x=>x.id===d.id)) row.deliverables.push(d);
+  }));
+  // Crew first, then SMC, each alphabetical — a stable, readable order.
+  return [...byId.values()].sort((x,y)=>
+    (x.is_smc?1:0)-(y.is_smc?1:0)
+    || String(user(x.user_id).full_name).localeCompare(String(user(y.user_id).full_name)));
+}
+
+/* Who is assigned to a deliverable, from the assignment records themselves —
+   never inferred from designation, team, owner or capacity role. Returns at most
+   one of each kind, matching how the deliverable panel assigns them. */
+function delivAssignees(did){
+  const rows=(DB.assignments||[]).filter(a=>a.deliverable_id===did
+    && a.status!=='cancelled' && a.smc_status!=='cancelled');
+  const pick=smc=>{
+    const a=rows.find(x=>!!x.is_smc===smc);
+    const uid=a&&(a.assignees||[])[0];
+    return uid==null?null:{uid,kind:smc?'SMC':'Team'};
+  };
+  return [pick(false),pick(true)].filter(Boolean);
+}
+/* Compact identity chip: existing avatar component + a subtle Team/SMC badge. */
+function assigneeChip(a,withName){
+  const u=user(a.uid);
+  return `<span class="asg-chip" title="${esc(u.full_name)}${u.designation?' · '+esc(u.designation):''} — ${a.kind}">
+    ${avatar(a.uid,'xs')}${withName?`<b>${esc(u.full_name)}</b>`:''}
+    <span class="asg-k ${a.kind==='SMC'?'smc':''}">${a.kind}</span></span>`;
+}
+
 function delivRow(d){
   const over=d.due_date&&d.due_date<TODAY&&!['delivered','not_required','cancelled'].includes(d.status);
   const vs=DB.deliverable_versions.filter(v=>v.deliverable_id===d.id);
@@ -6617,6 +6683,9 @@ function delivRow(d){
       <span>${esc(dtype(d.deliverable_type_id).name)} · ${esc(user(d.owner_id).full_name.split(' ')[0])}
         ${d.quantity_target?` · ${d.quantity_delivered||0}/${d.quantity_target} ${esc(d.unit||'')}`:''}
         ${vs.length?` · v${Math.max(...vs.map(v=>v.version_no))}`:''}</span></span>
+    ${(()=>{const as=delivAssignees(d.id);
+      return as.length?`<span class="asg-set">${as.map(a=>assigneeChip(a,false)).join('')}</span>`
+        :`<span class="chip mut" title="No team or SMC member assigned">Unassigned</span>`;})()}
     ${d.social_status!=='na'?`<span class="chip" title="Social media status (FR-4.5)">◍ ${esc(d.social_status)}</span>`:''}
     ${d.mail_status!=='na'?`<span class="chip" title="Mail status (FR-4.5)">✉ ${esc(d.mail_status)}</span>`:''}
     ${d.due_date?`<span class="${over?'status st-danger':'chip'}">${over?'⚑ ':''}${D.fmt(d.due_date)}</span>`:''}
@@ -14213,7 +14282,7 @@ async function hydrateFromServer(){
     'requests','meetings','vendor_activities','followups',
     'casting_records','casting_tags','casting_collections','casting_record_tags',
     'casting_record_collections','casting_requests','project_casting',
-    'casting_links','request_links'];
+    'casting_links','request_links','smc_people'];
   const st=await MO_API.get('/state');
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
   // Bind identity to the real logged-in Nerve user (server sends its prototype int id).

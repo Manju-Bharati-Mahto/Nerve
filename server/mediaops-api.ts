@@ -365,6 +365,22 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       o.assignees = (o.assignees as unknown[]).map(toInt);
       return o;
     });
+    /* SMC members who are assigned to something in this workspace. Deliberately
+       NOT merged into users: that array is the Media Crew roster and every
+       picker iterates it, so an SMC member appearing there would offer them as
+       crew. This is a lookup-only projection so their name and avatar resolve
+       on a deliverable they are assigned to. */
+    out.smc_people = (await pool.query(`
+      SELECT DISTINCT u.id, u.full_name, u.avatar_url, sp.designation, un.name AS institute
+        FROM mo_assignment_users au
+        JOIN mo_assignments a ON a.id = au.assignment_id AND a.is_smc
+        JOIN users u ON u.id = au.user_id
+        JOIN mo_smc_profiles sp ON sp.user_id = u.id
+        LEFT JOIN mo_academic_units un ON un.id = sp.academic_unit_id`)).rows
+      .map((r) => ({ id: r.id, full_name: r.full_name, avatar_url: r.avatar_url,
+                     designation: r.designation ?? "SMC Member",
+                     institute: r.institute ?? null, is_smc: true }));
+
     // Real roster (replaces the prototype's seed users) + the current identity.
     out.users = crew.map((r) => {
       const name = String(r.full_name ?? "User");
