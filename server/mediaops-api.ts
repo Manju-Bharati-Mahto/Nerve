@@ -4782,6 +4782,165 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ ok: true });
   }));
 
+
+  /* ═══ Deliverable-level assignment (crew + SMC) ═════════════════════════════
+     A deliverable can carry BOTH a Media Crew assignee and an SMC assignee: they
+     are two relationships to the same work, not alternatives. Both are ordinary
+     mo_assignments rows against the SAME project and deliverable, separated only
+     by is_smc — so each already flows into the My Day and workflow that reads it,
+     and neither duplicates a project, a deliverable or an assignment engine. */
+
+  /** The deliverable's current assignees, with names resolved. SMC members are
+      not in the crew roster /state ships, so their name is resolved here rather
+      than by polluting that roster. */
+  app.get(`${P}/deliverables/:id/assignees`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const did = parseInt(getSingleParam(req.params.id), 10);
+    const { rows } = await pool.query(`
+      SELECT a.id, a.is_smc, a.smc_status, a.status, au.user_id,
+             us.full_name, p.designation, un.name AS institute
+        FROM mo_assignments a
+        JOIN mo_assignment_users au ON au.assignment_id = a.id
+        JOIN users us ON us.id = au.user_id
+        LEFT JOIN mo_user_profiles p ON p.user_id = us.id
+        LEFT JOIN mo_smc_profiles sp ON sp.user_id = us.id
+        LEFT JOIN mo_academic_units un ON un.id = sp.academic_unit_id
+       WHERE a.deliverable_id = $1 AND a.status <> 'cancelled'
+         AND COALESCE(a.smc_status,'') <> 'cancelled'`, [did]);
+    const pick = (smc: boolean) => {
+      const r = rows.find((x) => !!x.is_smc === smc);
+      return r ? { assignment_id: r.id, user_id: r.user_id, full_name: r.full_name,
+                   designation: r.designation ?? null, institute: r.institute ?? null,
+                   status: smc ? r.smc_status : r.status } : null;
+    };
+    res.json({ crew: pick(false), smc: pick(true) });
+  }));
+
+  /** Candidates for both pickers, from the existing rosters. */
+  app.get(`${P}/deliverables/:id/assignable`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const allowed = await assignableMemberIds(u);
+    const crew = (await pool.query(`
+      SELECT u.id, u.full_name, p.designation, u.role
+        FROM users u LEFT JOIN mo_user_profiles p ON p.user_id = u.id
+       WHERE u.team='media' AND COALESCE(u.status,'active')='active'
+       ORDER BY u.full_name`)).rows.filter((r) => allowed.has(String(r.id)));
+    const smc = (await pool.query(`
+      SELECT sp.user_id AS id, us.full_name, sp.designation,
+             sp.academic_unit_id, un.name AS institute
+        FROM mo_smc_profiles sp
+        JOIN users us ON us.id = sp.user_id
+        LEFT JOIN mo_academic_units un ON un.id = sp.academic_unit_id
+       WHERE sp.is_active ORDER BY un.name NULLS LAST, us.full_name`)).rows;
+    res.json({ crew, smc });
+  }));
+
+  /* Assign (or reassign) the deliverable. One handler for both kinds so the
+     validation, audit and notification story cannot diverge between them. */
+  app.post(`${P}/deliverables/:id/assignee`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const did = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    const kind = String(b.kind ?? "crew");
+    const memberId = String(b.user_id ?? "").trim();
+    if (!["crew", "smc"].includes(kind)) return sendError(res, 400, "Unknown assignment type.");
+    if (!memberId) return sendError(res, 400, "Choose someone to assign.");
+
+    const d = (await pool.query(
+      `SELECT d.*, p.name AS project_name FROM mo_deliverables d
+         LEFT JOIN mo_projects p ON p.id = d.project_id WHERE d.id=$1`, [did])).rows[0];
+    if (!d) return sendError(res, 404, "That deliverable could not be found.");
+    // Same gate the rest of the project surface uses: owner, PM, Team Lead or Admin.
+    const pm = await pool.query(
+      `SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2
+         AND is_project_manager AND removed_at IS NULL`, [d.project_id, u.id]);
+    const owner = (await pool.query(
+      `SELECT owner_id FROM mo_projects WHERE id=$1`, [d.project_id])).rows[0]?.owner_id;
+    if (!(isMoAdmin(u) || isMoTL(u) || owner === u.id || pm.rows[0]))
+      return sendError(res, 403, "Only the owner/PM, a Team Lead or Admin may assign this deliverable.");
+
+    if (kind === "crew") {
+      if (!(await assertAssignable(res, u, [memberId]))) return;
+    } else {
+      const sp = (await pool.query(
+        `SELECT is_active FROM mo_smc_profiles WHERE user_id=$1`, [memberId])).rows[0];
+      if (!sp) return sendError(res, 404, "That SMC member could not be found.");
+      if (!sp.is_active) return sendError(res, 409, "That SMC member is inactive and cannot receive assignments.");
+    }
+
+    const isSmc = kind === "smc";
+    const existing = (await pool.query(
+      `SELECT a.id, au.user_id FROM mo_assignments a
+         LEFT JOIN mo_assignment_users au ON au.assignment_id=a.id
+        WHERE a.deliverable_id=$1 AND a.is_smc=$2 AND a.status <> 'cancelled'
+          AND COALESCE(a.smc_status,'') <> 'cancelled' LIMIT 1`, [did, isSmc])).rows[0];
+
+    // Deliverable titles often already carry the project name; only append it
+    // when it adds something, so the assignment does not read "X — Y — Y".
+    const dTitle = String(d.title ?? "Deliverable");
+    const pName = d.project_name ? String(d.project_name) : "";
+    const title = pName && !dTitle.includes(pName) ? `${dTitle} — ${pName}` : dTitle;
+    // dOnly(): pg hands back a DATE as a JS Date, and String(...).slice(0,10)
+    // yields "Thu Aug 27" rather than a date. The helper already exists for this.
+    const due = dOnly(d.due_date);
+
+    let asgId: number;
+    if (existing) {
+      // Reassign in place (§12): one active assignment per kind, never a duplicate.
+      asgId = Number(existing.id);
+      const from = existing.user_id ? String(existing.user_id) : null;
+      if (from === memberId)
+        return res.json({ ok: true, unchanged: true, assignment_id: asgId });
+      await pool.query(`DELETE FROM mo_assignment_users WHERE assignment_id=$1`, [asgId]);
+      await pool.query(
+        `INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2)`, [asgId, memberId]);
+      if (isSmc) {
+        // The incoming member starts fresh; the handover is kept, as elsewhere.
+        await pool.query(
+          `UPDATE mo_assignments SET smc_status='assigned', accepted_by=NULL, accepted_at=NULL,
+             started_at=NULL WHERE id=$1`, [asgId]);
+        await pool.query(
+          `INSERT INTO mo_smc_reassignments (assignment_id, from_user_id, to_user_id, changed_by, reason)
+           VALUES ($1,$2,$3,$4,$5)`, [asgId, from, memberId, u.id, "Reassigned from the deliverable panel"]);
+      }
+      if (from) await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,$2,$3,$4,'assignment',$5)`,
+        [from, isSmc ? "smc_assignment" : "assignment", "Assignment reassigned",
+         `${title} is no longer assigned to you.`, asgId]).catch(() => {});
+    } else {
+      const ins = await pool.query(
+        `INSERT INTO mo_assignments (project_id, deliverable_id, title, assigned_by, priority, status,
+           start_date, due_date, is_smc, academic_unit_id, submission_deadline, smc_status)
+         VALUES ($1,$2,$3,$4,'normal','not_started',CURRENT_DATE,$5,$6,$7,$8,$9) RETURNING id`,
+        [d.project_id, did, title, u.id, due, isSmc,
+         isSmc ? (await pool.query(`SELECT academic_unit_id FROM mo_smc_profiles WHERE user_id=$1`, [memberId])).rows[0]?.academic_unit_id ?? null : null,
+         isSmc && due ? `${due}T23:59:59` : null,
+         isSmc ? "assigned" : null]);
+      asgId = Number(ins.rows[0].id);
+      await pool.query(
+        `INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2)`, [asgId, memberId]);
+    }
+
+    await pool.query(
+      `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+       VALUES ($1,$2,$3,$4,'assignment',$5)`,
+      [memberId, isSmc ? "smc_assignment" : "assignment",
+       isSmc ? "New coverage assignment" : "New assignment", title, asgId]).catch(() => {});
+    await audit(u, isSmc ? "deliverable.smc_assigned" : "deliverable.assigned",
+      "deliverable", did, null, { assignment_id: asgId, user_id: memberId, kind }, req);
+
+    const state = (await pool.query(`
+      SELECT us.full_name, p.designation, un.name AS institute
+        FROM users us LEFT JOIN mo_user_profiles p ON p.user_id=us.id
+        LEFT JOIN mo_smc_profiles sp ON sp.user_id=us.id
+        LEFT JOIN mo_academic_units un ON un.id=sp.academic_unit_id
+       WHERE us.id=$1`, [memberId])).rows[0] ?? {};
+    res.status(201).json({ ok: true, assignment_id: asgId, kind,
+      assignee: { user_id: memberId, full_name: state.full_name ?? null,
+                  designation: state.designation ?? null, institute: state.institute ?? null } });
+  }));
+
 }
 
 // ── date/time utils ─────────────────────────────────────────────────────────

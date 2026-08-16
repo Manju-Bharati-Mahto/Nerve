@@ -434,16 +434,29 @@ export async function bootstrapMediaOpsDatabase() {
   // Assignments. Deliverables now carry their own schedule, so fold those rows
   // back into the deliverable and drop them. Idempotent: it only ever matches
   // assignments that still have a deliverable_id.
-  await pool.query(`
-    UPDATE mo_deliverables d SET
-      scheduled_date  = COALESCE(d.scheduled_date, a.start_date),
-      estimated_hours = COALESCE(d.estimated_hours, a.estimated_hours),
-      priority        = CASE WHEN d.priority='normal' THEN COALESCE(a.priority, d.priority) ELSE d.priority END,
-      owner_id        = COALESCE(d.owner_id, (SELECT au.user_id FROM mo_assignment_users au WHERE au.assignment_id=a.id LIMIT 1))
-    FROM mo_assignments a
-    WHERE a.deliverable_id = d.id`);
-  await pool.query(`DELETE FROM mo_assignment_users WHERE assignment_id IN (SELECT id FROM mo_assignments WHERE deliverable_id IS NOT NULL)`);
-  await pool.query(`DELETE FROM mo_assignments WHERE deliverable_id IS NOT NULL`);
+  /* Runs ONCE, not on every boot. As an unguarded step it kept deleting every
+     deliverable-linked assignment on restart — including ones a human had
+     deliberately made, since /projects/:id/work already accepts a deliverable_id
+     and the deliverable panel now assigns crew and SMC members against one. The
+     legacy auto-generation this was written to clean up no longer exists, so the
+     cleanup only ever needed to happen a single time. */
+  const folded = (await pool.query(
+    `SELECT 1 FROM app_settings WHERE key='mo_deliverable_assignments_folded'`)).rows[0];
+  if (!folded) {
+    await pool.query(`
+      UPDATE mo_deliverables d SET
+        scheduled_date  = COALESCE(d.scheduled_date, a.start_date),
+        estimated_hours = COALESCE(d.estimated_hours, a.estimated_hours),
+        priority        = CASE WHEN d.priority='normal' THEN COALESCE(a.priority, d.priority) ELSE d.priority END,
+        owner_id        = COALESCE(d.owner_id, (SELECT au.user_id FROM mo_assignment_users au WHERE au.assignment_id=a.id LIMIT 1))
+      FROM mo_assignments a
+      WHERE a.deliverable_id = d.id`);
+    await pool.query(`DELETE FROM mo_assignment_users WHERE assignment_id IN (SELECT id FROM mo_assignments WHERE deliverable_id IS NOT NULL)`);
+    await pool.query(`DELETE FROM mo_assignments WHERE deliverable_id IS NOT NULL`);
+    await pool.query(
+      `INSERT INTO app_settings (key, value) VALUES ('mo_deliverable_assignments_folded','1')
+       ON CONFLICT (key) DO NOTHING`);
+  }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_drive_links (
