@@ -50,6 +50,32 @@ async function isCoordinator(u: CurrentUser): Promise<boolean> {
   return r?.mo_role === "coordinator";
 }
 
+/* ── SMC — Social Media Council ────────────────────────────────────────────
+   An SMC member is an institute student on the coverage network, not Media
+   Crew. They are stored with team='smc', which means moRoleOf() returns null
+   for them and EVERY pre-existing media-ops route already refuses them — the
+   deny-by-default model does the work, so §41's deny list needs no new
+   enforcement code. Their access is granted only by the /smc/* routes below,
+   each of which re-checks ownership. */
+async function isSmcMember(u: CurrentUser): Promise<boolean> {
+  if (u.team !== "smc") return false;
+  const r = (await pool.query(
+    `SELECT is_active FROM mo_smc_profiles WHERE user_id=$1`, [u.id])).rows[0];
+  return !!r?.is_active;   // a deactivated member keeps their history but loses access (§21)
+}
+
+/* Who may run SMC Management. A duty rather than a tier, exactly like Casting
+   Manager — so an Admin, a Team Lead or the Operations Coordinator can hold it
+   without inventing a role (§15). Admins always qualify. */
+async function isSmcManager(u: CurrentUser): Promise<boolean> {
+  if (isMoAdmin(u)) return true;
+  if (u.team !== "media") return false;
+  const r = (await pool.query(
+    `SELECT 1 FROM mo_user_duties d JOIN mo_duty_flags f ON f.id=d.duty_flag_id
+      WHERE d.user_id=$1 AND f.code='smc_manager' AND f.is_active`, [u.id])).rows[0];
+  return !!r;
+}
+
 export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   const { asyncHandler, sendError, getSingleParam } = h;
   const P = "/api/v1/media";
@@ -4152,6 +4178,545 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (descs.length >= (cfg.identical_streak ?? 3) && new Set(descs).size === 1) out.push(`${cfg.identical_streak ?? 3}+ identical task descriptions`);
     return out;
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SMC — Social Media Council (institute-level coverage network)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Built on mo_projects (the event), mo_assignments (the assignment),
+  // mo_academic_units (the institute) and mo_notifications/mo_audit_logs, so
+  // Central Media keeps one source of truth and SMC coverage is never invisible
+  // to it. Only the SMC-specific lifecycle and the submission history are new.
+
+  const smcNotify = async (userId: string, kind: string, title: string, body: string, asgId: number) => {
+    try {
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,$2,$3,$4,'smc_assignment',$5)`, [userId, kind, title, body, asgId]);
+    } catch { /* notification failure must never break the workflow */ }
+  };
+
+  /** The SMC member on an assignment (mo_assignment_users, reused as-is). */
+  const smcAssignee = async (asgId: number): Promise<string | null> => {
+    const r = (await pool.query(
+      `SELECT user_id FROM mo_assignment_users WHERE assignment_id=$1 LIMIT 1`, [asgId])).rows[0];
+    return r ? String(r.user_id) : null;
+  };
+
+  /* One shared SELECT so member and management views can never disagree about
+     what an assignment is. Event data is joined from the project — never copied. */
+  const SMC_SELECT = `
+    SELECT a.id, a.title, a.priority, a.start_date, a.start_time, a.end_time, a.venue,
+           a.coverage_requirements, a.deliverables_required, a.submission_deadline,
+           a.smc_status, a.notes, a.accepted_at, a.started_at, a.cancelled_at, a.cancel_reason,
+           a.escalated_at, a.escalation_reason, a.escalation_status, a.assigned_by,
+           a.project_id, p.name AS event_name, p.event_level,
+           u.id AS unit_id, u.name AS institute,
+           ab.full_name AS assigned_by_name,
+           au.user_id AS member_id, mu.full_name AS member_name,
+           s.id AS submission_id, s.attempt, s.drive_url, s.photos_url, s.media_library_url,
+           s.reference_url, s.note AS submission_note, s.photo_count, s.video_count,
+           s.submitted_at, s.review_status, s.review_feedback, s.reviewed_at,
+           rv.full_name AS reviewed_by_name
+      FROM mo_assignments a
+      LEFT JOIN mo_projects p        ON p.id = a.project_id
+      LEFT JOIN mo_academic_units u  ON u.id = COALESCE(a.academic_unit_id, p.academic_unit_id)
+      LEFT JOIN users ab             ON ab.id = a.assigned_by
+      LEFT JOIN mo_assignment_users au ON au.assignment_id = a.id
+      LEFT JOIN users mu             ON mu.id = au.user_id
+      LEFT JOIN LATERAL (
+        SELECT * FROM mo_smc_submissions WHERE assignment_id = a.id
+         ORDER BY attempt DESC LIMIT 1) s ON true
+      LEFT JOIN users rv             ON rv.id = s.reviewed_by
+     WHERE a.is_smc = true`;
+
+  // ── SMC MEMBER ────────────────────────────────────────────────────────────
+
+  /* §7/§32 — everything the member must act on, ordered by what is most urgent:
+     revision-required first, then today chronologically, then overdue, then
+     upcoming. Scoped to the caller: an SMC member can only ever read their own
+     assignments (§42), enforced by the join on their own id. */
+  app.get(`${P}/smc/my-day`, asyncHandler(async (_req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await isSmcMember(u))) return sendError(res, 403, "SMC access only.");
+    const { rows } = await pool.query(`${SMC_SELECT} AND au.user_id = $1
+       ORDER BY
+         CASE WHEN a.smc_status = 'revision_required' THEN 0
+              WHEN a.start_date = CURRENT_DATE THEN 1
+              WHEN a.start_date < CURRENT_DATE AND a.smc_status NOT IN ('reviewed','cancelled') THEN 2
+              ELSE 3 END,
+         a.start_date, a.start_time NULLS LAST`, [u.id]);
+    const prof = (await pool.query(
+      `SELECT p.*, un.name AS institute FROM mo_smc_profiles p
+         LEFT JOIN mo_academic_units un ON un.id = p.academic_unit_id
+        WHERE p.user_id=$1`, [u.id])).rows[0] ?? null;
+    res.json({ profile: prof, assignments: rows });
+  }));
+
+  /* Ownership gate for every member action: the assignment must exist, be SMC,
+     belong to THIS member, and not be cancelled. Returns a message rather than
+     leaking whether someone else's assignment exists (§42, §50). */
+  async function ownAssignment(u: CurrentUser, id: number):
+    Promise<{ row: Record<string, unknown> } | { err: [number, string] }> {
+    const r = (await pool.query(
+      `SELECT a.*, au.user_id AS member_id FROM mo_assignments a
+         LEFT JOIN mo_assignment_users au ON au.assignment_id=a.id
+        WHERE a.id=$1 AND a.is_smc=true`, [id])).rows[0];
+    if (!r) return { err: [404, "That assignment could not be found."] };
+    if (String(r.member_id ?? "") !== u.id) return { err: [403, "That assignment is not yours."] };
+    if (r.smc_status === "cancelled") return { err: [409, "This assignment has been cancelled."] };
+    return { row: r };
+  }
+
+  const smcTransition = (from: string, to: string): boolean => {
+    const ok: Record<string, string[]> = {
+      assigned: ["accepted"],
+      accepted: ["in_progress", "submitted"],
+      in_progress: ["submitted"],
+      revision_required: ["submitted"],
+    };
+    return (ok[from] ?? []).includes(to);
+  };
+
+  // §9 accept / §10 start — one handler, since they differ only in the column.
+  for (const [verb, next, stamp] of [["accept", "accepted", "accepted_at"], ["start", "in_progress", "started_at"]] as const) {
+    app.post(`${P}/smc/assignments/:id/${verb}`, asyncHandler(async (req, res) => {
+      const u = res.locals.currentUser as CurrentUser;
+      if (!(await isSmcMember(u))) return sendError(res, 403, "SMC access only.");
+      const id = Number(getSingleParam(req.params.id));
+      const got = await ownAssignment(u, id);
+      if ("err" in got) return sendError(res, got.err[0], got.err[1]);
+      const from = String(got.row.smc_status ?? "assigned");
+      if (!smcTransition(from, next))
+        return sendError(res, 409, `This assignment cannot be ${verb === "accept" ? "accepted" : "started"} from its current state.`);
+      const extra = verb === "accept" ? `, accepted_by=$2` : ``;
+      await pool.query(
+        `UPDATE mo_assignments SET smc_status='${next}', ${stamp}=NOW()${extra} WHERE id=$1`,
+        verb === "accept" ? [id, u.id] : [id]);
+      await audit(u, `smc.assignment_${verb === "accept" ? "accepted" : "started"}`, "assignment", id,
+        { smc_status: from }, { smc_status: next }, req);
+      if (got.row.assigned_by)
+        await smcNotify(String(got.row.assigned_by), "smc_assignment",
+          verb === "accept" ? "SMC assignment accepted" : "SMC coverage started",
+          `${u.full_name ?? "An SMC member"} — ${String(got.row.title ?? "assignment")}`, id);
+      res.json({ ok: true, smc_status: next });
+    }));
+  }
+
+  /* §12/§13 — submit or resubmit. A new attempt row every time, so a revision
+     never overwrites what was reviewed before (§14). */
+  app.post(`${P}/smc/assignments/:id/submit`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await isSmcMember(u))) return sendError(res, 403, "SMC access only.");
+    const id = Number(getSingleParam(req.params.id));
+    const got = await ownAssignment(u, id);
+    if ("err" in got) return sendError(res, got.err[0], got.err[1]);
+    const from = String(got.row.smc_status ?? "assigned");
+    if (!smcTransition(from, "submitted"))
+      return sendError(res, 409, from === "submitted"
+        ? "This work has already been submitted and is awaiting review."
+        : "Accept and start this assignment before submitting your work.");
+
+    const b = req.body as Record<string, unknown>;
+    const url = (k: string) => String(b[k] ?? "").trim();
+    const drive = url("drive_url"), photos = url("photos_url");
+    if (!drive && !photos)
+      return sendError(res, 400, "Add at least one link to your work — a Drive or Photos link.");
+    const bad = [["drive_url", drive], ["photos_url", photos],
+      ["media_library_url", url("media_library_url")], ["reference_url", url("reference_url")]]
+      .find(([, v]) => v && !/^https?:\/\/\S+$/i.test(v));
+    if (bad) return sendError(res, 400, "One of the links is not a valid URL. Please check and try again.");
+
+    const attempt = Number((await pool.query(
+      `SELECT COALESCE(MAX(attempt),0)+1 AS n FROM mo_smc_submissions WHERE assignment_id=$1`, [id])).rows[0].n);
+    const ins = await pool.query(
+      `INSERT INTO mo_smc_submissions (assignment_id, submitted_by, attempt, drive_url, photos_url,
+         media_library_url, reference_url, note, photo_count, video_count)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+      [id, u.id, attempt, drive || null, photos || null, url("media_library_url") || null,
+       url("reference_url") || null, url("note") || null,
+       Math.max(0, Number(b.photo_count) || 0), Math.max(0, Number(b.video_count) || 0)]);
+    await pool.query(`UPDATE mo_assignments SET smc_status='submitted' WHERE id=$1`, [id]);
+    await audit(u, attempt > 1 ? "smc.submission_resubmitted" : "smc.submission_created",
+      "assignment", id, { smc_status: from }, { attempt, submission_id: ins.rows[0].id }, req);
+    if (got.row.assigned_by)
+      await smcNotify(String(got.row.assigned_by), "smc_submission", "SMC work submitted",
+        `${u.full_name ?? "An SMC member"} submitted ${String(got.row.title ?? "coverage")}`, id);
+    res.status(201).json({ ok: true, smc_status: "submitted", attempt });
+  }));
+
+
+  // ── SMC MANAGEMENT ────────────────────────────────────────────────────────
+
+  async function requireSmcManager(res: express.Response): Promise<CurrentUser | null> {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await isSmcManager(u))) { sendError(res, 403, "SMC Management access only."); return null; }
+    return u;
+  }
+
+  /* §16 — the dashboard counts. Every number is a real query, and each maps to a
+     filter the UI can open, so nothing here is decorative. */
+  app.get(`${P}/smc/overview`, asyncHandler(async (_req, res) => {
+    if (!(await requireSmcManager(res))) return;
+    const q = async (sql: string) => Number((await pool.query(sql)).rows[0].n);
+    const [members, active, institutes] = await Promise.all([
+      q(`SELECT COUNT(*) n FROM mo_smc_profiles`),
+      q(`SELECT COUNT(*) n FROM mo_smc_profiles WHERE is_active`),
+      q(`SELECT COUNT(DISTINCT academic_unit_id) n FROM mo_smc_profiles WHERE is_active AND academic_unit_id IS NOT NULL`),
+    ]);
+    const byStatus = (await pool.query(
+      `SELECT COALESCE(smc_status,'assigned') s, COUNT(*) n FROM mo_assignments
+        WHERE is_smc AND smc_status <> 'cancelled' GROUP BY 1`)).rows
+      .reduce((a: Record<string, number>, r) => { a[String(r.s)] = Number(r.n); return a; }, {});
+    const today = await q(`SELECT COUNT(*) n FROM mo_assignments WHERE is_smc AND start_date=CURRENT_DATE AND smc_status<>'cancelled'`);
+    // "Missed" is measurable, not guessed: past its deadline and still unsubmitted.
+    const missed = await q(
+      `SELECT COUNT(*) n FROM mo_assignments WHERE is_smc AND smc_status IN ('assigned','accepted','in_progress')
+        AND submission_deadline IS NOT NULL AND submission_deadline < NOW()`);
+    const unaccepted = await q(
+      `SELECT COUNT(*) n FROM mo_assignments WHERE is_smc AND COALESCE(smc_status,'assigned')='assigned'
+        AND start_date <= CURRENT_DATE`);
+    res.json({ members, active_members: active, institutes_covered: institutes, assignments_today: today,
+      assigned: byStatus.assigned ?? 0, accepted: byStatus.accepted ?? 0,
+      in_progress: byStatus.in_progress ?? 0, submitted: byStatus.submitted ?? 0,
+      reviewed: byStatus.reviewed ?? 0, revision_required: byStatus.revision_required ?? 0,
+      missed, unaccepted });
+  }));
+
+  /* §52/§53/§54 — the coverage list, filterable. One endpoint powers Today's
+     Coverage, the status drill-downs and the search box. */
+  app.get(`${P}/smc/assignments`, asyncHandler(async (req, res) => {
+    if (!(await requireSmcManager(res))) return;
+    const f = req.query as Record<string, string>;
+    const where: string[] = []; const args: unknown[] = [];
+    const add = (sql: string, v: unknown) => { args.push(v); where.push(sql.replace("?", `$${args.length}`)); };
+    if (f.status === "missed") where.push(`a.smc_status IN ('assigned','accepted','in_progress')
+      AND a.submission_deadline IS NOT NULL AND a.submission_deadline < NOW()`);
+    else if (f.status) add(`COALESCE(a.smc_status,'assigned') = ?`, f.status);
+    if (f.unit) add(`COALESCE(a.academic_unit_id, p.academic_unit_id) = ?`, Number(f.unit));
+    if (f.member) add(`au.user_id = ?`, f.member);
+    if (f.level) add(`p.event_level = ?`, f.level);
+    if (f.date === "today") where.push(`a.start_date = CURRENT_DATE`);
+    else if (f.from) add(`a.start_date >= ?`, f.from);
+    if (f.to) add(`a.start_date <= ?`, f.to);
+    if (f.q) add(`(a.title ILIKE '%'||?||'%' OR p.name ILIKE '%'||$${args.length}||'%' OR mu.full_name ILIKE '%'||$${args.length}||'%')`, f.q);
+    const sql = `${SMC_SELECT}${where.length ? " AND " + where.join(" AND ") : ""}
+      ORDER BY a.start_date DESC, a.start_time NULLS LAST LIMIT 300`;
+    res.json({ assignments: (await pool.query(sql, args)).rows });
+  }));
+
+  /* §34 — per-member and per-institute performance, all derived from records. */
+  app.get(`${P}/smc/performance`, asyncHandler(async (_req, res) => {
+    if (!(await requireSmcManager(res))) return;
+    const members = (await pool.query(`
+      SELECT u.id, u.full_name, un.name AS institute, pr.is_active,
+             COUNT(a.id) total,
+             COUNT(*) FILTER (WHERE a.accepted_at IS NOT NULL) accepted,
+             COUNT(*) FILTER (WHERE a.smc_status IN ('submitted','reviewed','revision_required')) submitted,
+             COUNT(*) FILTER (WHERE a.smc_status = 'reviewed') reviewed,
+             COUNT(*) FILTER (WHERE a.smc_status = 'revision_required') revision_required,
+             COUNT(*) FILTER (WHERE a.smc_status IN ('assigned','accepted','in_progress')
+               AND a.submission_deadline IS NOT NULL AND a.submission_deadline < NOW()) missed,
+             COUNT(*) FILTER (WHERE s.submitted_at IS NOT NULL AND a.submission_deadline IS NOT NULL
+               AND s.submitted_at > a.submission_deadline) late
+        FROM mo_smc_profiles pr
+        JOIN users u ON u.id = pr.user_id
+        LEFT JOIN mo_academic_units un ON un.id = pr.academic_unit_id
+        LEFT JOIN mo_assignment_users au ON au.user_id = u.id
+        LEFT JOIN mo_assignments a ON a.id = au.assignment_id AND a.is_smc AND a.smc_status <> 'cancelled'
+        LEFT JOIN LATERAL (SELECT submitted_at FROM mo_smc_submissions
+                            WHERE assignment_id = a.id ORDER BY attempt DESC LIMIT 1) s ON true
+       GROUP BY u.id, u.full_name, un.name, pr.is_active
+       ORDER BY u.full_name`)).rows;
+    const institutes = (await pool.query(`
+      SELECT un.id, un.name,
+             COUNT(DISTINCT pr.user_id) FILTER (WHERE pr.is_active) active_members,
+             COUNT(DISTINCT p.id) FILTER (WHERE p.event_level IN ('institute','major_institute')) events,
+             COUNT(DISTINCT a.id) covered,
+             COUNT(DISTINCT a.id) FILTER (WHERE a.smc_status = 'reviewed') completed
+        FROM mo_academic_units un
+        LEFT JOIN mo_smc_profiles pr ON pr.academic_unit_id = un.id
+        LEFT JOIN mo_projects p ON p.academic_unit_id = un.id
+        LEFT JOIN mo_assignments a ON a.is_smc AND COALESCE(a.academic_unit_id, p.academic_unit_id) = un.id
+                                  AND a.smc_status <> 'cancelled'
+       WHERE un.is_active AND un.archived_at IS NULL
+       GROUP BY un.id, un.name ORDER BY un.name`)).rows;
+    res.json({ members, institutes });
+  }));
+
+  // §18/§19 — SMC member CRUD. Creating one makes a REAL account (team='smc').
+  app.get(`${P}/smc/members`, asyncHandler(async (_req, res) => {
+    if (!(await requireSmcManager(res))) return;
+    const { rows } = await pool.query(`
+      SELECT u.id, u.full_name, u.email, pr.phone, pr.designation, pr.joining_date,
+             pr.coverage_area, pr.is_active, pr.academic_unit_id, un.name AS institute,
+             pr.manager_id, m.full_name AS manager_name
+        FROM mo_smc_profiles pr
+        JOIN users u ON u.id = pr.user_id
+        LEFT JOIN mo_academic_units un ON un.id = pr.academic_unit_id
+        LEFT JOIN users m ON m.id = pr.manager_id
+       ORDER BY pr.is_active DESC, u.full_name`);
+    res.json({ members: rows });
+  }));
+
+  app.post(`${P}/smc/members`, asyncHandler(async (req, res) => {
+    const actor = await requireSmcManager(res); if (!actor) return;
+    const b = req.body as Record<string, unknown>;
+    const name = String(b.full_name ?? "").trim();
+    const email = String(b.email ?? "").trim().toLowerCase();
+    const password = String(b.password ?? "").trim();
+    const unit = b.academic_unit_id ? Number(b.academic_unit_id) : null;
+    if (!name) return sendError(res, 400, "Please enter the member's full name.");
+    if (!/^\S+@\S+\.\S+$/.test(email)) return sendError(res, 400, "Please enter a valid email address.");
+    if (password.length < 6) return sendError(res, 400, "The temporary password must be at least 6 characters.");
+    if (!unit) return sendError(res, 400, "Please choose the institute this member covers.");
+    if ((await pool.query(`SELECT 1 FROM users WHERE lower(email)=lower($1)`, [email])).rows[0])
+      return sendError(res, 409, "An account already exists with that email address.");
+
+    // team='smc' is what makes the role real: moRoleOf() returns null for them,
+    // so every non-SMC media route refuses them server-side (§4, §41).
+    const id = `smc-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    await pool.query(
+      `INSERT INTO users (id, full_name, email, role, team, password_hash, email_verified)
+       VALUES ($1,$2,$3,'user','smc',$4,true)`,
+      [id, name, email, await hashPassword(password)]);
+    await pool.query(
+      `INSERT INTO mo_smc_profiles (user_id, academic_unit_id, designation, phone, joining_date,
+         coverage_area, manager_id, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [id, unit, String(b.designation ?? "SMC Member").trim() || "SMC Member",
+       String(b.phone ?? "").trim() || null, b.joining_date || null,
+       String(b.coverage_area ?? "").trim() || null, b.manager_id || null, actor.id]);
+    await audit(actor, "smc.member_created", "user", null, null, { id, email, unit }, req);
+    res.status(201).json({ ok: true, id });
+  }));
+
+  app.patch(`${P}/smc/members/:id`, asyncHandler(async (req, res) => {
+    const actor = await requireSmcManager(res); if (!actor) return;
+    const id = getSingleParam(req.params.id);
+    const before = (await pool.query(`SELECT * FROM mo_smc_profiles WHERE user_id=$1`, [id])).rows[0];
+    if (!before) return sendError(res, 404, "That SMC member could not be found.");
+    const b = req.body as Record<string, unknown>;
+    // Role is never editable here (§20) — only the SMC profile fields are.
+    const sets: string[] = []; const args: unknown[] = [];
+    const set = (col: string, v: unknown) => { args.push(v); sets.push(`${col}=$${args.length}`); };
+    if (b.academic_unit_id !== undefined) set("academic_unit_id", Number(b.academic_unit_id) || null);
+    if (b.designation !== undefined) set("designation", String(b.designation).trim() || "SMC Member");
+    if (b.phone !== undefined) set("phone", String(b.phone).trim() || null);
+    if (b.coverage_area !== undefined) set("coverage_area", String(b.coverage_area).trim() || null);
+    if (b.manager_id !== undefined) set("manager_id", b.manager_id || null);
+    if (b.joining_date !== undefined) set("joining_date", b.joining_date || null);
+    if (b.is_active !== undefined) set("is_active", !!b.is_active);
+    if (b.full_name !== undefined && String(b.full_name).trim())
+      await pool.query(`UPDATE users SET full_name=$1 WHERE id=$2`, [String(b.full_name).trim(), id]);
+    if (sets.length) {
+      args.push(id);
+      await pool.query(`UPDATE mo_smc_profiles SET ${sets.join(", ")}, updated_at=NOW() WHERE user_id=$${args.length}`, args);
+    }
+    const action = b.is_active === undefined ? "smc.member_edited"
+      : (b.is_active ? "smc.member_activated" : "smc.member_deactivated");
+    await audit(actor, action, "user", null, before, { ...b, user_id: id }, req);
+    res.json({ ok: true });
+  }));
+
+  /* §35 — one member's full history: assignments, submissions, reviews. */
+  app.get(`${P}/smc/members/:id/history`, asyncHandler(async (req, res) => {
+    if (!(await requireSmcManager(res))) return;
+    const id = getSingleParam(req.params.id);
+    const { rows } = await pool.query(`${SMC_SELECT} AND au.user_id=$1 ORDER BY a.start_date DESC`, [id]);
+    const reviews = (await pool.query(`
+      SELECT s.*, a.title, rv.full_name AS reviewer FROM mo_smc_submissions s
+        JOIN mo_assignments a ON a.id = s.assignment_id
+        LEFT JOIN users rv ON rv.id = s.reviewed_by
+       WHERE s.submitted_by=$1 ORDER BY s.submitted_at DESC`, [id])).rows;
+    res.json({ assignments: rows, submissions: reviews });
+  }));
+
+  /* §27/§28 — create an assignment against an EXISTING event. Event facts are
+     read from the project, never re-entered, so the two cannot disagree. */
+  app.post(`${P}/smc/assignments`, asyncHandler(async (req, res) => {
+    const actor = await requireSmcManager(res); if (!actor) return;
+    const b = req.body as Record<string, unknown>;
+    const projectId = Number(b.project_id) || null;
+    const memberId = String(b.member_id ?? "").trim();
+    if (!projectId) return sendError(res, 400, "Choose the event this coverage is for.");
+    if (!memberId) return sendError(res, 400, "Choose an SMC member to assign.");
+    const proj = (await pool.query(`SELECT * FROM mo_projects WHERE id=$1`, [projectId])).rows[0];
+    if (!proj) return sendError(res, 404, "That event could not be found.");
+    const prof = (await pool.query(`SELECT * FROM mo_smc_profiles WHERE user_id=$1`, [memberId])).rows[0];
+    if (!prof) return sendError(res, 404, "That SMC member could not be found.");
+    if (!prof.is_active) return sendError(res, 409, "That SMC member is inactive and cannot receive assignments.");
+
+    const date = String(b.start_date ?? proj.start_date ?? "").slice(0, 10) || null;
+    const unit = Number(b.academic_unit_id) || proj.academic_unit_id || prof.academic_unit_id || null;
+    // §31 — a conflict is reported, not blocked; management decides.
+    const conflicts = date ? (await pool.query(
+      `SELECT a.id, a.title, a.start_time, a.end_time FROM mo_assignments a
+         JOIN mo_assignment_users au ON au.assignment_id=a.id
+        WHERE au.user_id=$1 AND a.is_smc AND a.start_date=$2
+          AND COALESCE(a.smc_status,'assigned') NOT IN ('cancelled','reviewed')`,
+      [memberId, date])).rows : [];
+
+    const ins = await pool.query(
+      `INSERT INTO mo_assignments (project_id, title, assigned_by, priority, status, start_date,
+         start_time, end_time, notes, is_smc, academic_unit_id, venue, coverage_requirements,
+         deliverables_required, submission_deadline, smc_status)
+       VALUES ($1,$2,$3,$4,'not_started',$5,$6,$7,$8,true,$9,$10,$11,$12,$13,'assigned') RETURNING id`,
+      [projectId, String(b.title ?? proj.name ?? "SMC coverage").trim(), actor.id,
+       String(b.priority ?? "normal"), date, b.start_time || null, b.end_time || null,
+       String(b.instructions ?? "").trim() || null, unit, String(b.venue ?? "").trim() || null,
+       String(b.coverage_requirements ?? "").trim() || null,
+       String(b.deliverables_required ?? "").trim() || null, b.submission_deadline || null]);
+    const id = Number(ins.rows[0].id);
+    await pool.query(`INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2)`, [id, memberId]);
+    await audit(actor, "smc.assignment_created", "assignment", id, null,
+      { project_id: projectId, member_id: memberId, unit }, req);
+    await smcNotify(memberId, "smc_assignment", "New coverage assignment",
+      `${String(proj.name ?? "An event")}${date ? " — " + date : ""}`, id);
+    res.status(201).json({ ok: true, id, conflicts });
+  }));
+
+  /* §14 — review a submission. The decision is written on the submission ATTEMPT,
+     so the history of what was reviewed when is preserved across revisions. */
+  app.post(`${P}/smc/assignments/:id/review`, asyncHandler(async (req, res) => {
+    const actor = await requireSmcManager(res); if (!actor) return;
+    const id = Number(getSingleParam(req.params.id));
+    const b = req.body as Record<string, unknown>;
+    const decision = String(b.decision ?? "").trim();
+    if (!["reviewed", "revision_required"].includes(decision))
+      return sendError(res, 400, "Choose whether the work is accepted or needs revision.");
+    const feedback = String(b.feedback ?? "").trim();
+    if (decision === "revision_required" && !feedback)
+      return sendError(res, 400, "Please say what needs to change so the member can act on it.");
+    const sub = (await pool.query(
+      `SELECT * FROM mo_smc_submissions WHERE assignment_id=$1 ORDER BY attempt DESC LIMIT 1`, [id])).rows[0];
+    if (!sub) return sendError(res, 404, "There is no submission to review yet.");
+    await pool.query(
+      `UPDATE mo_smc_submissions SET review_status=$1, reviewed_by=$2, reviewed_at=NOW(), review_feedback=$3
+        WHERE id=$4`, [decision, actor.id, feedback || null, sub.id]);
+    await pool.query(`UPDATE mo_assignments SET smc_status=$1 WHERE id=$2`, [decision, id]);
+    await audit(actor, decision === "reviewed" ? "smc.submission_reviewed" : "smc.revision_requested",
+      "assignment", id, { attempt: sub.attempt }, { decision, feedback }, req);
+    const member = await smcAssignee(id);
+    if (member) await smcNotify(member, "smc_review",
+      decision === "reviewed" ? "Your coverage was reviewed" : "Revision requested",
+      decision === "reviewed" ? "Your submission has been accepted." : feedback, id);
+    res.json({ ok: true, smc_status: decision });
+  }));
+
+  // §30 — reassign, keeping the handover auditable.
+  app.post(`${P}/smc/assignments/:id/reassign`, asyncHandler(async (req, res) => {
+    const actor = await requireSmcManager(res); if (!actor) return;
+    const id = Number(getSingleParam(req.params.id));
+    const to = String((req.body as Record<string, unknown>).member_id ?? "").trim();
+    const reason = String((req.body as Record<string, unknown>).reason ?? "").trim();
+    const asg = (await pool.query(`SELECT * FROM mo_assignments WHERE id=$1 AND is_smc`, [id])).rows[0];
+    if (!asg) return sendError(res, 404, "That assignment could not be found.");
+    const prof = (await pool.query(`SELECT is_active FROM mo_smc_profiles WHERE user_id=$1`, [to])).rows[0];
+    if (!prof) return sendError(res, 404, "That SMC member could not be found.");
+    if (!prof.is_active) return sendError(res, 409, "That SMC member is inactive and cannot receive assignments.");
+    const from = await smcAssignee(id);
+    if (from === to) return sendError(res, 409, "That assignment is already with this member.");
+    await pool.query(`DELETE FROM mo_assignment_users WHERE assignment_id=$1`, [id]);
+    await pool.query(`INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2)`, [id, to]);
+    // The new assignee starts from the beginning; the old one's acceptance is history.
+    await pool.query(
+      `UPDATE mo_assignments SET smc_status='assigned', accepted_by=NULL, accepted_at=NULL, started_at=NULL WHERE id=$1`, [id]);
+    await pool.query(
+      `INSERT INTO mo_smc_reassignments (assignment_id, from_user_id, to_user_id, changed_by, reason)
+       VALUES ($1,$2,$3,$4,$5)`, [id, from, to, actor.id, reason || null]);
+    await audit(actor, "smc.assignment_reassigned", "assignment", id, { from }, { to, reason }, req);
+    if (from) await smcNotify(from, "smc_assignment", "Assignment reassigned",
+      `${String(asg.title ?? "Coverage")} is no longer assigned to you.`, id);
+    await smcNotify(to, "smc_assignment", "New coverage assignment", String(asg.title ?? "Coverage"), id);
+    res.json({ ok: true });
+  }));
+
+  // §37 — escalate to Central Media: the event is promoted so the existing
+  // Central Media workflow picks it up, rather than inventing a second pipeline.
+  app.post(`${P}/smc/assignments/:id/escalate`, asyncHandler(async (req, res) => {
+    const actor = await requireSmcManager(res); if (!actor) return;
+    const id = Number(getSingleParam(req.params.id));
+    const reason = String((req.body as Record<string, unknown>).reason ?? "").trim();
+    if (!reason) return sendError(res, 400, "Please give a reason so Central Media knows what is needed.");
+    const asg = (await pool.query(`SELECT * FROM mo_assignments WHERE id=$1 AND is_smc`, [id])).rows[0];
+    if (!asg) return sendError(res, 404, "That assignment could not be found.");
+    if (asg.escalated_at) return sendError(res, 409, "This assignment has already been escalated.");
+    await pool.query(
+      `UPDATE mo_assignments SET escalated_at=NOW(), escalated_by=$1, escalation_reason=$2,
+         escalation_status='open' WHERE id=$3`, [actor.id, reason, id]);
+    // Promote the event itself so it surfaces in the Central Media views.
+    if (asg.project_id)
+      await pool.query(
+        `UPDATE mo_projects SET event_level='major_institute'
+          WHERE id=$1 AND event_level='institute'`, [asg.project_id]);
+    await audit(actor, "smc.assignment_escalated", "assignment", id, null, { reason }, req);
+    res.json({ ok: true });
+  }));
+
+  // §21 — cancel, never delete: history stays intact.
+  app.post(`${P}/smc/assignments/:id/cancel`, asyncHandler(async (req, res) => {
+    const actor = await requireSmcManager(res); if (!actor) return;
+    const id = Number(getSingleParam(req.params.id));
+    const reason = String((req.body as Record<string, unknown>).reason ?? "").trim();
+    const asg = (await pool.query(`SELECT * FROM mo_assignments WHERE id=$1 AND is_smc`, [id])).rows[0];
+    if (!asg) return sendError(res, 404, "That assignment could not be found.");
+    await pool.query(
+      `UPDATE mo_assignments SET smc_status='cancelled', cancelled_at=NOW(), cancel_reason=$1 WHERE id=$2`,
+      [reason || null, id]);
+    await audit(actor, "smc.assignment_cancelled", "assignment", id, { smc_status: asg.smc_status }, { reason }, req);
+    const member = await smcAssignee(id);
+    if (member) await smcNotify(member, "smc_assignment", "Assignment cancelled",
+      `${String(asg.title ?? "Coverage")}${reason ? " — " + reason : ""}`, id);
+    res.json({ ok: true });
+  }));
+
+  /* Institutes for the pickers, with their SMC strength (§17/§22). Reuses
+     mo_academic_units — no second institute table. */
+  app.get(`${P}/smc/institutes`, asyncHandler(async (_req, res) => {
+    if (!(await requireSmcManager(res))) return;
+    const { rows } = await pool.query(`
+      SELECT un.id, un.name, un.is_active,
+             COUNT(pr.user_id) FILTER (WHERE pr.is_active) AS active_members,
+             COUNT(pr.user_id) AS total_members
+        FROM mo_academic_units un
+        LEFT JOIN mo_smc_profiles pr ON pr.academic_unit_id = un.id
+       WHERE un.archived_at IS NULL
+       GROUP BY un.id, un.name, un.is_active ORDER BY un.name`);
+    res.json({ institutes: rows });
+  }));
+
+  /* Institute-level events that can take SMC coverage (§24/§27), with the
+     institute's own SMC members offered alongside. */
+  app.get(`${P}/smc/assignable-events`, asyncHandler(async (_req, res) => {
+    if (!(await requireSmcManager(res))) return;
+    const events = (await pool.query(`
+      SELECT p.id, p.name, p.start_date, p.event_level, p.academic_unit_id, un.name AS institute
+        FROM mo_projects p LEFT JOIN mo_academic_units un ON un.id = p.academic_unit_id
+       WHERE p.event_level IN ('institute','major_institute','university')
+         AND p.status NOT IN ('archived','cancelled','completed')
+       ORDER BY p.start_date DESC NULLS LAST LIMIT 200`)).rows;
+    const members = (await pool.query(`
+      SELECT pr.user_id id, u.full_name, pr.academic_unit_id, un.name AS institute
+        FROM mo_smc_profiles pr JOIN users u ON u.id=pr.user_id
+        LEFT JOIN mo_academic_units un ON un.id=pr.academic_unit_id
+       WHERE pr.is_active ORDER BY u.full_name`)).rows;
+    res.json({ events, members });
+  }));
+
+  /* §23 — set an event's level. The only change SMC makes to an existing event. */
+  app.patch(`${P}/smc/events/:id/level`, asyncHandler(async (req, res) => {
+    const actor = await requireSmcManager(res); if (!actor) return;
+    const id = Number(getSingleParam(req.params.id));
+    const level = String((req.body as Record<string, unknown>).event_level ?? "");
+    if (!["central", "institute", "major_institute", "university"].includes(level))
+      return sendError(res, 400, "That is not a valid event level.");
+    const before = (await pool.query(`SELECT event_level FROM mo_projects WHERE id=$1`, [id])).rows[0];
+    if (!before) return sendError(res, 404, "That event could not be found.");
+    await pool.query(`UPDATE mo_projects SET event_level=$1 WHERE id=$2`, [level, id]);
+    await audit(actor, "smc.event_level_changed", "project", id, before, { event_level: level }, req);
+    res.json({ ok: true });
+  }));
+
 }
 
 // ── date/time utils ─────────────────────────────────────────────────────────
