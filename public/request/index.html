@@ -42,6 +42,11 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary)
   font:inherit;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:9px}
 .btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
 .btn.primary:disabled{opacity:.5;cursor:not-allowed}
+.steps{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 16px;font-size:12px}
+.steps .step{display:inline-flex;align-items:center;gap:6px;color:var(--text-3);white-space:nowrap}
+.steps .step.on{color:var(--primary-2);font-weight:650}
+.steps .step.done{color:#15803D}
+.steps i{color:var(--text-3);font-style:normal}
 .who{display:flex;align-items:center;gap:10px;background:var(--ok-bg);border:1px solid #BBF7D0;
   border-radius:10px;padding:10px 12px;font-size:13px;color:var(--ok);font-weight:600}
 .note{border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.55;margin-bottom:14px}

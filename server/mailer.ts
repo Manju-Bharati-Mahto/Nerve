@@ -60,6 +60,27 @@ export function passwordOtpEmail(name: string, otp: string): string {
     </div>`;
 }
 
+/* Verification code for the public casting / request portals. Same transport and
+   the same visual language as the password codes above — it goes out through
+   sendMail(), so it inherits whichever of SMTP or TradAI the deployment has
+   configured. There is no second mail setup. */
+export function portalOtpEmail(otp: string, campaign: string, ttlMinutes: number): string {
+  return `
+    <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:24px">
+      <h2 style="color:#1a1a1a">NERVE Media Ops — Your verification code</h2>
+      <p>Use the code below to continue${campaign ? ` with <strong>${campaign}</strong>` : ""}.</p>
+      <div style="text-align:center;margin:28px 0">
+        <span style="display:inline-block;font-size:38px;font-weight:700;letter-spacing:12px;color:#1a1a1a;background:#f4f4f5;padding:18px 28px;border-radius:12px;font-family:monospace">
+          ${otp}
+        </span>
+      </div>
+      <p>This code expires in <strong>${ttlMinutes} minutes</strong> and can be used once.</p>
+      <p style="color:#666;font-size:13px">If you did not request this code, you can ignore this email.</p>
+      <hr style="border:none;border-top:1px solid #eee;margin:24px 0">
+      <p style="color:#999;font-size:12px">Parul University<br>NERVE Media Ops</p>
+    </div>`;
+}
+
 export function passwordResetEmail(name: string, resetUrl: string): string {
   return `
     <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:24px">

@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { pool } from "./db.js";
+import { generateOtp, hashOtp, OTP_TTL_MINUTES } from "./otp.js";
 
 // ── Bootstrap ──────────────────────────────────────────────────────────────
 
@@ -199,9 +200,12 @@ export async function isEmailVerified(userId: string): Promise<boolean> {
 
 /** Create a 6-digit OTP, store its hash (10 min TTL), return raw OTP to email. */
 export async function createPasswordOtp(userId: string): Promise<string> {
-  const otp = String(Math.floor(100000 + Math.random() * 900000));
-  const { createHash } = await import("node:crypto");
-  const hash = createHash("sha256").update(otp).digest("hex");
+  // Generation, hashing and TTL come from the shared policy in otp.ts, which the
+  // public portals use too — one definition of what an OTP is. Behaviour here is
+  // unchanged apart from the code now coming from a CSPRNG rather than
+  // Math.random(), which was never suitable for a credential.
+  const otp = generateOtp();
+  const hash = hashOtp(otp);
   const id = `otp-${Date.now()}-${randomBytes(3).toString("hex")}`;
 
   await pool.query(
@@ -210,8 +214,8 @@ export async function createPasswordOtp(userId: string): Promise<string> {
   );
   await pool.query(
     `INSERT INTO password_otps (id, user_id, otp_hash, expires_at)
-     VALUES ($1, $2, $3, NOW() + interval '10 minutes')`,
-    [id, userId, hash]
+     VALUES ($1, $2, $3, NOW() + ($4 || ' minutes')::interval)`,
+    [id, userId, hash, String(OTP_TTL_MINUTES)]
   );
   return otp;
 }
@@ -224,8 +228,7 @@ export async function verifyPasswordOtp(
   userId: string,
   otp: string
 ): Promise<string | null> {
-  const { createHash } = await import("node:crypto");
-  const hash = createHash("sha256").update(otp).digest("hex");
+  const hash = hashOtp(otp);
   const res = await pool.query<{ id: string }>(
     `UPDATE password_otps SET used = true
      WHERE user_id = $1 AND otp_hash = $2 AND used = false AND expires_at > NOW()
