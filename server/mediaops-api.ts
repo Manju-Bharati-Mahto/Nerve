@@ -2238,12 +2238,26 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     return { email, name: String(body.dev_name ?? email.split("@")[0]), email_verified: true };
   }
 
+  /* pg returns a DATE column as a JS Date at LOCAL midnight, so String(...) is
+     "Fri Aug 14 2026 00:00:00 GMT+0530 …" and taking ten characters yields
+     "Fri Aug 14". Compared against "2026-08-14" that sorts GREATER — which
+     permanently closed every link carrying an opening date, and meant a link
+     past its expiry never closed at all. Read the local calendar parts, which
+     are exactly the date that was stored. */
+  const isoDay = (v: unknown): string => {
+    if (v instanceof Date) {
+      const pad = (n: number) => String(n).padStart(2, "0");
+      return `${v.getFullYear()}-${pad(v.getMonth() + 1)}-${pad(v.getDate())}`;
+    }
+    return String(v ?? "").slice(0, 10);
+  };
+
   const linkOpen = (l: Record<string, unknown>): { ok: boolean; why?: string } => {
     if (!l.is_active) return { ok: false, why: "This casting registration is currently closed." };
-    const today = new Date().toISOString().slice(0, 10);
-    if (l.active_from && String(l.active_from).slice(0, 10) > today)
+    const today = isoDay(new Date());
+    if (l.active_from && isoDay(l.active_from) > today)
       return { ok: false, why: "This casting registration has not opened yet." };
-    if (l.expires_on && String(l.expires_on).slice(0, 10) < today)
+    if (l.expires_on && isoDay(l.expires_on) < today)
       return { ok: false, why: "This casting registration has closed." };
     return { ok: true };
   };
@@ -2477,10 +2491,10 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   const reqLinkOpen = (l: Record<string, unknown>): { ok: boolean; why?: string } => {
     if (!l.is_active) return { ok: false, why: "This media request portal is currently unavailable. Please contact the Media Operations team for assistance." };
-    const today = new Date().toISOString().slice(0, 10);
-    if (l.active_from && String(l.active_from).slice(0, 10) > today)
+    const today = isoDay(new Date());   // see isoDay above — plain slicing breaks pg DATEs
+    if (l.active_from && isoDay(l.active_from) > today)
       return { ok: false, why: "This media request portal has not opened yet." };
-    if (l.expires_on && String(l.expires_on).slice(0, 10) < today)
+    if (l.expires_on && isoDay(l.expires_on) < today)
       return { ok: false, why: "This media request portal has closed." };
     return { ok: true };
   };
