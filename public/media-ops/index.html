@@ -2942,10 +2942,7 @@ function legend(items){return `<div class="legend">${items.map(i=>`<span><i styl
 const NAV = [
   {group:'Main',items:[
     {r:'#/media/home',   i:'home',  l:'Home'},
-    {r:'#/media/my-day', i:'myday', l:'My Day'},
-    /* The SMC member's own My Day — a different page from the crew's, not the
-       same one with buttons removed. */
-    {r:'#/media/smc/my-day', i:'myday', l:'My Day', roles:['smc_member']}
+    {r:'#/media/my-day', i:'myday', l:'My Day'}
   ]},
   {group:'SMC Network',items:[
     {r:'#/media/smc',i:'users',l:'SMC Management', cap:'smc.manage', pfx:['#/media/smc']}
@@ -3000,11 +2997,6 @@ const ROLE_RANK={employee:0,team_lead:1,admin:2};
    with an explicit role, for the Module Access dialog (user being edited). */
 function navShow(it,r){
   r=r||role();
-  /* An SMC member is not a junior employee — they are outside the ladder. They
-     see only entries that name them explicitly, so any module added later is
-     invisible to them unless someone deliberately opts them in. This mirrors the
-     server, where team='smc' makes moRoleOf() null and every crew route refuses. */
-  if(r==='smc_member')return Array.isArray(it.roles)&&it.roles.includes('smc_member');
   /* roles — an explicit allow-list, for a role outside the employee → team lead
      → admin ladder (the Operations Coordinator). */
   if(it.roles)return it.roles.includes(r);
@@ -3113,7 +3105,8 @@ function renderNav(){
 }
 
 const ROUTES = [
-  [/^#\/media\/smc\/my-day$/,           ()=>viewSmcMyDay()],
+  /* SMC work now lives on the ordinary My Day; keep the old path working. */
+  [/^#\/media\/smc\/my-day$/,           ()=>{location.hash='#/media/my-day';return '';}],
   [/^#\/media\/smc$/,                  ()=>viewSmcManagement()],
   [/^#\/media\/smc\/members\/([\w-]+)$/, m=>viewSmcMember(m[1])],
   [/^#\/media\/home$/,                 ()=>viewDashboard()],
@@ -3150,13 +3143,6 @@ const ROUTES = [
 ];
 function render(){
   let hash=location.hash||'#/media/home';
-  /* An SMC member's home IS their My Day (§5). Any crew route they land on —
-     by habit, a stale link or the address bar — bounces here; the server would
-     refuse the data anyway, so this only spares them a dead end. */
-  if(role()==='smc_member'&&!hash.startsWith('#/media/smc/my-day')){
-    hash='#/media/smc/my-day';
-    if(location.hash!==hash){location.hash=hash;return;}
-  }
   S.route=hash;
   let html='';
   // Module-access guard (§ Module Access): bounce to the user's first allowed
@@ -5764,6 +5750,7 @@ function myAssignments(uid=S.me,date,opts={}){
   date=String(date||rtoday()).slice(0,10);
   const logged=opts.all?{delivs:new Set(),projects:new Set()}:loggedTodayKeys(uid);
   const tasks=(DB.assignments||[]).filter(a=>(a.assignees||[]).includes(uid)&&a.status!=='cancelled'
+    &&!a.is_smc                       /* drawn by the SMC card, with its own actions */
     &&!a.deliverable_id&&inSchedule(a,date)
     /* an ad-hoc task counts as logged once its project has a log entry today */
     &&!(a.project_id&&logged.projects.has(a.project_id)));
@@ -5844,8 +5831,33 @@ function assignmentCard(a){
     </div>
   </div>`;
 }
+/* The member's SMC coverage, rendered on the standard My Day. Returns nothing
+   at all for anyone without SMC work, so the page is unchanged for the crew. */
+function smcMyDaySection(){
+  const d=SMC.myday;
+  if(!d) return SMC.loading?`<div class="card"><div class="card-body">
+    <div class="small mut3">Loading your SMC coverage…</div></div></div>`:'';
+  const live=(d.assignments||[]).filter(a=>a.smc_status!=='cancelled'&&a.smc_status!=='reviewed');
+  if(!live.length) return '';
+  const revision=live.filter(a=>a.smc_status==='revision_required');
+  const rest=live.filter(a=>a.smc_status!=='revision_required');
+  return `${smcStyles()}<div class="card">
+    <div class="card-head"><h3>SMC coverage</h3>
+      <div class="ca"><span class="chip${revision.length?' bad':''}">${live.length}</span></div></div>
+    <div class="card-body">
+      ${[...revision,...rest].map(a=>smcCard(a,a.smc_status==='revision_required')).join('')}
+    </div>
+    <div class="card-foot">Institute coverage assigned to you. Accepting, starting and
+      submitting here follows the SMC review workflow.</div></div>`;
+}
+
 function viewMyDay(){
   if(isCoord())return viewCoordMyDay();
+  /* SMC coverage is ordinary work for the person doing it, so it belongs on the
+     ordinary My Day rather than a separate page. The card and its actions are the
+     SMC ones because the lifecycle is genuinely different (accept → start →
+     submit → review); everything around it is the standard page. */
+  if(SMC.myday===null&&!SMC.loading&&!SMC.err) smcLoadMyDay();
   const r=DB.daily_reports.find(x=>x.user_id===S.me&&x.report_date===TODAY);
   const tasks=r?DB.report_tasks.filter(t=>t.daily_report_id===r.id):[];
   /* ONE queue for the whole day. Shoots, deliverables and ad-hoc tasks all arrive
@@ -5881,7 +5893,8 @@ function viewMyDay(){
         lands here on the day it is scheduled for you.</p></div>`:''}
     </div>
     <div class="card-foot">Everything you need to do today is in this one queue. Logging an item moves it
-      out of here and into today’s task log.</div></div>`;
+      out of here and into today’s task log.</div></div>`
+    + smcMyDaySection();
 
   /* Sits directly under the queue: pressing Log on an assignment moves it here. */
   const cLog=`<div class="card">

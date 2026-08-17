@@ -38,6 +38,16 @@ interface CurrentUser { id: string; role: string; team: string | null; full_name
 type MoRole = "admin" | "team_lead" | "employee" | null;
 function moRoleOf(u: CurrentUser): MoRole {
   if (u.role === "super_admin") return "admin";      // platform superuser → full media-ops access
+  /* An SMC member is an ordinary NERVE user who also carries SMC work — not a
+     separate product. Resolving them to 'employee' is the same move the
+     Operations Coordinator makes: every EXISTING gate (admin settings, role
+     changes, approving a version, managing a team) denies an employee, so the
+     administrative surface stays closed by default, while the common modules —
+     Home, My Day, Projects, Calendar, Leave, Equipment, Media Library — work
+     through the paths that already serve employees. SMC-specific rights are
+     granted only by the /smc/* endpoints, which check isSmcMember/isSmcManager
+     explicitly. */
+  if (u.team === "smc") return "employee";
   if (u.team !== "media") return null;               // not on the media crew
   if (u.role === "admin") return "admin";
   if (u.role === "sub_admin") return "team_lead";
@@ -296,33 +306,6 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["user_skills", "mo_user_skills", null, ["user_id"]],
   ];
   app.get(`${P}/state`, asyncHandler(async (_req, res) => {
-    /* An SMC member boots the same SPA but must never receive the crew payload:
-       no roster, no projects, no deliverables, no other members' work (§42). The
-       server decides what they get rather than trusting the client to ignore it,
-       so this stays a data-scoping decision, not a UI one. They are the only
-       person in their own users array, which is all me() needs. */
-    const cu = res.locals.currentUser as CurrentUser;
-    if (await isSmcMember(cu)) {
-      const prof = (await pool.query(
-        `SELECT p.*, un.name AS institute FROM mo_smc_profiles p
-           LEFT JOIN mo_academic_units un ON un.id = p.academic_unit_id
-          WHERE p.user_id=$1`, [cu.id])).rows[0] ?? null;
-      const units = (await pool.query(
-        `SELECT id, name FROM mo_academic_units WHERE is_active AND archived_at IS NULL ORDER BY name`)).rows;
-      const notes = (await pool.query(
-        `SELECT id, kind, title, body, entity_type, entity_id, is_read, created_at
-           FROM mo_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, [cu.id])).rows;
-      const ME = 900;
-      return res.json({
-        me: ME,
-        users: [{ id: ME, real_id: cu.id, full_name: cu.full_name ?? "SMC Member",
-                  email: cu.email ?? "", role: "smc_member", avatar_url: null,
-                  designation: prof?.designation ?? "SMC Member" }],
-        academic_units: units,
-        notifications: notes.map((n) => ({ ...n, user_id: ME })),
-        smc_profile: prof,
-      });
-    }
     const u = requireMedia(res); if (!u) return;
     // Stable {real user id → prototype integer id} map for the media crew (+ the
     // current user if they aren't on the media team, e.g. super_admin). Used for
@@ -333,8 +316,21 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
               p.designation, p.joined_on, p.allowed_modules, p.mo_role,
               u.status, u.deactivated_at FROM users u LEFT JOIN mo_user_profiles p ON p.user_id=u.id
         WHERE u.team='media' ORDER BY u.id`)).rows as Array<Record<string, unknown>>;
-    if (!crew.some((r) => r.id === u.id))
-      crew.unshift({ id: u.id, full_name: u.full_name ?? "You", email: u.email ?? "", role: u.role, avatar_url: null });
+    if (!crew.some((r) => r.id === u.id)) {
+      /* A caller who is not on the media crew — an SMC member, or a super admin
+         on another team — still needs their OWN row, and it must carry the same
+         profile columns the crew rows do. Without allowed_modules here, module
+         access silently did not apply to them: the client reads it as "no
+         restriction" and drew the whole sidebar. */
+      const own = (await pool.query(
+        `SELECT u.id, u.full_name, u.email, u.role, u.avatar_url, u.created_at,
+                p.designation, p.joined_on, p.allowed_modules, p.mo_role,
+                u.status, u.deactivated_at
+           FROM users u LEFT JOIN mo_user_profiles p ON p.user_id=u.id
+          WHERE u.id=$1`, [u.id])).rows[0];
+      crew.unshift(own ?? { id: u.id, full_name: u.full_name ?? "You",
+        email: u.email ?? "", role: u.role, avatar_url: null });
+    }
     let ctr = 900;
     const idMap = new Map<string, number>();
     for (const r of crew) { const m = /^mo-u(\d+)$/.exec(String(r.id)); idMap.set(String(r.id), m ? Number(m[1]) : ctr++); }
@@ -4729,6 +4725,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       `INSERT INTO users (id, full_name, email, role, team, password_hash, email_verified)
        VALUES ($1,$2,$3,'user','smc',$4,true)`,
       [id, name, email, await hashPassword(password)]);
+    /* Sensible defaults: the common employee modules, and SMC Management OFF —
+       being an SMC member is not being an SMC manager. An administrator can
+       change any of this afterwards through the ordinary Module Access UI. */
+    await pool.query(
+      `INSERT INTO mo_user_profiles (user_id, allowed_modules) VALUES ($1,$2)
+       ON CONFLICT (user_id) DO UPDATE SET allowed_modules=EXCLUDED.allowed_modules`,
+      [id, JSON.stringify(["home", "my-day", "projects", "pipeline", "reports",
+                           "boards", "library", "equipment", "calendar", "leave"])]);
     await pool.query(
       `INSERT INTO mo_smc_profiles (user_id, academic_unit_id, designation, phone, joining_date,
          coverage_area, manager_id, created_by)
