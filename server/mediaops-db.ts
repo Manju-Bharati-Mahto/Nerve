@@ -434,16 +434,29 @@ export async function bootstrapMediaOpsDatabase() {
   // Assignments. Deliverables now carry their own schedule, so fold those rows
   // back into the deliverable and drop them. Idempotent: it only ever matches
   // assignments that still have a deliverable_id.
-  await pool.query(`
-    UPDATE mo_deliverables d SET
-      scheduled_date  = COALESCE(d.scheduled_date, a.start_date),
-      estimated_hours = COALESCE(d.estimated_hours, a.estimated_hours),
-      priority        = CASE WHEN d.priority='normal' THEN COALESCE(a.priority, d.priority) ELSE d.priority END,
-      owner_id        = COALESCE(d.owner_id, (SELECT au.user_id FROM mo_assignment_users au WHERE au.assignment_id=a.id LIMIT 1))
-    FROM mo_assignments a
-    WHERE a.deliverable_id = d.id`);
-  await pool.query(`DELETE FROM mo_assignment_users WHERE assignment_id IN (SELECT id FROM mo_assignments WHERE deliverable_id IS NOT NULL)`);
-  await pool.query(`DELETE FROM mo_assignments WHERE deliverable_id IS NOT NULL`);
+  /* Runs ONCE, not on every boot. As an unguarded step it kept deleting every
+     deliverable-linked assignment on restart — including ones a human had
+     deliberately made, since /projects/:id/work already accepts a deliverable_id
+     and the deliverable panel now assigns crew and SMC members against one. The
+     legacy auto-generation this was written to clean up no longer exists, so the
+     cleanup only ever needed to happen a single time. */
+  const folded = (await pool.query(
+    `SELECT 1 FROM app_settings WHERE key='mo_deliverable_assignments_folded'`)).rows[0];
+  if (!folded) {
+    await pool.query(`
+      UPDATE mo_deliverables d SET
+        scheduled_date  = COALESCE(d.scheduled_date, a.start_date),
+        estimated_hours = COALESCE(d.estimated_hours, a.estimated_hours),
+        priority        = CASE WHEN d.priority='normal' THEN COALESCE(a.priority, d.priority) ELSE d.priority END,
+        owner_id        = COALESCE(d.owner_id, (SELECT au.user_id FROM mo_assignment_users au WHERE au.assignment_id=a.id LIMIT 1))
+      FROM mo_assignments a
+      WHERE a.deliverable_id = d.id`);
+    await pool.query(`DELETE FROM mo_assignment_users WHERE assignment_id IN (SELECT id FROM mo_assignments WHERE deliverable_id IS NOT NULL)`);
+    await pool.query(`DELETE FROM mo_assignments WHERE deliverable_id IS NOT NULL`);
+    await pool.query(
+      `INSERT INTO app_settings (key, value) VALUES ('mo_deliverable_assignments_folded','1')
+       ON CONFLICT (key) DO NOTHING`);
+  }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_drive_links (
@@ -1100,6 +1113,147 @@ export async function bootstrapMediaOpsDatabase() {
     INSERT INTO mo_duty_flags (code, name, description)
     SELECT 'casting_manager','Casting Manager','Maintains the casting library: records, tags, collections, consent and casting requests.'
      WHERE NOT EXISTS (SELECT 1 FROM mo_duty_flags WHERE code='casting_manager')`);
+
+  /* ═══ SMC — Social Media Council ══════════════════════════════════════════
+     The institute-level coverage network. Deliberately built ON the existing
+     entities rather than beside them, because a parallel event system is the
+     one thing that would make SMC coverage invisible to Central Media:
+
+       institute   → mo_academic_units      (reused as-is, 13 rows)
+       event       → mo_projects            (+ event_level below)
+       assignment  → mo_assignments         (+ SMC lifecycle below)
+       assignee    → mo_assignment_users    (reused as-is)
+       notify      → mo_notifications       (reused as-is)
+       audit       → mo_audit_logs          (reused as-is)
+       management  → mo_duty_flags          (a duty, exactly like Casting Manager)
+
+     Only two genuinely new concepts exist: an SMC member's institute mapping,
+     and the submission/review history, which needs to survive revisions. */
+
+  /* The SMC network is its own team, which is what makes the role real without
+     touching the platform role vocabulary: users.team='smc' means moRoleOf()
+     resolves to null, so every Media Crew route already refuses them. Built-in,
+     because Team Management must not be able to delete the network out from
+     under its members. */
+  await pool.query(`
+    INSERT INTO teams (id, name, color, is_built_in)
+    SELECT 'smc','SMC Network','#7C3AED',true
+     WHERE NOT EXISTS (SELECT 1 FROM teams WHERE id='smc')`);
+
+  // Who may run SMC Management. A duty, not a tier (D4) — so an Admin, a Team
+  // Lead or the Operations Coordinator can hold it without inventing new roles.
+  await pool.query(`
+    INSERT INTO mo_duty_flags (code, name, description)
+    SELECT 'smc_manager','SMC Manager','Runs the institute-level SMC coverage network: members, institute mapping, assignments, submissions and review.'
+     WHERE NOT EXISTS (SELECT 1 FROM mo_duty_flags WHERE code='smc_manager')`);
+
+  /* §23 — event level lives on the EXISTING project, so one event is one row and
+     Central Media keeps seeing everything it already saw. Level 2 deliberately
+     admits both SMC and Central Media crew (§25) — nothing here makes coverage
+     exclusive. Existing rows default to 'central', so nothing already in the
+     system silently becomes SMC-eligible. */
+  await pool.query(`
+    ALTER TABLE mo_projects ADD COLUMN IF NOT EXISTS event_level TEXT NOT NULL DEFAULT 'central'`);
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE mo_projects ADD CONSTRAINT mo_projects_event_level_check
+        CHECK (event_level IN ('central','institute','major_institute','university'));
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_projects_event_level ON mo_projects(event_level)`);
+
+  /* An SMC member's mapping. The account itself stays an ordinary users row —
+     this only records what makes them SMC: which institute they cover, and under
+     whom. Deactivating sets is_active=false and never deletes, so history
+     survives (§21). */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_smc_profiles (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      academic_unit_id BIGINT REFERENCES mo_academic_units(id),
+      designation TEXT NOT NULL DEFAULT 'SMC Member',
+      phone TEXT,
+      joining_date DATE,
+      coverage_area TEXT,
+      manager_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_by TEXT REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_smc_profiles_unit ON mo_smc_profiles(academic_unit_id, is_active)`);
+
+  /* §8 lifecycle on the EXISTING assignment row. mo_assignments already carries
+     project, title, priority, dates, times and notes — everything §28 asks for —
+     so SMC adds only what it genuinely introduces: the acceptance/coverage
+     timestamps, the coverage brief, and the escalation trail. is_smc marks the
+     rows the SMC views read, leaving every existing assignment untouched. */
+  const SMC_ASG: Array<[string, string]> = [
+    ["is_smc", "BOOLEAN NOT NULL DEFAULT false"],
+    ["academic_unit_id", "BIGINT REFERENCES mo_academic_units(id)"],
+    ["venue", "TEXT"],
+    ["coverage_requirements", "TEXT"],
+    ["deliverables_required", "TEXT"],
+    ["submission_deadline", "TIMESTAMPTZ"],
+    ["smc_status", "TEXT"],                       // assigned→accepted→in_progress→submitted→reviewed
+    ["accepted_by", "TEXT REFERENCES users(id) ON DELETE SET NULL"],
+    ["accepted_at", "TIMESTAMPTZ"],
+    ["started_at", "TIMESTAMPTZ"],
+    ["cancelled_at", "TIMESTAMPTZ"],
+    ["cancel_reason", "TEXT"],
+    ["escalated_at", "TIMESTAMPTZ"],
+    ["escalated_by", "TEXT REFERENCES users(id) ON DELETE SET NULL"],
+    ["escalation_reason", "TEXT"],
+    ["escalation_status", "TEXT"],
+  ];
+  for (const [col, def] of SMC_ASG)
+    await pool.query(`ALTER TABLE mo_assignments ADD COLUMN IF NOT EXISTS ${col} ${def}`);
+  await pool.query(`
+    DO $$ BEGIN
+      ALTER TABLE mo_assignments ADD CONSTRAINT mo_assignments_smc_status_check
+        CHECK (smc_status IS NULL OR smc_status IN
+          ('assigned','accepted','in_progress','submitted','reviewed','revision_required','cancelled'));
+    EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_assignments_smc ON mo_assignments(is_smc, smc_status, start_date)`);
+
+  /* Reassignment trail (§30). A row per handover, so the original assignee is
+     never edited away and the history stays auditable. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_smc_reassignments (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      assignment_id BIGINT NOT NULL REFERENCES mo_assignments(id) ON DELETE CASCADE,
+      from_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      to_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      changed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      reason TEXT,
+      changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_smc_reassignments_asg ON mo_smc_reassignments(assignment_id)`);
+
+  /* Submission + review history (§14, §35). One row per attempt rather than a
+     mutable submission, so a revision never overwrites what was reviewed before.
+     The newest row for an assignment is the current submission. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_smc_submissions (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      assignment_id BIGINT NOT NULL REFERENCES mo_assignments(id) ON DELETE CASCADE,
+      submitted_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      attempt INT NOT NULL DEFAULT 1,
+      drive_url TEXT,
+      photos_url TEXT,
+      media_library_url TEXT,
+      reference_url TEXT,
+      note TEXT,
+      photo_count INT NOT NULL DEFAULT 0,
+      video_count INT NOT NULL DEFAULT 0,
+      submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      review_status TEXT NOT NULL DEFAULT 'submitted',
+      reviewed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      reviewed_at TIMESTAMPTZ,
+      review_feedback TEXT,
+      CONSTRAINT mo_smc_submissions_review_check
+        CHECK (review_status IN ('submitted','reviewed','revision_required'))
+    )`);
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_mo_smc_submissions_asg ON mo_smc_submissions(assignment_id, attempt DESC)`);
 
   // Starter taxonomy so the library is usable on day one; the Casting Manager and
   // Admin can edit or archive any of it from Settings.
