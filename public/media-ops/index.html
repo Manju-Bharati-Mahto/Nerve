@@ -2408,9 +2408,9 @@ const CAPS = {
    it holds for every cap-gated module — casting, boards, SMC and anything added
    later — with nothing named here. */
 function grantedByModule(cap){
-  const am=(me()||{}).allowed_modules;
-  if(!Array.isArray(am)) return false;
-  return MODULES.some(m=>m.cap===cap&&am.includes(m.key));
+  const eff=effectiveModulesFor(me());
+  if(!Array.isArray(eff)) return false;
+  return MODULES.some(m=>m.cap===cap&&eff.includes(m.key));
 }
 function can(cap,ctx={}){
   const rule=CAPS[cap]; if(!rule) return false;
@@ -3034,11 +3034,32 @@ const MODULE_GROUPS = [...new Set(MODULES.map(m=>m.group))];
 /* Group I: module access may only REMOVE what the role grants, never add. */
 function moduleRoleOk(m,r){ return m.key==='kiosk'?true:navShow(m,r); }
 function hashModule(hash){ let best=null,len=-1; for(const m of MODULES) for(const p of m.pfx) if(hash.startsWith(p)&&p.length>len){best=m.key;len=p.length;} return best; }
-function moduleAllowed(mod){ if(mod==null)return true; const am=(me()||{}).allowed_modules; if(!Array.isArray(am)||isAdmin())return true; return am.includes(mod); }
-function firstAllowedRoute(){ const am=(me()||{}).allowed_modules; if(!Array.isArray(am)||isAdmin())return '#/media/home';
+function moduleAllowed(mod){ if(mod==null)return true; if(isAdmin())return true;
+  const eff=effectiveModulesFor(me()); return eff===null||eff.includes(mod); }
+function firstAllowedRoute(){ if(isAdmin()||effectiveModulesFor(me())===null)return '#/media/home';
   for(const g of NAV)for(const it of g.items)if(navShow(it)&&moduleAllowed(hashModule(it.r)))return it.r; return null; }
 /* Role defaults — derived, so they can never drift from the sidebar either. */
-function defaultModulesFor(r){ return MODULES.filter(m=>moduleRoleOk(m,r)).map(m=>m.key); }
+/* What a group starts with. A configured default wins; otherwise fall back to
+   the set derived from the nav, so a group nobody has touched behaves exactly as
+   it always did. */
+function defaultModulesFor(r){
+  const d=(DB.module_defaults||{})[r];
+  if(Array.isArray(d)) return d.slice();
+  return MODULES.filter(m=>moduleRoleOk(m,r)).map(m=>m.key);
+}
+/* Effective access for a user: explicit override, else their group's default,
+   else unrestricted. Mirrors effectiveModules() on the server. */
+function effectiveModulesFor(u){
+  if(Array.isArray(u&&u.allowed_modules)) return u.allowed_modules;
+  /* For the signed-in user the server tells us their group outright — an SMC
+     member resolves to role 'employee', so the role alone would read the wrong
+     defaults row and draw a sidebar the API refuses. */
+  const g=(u&&u.id===S.me&&DB.my_module_group)
+    ? DB.my_module_group
+    : (u&&u.is_smc?'smc_member':(u||{}).role);
+  const d=(DB.module_defaults||{})[g];
+  return Array.isArray(d)?d:null;
+}
 /* The grouped Module Access checklist, rendered straight off NAV so its groups,
    order, icons and labels ARE the sidebar's. Shared by the Add-member form and
    the per-user dialog — one renderer, no duplicate markup.
@@ -7706,6 +7727,9 @@ function teamDirectory(){
       .dir-search .inp{padding-right:32px}
       .dir-x{position:absolute;right:4px;top:50%;transform:translateY(-50%)}
       .dir-grp{margin-bottom:18px}
+      .dir-head-row{display:flex;align-items:center;gap:8px}
+      .dir-head-row .dir-head{flex:1;min-width:0}
+      .dir-mods{flex:none;white-space:nowrap}
       .dir-head{display:flex;align-items:center;gap:9px;width:100%;text-align:left;padding:8px 10px;border-radius:var(--r);
         background:var(--surface-2);border:1px solid var(--border)}
       .dir-head:hover{border-color:var(--primary-border)}
@@ -7728,12 +7752,15 @@ function dirGroup(g,searching){
   const showAll=S.dirAll[key]||g.users.length<=CAP;
   const shown=showAll?g.users:g.users.slice(0,CAP);
   return `<div class="dir-grp">
-    <button class="dir-head" onclick="ACTIONS.dirToggle({k:'${key}'})" ${searching?'disabled':''}>
-      <span class="dir-caret" style="transform:rotate(${open?90:0}deg)">▶</span>
-      <span style="font-size:13px">${g.meta.i}</span>
-      <span class="dir-title">${esc(g.meta.p)}</span>
-      <span class="dir-cnt">(${g.users.length})</span>
-    </button>
+    <div class="dir-head-row">
+      <button class="dir-head" onclick="ACTIONS.dirToggle({k:'${key}'})" ${searching?'disabled':''}>
+        <span class="dir-caret" style="transform:rotate(${open?90:0}deg)">▶</span>
+        <span class="dir-title">${esc(g.meta.p)}</span>
+        <span class="dir-cnt">${g.users.length}</span>
+      </button>
+      ${can('admin.users')?`<button class="btn xs dir-mods" title="Default module access for this group"
+        onclick="event.stopPropagation();ACTIONS.groupModules({role:'${g.role}'})">⚿ Modules</button>`:''}
+    </div>
     ${open?`<div class="dir-body grid g3">
       ${shown.map(dirCard).join('')}
       ${showAll?'':`<div class="dir-more"><button class="btn sm" onclick="ACTIONS.dirShowAll({k:'${key}'})">
@@ -10592,6 +10619,48 @@ function evaluateFlags(r,ts){
    ACTIONS — every mutation goes through here so the audit log stays honest
    ========================================================================== */
 const ACTIONS = {
+  /* ---- group-level module defaults ---------------------------------------
+     The same checklist the per-member dialog uses, saved against the group
+     instead of a person. */
+  groupModules:(d)=>{
+    const role=d.role, meta=roleMeta(role);
+    const cur=(DB.module_defaults||{})[role];
+    /* Pre-tick only what the role holds outright. A duty-gated module (verdict
+       'CASTING', 'SMC', 'CUSTODIAN'…) is offered but starts UNticked, because
+       saving the checklist turns a default into a real grant — pre-ticking those
+       would hand every member of the group a responsibility that until now
+       required the duty to be assigned deliberately. */
+    const sel=Array.isArray(cur)?cur:defaultModulesFor(role).filter(k=>{
+      const m=MODULES.find(x=>x.key===k);
+      if(!m||!m.cap) return true;
+      return (CAPS[m.cap]||{})[role]==='A';
+    });
+    modal(`<div class="mo-head"><div><h2>Default module access — ${esc(meta.p)}</h2>
+        <p>Set the default module access for members of this group. Individual member
+          access can still be customised separately, and an existing customisation is
+          never overwritten by a change here.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        ${Array.isArray(cur)?'':`<div class="note mb3" style="padding:8px 11px;font-size:11.5px">
+          This group has no saved default yet — the ticks below show what its role
+          currently implies. Saving makes it explicit.</div>`}
+        <div id="gm-wrap">${moduleGroupsHtml('gm-mod',sel,role)}</div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="groupModulesSave" data-role="${esc(role)}">Save defaults</button></div>`,
+      {size:'wide'});
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  groupModulesSave:(d,n)=>{
+    const mods=$$('.gm-mod:checked').map(c=>c.value);
+    if(n){n.disabled=true;n.textContent='Saving…';}   // no double-save
+    closeModal();
+    // moSync re-hydrates and re-renders on success, so the sidebar picks the
+    // new defaults up immediately for anyone inheriting them.
+    moSync(MO_API.put('/module-defaults/'+encodeURIComponent(d.role),{modules:mods}),
+      ()=>toast('Default module access updated for '+roleMeta(d.role).p,'ok'));
+  },
+
   /* ---- deliverable assignment (crew + SMC) ------------------------------- */
   dasgReload:(d)=>loadDelivAssignees(d.did,true),
   dasgOpen:(d)=>{ DASG.unit=''; dasgModal(d.did,d.kind); },
@@ -13358,7 +13427,8 @@ const MO_API = {
     return j;
   },
   get(p){return this.req('GET',p);}, post(p,b){return this.req('POST',p,b);},
-  patch(p,b){return this.req('PATCH',p,b);}, del(p){return this.req('DELETE',p);}
+  patch(p,b){return this.req('PATCH',p,b);}, put(p,b){return this.req('PUT',p,b);},
+  del(p){return this.req('DELETE',p);}
 };
 /* ── Session / logout (auth) ──────────────────────────────────────────────
    Explicit logout ends the session server-side and wipes every client cache so
@@ -14391,6 +14461,9 @@ async function hydrateFromServer(){
     'casting_record_collections','casting_requests','project_casting',
     'casting_links','request_links','smc_people'];
   const st=await MO_API.get('/state');
+  // An object, not one of the array tables above.
+  DB.module_defaults=(st.module_defaults&&typeof st.module_defaults==='object')?st.module_defaults:{};
+  DB.my_module_group=st.my_module_group||null;
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
   // Bind identity to the real logged-in Nerve user (server sends its prototype int id).
   if(typeof st.me==='number' && DB.users.some(u=>u.id===st.me)) S.me=st.me;

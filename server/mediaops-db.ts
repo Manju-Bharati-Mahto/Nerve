@@ -1130,6 +1130,24 @@ export async function bootstrapMediaOpsDatabase() {
      Only two genuinely new concepts exist: an SMC member's institute mapping,
      and the submission/review history, which needs to survive revisions. */
 
+  /* Group-level module defaults. The only thing the module system lacked: role
+     defaults were DERIVED from the nav each time (defaultModulesFor), so an
+     administrator could not change what a group starts with. One row per group,
+     holding the same module keys the sidebar and the per-member dialog use.
+
+     Semantics, chosen so nothing existing shifts underfoot:
+       mo_user_profiles.allowed_modules IS NULL  → inherit this group default
+       allowed_modules IS an array               → explicit member override, wins
+     A group with no row here behaves exactly as before (unrestricted), so this
+     table only takes effect once someone deliberately configures a group. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_module_defaults (
+      role TEXT PRIMARY KEY,
+      modules JSONB NOT NULL DEFAULT '[]'::jsonb,
+      updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+
   /* The SMC network is its own team, which is what makes the role real without
      touching the platform role vocabulary: users.team='smc' means moRoleOf()
      resolves to null, so every Media Crew route already refuses them. Built-in,

@@ -79,10 +79,38 @@ async function isCoordinator(u: CurrentUser): Promise<boolean> {
    ever subtract, so ticking a box for a module the role did not already imply
    changed nothing — the sidebar stayed hidden and the API kept answering 403. */
 async function hasModuleGrant(u: CurrentUser, key: string): Promise<boolean> {
+  const eff = await effectiveModules(u);
+  return eff !== null && eff.includes(key);
+}
+
+/* The module list actually in force for this user:
+
+     explicit member override (allowed_modules is an array)  → that list
+     otherwise, a configured default for their group          → that list
+     otherwise                                                → null (unrestricted)
+
+   Returning null rather than an empty list matters: a group nobody has
+   configured behaves exactly as it did before this table existed, so adding
+   group defaults cannot silently revoke access from anyone. */
+async function effectiveModules(u: CurrentUser): Promise<string[] | null> {
   const row = (await pool.query(
     `SELECT allowed_modules FROM mo_user_profiles WHERE user_id=$1`, [u.id])).rows[0];
   const am = row?.allowed_modules;
-  return Array.isArray(am) && am.includes(key);
+  if (Array.isArray(am)) return am.map(String);          // explicit override wins
+  const group = await moduleGroupOf(u);
+  if (!group) return null;
+  const def = (await pool.query(
+    `SELECT modules FROM mo_module_defaults WHERE role=$1`, [group])).rows[0]?.modules;
+  return Array.isArray(def) ? def.map(String) : null;
+}
+
+/* Which defaults row applies to this user. Mirrors how the directory groups
+   them, so the modal an admin edits is the one that takes effect. */
+async function moduleGroupOf(u: CurrentUser): Promise<string | null> {
+  if (u.team === "smc") return "smc_member";
+  if (await isCoordinator(u)) return "coordinator";
+  const r = moRoleOf(u);
+  return r === "admin" ? "admin" : r === "team_lead" ? "team_lead" : r === "employee" ? "employee" : null;
 }
 
 /* ── SMC — Social Media Council ────────────────────────────────────────────
@@ -167,9 +195,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // (role-based). Backend defense-in-depth behind the client's nav/route gating.
   async function requireModule(res: express.Response, u: CurrentUser, key: string): Promise<boolean> {
     if (isMoAdmin(u)) return true;
-    const row = (await pool.query(`SELECT allowed_modules FROM mo_user_profiles WHERE user_id=$1`, [u.id])).rows[0];
-    const am = row?.allowed_modules;
-    if (!Array.isArray(am) || am.includes(key)) return true;
+    const eff = await effectiveModules(u);   // override, else group default, else unrestricted
+    if (eff === null || eff.includes(key)) return true;
     sendError(res, 403, `Your account has no access to the "${key}" module.`);
     return false;
   }
@@ -371,6 +398,17 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       o.assignees = (o.assignees as unknown[]).map(toInt);
       return o;
     });
+    // Group module defaults, so the client resolves effective access the same way
+    // the API does rather than guessing from the nav.
+    out.module_defaults = (await pool.query(
+      `SELECT role, modules FROM mo_module_defaults`)).rows
+      .reduce((a: Record<string, unknown>, r) => { a[String(r.role)] = r.modules; return a; }, {});
+    /* Which defaults row applies to THIS caller, decided by the same function the
+       API gates use. The client cannot work it out from the role alone: an SMC
+       member resolves to 'employee' there, so it would read the wrong group and
+       draw a sidebar the API would not honour. */
+    out.my_module_group = await moduleGroupOf(u);
+
     /* The SMC roster — the SAME population SMC Management lists, so Team
        Directory and SMC Management can never disagree about who exists or how
        many there are. Deliberately NOT merged into users: that array is the
@@ -5142,6 +5180,42 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.status(201).json({ ok: true, assignment_id: asgId, kind,
       assignee: { user_id: memberId, full_name: state.full_name ?? null,
                   designation: state.designation ?? null, institute: state.institute ?? null } });
+  }));
+
+
+  /* ── Group module defaults ────────────────────────────────────────────────
+     Read/written with the same authority that already governs per-member module
+     access, so no new permission concept appears. */
+  const MODULE_DEFAULT_ROLES = ["admin", "team_lead", "coordinator", "employee", "smc_member"];
+
+  app.get(`${P}/module-defaults`, asyncHandler(async (_req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const { rows } = await pool.query(
+      `SELECT role, modules, updated_at FROM mo_module_defaults`);
+    const out: Record<string, unknown> = {};
+    for (const r of rows) out[String(r.role)] = r.modules;
+    res.json({ defaults: out });
+  }));
+
+  app.put(`${P}/module-defaults/:role`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    // Same gate as changing one member's modules — Admin only (§15).
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may change module defaults.");
+    const role = getSingleParam(req.params.role);
+    if (!MODULE_DEFAULT_ROLES.includes(role)) return sendError(res, 400, "Unknown group.");
+    const mods = (req.body as Record<string, unknown>).modules;
+    if (!Array.isArray(mods)) return sendError(res, 400, "Modules must be a list.");
+    const before = (await pool.query(
+      `SELECT modules FROM mo_module_defaults WHERE role=$1`, [role])).rows[0]?.modules ?? null;
+    await pool.query(
+      `INSERT INTO mo_module_defaults (role, modules, updated_by, updated_at)
+       VALUES ($1,$2,$3,NOW())
+       ON CONFLICT (role) DO UPDATE SET modules=EXCLUDED.modules,
+         updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+      [role, JSON.stringify(mods.map(String)), u.id]);
+    await audit(u, "module_defaults.changed", "role", null,
+      { role, modules: before }, { role, modules: mods }, req);
+    res.json({ ok: true });
   }));
 
 }
