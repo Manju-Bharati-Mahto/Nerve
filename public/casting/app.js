@@ -28,6 +28,36 @@ const AVAIL = ['Available regularly','Available occasionally','Available with ad
 
 let campaign = null, identity = null, session = '', state = { languages: [], interests: [] };
 
+/* The consent wording is whatever the SERVER serves, never a copy kept here —
+   that is what lets the recorded version match what was actually on screen. The
+   fallback only covers an older API that does not send one yet. */
+const consentText = () => (campaign && campaign.consent && campaign.consent.text)
+  || 'I consent to Parul University using my submitted information and media for official university purposes.';
+const consentVersion = () => (campaign && campaign.consent && campaign.consent.version) || null;
+
+/* Mirrors of the server rules, for the applicant's benefit only — the server
+   re-runs every one of them and its answer is the one that counts. Each returns
+   the cleaned value, or null when the input cannot be used. */
+const cleanPhone = raw => {
+  const s = String(raw || '').replace(/[\s()\-.]/g, '');
+  const india = /^(?:\+91|0091|91|0)?([6-9]\d{9})$/.exec(s);
+  if (india) return '+91' + india[1];
+  return /^\+[1-9]\d{7,14}$/.test(s) ? s : null;
+};
+const cleanInstagram = raw => {
+  let v = String(raw || '').trim();
+  if (!v) return null;
+  // "@handle" is a handle, not a host — make it the profile path.
+  if (v[0] === '@') v = 'https://instagram.com/' + v.slice(1);
+  else if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) v = 'https://' + v.replace(/^\/+/, '');
+  let u; try { u = new URL(v); } catch { return null; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  if (u.hostname.toLowerCase().replace(/^www\./, '') !== 'instagram.com') return null;
+  const handle = u.pathname.replace(/^\/+|\/+$/g, '');
+  return /^[A-Za-z0-9._]{1,30}$/.test(handle) ? 'https://instagram.com/' + handle : null;
+};
+const isDriveUrl = raw => /^https:\/\/(drive|docs)\.google\.com\/\S+$/i.test(String(raw || '').trim());
+
 const brand = `<div class="brand"><i>N</i><div><b>NERVE Media Ops</b><span>Parul University</span></div></div>`;
 const shell = inner => { app.innerHTML = brand + inner + `<div class="foot">Parul University · Media Crew</div>`; };
 const note = (kind, html) => `<div class="note ${kind}">${html}</div>`;
@@ -233,6 +263,12 @@ function renderForm(existing) {
         <input type="text" id="f-dept" placeholder="e.g. Faculty of Engineering &amp; Technology"></div>
       <div class="field"><label>Designation / course</label>
         <input type="text" id="f-desig" placeholder="e.g. B.Tech Student, Assistant Professor"></div>
+      <div class="field"><label>Enrolment number</label>
+        <input type="text" id="f-enrol" placeholder="e.g. 2203051050123" autocomplete="off">
+        <div class="hint">Optional — if applicable.</div></div>
+      <div class="field"><label>Mobile phone number <span class="req">*</span></label>
+        <input type="tel" id="f-phone" placeholder="e.g. 98765 43210" autocomplete="tel" inputmode="tel">
+        <div class="hint">So the Media Crew can reach you about a shoot.</div></div>
     </div>
 
     <div class="card">
@@ -251,14 +287,31 @@ function renderForm(existing) {
     </div>
 
     <div class="card">
+      <h2>Social / profile</h2>
+      <div class="field"><label>Instagram profile link</label>
+        <input type="url" id="f-insta" placeholder="https://instagram.com/username" autocomplete="off"
+          inputmode="url" spellcheck="false">
+        <div class="hint">Optional.</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Photo</h2>
+      <div class="field"><label>Photo — Google Drive link <span class="req">*</span></label>
+        <input type="url" id="f-photo" placeholder="https://drive.google.com/..." autocomplete="off"
+          inputmode="url" spellcheck="false">
+        <div class="hint">Upload your photo to Google Drive and paste the shareable link here.
+          Make sure the link can be accessed by the Media Crew.</div></div>
+      <div class="note warn" style="margin:0">
+        <b>Check the sharing setting.</b> A link we cannot open is the most common reason a
+        submission stalls — set it so anyone with the link can view, then paste it above.</div>
+    </div>
+
+    <div class="card">
       <h2>Media casting consent</h2>
-      <p style="color:var(--text-2);font-size:13.5px;margin:0 0 12px">
-        You confirm that you voluntarily wish to be considered for university media productions, and understand
-        that the information you submit here will be reviewed by the Media Crew for casting purposes.
-        You can ask the Media Crew to remove your details at any time.</p>
+      <div class="legal">${esc(consentText())}</div>
       <div class="consent">
         <input type="checkbox" id="f-consent">
-        <label for="f-consent">I agree to be considered for university media productions.</label>
+        <label for="f-consent">I have read and agree to the above consent.</label>
       </div>
       <div id="form-msg"></div>
     </div>
@@ -290,7 +343,21 @@ async function submit() {
   if (!name) return fail('Please enter your full name.');
   if (!type) return fail('Please tell us what best describes you.');
   if (campaign.campaign.require_department && !dept) return fail('Please enter your department or institute.');
-  if (!$('#f-consent').checked) return fail('Please confirm the casting consent before submitting.');
+
+  const phone = cleanPhone($('#f-phone').value);
+  if (!($('#f-phone').value || '').trim()) return fail('Please enter your mobile phone number.');
+  if (!phone) return fail('Please enter a valid mobile number — 10 digits for an Indian number, or +country code.');
+
+  const photo = ($('#f-photo').value || '').trim();
+  if (!photo) return fail('Please add the Google Drive link to your photo.');
+  if (!isDriveUrl(photo)) return fail('Please enter a valid Google Drive link — it should start with https://drive.google.com/');
+
+  // Optional, so only a value that WAS typed and cannot be used is an error.
+  const rawInsta = ($('#f-insta').value || '').trim();
+  const insta = rawInsta ? cleanInstagram(rawInsta) : '';
+  if (rawInsta && !insta) return fail('That does not look like an Instagram profile link. Example: https://instagram.com/username');
+
+  if (!$('#f-consent').checked) return fail('Please read and agree to the media usage consent before submitting.');
 
   btn.disabled = true; btn.textContent = 'Submitting…';
   try {
@@ -304,7 +371,11 @@ async function submit() {
       availability: picked('f-avail')[0] || null,
       location: ($('#f-loc').value || '').trim(),
       intro: ($('#f-intro').value || '').trim(),
-      consent: true,
+      mobile_phone: phone,
+      enrolment_number: ($('#f-enrol').value || '').trim(),
+      instagram_url: insta,
+      photo_url: photo,
+      consent: true, consent_version: consentVersion(),
     });
     renderDone(r);
   } catch (e) {

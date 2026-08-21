@@ -373,6 +373,15 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         return o;
       });
     }
+    /* An applicant's phone number is contact detail they gave for casting, not
+       roster data the whole crew needs: it ships only to whoever may actually
+       work the queue, which is the same authority that gates the Casting
+       Management screen. Redacted per row rather than dropped, so the client
+       renders "Not provided" instead of breaking on a missing key. */
+    if (!(await canManageCasting(u)))
+      out.casting_requests = (out.casting_requests as Array<Record<string, unknown>>)
+        .map((r) => (r.mobile_phone == null ? r : { ...r, mobile_phone: null }));
+
     // Kanban cards — reassemble the prototype's embedded arrays from child tables.
     const cards = await pool.query(`
       SELECT to_jsonb(c) || jsonb_build_object(
@@ -2085,6 +2094,72 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   /* A Drive folder link, validated rather than trusted — a malformed URL in the
      library is a dead end for whoever needs the media on a shoot day. */
   const DRIVE_RE = /^https:\/\/(drive|docs)\.google\.com\/[^\s]+$/i;
+
+  /* ── External registration field rules ──────────────────────────────────────
+     Every one of these runs on the SERVER; the public form mirrors them purely
+     for the applicant's benefit. Each returns the value to STORE, or null when
+     the input is unusable, so a caller never has to re-derive the clean form.
+
+     Kept together, and keyed by field, because the next step for this intake is
+     letting a campaign choose which fields it asks for: the rules can then be
+     looked up per field without any of this logic moving. */
+
+  /* Indian mobile is the expected case (§ university intake), but the portal is
+     open to visiting faculty and alumni abroad, so a genuine E.164 number is
+     accepted too. What is NOT accepted is arbitrary text. */
+  const normalisePhone = (raw: string): string | null => {
+    const s = raw.replace(/[\s()\-.]/g, "");
+    if (!s) return null;
+    const india = /^(?:\+91|0091|91|0)?([6-9]\d{9})$/.exec(s);
+    if (india) return "+91" + india[1];
+    if (/^\+[1-9]\d{7,14}$/.test(s)) return s;      // international, already E.164
+    return null;
+  };
+
+  /* A profile URL, not a scraped account: nothing here contacts Instagram. The
+     URL object does the parsing so a hostile scheme (javascript:, data:) cannot
+     survive as it can through a permissive regex. */
+  const normaliseInstagram = (raw: string): string | null => {
+    let s = raw.trim();
+    if (!s) return null;
+    // A pasted "@handle" is a handle, not a host — turn it into the profile path
+    // rather than letting it become https://handle and fail as a bad hostname.
+    if (s.startsWith("@")) s = "https://instagram.com/" + s.slice(1);
+    else if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = "https://" + s.replace(/^\/+/, "");
+    let u: URL;
+    try { u = new URL(s); } catch { return null; }
+    if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+    if (u.hostname.toLowerCase().replace(/^www\./, "") !== "instagram.com") return null;
+    const handle = u.pathname.replace(/^\/+|\/+$/g, "");
+    if (!/^[A-Za-z0-9._]{1,30}$/.test(handle)) return null;
+    return "https://instagram.com/" + handle;      // query/tracking params dropped
+  };
+
+  /* Stored exactly as submitted (§ requirement) — only trimmed. DRIVE_RE already
+     pins the scheme to https, so no other scheme can reach the database.
+
+     Syntactically valid is NOT the same as reachable: whether the Media Crew can
+     actually open the folder depends on the applicant's sharing settings, which
+     nothing server-side can see. The form says so, and the existing
+     casting/:id/check-drive HEAD probe is what reports reachability later. */
+  const normaliseDriveUrl = (raw: string): string | null => {
+    const s = raw.trim();
+    return s && DRIVE_RE.test(s) ? s : null;
+  };
+
+  /* Consent wording is versioned rather than inlined at the point of use. The
+     server owns the text, the form renders whatever it is served, and the
+     submission records the version the applicant actually saw — so rewording
+     this later cannot retroactively change what anyone agreed to. */
+  const CASTING_CONSENT: Record<string, string> = {
+    "media-usage-2026-08": "By submitting this form, I voluntarily consent to Parul University and its "
+      + "authorised representatives photographing, filming, recording and using my submitted information, "
+      + "photographs and other submitted media for university communication, promotional, educational, "
+      + "social media, website, advertising and other official university-related purposes. I understand "
+      + "that these materials may appear in digital or printed communications, including social media posts, "
+      + "websites, brochures, banners, flyers and other promotional materials.",
+  };
+  const CASTING_CONSENT_CURRENT = "media-usage-2026-08";
   const nextCastId = async (): Promise<string> => {
     const { rows } = await pool.query(
       `SELECT COALESCE(MAX(NULLIF(regexp_replace(cast_id,'\\D','','g'),'')::int),0) AS n FROM mo_casting_records`);
@@ -2491,6 +2566,10 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       // hand out and no NERVE account involved.
       auth: "email_otp", otp_ttl_minutes: OTP_TTL_MINUTES,
       resend_after_seconds: OTP_RESEND_COOLDOWN_SECONDS,
+      /* The form renders the wording it is SERVED and echoes the version back on
+         submit, so the text an applicant agreed to is never guessed from the
+         client. It is also the seam a per-campaign consent would use later. */
+      consent: { version: CASTING_CONSENT_CURRENT, text: CASTING_CONSENT[CASTING_CONSENT_CURRENT] },
     });
   }));
 
@@ -2586,9 +2665,20 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const who = await portalIdentity("casting", token, b);
     if (!who) return sendError(res, 401, "Please verify your email address to continue.");
     const domain = String(l.allowed_domain).replace(/^@/, "");
+    /* Domain is re-checked here even though /lookup checked it: the session is
+       the identity, and this endpoint must not depend on an earlier call having
+       run. emailInDomain() is main's shared helper — the OTP flow's rule, kept. */
     if (!emailInDomain(who.email, domain))
       return sendError(res, 403, `Please use your official @${domain} email address.`);
-    if (!b.consent) return sendError(res, 400, "Please confirm the casting consent before submitting.");
+    /* Consent: the version the applicant was SHOWN is what gets recorded, so a
+       reword between page load and submit cannot silently move the goalposts.
+       An unknown version means the form is stale — say so rather than storing it. */
+    const consentVersion = String(b.consent_version ?? CASTING_CONSENT_CURRENT);
+    const consentText = CASTING_CONSENT[consentVersion];
+    if (!consentText)
+      return sendError(res, 400, "This form is out of date. Please reload the page and submit again.");
+    if (b.consent !== true)
+      return sendError(res, 400, "Please read and agree to the media usage consent before submitting.");
 
     const name = String(b.name ?? who.name ?? "").trim();
     if (!name) return sendError(res, 400, "Please enter your full name.");
@@ -2596,6 +2686,28 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!type) return sendError(res, 400, "Please tell us what best describes you.");
     if (l.require_department && !String(b.department ?? "").trim())
       return sendError(res, 400, "Please enter your department or institute.");
+
+    // Required contact + photo. Frontend checks these too; these are the ones
+    // that decide, because the frontend is not a trust boundary.
+    const rawPhone = String(b.mobile_phone ?? "").trim();
+    if (!rawPhone) return sendError(res, 400, "Please enter your mobile phone number.");
+    const mobilePhone = normalisePhone(rawPhone);
+    if (!mobilePhone)
+      return sendError(res, 400, "Please enter a valid mobile number — 10 digits for an Indian number, or +country code.");
+
+    const rawDrive = String(b.photo_url ?? "").trim();
+    if (!rawDrive) return sendError(res, 400, "Please add the Google Drive link to your photo.");
+    const driveUrl = normaliseDriveUrl(rawDrive);
+    if (!driveUrl)
+      return sendError(res, 400, "Please enter a valid Google Drive link (it should start with https://drive.google.com/ or https://docs.google.com/).");
+
+    // Optional. Empty is a normal answer and must never block a submission —
+    // only a value that was supplied AND is unusable is an error.
+    const enrolment = String(b.enrolment_number ?? "").trim().slice(0, 64) || null;
+    const rawInsta = String(b.instagram_url ?? "").trim();
+    const instagram = rawInsta ? normaliseInstagram(rawInsta) : null;
+    if (rawInsta && !instagram)
+      return sendError(res, 400, "That does not look like an Instagram profile link. Example: https://instagram.com/username");
 
     // §14 — one submission per account per campaign; an update is allowed while
     // the request has not been decided.
@@ -2612,6 +2724,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       availability: String(b.availability ?? "") || null,
       location: String(b.location ?? "") || null,
       intro: String(b.intro ?? "") || null,
+      mobile_phone: mobilePhone, enrolment_number: enrolment,
+      instagram_url: instagram, photo_url: driveUrl,
       need: `${type} — ${name}`,
     };
     if (ex) {
@@ -2621,10 +2735,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       await pool.query(
         `UPDATE mo_casting_requests SET applicant_name=$1, applicant_type=$2, department=$3, designation=$4,
            age_group=$5, gender=$6, languages=$7, category=$8, interests=$9, availability=$10, location=$11,
-           intro=$12, need=$13, updated_at=NOW() WHERE id=$14`,
+           intro=$12, need=$13, mobile_phone=$14, enrolment_number=$15, instagram_url=$16, photo_url=$17,
+           consent_given=true, consent_at=NOW(), consent_version=$18, consent_text=$19,
+           updated_at=NOW() WHERE id=$20`,
         [payload.applicant_name, payload.applicant_type, payload.department, payload.designation,
          payload.age_group, payload.gender, payload.languages, payload.category, payload.interests,
-         payload.availability, payload.location, payload.intro, payload.need, ex.id]);
+         payload.availability, payload.location, payload.intro, payload.need,
+         payload.mobile_phone, payload.enrolment_number, payload.instagram_url, payload.photo_url,
+         consentVersion, consentText, ex.id]);
       return res.json({ updated: true, request_id: ex.request_id, status: ex.status });
     }
 
@@ -2634,11 +2752,15 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const ins = await pool.query(
       `INSERT INTO mo_casting_requests (request_id, source, link_id, applicant_email, applicant_name, applicant_type,
          department, designation, age_group, gender, languages, category, interests, availability, location, intro,
-         need, consent_given, consent_at, status, submitted_ip)
-       VALUES ($1,'external',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,true,NOW(),'new',$17) RETURNING *`,
+         need, mobile_phone, enrolment_number, instagram_url, photo_url,
+         consent_given, consent_at, consent_version, consent_text, status, submitted_ip)
+       VALUES ($1,'external',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+               true,NOW(),$21,$22,'new',$23) RETURNING *`,
       [code, l.id, who.email, payload.applicant_name, payload.applicant_type, payload.department,
        payload.designation, payload.age_group, payload.gender, payload.languages, payload.category,
        payload.interests, payload.availability, payload.location, payload.intro, payload.need,
+       payload.mobile_phone, payload.enrolment_number, payload.instagram_url, payload.photo_url,
+       consentVersion, consentText,
        (req.headers["x-forwarded-for"] as string) || req.ip || null]);
 
     // Audited without a NERVE actor — the applicant has no account, by design (§7).
@@ -2730,10 +2852,13 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (r.matched_record_id) return sendError(res, 409, "This request already has a casting record.");
     const castId = await nextCastId();
     const rec = (await pool.query(
+      /* drive_url carries the applicant's own photo link across, so approval does
+         not strand it on the request: the library record is what a shoot day
+         actually opens, and check-drive can then probe it like any other. */
       `INSERT INTO mo_casting_records (cast_id, name, category, profession, age_group, gender, languages,
-         campus_id, location, availability, consent_status, consent_date, notes,
+         campus_id, location, availability, consent_status, consent_date, notes, drive_url,
          source, source_request_id, applicant_email, created_by, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'confirmed',CURRENT_DATE,$11,'external_registration',$12,$13,$14,$14)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'confirmed',CURRENT_DATE,$11,$12,'external_registration',$13,$14,$15,$15)
        RETURNING *`,
       [castId, r.applicant_name ?? r.need, r.category ?? r.applicant_type ?? "Other", r.designation ?? null,
        r.age_group ?? null, r.gender ?? null, JSON.stringify(r.languages ?? []),
@@ -2741,6 +2866,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        ({ "Available regularly": "available", "Available occasionally": "limited",
           "Available with advance notice": "limited", "Currently unavailable": "unavailable" } as Record<string, string>)[String(r.availability)] ?? "available",
        [r.intro, r.department ? `Department: ${r.department}` : null].filter(Boolean).join("\n"),
+       r.photo_url ?? null,
        id, r.applicant_email, u.id])).rows[0];
     await pool.query(
       `UPDATE mo_casting_requests SET status='approved', matched_record_id=$1, review_note=COALESCE($2, review_note),

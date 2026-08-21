@@ -1339,9 +1339,19 @@ export async function bootstrapMediaOpsDatabase() {
     ["interests", "JSONB NOT NULL DEFAULT '[]'::jsonb"],
     ["availability", "TEXT"],
     ["intro", "TEXT"],
+    // The applicant hosts their own photo and gives us the link — NERVE stores the
+    // URL, never a copy of the image. The column the intake layer always reserved.
     ["photo_url", "TEXT"],
+    ["mobile_phone", "TEXT"],             // normalised on the way in, never free text
+    ["enrolment_number", "TEXT"],         // optional: staff, alumni and externals have none
+    ["instagram_url", "TEXT"],
     ["consent_given", "BOOLEAN NOT NULL DEFAULT false"],
     ["consent_at", "TIMESTAMPTZ"],
+    // WHICH wording was agreed to. The id alone would rot the moment the text is
+    // reworded, so the row keeps a snapshot of the text too: an old submission
+    // stays readable without every retired version having to be kept forever.
+    ["consent_version", "TEXT"],
+    ["consent_text", "TEXT"],
     ["review_note", "TEXT"],
     ["reviewed_at", "TIMESTAMPTZ"],
     ["archived_at", "TIMESTAMPTZ"],

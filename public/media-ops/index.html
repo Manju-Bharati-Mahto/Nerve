@@ -3723,6 +3723,16 @@ const castTags    = ()=>(DB.casting_tags||[]).filter(t=>t.is_active!==false&&!t.
 const castColls   = ()=>(DB.casting_collections||[]).filter(c=>c.is_active!==false&&!c.archived_at)
   .sort((a,b)=>(a.sort_order||0)-(b.sort_order||0)||a.name.localeCompare(b.name));
 const castRequests= ()=>(DB.casting_requests||[]);
+/* An applicant-supplied URL becomes a live link only if it is https. Everything
+   submitted through the portal is already validated server-side; this is the
+   second lock, so a value that reached the row by any other path prints as text
+   rather than arming a javascript:/data: link in the reviewer's browser. */
+const safeExtUrl=u=>{ if(!u)return null;
+  try{ const p=new URL(String(u)); return p.protocol==='https:'?p.href:null; }catch{ return null; } };
+const notGiven=()=>'<span class="mut3">Not provided</span>';
+const extLink=(u,label)=>{ const h=safeExtUrl(u);
+  if(!h) return u?`<span class="mut3">${esc(String(u))}</span>`:notGiven();
+  return `<a class="btn xs" href="${esc(h)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`; };
 const openCastingRequests = ()=>castRequests().filter(r=>!['completed','rejected'].includes(r.status));
 const tagsOf  = rid=>(DB.casting_record_tags||[]).filter(x=>x.record_id===rid).map(x=>x.tag_id);
 const collsOf = rid=>(DB.casting_record_collections||[]).filter(x=>x.record_id===rid).map(x=>x.collection_id);
@@ -3902,9 +3912,18 @@ function drawerCastRequest(id){
         <dl class="kv mb4">
           <dt>Name</dt><dd>${esc(q.applicant_name||'—')}</dd>
           <dt>University email</dt><dd class="mono">${esc(q.applicant_email||'—')}</dd>
+          <dt>Mobile</dt><dd>${q.mobile_phone
+            ?`<a class="mono" href="tel:${esc(q.mobile_phone)}">${esc(q.mobile_phone)}</a>`:notGiven()}</dd>
           <dt>Type</dt><dd>${esc(q.applicant_type||'—')}</dd>
           <dt>Department</dt><dd>${esc(q.department||'—')}</dd>
           <dt>Designation / course</dt><dd>${esc(q.designation||'—')}</dd>
+          <dt>Enrolment number</dt><dd>${q.enrolment_number
+            ?`<span class="mono">${esc(q.enrolment_number)}</span>`:notGiven()}</dd>
+        </dl>
+        <h4 class="small b mb2">Photo &amp; profile</h4>
+        <dl class="kv mb4">
+          <dt>Google Drive photo</dt><dd>${extLink(q.photo_url,'⛁ Open Google Drive')}</dd>
+          <dt>Instagram</dt><dd>${extLink(q.instagram_url,'↗ Open profile')}</dd>
         </dl>`:''}
       <h4 class="small b mb2">Casting information</h4>
       <dl class="kv mb4">
@@ -3925,7 +3944,13 @@ function drawerCastRequest(id){
           <dt>Consent</dt><dd>${q.consent_given
             ?`<span class="status st-success"><span class="si">✔</span>Given ${q.consent_at?D.fmt(q.consent_at):''}</span>`
             :'<span class="status st-warn"><span class="si">◔</span>Not recorded</span>'}</dd>
-        </dl>`:''}
+          ${q.consent_version?`<dt>Consent version</dt><dd><span class="code">${esc(q.consent_version)}</span></dd>`:''}
+        </dl>
+        ${q.consent_text?`<details class="mb4"><summary class="small b" style="cursor:pointer">
+            Consent wording this applicant accepted</summary>
+          <div class="note mt2">${esc(q.consent_text)}
+            <div class="xsmall mut3 mt2">Recorded as accepted${q.consent_at?' on '+D.fmt(q.consent_at):''}.
+              Kept verbatim — later rewording does not change it.</div></div></details>`:''}`:''}
       ${rec?`<div class="note ok mb4"><b>Approved.</b> Casting record
         <span class="code">${esc(rec.cast_id)}</span> was created from this request.
         <button class="btn xs mt2" data-drawer="casting:${rec.id}">Open record</button></div>`:''}
@@ -4102,6 +4127,7 @@ function castAdminRequests(){
   if(f.type)list=list.filter(r=>r.applicant_type===f.type);
   if(f.q){const q=f.q.toLowerCase();
     list=list.filter(r=>[r.request_id,r.applicant_name,r.applicant_email,r.department,r.need,
+      r.mobile_phone,r.enrolment_number,
       r.link_id?(castLink(r.link_id)||{}).name:'',
       r.matched_record_id?(castRec(r.matched_record_id)||{}).cast_id:''].filter(Boolean).join(' ').toLowerCase().includes(q));}
   const SORTS={newest:(a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')),
@@ -4115,7 +4141,7 @@ function castAdminRequests(){
   const byStatus=k=>castRequests().filter(r=>r.status===k).length;
   return `<div class="cast-bar">
       <div class="search-wrap cast-search"><input class="inp" value="${esc(f.q)}"
-        placeholder="Search request ID, applicant, email, department, campaign, CAST ID…"
+        placeholder="Search request ID, applicant, email, mobile, enrolment, department, campaign, CAST ID…"
         oninput="S.filters.castreq.q=this.value;render()"></div>
       <select class="inp" style="height:34px;font-size:12.5px;width:auto"
         onchange="S.filters.castreq.sort=this.value;render()">
