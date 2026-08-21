@@ -20,6 +20,13 @@ import {
   generateOtp, hashOtp, otpHashMatches, newSessionToken, maskEmail, emailInDomain,
   OTP_TTL_MINUTES, OTP_RESEND_COOLDOWN_SECONDS, OTP_MAX_ATTEMPTS,
 } from "./otp.js";
+import { getAiProvider, getAiStatus, testAiConnection } from "./ai/index.js";
+import { runAiOrchestration } from "./ai/orchestrator.js";
+import { createAiToolRegistry } from "./ai/tools/registry.js";
+import { estimateAiCost, parseAiPricing } from "./ai/pricing.js";
+import { countAiRequestsToday, findOverdueDeliverables, getAiUsageSummary, recordAiRequest } from "./mediaops-queries.js";
+import { config } from "./config.js";
+import type { AiCapability, AiUserContext } from "./ai/types.js";
 
 type Handlers = {
   asyncHandler: (fn: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<unknown>) =>
@@ -142,9 +149,98 @@ async function isSmcManager(u: CurrentUser): Promise<boolean> {
   return !!r;
 }
 
+/* ── AI user context (Phase 3) ───────────────────────────────────────────
+   The bridge between Nerve's permission model and the AI layer, and the reason
+   the AI layer needs no permission model of its own.
+
+   It lives HERE, beside moRoleOf/hasModuleGrant/isSmcManager, because this is
+   where authorisation is already decided. server/ai/ receives the RESULT — a
+   plain set of capability strings — and can only ever narrow it further. Put
+   another way: this function can never grant more than Nerve already grants,
+   because every branch below is an existing Nerve check.
+
+   Each capability is derived from the source named in AI_CAPABILITY_SOURCE. */
+/**
+ * May this person use Ask Nerve AI?
+ *
+ * Deliberately NARROWER than the AI Assist page. The deterministic cards there
+ * (digest, duplicates, forecast) stay exactly as open as they are today; only
+ * the part that sends a question to a language model is gated, because that is
+ * the part with a cost and an external dependency.
+ *
+ * Admin-only for now, and deliberately NOT keyed on the 'ai' module.
+ *
+ * That module opens the AI Assist page itself, so keying on it would tie the two
+ * together the wrong way round: granting someone the cheap, deterministic
+ * insights would also hand them the metered, externally-dependent one. The
+ * expensive half needs the narrower gate, so it gets its own predicate.
+ *
+ * This is still not a second RBAC — isMoAdmin() is Nerve's existing role check,
+ * and moRoleOf() the existing media gate. When Ask Nerve AI needs delegating to
+ * a non-admin, the honest way is a dedicated module key in the nav registry
+ * (which is what Module Access enumerates), not a reuse of this one.
+ */
+export async function canUseAiCommand(u: CurrentUser): Promise<boolean> {
+  if (!moRoleOf(u)) return false;                 // not Media Crew at all
+  return isMoAdmin(u);
+}
+
+export async function buildAiUserContext(u: CurrentUser): Promise<AiUserContext> {
+  const role = moRoleOf(u);                       // admin | team_lead | employee | null
+  const caps = new Set<AiCapability>();
+
+  /* requireMedia() is the gate every media-ops route already uses; a caller
+     who fails it gets an empty capability set and therefore no tools at all. */
+  /* visibleProjects() in the client is Nerve's existing rule for project-scoped
+     data: an Employee sees only what they own or are assigned to, while a Team
+     Lead and an Admin see the department ("production history is departmental
+     knowledge", §16). Resolved here so no tool has to consult a role. */
+  const projectScope: "all" | "own" =
+    (role === "admin" || role === "team_lead") ? "all" : "own";
+
+  if (!role) return { id: u.id, role: "none", capabilities: caps, projectScope: "own" };
+  caps.add("media.read");
+
+  /* Module keys below are the REAL ones the sidebar and mo_module_defaults use
+     (derived from the nav route: '#/media/my-day' → 'my-day'). An admin who
+     revokes a module here revokes the matching AI tool with it. */
+  if (await allowsModule(u, "my-day")) caps.add("myday.read");
+
+  // pipeline.view — Employee 'S', Team Lead 'T', Admin 'A' in CAPS. Everyone on
+  // the crew holds it; WHAT they see is scoped per tool, not gated here.
+  if (await allowsModule(u, "projects")) { caps.add("projects.read"); caps.add("events.read"); }
+
+  // team.workload — Team Lead and Admin only ('-' for employee in CAPS).
+  if ((role === "admin" || role === "team_lead") && await allowsModule(u, "team")) caps.add("team.read");
+  if ((role === "admin" || role === "team_lead") && await allowsModule(u, "reports")) caps.add("reports.read");
+
+  // admin.audit — Admin only.
+  if (await allowsModule(u, "equipment")) caps.add("equipment.read");
+  if (await allowsModule(u, "leave")) caps.add("leave.read");
+
+  if (isMoAdmin(u)) caps.add("automation.read");
+
+  // SMC Management is a duty, resolved by the existing isSmcManager().
+  if (await isSmcManager(u)) caps.add("smc.read");
+
+  return { id: u.id, role, capabilities: caps, projectScope };
+}
+
+/* Module access is the second half of Nerve's model (§ Module Access): a role
+   may imply a capability, and an explicit grant may add one. requireModule()
+   is the request-time gate; this is the same rule without the 403. */
+async function allowsModule(u: CurrentUser, key: string): Promise<boolean> {
+  if (isMoAdmin(u)) return true;
+  const eff = await effectiveModules(u);
+  return eff === null || eff.includes(key);
+}
+
 export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   const { asyncHandler, sendError, getSingleParam } = h;
   const P = "/api/v1/media";
+  /* A question, not a document. Long enough for a real operational question and
+     short enough that a pasted spreadsheet cannot become an expensive prompt. */
+  const AI_QUESTION_MAX_CHARS = 1000;
 
   // Guard: every media-ops route requires a media-team member (or super admin).
   function requireMedia(res: express.Response): CurrentUser | null {
@@ -417,6 +513,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        member resolves to 'employee' there, so it would read the wrong group and
        draw a sidebar the API would not honour. */
     out.my_module_group = await moduleGroupOf(u);
+    /* Whether THIS caller may use Ask Nerve AI, resolved by the same predicate
+       the endpoint enforces. Sent for the same reason my_module_group is: the
+       client cannot derive it (an explicit module grant is invisible to a role
+       check), and a UI that guessed would drift from the API. It is a hint for
+       rendering only — POST /ai/ask re-checks and 403s regardless. */
+    out.ai_command = await canUseAiCommand(u);
 
     /* The SMC roster — the SAME population SMC Management lists, so Team
        Directory and SMC Management can never disagree about who exists or how
@@ -1690,6 +1792,151 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       .filter((c) => c.upcoming_bookings >= c.items && c.items > 0)
       .map((c) => ({ ...c, short_by: c.upcoming_bookings - c.items + 1 }));
     res.json({ upcoming_shoots: shoots.rows, shortfalls });
+  }));
+
+  /* ── AI provider foundation (Phase 1) ────────────────────────────────────
+     Configuration and reachability only. Neither route reads a Nerve table,
+     accepts a prompt, or sends anything about a user, project or report to a
+     model — the layer below them has no database handle at all.
+
+     Admin-only on both: the API key's existence, the provider origin and the
+     model id are operational details, and the only consumer in this phase is an
+     administrator verifying setup. There is no UI, so nothing else needs them.
+     A later phase may widen /ai/status to requireMedia so the AI Assist page can
+     degrade gracefully; that is a deliberate decision for the phase that adds
+     the UI, not a default to inherit now. */
+  /* Readable by any Media Crew member so the AI Assist page can tell, before a
+     question is typed, whether asking is even possible. It carries no secret:
+     an enabled flag, a provider and model name, and the last probe's outcome.
+
+     baseUrl is the exception and stays Admin-only — an internal inference host
+     is infrastructure detail, and nothing in the UI needs it. */
+  app.get(`${P}/ai/status`, asyncHandler(async (_req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const status = getAiStatus();
+    res.json({
+      ...status,
+      baseUrl: isMoAdmin(u) ? status.baseUrl : null,
+      // Whether THIS caller may actually ask, so the page never offers a control
+      // the API would refuse.
+      canAsk: await canUseAiCommand(u),
+    });
+  }));
+
+  /* Live probe. Costs at most one token and is rate-limited by the existing
+     media limiter; it is a deliberate admin action, never automatic. */
+  app.post(`${P}/ai/test-connection`, asyncHandler(async (_req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may test the AI provider connection.");
+    res.json(await testAiConnection());
+  }));
+
+  /* ── Ask Nerve AI (Phase 4A) ─────────────────────────────────────────────
+     A thin handler on purpose: authenticate, authorise, hand over. All of the
+     orchestration — tool selection, permission filtering, the bounded loop —
+     lives in server/ai/, and none of it is reachable from here except through
+     runAiOrchestration().
+
+     Note what the request body does NOT contain. There is no user id, no role,
+     no capability list, no project scope, no tool list and no system prompt: all
+     of those are derived server-side from the session, so a caller cannot widen
+     their own access by decorating the payload. The only thing the client
+     supplies is the question. */
+  const aiRegistry = createAiToolRegistry();
+  // Parsed once: pricing is environment configuration, not per-request data.
+  const aiPricing = parseAiPricing(config.ai.pricing);
+
+  app.post(`${P}/ai/ask`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await canUseAiCommand(u)))
+      return sendError(res, 403, "Ask Nerve AI is not enabled for your account.");
+
+    const b = req.body as Record<string, unknown> | null;
+    const question = typeof b?.question === "string" ? b.question.trim() : "";
+    if (!question) return sendError(res, 400, "Please enter a question.");
+    if (question.length > AI_QUESTION_MAX_CHARS)
+      return sendError(res, 400, `Please keep your question under ${AI_QUESTION_MAX_CHARS} characters.`);
+
+    /* Provider absent is a normal state, not a fault: Nerve runs fine without
+       one, so this is a clean 503 with a code the UI can branch on rather than
+       an error. Nothing about the configuration is described. */
+    const provider = getAiProvider();
+    if (!provider)
+      return res.status(503).json({ code: "AI_NOT_CONFIGURED", message: "AI Assistant is not configured yet." });
+
+    /* Second usage ceiling, server-side. The per-minute limiter in index.ts
+       stops a runaway browser loop; this stops steady deliberate use adding up
+       over a day, which a per-minute window cannot see. Counted on the Nerve
+       calendar day so it resets at local midnight, not at 05:30 IST. */
+    const dailyLimit = Math.max(1, Number(config.ai.dailyRequestLimit) || 50);
+    const usedToday = await countAiRequestsToday(u.id);
+    if (usedToday >= dailyLimit) {
+      await recordAiRequest({ requestId: randomUUID(), userId: u.id, status: "failed",
+        failureCategory: "daily_limit", questionChars: question.length });
+      return res.status(429).json({ code: "AI_DAILY_LIMIT_REACHED",
+        message: "You have reached today's AI request limit. It resets at midnight." });
+    }
+
+    const user = await buildAiUserContext(u);
+    const info = provider.info();
+    const startedAt = Date.now();
+    const result = await runAiOrchestration({
+      provider, registry: aiRegistry, user, question,
+      // Splits the model's prose into facts vs recommendations; degrades to
+      // plain prose if the provider cannot honour a schema.
+      finalizeStructured: true,
+    });
+
+    /* Metering. Names of tools that ran, counts, timings and whatever usage the
+       provider volunteered — never the question, the answer, tool arguments or
+       tool results. estimated_cost stays NULL: no pricing configuration exists,
+       and a guessed price is worse than an absent one. The column is the clean
+       place for it when real pricing is configured. */
+    const failed = result.stopReason === "provider_error" || result.stopReason === "timeout";
+    await recordAiRequest({
+      requestId: result.requestId, userId: u.id, feature: "ask",
+      provider: info.provider, model: result.model ?? info.model,
+      status: failed ? "failed" : "ok",
+      failureCategory: result.stopReason === "timeout" ? "orchestration_timeout"
+                     : result.stopReason === "provider_error" ? "provider_error" : null,
+      stopReason: result.stopReason,
+      durationMs: Date.now() - startedAt,
+      tools: result.answer.sources ?? [],
+      toolRounds: result.rounds,
+      promptTokens: result.usage?.promptTokens ?? null,
+      completionTokens: result.usage?.completionTokens ?? null,
+      totalTokens: result.usage?.totalTokens ?? null,
+      /* NULL unless AI_PRICING supplies a verified rate for this exact model.
+         No price is built in for any provider. */
+      estimatedCost: estimateAiCost(aiPricing, result.model ?? info.model,
+                                    result.usage?.promptTokens ?? null,
+                                    result.usage?.completionTokens ?? null),
+      questionChars: question.length,
+    });
+
+    /* Returned field by field. usage, model and the raw tool payloads stay
+       server-side — a caller gets the answer and its provenance, not the
+       machinery that produced it. */
+    res.json({
+      requestId: result.requestId,
+      answer: result.answer.answer,
+      facts: result.answer.facts ?? [],
+      recommendations: result.answer.recommendations ?? [],
+      warnings: result.answer.warnings ?? [],
+      sources: result.answer.sources ?? [],
+      stopReason: result.stopReason,
+      // So the UI can show what remains without a second round trip.
+      usage: { today: usedToday + 1, dailyLimit },
+    });
+  }));
+
+  /* Aggregate AI usage for an administrator (§6). Counts and totals only — no
+     per-request rows, no questions, no answers. An employee has no route to
+     anyone's AI activity, including their own. */
+  app.get(`${P}/ai/usage`, asyncHandler(async (_req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "AI usage is Admin-only.");
+    res.json(await getAiUsageSummary());
   }));
 
   // ICS calendar feed (§7.11) — subscribe to shoots + deadlines + leave + holidays.
@@ -5389,21 +5636,19 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
     notified += r.rowCount ?? 0;
   };
 
-  // AUTO-2 — overdue deliverables → owner; escalation: +PM at 3 days, +Admins at 7 (§17).
+  /* AUTO-2 — overdue deliverables → owner; escalation: +PM at 3 days, +Admins at 7 (§17).
+     The overdue DEFINITION now lives in findOverdueDeliverables() so the AI layer
+     answers from the same predicate instead of a second copy. Scope "all" is what
+     this loop has always operated on; the escalation rules below are unchanged. */
   if (ruleOn("AUTO-2")) {
     const admins = (await pool.query(`SELECT id FROM users WHERE team='media' AND role='admin'`)).rows.map((r) => r.id as string);
-    for (const d of (await pool.query(
-      `SELECT d.id, d.title, d.owner_id, d.due_date, (CURRENT_DATE - d.due_date) AS days_over,
-              (SELECT a.user_id FROM mo_project_assignments a WHERE a.project_id=d.project_id AND a.is_project_manager AND a.removed_at IS NULL LIMIT 1) AS pm
-         FROM mo_deliverables d
-        WHERE d.deleted_at IS NULL AND d.due_date < CURRENT_DATE
-          AND d.status NOT IN ('delivered','not_required','cancelled') AND d.owner_id IS NOT NULL`)).rows) {
-      const msg = `“${d.title}” was due ${String(d.due_date).slice(0, 10)}`;
-      await notify(d.owner_id, "overdue", "Deliverable overdue", msg, "deliverable", d.id);
-      if (Number(d.days_over) >= 3 && d.pm && d.pm !== d.owner_id)
-        await notify(d.pm, "overdue", "Escalation: deliverable 3+ days overdue", msg, "deliverable", d.id);
-      if (Number(d.days_over) >= 7)
-        for (const a of admins) if (a !== d.owner_id) await notify(a, "overdue", "Escalation: deliverable 7+ days overdue", msg, "deliverable", d.id);
+    for (const d of await findOverdueDeliverables({ kind: "all" })) {
+      const msg = `“${d.title}” was due ${d.dueDate}`;
+      await notify(d.ownerId, "overdue", "Deliverable overdue", msg, "deliverable", d.id);
+      if (d.daysOverdue >= 3 && d.projectManagerId && d.projectManagerId !== d.ownerId)
+        await notify(d.projectManagerId, "overdue", "Escalation: deliverable 3+ days overdue", msg, "deliverable", d.id);
+      if (d.daysOverdue >= 7)
+        for (const a of admins) if (a !== d.ownerId) await notify(a, "overdue", "Escalation: deliverable 7+ days overdue", msg, "deliverable", d.id);
     }
   }
 

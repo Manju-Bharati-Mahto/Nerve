@@ -572,6 +572,21 @@ const mediaApiLimiter = rateLimit({
 });
 app.use("/api/v1/media", mediaApiLimiter);
 
+/* Ask Nerve AI is the one media route whose cost is not ours: every accepted
+   request may become several provider calls. The 300/min media limit above is
+   the right shape for reading Nerve and far too loose for that, so this narrows
+   it — same library, same convention, applied to the one path that needs it.
+   A runaway retry loop in the browser stops here rather than at the provider. */
+const aiAskLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  keyGenerator: (req, res) => (res.locals.currentUser?.id as string) || req.ip || "anon",
+  message: { message: "Too many AI requests — please wait a moment before asking again." },
+});
+app.use("/api/v1/media/ai/ask", aiAskLimiter);
+
 // The portals' email-verification endpoints reuse the same limiters that guard
 // the employee password-OTP endpoints, rather than declaring a second budget.
 registerMediaOpsApi(app, { asyncHandler, sendError, getSingleParam, otpSendLimiter, otpVerifyLimiter });

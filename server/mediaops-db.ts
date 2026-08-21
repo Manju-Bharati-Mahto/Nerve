@@ -1382,6 +1382,59 @@ export async function bootstrapMediaOpsDatabase() {
                     REFERENCES mo_casting_requests(id) ON DELETE SET NULL`);
   await pool.query(`ALTER TABLE mo_casting_records ADD COLUMN IF NOT EXISTS applicant_email TEXT`);
 
+  /* ═══════════ AI REQUEST METERING (§ AI operating layer) ═══════════════════
+     Operational accountability and cost tracking for the AI layer — NOT
+     conversation storage.
+
+     Deliberately its own table rather than rows in mo_audit_logs. That table is
+     the business-event trail: it keys on entity_id BIGINT and carries before/
+     after jsonb, which suits "who changed this deliverable" and suits metering
+     badly. Here the questions are numeric and aggregate — tokens summed per
+     month, requests counted per user per day, failures grouped by category —
+     and answering them over jsonb would be both awkward and slow. The retention
+     story differs too: a business audit trail is kept indefinitely, telemetry is
+     not.
+
+     What this table must never hold is equally deliberate: no prompt, no model
+     response, no tool arguments, no tool results, no API key, no headers. It
+     records THAT a request happened and what it cost, never what was said. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_ai_requests (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      request_id TEXT NOT NULL UNIQUE,          -- the orchestrator's trace id
+      user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      feature TEXT NOT NULL DEFAULT 'ask',      -- which AI surface was used
+      -- The calendar day in Nerve's timezone, written by the application rather
+      -- than derived from occurred_at: a UTC-derived date rolls over at 05:30
+      -- IST and would reset a daily limit in the middle of the working morning.
+      local_date DATE NOT NULL,
+      occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      provider TEXT,
+      model TEXT,
+      status TEXT NOT NULL CHECK (status IN ('ok','failed')),
+      -- One of a closed set of safe categories; never an exception message,
+      -- which could carry SQL, a path, or a provider payload.
+      failure_category TEXT,
+      stop_reason TEXT,
+      duration_ms INTEGER,
+      -- Tool NAMES only. Arguments and results are deliberately absent.
+      tools JSONB NOT NULL DEFAULT '[]'::jsonb,
+      tool_rounds SMALLINT,
+      -- NULL means the provider reported no usage block, which is normal for
+      -- some OpenAI-compatible endpoints. Never guessed.
+      prompt_tokens INTEGER,
+      completion_tokens INTEGER,
+      total_tokens INTEGER,
+      -- Only ever set when a real pricing configuration exists. No default
+      -- price is assumed for any provider.
+      estimated_cost NUMERIC(12,6),
+      -- Length only. The question itself is NOT stored — see the note in
+      -- recordAiRequest() for why a hash was rejected as well.
+      question_chars INTEGER
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_ai_req_user_day ON mo_ai_requests(user_id, local_date)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_ai_req_when ON mo_ai_requests(occurred_at DESC)`);
+
   // ═════════ EXTERNAL MEDIA REQUEST INTAKE (§ external intake door) ═════════
   // The same intake door pattern as external casting, pointed at Request Intake.
   // Critically ONE database (§51): an external submission is an ordinary

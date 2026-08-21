@@ -8818,8 +8818,120 @@ async function loadAI(force){
   MO_AI_LOADING=false;
   if(S.route==='#/media/ai')render();
 }
+/* ── Ask Nerve AI (Phase 4A) ──────────────────────────────────────────────
+   The first interaction that actually asks a language model something. Kept
+   deliberately small: one question, one answer, no history. State lives in a
+   plain object rather than the URL because a question is not a place you
+   navigate back to. */
+const ASK={q:'',busy:false,res:null,err:null,limited:false};
+
+/* Provider status, fetched once when the AI page opens. Knowing this up front is
+   the difference between a disabled control with a reason on it and a user
+   typing a question only to be told it was never going to work. */
+let AI_STATUS=null, AI_STATUS_LOADING=false;
+function loadAiStatus(force){
+  if(!window.__MO_LIVE__||AI_STATUS_LOADING||(AI_STATUS&&!force))return;
+  AI_STATUS_LOADING=true;
+  MO_API.get('/ai/status')
+    .then(st=>{AI_STATUS=st;})
+    /* A status we could not read must not disable a page that is otherwise
+       working; the deterministic cards below never needed a provider. */
+    .catch(()=>{AI_STATUS={unknown:true};})
+    .then(()=>{AI_STATUS_LOADING=false; if(S.route==='#/media/ai')render();});
+}
+/* One place decides whether asking is possible, and why not. */
+function askAvailability(){
+  const st=AI_STATUS;
+  if(!st||st.unknown) return {ok:true};                       // unknown: let the API decide
+  if(!st.enabled) return {ok:false,msg:'AI Assistant is not configured.'};
+  if(st.lastCheck&&(!st.lastCheck.reachable||!st.lastCheck.authenticated))
+    return {ok:false,msg:'AI Assistant is temporarily unavailable.'};
+  return {ok:true};
+}
+
+const ASK_LABEL={facts:'From your Nerve data',recommendations:'Suggested next steps',warnings:'Worth knowing'};
+/* Tool names are an implementation detail; a reviewer wants to know WHICH part
+   of Nerve an answer came from. Anything unmapped falls back to the raw name so
+   a tool added later still shows something truthful. */
+const ASK_SOURCE={get_current_user:'Your profile',get_my_day:'My Day',
+  get_overdue_deliverables:'Overdue deliverables'};
+
+function askSection(){
+  if(!DB.ai_command)
+    return `<div class="ai-box mb5"><div class="between mb3"><b>Ask Nerve AI</b>
+        <span class="ai-chip">✦ Admin</span></div>
+      <div class="hint">Ask Nerve AI is not enabled for your account. The insights below are
+        computed from your data and need no AI provider.</div></div>`;
+
+  const avail=askAvailability();
+  const r=ASK.res;
+  /* Every one of these goes through esc(): the answer is model output, and model
+     output is never markup. */
+  const list=(items,cls)=>items&&items.length
+    ? `<ul class="small ${cls||''}" style="line-height:1.8;margin:0 0 10px;padding-left:20px">
+         ${items.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:'';
+
+  /* Not configured / unreachable is a STATE, not an error: a plain note, and a
+     control that is visibly unavailable rather than one that fails on click. */
+  if(!avail.ok)
+    return `<div class="ai-box mb5"><div class="between mb3"><b>Ask Nerve AI</b>
+        <span class="ai-chip">✦ Read-only</span></div>
+      <div class="note warn" style="margin:0">${esc(avail.msg)}<br>
+        <span class="small">The insights below are computed from your Nerve data and do not need an AI provider.</span></div></div>`;
+
+  const body = ASK.busy
+    ? `<div class="skel" style="height:14px;width:52%;margin-bottom:9px"></div>
+       <div class="skel" style="height:14px;width:88%;margin-bottom:9px"></div>
+       <div class="skel" style="height:14px;width:66%"></div>`
+    : ASK.err
+      ? `<div class="note ${ASK.limited?'warn':'danger'}" style="margin:0">${esc(ASK.err)}</div>`
+      : r
+        ? `<div class="note mb3" style="white-space:pre-wrap">${esc(r.answer||'')}</div>
+           ${r.facts&&r.facts.length?`<h4 class="small b mb2">${ASK_LABEL.facts}</h4>${list(r.facts)}`:''}
+           ${r.recommendations&&r.recommendations.length?`<h4 class="small b mb2">${ASK_LABEL.recommendations}</h4>${list(r.recommendations)}`:''}
+           ${r.warnings&&r.warnings.length?`<div class="note warn mb3">${r.warnings.map(esc).join('<br>')}</div>`:''}
+           ${r.sources&&r.sources.length
+             ? `<div class="xsmall mut3">Based on your Nerve data · ${r.sources.map(x=>esc(ASK_SOURCE[x]||x)).join(' · ')}</div>`
+             : `<div class="xsmall mut3">No Nerve data was read for this answer.</div>`}
+           ${r.usage?`<div class="xsmall mut3 mt1">${r.usage.today} of ${r.usage.dailyLimit} AI requests used today.</div>`:''}`
+        : `<div class="hint">Ask about your own day or your overdue work. Answers come from your
+             Nerve data, and Nerve AI can only read — it never changes anything.</div>`;
+
+  return `<div class="ai-box mb5">
+      <div class="between mb3"><b>Ask Nerve AI</b><span class="ai-chip">✦ Read-only</span></div>
+      <div class="f gap2 mb3" style="align-items:flex-start">
+        <input class="inp" id="ask-q" style="flex:1" maxlength="1000"
+          placeholder="e.g. What do I have today?" value="${esc(ASK.q)}"
+          oninput="ASK.q=this.value" onkeydown="if(event.key==='Enter')askRun()">
+        <button class="btn primary" data-act="askRun" ${ASK.busy||ASK.limited?'disabled':''}
+          style="flex:0 0 auto">${ASK.busy?'Asking…':'Ask'}</button>
+      </div>
+      ${body}
+    </div>`;
+}
+
+async function askRun(){
+  const q=(ASK.q||'').trim();
+  if(!q||ASK.busy)return;
+  ASK.busy=true; ASK.err=null; ASK.res=null; render();
+  try{
+    ASK.res=await MO_API.post('/ai/ask',{question:q});
+  }catch(e){
+    /* MO_API surfaces the server's message; the server has already sanitised it,
+       so there is nothing here to strip — only somewhere to put it. */
+    ASK.err=e.message||'Nerve AI could not answer that just now.';
+    /* The daily ceiling is not a failure to retry: disable the control until the
+       page is reloaded rather than inviting the user to hammer a 429. */
+    ASK.limited=/limit/i.test(ASK.err)&&/today|midnight/i.test(ASK.err);
+    /* A provider that has gone away mid-session should re-show as unavailable. */
+    loadAiStatus(true);
+  }
+  ASK.busy=false; render();
+}
+
 function viewAI(){
   if(window.__MO_LIVE__&&!MO_AI&&!MO_AI_LOADING)loadAI();
+  loadAiStatus();
   const A=MO_AI;
   const head=`<div class="page-head">
       <div><div class="crumb">§7.15 — cross-cutting · computed live</div><h1 class="page-title">AI Assist</h1>
@@ -8838,11 +8950,14 @@ function viewAI(){
           <div class="between"><span class="chip sel">${esc(val)}</span><span class="chip">${pri==='S'?'Should':'Could'}</span></div>
         </div></div>`).join('')}</div></div>`;
   if(!window.__MO_LIVE__) return head+`<div class="note warn mb5">Sign in to Nerve to load live AI insights.</div>`+register;
-  if(!A) return head+`<div class="ai-box mb5"><div class="skel" style="height:18px;width:38%;margin-bottom:14px"></div>
+  /* Ask sits above the computed cards, and is INDEPENDENT of them: the digest
+     failing to load must not remove it, and it must not remove the digest. */
+  const ask=askSection();
+  if(!A) return head+ask+`<div class="ai-box mb5"><div class="skel" style="height:18px;width:38%;margin-bottom:14px"></div>
       <div class="skel" style="height:64px"></div></div>
       <div class="grid g2 mb5"><div class="ai-box"><div class="skel" style="height:80px"></div></div>
       <div class="ai-box"><div class="skel" style="height:80px"></div></div></div>`+register;
-  if(A.error) return head+`<div class="note danger mb5">Couldn't load AI insights: ${esc(A.error)}</div>`+register;
+  if(A.error) return head+ask+`<div class="note danger mb5">Couldn't load AI insights: ${esc(A.error)}</div>`+register;
 
   const dg=A.digest, an=dg.anomalies||{over_hours:[],blocked:[],stalls:[]};
   const clean=!an.over_hours.length&&!an.stalls.length&&!an.blocked.length;
@@ -8870,7 +8985,7 @@ function viewAI(){
         `<div class="hint">Inventory covers all upcoming bookings.</div>`}
       <div class="small mut mt2">Next shoots: ${(A.fc.upcoming_shoots||[]).map(s=>esc(s.title)+' ('+s.shoot_date+')').join(' · ')||'none scheduled'}</div></div>`;
 
-  return head+digestBox+`<div class="grid g2 mb5">${dupBox}${fcBox}</div>`+register;
+  return head+ask+digestBox+`<div class="grid g2 mb5">${dupBox}${fcBox}</div>`+register;
 }
 
 /* ==========================================================================
@@ -12819,6 +12934,7 @@ const ACTIONS = {
     ' — AI outputs are always labelled and editable','ok');},
   aiSettings:()=>toast('AI settings — model, retention, opt-out per feature. No AI performance scoring, ever (§7.15).','ok'),
   aiRegen:()=>{loadAI(true);toast('Recomputing AI insights from live data…','ok');},
+  askRun:()=>askRun(),
   uploadCrewPhoto:(input)=>{
     const f=input.files&&input.files[0]; if(!f)return;
     const st=$('#au-photo-status'); st.textContent='Uploading…';
@@ -14490,6 +14606,9 @@ async function hydrateFromServer(){
   // An object, not one of the array tables above.
   DB.module_defaults=(st.module_defaults&&typeof st.module_defaults==='object')?st.module_defaults:{};
   DB.my_module_group=st.my_module_group||null;
+  /* Server-resolved: may this user use Ask Nerve AI? Render hint only — the
+     endpoint enforces the same predicate independently. */
+  DB.ai_command=!!st.ai_command;
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
   // Bind identity to the real logged-in Nerve user (server sends its prototype int id).
   if(typeof st.me==='number' && DB.users.some(u=>u.id===st.me)) S.me=st.me;
