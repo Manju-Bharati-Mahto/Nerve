@@ -1130,6 +1130,24 @@ export async function bootstrapMediaOpsDatabase() {
      Only two genuinely new concepts exist: an SMC member's institute mapping,
      and the submission/review history, which needs to survive revisions. */
 
+  /* Group-level module defaults. The only thing the module system lacked: role
+     defaults were DERIVED from the nav each time (defaultModulesFor), so an
+     administrator could not change what a group starts with. One row per group,
+     holding the same module keys the sidebar and the per-member dialog use.
+
+     Semantics, chosen so nothing existing shifts underfoot:
+       mo_user_profiles.allowed_modules IS NULL  → inherit this group default
+       allowed_modules IS an array               → explicit member override, wins
+     A group with no row here behaves exactly as before (unrestricted), so this
+     table only takes effect once someone deliberately configures a group. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_module_defaults (
+      role TEXT PRIMARY KEY,
+      modules JSONB NOT NULL DEFAULT '[]'::jsonb,
+      updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+
   /* The SMC network is its own team, which is what makes the role real without
      touching the platform role vocabulary: users.team='smc' means moRoleOf()
      resolves to null, so every Media Crew route already refuses them. Built-in,
@@ -1321,9 +1339,19 @@ export async function bootstrapMediaOpsDatabase() {
     ["interests", "JSONB NOT NULL DEFAULT '[]'::jsonb"],
     ["availability", "TEXT"],
     ["intro", "TEXT"],
+    // The applicant hosts their own photo and gives us the link — NERVE stores the
+    // URL, never a copy of the image. The column the intake layer always reserved.
     ["photo_url", "TEXT"],
+    ["mobile_phone", "TEXT"],             // normalised on the way in, never free text
+    ["enrolment_number", "TEXT"],         // optional: staff, alumni and externals have none
+    ["instagram_url", "TEXT"],
     ["consent_given", "BOOLEAN NOT NULL DEFAULT false"],
     ["consent_at", "TIMESTAMPTZ"],
+    // WHICH wording was agreed to. The id alone would rot the moment the text is
+    // reworded, so the row keeps a snapshot of the text too: an old submission
+    // stays readable without every retired version having to be kept forever.
+    ["consent_version", "TEXT"],
+    ["consent_text", "TEXT"],
     ["review_note", "TEXT"],
     ["reviewed_at", "TIMESTAMPTZ"],
     ["archived_at", "TIMESTAMPTZ"],
@@ -1353,6 +1381,59 @@ export async function bootstrapMediaOpsDatabase() {
   await pool.query(`ALTER TABLE mo_casting_records ADD COLUMN IF NOT EXISTS source_request_id BIGINT
                     REFERENCES mo_casting_requests(id) ON DELETE SET NULL`);
   await pool.query(`ALTER TABLE mo_casting_records ADD COLUMN IF NOT EXISTS applicant_email TEXT`);
+
+  /* ═══════════ AI REQUEST METERING (§ AI operating layer) ═══════════════════
+     Operational accountability and cost tracking for the AI layer — NOT
+     conversation storage.
+
+     Deliberately its own table rather than rows in mo_audit_logs. That table is
+     the business-event trail: it keys on entity_id BIGINT and carries before/
+     after jsonb, which suits "who changed this deliverable" and suits metering
+     badly. Here the questions are numeric and aggregate — tokens summed per
+     month, requests counted per user per day, failures grouped by category —
+     and answering them over jsonb would be both awkward and slow. The retention
+     story differs too: a business audit trail is kept indefinitely, telemetry is
+     not.
+
+     What this table must never hold is equally deliberate: no prompt, no model
+     response, no tool arguments, no tool results, no API key, no headers. It
+     records THAT a request happened and what it cost, never what was said. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_ai_requests (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      request_id TEXT NOT NULL UNIQUE,          -- the orchestrator's trace id
+      user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      feature TEXT NOT NULL DEFAULT 'ask',      -- which AI surface was used
+      -- The calendar day in Nerve's timezone, written by the application rather
+      -- than derived from occurred_at: a UTC-derived date rolls over at 05:30
+      -- IST and would reset a daily limit in the middle of the working morning.
+      local_date DATE NOT NULL,
+      occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      provider TEXT,
+      model TEXT,
+      status TEXT NOT NULL CHECK (status IN ('ok','failed')),
+      -- One of a closed set of safe categories; never an exception message,
+      -- which could carry SQL, a path, or a provider payload.
+      failure_category TEXT,
+      stop_reason TEXT,
+      duration_ms INTEGER,
+      -- Tool NAMES only. Arguments and results are deliberately absent.
+      tools JSONB NOT NULL DEFAULT '[]'::jsonb,
+      tool_rounds SMALLINT,
+      -- NULL means the provider reported no usage block, which is normal for
+      -- some OpenAI-compatible endpoints. Never guessed.
+      prompt_tokens INTEGER,
+      completion_tokens INTEGER,
+      total_tokens INTEGER,
+      -- Only ever set when a real pricing configuration exists. No default
+      -- price is assumed for any provider.
+      estimated_cost NUMERIC(12,6),
+      -- Length only. The question itself is NOT stored — see the note in
+      -- recordAiRequest() for why a hash was rejected as well.
+      question_chars INTEGER
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_ai_req_user_day ON mo_ai_requests(user_id, local_date)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_ai_req_when ON mo_ai_requests(occurred_at DESC)`);
 
   // ═════════ EXTERNAL MEDIA REQUEST INTAKE (§ external intake door) ═════════
   // The same intake door pattern as external casting, pointed at Request Intake.

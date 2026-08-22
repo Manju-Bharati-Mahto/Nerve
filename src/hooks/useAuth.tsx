@@ -104,7 +104,10 @@ export function getRoleDashboard(role: AppRole | null, team: AppTeam | null): st
   if (role === 'design_reports_admin')  return '/design/dashboard'
   // Media Crew uses the self-contained Media Ops app, which adapts its own UI
   // to the user's role internally — every media-team role lands on /media.
-  if (team === 'media')                 return '/media'
+  // SMC members live in that same app: they are ordinary NERVE users who also
+  // carry institute coverage, so they land there too rather than falling through
+  // to the branding dashboard, which is a different product entirely.
+  if (team === 'media' || team === 'smc') return '/media'
   if (role === 'admin')                 return team === 'content' ? '/content/dashboard'   : team === 'design' ? '/design/dashboard' : '/branding/dashboard'
   if (role === 'sub_admin')             return team === 'content' ? '/content/sub-admin'   : team === 'design' ? '/design/sub-admin' : '/branding/sub-admin'
   // Task Owner: a branding/design lead variant with project-assign rights. Lands

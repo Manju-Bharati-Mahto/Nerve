@@ -2408,9 +2408,9 @@ const CAPS = {
    it holds for every cap-gated module — casting, boards, SMC and anything added
    later — with nothing named here. */
 function grantedByModule(cap){
-  const am=(me()||{}).allowed_modules;
-  if(!Array.isArray(am)) return false;
-  return MODULES.some(m=>m.cap===cap&&am.includes(m.key));
+  const eff=effectiveModulesFor(me());
+  if(!Array.isArray(eff)) return false;
+  return MODULES.some(m=>m.cap===cap&&eff.includes(m.key));
 }
 function can(cap,ctx={}){
   const rule=CAPS[cap]; if(!rule) return false;
@@ -2942,10 +2942,7 @@ function legend(items){return `<div class="legend">${items.map(i=>`<span><i styl
 const NAV = [
   {group:'Main',items:[
     {r:'#/media/home',   i:'home',  l:'Home'},
-    {r:'#/media/my-day', i:'myday', l:'My Day'},
-    /* The SMC member's own My Day — a different page from the crew's, not the
-       same one with buttons removed. */
-    {r:'#/media/smc/my-day', i:'myday', l:'My Day', roles:['smc_member']}
+    {r:'#/media/my-day', i:'myday', l:'My Day'}
   ]},
   {group:'SMC Network',items:[
     {r:'#/media/smc',i:'users',l:'SMC Management', cap:'smc.manage', pfx:['#/media/smc']}
@@ -3000,11 +2997,6 @@ const ROLE_RANK={employee:0,team_lead:1,admin:2};
    with an explicit role, for the Module Access dialog (user being edited). */
 function navShow(it,r){
   r=r||role();
-  /* An SMC member is not a junior employee — they are outside the ladder. They
-     see only entries that name them explicitly, so any module added later is
-     invisible to them unless someone deliberately opts them in. This mirrors the
-     server, where team='smc' makes moRoleOf() null and every crew route refuses. */
-  if(r==='smc_member')return Array.isArray(it.roles)&&it.roles.includes('smc_member');
   /* roles — an explicit allow-list, for a role outside the employee → team lead
      → admin ladder (the Operations Coordinator). */
   if(it.roles)return it.roles.includes(r);
@@ -3042,11 +3034,32 @@ const MODULE_GROUPS = [...new Set(MODULES.map(m=>m.group))];
 /* Group I: module access may only REMOVE what the role grants, never add. */
 function moduleRoleOk(m,r){ return m.key==='kiosk'?true:navShow(m,r); }
 function hashModule(hash){ let best=null,len=-1; for(const m of MODULES) for(const p of m.pfx) if(hash.startsWith(p)&&p.length>len){best=m.key;len=p.length;} return best; }
-function moduleAllowed(mod){ if(mod==null)return true; const am=(me()||{}).allowed_modules; if(!Array.isArray(am)||isAdmin())return true; return am.includes(mod); }
-function firstAllowedRoute(){ const am=(me()||{}).allowed_modules; if(!Array.isArray(am)||isAdmin())return '#/media/home';
+function moduleAllowed(mod){ if(mod==null)return true; if(isAdmin())return true;
+  const eff=effectiveModulesFor(me()); return eff===null||eff.includes(mod); }
+function firstAllowedRoute(){ if(isAdmin()||effectiveModulesFor(me())===null)return '#/media/home';
   for(const g of NAV)for(const it of g.items)if(navShow(it)&&moduleAllowed(hashModule(it.r)))return it.r; return null; }
 /* Role defaults — derived, so they can never drift from the sidebar either. */
-function defaultModulesFor(r){ return MODULES.filter(m=>moduleRoleOk(m,r)).map(m=>m.key); }
+/* What a group starts with. A configured default wins; otherwise fall back to
+   the set derived from the nav, so a group nobody has touched behaves exactly as
+   it always did. */
+function defaultModulesFor(r){
+  const d=(DB.module_defaults||{})[r];
+  if(Array.isArray(d)) return d.slice();
+  return MODULES.filter(m=>moduleRoleOk(m,r)).map(m=>m.key);
+}
+/* Effective access for a user: explicit override, else their group's default,
+   else unrestricted. Mirrors effectiveModules() on the server. */
+function effectiveModulesFor(u){
+  if(Array.isArray(u&&u.allowed_modules)) return u.allowed_modules;
+  /* For the signed-in user the server tells us their group outright — an SMC
+     member resolves to role 'employee', so the role alone would read the wrong
+     defaults row and draw a sidebar the API refuses. */
+  const g=(u&&u.id===S.me&&DB.my_module_group)
+    ? DB.my_module_group
+    : (u&&u.is_smc?'smc_member':(u||{}).role);
+  const d=(DB.module_defaults||{})[g];
+  return Array.isArray(d)?d:null;
+}
 /* The grouped Module Access checklist, rendered straight off NAV so its groups,
    order, icons and labels ARE the sidebar's. Shared by the Add-member form and
    the per-user dialog — one renderer, no duplicate markup.
@@ -3113,7 +3126,8 @@ function renderNav(){
 }
 
 const ROUTES = [
-  [/^#\/media\/smc\/my-day$/,           ()=>viewSmcMyDay()],
+  /* SMC work now lives on the ordinary My Day; keep the old path working. */
+  [/^#\/media\/smc\/my-day$/,           ()=>{location.hash='#/media/my-day';return '';}],
   [/^#\/media\/smc$/,                  ()=>viewSmcManagement()],
   [/^#\/media\/smc\/members\/([\w-]+)$/, m=>viewSmcMember(m[1])],
   [/^#\/media\/home$/,                 ()=>viewDashboard()],
@@ -3150,13 +3164,6 @@ const ROUTES = [
 ];
 function render(){
   let hash=location.hash||'#/media/home';
-  /* An SMC member's home IS their My Day (§5). Any crew route they land on —
-     by habit, a stale link or the address bar — bounces here; the server would
-     refuse the data anyway, so this only spares them a dead end. */
-  if(role()==='smc_member'&&!hash.startsWith('#/media/smc/my-day')){
-    hash='#/media/smc/my-day';
-    if(location.hash!==hash){location.hash=hash;return;}
-  }
   S.route=hash;
   let html='';
   // Module-access guard (§ Module Access): bounce to the user's first allowed
@@ -3716,6 +3723,16 @@ const castTags    = ()=>(DB.casting_tags||[]).filter(t=>t.is_active!==false&&!t.
 const castColls   = ()=>(DB.casting_collections||[]).filter(c=>c.is_active!==false&&!c.archived_at)
   .sort((a,b)=>(a.sort_order||0)-(b.sort_order||0)||a.name.localeCompare(b.name));
 const castRequests= ()=>(DB.casting_requests||[]);
+/* An applicant-supplied URL becomes a live link only if it is https. Everything
+   submitted through the portal is already validated server-side; this is the
+   second lock, so a value that reached the row by any other path prints as text
+   rather than arming a javascript:/data: link in the reviewer's browser. */
+const safeExtUrl=u=>{ if(!u)return null;
+  try{ const p=new URL(String(u)); return p.protocol==='https:'?p.href:null; }catch{ return null; } };
+const notGiven=()=>'<span class="mut3">Not provided</span>';
+const extLink=(u,label)=>{ const h=safeExtUrl(u);
+  if(!h) return u?`<span class="mut3">${esc(String(u))}</span>`:notGiven();
+  return `<a class="btn xs" href="${esc(h)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`; };
 const openCastingRequests = ()=>castRequests().filter(r=>!['completed','rejected'].includes(r.status));
 const tagsOf  = rid=>(DB.casting_record_tags||[]).filter(x=>x.record_id===rid).map(x=>x.tag_id);
 const collsOf = rid=>(DB.casting_record_collections||[]).filter(x=>x.record_id===rid).map(x=>x.collection_id);
@@ -3895,9 +3912,18 @@ function drawerCastRequest(id){
         <dl class="kv mb4">
           <dt>Name</dt><dd>${esc(q.applicant_name||'—')}</dd>
           <dt>University email</dt><dd class="mono">${esc(q.applicant_email||'—')}</dd>
+          <dt>Mobile</dt><dd>${q.mobile_phone
+            ?`<a class="mono" href="tel:${esc(q.mobile_phone)}">${esc(q.mobile_phone)}</a>`:notGiven()}</dd>
           <dt>Type</dt><dd>${esc(q.applicant_type||'—')}</dd>
           <dt>Department</dt><dd>${esc(q.department||'—')}</dd>
           <dt>Designation / course</dt><dd>${esc(q.designation||'—')}</dd>
+          <dt>Enrolment number</dt><dd>${q.enrolment_number
+            ?`<span class="mono">${esc(q.enrolment_number)}</span>`:notGiven()}</dd>
+        </dl>
+        <h4 class="small b mb2">Photo &amp; profile</h4>
+        <dl class="kv mb4">
+          <dt>Google Drive photo</dt><dd>${extLink(q.photo_url,'⛁ Open Google Drive')}</dd>
+          <dt>Instagram</dt><dd>${extLink(q.instagram_url,'↗ Open profile')}</dd>
         </dl>`:''}
       <h4 class="small b mb2">Casting information</h4>
       <dl class="kv mb4">
@@ -3918,7 +3944,13 @@ function drawerCastRequest(id){
           <dt>Consent</dt><dd>${q.consent_given
             ?`<span class="status st-success"><span class="si">✔</span>Given ${q.consent_at?D.fmt(q.consent_at):''}</span>`
             :'<span class="status st-warn"><span class="si">◔</span>Not recorded</span>'}</dd>
-        </dl>`:''}
+          ${q.consent_version?`<dt>Consent version</dt><dd><span class="code">${esc(q.consent_version)}</span></dd>`:''}
+        </dl>
+        ${q.consent_text?`<details class="mb4"><summary class="small b" style="cursor:pointer">
+            Consent wording this applicant accepted</summary>
+          <div class="note mt2">${esc(q.consent_text)}
+            <div class="xsmall mut3 mt2">Recorded as accepted${q.consent_at?' on '+D.fmt(q.consent_at):''}.
+              Kept verbatim — later rewording does not change it.</div></div></details>`:''}`:''}
       ${rec?`<div class="note ok mb4"><b>Approved.</b> Casting record
         <span class="code">${esc(rec.cast_id)}</span> was created from this request.
         <button class="btn xs mt2" data-drawer="casting:${rec.id}">Open record</button></div>`:''}
@@ -4095,6 +4127,7 @@ function castAdminRequests(){
   if(f.type)list=list.filter(r=>r.applicant_type===f.type);
   if(f.q){const q=f.q.toLowerCase();
     list=list.filter(r=>[r.request_id,r.applicant_name,r.applicant_email,r.department,r.need,
+      r.mobile_phone,r.enrolment_number,
       r.link_id?(castLink(r.link_id)||{}).name:'',
       r.matched_record_id?(castRec(r.matched_record_id)||{}).cast_id:''].filter(Boolean).join(' ').toLowerCase().includes(q));}
   const SORTS={newest:(a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')),
@@ -4108,7 +4141,7 @@ function castAdminRequests(){
   const byStatus=k=>castRequests().filter(r=>r.status===k).length;
   return `<div class="cast-bar">
       <div class="search-wrap cast-search"><input class="inp" value="${esc(f.q)}"
-        placeholder="Search request ID, applicant, email, department, campaign, CAST ID…"
+        placeholder="Search request ID, applicant, email, mobile, enrolment, department, campaign, CAST ID…"
         oninput="S.filters.castreq.q=this.value;render()"></div>
       <select class="inp" style="height:34px;font-size:12.5px;width:auto"
         onchange="S.filters.castreq.sort=this.value;render()">
@@ -5764,6 +5797,7 @@ function myAssignments(uid=S.me,date,opts={}){
   date=String(date||rtoday()).slice(0,10);
   const logged=opts.all?{delivs:new Set(),projects:new Set()}:loggedTodayKeys(uid);
   const tasks=(DB.assignments||[]).filter(a=>(a.assignees||[]).includes(uid)&&a.status!=='cancelled'
+    &&!a.is_smc                       /* drawn by the SMC card, with its own actions */
     &&!a.deliverable_id&&inSchedule(a,date)
     /* an ad-hoc task counts as logged once its project has a log entry today */
     &&!(a.project_id&&logged.projects.has(a.project_id)));
@@ -5844,8 +5878,33 @@ function assignmentCard(a){
     </div>
   </div>`;
 }
+/* The member's SMC coverage, rendered on the standard My Day. Returns nothing
+   at all for anyone without SMC work, so the page is unchanged for the crew. */
+function smcMyDaySection(){
+  const d=SMC.myday;
+  if(!d) return SMC.loading?`<div class="card"><div class="card-body">
+    <div class="small mut3">Loading your SMC coverage…</div></div></div>`:'';
+  const live=(d.assignments||[]).filter(a=>a.smc_status!=='cancelled'&&a.smc_status!=='reviewed');
+  if(!live.length) return '';
+  const revision=live.filter(a=>a.smc_status==='revision_required');
+  const rest=live.filter(a=>a.smc_status!=='revision_required');
+  return `${smcStyles()}<div class="card">
+    <div class="card-head"><h3>SMC coverage</h3>
+      <div class="ca"><span class="chip${revision.length?' bad':''}">${live.length}</span></div></div>
+    <div class="card-body">
+      ${[...revision,...rest].map(a=>smcCard(a,a.smc_status==='revision_required')).join('')}
+    </div>
+    <div class="card-foot">Institute coverage assigned to you. Accepting, starting and
+      submitting here follows the SMC review workflow.</div></div>`;
+}
+
 function viewMyDay(){
   if(isCoord())return viewCoordMyDay();
+  /* SMC coverage is ordinary work for the person doing it, so it belongs on the
+     ordinary My Day rather than a separate page. The card and its actions are the
+     SMC ones because the lifecycle is genuinely different (accept → start →
+     submit → review); everything around it is the standard page. */
+  if(SMC.myday===null&&!SMC.loading&&!SMC.err) smcLoadMyDay();
   const r=DB.daily_reports.find(x=>x.user_id===S.me&&x.report_date===TODAY);
   const tasks=r?DB.report_tasks.filter(t=>t.daily_report_id===r.id):[];
   /* ONE queue for the whole day. Shoots, deliverables and ad-hoc tasks all arrive
@@ -5881,7 +5940,8 @@ function viewMyDay(){
         lands here on the day it is scheduled for you.</p></div>`:''}
     </div>
     <div class="card-foot">Everything you need to do today is in this one queue. Logging an item moves it
-      out of here and into today’s task log.</div></div>`;
+      out of here and into today’s task log.</div></div>`
+    + smcMyDaySection();
 
   /* Sits directly under the queue: pressing Log on an assignment moves it here. */
   const cLog=`<div class="card">
@@ -7693,6 +7753,9 @@ function teamDirectory(){
       .dir-search .inp{padding-right:32px}
       .dir-x{position:absolute;right:4px;top:50%;transform:translateY(-50%)}
       .dir-grp{margin-bottom:18px}
+      .dir-head-row{display:flex;align-items:center;gap:8px}
+      .dir-head-row .dir-head{flex:1;min-width:0}
+      .dir-mods{flex:none;white-space:nowrap}
       .dir-head{display:flex;align-items:center;gap:9px;width:100%;text-align:left;padding:8px 10px;border-radius:var(--r);
         background:var(--surface-2);border:1px solid var(--border)}
       .dir-head:hover{border-color:var(--primary-border)}
@@ -7715,12 +7778,15 @@ function dirGroup(g,searching){
   const showAll=S.dirAll[key]||g.users.length<=CAP;
   const shown=showAll?g.users:g.users.slice(0,CAP);
   return `<div class="dir-grp">
-    <button class="dir-head" onclick="ACTIONS.dirToggle({k:'${key}'})" ${searching?'disabled':''}>
-      <span class="dir-caret" style="transform:rotate(${open?90:0}deg)">▶</span>
-      <span style="font-size:13px">${g.meta.i}</span>
-      <span class="dir-title">${esc(g.meta.p)}</span>
-      <span class="dir-cnt">(${g.users.length})</span>
-    </button>
+    <div class="dir-head-row">
+      <button class="dir-head" onclick="ACTIONS.dirToggle({k:'${key}'})" ${searching?'disabled':''}>
+        <span class="dir-caret" style="transform:rotate(${open?90:0}deg)">▶</span>
+        <span class="dir-title">${esc(g.meta.p)}</span>
+        <span class="dir-cnt">${g.users.length}</span>
+      </button>
+      ${can('admin.users')?`<button class="btn xs dir-mods" title="Default module access for this group"
+        onclick="event.stopPropagation();ACTIONS.groupModules({role:'${g.role}'})">⚿ Modules</button>`:''}
+    </div>
     ${open?`<div class="dir-body grid g3">
       ${shown.map(dirCard).join('')}
       ${showAll?'':`<div class="dir-more"><button class="btn sm" onclick="ACTIONS.dirShowAll({k:'${key}'})">
@@ -8752,8 +8818,120 @@ async function loadAI(force){
   MO_AI_LOADING=false;
   if(S.route==='#/media/ai')render();
 }
+/* ── Ask Nerve AI (Phase 4A) ──────────────────────────────────────────────
+   The first interaction that actually asks a language model something. Kept
+   deliberately small: one question, one answer, no history. State lives in a
+   plain object rather than the URL because a question is not a place you
+   navigate back to. */
+const ASK={q:'',busy:false,res:null,err:null,limited:false};
+
+/* Provider status, fetched once when the AI page opens. Knowing this up front is
+   the difference between a disabled control with a reason on it and a user
+   typing a question only to be told it was never going to work. */
+let AI_STATUS=null, AI_STATUS_LOADING=false;
+function loadAiStatus(force){
+  if(!window.__MO_LIVE__||AI_STATUS_LOADING||(AI_STATUS&&!force))return;
+  AI_STATUS_LOADING=true;
+  MO_API.get('/ai/status')
+    .then(st=>{AI_STATUS=st;})
+    /* A status we could not read must not disable a page that is otherwise
+       working; the deterministic cards below never needed a provider. */
+    .catch(()=>{AI_STATUS={unknown:true};})
+    .then(()=>{AI_STATUS_LOADING=false; if(S.route==='#/media/ai')render();});
+}
+/* One place decides whether asking is possible, and why not. */
+function askAvailability(){
+  const st=AI_STATUS;
+  if(!st||st.unknown) return {ok:true};                       // unknown: let the API decide
+  if(!st.enabled) return {ok:false,msg:'AI Assistant is not configured.'};
+  if(st.lastCheck&&(!st.lastCheck.reachable||!st.lastCheck.authenticated))
+    return {ok:false,msg:'AI Assistant is temporarily unavailable.'};
+  return {ok:true};
+}
+
+const ASK_LABEL={facts:'From your Nerve data',recommendations:'Suggested next steps',warnings:'Worth knowing'};
+/* Tool names are an implementation detail; a reviewer wants to know WHICH part
+   of Nerve an answer came from. Anything unmapped falls back to the raw name so
+   a tool added later still shows something truthful. */
+const ASK_SOURCE={get_current_user:'Your profile',get_my_day:'My Day',
+  get_overdue_deliverables:'Overdue deliverables'};
+
+function askSection(){
+  if(!DB.ai_command)
+    return `<div class="ai-box mb5"><div class="between mb3"><b>Ask Nerve AI</b>
+        <span class="ai-chip">✦ Admin</span></div>
+      <div class="hint">Ask Nerve AI is not enabled for your account. The insights below are
+        computed from your data and need no AI provider.</div></div>`;
+
+  const avail=askAvailability();
+  const r=ASK.res;
+  /* Every one of these goes through esc(): the answer is model output, and model
+     output is never markup. */
+  const list=(items,cls)=>items&&items.length
+    ? `<ul class="small ${cls||''}" style="line-height:1.8;margin:0 0 10px;padding-left:20px">
+         ${items.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:'';
+
+  /* Not configured / unreachable is a STATE, not an error: a plain note, and a
+     control that is visibly unavailable rather than one that fails on click. */
+  if(!avail.ok)
+    return `<div class="ai-box mb5"><div class="between mb3"><b>Ask Nerve AI</b>
+        <span class="ai-chip">✦ Read-only</span></div>
+      <div class="note warn" style="margin:0">${esc(avail.msg)}<br>
+        <span class="small">The insights below are computed from your Nerve data and do not need an AI provider.</span></div></div>`;
+
+  const body = ASK.busy
+    ? `<div class="skel" style="height:14px;width:52%;margin-bottom:9px"></div>
+       <div class="skel" style="height:14px;width:88%;margin-bottom:9px"></div>
+       <div class="skel" style="height:14px;width:66%"></div>`
+    : ASK.err
+      ? `<div class="note ${ASK.limited?'warn':'danger'}" style="margin:0">${esc(ASK.err)}</div>`
+      : r
+        ? `<div class="note mb3" style="white-space:pre-wrap">${esc(r.answer||'')}</div>
+           ${r.facts&&r.facts.length?`<h4 class="small b mb2">${ASK_LABEL.facts}</h4>${list(r.facts)}`:''}
+           ${r.recommendations&&r.recommendations.length?`<h4 class="small b mb2">${ASK_LABEL.recommendations}</h4>${list(r.recommendations)}`:''}
+           ${r.warnings&&r.warnings.length?`<div class="note warn mb3">${r.warnings.map(esc).join('<br>')}</div>`:''}
+           ${r.sources&&r.sources.length
+             ? `<div class="xsmall mut3">Based on your Nerve data · ${r.sources.map(x=>esc(ASK_SOURCE[x]||x)).join(' · ')}</div>`
+             : `<div class="xsmall mut3">No Nerve data was read for this answer.</div>`}
+           ${r.usage?`<div class="xsmall mut3 mt1">${r.usage.today} of ${r.usage.dailyLimit} AI requests used today.</div>`:''}`
+        : `<div class="hint">Ask about your own day or your overdue work. Answers come from your
+             Nerve data, and Nerve AI can only read — it never changes anything.</div>`;
+
+  return `<div class="ai-box mb5">
+      <div class="between mb3"><b>Ask Nerve AI</b><span class="ai-chip">✦ Read-only</span></div>
+      <div class="f gap2 mb3" style="align-items:flex-start">
+        <input class="inp" id="ask-q" style="flex:1" maxlength="1000"
+          placeholder="e.g. What do I have today?" value="${esc(ASK.q)}"
+          oninput="ASK.q=this.value" onkeydown="if(event.key==='Enter')askRun()">
+        <button class="btn primary" data-act="askRun" ${ASK.busy||ASK.limited?'disabled':''}
+          style="flex:0 0 auto">${ASK.busy?'Asking…':'Ask'}</button>
+      </div>
+      ${body}
+    </div>`;
+}
+
+async function askRun(){
+  const q=(ASK.q||'').trim();
+  if(!q||ASK.busy)return;
+  ASK.busy=true; ASK.err=null; ASK.res=null; render();
+  try{
+    ASK.res=await MO_API.post('/ai/ask',{question:q});
+  }catch(e){
+    /* MO_API surfaces the server's message; the server has already sanitised it,
+       so there is nothing here to strip — only somewhere to put it. */
+    ASK.err=e.message||'Nerve AI could not answer that just now.';
+    /* The daily ceiling is not a failure to retry: disable the control until the
+       page is reloaded rather than inviting the user to hammer a 429. */
+    ASK.limited=/limit/i.test(ASK.err)&&/today|midnight/i.test(ASK.err);
+    /* A provider that has gone away mid-session should re-show as unavailable. */
+    loadAiStatus(true);
+  }
+  ASK.busy=false; render();
+}
+
 function viewAI(){
   if(window.__MO_LIVE__&&!MO_AI&&!MO_AI_LOADING)loadAI();
+  loadAiStatus();
   const A=MO_AI;
   const head=`<div class="page-head">
       <div><div class="crumb">§7.15 — cross-cutting · computed live</div><h1 class="page-title">AI Assist</h1>
@@ -8772,11 +8950,14 @@ function viewAI(){
           <div class="between"><span class="chip sel">${esc(val)}</span><span class="chip">${pri==='S'?'Should':'Could'}</span></div>
         </div></div>`).join('')}</div></div>`;
   if(!window.__MO_LIVE__) return head+`<div class="note warn mb5">Sign in to Nerve to load live AI insights.</div>`+register;
-  if(!A) return head+`<div class="ai-box mb5"><div class="skel" style="height:18px;width:38%;margin-bottom:14px"></div>
+  /* Ask sits above the computed cards, and is INDEPENDENT of them: the digest
+     failing to load must not remove it, and it must not remove the digest. */
+  const ask=askSection();
+  if(!A) return head+ask+`<div class="ai-box mb5"><div class="skel" style="height:18px;width:38%;margin-bottom:14px"></div>
       <div class="skel" style="height:64px"></div></div>
       <div class="grid g2 mb5"><div class="ai-box"><div class="skel" style="height:80px"></div></div>
       <div class="ai-box"><div class="skel" style="height:80px"></div></div></div>`+register;
-  if(A.error) return head+`<div class="note danger mb5">Couldn't load AI insights: ${esc(A.error)}</div>`+register;
+  if(A.error) return head+ask+`<div class="note danger mb5">Couldn't load AI insights: ${esc(A.error)}</div>`+register;
 
   const dg=A.digest, an=dg.anomalies||{over_hours:[],blocked:[],stalls:[]};
   const clean=!an.over_hours.length&&!an.stalls.length&&!an.blocked.length;
@@ -8804,7 +8985,7 @@ function viewAI(){
         `<div class="hint">Inventory covers all upcoming bookings.</div>`}
       <div class="small mut mt2">Next shoots: ${(A.fc.upcoming_shoots||[]).map(s=>esc(s.title)+' ('+s.shoot_date+')').join(' · ')||'none scheduled'}</div></div>`;
 
-  return head+digestBox+`<div class="grid g2 mb5">${dupBox}${fcBox}</div>`+register;
+  return head+ask+digestBox+`<div class="grid g2 mb5">${dupBox}${fcBox}</div>`+register;
 }
 
 /* ==========================================================================
@@ -10579,6 +10760,48 @@ function evaluateFlags(r,ts){
    ACTIONS — every mutation goes through here so the audit log stays honest
    ========================================================================== */
 const ACTIONS = {
+  /* ---- group-level module defaults ---------------------------------------
+     The same checklist the per-member dialog uses, saved against the group
+     instead of a person. */
+  groupModules:(d)=>{
+    const role=d.role, meta=roleMeta(role);
+    const cur=(DB.module_defaults||{})[role];
+    /* Pre-tick only what the role holds outright. A duty-gated module (verdict
+       'CASTING', 'SMC', 'CUSTODIAN'…) is offered but starts UNticked, because
+       saving the checklist turns a default into a real grant — pre-ticking those
+       would hand every member of the group a responsibility that until now
+       required the duty to be assigned deliberately. */
+    const sel=Array.isArray(cur)?cur:defaultModulesFor(role).filter(k=>{
+      const m=MODULES.find(x=>x.key===k);
+      if(!m||!m.cap) return true;
+      return (CAPS[m.cap]||{})[role]==='A';
+    });
+    modal(`<div class="mo-head"><div><h2>Default module access — ${esc(meta.p)}</h2>
+        <p>Set the default module access for members of this group. Individual member
+          access can still be customised separately, and an existing customisation is
+          never overwritten by a change here.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        ${Array.isArray(cur)?'':`<div class="note mb3" style="padding:8px 11px;font-size:11.5px">
+          This group has no saved default yet — the ticks below show what its role
+          currently implies. Saving makes it explicit.</div>`}
+        <div id="gm-wrap">${moduleGroupsHtml('gm-mod',sel,role)}</div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="groupModulesSave" data-role="${esc(role)}">Save defaults</button></div>`,
+      {size:'wide'});
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  groupModulesSave:(d,n)=>{
+    const mods=$$('.gm-mod:checked').map(c=>c.value);
+    if(n){n.disabled=true;n.textContent='Saving…';}   // no double-save
+    closeModal();
+    // moSync re-hydrates and re-renders on success, so the sidebar picks the
+    // new defaults up immediately for anyone inheriting them.
+    moSync(MO_API.put('/module-defaults/'+encodeURIComponent(d.role),{modules:mods}),
+      ()=>toast('Default module access updated for '+roleMeta(d.role).p,'ok'));
+  },
+
   /* ---- deliverable assignment (crew + SMC) ------------------------------- */
   dasgReload:(d)=>loadDelivAssignees(d.did,true),
   dasgOpen:(d)=>{ DASG.unit=''; dasgModal(d.did,d.kind); },
@@ -12711,6 +12934,7 @@ const ACTIONS = {
     ' — AI outputs are always labelled and editable','ok');},
   aiSettings:()=>toast('AI settings — model, retention, opt-out per feature. No AI performance scoring, ever (§7.15).','ok'),
   aiRegen:()=>{loadAI(true);toast('Recomputing AI insights from live data…','ok');},
+  askRun:()=>askRun(),
   uploadCrewPhoto:(input)=>{
     const f=input.files&&input.files[0]; if(!f)return;
     const st=$('#au-photo-status'); st.textContent='Uploading…';
@@ -13345,7 +13569,8 @@ const MO_API = {
     return j;
   },
   get(p){return this.req('GET',p);}, post(p,b){return this.req('POST',p,b);},
-  patch(p,b){return this.req('PATCH',p,b);}, del(p){return this.req('DELETE',p);}
+  patch(p,b){return this.req('PATCH',p,b);}, put(p,b){return this.req('PUT',p,b);},
+  del(p){return this.req('DELETE',p);}
 };
 /* ── Session / logout (auth) ──────────────────────────────────────────────
    Explicit logout ends the session server-side and wipes every client cache so
@@ -14378,6 +14603,12 @@ async function hydrateFromServer(){
     'casting_record_collections','casting_requests','project_casting',
     'casting_links','request_links','smc_people'];
   const st=await MO_API.get('/state');
+  // An object, not one of the array tables above.
+  DB.module_defaults=(st.module_defaults&&typeof st.module_defaults==='object')?st.module_defaults:{};
+  DB.my_module_group=st.my_module_group||null;
+  /* Server-resolved: may this user use Ask Nerve AI? Render hint only — the
+     endpoint enforces the same predicate independently. */
+  DB.ai_command=!!st.ai_command;
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
   // Bind identity to the real logged-in Nerve user (server sends its prototype int id).
   if(typeof st.me==='number' && DB.users.some(u=>u.id===st.me)) S.me=st.me;

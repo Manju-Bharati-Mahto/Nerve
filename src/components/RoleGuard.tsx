@@ -4,7 +4,8 @@ import type { AppRole } from '@/lib/constants'
 
 interface RoleGuardProps {
   allowed: AppRole[]
-  team?: string           // if set, user must belong to this team (super_admin bypasses)
+  // if set, user must belong to this team — or one of them (super_admin bypasses)
+  team?: string | string[]
   excludeTeam?: string    // if set, users on this team are redirected (super_admin bypasses)
   // Optional escape hatch: if the user's role isn't in `allowed`, this list of
   // capability keys is checked against their grants. Any match unlocks access.
@@ -20,7 +21,8 @@ export default function RoleGuard({ allowed, team, excludeTeam, anyCapability, c
   if (loading) return null
 
   const roleOk = role && allowed.includes(role)
-  const teamOk = !team || role === 'super_admin' || userTeam === team
+  const teams = team == null ? null : (Array.isArray(team) ? team : [team])
+  const teamOk = !teams || role === 'super_admin' || (!!userTeam && teams.includes(userTeam))
   const notExcluded = !excludeTeam || role === 'super_admin' || userTeam !== excludeTeam
   const capOk = !!anyCapability && anyCapability.length > 0
     && (profile?.capabilities ?? []).some(k => anyCapability.includes(k))

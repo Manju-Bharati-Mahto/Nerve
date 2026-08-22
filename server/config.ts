@@ -31,6 +31,28 @@ export const config = {
     pass: process.env.SMTP_PASS || "",
     from: process.env.SMTP_FROM || "noreply@parul.ac.in",
   },
+  /* AI provider (Phase 1). Entirely optional, and deliberately NOT read through
+     requireEnv(): with none of these set the AI layer reports itself disabled and
+     Nerve boots and runs exactly as it did before. Nothing here may throw.
+     AI_API_KEY is server-only — it must never gain a VITE_ prefix, which would
+     inline it into the browser bundle. */
+  ai: {
+    provider: process.env.AI_PROVIDER?.trim() || "openai-compatible",
+    baseUrl: process.env.AI_BASE_URL?.trim() || "",
+    apiKey: process.env.AI_API_KEY?.trim() || "",
+    model: process.env.AI_MODEL?.trim() || "",
+    timeoutMs: Number(process.env.AI_TIMEOUT_MS || 30000),
+    maxOutputTokens: Number(process.env.AI_MAX_OUTPUT_TOKENS || 1024),
+    /* Per-user requests per Nerve calendar day. The per-minute limiter stops a
+       runaway loop; this stops a determined user running up a bill over hours,
+       which a per-minute limit cannot. Deliberately conservative — it is far
+       easier to raise once real usage is understood than to explain an invoice. */
+    dailyRequestLimit: Number(process.env.AI_DAILY_REQUEST_LIMIT || 50),
+    /* Optional per-model rates, as JSON. Unset by default — no price for any
+       model is assumed, so estimated_cost stays NULL until an operator supplies
+       figures from their own billing page. See server/ai/pricing.ts. */
+    pricing: process.env.AI_PRICING?.trim() || "",
+  },
   apify: {
     token: process.env.APIFY_TOKEN?.trim() || "",
     profileActor: process.env.APIFY_PROFILE_ACTOR?.trim() || "apify~instagram-profile-scraper",

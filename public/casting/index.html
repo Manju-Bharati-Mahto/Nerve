@@ -28,10 +28,14 @@ h1{font-family:'DM Serif Display',serif;font-size:30px;font-weight:400;margin:0 
 .card h2{font-size:14px;margin:0 0 12px;font-weight:700}
 label{display:block;font-size:12.5px;font-weight:600;color:var(--text-2);margin:0 0 5px}
 .req{color:var(--danger)}
-input[type=text],input[type=email],select,textarea{width:100%;padding:11px 12px;border:1px solid var(--border);
+input[type=text],input[type=email],input[type=tel],input[type=url],select,textarea{width:100%;padding:11px 12px;border:1px solid var(--border);
   border-radius:10px;font:inherit;font-size:16px;background:#fff;color:var(--text)}
 textarea{min-height:88px;resize:vertical}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(37,99,235,.14)}
+/* The consent wording is served by the API, not written into this page, so it
+   reads as a quoted legal block rather than ordinary body copy. */
+.legal{background:#F8FAFC;border:1px solid var(--border);border-left:3px solid var(--primary);
+  border-radius:8px;padding:12px 14px;font-size:12.5px;line-height:1.6;color:var(--text-2);margin:0 0 12px}
 .field{margin-bottom:14px}
 .hint{font-size:11.5px;color:var(--text-3);margin-top:4px}
 .chips{display:flex;flex-wrap:wrap;gap:7px}
