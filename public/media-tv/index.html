@@ -400,16 +400,23 @@ body.nav-open #drawer{transform:translateX(0)}
       <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
       <span id="full-label">Full screen</span>
     </button>
+    <!-- An account granted only the TV module lands here directly and never sees
+         Media Ops' own Log out, so without this the display cannot be signed
+         out to hand the screen to someone else. -->
+    <button class="item" id="btn-signout" style="padding-left:.35rem;color:var(--danger)">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>
+      <span>Sign out</span>
+    </button>
     <div id="drawer-foot" style="padding:.5rem .35rem 0"></div>
   </div>
 </aside>
 
 <div id="gate">
   <div class="box">
-    <h2>This display is signed out</h2>
-    <p>The board reads live Nerve data, so it needs a signed-in display account.
+    <h2 id="gate-h">This display is signed out</h2>
+    <p id="gate-p">The board reads live Nerve data, so it needs a signed-in display account.
        Sign in on this screen once and leave the session open.</p>
-    <a href="/login">Sign in to Nerve</a>
+    <a id="gate-a" href="/login">Sign in to Nerve</a>
   </div>
 </div>
 
@@ -857,13 +864,29 @@ document.addEventListener('fullscreenchange', () => {
   $('#full-label').textContent = document.fullscreenElement ? 'Exit full screen' : 'Full screen';
 });
 
+/* Ends the session server-side, then leaves for the login page — the same two
+   steps the Media Ops shell takes, so a display signs out the way any other
+   Nerve surface does. */
+$('#btn-signout').addEventListener('click', async () => {
+  try{ await fetch('/api/auth/logout', {method:'POST', credentials:'same-origin'}); }catch(_){}
+  window.location.replace('/login');
+});
+
 /* ── Poll ────────────────────────────────────────────────────────────────── */
 async function load(){
   try{
     const r = await fetch('/api/v1/media/tv/board', {
       credentials:'same-origin', headers:{Accept:'application/json'}, cache:'no-store'
     });
-    if(r.status === 401 || r.status === 403){ $('#gate').classList.add('on'); return; }
+    /* 401 and 403 are different problems with different answers, and telling a
+       viewer to sign in when the real answer is "ask an admin for the module"
+       sends them round a loop they cannot exit. */
+    if(r.status === 401) return gate('This display is signed out',
+      'The board reads live Nerve data, so it needs a signed-in display account. ' +
+      'Sign in on this screen once and leave the session open.', '/login', 'Sign in to Nerve');
+    if(r.status === 403) return gate('This account cannot open the board',
+      'The signed-in account does not have the TV Display Board module. An administrator ' +
+      'can grant it in Media Ops → Users & Roles → Modules → System.', null, null);
     if(!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     $('#gate').classList.remove('on');
@@ -873,8 +896,22 @@ async function load(){
     // Keep the last good board on screen. A blank TV tells the office nothing;
     // a board that says how old it is tells them exactly what they need.
     failing = true;
-    if(!DATA) $('#fresh-txt').textContent = 'Cannot reach Nerve';
+    // Nothing to keep, though, means an empty grid and no explanation — so on a
+    // first-load failure say what went wrong rather than showing nothing.
+    if(!DATA) gate('The board cannot reach Nerve',
+      'The display is signed in, but ' + esc(String(err && err.message || err)) +
+      '. It will keep retrying on its own.', null, null);
   }
+}
+
+/* One reason panel, used for every state the board cannot render through. */
+function gate(title, note, href, cta){
+  $('#gate-h').textContent = title;
+  $('#gate-p').textContent = note;
+  const a = $('#gate-a');
+  if(href){ a.href = href; a.textContent = cta; a.style.display = ''; }
+  else a.style.display = 'none';
+  $('#gate').classList.add('on');
 }
 
 function paint(d){

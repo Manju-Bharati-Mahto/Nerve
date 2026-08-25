@@ -25,7 +25,7 @@ import { runAiOrchestration } from "./ai/orchestrator.js";
 import { createAiToolRegistry } from "./ai/tools/registry.js";
 import { estimateAiCost, parseAiPricing } from "./ai/pricing.js";
 import { countAiRequestsToday, findOverdueDeliverables, getAiUsageSummary, nerveToday, recordAiRequest } from "./mediaops-queries.js";
-import { buildTvBoard, type TvBoard } from "./mediaops-tv.js";
+import { buildTvBoard, tvBoardAllowed, type TvBoard } from "./mediaops-tv.js";
 import { config } from "./config.js";
 import type { AiCapability, AiUserContext } from "./ai/types.js";
 
@@ -40,11 +40,11 @@ type Handlers = {
   otpVerifyLimiter: RequestHandler;
 };
 
-interface CurrentUser { id: string; role: string; team: string | null; full_name?: string; email?: string; }
+export interface CurrentUser { id: string; role: string; team: string | null; full_name?: string; email?: string; }
 
 // ── §16 role mapping + permission model ─────────────────────────────────────
 type MoRole = "admin" | "team_lead" | "employee" | null;
-function moRoleOf(u: CurrentUser): MoRole {
+export function moRoleOf(u: CurrentUser): MoRole {
   if (u.role === "super_admin") return "admin";      // platform superuser → full media-ops access
   /* An SMC member is an ordinary NERVE user who also carries SMC work — not a
      separate product. Resolving them to 'employee' is the same move the
@@ -61,7 +61,7 @@ function moRoleOf(u: CurrentUser): MoRole {
   if (u.role === "sub_admin") return "team_lead";
   return "employee";                                  // 'user'
 }
-const isMoAdmin = (u: CurrentUser) => moRoleOf(u) === "admin";
+export const isMoAdmin = (u: CurrentUser) => moRoleOf(u) === "admin";
 const isMoTL = (u: CurrentUser) => moRoleOf(u) === "team_lead";
 /* The Media Operations Coordinator is a MEDIA-department role stored on
    mo_user_profiles.mo_role, so Nerve-wide three-role parity is untouched: at the
@@ -100,7 +100,7 @@ async function hasModuleGrant(u: CurrentUser, key: string): Promise<boolean> {
    Returning null rather than an empty list matters: a group nobody has
    configured behaves exactly as it did before this table existed, so adding
    group defaults cannot silently revoke access from anyone. */
-async function effectiveModules(u: CurrentUser): Promise<string[] | null> {
+export async function effectiveModules(u: CurrentUser): Promise<string[] | null> {
   const row = (await pool.query(
     `SELECT allowed_modules FROM mo_user_profiles WHERE user_id=$1`, [u.id])).rows[0];
   const am = row?.allowed_modules;
@@ -4827,8 +4827,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   app.get(`${P}/tv/board`, asyncHandler(async (_req, res) => {
     const u = requireMedia(res); if (!u) return;
     const eff = await effectiveModules(u);
-    if (!(isMoAdmin(u) || eff === null || eff.includes("tv")))
-      return sendError(res, 403, "This account does not have the TV display module.");
+    if (!tvBoardAllowed(isMoAdmin(u), eff))
+      return sendError(res, 403, "This account does not have the TV Display Board module.");
 
     const day = nerveToday();
     if (!tvCache || tvCache.day !== day || Date.now() - tvCache.at > TV_CACHE_MS) {

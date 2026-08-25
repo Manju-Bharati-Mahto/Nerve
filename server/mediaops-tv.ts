@@ -18,6 +18,23 @@
 import { pool } from "./db.js";
 import { NERVE_TIME_ZONE, nerveToday, dateOnly } from "./mediaops-queries.js";
 
+/* ── Access ────────────────────────────────────────────────────────────────
+   The module key is the one the client derives from the sidebar route
+   '#/media/tv' — declared here so the endpoint and the tests can never drift
+   from a string typed twice.
+
+   This is NOT a permission system. It is the existing module decision, named:
+   the caller resolves identity and modules with the helpers that already exist
+   (moRoleOf / effectiveModules) and passes the answers in. `null` means the
+   installation has configured no module restrictions at all, which the client's
+   moduleAllowed() reads as "allowed" for every module — this reads it the same
+   way, so the board can never disagree with the sidebar that links to it. */
+export const TV_MODULE_KEY = "tv";
+
+export function tvBoardAllowed(isAdmin: boolean, effective: readonly string[] | null): boolean {
+  return isAdmin || effective === null || effective.includes(TV_MODULE_KEY);
+}
+
 /* ── Shapes the display renders ─────────────────────────────────────────── */
 
 export interface TvEvent {
