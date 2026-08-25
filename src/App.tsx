@@ -90,7 +90,7 @@ const App = () => (
 
             {/* ── Media Ops — full-screen self-contained app (own shell, no chrome) ── */}
             <Route path="/media" element={
-              <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']} team="media">
+              <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']} team={['media', 'smc']}>
                 <MediaOps />
               </RoleGuard>
             } />
