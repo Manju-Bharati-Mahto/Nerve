@@ -3028,11 +3028,15 @@ const MODULES = [
   }))),
   /* Not a sidebar route — the kiosk button lives in the shell — but it is still
      a permission-controlled surface, so it is grantable under "System". */
-  {key:'kiosk', label:'Kiosk Mode', group:'System', icon:'grid', pfx:[]}
+  {key:'kiosk', label:'Kiosk Mode', group:'System', icon:'grid', pfx:[]},
+  /* The office TV board at /api/media-tv/ — a separate page, not a route here,
+     but gated by this same list so a display account can be granted 'tv' ALONE
+     and reach nothing else. GET /tv/board re-checks it server-side. */
+  {key:'tv', label:'TV Display Board', group:'System', icon:'grid', pfx:[]}
 ];
 const MODULE_GROUPS = [...new Set(MODULES.map(m=>m.group))];
 /* Group I: module access may only REMOVE what the role grants, never add. */
-function moduleRoleOk(m,r){ return m.key==='kiosk'?true:navShow(m,r); }
+function moduleRoleOk(m,r){ return (m.key==='kiosk'||m.key==='tv')?true:navShow(m,r); }
 function hashModule(hash){ let best=null,len=-1; for(const m of MODULES) for(const p of m.pfx) if(hash.startsWith(p)&&p.length>len){best=m.key;len=p.length;} return best; }
 function moduleAllowed(mod){ if(mod==null)return true; if(isAdmin())return true;
   const eff=effectiveModulesFor(me()); return eff===null||eff.includes(mod); }

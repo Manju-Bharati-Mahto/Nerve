@@ -211,6 +211,14 @@ app.use(
   express.static(path.resolve("public/media-ops")),
 );
 
+// ── Nerve Media Crew TV board (office display) ──────────────────────────────
+// A separate, deliberately small page: the 43" board in the Media Crew office.
+// Mounted beside the prototype so it rides the same nginx `/api` proxy, and
+// public in the same way — the SHELL is not sensitive; every number on it comes
+// from the authenticated GET /api/v1/media/tv/board, which is module-gated.
+// Framing stays DENY (unlike media-ops): nothing embeds this page.
+app.use("/api/media-tv", express.static(path.resolve("public/media-tv")));
+
 // ── External casting registration (public, no NERVE account) ───────────────
 // A standalone page: no admin bundle, no session. Every /casting/register/<token>
 // serves the same shell, which reads the token from the URL and authorises each

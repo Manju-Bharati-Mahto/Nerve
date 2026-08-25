@@ -24,7 +24,8 @@ import { getAiProvider, getAiStatus, testAiConnection } from "./ai/index.js";
 import { runAiOrchestration } from "./ai/orchestrator.js";
 import { createAiToolRegistry } from "./ai/tools/registry.js";
 import { estimateAiCost, parseAiPricing } from "./ai/pricing.js";
-import { countAiRequestsToday, findOverdueDeliverables, getAiUsageSummary, recordAiRequest } from "./mediaops-queries.js";
+import { countAiRequestsToday, findOverdueDeliverables, getAiUsageSummary, nerveToday, recordAiRequest } from "./mediaops-queries.js";
+import { buildTvBoard, type TvBoard } from "./mediaops-tv.js";
 import { config } from "./config.js";
 import type { AiCapability, AiUserContext } from "./ai/types.js";
 
@@ -4801,6 +4802,50 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       active_projects: active.rows[0].c, deliverables_due_week: dueWeek.rows[0].c, overdue_deliverables: overdue.rows[0].c,
       shoots_today: shootsToday.rows[0].c, equipment_out: equipOut.rows[0].c, reports_to_review: pendingReports.rows[0].c,
     });
+  }));
+
+  /* ── TV Operations Board (/tv/board) ───────────────────────────────────────
+     The office display at /api/media-tv/ reads this and nothing else. It is a
+     SECOND, much smaller door onto the same data — deliberately not /state,
+     which ships ~60 tables (casting records, contact details) that have no
+     business on a screen the corridor can see.
+
+     Permission reuses the existing module model exactly as the client resolves
+     it (moduleAllowed): unrestricted or an explicit 'tv' grant, admins always.
+     No new role, no new permission table — an Admin creates a display account
+     in Users & Roles and grants it 'tv' alone, so if anyone opens the drawer on
+     the TV every other module is refused by the gates that already exist.
+
+     Cached briefly so several displays (and a 45 s poll) cost one query set
+     rather than one each — §24's "do not create unnecessary database load". */
+  /* The in-flight PROMISE is cached, not the resolved board: several displays
+     waking at the same moment would otherwise each start their own query set
+     the instant the entry expires. They now share one build. */
+  let tvCache: { at: number; day: string; body: Promise<TvBoard> } | null = null;
+  const TV_CACHE_MS = 20_000;
+
+  app.get(`${P}/tv/board`, asyncHandler(async (_req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const eff = await effectiveModules(u);
+    if (!(isMoAdmin(u) || eff === null || eff.includes("tv")))
+      return sendError(res, 403, "This account does not have the TV display module.");
+
+    const day = nerveToday();
+    if (!tvCache || tvCache.day !== day || Date.now() - tvCache.at > TV_CACHE_MS) {
+      const entry = { at: Date.now(), day, body: buildTvBoard(day) };
+      // A failed build must not be cached, or every display stays broken for the
+      // full TTL after one transient database error.
+      entry.body.catch(() => { if (tvCache === entry) tvCache = null; });
+      tvCache = entry;
+    }
+    const board = await tvCache.body;
+    // A display that reloads must never be served a stale board by a proxy.
+    res.setHeader("Cache-Control", "no-store");
+    /* `modules` is per-caller, so it is merged in here rather than cached with
+       the board — the cached body must stay identical for every display. The
+       drawer uses it to hide links this account could not open anyway; the
+       routes behind them enforce the same answer independently. */
+    res.json({ ...board, modules: eff });
   }));
 
   // ── helpers ───────────────────────────────────────────────────────────────
