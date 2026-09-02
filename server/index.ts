@@ -2578,6 +2578,9 @@ const outreachPageSchema = z.object({
   type: z.enum(OUTREACH_PAGE_TYPES),
   follower_tier: z.enum(OUTREACH_FOLLOWER_TIERS),
   content_types: z.array(z.enum(["static", "reel", "carousel"])).optional(),
+  // PRD 6.5 — page content preference/category. Kept permissive (string[]) so the
+  // configurable list can grow UI-side without a server change.
+  content_preferences: z.array(z.string()).optional(),
   followers: z.number().int().nonnegative().optional(),
   inventory_posts: z.number().int().nonnegative(),
   inventory_stories: z.number().int().nonnegative(),

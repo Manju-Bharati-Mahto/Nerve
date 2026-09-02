@@ -3,7 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import {
   FileText, Search, Filter as FilterIcon, Download, Plus,
   ArrowUpDown, ArrowUp, ArrowDown, Sparkles, ExternalLink, Trash2, LinkIcon,
-  Upload,
+  Upload, Pencil,
 } from 'lucide-react'
 import {
   useOutreachData, pageMetrics, suggestedMonthlyUsage, removePage,
@@ -11,7 +11,7 @@ import {
   PAGE_CONTENT_TYPES, FOLLOWER_TIERS, type FollowerTier, type PageContentType, type OutreachPage,
 } from '@/lib/outreach-data'
 import ImportPagesDialog from './ImportPagesDialog'
-import { AddPageModal } from './OutreachAnalytics'
+import { AddPageModal, EditPageModal } from './OutreachAnalytics'
 import AddLivePostsDialog from './AddLivePostsDialog'
 
 type SortKey = 'handle' | 'tier' | 'geography' | 'total' | 'consumed' | 'suggested' | 'status'
@@ -42,6 +42,8 @@ export default function OutreachAllPages() {
   const [importing, setImporting] = useState(false)
   // Which page is currently the target of the "Add live posts" dialog (null = closed).
   const [livePostsPageId, setLivePostsPageId] = useState<string | null>(null)
+  // Page currently open in the edit modal (content preference + inventory totals).
+  const [editingPage, setEditingPage] = useState<OutreachPage | null>(null)
 
   const geographies = useMemo(() => Array.from(new Set(pages.map(p => p.geography))).sort(), [pages])
 
@@ -246,6 +248,11 @@ export default function OutreachAllPages() {
                       </a>
                     )}
                   </div>
+                  <div className="mt-0.5 text-[10px] text-muted-foreground">
+                    {page.contentPreferences.length > 0
+                      ? page.contentPreferences.join(' · ')
+                      : <span className="italic opacity-70">Content pref: Not set</span>}
+                  </div>
                 </td>
                 <td className="px-3 py-2.5">
                   <span className="hub-badge bg-orange-50 text-orange-700 text-[10px]">Tier {page.followerTier}</span>
@@ -264,6 +271,11 @@ export default function OutreachAllPages() {
                       className="p-1 rounded-md text-muted-foreground hover:bg-orange-50 hover:text-orange-600">
                       <LinkIcon className="w-3.5 h-3.5" />
                     </button>
+                    <button onClick={() => setEditingPage(page)}
+                      title="Edit content preference & inventory"
+                      className="p-1 rounded-md text-muted-foreground hover:bg-orange-50 hover:text-orange-600">
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
                     <button onClick={() => confirmDelete(page)}
                       title="Delete page"
                       className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
@@ -278,6 +290,7 @@ export default function OutreachAllPages() {
       </div>
 
       {creating && <AddPageModal onClose={() => setCreating(false)} />}
+      {editingPage && <EditPageModal page={editingPage} onClose={() => setEditingPage(null)} />}
       {importing && <ImportPagesDialog onClose={() => setImporting(false)} />}
       {livePostsPageId && (
         <AddLivePostsDialog

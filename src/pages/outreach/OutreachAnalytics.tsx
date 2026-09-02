@@ -11,7 +11,7 @@ import {
 import {
   useOutreachData, pageMetrics, campaignMetrics, addPage, updatePage,
   parseInstagramHandle, instagramUrlForHandle,
-  PAGE_TYPES, FOLLOWER_TIERS, PAGE_CONTENT_TYPES,
+  PAGE_TYPES, FOLLOWER_TIERS, PAGE_CONTENT_TYPES, PAGE_CONTENT_PREFERENCES,
   type PageType, type FollowerTier, type PageContentType, type OutreachPage, type Post,
 } from '@/lib/outreach-data'
 
@@ -563,11 +563,11 @@ function fmt(n: number): string {
 export function AddPageModal({ onClose }: { onClose: () => void }) {
   const [form, setForm] = useState<{
     handle: string; geography: string; state: string; type: PageType;
-    followerTier: FollowerTier; contentTypes: PageContentType[];
+    followerTier: FollowerTier; contentTypes: PageContentType[]; contentPreferences: string[];
     followers: number; inventoryPosts: number; inventoryStories: number; notes: string;
   }>({
     handle: '', geography: '', state: '', type: 'state',
-    followerTier: '1', contentTypes: [],
+    followerTier: '1', contentTypes: [], contentPreferences: [],
     followers: 20000, inventoryPosts: 24, inventoryStories: 24, notes: '',
   })
 
@@ -577,6 +577,15 @@ export function AddPageModal({ onClose }: { onClose: () => void }) {
       contentTypes: f.contentTypes.includes(t)
         ? f.contentTypes.filter(x => x !== t)
         : [...f.contentTypes, t],
+    }))
+  }
+
+  function toggleContentPref(p: string) {
+    setForm(f => ({
+      ...f,
+      contentPreferences: f.contentPreferences.includes(p)
+        ? f.contentPreferences.filter(x => x !== p)
+        : [...f.contentPreferences, p],
     }))
   }
 
@@ -662,6 +671,25 @@ export function AddPageModal({ onClose }: { onClose: () => void }) {
               })}
             </div>
             <p className="text-[11px] text-muted-foreground mt-1">Pick all formats this page accepts. Drives the filters on All pages.</p>
+          </div>
+          <div>
+            <label className="hub-label">Content preference</label>
+            <div className="flex gap-2 flex-wrap">
+              {PAGE_CONTENT_PREFERENCES.map(p => {
+                const selected = form.contentPreferences.includes(p)
+                return (
+                  <button key={p} type="button" onClick={() => toggleContentPref(p)}
+                    className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+                      selected
+                        ? 'bg-orange-100 border-orange-300 text-orange-700 font-medium'
+                        : 'bg-card border-border text-muted-foreground hover:bg-accent'
+                    }`}>
+                    {p}
+                  </button>
+                )
+              })}
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-1">The kind of content this page is known for. Powers page recommendations and underperformance hints.</p>
           </div>
           <div className="grid grid-cols-3 gap-3">
             <div>
@@ -749,6 +777,101 @@ export function AddInventoryModal({ pages, initialPage, onClose }:
           <button onClick={submit} disabled={addPosts + addStories === 0}
             className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">
             Add inventory
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Edit an existing page's content preference (PRD 6.5) and inventory totals
+// (PRD 6.2). Unlike AddInventoryModal (which tops up), this SETS the totals.
+export function EditPageModal({ page, onClose }: { page: OutreachPage; onClose: () => void }) {
+  const [contentPreferences, setContentPreferences] = useState<string[]>(page.contentPreferences)
+  const [inventoryPosts, setInventoryPosts] = useState(page.inventoryPosts)
+  const [inventoryStories, setInventoryStories] = useState(page.inventoryStories)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  function togglePref(p: string) {
+    setContentPreferences(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p])
+  }
+
+  const changed =
+    inventoryPosts !== page.inventoryPosts ||
+    inventoryStories !== page.inventoryStories ||
+    JSON.stringify(contentPreferences) !== JSON.stringify(page.contentPreferences)
+
+  async function save() {
+    if (saving || !changed) return
+    setSaving(true); setError(null)
+    try {
+      await updatePage(page.id, {
+        contentPreferences,
+        inventoryPosts: Math.max(0, inventoryPosts),
+        inventoryStories: Math.max(0, inventoryStories),
+      })
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to save page.')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-fade-in" onClick={onClose}>
+      <div className="bg-card rounded-xl border border-border w-full max-w-md" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <h2 className="text-base font-serif text-foreground">Edit @{page.handle}</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+        </div>
+        <div className="p-4 space-y-3">
+          <div>
+            <label className="hub-label">Content preference</label>
+            <div className="flex gap-2 flex-wrap">
+              {PAGE_CONTENT_PREFERENCES.map(p => {
+                const selected = contentPreferences.includes(p)
+                return (
+                  <button key={p} type="button" onClick={() => togglePref(p)}
+                    className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+                      selected
+                        ? 'bg-orange-100 border-orange-300 text-orange-700 font-medium'
+                        : 'bg-card border-border text-muted-foreground hover:bg-accent'
+                    }`}>
+                    {p}
+                  </button>
+                )
+              })}
+            </div>
+            {contentPreferences.length === 0 && (
+              <p className="text-[11px] text-muted-foreground mt-1">Not set — pick the content this page is known for.</p>
+            )}
+          </div>
+          <div>
+            <label className="hub-label">Inventory (total slots)</label>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[11px] text-muted-foreground">Posts</label>
+                <input type="number" min={0} className="hub-input" value={inventoryPosts}
+                  onChange={e => setInventoryPosts(Number(e.target.value) || 0)} />
+              </div>
+              <div>
+                <label className="text-[11px] text-muted-foreground">Stories</label>
+                <input type="number" min={0} className="hub-input" value={inventoryStories}
+                  onChange={e => setInventoryStories(Number(e.target.value) || 0)} />
+              </div>
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              Used slots are counted automatically from live posts — only the total is editable here.
+            </p>
+          </div>
+        </div>
+        {error && <div className="px-4 py-2 text-xs text-rose-700 bg-rose-50 border-t border-rose-200">{error}</div>}
+        <div className="flex items-center justify-end gap-2 p-4 border-t border-border">
+          <button onClick={onClose} disabled={saving} className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent disabled:opacity-40">Cancel</button>
+          <button onClick={save} disabled={saving || !changed}
+            className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">
+            {saving ? 'Saving…' : 'Save changes'}
           </button>
         </div>
       </div>

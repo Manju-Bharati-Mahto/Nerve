@@ -81,6 +81,7 @@ export default function ImportPagesDialog({ onClose }: { onClose: () => void }) 
           type: r.type,
           followerTier: r.followerTier,
           contentTypes: [],
+          contentPreferences: [],
           followers: 0,
           inventoryPosts: r.inventoryPosts,
           inventoryStories: r.inventoryStories,

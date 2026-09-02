@@ -266,6 +266,7 @@ export interface ServerOutreachPage {
   type: "state" | "pu";
   follower_tier: "1" | "2" | "3" | "4" | "5";
   content_types: ("static" | "reel" | "carousel")[];
+  content_preferences: string[];
   followers: number;
   inventory_posts: number;
   inventory_stories: number;
