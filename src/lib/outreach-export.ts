@@ -17,7 +17,7 @@ import {
   HeadingLevel, WidthType, AlignmentType, BorderStyle,
 } from 'docx'
 import type { Campaign, OutreachPage, OutreachCreator, Post } from './outreach-data'
-import { slug } from './outreach-data'
+import { slug, buildPostStateLookup, formatLocalDate } from './outreach-data'
 
 export interface CampaignReportRow {
   subject: string          // @handle
@@ -222,4 +222,169 @@ export async function exportCampaignReportDocx(report: CampaignReport) {
 
   const blob = await Packer.toBlob(doc)
   triggerDownload(blob, `campaign-${slug(campaign.name) || campaign.id}-report.docx`)
+}
+
+// ── Dashboard "Last 30 days" report (PRD 6.3) ────────────────────────────────
+
+export interface DashboardReportRow {
+  name: string
+  state: string
+  reach: number
+  views: number
+  likes: number
+  comments: number
+  shares: number
+  /** (likes + comments + shares) / reach, as a percentage. */
+  engagementRate: number
+}
+
+export interface DashboardReport {
+  generatedAt: Date
+  from: string           // YYYY-MM-DD (inclusive window start)
+  to: string             // YYYY-MM-DD (report day)
+  days: number
+  stateFilter: string    // '' = all states
+  summary: { views: number; likes: number; campaigns: number }
+  rows: DashboardReportRow[]
+  totals: { reach: number; views: number; likes: number; comments: number; shares: number; engagementRate: number }
+}
+
+/**
+ * Builds the rolling-window dashboard report. Only operator-added live posts
+ * count (consistent with every other outreach analytic). When `stateFilter` is
+ * set, the report mirrors the dashboard's state scoping exactly: posts are
+ * narrowed by their page/creator state and campaigns by their own state.
+ */
+export function buildDashboardReport(
+  campaigns: Campaign[],
+  pages: OutreachPage[],
+  creators: OutreachCreator[],
+  posts: Post[],
+  opts: { stateFilter?: string; days?: number } = {},
+): DashboardReport {
+  const days = opts.days ?? 30
+  const stateFilter = opts.stateFilter ?? ''
+  const now = new Date()
+  const start = new Date(now.getTime() - days * 86400_000)
+  const startIso = formatLocalDate(start)
+  const stateOf = buildPostStateLookup(pages, creators)
+
+  // Live posts within the rolling window, narrowed by state when a filter is on.
+  const windowPosts = posts.filter(p =>
+    p.addedAsLive &&
+    p.date >= startIso &&
+    (!stateFilter || stateOf(p) === stateFilter),
+  )
+
+  const scopedCampaigns = stateFilter ? campaigns.filter(c => c.state === stateFilter) : campaigns
+
+  const rows: DashboardReportRow[] = []
+  for (const c of scopedCampaigns) {
+    const cp = windowPosts.filter(p => p.campaignId === c.id)
+    // "active or run in the last N days": include if it drew posts in the window
+    // or is currently active. Skip otherwise so the table stays relevant.
+    if (cp.length === 0 && c.status !== 'active') continue
+    const reach = cp.reduce((s, p) => s + p.views, 0)
+    const likes = cp.reduce((s, p) => s + p.likes, 0)
+    const comments = cp.reduce((s, p) => s + p.comments, 0)
+    const shares = cp.reduce((s, p) => s + p.shares, 0)
+    const engagementRate = reach ? ((likes + comments + shares) / reach) * 100 : 0
+    rows.push({ name: c.name, state: c.state || '—', reach, views: reach, likes, comments, shares, engagementRate })
+  }
+  rows.sort((a, b) => b.reach - a.reach)
+
+  const totReach = rows.reduce((s, r) => s + r.reach, 0)
+  const totLikes = rows.reduce((s, r) => s + r.likes, 0)
+  const totComments = rows.reduce((s, r) => s + r.comments, 0)
+  const totShares = rows.reduce((s, r) => s + r.shares, 0)
+  const totals = {
+    reach: totReach,
+    views: totReach,
+    likes: totLikes,
+    comments: totComments,
+    shares: totShares,
+    engagementRate: totReach ? ((totLikes + totComments + totShares) / totReach) * 100 : 0,
+  }
+
+  // Overall summary totals are taken across ALL live window posts (not only the
+  // ones attributed to a campaign) so the headline views/likes match the
+  // dashboard's state-scoped cards.
+  const summary = {
+    views: windowPosts.reduce((s, p) => s + p.views, 0),
+    likes: windowPosts.reduce((s, p) => s + p.likes, 0),
+    campaigns: rows.length,
+  }
+
+  return { generatedAt: now, from: startIso, to: formatLocalDate(now), days, stateFilter, summary, rows, totals }
+}
+
+export function exportDashboardReportPdf(report: DashboardReport) {
+  const { rows, totals, summary } = report
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' })
+  const marginX = 40
+  let y = 48
+
+  doc.setFontSize(18)
+  doc.setTextColor(234, 88, 12)
+  doc.text(`Outreach Report — Last ${report.days} Days`, marginX, y)
+  y += 22
+
+  doc.setFontSize(10)
+  doc.setTextColor(80)
+  const gen = report.generatedAt
+  const genStr = `${gen.toLocaleDateString('en-IN')} ${gen.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}`
+  for (const line of [
+    `Date range: ${report.from}  to  ${report.to}`,
+    `State: ${report.stateFilter || 'All states'}`,
+    `Generated: ${genStr}`,
+  ]) { doc.text(line, marginX, y); y += 15 }
+  y += 8
+
+  // Overall summary band
+  doc.setFontSize(12)
+  doc.setTextColor(20)
+  doc.text('Overall summary', marginX, y)
+  y += 16
+  doc.setFontSize(10)
+  doc.setTextColor(80)
+  for (const line of [
+    `Total views (reach): ${fmtNum(summary.views)}`,
+    `Total likes: ${fmtNum(summary.likes)}`,
+    `Campaigns active / run in the last ${report.days} days: ${fmtNum(summary.campaigns)}`,
+  ]) { doc.text(line, marginX, y); y += 14 }
+  y += 8
+
+  autoTable(doc, {
+    startY: y,
+    head: [['Campaign', 'State', 'Reach', 'Views', 'Likes', 'Comments', 'Shares', 'Eng. rate']],
+    body: rows.map(r => [
+      r.name, r.state,
+      fmtNum(r.reach), fmtNum(r.views), fmtNum(r.likes), fmtNum(r.comments), fmtNum(r.shares),
+      `${r.engagementRate.toFixed(1)}%`,
+    ]),
+    foot: [[
+      'Totals', '',
+      fmtNum(totals.reach), fmtNum(totals.views), fmtNum(totals.likes), fmtNum(totals.comments), fmtNum(totals.shares),
+      `${totals.engagementRate.toFixed(1)}%`,
+    ]],
+    styles: { fontSize: 8, cellPadding: 4, overflow: 'linebreak' },
+    headStyles: { fillColor: [234, 88, 12], textColor: 255 },
+    footStyles: { fillColor: [255, 237, 213], textColor: 20, fontStyle: 'bold' },
+    columnStyles: {
+      0: { cellWidth: 150 },
+      2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' },
+      5: { halign: 'right' }, 6: { halign: 'right' }, 7: { halign: 'right' },
+    },
+    margin: { left: marginX, right: marginX },
+  })
+
+  if (rows.length === 0) {
+    const afterY = (doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y
+    doc.setFontSize(10)
+    doc.setTextColor(120)
+    doc.text('No campaigns ran in this window.', marginX, afterY + 20)
+  }
+
+  const stateTag = report.stateFilter ? `-${slug(report.stateFilter)}` : ''
+  triggerDownload(doc.output('blob'), `outreach-report-last-${report.days}d${stateTag}-${report.to}.pdf`)
 }

@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Send, Plus, Search, X, ChevronRight, Filter as FilterIcon, Trash2, Upload, CheckCircle, AlertCircle } from 'lucide-react'
+import { Send, Plus, Search, X, ChevronRight, Filter as FilterIcon, Trash2, Upload, CheckCircle, AlertCircle, ArrowDown } from 'lucide-react'
 import {
   useOutreachData, addCampaign, updateCampaign, removeCampaign, campaignMetrics,
   addPage, addLivePostsByUrl, slug,
@@ -20,9 +20,13 @@ const STATUS_CFG: Record<CampaignStatus, { label: string; cls: string }> = {
 export default function OutreachCampaigns() {
   const { campaigns, posts, pages, creators } = useOutreachData()
   const navigate = useNavigate()
-  const [view, setView] = useState<'cards' | 'table'>('cards')
+  const [view, setView] = useState<'cards' | 'table' | 'state'>('cards')
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<CampaignStatus | ''>('')
+  // PRD 6.7 — state-wise drill-down. `stateFilter` narrows the campaign list to
+  // one state; `stateSort` ranks the state rollup by reach or engagement.
+  const [stateFilter, setStateFilter] = useState('')
+  const [stateSort, setStateSort] = useState<'reach' | 'engagement'>('reach')
   const [creating, setCreating] = useState(false)
   const [importing, setImporting] = useState(false)
   // Campaign whose "add live posts" dialog is currently open. Set when the
@@ -42,14 +46,33 @@ export default function OutreachCampaigns() {
     catch (err) { alert(err instanceof Error ? err.message : 'Failed to delete campaign.') }
   }
 
-  const filtered = useMemo(() => {
+  // Search + status filter only — the state rollup is built from this so it
+  // always shows every state regardless of the active state drill-down.
+  const base = useMemo(() => {
     const q = search.trim().toLowerCase()
     return enriched.filter(({ c }) => {
       if (q && !c.name.toLowerCase().includes(q)) return false
       if (status && c.status !== status) return false
       return true
-    }).sort((a, b) => a.c.startDate < b.c.startDate ? 1 : -1)
+    })
   }, [enriched, search, status])
+
+  const filtered = useMemo(() => {
+    const list = stateFilter ? base.filter(({ c }) => (c.state || 'No state') === stateFilter) : base
+    return [...list].sort((a, b) => a.c.startDate < b.c.startDate ? 1 : -1)
+  }, [base, stateFilter])
+
+  // Per-state rollup (PRD 6.7): aggregated reach + engagement, ranked.
+  const stateRollup = useMemo(() => {
+    const map = new Map<string, { state: string; count: number; reach: number; engagement: number }>()
+    for (const { c, m } of base) {
+      const key = c.state || 'No state'
+      const e = map.get(key) ?? { state: key, count: 0, reach: 0, engagement: 0 }
+      e.count++; e.reach += m.totalReach; e.engagement += m.totalEngagement
+      map.set(key, e)
+    }
+    return [...map.values()].sort((a, b) => stateSort === 'reach' ? b.reach - a.reach : b.engagement - a.engagement)
+  }, [base, stateSort])
 
   return (
     <div className="animate-fade-in space-y-5">
@@ -66,10 +89,10 @@ export default function OutreachCampaigns() {
         </div>
         <div className="flex items-center gap-2">
           <div className="inline-flex bg-card border border-border rounded-lg overflow-hidden text-xs">
-            {(['cards', 'table'] as const).map(v => (
+            {([['cards', 'Cards'], ['table', 'Table'], ['state', 'State-wise']] as const).map(([v, label]) => (
               <button key={v} onClick={() => setView(v)}
-                className={`px-3 py-1.5 transition-colors capitalize ${view === v ? 'bg-orange-100 text-orange-700 font-medium' : 'text-muted-foreground hover:bg-accent'}`}>
-                {v}
+                className={`px-3 py-1.5 transition-colors ${view === v ? 'bg-orange-100 text-orange-700 font-medium' : 'text-muted-foreground hover:bg-accent'}`}>
+                {label}
               </button>
             ))}
           </div>
@@ -98,12 +121,64 @@ export default function OutreachCampaigns() {
             <option value="">Any status</option>
             {Object.entries(STATUS_CFG).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
           </select>
+          {stateFilter && (
+            <button onClick={() => setStateFilter('')}
+              className="ml-auto inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-orange-100 text-orange-700 hover:bg-orange-200">
+              State: {stateFilter} <X className="w-3 h-3" />
+            </button>
+          )}
           <span className="text-xs text-muted-foreground ml-auto">{filtered.length} of {campaigns.length} campaigns</span>
         </div>
       </div>
 
       {/* Body */}
-      {filtered.length === 0 ? (
+      {view === 'state' ? (
+        <div className="hub-card p-0 overflow-x-auto">
+          <div className="px-4 py-2.5 border-b border-border text-[11px] text-muted-foreground">
+            Reach + engagement by state — click a row to drill into that state's campaigns.
+          </div>
+          {stateRollup.length === 0 ? (
+            <p className="px-3 py-16 text-center text-sm text-muted-foreground">No campaigns match these filters.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-widest text-muted-foreground border-b border-border">
+                  <th className="px-3 py-2 w-10">#</th>
+                  <th className="px-3 py-2">State</th>
+                  <th className="px-3 py-2 text-right">Campaigns</th>
+                  <th className="px-3 py-2 text-right">
+                    <button onClick={() => setStateSort('reach')}
+                      className={`inline-flex items-center gap-1 hover:text-foreground ${stateSort === 'reach' ? 'text-orange-600 font-semibold' : ''}`}>
+                      Total Reach {stateSort === 'reach' && <ArrowDown className="w-3 h-3" />}
+                    </button>
+                  </th>
+                  <th className="px-3 py-2 text-right">
+                    <button onClick={() => setStateSort('engagement')}
+                      className={`inline-flex items-center gap-1 hover:text-foreground ${stateSort === 'engagement' ? 'text-orange-600 font-semibold' : ''}`}>
+                      Total Engagement {stateSort === 'engagement' && <ArrowDown className="w-3 h-3" />}
+                    </button>
+                  </th>
+                  <th className="px-3 py-2 w-8"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {stateRollup.map((s, i) => (
+                  <tr key={s.state} onClick={() => { setStateFilter(s.state); setView('cards') }}
+                    title={`View ${s.state} campaigns`}
+                    className="border-b border-border last:border-0 hover:bg-accent/40 cursor-pointer transition-colors">
+                    <td className="px-3 py-2.5 text-xs text-muted-foreground tabular-nums">{i + 1}</td>
+                    <td className="px-3 py-2.5 text-xs font-medium text-foreground">{s.state}</td>
+                    <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{s.count}</td>
+                    <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{s.reach.toLocaleString('en-IN')}</td>
+                    <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{s.engagement.toLocaleString('en-IN')}</td>
+                    <td className="px-3 py-2.5"><ChevronRight className="w-4 h-4 text-muted-foreground" /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      ) : filtered.length === 0 ? (
         <div className="hub-card text-center py-16">
           <div className="w-12 h-12 rounded-xl bg-orange-50 mx-auto flex items-center justify-center mb-3">
             <Send className="w-6 h-6 text-orange-600" />
@@ -558,7 +633,7 @@ function ImportCampaignsModal({ onClose }: { onClose: () => void }) {
               setProgress(`"${g.name}" — creating page @${row.handle}…`)
               await addPage({
                 handle: row.handle, geography: g.state, state: g.state,
-                type: 'state', followerTier: '3', contentTypes: [],
+                type: 'state', followerTier: '3', contentTypes: [], contentPreferences: [],
                 followers: 0, inventoryPosts: 0, inventoryStories: 0,
                 notes: `Created by campaign import (${g.name})`,
               })

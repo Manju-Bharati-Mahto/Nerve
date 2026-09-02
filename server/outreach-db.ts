@@ -37,6 +37,15 @@ export type PostType = typeof POST_TYPES[number];
 export const PAGE_CONTENT_TYPES = ["static", "reel", "carousel"] as const;
 export type PageContentType = typeof PAGE_CONTENT_TYPES[number];
 
+// Content preference / category a page is known for (PRD 6.5). Distinct from
+// `content_types` (which is post FORMAT). Configurable, multi-select; drives the
+// Smart Page Recommendation engine (6.4) and the Underperformance reason (6.6).
+// Empty array on a page means "Not Set".
+export const PAGE_CONTENT_PREFERENCES = [
+  "Comedy", "News", "Motivational", "Devotional", "Local Info", "Reels-only",
+] as const;
+export type PageContentPreference = typeof PAGE_CONTENT_PREFERENCES[number];
+
 export const POST_STATUSES = ["draft", "scheduled", "pending_approval", "published"] as const;
 export type PostStatus = typeof POST_STATUSES[number];
 
@@ -51,6 +60,8 @@ export interface OutreachPage {
   type: PageType;
   follower_tier: FollowerTier;
   content_types: PageContentType[];
+  // PRD 6.5 — content preference/category (multi-select); empty = "Not Set".
+  content_preferences: string[];
   followers: number;
   inventory_posts: number;
   inventory_stories: number;
@@ -177,6 +188,8 @@ export async function bootstrapOutreach() {
     END $$;
   `);
   await pool.query(`ALTER TABLE outreach_pages ADD COLUMN IF NOT EXISTS content_types JSONB NOT NULL DEFAULT '[]'::JSONB`);
+  // PRD 6.5 — page content preference/category. Existing rows default to [] ("Not Set").
+  await pool.query(`ALTER TABLE outreach_pages ADD COLUMN IF NOT EXISTS content_preferences JSONB NOT NULL DEFAULT '[]'::JSONB`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS outreach_creators (
@@ -362,12 +375,14 @@ export async function bootstrapOutreach() {
       archived_by TEXT,
       archived_reason TEXT,
       id TEXT, handle TEXT, geography TEXT, state TEXT, type TEXT,
-      follower_tier TEXT, content_types JSONB,
+      follower_tier TEXT, content_types JSONB, content_preferences JSONB,
       followers INTEGER, inventory_posts INTEGER, inventory_stories INTEGER,
       notes TEXT, last_synced_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ
     )
   `);
+  // Back-fill the archive schema for installations created before content_preferences.
+  await pool.query(`ALTER TABLE outreach_pages_archive ADD COLUMN IF NOT EXISTS content_preferences JSONB`);
   await pool.query(`CREATE INDEX IF NOT EXISTS outreach_pages_archive_id_idx ON outreach_pages_archive(id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS outreach_pages_archive_handle_idx ON outreach_pages_archive(handle)`);
 
@@ -419,13 +434,13 @@ export async function bootstrapOutreach() {
     BEGIN
       INSERT INTO outreach_pages_archive (
         archived_by, archived_reason,
-        id, handle, geography, state, type, follower_tier, content_types,
+        id, handle, geography, state, type, follower_tier, content_types, content_preferences,
         followers, inventory_posts, inventory_stories, notes, last_synced_at,
         created_at, updated_at
       ) VALUES (
         NULLIF(current_setting('app.user_id', true), ''),
         NULLIF(current_setting('app.archive_reason', true), ''),
-        OLD.id, OLD.handle, OLD.geography, OLD.state, OLD.type, OLD.follower_tier, OLD.content_types,
+        OLD.id, OLD.handle, OLD.geography, OLD.state, OLD.type, OLD.follower_tier, OLD.content_types, OLD.content_preferences,
         OLD.followers, OLD.inventory_posts, OLD.inventory_stories, OLD.notes, OLD.last_synced_at,
         OLD.created_at, OLD.updated_at
       );
@@ -485,6 +500,7 @@ export interface CreatePageInput {
   type: PageType;
   follower_tier: FollowerTier;
   content_types?: PageContentType[];
+  content_preferences?: string[];
   followers?: number;
   inventory_posts: number;
   inventory_stories: number;
@@ -499,12 +515,13 @@ export async function listPages(): Promise<OutreachPage[]> {
 export async function createPage(input: CreatePageInput): Promise<OutreachPage> {
   const id = slug(input.handle) || newId("page");
   const { rows } = await pool.query<OutreachPage>(
-    `INSERT INTO outreach_pages (id, handle, geography, state, type, follower_tier, content_types, followers, inventory_posts, inventory_stories, notes)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11)
+    `INSERT INTO outreach_pages (id, handle, geography, state, type, follower_tier, content_types, content_preferences, followers, inventory_posts, inventory_stories, notes)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, $12)
      RETURNING *`,
     [
       id, input.handle.trim(), input.geography, input.state, input.type, input.follower_tier,
       JSON.stringify(input.content_types ?? []),
+      JSON.stringify(input.content_preferences ?? []),
       input.followers ?? 0, input.inventory_posts, input.inventory_stories, input.notes ?? "",
     ],
   );
@@ -517,7 +534,7 @@ export async function updatePage(id: string, patch: Partial<CreatePageInput> & {
   let i = 1;
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined) continue;
-    if (k === "content_types") {
+    if (k === "content_types" || k === "content_preferences") {
       fields.push(`${k} = $${i++}::jsonb`);
       values.push(JSON.stringify(v));
     } else {
@@ -541,9 +558,11 @@ export async function updatePage(id: string, patch: Partial<CreatePageInput> & {
 function mapPageRow(row: OutreachPage): OutreachPage {
   // pg returns JSONB pre-parsed, but defend against legacy string-encoded values.
   const ct = (row as unknown as { content_types: unknown }).content_types;
+  const cp = (row as unknown as { content_preferences: unknown }).content_preferences;
   return {
     ...row,
     content_types: Array.isArray(ct) ? ct as PageContentType[] : safeJson(ct, [] as PageContentType[]),
+    content_preferences: Array.isArray(cp) ? cp as string[] : safeJson(cp, [] as string[]),
   };
 }
 

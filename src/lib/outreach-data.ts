@@ -32,6 +32,14 @@ export type FollowerTier = typeof FOLLOWER_TIERS[number]
 export const PAGE_CONTENT_TYPES = ['static', 'reel', 'carousel'] as const
 export type PageContentType = typeof PAGE_CONTENT_TYPES[number]
 
+// PRD 6.5 — content preference/category a page is known for (multi-select,
+// configurable). Distinct from PAGE_CONTENT_TYPES (post format). Feeds the Smart
+// Page Recommendation engine (6.4) and the Underperformance reason (6.6).
+export const PAGE_CONTENT_PREFERENCES = [
+  'Comedy', 'News', 'Motivational', 'Devotional', 'Local Info', 'Reels-only',
+] as const
+export type PageContentPreference = typeof PAGE_CONTENT_PREFERENCES[number]
+
 export interface OutreachPage {
   id: string
   handle: string
@@ -40,6 +48,8 @@ export interface OutreachPage {
   type: PageType
   followerTier: FollowerTier
   contentTypes: PageContentType[]
+  // PRD 6.5 — content preference/category (multi-select). Empty = "Not Set".
+  contentPreferences: string[]
   followers: number
   inventoryPosts: number
   inventoryStories: number
@@ -126,6 +136,7 @@ function toPage(p: ServerOutreachPage): OutreachPage {
     type: p.type,
     followerTier: p.follower_tier,
     contentTypes: Array.isArray(p.content_types) ? p.content_types : [],
+    contentPreferences: Array.isArray(p.content_preferences) ? p.content_preferences : [],
     followers: p.followers,
     inventoryPosts: p.inventory_posts,
     inventoryStories: p.inventory_stories,
@@ -142,6 +153,7 @@ function fromPage(p: Omit<OutreachPage, 'id' | 'lastSyncedAt'> & Partial<Pick<Ou
     type: p.type,
     follower_tier: p.followerTier,
     content_types: p.contentTypes,
+    content_preferences: p.contentPreferences,
     followers: p.followers,
     inventory_posts: p.inventoryPosts,
     inventory_stories: p.inventoryStories,
@@ -321,6 +333,7 @@ export async function updatePage(id: string, patch: Partial<Omit<OutreachPage, '
   if (patch.type !== undefined) serverPatch.type = patch.type
   if (patch.followerTier !== undefined) serverPatch.follower_tier = patch.followerTier
   if (patch.contentTypes !== undefined) serverPatch.content_types = patch.contentTypes
+  if (patch.contentPreferences !== undefined) serverPatch.content_preferences = patch.contentPreferences
   if (patch.followers !== undefined) serverPatch.followers = patch.followers
   if (patch.inventoryPosts !== undefined) serverPatch.inventory_posts = patch.inventoryPosts
   if (patch.inventoryStories !== undefined) serverPatch.inventory_stories = patch.inventoryStories
@@ -560,6 +573,128 @@ export function suggestedMonthlyUsage(page: OutreachPage, posts: Post[]): number
   if (m.avgEngagement >= 4000) pace *= 1.2
   else if (m.avgEngagement > 0 && m.avgEngagement < 500) pace *= 0.7
   return Math.max(1, Math.round(pace))
+}
+
+// ── Smart page recommendation (PRD 6.4) ────────────────────────────────────
+
+export interface PageRecommendation {
+  page: OutreachPage
+  /** Average reach (views) across this page's historical live posts. */
+  avgReach: number
+  /** Average engagement (likes + comments) across this page's live posts. */
+  avgEngagement: number
+  postsConsidered: number
+  stateMatch: boolean
+  prefMatch: boolean
+  score: number
+}
+
+/**
+ * Ranks pages to recommend for a campaign, using ONLY data already captured
+ * (PRD 6.4). Priority tiers: state match → content-preference match →
+ * historical performance (avg reach, then avg engagement). Pages already
+ * assigned (excludeIds) and pages with no signal at all (no state/pref match
+ * and no history) are dropped. Recommendations are suggestions only.
+ */
+export function recommendPages(
+  pages: OutreachPage[],
+  posts: Post[],
+  opts: { campaignState?: string; preference?: string; excludeIds?: Set<string>; limit?: number },
+): PageRecommendation[] {
+  const limit = opts.limit ?? 5
+  const exclude = opts.excludeIds ?? new Set<string>()
+  const recs: PageRecommendation[] = []
+  for (const page of pages) {
+    if (exclude.has(page.id)) continue
+    const pp = posts.filter(p => p.pageId === page.id && p.addedAsLive)
+    const avgReach = pp.length ? Math.round(pp.reduce((s, p) => s + p.views, 0) / pp.length) : 0
+    const avgEngagement = pp.length ? Math.round(pp.reduce((s, p) => s + p.likes + p.comments, 0) / pp.length) : 0
+    const stateMatch = !!opts.campaignState && page.state === opts.campaignState
+    const prefMatch = !!opts.preference && page.contentPreferences.includes(opts.preference)
+    // Tiered score: state match dominates, then preference match, then measured
+    // performance. The large constants keep the tiers from bleeding into each other.
+    const score = (stateMatch ? 1_000_000 : 0) + (prefMatch ? 500_000 : 0) + avgReach + avgEngagement * 5
+    if (score <= 0) continue
+    recs.push({ page, avgReach, avgEngagement, postsConsidered: pp.length, stateMatch, prefMatch, score })
+  }
+  return recs.sort((a, b) => b.score - a.score).slice(0, limit)
+}
+
+// ── Underperformance analysis (PRD 6.6) ─────────────────────────────────────
+
+export interface PostPerformanceAnalysis {
+  /** True when this post's reach (views) is below the page's historical average. */
+  underperforming: boolean
+  /** False when the page has too little history to judge ("Not enough data yet"). */
+  enoughData: boolean
+  pageAvgReach: number
+  /** Likely causes, pattern-matched against the page's own history. Not certainties. */
+  reasons: string[]
+  /** Content format that has historically performed best on this page, if any. */
+  alternate: PostType | null
+}
+
+const DOW_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+/** Minimum live posts on a page before we'll attempt an underperformance call. */
+export const UNDERPERF_MIN_HISTORY = 3
+
+/**
+ * Flags a post as underperforming (reach below the page's average) and offers
+ * likely reasons + a better content format, using ONLY the page's own history
+ * (PRD 6.6). `pageLivePosts` should be the page's operator-added live posts
+ * (including this one). Presented as a likely cause, never a certainty.
+ */
+export function analyzePostPerformance(
+  page: OutreachPage,
+  post: Post,
+  pageLivePosts: Post[],
+): PostPerformanceAnalysis {
+  const live = pageLivePosts.filter(p => p.addedAsLive)
+  if (live.length < UNDERPERF_MIN_HISTORY) {
+    return { underperforming: false, enoughData: false, pageAvgReach: 0, reasons: [], alternate: null }
+  }
+  const pageAvgReach = Math.round(live.reduce((s, p) => s + p.views, 0) / live.length)
+
+  // Best-performing format on this page (by avg reach) — also the alternate suggestion.
+  const byFormat = new Map<PostType, { sum: number; n: number }>()
+  for (const p of live) {
+    const e = byFormat.get(p.type) ?? { sum: 0, n: 0 }
+    e.sum += p.views; e.n++; byFormat.set(p.type, e)
+  }
+  const formatRank = [...byFormat.entries()]
+    .map(([t, e]) => ({ t, avg: e.sum / e.n }))
+    .sort((a, b) => b.avg - a.avg)
+  const alternate = formatRank[0]?.t ?? null
+
+  if (post.views >= pageAvgReach) {
+    return { underperforming: false, enoughData: true, pageAvgReach, reasons: [], alternate }
+  }
+
+  const reasons: string[] = []
+  // 1) Format mismatch — the post's format historically reaches less than the best.
+  if (alternate && post.type !== alternate && byFormat.size > 1) {
+    reasons.push(`This is a ${post.type}; ${alternate}s have historically reached more on this page.`)
+  }
+  // 2) Content-preference mismatch — a "Reels-only" page running a non-reel.
+  if (page.contentPreferences.includes('Reels-only') && post.type !== 'reel') {
+    reasons.push(`This page is set to "Reels-only", but this post is a ${post.type}.`)
+  }
+  // 3) Timing — the post's weekday historically underperforms the page's best day.
+  const byDow = new Map<number, { sum: number; n: number }>()
+  for (const p of live) {
+    const d = new Date(`${p.date}T00:00:00`).getDay()
+    const e = byDow.get(d) ?? { sum: 0, n: 0 }
+    e.sum += p.views; e.n++; byDow.set(d, e)
+  }
+  const dowRank = [...byDow.entries()].map(([d, e]) => ({ d, avg: e.sum / e.n })).sort((a, b) => b.avg - a.avg)
+  const postDow = new Date(`${post.date}T00:00:00`).getDay()
+  if (dowRank.length > 1 && dowRank[0].d !== postDow) {
+    reasons.push(`Published on a ${DOW_NAMES[postDow]}; ${DOW_NAMES[dowRank[0].d]} has performed best for this page.`)
+  }
+  if (reasons.length === 0) {
+    reasons.push('Reached below this page’s average — no single pattern stands out.')
+  }
+  return { underperforming: true, enoughData: true, pageAvgReach, reasons, alternate }
 }
 
 export function slug(s: string): string {

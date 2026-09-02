@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import {
   Megaphone, Send, Calendar as CalendarIcon, BarChart3, FileText, Users, Sparkles,
   TrendingUp, Heart, Eye, MessageCircle, Share2, AlertTriangle, Activity, RefreshCw,
-  ExternalLink, MapPin, X, Gauge,
+  ExternalLink, MapPin, X, Gauge, Download,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -15,6 +15,7 @@ import {
   aggregateTotals, outreachStates, buildPostStateLookup,
   computeOutreachAlerts, getDismissedAlertIds, dismissAlert,
 } from '@/lib/outreach-data'
+import { buildDashboardReport, exportDashboardReportPdf } from '@/lib/outreach-export'
 
 type Range = '7d' | '30d' | 'mtd' | 'all'
 
@@ -90,6 +91,13 @@ export default function OutreachDashboard() {
 
   function onDismissAlert(id: string) {
     setDismissed(dismissAlert(id))
+  }
+
+  // PRD 6.3 — one-click last-30-days PDF. Uses the latest synced data and honours
+  // the dashboard's current state filter so the report matches what's on screen.
+  function onDownloadReport() {
+    const report = buildDashboardReport(campaigns, pages, creators, posts, { stateFilter, days: 30 })
+    exportDashboardReportPdf(report)
   }
 
   // Dashboard KPIs reflect work the team explicitly executed — live posts the
@@ -179,12 +187,26 @@ export default function OutreachDashboard() {
     })
   }, [livePosts])
 
+  // Page inventory usage (PRD 6.2) — total slots consumed vs available across the
+  // (state-filtered) page set. Reflects instantly when a page's inventory is
+  // edited, since the store refetches and statePages/posts recompute.
+  const inventoryUsage = useMemo(() => {
+    let used = 0, total = 0
+    for (const p of statePages) {
+      const m = pageMetrics(p, posts)
+      used += m.postsDone + m.storiesDone
+      total += p.inventoryPosts + p.inventoryStories
+    }
+    return { used, total, pct: total ? Math.round((used / total) * 100) : 0 }
+  }, [statePages, posts])
+
   const kpiCards = [
     { label: 'Total Reach', value: fmt(totals.reach), sub: 'post views (reach proxy)', icon: Eye, bg: 'bg-orange-50', color: 'text-orange-600' },
     { label: 'Total Views', value: fmt(totals.views), sub: `${totals.posts} live post${totals.posts === 1 ? '' : 's'}`, icon: Activity, bg: 'bg-blue-50', color: 'text-blue-600' },
     { label: 'Total Likes', value: fmt(totals.likes), sub: 'across live posts', icon: Heart, bg: 'bg-rose-50', color: 'text-rose-600' },
     { label: 'Total Comments', value: fmt(totals.comments), sub: 'across live posts', icon: MessageCircle, bg: 'bg-violet-50', color: 'text-violet-600' },
     { label: 'Total Shares', value: fmt(totals.shares), sub: 'where recorded', icon: Share2, bg: 'bg-emerald-50', color: 'text-emerald-600' },
+    { label: 'Page Inventory Used', value: `${fmt(inventoryUsage.used)} / ${fmt(inventoryUsage.total)}`, sub: `${inventoryUsage.pct}% of slots consumed`, icon: Gauge, bg: 'bg-amber-50', color: 'text-amber-600' },
   ]
 
   return (
@@ -224,6 +246,12 @@ export default function OutreachDashboard() {
             <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
             {syncing ? 'Syncing…' : 'Sync now'}
           </button>
+          <button onClick={onDownloadReport}
+            title="Download a PDF summary of the last 30 days (respects the state filter)"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-border hover:bg-accent">
+            <Download className="w-3.5 h-3.5" />
+            Download report
+          </button>
           <button onClick={onRefreshReach} disabled={refreshing || syncing}
             title="Re-pull the latest views/reach for every tracked live post across all pages"
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-border hover:bg-accent disabled:opacity-50">
@@ -241,7 +269,7 @@ export default function OutreachDashboard() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         {kpiCards.map(k => {
           const Icon = k.icon
           return (
