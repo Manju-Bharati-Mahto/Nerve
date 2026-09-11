@@ -17,6 +17,11 @@ import { api, type ServerOutreachPage, type ServerOutreachCreator, type ServerOu
 export const PAGE_TYPES = ['state', 'pu'] as const
 export type PageType = typeof PAGE_TYPES[number]
 
+// Which social network a page / post lives on. Instagram is the default;
+// Facebook pages + links are tracked manually until the FB API scraper lands.
+export const PLATFORMS = ['instagram', 'facebook'] as const
+export type Platform = typeof PLATFORMS[number]
+
 export const POST_TYPES = ['static', 'reel', 'story', 'carousel'] as const
 export type PostType = typeof POST_TYPES[number]
 
@@ -43,6 +48,7 @@ export type PageContentPreference = typeof PAGE_CONTENT_PREFERENCES[number]
 export interface OutreachPage {
   id: string
   handle: string
+  platform: Platform
   geography: string
   state: string
   type: PageType
@@ -94,6 +100,7 @@ export interface Campaign {
 
 export interface Post {
   id: string
+  platform: Platform
   date: string
   // Exactly one of pageId / creatorId is set. Mirrors the DB CHECK constraint.
   pageId: string | null
@@ -131,6 +138,7 @@ function toPage(p: ServerOutreachPage): OutreachPage {
   return {
     id: p.id,
     handle: p.handle,
+    platform: p.platform === 'facebook' ? 'facebook' : 'instagram',
     geography: p.geography,
     state: p.state,
     type: p.type,
@@ -148,6 +156,7 @@ function toPage(p: ServerOutreachPage): OutreachPage {
 function fromPage(p: Omit<OutreachPage, 'id' | 'lastSyncedAt'> & Partial<Pick<OutreachPage, 'id' | 'lastSyncedAt'>>): Partial<ServerOutreachPage> {
   return {
     handle: p.handle,
+    platform: p.platform,
     geography: p.geography,
     state: p.state,
     type: p.type,
@@ -235,6 +244,7 @@ function fromCampaign(c: Omit<Campaign, 'id'> & Partial<Pick<Campaign, 'id'>>): 
 function toPost(p: ServerOutreachPost): Post {
   return {
     id: p.id,
+    platform: p.platform === 'facebook' ? 'facebook' : 'instagram',
     date: p.date,
     pageId: p.page_id,
     creatorId: p.creator_id,
@@ -447,6 +457,24 @@ export async function refreshReachNow() {
   const result = await api.refreshOutreachReach()
   await fetchAll()
   return result
+}
+
+/**
+ * Per-campaign sync: re-scrapes only the live posts attributed to one campaign
+ * and refreshes the store. Facebook posts are reported as skipped (no FB
+ * scraper yet), never attempted.
+ */
+export async function syncCampaignNow(campaignId: string) {
+  const result = await api.syncOutreachCampaign(campaignId)
+  await fetchAll()
+  return result
+}
+
+/** Public profile URL for a page on its own platform. */
+export function profileUrlForPage(page: Pick<OutreachPage, 'handle' | 'platform'>): string {
+  return page.platform === 'facebook'
+    ? `https://www.facebook.com/${page.handle.trim().replace(/^@/, '')}`
+    : instagramUrlForHandle(page.handle)
 }
 
 // ── Dismissed alerts (client-only, persisted per browser) ──────────────────

@@ -191,11 +191,13 @@ export default function OutreachDashboard() {
   // (state-filtered) page set. Reflects instantly when a page's inventory is
   // edited, since the store refetches and statePages/posts recompute.
   const inventoryUsage = useMemo(() => {
+    // Posts + reels only — stories are deliberately excluded from the
+    // dashboard's inventory KPI (postsDone counts every non-story live post).
     let used = 0, total = 0
     for (const p of statePages) {
       const m = pageMetrics(p, posts)
-      used += m.postsDone + m.storiesDone
-      total += p.inventoryPosts + p.inventoryStories
+      used += m.postsDone
+      total += p.inventoryPosts
     }
     return { used, total, pct: total ? Math.round((used / total) * 100) : 0 }
   }, [statePages, posts])
@@ -206,7 +208,7 @@ export default function OutreachDashboard() {
     { label: 'Total Likes', value: fmt(totals.likes), sub: 'across live posts', icon: Heart, bg: 'bg-rose-50', color: 'text-rose-600' },
     { label: 'Total Comments', value: fmt(totals.comments), sub: 'across live posts', icon: MessageCircle, bg: 'bg-violet-50', color: 'text-violet-600' },
     { label: 'Total Shares', value: fmt(totals.shares), sub: 'where recorded', icon: Share2, bg: 'bg-emerald-50', color: 'text-emerald-600' },
-    { label: 'Page Inventory Used', value: `${fmt(inventoryUsage.used)} / ${fmt(inventoryUsage.total)}`, sub: `${inventoryUsage.pct}% of slots consumed`, icon: Gauge, bg: 'bg-amber-50', color: 'text-amber-600' },
+    { label: 'Page Inventory Used', value: `${fmt(inventoryUsage.used)} / ${fmt(inventoryUsage.total)}`, sub: `${inventoryUsage.pct}% of post+reel slots (stories excluded)`, icon: Gauge, bg: 'bg-amber-50', color: 'text-amber-600' },
   ]
 
   return (

@@ -229,6 +229,14 @@ export const api = {
       body: JSON.stringify(handles ? { handles } : {}),
     }),
 
+  // Outreach — per-campaign sync: re-scrape only the live posts attributed to
+  // one campaign. Facebook posts are counted (facebook_skipped), not scraped.
+  syncOutreachCampaign: (campaignId: string) =>
+    request<{ ok: true; refreshed: number; failed: number; facebook_skipped: number }>(
+      `/outreach/campaigns/${campaignId}/sync`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+
   // Outreach — re-scrape every tracked live post's metrics (reach/views) across
   // all pages. On-demand; does not run the profile scrape.
   refreshOutreachReach: () =>
@@ -261,6 +269,7 @@ export const api = {
 export interface ServerOutreachPage {
   id: string;
   handle: string;
+  platform: "instagram" | "facebook";
   geography: string;
   state: string;
   type: "state" | "pu";
@@ -315,6 +324,7 @@ export interface ServerOutreachCampaign {
 export interface ServerOutreachPost {
   id: string;
   instagram_id: string | null;
+  platform: "instagram" | "facebook";
   // A post belongs to exactly one of page_id or creator_id — never both.
   page_id: string | null;
   creator_id: string | null;

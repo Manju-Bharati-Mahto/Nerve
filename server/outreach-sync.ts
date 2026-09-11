@@ -14,6 +14,7 @@
 import {
   listPages,
   listCampaigns,
+  listPosts,
   updatePage,
   upsertPostByInstagramId,
   listLivePostsWithPermalink,
@@ -103,15 +104,24 @@ export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> 
   // Normalise both sides identically — strip whitespace, leading @,
   // lowercase — so `["@foo"]` matches a page stored as `"Foo"`.
   const normHandle = (h: string) => h.trim().toLowerCase().replace(/^@/, "");
+  // Only Instagram pages are syncable — the profile scraper is IG-only.
+  // Facebook pages are reported as skipped (not silently dropped) so the sync
+  // summary stays honest about what wasn't refreshed.
+  const igPages = allPages.filter(p => p.platform !== "facebook");
+  const fbPages = allPages.filter(p => p.platform === "facebook");
   const targetPages = opts.handles && opts.handles.length > 0
-    ? allPages.filter(p => opts.handles!.some(h => normHandle(h) === normHandle(p.handle)))
-    : allPages;
+    ? igPages.filter(p => opts.handles!.some(h => normHandle(h) === normHandle(p.handle)))
+    : igPages;
+  const skippedFacebook: SyncResult["skipped"] = (opts.handles && opts.handles.length > 0
+    ? fbPages.filter(p => opts.handles!.some(h => normHandle(h) === normHandle(p.handle)))
+    : fbPages
+  ).map(p => ({ handle: p.handle, reason: "Facebook page — sync starts once the Facebook scraper is integrated" }));
 
   if (targetPages.length === 0) {
-    return { ok: true, synced_pages: 0, upserted_posts: 0, skipped: [], attribution: { matched: 0, unmatched: 0 }, refreshed_live_posts: 0 };
+    return { ok: true, synced_pages: 0, upserted_posts: 0, skipped: skippedFacebook, attribution: { matched: 0, unmatched: 0 }, refreshed_live_posts: 0 };
   }
 
-  const skipped: SyncResult["skipped"] = [];
+  const skipped: SyncResult["skipped"] = [...skippedFacebook];
   let upsertedPosts = 0;
   let matched = 0;
   let unmatched = 0;
@@ -164,12 +174,13 @@ export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> 
   let refreshed = 0;
   if (opts.refreshLivePosts) {
     const pageIds = opts.handles && opts.handles.length > 0 ? targetPages.map(p => p.id) : undefined;
-    ({ refreshed } = await refreshLivePostMetrics(pageIds));
+    ({ refreshed } = await refreshLivePostMetrics({ pageIds }));
   }
 
   return {
     ok: true,
-    synced_pages: targetPages.length - skipped.length,
+    // FB skips were never in targetPages — subtract only the IG-side skips.
+    synced_pages: targetPages.length - (skipped.length - skippedFacebook.length),
     upserted_posts: upsertedPosts,
     skipped,
     attribution: { matched, unmatched },
@@ -192,9 +203,9 @@ const LIVE_REFRESH_BATCH = 50;
  * numbers rather than being zeroed.
  */
 export async function refreshLivePostMetrics(
-  pageIds?: string[],
+  scope: { pageIds?: string[]; campaignId?: string } = {},
 ): Promise<{ refreshed: number; failed: number }> {
-  const livePosts = await listLivePostsWithPermalink(pageIds);
+  const livePosts = await listLivePostsWithPermalink(scope);
   if (livePosts.length === 0) return { refreshed: 0, failed: 0 };
 
   let refreshed = 0;
@@ -282,6 +293,96 @@ export async function refreshLivePostMetrics(
 // request — syncing is now MANUAL ONLY: the "Sync now" button (POST
 // /api/outreach/sync) and the live-post refresh (POST /api/outreach/refresh-reach).
 // Nothing calls Apify on a timer any more.
+
+/**
+ * Per-campaign sync: re-scrapes ONLY the live posts attributed to the given
+ * campaign (not the whole department's). Facebook rows can't be scraped until
+ * the FB scraper is integrated — they're counted and reported, never attempted.
+ */
+export async function syncCampaignPosts(campaignId: string): Promise<{
+  ok: true; refreshed: number; failed: number; facebook_skipped: number;
+}> {
+  const campaign = await getCampaign(campaignId);
+  if (!campaign) throw new Error("Campaign not found.");
+  const campaignPosts = await listPosts({ campaignId });
+  const facebook_skipped = campaignPosts.filter(p => p.platform === "facebook" && p.added_as_live).length;
+  const { refreshed, failed } = await refreshLivePostMetrics({ campaignId });
+  return { ok: true, refreshed, failed, facebook_skipped };
+}
+
+// ── Facebook link parsing ──────────────────────────────────────────────────
+//
+// No Facebook scraper exists yet ("planned API scraper" — metrics stay 0 until
+// it lands), but campaign links must already be enterable and tracked. This
+// recognises the common shapes of a Facebook post / reel / video URL and
+// returns a stable id + inferred type.
+export function extractFacebookPostRef(url: string): { id: string; type: "static" | "reel" } | null {
+  if (!/(?:^|\.)?(?:facebook\.com|fb\.com|fb\.watch)\//i.test(url)) return null;
+  const patterns: { re: RegExp; type: "static" | "reel" }[] = [
+    { re: /facebook\.com\/reel\/([A-Za-z0-9]+)/i,                 type: "reel" },
+    { re: /facebook\.com\/[^/?#]+\/videos\/(\d+)/i,               type: "reel" },
+    { re: /facebook\.com\/watch\/?\?(?:.*&)?v=(\d+)/i,            type: "reel" },
+    { re: /fb\.watch\/([A-Za-z0-9_-]+)/i,                         type: "reel" },
+    { re: /facebook\.com\/share\/[rv]\/([A-Za-z0-9]+)/i,          type: "reel" },
+    { re: /facebook\.com\/share\/p\/([A-Za-z0-9]+)/i,             type: "static" },
+    { re: /facebook\.com\/[^/?#]+\/posts\/([A-Za-z0-9]+)/i,       type: "static" },
+    { re: /facebook\.com\/photo(?:\.php)?\/?\?(?:.*&)?fbid=(\d+)/i, type: "static" },
+    { re: /facebook\.com\/permalink\.php\?(?:.*&)?story_fbid=(\d+)/i, type: "static" },
+  ];
+  for (const { re, type } of patterns) {
+    const m = url.match(re);
+    if (m) return { id: m[1], type };
+  }
+  return null;
+}
+
+/**
+ * Persists Facebook links as manual (unscrapeable-for-now) live posts under a
+ * Facebook page: platform 'facebook', metrics 0, date = added-on date. The id
+ * is namespaced ("fb:<id>") into the same UNIQUE column the IG ids use, so
+ * re-adding a link updates the existing row instead of duplicating it. Once
+ * the Facebook scraper is integrated these rows are the ones it will hydrate.
+ */
+async function addFacebookLivePosts(ctx: {
+  page: OutreachPage;
+  campaign: OutreachCampaign | null;
+  urls: string[];
+  forceVariant?: string;
+}): Promise<AddLivePostsResult> {
+  const skipped: AddLivePostsResult["skipped"] = [];
+  const persisted: OutreachPost[] = [];
+  const today = new Date().toISOString().slice(0, 10);
+  for (const raw of ctx.urls) {
+    const url = raw.trim();
+    if (!url) continue;
+    if (extractInstagramShortcode(url)) {
+      skipped.push({ url, reason: `This is an Instagram URL, but @${ctx.page.handle} is a Facebook page.` });
+      continue;
+    }
+    const ref = extractFacebookPostRef(url);
+    if (!ref) {
+      skipped.push({ url, reason: "Not a recognisable Facebook post / reel / video URL." });
+      continue;
+    }
+    const post = await upsertPostByInstagramId({
+      instagram_id: `fb:${ref.id}`,
+      platform: "facebook",
+      page_id: ctx.page.id,
+      campaign_id: ctx.campaign?.id ?? null,
+      date: today,
+      type: ref.type,
+      creative_variant: ctx.forceVariant && ctx.campaign?.creative_variants.includes(ctx.forceVariant) ? ctx.forceVariant : null,
+      caption: "",
+      status: "published",
+      likes: 0, comments: 0, views: 0, saves: 0, shares: 0,
+      media_url: null,
+      permalink: url,
+      added_as_live: true,
+    });
+    persisted.push(post);
+  }
+  return { ok: true, posts: persisted, skipped };
+}
 
 async function persistPost(
   page: OutreachPage,
@@ -431,6 +532,12 @@ export async function addLivePosts(input: AddLivePostsInput): Promise<AddLivePos
     }
   }
 
+  // Facebook pages take the manual (no-scraper-yet) path: links are validated
+  // as Facebook URLs and persisted with zero metrics for later hydration.
+  if (page && page.platform === "facebook") {
+    return addFacebookLivePosts({ page, campaign, urls: input.urls, forceVariant: input.creativeVariant });
+  }
+
   const subjectHandle = (page ?? creator)!.handle.trim().toLowerCase().replace(/^@/, "");
 
   const skipped: AddLivePostsResult["skipped"] = [];
@@ -439,7 +546,12 @@ export async function addLivePosts(input: AddLivePostsInput): Promise<AddLivePos
     const url = raw.trim();
     if (!url) continue;
     if (!extractInstagramShortcode(url)) {
-      skipped.push({ url, reason: "Not a recognisable Instagram post or reel URL." });
+      skipped.push({
+        url,
+        reason: extractFacebookPostRef(url)
+          ? `This is a Facebook URL, but @${subjectHandle} is an Instagram ${page ? "page" : "creator"}. Add it under a Facebook page instead.`
+          : "Not a recognisable Instagram post or reel URL.",
+      });
       continue;
     }
     validUrls.push(url);

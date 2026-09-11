@@ -10,9 +10,9 @@ import {
 } from 'recharts'
 import {
   useOutreachData, pageMetrics, campaignMetrics, addPage, updatePage,
-  parseInstagramHandle, instagramUrlForHandle,
-  PAGE_TYPES, FOLLOWER_TIERS, PAGE_CONTENT_TYPES, PAGE_CONTENT_PREFERENCES,
-  type PageType, type FollowerTier, type PageContentType, type OutreachPage, type Post,
+  parseInstagramHandle, profileUrlForPage,
+  PAGE_TYPES, FOLLOWER_TIERS, PAGE_CONTENT_TYPES, PAGE_CONTENT_PREFERENCES, PLATFORMS,
+  type PageType, type FollowerTier, type PageContentType, type OutreachPage, type Post, type Platform,
 } from '@/lib/outreach-data'
 
 type Tab = 'pages' | 'campaigns' | 'posts' | 'trend' | 'inventory'
@@ -439,8 +439,15 @@ function InventoryHeatmap() {
   const rows = useMemo(() => {
     return pages
       .filter(p => (!geoFilter || p.geography === geoFilter) && (!typeFilter || p.type === typeFilter))
-      .map(p => ({ page: p, m: pageMetrics(p, posts) }))
-      .sort((a, b) => b.m.pctConsumed - a.m.pctConsumed)
+      .map(p => {
+        const m = pageMetrics(p, posts)
+        // Inventory here is POSTS + REELS only — stories are deliberately
+        // excluded from this heatmap (postsDone already counts every
+        // non-story live post: static, reel, carousel).
+        const pctPosts = p.inventoryPosts ? m.postsDone / p.inventoryPosts : 0
+        return { page: p, m, pctPosts }
+      })
+      .sort((a, b) => b.pctPosts - a.pctPosts)
   }, [pages, posts, geoFilter, typeFilter])
 
   function bg(pct: number): string {
@@ -483,7 +490,7 @@ function InventoryHeatmap() {
       </div>
 
       <div className="hub-card flex items-center gap-3 text-xs flex-wrap">
-        <span className="text-muted-foreground">Inventory consumption legend:</span>
+        <span className="text-muted-foreground">Inventory consumption legend (posts + reels — stories excluded):</span>
         <Legend2 cls="bg-emerald-100 text-emerald-700"  label="<30% (under-used)" />
         <Legend2 cls="bg-emerald-300 text-emerald-900" label="30-60%" />
         <Legend2 cls="bg-amber-300 text-amber-900"     label="60-80%" />
@@ -498,13 +505,13 @@ function InventoryHeatmap() {
         <div key={geo} className="hub-card">
           <h3 className="text-sm font-semibold text-foreground mb-3">{geo} <span className="text-xs text-muted-foreground font-normal">({gRows.length} pages)</span></h3>
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
-            {gRows.map(({ page, m }) => (
+            {gRows.map(({ page, m, pctPosts }) => (
               <Link key={page.id} to={`/outreach/pages/${page.id}`}
-                title={`@${page.handle} — ${m.postsDone + m.storiesDone}/${page.inventoryPosts + page.inventoryStories} = ${Math.round(m.pctConsumed * 100)}%`}
-                className={`p-3 rounded-lg ${bg(m.pctConsumed)} hover:opacity-90 transition-opacity`}>
+                title={`@${page.handle} — ${m.postsDone}/${page.inventoryPosts} posts+reels = ${Math.round(pctPosts * 100)}% (stories excluded)`}
+                className={`p-3 rounded-lg ${bg(pctPosts)} hover:opacity-90 transition-opacity`}>
                 <p className="text-xs font-medium truncate">@{page.handle}</p>
-                <p className="text-lg font-mono tabular-nums leading-none mt-1">{Math.round(m.pctConsumed * 100)}%</p>
-                <p className="text-[10px] opacity-80 mt-1">{m.postsDone + m.storiesDone} of {page.inventoryPosts + page.inventoryStories}</p>
+                <p className="text-lg font-mono tabular-nums leading-none mt-1">{Math.round(pctPosts * 100)}%</p>
+                <p className="text-[10px] opacity-80 mt-1">{m.postsDone} of {page.inventoryPosts} posts + reels</p>
               </Link>
             ))}
           </div>
@@ -560,13 +567,13 @@ function fmt(n: number): string {
 
 // ── Modals ─────────────────────────────────────────────────────────────────
 
-export function AddPageModal({ onClose }: { onClose: () => void }) {
+export function AddPageModal({ onClose, defaultPlatform = 'instagram' }: { onClose: () => void; defaultPlatform?: Platform }) {
   const [form, setForm] = useState<{
-    handle: string; geography: string; state: string; type: PageType;
+    handle: string; platform: Platform; geography: string; state: string; type: PageType;
     followerTier: FollowerTier; contentTypes: PageContentType[]; contentPreferences: string[];
     followers: number; inventoryPosts: number; inventoryStories: number; notes: string;
   }>({
-    handle: '', geography: '', state: '', type: 'state',
+    handle: '', platform: defaultPlatform, geography: '', state: '', type: 'state',
     followerTier: '1', contentTypes: [], contentPreferences: [],
     followers: 20000, inventoryPosts: 24, inventoryStories: 24, notes: '',
   })
@@ -589,9 +596,12 @@ export function AddPageModal({ onClose }: { onClose: () => void }) {
     }))
   }
 
-  // Accept either a bare username or a pasted Instagram URL — we store
-  // the canonical handle either way.
-  const normalisedHandle = parseInstagramHandle(form.handle)
+  // Accept either a bare username or a pasted profile URL — we store the
+  // canonical handle either way. (parseInstagramHandle also strips a pasted
+  // facebook.com/<page> URL down to its path segment well enough for FB pages.)
+  const normalisedHandle = form.platform === 'facebook'
+    ? form.handle.trim().replace(/^@/, '').replace(/^https?:\/\/(www\.)?(facebook\.com|fb\.com)\//i, '').replace(/[/?#].*$/, '')
+    : parseInstagramHandle(form.handle)
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const canSubmit = !!normalisedHandle && form.geography.trim() && form.state.trim() && !submitting
@@ -623,16 +633,38 @@ export function AddPageModal({ onClose }: { onClose: () => void }) {
         </div>
         <div className="p-4 space-y-3">
           <div>
-            <label className="hub-label">Instagram handle or URL *</label>
+            <label className="hub-label">Platform *</label>
+            <div className="flex gap-2">
+              {PLATFORMS.map(pl => (
+                <button key={pl} type="button" onClick={() => setForm(f => ({ ...f, platform: pl }))}
+                  className={`text-xs px-3 py-1.5 rounded-lg border capitalize ${
+                    form.platform === pl
+                      ? pl === 'facebook' ? 'bg-blue-100 border-blue-300 text-blue-700 font-medium' : 'bg-orange-100 border-orange-300 text-orange-700 font-medium'
+                      : 'bg-card border-border text-muted-foreground hover:bg-accent'
+                  }`}>
+                  {pl}
+                </button>
+              ))}
+            </div>
+            {form.platform === 'facebook' && (
+              <p className="text-[11px] text-muted-foreground mt-1">
+                Facebook pages are tracked manually for now — metrics sync starts once the Facebook scraper is integrated.
+              </p>
+            )}
+          </div>
+          <div>
+            <label className="hub-label">{form.platform === 'facebook' ? 'Facebook page name or URL *' : 'Instagram handle or URL *'}</label>
             <input className="hub-input" value={form.handle}
               onChange={e => setForm(f => ({ ...f, handle: e.target.value }))}
-              placeholder="mycitypage  —or—  https://www.instagram.com/mycitypage/" />
+              placeholder={form.platform === 'facebook'
+                ? 'mycitypage  —or—  https://www.facebook.com/mycitypage'
+                : 'mycitypage  —or—  https://www.instagram.com/mycitypage/'} />
             {normalisedHandle && (
               <p className="text-[11px] text-muted-foreground mt-1">
                 Will save as <span className="font-mono text-foreground">@{normalisedHandle}</span> ·{' '}
-                <a href={instagramUrlForHandle(normalisedHandle)} target="_blank" rel="noreferrer"
+                <a href={profileUrlForPage({ handle: normalisedHandle, platform: form.platform })} target="_blank" rel="noreferrer"
                   className="text-orange-600 hover:underline">
-                  preview on Instagram
+                  preview on {form.platform === 'facebook' ? 'Facebook' : 'Instagram'}
                 </a>
               </p>
             )}

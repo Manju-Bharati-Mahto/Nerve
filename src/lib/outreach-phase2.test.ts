@@ -9,7 +9,7 @@ import { buildDashboardReport } from './outreach-export'
 
 function page(over: Partial<OutreachPage> & { id: string }): OutreachPage {
   return {
-    handle: over.id, geography: 'Geo', state: 'Gujarat', type: 'state', followerTier: '3',
+    handle: over.id, platform: 'instagram', geography: 'Geo', state: 'Gujarat', type: 'state', followerTier: '3',
     contentTypes: [], contentPreferences: [], followers: 1000,
     inventoryPosts: 24, inventoryStories: 24, notes: '', lastSyncedAt: null,
     ...over,
@@ -19,7 +19,7 @@ function page(over: Partial<OutreachPage> & { id: string }): OutreachPage {
 let seq = 0
 function post(over: Partial<Post> & { pageId?: string | null; campaignId?: string | null }): Post {
   return {
-    id: `p${seq++}`, date: '2026-08-01', pageId: null, creatorId: null, campaignId: null,
+    id: `p${seq++}`, platform: 'instagram', date: '2026-08-01', pageId: null, creatorId: null, campaignId: null,
     type: 'reel', creativeVariant: null, caption: '', status: 'published',
     likes: 0, comments: 0, views: 0, saves: 0, shares: 0, addedAsLive: true,
     ...over,

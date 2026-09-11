@@ -25,6 +25,12 @@ const pool = new Pool({ connectionString: config.databaseUrl });
 export const PAGE_TYPES = ["state", "pu"] as const;
 export type PageType = typeof PAGE_TYPES[number];
 
+// Which social network a page / post lives on. Instagram is the original (and
+// default) platform; Facebook pages + links are tracked manually until the
+// Facebook API scraper is integrated.
+export const PLATFORMS = ["instagram", "facebook"] as const;
+export type Platform = typeof PLATFORMS[number];
+
 export const FOLLOWER_TIERS = ["1", "2", "3", "4", "5"] as const;
 export type FollowerTier = typeof FOLLOWER_TIERS[number];
 
@@ -55,6 +61,7 @@ export type CampaignStatus = typeof CAMPAIGN_STATUSES[number];
 export interface OutreachPage {
   id: string;
   handle: string;
+  platform: Platform;
   geography: string;
   state: string;
   type: PageType;
@@ -113,7 +120,10 @@ export interface OutreachCampaign {
 
 export interface OutreachPost {
   id: string;
+  // External post id. For Instagram: the IG media id / shortcode. For Facebook:
+  // "fb:<post id>" (namespaced so the two can never collide in the UNIQUE index).
   instagram_id: string | null;
+  platform: Platform;
   // A post is owned by either a page OR a creator (never both, never neither —
   // enforced by a CHECK constraint). `campaign_id` is optional for both, but
   // the live-posts route still requires it for page posts to preserve the
@@ -190,6 +200,27 @@ export async function bootstrapOutreach() {
   await pool.query(`ALTER TABLE outreach_pages ADD COLUMN IF NOT EXISTS content_types JSONB NOT NULL DEFAULT '[]'::JSONB`);
   // PRD 6.5 — page content preference/category. Existing rows default to [] ("Not Set").
   await pool.query(`ALTER TABLE outreach_pages ADD COLUMN IF NOT EXISTS content_preferences JSONB NOT NULL DEFAULT '[]'::JSONB`);
+  // Platform split (Instagram / Facebook). Every pre-existing row is Instagram.
+  await pool.query(`ALTER TABLE outreach_pages ADD COLUMN IF NOT EXISTS platform TEXT NOT NULL DEFAULT 'instagram'`);
+  // The same handle may exist on BOTH platforms (an org's IG and FB page often
+  // share a name) — uniqueness is per platform, not global.
+  await pool.query(`ALTER TABLE outreach_pages DROP CONSTRAINT IF EXISTS outreach_pages_handle_key`);
+  await pool.query(`
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'outreach_pages_handle_platform_key') THEN
+        ALTER TABLE outreach_pages ADD CONSTRAINT outreach_pages_handle_platform_key
+          UNIQUE (handle, platform);
+      END IF;
+    END $$;
+  `);
+  await pool.query(`
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'outreach_pages_platform_check') THEN
+        ALTER TABLE outreach_pages ADD CONSTRAINT outreach_pages_platform_check
+          CHECK (platform IN ('instagram', 'facebook'));
+      END IF;
+    END $$;
+  `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS outreach_creators (
@@ -278,6 +309,18 @@ export async function bootstrapOutreach() {
       (page_id IS NOT NULL AND creator_id IS NULL)
       OR (page_id IS NULL AND creator_id IS NOT NULL)
     )
+  `);
+
+  // Platform split for posts (Instagram / Facebook). Pre-existing rows are all
+  // Instagram. Facebook rows are manual (link-tracked) until the FB scraper lands.
+  await pool.query(`ALTER TABLE outreach_posts ADD COLUMN IF NOT EXISTS platform TEXT NOT NULL DEFAULT 'instagram'`);
+  await pool.query(`
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'outreach_posts_platform_check') THEN
+        ALTER TABLE outreach_posts ADD CONSTRAINT outreach_posts_platform_check
+          CHECK (platform IN ('instagram', 'facebook'));
+      END IF;
+    END $$;
   `);
 
   await pool.query(`CREATE INDEX IF NOT EXISTS outreach_posts_page_id_idx ON outreach_posts(page_id)`);
@@ -495,6 +538,7 @@ function newId(prefix: string): string {
 
 export interface CreatePageInput {
   handle: string;
+  platform?: Platform;
   geography: string;
   state: string;
   type: PageType;
@@ -513,13 +557,17 @@ export async function listPages(): Promise<OutreachPage[]> {
 }
 
 export async function createPage(input: CreatePageInput): Promise<OutreachPage> {
-  const id = slug(input.handle) || newId("page");
+  // Prefix Facebook page ids so an FB page can coexist with an IG page that
+  // shares the same handle (the id is a slug of the handle).
+  const platform = input.platform ?? "instagram";
+  const base = slug(input.handle) || newId("page");
+  const id = platform === "facebook" ? `fb-${base}` : base;
   const { rows } = await pool.query<OutreachPage>(
-    `INSERT INTO outreach_pages (id, handle, geography, state, type, follower_tier, content_types, content_preferences, followers, inventory_posts, inventory_stories, notes)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10, $11, $12)
+    `INSERT INTO outreach_pages (id, handle, platform, geography, state, type, follower_tier, content_types, content_preferences, followers, inventory_posts, inventory_stories, notes)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12, $13)
      RETURNING *`,
     [
-      id, input.handle.trim(), input.geography, input.state, input.type, input.follower_tier,
+      id, input.handle.trim(), platform, input.geography, input.state, input.type, input.follower_tier,
       JSON.stringify(input.content_types ?? []),
       JSON.stringify(input.content_preferences ?? []),
       input.followers ?? 0, input.inventory_posts, input.inventory_stories, input.notes ?? "",
@@ -769,6 +817,7 @@ function safeJson<T>(v: unknown, fallback: T): T {
 
 export interface UpsertPostInput {
   instagram_id: string;
+  platform?: Platform;
   // Exactly one of page_id/creator_id must be set — the DB CHECK enforces it.
   page_id?: string | null;
   creator_id?: string | null;
@@ -863,9 +912,9 @@ export async function upsertPostByInstagramId(input: UpsertPostInput): Promise<O
   const id = newId("post");
   const { rows } = await pool.query<OutreachPost>(
     `INSERT INTO outreach_posts
-       (id, instagram_id, page_id, creator_id, campaign_id, date, type, creative_variant, caption,
+       (id, instagram_id, platform, page_id, creator_id, campaign_id, date, type, creative_variant, caption,
         status, likes, comments, views, saves, shares, media_url, permalink, synced_at, added_as_live)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), $18)
+     VALUES ($1, $2, $19, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), $18)
      ON CONFLICT (instagram_id) DO UPDATE SET
        page_id          = EXCLUDED.page_id,
        creator_id       = EXCLUDED.creator_id,
@@ -891,6 +940,7 @@ export async function upsertPostByInstagramId(input: UpsertPostInput): Promise<O
       input.date, input.type, input.creative_variant ?? null, input.caption,
       input.status, input.likes, input.comments, input.views, input.saves ?? 0, input.shares ?? 0,
       input.media_url ?? null, input.permalink ?? null, input.added_as_live ?? false,
+      input.platform ?? "instagram",
     ],
   );
   return mapPostRow(rows[0]);
@@ -902,15 +952,24 @@ export async function upsertPostByInstagramId(input: UpsertPostInput): Promise<O
  * now" needs to refresh exactly these rows. Optionally scoped to a set of page
  * ids (used when a sync targets a subset of handles).
  */
-export async function listLivePostsWithPermalink(pageIds?: string[]): Promise<OutreachPost[]> {
-  const scoped = pageIds && pageIds.length > 0;
+export async function listLivePostsWithPermalink(
+  scope: { pageIds?: string[]; campaignId?: string } = {},
+): Promise<OutreachPost[]> {
+  const where: string[] = [
+    `added_as_live = true`,
+    `permalink IS NOT NULL AND permalink <> ''`,
+    // Only Instagram posts are re-scrapable today — Facebook rows are manual
+    // (link-tracked) until the FB scraper is integrated, and their URLs must
+    // never be sent to the Instagram Post Scraper.
+    `platform = 'instagram'`,
+  ];
+  const values: unknown[] = [];
+  let i = 1;
+  if (scope.pageIds && scope.pageIds.length > 0) { where.push(`page_id = ANY($${i++})`); values.push(scope.pageIds); }
+  if (scope.campaignId) { where.push(`campaign_id = $${i++}`); values.push(scope.campaignId); }
   const { rows } = await pool.query<OutreachPost>(
-    `SELECT * FROM outreach_posts
-       WHERE added_as_live = true
-         AND permalink IS NOT NULL AND permalink <> ''
-         ${scoped ? "AND page_id = ANY($1)" : ""}
-       ORDER BY date DESC`,
-    scoped ? [pageIds] : [],
+    `SELECT * FROM outreach_posts WHERE ${where.join(" AND ")} ORDER BY date DESC`,
+    values,
   );
   return rows.map(mapPostRow);
 }

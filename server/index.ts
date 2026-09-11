@@ -74,7 +74,7 @@ import {
   POST_TYPES as OUTREACH_POST_TYPES,
   POST_STATUSES as OUTREACH_POST_STATUSES,
 } from "./outreach-db.js";
-import { syncOutreach, addLivePosts, refreshLivePostMetrics } from "./outreach-sync.js";
+import { syncOutreach, addLivePosts, refreshLivePostMetrics, syncCampaignPosts } from "./outreach-sync.js";
 import { verifyPassword } from "./password.js";
 import {
   bootstrapBrandingDatabase,
@@ -2573,6 +2573,8 @@ function requireOutreach(res: express.Response): boolean {
 
 const outreachPageSchema = z.object({
   handle: z.string().min(1),
+  // Instagram (default) or Facebook. FB pages are manual until the FB scraper lands.
+  platform: z.enum(["instagram", "facebook"]).optional(),
   geography: z.string().min(1),
   state: z.string().min(1),
   type: z.enum(OUTREACH_PAGE_TYPES),
@@ -2788,6 +2790,20 @@ app.post("/api/outreach/sync", asyncHandler(async (req, res) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Sync failed.";
     return sendError(res, 502, msg);
+  }
+}));
+
+// Per-campaign sync — re-scrapes ONLY the live posts attributed to one
+// campaign (paid Apify calls, but scoped far tighter than a full refresh).
+// Facebook posts are counted, not attempted, until the FB scraper exists.
+app.post("/api/outreach/campaigns/:id/sync", asyncHandler(async (req, res) => {
+  if (!requireOutreach(res)) return;
+  try {
+    const result = await syncCampaignPosts(getSingleParam(req.params.id));
+    res.json(result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Campaign sync failed.";
+    return sendError(res, /not found/i.test(msg) ? 404 : 502, msg);
   }
 }));
 
