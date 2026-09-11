@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Send, Calendar, Heart, Eye, FileText, Pause, Play, CheckCircle,
-  Link as LinkIcon, Trash2, Users, Download, Pencil, X, Sparkles,
+  Link as LinkIcon, Trash2, Users, Download, Pencil, X, Sparkles, RefreshCw, Loader2,
 } from 'lucide-react'
 import AddLivePostsDialog from './AddLivePostsDialog'
 import { buildCampaignReport, exportCampaignReportPdf, exportCampaignReportDocx } from '@/lib/outreach-export'
@@ -11,8 +11,9 @@ import {
 } from 'recharts'
 import {
   useOutreachData, updateCampaign, removeCampaign, campaignMetrics, recommendPages,
+  syncCampaignNow,
   PAGE_CONTENT_PREFERENCES,
-  type Campaign, type CampaignStatus, type OutreachPage, type OutreachCreator, type Post,
+  type Campaign, type CampaignStatus, type OutreachPage, type OutreachCreator, type Post, type Platform,
 } from '@/lib/outreach-data'
 
 const STATUS_CFG: Record<CampaignStatus, { label: string; cls: string }> = {
@@ -31,6 +32,31 @@ export default function OutreachCampaignDetail() {
   const [livePostsOpen, setLivePostsOpen] = useState(false)
   const [editing, setEditing] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  // Account filter: All / Instagram / Facebook. Scopes every number and table
+  // on this screen to posts (and pages) of the chosen platform.
+  const [platformFilter, setPlatformFilter] = useState<'all' | Platform>('all')
+  const [syncing, setSyncing] = useState(false)
+  const [syncMsg, setSyncMsg] = useState<string | null>(null)
+  const [syncErr, setSyncErr] = useState<string | null>(null)
+
+  // Sync just this campaign's live posts (paid Apify calls, tightly scoped).
+  async function handleCampaignSync() {
+    if (!campaign || syncing) return
+    setSyncing(true)
+    setSyncMsg(null)
+    setSyncErr(null)
+    try {
+      const r = await syncCampaignNow(campaign.id)
+      const parts = [`${r.refreshed} post${r.refreshed === 1 ? '' : 's'} updated`]
+      if (r.failed > 0) parts.push(`${r.failed} failed`)
+      if (r.facebook_skipped > 0) parts.push(`${r.facebook_skipped} Facebook link${r.facebook_skipped === 1 ? '' : 's'} pending FB scraper`)
+      setSyncMsg(parts.join(' · '))
+    } catch (err) {
+      setSyncErr(err instanceof Error ? err.message : 'Campaign sync failed.')
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   async function handleDelete() {
     if (!campaign) return
@@ -49,16 +75,28 @@ export default function OutreachCampaignDetail() {
     }
   }
 
-  const m = useMemo(() => campaign ? campaignMetrics(campaign, posts) : null, [campaign, posts])
+  // Posts scoped to the account filter — every widget below derives from this.
+  const scopedPosts = useMemo(
+    () => platformFilter === 'all' ? posts : posts.filter(p => p.platform === platformFilter),
+    [posts, platformFilter],
+  )
+
+  const m = useMemo(() => campaign ? campaignMetrics(campaign, scopedPosts) : null, [campaign, scopedPosts])
 
   const perPage = useMemo(() => {
     if (!campaign) return []
-    return campaign.assignedPageIds.map(pid => {
+    return campaign.assignedPageIds
+      .filter(pid => {
+        if (platformFilter === 'all') return true
+        const page = pages.find(p => p.id === pid)
+        return page?.platform === platformFilter
+      })
+      .map(pid => {
       const page = pages.find(p => p.id === pid)
       // Only count posts explicitly added via Add Live Posts — Apify-synced
       // backlog posts (the page's lifetime Instagram feed) get attributed by
       // accident otherwise and inflate every campaign's "delivered" count.
-      const pp = posts.filter(p => p.pageId === pid && p.campaignId === campaign.id && p.addedAsLive)
+      const pp = scopedPosts.filter(p => p.pageId === pid && p.campaignId === campaign.id && p.addedAsLive)
       return {
         page,
         delivered: pp.length,
@@ -68,19 +106,19 @@ export default function OutreachCampaignDetail() {
         engagement: pp.reduce((s, p) => s + p.likes + p.comments + p.saves + p.shares, 0),
       }
     }).filter(x => x.page).sort((a, b) => b.engagement - a.engagement)
-  }, [campaign, posts, pages])
+  }, [campaign, scopedPosts, pages, platformFilter])
 
   const variantStats = useMemo(() => {
     if (!campaign) return []
     return campaign.creativeVariants.map(v => {
-      const vp = posts.filter(p => p.campaignId === campaign.id && p.creativeVariant === v && p.addedAsLive)
+      const vp = scopedPosts.filter(p => p.campaignId === campaign.id && p.creativeVariant === v && p.addedAsLive)
       return {
         variant: v,
         posts: vp.length,
         avgEng: vp.length ? Math.round(vp.reduce((s, p) => s + p.likes + p.comments + p.saves + p.shares, 0) / vp.length) : 0,
       }
     })
-  }, [campaign, posts])
+  }, [campaign, scopedPosts])
 
   if (!campaign || !m) {
     return (
@@ -141,6 +179,15 @@ export default function OutreachCampaignDetail() {
               <LinkIcon className="w-3 h-3" /> Add live posts
             </button>
             <button
+              onClick={handleCampaignSync}
+              disabled={syncing}
+              title="Re-scrape only this campaign's posts and reels and update their stats"
+              className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50"
+            >
+              {syncing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+              {syncing ? 'Syncing…' : 'Sync'}
+            </button>
+            <button
               onClick={() => exportCampaignReportPdf(buildCampaignReport(campaign, pages, creators, posts))}
               className="text-xs px-2.5 py-1.5 rounded-lg bg-blue-100 text-blue-700 hover:opacity-80 inline-flex items-center gap-1"
             >
@@ -178,6 +225,36 @@ export default function OutreachCampaignDetail() {
               <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
             </button>
           </div>
+        </div>
+
+        {/* Campaign sync result */}
+        {(syncMsg || syncErr) && (
+          <p className={`mt-2 text-xs ${syncErr ? 'text-rose-600' : 'text-emerald-700'}`}>
+            {syncErr ?? `Campaign synced — ${syncMsg}`}
+          </p>
+        )}
+
+        {/* Account filter — Instagram / Facebook. Scopes the KPIs, per-page
+            delivery and variant charts to posts of that platform only. */}
+        <div className="mt-4 flex items-center gap-2 flex-wrap">
+          <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Account</span>
+          {([['all', 'All'], ['instagram', 'Instagram'], ['facebook', 'Facebook']] as const).map(([val, label]) => (
+            <button key={val} type="button" onClick={() => setPlatformFilter(val)}
+              className={`text-[11px] px-2.5 py-1 rounded-lg border transition-colors ${
+                platformFilter === val
+                  ? val === 'facebook' ? 'bg-blue-100 border-blue-300 text-blue-700 font-medium'
+                    : val === 'instagram' ? 'bg-orange-100 border-orange-300 text-orange-700 font-medium'
+                    : 'bg-foreground/10 border-foreground/20 text-foreground font-medium'
+                  : 'bg-card border-border text-muted-foreground hover:bg-accent'
+              }`}>
+              {label}
+            </button>
+          ))}
+          {platformFilter !== 'all' && (
+            <span className="text-[11px] text-muted-foreground">
+              Showing only {platformFilter === 'facebook' ? 'Facebook' : 'Instagram'} pages and their posts / reels.
+            </span>
+          )}
         </div>
 
         {/* Progress */}

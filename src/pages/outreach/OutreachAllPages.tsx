@@ -7,8 +7,8 @@ import {
 } from 'lucide-react'
 import {
   useOutreachData, pageMetrics, suggestedMonthlyUsage, removePage,
-  instagramUrlForHandle, isValidInstagramHandle, assignedPageIdSet,
-  PAGE_CONTENT_TYPES, FOLLOWER_TIERS, type FollowerTier, type PageContentType, type OutreachPage,
+  profileUrlForPage, isValidInstagramHandle, assignedPageIdSet,
+  PAGE_CONTENT_TYPES, FOLLOWER_TIERS, type FollowerTier, type PageContentType, type OutreachPage, type Platform,
 } from '@/lib/outreach-data'
 import ImportPagesDialog from './ImportPagesDialog'
 import { AddPageModal, EditPageModal } from './OutreachAnalytics'
@@ -28,6 +28,11 @@ export default function OutreachAllPages() {
     return new Set(raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [])
   }, [searchParams])
 
+  // Platform sub-tab: Instagram (default) or Facebook. Each shows the full
+  // inventory ledger for pages on that platform only.
+  const [platform, setPlatform] = useState<Platform>(
+    searchParams.get('platform') === 'facebook' ? 'facebook' : 'instagram',
+  )
   const [search, setSearch] = useState('')
   const [tier, setTier] = useState<FollowerTier | ''>('')
   const [contentTypeFilter, setContentTypeFilter] = useState<Set<PageContentType>>(new Set())
@@ -64,6 +69,7 @@ export default function OutreachAllPages() {
       return { page: p, m, total, consumed, suggested: suggestedMonthlyUsage(p, posts) }
     })
     const filtered = enriched.filter(({ page, m }) => {
+      if (page.platform !== platform) return false
       if (q && !`${page.handle} ${page.geography}`.toLowerCase().includes(q)) return false
       if (tier && page.followerTier !== tier) return false
       if (geography && page.geography !== geography) return false
@@ -95,7 +101,7 @@ export default function OutreachAllPages() {
       return ((av as number) - (bv as number)) * dir
     })
     return filtered
-  }, [pages, posts, search, tier, contentTypeFilter, geography, invStatus, sort])
+  }, [pages, posts, platform, search, tier, contentTypeFilter, geography, invStatus, sort])
 
   async function confirmDelete(page: OutreachPage) {
     const linked = posts.filter(p => p.pageId === page.id).length
@@ -112,9 +118,9 @@ export default function OutreachAllPages() {
   }
 
   function exportCSV() {
-    const header = ['handle', 'tier', 'geography', 'state', 'total_inventory', 'consumed_inventory', 'suggested_per_month', 'status', 'inventory_status']
+    const header = ['handle', 'platform', 'tier', 'geography', 'state', 'total_inventory', 'consumed_inventory', 'suggested_per_month', 'status', 'inventory_status']
     const lines = rows.map(({ page, total, consumed, suggested, m }) => [
-      page.handle, page.followerTier, page.geography, page.state, total, consumed, suggested, m.status,
+      page.handle, page.platform, page.followerTier, page.geography, page.state, total, consumed, suggested, m.status,
       assigned.has(page.id) ? 'assigned' : 'available',
     ].join(','))
     const csv = [header.join(','), ...lines].join('\n')
@@ -151,6 +157,31 @@ export default function OutreachAllPages() {
             <Download className="w-4 h-4" /> Export CSV
           </button>
         </div>
+      </div>
+
+      {/* Platform sub-tabs — Insta / FB. Each shows that platform's full
+          inventory ledger; counts update live as pages are added. */}
+      <div className="flex items-center gap-1 border-b border-border">
+        {(['instagram', 'facebook'] as const).map(pl => {
+          const count = pages.filter(p => p.platform === pl).length
+          const active = platform === pl
+          return (
+            <button key={pl} onClick={() => setPlatform(pl)}
+              className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                active
+                  ? pl === 'facebook' ? 'border-blue-600 text-blue-700' : 'border-orange-600 text-orange-700'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}>
+              {pl === 'facebook' ? 'Facebook' : 'Instagram'}
+              <span className="ml-1.5 text-xs text-muted-foreground">({count})</span>
+            </button>
+          )
+        })}
+        {platform === 'facebook' && (
+          <span className="ml-auto text-[11px] text-muted-foreground pb-1.5">
+            Facebook pages are tracked manually — metrics sync starts once the FB scraper is integrated.
+          </span>
+        )}
       </div>
 
       {/* Filters */}
@@ -240,9 +271,9 @@ export default function OutreachAllPages() {
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-1.5">
                     <Link to={`/outreach/pages/${page.id}`} className="text-xs font-medium text-foreground hover:underline">@{page.handle}</Link>
-                    {isValidInstagramHandle(page.handle) && (
-                      <a href={instagramUrlForHandle(page.handle)} target="_blank" rel="noreferrer"
-                        title={`Open @${page.handle} on Instagram`}
+                    {(page.platform === 'facebook' || isValidInstagramHandle(page.handle)) && (
+                      <a href={profileUrlForPage(page)} target="_blank" rel="noreferrer"
+                        title={`Open @${page.handle} on ${page.platform === 'facebook' ? 'Facebook' : 'Instagram'}`}
                         className="text-muted-foreground hover:text-orange-600">
                         <ExternalLink className="w-3 h-3" />
                       </a>
@@ -289,7 +320,7 @@ export default function OutreachAllPages() {
         </table>
       </div>
 
-      {creating && <AddPageModal onClose={() => setCreating(false)} />}
+      {creating && <AddPageModal defaultPlatform={platform} onClose={() => setCreating(false)} />}
       {editingPage && <EditPageModal page={editingPage} onClose={() => setEditingPage(null)} />}
       {importing && <ImportPagesDialog onClose={() => setImporting(false)} />}
       {livePostsPageId && (

@@ -632,7 +632,7 @@ function ImportCampaignsModal({ onClose }: { onClose: () => void }) {
             if (!pid) {
               setProgress(`"${g.name}" — creating page @${row.handle}…`)
               await addPage({
-                handle: row.handle, geography: g.state, state: g.state,
+                handle: row.handle, platform: 'instagram', geography: g.state, state: g.state,
                 type: 'state', followerTier: '3', contentTypes: [], contentPreferences: [],
                 followers: 0, inventoryPosts: 0, inventoryStories: 0,
                 notes: `Created by campaign import (${g.name})`,
