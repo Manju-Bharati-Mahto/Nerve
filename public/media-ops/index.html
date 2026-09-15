@@ -7716,6 +7716,46 @@ function renderRemoveModal(uid,impact){
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
 }
 
+/* ── Re-adding someone who was removed ─────────────────────────────────────
+   Nerve keeps ONE identity per email: removal archives the row rather than
+   deleting it, which is what keeps that person's reports, assignments, leave
+   and audit trail attached to them. So when Add Member hits a removed account
+   the repair is to bring the identity back, never to mint a second one — a
+   duplicate would strand every historical record on an id nobody points at.
+
+   The Admin's form values are carried straight into the reactivation, so the
+   role, designation, team and module ticks they just filled in take effect. */
+function offerReactivate(prior,payload){
+  const when=prior.deactivated_at?D.fmt(String(prior.deactivated_at).slice(0,10)):null;
+  if(!prior.same_team){
+    modal(`<div class="mo-head"><div><h2>That email belongs to another team</h2>
+        <p>An account for <b>${esc(prior.email)}</b> exists on another Nerve team and was removed there.
+        Reactivating it belongs with that team's administrator — adding a second account here would split
+        ${esc(prior.full_name||'their')} history across two identities.</p></div></div>
+      <div class="mo-foot"><button class="btn primary" onclick="closeModal()">Close</button></div>`);
+    return;
+  }
+  modal(`<div class="mo-head"><div><h2>This person was removed before</h2>
+      <p>An account with this email already exists and was removed${when?' on '+esc(when):''}.
+      Reactivating keeps their reports, project history, equipment records, leave and audit trail
+      attached to the same person. Adding a second account would leave all of it behind.</p></div></div>
+    <div class="mo-body">
+      <dl class="kv"><dt>Name on file</dt><dd>${esc(prior.full_name||'—')}</dd>
+        <dt>Email</dt><dd>${esc(prior.email)}</dd>
+        <dt>Status</dt><dd><span class="status st-neutral"><span class="si">⛁</span>${esc(titleCase(prior.status||'archived'))}</span></dd></dl>
+      <div class="small mut3 mt3">They will be reactivated with the role, designation, team and module access
+        you just chose, and the password you entered.</div>
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn primary" data-act="reactivateCrew">Reactivate Existing User</button></div>`);
+  // modal() does not delegate data-act — every modal that uses it wires its own
+  // buttons, the same line addUser uses.
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  // Held for the button rather than inlined, so the payload never round-trips
+  // through markup.
+  S._reactivate={id:prior.id,payload:payload,name:prior.full_name};
+}
+
 /* ── Directory — hierarchical organization view ─────────────────────────────
    Grouped by role, with the team each person belongs to read from Organization
    Management (teamOf), so a role or team change in the admin panel shows here
@@ -12800,7 +12840,19 @@ const ACTIONS = {
       skills:$$('.au-skill.sel').map(c=>({skill_id:+c.dataset.sid,proficiency:3})),
       allowed_modules:$$('.au-mod:checked').map(c=>c.value)};
     closeModal();
-    moSync(MO_API.post('/crew',payload), ()=>{render();toast(name+' added to the crew','ok');});
+    /* Not moSync(): a clash with a REMOVED identity is not a failure to revert
+       from, it is a decision for the Admin. Everything else behaves as before. */
+    (async()=>{
+      try{
+        await MO_API.post('/crew',payload);
+        await hydrateFromServer(); render(); toast(name+' added to the crew','ok');
+      }catch(e){
+        const body=e.body||{};
+        if(body.code==='REMOVED_USER_EXISTS'&&body.user) return offerReactivate(body.user,payload);
+        toast('Server rejected this change: '+e.message+' — reverting.','bad');
+        try{ await hydrateFromServer(); render(); }catch(_){}
+      }
+    })();
   },
   manageDuties:(d)=>{
     const uid=+d.uid;
@@ -13019,6 +13071,19 @@ const ACTIONS = {
         if(r&&r.teams_unassigned&&r.teams_unassigned.length&&!(r&&r.new_lead))
           bits.push(r.teams_unassigned.map(t=>t.name).join(', ')+' now has no lead');
         toast(bits.join(' · '),'ok');});
+  },
+  /* Add Member found a removed identity and the Admin confirmed. Reuses the
+     SAME restore endpoint the Directory's Restore button calls — one service,
+     two entry points — passing the form values so the member comes back
+     configured rather than bare. */
+  reactivateCrew:()=>{
+    const r=S._reactivate; if(!r)return; S._reactivate=null; closeModal();
+    const p=r.payload;
+    moSync(MO_API.post('/crew/'+r.id+'/restore',{
+        password:p.password, full_name:p.full_name, role:p.role, designation:p.designation,
+        avatar_url:p.avatar_url, campus_id:p.campus_id, lead_user_id:p.lead_user_id,
+        allowed_modules:p.allowed_modules}),
+      ()=>{render();toast((p.full_name||r.name)+' reactivated — their history is intact','ok');});
   },
   restoreCrew:(d)=>{
     const uid=+d.uid;
@@ -13583,7 +13648,12 @@ const MO_API = {
       headers:{'Content-Type':'application/json',Accept:'application/json'},
       body:body!==undefined?JSON.stringify(body):undefined});
     const j=await r.json().catch(()=>({}));
-    if(!r.ok){ if(r.status===401) handle401(); throw new Error(j.message||('HTTP '+r.status)); }
+    if(!r.ok){ if(r.status===401) handle401();
+      /* The message alone cannot express an outcome the UI must ACT on — a
+         removed identity the Admin can reactivate, say. Carry the status and
+         the parsed body on the error so a caller that cares can branch on
+         j.code; every existing caller still reads e.message and is unchanged. */
+      const err=new Error(j.message||('HTTP '+r.status)); err.status=r.status; err.body=j; throw err; }
     return j;
   },
   get(p){return this.req('GET',p);}, post(p,b){return this.req('POST',p,b);},

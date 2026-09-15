@@ -2283,13 +2283,75 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const t = (await pool.query(`SELECT status FROM users WHERE id=$1 AND team='media'`, [realId])).rows[0];
     if (!t) return sendError(res, 404, "That member is not on the media crew.");
     if (t.status === "active") return res.json({ ok: true, already: true });
-    // The password is NOT restored — it was destroyed on removal by design, so a
-    // restored member goes through a password reset like any new account.
+
+    /* An optional body lets Add Member reactivate through this same endpoint
+       rather than a second code path: the Admin filled in a role, designation
+       and modules for the person they were trying to add, and those should take
+       effect. Sent with no body — the Directory's Restore button — this behaves
+       exactly as it always did.
+
+       Only what is EXPLICITLY sent is applied. There are deliberately no role
+       default modules here: reactivation must not hand out access the Admin did
+       not tick, and an absent field leaves the prior value in place. */
+    const b = (req.body ?? {}) as Record<string, unknown>;
     await pool.query(
       `UPDATE users SET status='active', deactivated_at=NULL, deactivated_by=NULL, deactivation_reason=NULL WHERE id=$1`,
       [realId]);
-    await audit(u, "crew.restored", "user", null, { id: realId, status: t.status }, { id: realId, status: "active" }, req);
-    res.json({ ok: true, needs_password_reset: true });
+
+    /* Removal destroyed the password hash on purpose, so a reactivated account
+       cannot be signed into until one is set. Supplying it here is what makes
+       Add Member's reactivation a complete flow instead of half of one. */
+    const pw = String(b.password ?? "");
+    if (pw) {
+      if (pw.length < 6) return sendError(res, 400, "Password must be at least 6 characters.");
+      await pool.query(`UPDATE users SET password_hash=$1, email_verified=true WHERE id=$2`,
+        [await hashPassword(pw), realId]);
+    }
+    if (typeof b.full_name === "string" && b.full_name.trim())
+      await pool.query(`UPDATE users SET full_name=$1 WHERE id=$2`, [b.full_name.trim(), realId]);
+    if (typeof b.avatar_url === "string" && b.avatar_url.trim())
+      await pool.query(`UPDATE users SET avatar_url=$1 WHERE id=$2`, [b.avatar_url.trim(), realId]);
+
+    // Same mapping POST /crew uses, so a reactivated member and a new one with
+    // the same form values end up in the same state.
+    let moRole: string | null = null;
+    if (b.role) {
+      const ROLE_MAP: Record<string, string> = { admin: "admin", team_lead: "sub_admin", employee: "user", coordinator: "user" };
+      const MO_ROLE_MAP: Record<string, string> = { admin: "admin", sub_admin: "team_lead", user: "employee" };
+      const role = ROLE_MAP[String(b.role)] ?? "user";
+      moRole = String(b.role) === "coordinator" ? "coordinator" : MO_ROLE_MAP[role];
+      await pool.query(`UPDATE users SET role=$1 WHERE id=$2`, [role, realId]);
+    }
+    if (moRole || "designation" in b || "campus_id" in b || Array.isArray(b.allowed_modules))
+      await pool.query(
+        `INSERT INTO mo_user_profiles (user_id, designation, mo_role, allowed_modules, campus_id)
+         VALUES ($1, COALESCE($2,''), COALESCE($3,'employee'), $4, $5)
+         ON CONFLICT (user_id) DO UPDATE SET
+           designation     = COALESCE(NULLIF($2,''), mo_user_profiles.designation),
+           mo_role         = COALESCE($3, mo_user_profiles.mo_role),
+           allowed_modules = COALESCE($4, mo_user_profiles.allowed_modules),
+           campus_id       = COALESCE($5, mo_user_profiles.campus_id)`,
+        [realId, typeof b.designation === "string" ? b.designation.trim() : null, moRole,
+         Array.isArray(b.allowed_modules) ? JSON.stringify(b.allowed_modules) : null,
+         b.campus_id ? Number(b.campus_id) : null]);
+
+    // Team membership was cleared on removal, so putting them back on one is a
+    // re-add, not an edit. Mirrors POST /crew's lead_user_id handling.
+    if (b.lead_user_id) {
+      const leadId = String(b.lead_user_id);
+      let team = (await pool.query(`SELECT id FROM mo_teams WHERE lead_user_id=$1 AND is_active LIMIT 1`, [leadId])).rows[0];
+      if (!team) {
+        const lead = (await pool.query(`SELECT full_name FROM users WHERE id=$1`, [leadId])).rows[0];
+        team = (await pool.query(`INSERT INTO mo_teams (department_id, name, lead_user_id, is_active) VALUES (1,$1,$2,true) RETURNING id`,
+          [`${lead?.full_name ?? "Team"}'s team`, leadId])).rows[0];
+      }
+      await pool.query(`INSERT INTO mo_team_members (team_id, user_id, is_primary) VALUES ($1,$2,true) ON CONFLICT DO NOTHING`, [team.id, realId]);
+    }
+
+    await audit(u, "crew.restored", "user", null, { id: realId, status: t.status },
+      { id: realId, status: "active", role: b.role ?? null, password_set: !!pw,
+        allowed_modules: Array.isArray(b.allowed_modules) ? b.allowed_modules : null }, req);
+    res.json({ ok: true, id: realId, password_set: !!pw, needs_password_reset: !pw });
   }));
 
   // Change a member's role (and optionally team-lead) — #1. Admin only.
@@ -3956,14 +4018,62 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (String(b.password ?? "").length < 6) return sendError(res, 400, "Password must be at least 6 characters.");
     // H2: photo is optional — initials avatar is the fallback (bulk onboarding).
     const role = ({ admin: "admin", team_lead: "sub_admin", employee: "user", coordinator: "user" } as Record<string, string>)[String(b.role)] ?? "user";
-    const exists = await pool.query(`SELECT 1 FROM users WHERE email=$1`, [email]);
-    if (exists.rows[0]) return sendError(res, 409, "A user with that email already exists.");
+    /* One identity per email — removal is a lifecycle state on the SAME row
+       (users.status='archived'), which is what keeps a person's reports,
+       assignments and audit trail attached to them. So a clash here is one of
+       two different situations and the Admin needs to be told which:
+
+         ACTIVE_DUPLICATE     someone is using this email. Refuse, as before.
+         REMOVED_USER_EXISTS  the identity exists but was removed. Creating a
+                              second row is exactly the wrong repair — it would
+                              orphan the history and give getUserByEmail() two
+                              rows to choose between. Offer reactivation instead.
+
+       Matched on LOWER(email) rather than the raw column because that is what
+       getUserByEmail() uses to decide who can log in: UNIQUE(email) is
+       case-sensitive, so a row stored as 'Rahul@…' would slip past `email=$1`
+       and become a second identity that login then picks between arbitrarily. */
+    const prior = (await pool.query(
+      `SELECT id, full_name, email, status, team, deactivated_at FROM users WHERE LOWER(email)=$1`,
+      [email])).rows[0];
+    if (prior && prior.status === "active")
+      return res.status(409).json({ code: "ACTIVE_DUPLICATE", message: "A user with that email already exists." });
+    if (prior) {
+      const sameTeam = prior.team === "media";
+      return res.status(409).json({
+        code: "REMOVED_USER_EXISTS",
+        message: sameTeam
+          ? "An account with this email was previously removed."
+          : "An account with this email was previously removed from another team.",
+        // Enough for the Admin to recognise the person and decide — no more.
+        user: { id: prior.id, full_name: prior.full_name, email: prior.email,
+                status: prior.status, deactivated_at: prior.deactivated_at, same_team: sameTeam },
+      });
+    }
     const id = `u-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const pw = await hashPassword(String(b.password));
-    await pool.query(
-      `INSERT INTO users (id, full_name, email, department, role, team, password_hash, email_verified, avatar_url)
-       VALUES ($1,$2,$3,'Media Crew',$4,'media',$5,true,$6)`,
-      [id, String(b.full_name ?? "New Member").trim() || "New Member", email, role, pw, (b.avatar_url as string) || null]);
+    /* The check above is a read followed by a write, so two Admins submitting
+       the same email at once can both pass it. UNIQUE(email) is what actually
+       guarantees one identity, and this turns its violation into the same
+       answer the pre-check would have given rather than a 500. */
+    try {
+      await pool.query(
+        `INSERT INTO users (id, full_name, email, department, role, team, password_hash, email_verified, avatar_url)
+         VALUES ($1,$2,$3,'Media Crew',$4,'media',$5,true,$6)`,
+        [id, String(b.full_name ?? "New Member").trim() || "New Member", email, role, pw, (b.avatar_url as string) || null]);
+    } catch (err) {
+      if ((err as { code?: string }).code !== "23505") throw err;
+      const raced = (await pool.query(
+        `SELECT id, full_name, email, status, team, deactivated_at FROM users WHERE LOWER(email)=$1`,
+        [email])).rows[0];
+      if (raced && raced.status !== "active")
+        return res.status(409).json({
+          code: "REMOVED_USER_EXISTS", message: "An account with this email was previously removed.",
+          user: { id: raced.id, full_name: raced.full_name, email: raced.email, status: raced.status,
+                  deactivated_at: raced.deactivated_at, same_team: raced.team === "media" },
+        });
+      return res.status(409).json({ code: "ACTIVE_DUPLICATE", message: "A user with that email already exists." });
+    }
     // 1.2 — default module sets per role, applied when no explicit selection is
     // made: onboarding must not depend on remembering ten checkboxes, and a missed
     // tick must never silently remove a right §16 grants.
@@ -4017,7 +4127,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (typeof b.full_name === "string" && b.full_name.trim())
       await pool.query(`UPDATE users SET full_name=$1 WHERE id=$2`, [b.full_name.trim(), realId]);
     if (typeof b.email === "string" && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(b.email.trim())) {
-      const clash = await pool.query(`SELECT 1 FROM users WHERE email=$1 AND id<>$2`, [b.email.trim().toLowerCase(), realId]);
+      /* LOWER(), for the same reason POST /crew uses it: UNIQUE(email) is
+         case-sensitive, so a raw comparison would let an Admin set an email that
+         differs only in case from an existing one — including an archived one —
+         and hand getUserByEmail() two rows to choose between at login. */
+      const clash = await pool.query(`SELECT 1 FROM users WHERE LOWER(email)=$1 AND id<>$2`, [b.email.trim().toLowerCase(), realId]);
       if (clash.rows[0]) return sendError(res, 409, "That email is already in use.");
       await pool.query(`UPDATE users SET email=$1 WHERE id=$2`, [b.email.trim().toLowerCase(), realId]);
     }
