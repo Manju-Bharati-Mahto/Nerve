@@ -75,6 +75,9 @@ export interface OutreachPage {
   last_synced_at: string | null;
   created_at: string;
   updated_at: string;
+  // Facebook only — Meta's own numeric page id, cached after first resolution.
+  // Null for Instagram pages and for a Facebook page not yet resolved.
+  platform_page_id: string | null;
 }
 
 // Creators share the same shape as pages — separate table so they don't show up
@@ -220,6 +223,13 @@ export async function bootstrapOutreach() {
       END IF;
     END $$;
   `);
+  // The Facebook page's own numeric id (Meta's stable identifier, e.g.
+  // "100044561550831"), NOT our handle/slug. Resolved lazily by scraping the
+  // page's own URL the first time a live post is added or synced, then cached
+  // here — this is the trust anchor "Add live posts" verifies a pasted post's
+  // scraped owner id against, so a post from a different Facebook page can't
+  // be attached to this one (mirrors Instagram's ownerUsername check).
+  await pool.query(`ALTER TABLE outreach_pages ADD COLUMN IF NOT EXISTS platform_page_id TEXT`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS outreach_creators (
@@ -575,7 +585,7 @@ export async function createPage(input: CreatePageInput): Promise<OutreachPage> 
   return mapPageRow(rows[0]);
 }
 
-export async function updatePage(id: string, patch: Partial<CreatePageInput> & { last_synced_at?: string }): Promise<OutreachPage | null> {
+export async function updatePage(id: string, patch: Partial<CreatePageInput> & { last_synced_at?: string; platform_page_id?: string }): Promise<OutreachPage | null> {
   const fields: string[] = [];
   const values: unknown[] = [];
   let i = 1;
