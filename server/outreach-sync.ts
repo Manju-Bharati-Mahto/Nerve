@@ -152,6 +152,10 @@ export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> 
     }
 
     const touchedPageIds = new Set<string>();
+    // Opportunistic: a page-feed scrape already carries each post's owner id
+    // for free — cache it now so "Add live posts" doesn't need its own
+    // extra actor call to resolve this page's identity later.
+    const ownerIdByPageId = new Map<string, string>();
     for (const item of items) {
       const inputUrl = item.inputUrl ? item.inputUrl.toLowerCase().replace(/\/$/, "") : undefined;
       const page = (inputUrl && pageByUrl.get(inputUrl))
@@ -159,6 +163,7 @@ export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> 
       if (!page) continue; // best-effort attribution, same spirit as the IG loop's no-match skip
 
       touchedPageIds.add(page.id);
+      if (item.ownerId && !page.platform_page_id) ownerIdByPageId.set(page.id, item.ownerId);
       const date = item.publishedAt ? item.publishedAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
       const attribution = attributePostToCampaign(page.id, date, item.caption, campaigns);
       await upsertPostByInstagramId({
@@ -186,7 +191,8 @@ export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> 
 
     for (const id of touchedPageIds) {
       syncedPageCount++;
-      await updatePage(id, { last_synced_at: new Date().toISOString() });
+      const cachedOwnerId = ownerIdByPageId.get(id);
+      await updatePage(id, { last_synced_at: new Date().toISOString(), ...(cachedOwnerId ? { platform_page_id: cachedOwnerId } : {}) });
     }
     // Pages in this batch that produced nothing (private/empty/unreachable)
     // aren't silently dropped from the summary.
@@ -418,6 +424,35 @@ export async function syncCampaignPosts(campaignId: string): Promise<{
  * this campaign) is clear even when Apify can't confirm it yet; the next
  * "Sync" on the campaign will pick up real numbers once available.
  */
+/**
+ * Resolves — and caches on the page row — a Facebook page's own canonical
+ * numeric id (Meta's stable identifier), by scraping the page's OWN URL
+ * (built from its stored `handle`, which only an operator can set). This is
+ * the trust anchor "Add live posts" verifies a pasted post's scraped owner id
+ * against, so a post pasted under the wrong page can't be accepted: the
+ * identity check never depends on anything derived from the pasted URL
+ * itself, only on what the page's own feed reports about its own posts.
+ *
+ * Cached after the first successful resolution — subsequent calls for the
+ * same page cost nothing extra. Returns null if the page has no scrapeable
+ * posts yet (brand new, empty page) or the actor call fails.
+ */
+async function resolveFacebookOwnerId(page: OutreachPage): Promise<string | null> {
+  if (page.platform_page_id) return page.platform_page_id;
+  const pageUrl = `https://www.facebook.com/${page.handle.trim().replace(/^@/, "")}`;
+  let items: ApifyFacebookPost[];
+  try {
+    items = await fetchFacebookPagePosts([pageUrl], 3);
+  } catch (err) {
+    console.warn(`[add-live-posts] could not resolve @${page.handle}'s Facebook identity:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+  const ownerId = items.find(i => i.ownerId)?.ownerId;
+  if (!ownerId) return null;
+  await updatePage(page.id, { platform_page_id: ownerId });
+  return ownerId;
+}
+
 async function addFacebookLivePosts(ctx: {
   page: OutreachPage;
   campaign: OutreachCampaign | null;
@@ -442,35 +477,59 @@ async function addFacebookLivePosts(ctx: {
   }
   if (validRefs.length === 0) return { ok: true, posts: [], skipped };
 
-  let scraped: ApifyFacebookPost[] = [];
-  try {
-    scraped = await fetchFacebookPostsByUrls(validRefs.map(v => v.url));
-  } catch (err) {
-    console.warn(`[add-live-posts] Facebook scrape failed, saving links with placeholder metrics:`, err instanceof Error ? err.message : err);
+  // Establish the target page's own identity BEFORE trusting anything scraped
+  // from the pasted URLs. Refuse rather than risk attaching a stranger's post
+  // when we can't verify ownership at all — same philosophy as Instagram's
+  // "Could not verify the post owner" refusal.
+  const ownerId = await resolveFacebookOwnerId(ctx.page);
+  if (!ownerId) {
+    throw new Error(`Could not verify @${ctx.page.handle}'s Facebook identity right now — try again shortly, or confirm the page URL is correct.`);
   }
+
+  // Let a scrape failure propagate as a real error (same as the Instagram
+  // path) instead of silently persisting placeholder zero-metric rows — a
+  // misconfigured APIFY_TOKEN or an actor outage must be visible, not masked
+  // as "saved with no likes/shares".
+  const scraped = await fetchFacebookPostsByUrls(validRefs.map(v => v.url));
   const byRef = new Map(scraped.map(s => [s.ref.toLowerCase(), s]));
 
   const persisted: OutreachPost[] = [];
-  const today = new Date().toISOString().slice(0, 10);
   const forceVariant = ctx.forceVariant && ctx.campaign?.creative_variants.includes(ctx.forceVariant) ? ctx.forceVariant : null;
 
   for (const { url, ref } of validRefs) {
     const s = byRef.get(ref.id.toLowerCase());
+    if (!s) {
+      skipped.push({ url, reason: "Apify did not return data for this URL." });
+      continue;
+    }
+    if (!s.ownerId) {
+      skipped.push({ url, reason: "Could not verify the post's owning Facebook page. Try again or use a different URL." });
+      continue;
+    }
+    if (s.ownerId !== ownerId) {
+      skipped.push({
+        url,
+        reason: s.pageName
+          ? `Post belongs to ${s.pageName}, not @${ctx.page.handle}.`
+          : `Post belongs to a different Facebook page, not @${ctx.page.handle}.`,
+      });
+      continue;
+    }
     const post = await upsertPostByInstagramId({
       instagram_id: `fb:${ref.id}`,
       platform: "facebook",
       page_id: ctx.page.id,
       campaign_id: ctx.campaign?.id ?? null,
-      date: s?.publishedAt ? s.publishedAt.slice(0, 10) : today,
-      type: s?.mediaType ?? ref.type,
+      date: s.publishedAt ? s.publishedAt.slice(0, 10) : new Date().toISOString().slice(0, 10),
+      type: s.mediaType ?? ref.type,
       creative_variant: forceVariant,
-      caption: s?.caption ?? "",
+      caption: s.caption,
       status: "published",
-      likes: s?.likes ?? 0,
-      comments: s?.comments ?? 0,
-      views: s?.views ?? 0,
+      likes: s.likes ?? 0,
+      comments: s.comments ?? 0,
+      views: s.views ?? 0,
       saves: 0,
-      shares: s?.shares ?? 0,
+      shares: s.shares ?? 0,
       media_url: null,
       permalink: url,
       added_as_live: true,

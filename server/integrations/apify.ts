@@ -320,6 +320,16 @@ export interface ApifyFacebookPost {
   ref: string;
   url: string;
   pageName?: string;
+  /**
+   * The POSTING page's own numeric Facebook id (Meta's stable identifier,
+   * e.g. "100044561550831") — present as `user.id` for every post type in
+   * feed mode and for static/photo posts in direct-URL mode, and as
+   * `video.owner.id` for a video/reel scraped by its direct URL (that shape
+   * omits the top-level `user` object entirely). This is what "Add live
+   * posts" verifies a pasted URL against the target page's own id — never
+   * derived from the pasted URL itself, so a wrong-page URL can't spoof it.
+   */
+  ownerId?: string;
   caption: string;
   likes?: number;
   comments?: number;
@@ -366,12 +376,37 @@ function normalizeFacebookPost(raw: Record<string, unknown>): ApifyFacebookPost 
     : typeof raw.timestamp === "number" ? raw.timestamp : undefined;
   const publishedAt = timeIso ?? (creationSec ? new Date(creationSec * 1000).toISOString() : undefined);
 
+  // user.id is present at top level for every post type in feed mode, and for
+  // static/photo posts scraped by direct URL; a video/reel scraped by direct
+  // URL omits the top-level `user` object entirely and carries the same id at
+  // video.owner.id instead.
+  const userObj = raw.user as Record<string, unknown> | undefined;
+  const videoObj = raw.video as Record<string, unknown> | undefined;
+  const videoOwner = videoObj?.owner as Record<string, unknown> | undefined;
+  const ownerId = typeof userObj?.id === "string" ? userObj.id
+    : typeof videoOwner?.id === "string" ? videoOwner.id
+    : undefined;
+
+  // likes: prefer the flat number, then the two structured reaction-count
+  // objects the actor also returns (`likers.count` / `unified_reactors.count`
+  // — both mirror `likes` when present, and are a safety net for post/page
+  // combinations where `likes` itself comes back missing or non-numeric),
+  // then fall back to parsing it as a possibly-abbreviated string (mirrors
+  // the `share_count_reduced` handling below).
+  const likersObj = raw.likers as Record<string, unknown> | undefined;
+  const reactorsObj = raw.unified_reactors as Record<string, unknown> | undefined;
+  const likes = typeof raw.likes === "number" ? raw.likes
+    : typeof likersObj?.count === "number" ? likersObj.count
+    : typeof reactorsObj?.count === "number" ? reactorsObj.count
+    : parseCount(raw.likes);
+
   return {
     ref,
     url,
     pageName: typeof raw.pageName === "string" ? raw.pageName : undefined,
+    ownerId,
     caption,
-    likes: typeof raw.likes === "number" ? raw.likes : undefined,
+    likes,
     comments: typeof raw.comments === "number" ? raw.comments : parseCount(raw.total_comment_count),
     shares: typeof raw.shares === "number" ? raw.shares : parseCount(raw.share_count_reduced),
     views: bestViewCount(raw),
