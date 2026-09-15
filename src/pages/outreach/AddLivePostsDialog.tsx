@@ -359,7 +359,7 @@ function DialogShell({
                 </div>
                 <p className="text-[11px] text-muted-foreground mt-1">
                   {platform === 'facebook'
-                    ? 'Up to 20 URLs per request. Facebook links are saved and tracked now; their metrics populate once the Facebook scraper is integrated.'
+                    ? 'Up to 20 URLs per request. Each one is scraped and saved as a published post, same as Instagram.'
                     : 'Up to 20 URLs per request. Each one is scraped via Apify and saved as a published post.'}
                 </p>
               </div>

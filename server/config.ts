@@ -57,6 +57,11 @@ export const config = {
     token: process.env.APIFY_TOKEN?.trim() || "",
     profileActor: process.env.APIFY_PROFILE_ACTOR?.trim() || "apify~instagram-profile-scraper",
     postActor: process.env.APIFY_POST_ACTOR?.trim() || "apify~instagram-post-scraper",
+    // Facebook Posts Scraper — used both for page-level batch sync (startUrls =
+    // page URLs, returns recent posts) and specific-URL metric refresh
+    // (startUrls = post/reel URLs). One actor, two call shapes, same as how
+    // apify/instagram-post-scraper is reused for both modes on the IG side.
+    facebookPostActor: process.env.APIFY_FACEBOOK_ACTOR?.trim() || "apify~facebook-posts-scraper",
     // Optional Instagram session cookie. When set, we forward it to Apify so
     // the scraper runs as a logged-in user, which returns live counts instead
     // of the stale logged-out snapshots Instagram serves to bots.

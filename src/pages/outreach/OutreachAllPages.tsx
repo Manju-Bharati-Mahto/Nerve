@@ -179,7 +179,7 @@ export default function OutreachAllPages() {
         })}
         {platform === 'facebook' && (
           <span className="ml-auto text-[11px] text-muted-foreground pb-1.5">
-            Facebook pages are tracked manually — metrics sync starts once the FB scraper is integrated.
+            Facebook pages sync the same way Instagram pages do — use Sync now or Add live posts to pull real metrics.
           </span>
         )}
       </div>

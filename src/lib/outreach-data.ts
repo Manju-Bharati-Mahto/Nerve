@@ -18,7 +18,7 @@ export const PAGE_TYPES = ['state', 'pu'] as const
 export type PageType = typeof PAGE_TYPES[number]
 
 // Which social network a page / post lives on. Instagram is the default;
-// Facebook pages + links are tracked manually until the FB API scraper lands.
+// Facebook is synced via its own Apify scraper, same workflow either way.
 export const PLATFORMS = ['instagram', 'facebook'] as const
 export type Platform = typeof PLATFORMS[number]
 

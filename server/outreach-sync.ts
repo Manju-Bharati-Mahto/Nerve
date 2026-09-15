@@ -14,7 +14,6 @@
 import {
   listPages,
   listCampaigns,
-  listPosts,
   updatePage,
   upsertPostByInstagramId,
   listLivePostsWithPermalink,
@@ -30,10 +29,15 @@ import {
 import {
   fetchInstagramProfiles,
   fetchInstagramPostsByUrls,
+  fetchFacebookPagePosts,
+  fetchFacebookPostsByUrls,
   inferPostType,
   extractInstagramShortcode,
+  extractFacebookPostRef,
+  bestViewCount,
   type ApifyLatestPost,
   type ApifyPostResult,
+  type ApifyFacebookPost,
 } from "./integrations/apify.js";
 
 export interface SyncResult {
@@ -60,42 +64,9 @@ export interface SyncOptions {
 }
 
 const BATCH_SIZE = 20;
-
-/**
- * The true public "views" for a post. Instagram's reel "Views" (the big number
- * shown on the app) is reported by Apify under different keys across post types
- * and actor versions — videoPlayCount, videoViewCount, igPlayCount, playCount,
- * viewCount, and sometimes a bare `views` — and any given field can be zero,
- * absent, or an older/smaller count that doesn't match the unified "Views".
- *
- * Rather than a fixed `??` chain (which a present-but-zero field would shadow,
- * and which misses whatever key the actor actually populated), we scan every
- * top-level numeric field whose name looks like a view/play/impression count
- * and take the LARGEST — that's the public "Views" number. Returns null only
- * when no such field is present, so callers can keep an existing value instead
- * of zeroing it out.
- */
-function isViewCountKey(key: string): boolean {
-  const k = key.toLowerCase();
-  return (
-    k.includes("playcount") ||
-    k.includes("viewcount") ||
-    k.includes("impressioncount") ||
-    k === "views" || k === "plays" || k === "impressions" ||
-    k === "viewscount" || k === "playscount" || k === "viewcount" || k === "playcount"
-  );
-}
-
-function bestViewCount(post: unknown): number | null {
-  if (!post || typeof post !== "object") return null;
-  let best: number | null = null;
-  for (const [key, value] of Object.entries(post as Record<string, unknown>)) {
-    if (typeof value === "number" && Number.isFinite(value) && value >= 0 && isViewCountKey(key)) {
-      if (best === null || value > best) best = value;
-    }
-  }
-  return best;
-}
+// Facebook page batches are kept smaller than Instagram's — a newer, costlier
+// integration; raise once real usage patterns are understood.
+const FB_BATCH_SIZE = 10;
 
 export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> {
   const allPages = await listPages();
@@ -104,27 +75,20 @@ export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> 
   // Normalise both sides identically — strip whitespace, leading @,
   // lowercase — so `["@foo"]` matches a page stored as `"Foo"`.
   const normHandle = (h: string) => h.trim().toLowerCase().replace(/^@/, "");
-  // Only Instagram pages are syncable — the profile scraper is IG-only.
-  // Facebook pages are reported as skipped (not silently dropped) so the sync
-  // summary stays honest about what wasn't refreshed.
   const igPages = allPages.filter(p => p.platform !== "facebook");
   const fbPages = allPages.filter(p => p.platform === "facebook");
   const targetPages = opts.handles && opts.handles.length > 0
     ? igPages.filter(p => opts.handles!.some(h => normHandle(h) === normHandle(p.handle)))
     : igPages;
-  const skippedFacebook: SyncResult["skipped"] = (opts.handles && opts.handles.length > 0
+  const targetFbPages = opts.handles && opts.handles.length > 0
     ? fbPages.filter(p => opts.handles!.some(h => normHandle(h) === normHandle(p.handle)))
-    : fbPages
-  ).map(p => ({ handle: p.handle, reason: "Facebook page — sync starts once the Facebook scraper is integrated" }));
+    : fbPages;
 
-  if (targetPages.length === 0) {
-    return { ok: true, synced_pages: 0, upserted_posts: 0, skipped: skippedFacebook, attribution: { matched: 0, unmatched: 0 }, refreshed_live_posts: 0 };
-  }
-
-  const skipped: SyncResult["skipped"] = [...skippedFacebook];
+  const skipped: SyncResult["skipped"] = [];
   let upsertedPosts = 0;
   let matched = 0;
   let unmatched = 0;
+  let syncedPageCount = 0;
 
   // Index pages by lowercased handle so we can match Apify's `username`
   // (which is always the canonical lowercase form) to our records.
@@ -150,6 +114,7 @@ export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> 
         skipped.push({ handle: profile.username, reason: profile.error });
         continue;
       }
+      syncedPageCount++;
 
       // Update follower count + last_synced_at on the page.
       await updatePage(page.id, {
@@ -165,22 +130,89 @@ export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> 
     }
   }
 
-  // The profile scrape above only sees each account's most-recent posts, so a
-  // tracked live post that has since scrolled past that window would never get
-  // fresh numbers. Re-scrape the operator-curated live posts by permalink to
-  // move the dashboard's reach/views KPIs — but ONLY on the scheduled runs
-  // (opts.refreshLivePosts): those extra Post Scraper calls are the expensive
-  // part, so manual "Sync now" skips them and just re-pulls profile data.
+  // Facebook pages — same shape of work as the Instagram loop above (batch
+  // scrape each page's recent posts, upsert + auto-attribute by caption
+  // match), just via the Facebook Posts Scraper actor and matched back to our
+  // DB pages by the actor's `inputUrl` (falls back to pageName if a run drops
+  // it) rather than by username, since Facebook page URLs vary in shape.
+  const normName = (s: string) => s.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  for (let i = 0; i < targetFbPages.length; i += FB_BATCH_SIZE) {
+    const batch = targetFbPages.slice(i, i + FB_BATCH_SIZE);
+    const pageUrlByPage = new Map(batch.map(p => [p.id, `https://www.facebook.com/${p.handle.trim().replace(/^@/, "")}`]));
+    const pageByUrl = new Map<string, OutreachPage>();
+    for (const p of batch) pageByUrl.set((pageUrlByPage.get(p.id) as string).toLowerCase().replace(/\/$/, ""), p);
+
+    let items: ApifyFacebookPost[] = [];
+    try {
+      items = await fetchFacebookPagePosts(Array.from(pageUrlByPage.values()), opts.resultsLimit ? Math.min(opts.resultsLimit, 15) : 10);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : "Facebook scrape failed.";
+      for (const p of batch) skipped.push({ handle: p.handle, reason });
+      continue;
+    }
+
+    const touchedPageIds = new Set<string>();
+    for (const item of items) {
+      const inputUrl = item.inputUrl ? item.inputUrl.toLowerCase().replace(/\/$/, "") : undefined;
+      const page = (inputUrl && pageByUrl.get(inputUrl))
+        ?? batch.find(p => item.pageName && normName(p.handle) === normName(item.pageName!));
+      if (!page) continue; // best-effort attribution, same spirit as the IG loop's no-match skip
+
+      touchedPageIds.add(page.id);
+      const date = item.publishedAt ? item.publishedAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
+      const attribution = attributePostToCampaign(page.id, date, item.caption, campaigns);
+      await upsertPostByInstagramId({
+        instagram_id: `fb:${item.ref}`,
+        platform: "facebook",
+        page_id: page.id,
+        campaign_id: attribution?.campaignId ?? null,
+        date,
+        type: item.mediaType ?? "static",
+        creative_variant: attribution?.variant ?? null,
+        caption: item.caption,
+        status: "published",
+        likes: item.likes ?? 0,
+        comments: item.comments ?? 0,
+        views: item.views ?? 0,
+        // The actor doesn't reliably separate saves from other reactions.
+        saves: 0,
+        shares: item.shares ?? 0,
+        media_url: null,
+        permalink: item.url,
+      });
+      upsertedPosts++;
+      if (attribution) matched++; else unmatched++;
+    }
+
+    for (const id of touchedPageIds) {
+      syncedPageCount++;
+      await updatePage(id, { last_synced_at: new Date().toISOString() });
+    }
+    // Pages in this batch that produced nothing (private/empty/unreachable)
+    // aren't silently dropped from the summary.
+    for (const p of batch) {
+      if (!touchedPageIds.has(p.id)) skipped.push({ handle: p.handle, reason: "No posts returned by the Facebook scraper." });
+    }
+  }
+
+  // The profile/page scrapes above only see each account's most-recent posts,
+  // so a tracked live post that has since scrolled past that window would
+  // never get fresh numbers. Re-scrape the operator-curated live posts by
+  // permalink to move the dashboard's reach/views KPIs — but ONLY on the
+  // scheduled runs (opts.refreshLivePosts): those extra Post Scraper calls are
+  // the expensive part, so manual "Sync now" skips them and just re-pulls feed
+  // data.
   let refreshed = 0;
   if (opts.refreshLivePosts) {
-    const pageIds = opts.handles && opts.handles.length > 0 ? targetPages.map(p => p.id) : undefined;
+    const pageIds = opts.handles && opts.handles.length > 0
+      ? [...targetPages, ...targetFbPages].map(p => p.id)
+      : undefined;
     ({ refreshed } = await refreshLivePostMetrics({ pageIds }));
   }
 
   return {
     ok: true,
-    // FB skips were never in targetPages — subtract only the IG-side skips.
-    synced_pages: targetPages.length - (skipped.length - skippedFacebook.length),
+    synced_pages: syncedPageCount,
     upserted_posts: upsertedPosts,
     skipped,
     attribution: { matched, unmatched },
@@ -208,8 +240,24 @@ export async function refreshLivePostMetrics(
   const livePosts = await listLivePostsWithPermalink(scope);
   if (livePosts.length === 0) return { refreshed: 0, failed: 0 };
 
+  const igLivePosts = livePosts.filter(p => p.platform !== "facebook");
+  const fbLivePosts = livePosts.filter(p => p.platform === "facebook");
+
   let refreshed = 0;
   let failed = 0;
+
+  ({ refreshed, failed } = await refreshInstagramLiveMetrics(igLivePosts, refreshed, failed));
+  ({ refreshed, failed } = await refreshFacebookLiveMetrics(fbLivePosts, refreshed, failed));
+
+  return { refreshed, failed };
+}
+
+async function refreshInstagramLiveMetrics(
+  livePosts: OutreachPost[], refreshedIn: number, failedIn: number,
+): Promise<{ refreshed: number; failed: number }> {
+  if (livePosts.length === 0) return { refreshed: refreshedIn, failed: failedIn };
+  let refreshed = refreshedIn;
+  let failed = failedIn;
   // Video posts whose batch result was missing videoPlayCount (Instagram's
   // real public "views"). The actor drops that field intermittently on batched
   // runs while single-URL runs reliably include it, so these get a targeted
@@ -289,6 +337,56 @@ export async function refreshLivePostMetrics(
   return { refreshed, failed };
 }
 
+/**
+ * Re-scrapes Facebook live posts by permalink, matched back to their DB row
+ * via extractFacebookPostRef (the actor's `inputUrl` field is only populated
+ * in page-feed mode, not for direct post/reel URLs — see fetchFacebookPostsByUrls).
+ * Never touches type/attribution — metrics only, same contract as the
+ * Instagram path above.
+ */
+async function refreshFacebookLiveMetrics(
+  livePosts: OutreachPost[], refreshedIn: number, failedIn: number,
+): Promise<{ refreshed: number; failed: number }> {
+  if (livePosts.length === 0) return { refreshed: refreshedIn, failed: failedIn };
+  let refreshed = refreshedIn;
+  let failed = failedIn;
+
+  for (let i = 0; i < livePosts.length; i += LIVE_REFRESH_BATCH) {
+    const batch = livePosts.slice(i, i + LIVE_REFRESH_BATCH);
+    const urls = batch.map(p => p.permalink!).filter(Boolean);
+    let results: ApifyFacebookPost[] = [];
+    try {
+      results = await fetchFacebookPostsByUrls(urls);
+    } catch (err) {
+      failed += batch.length;
+      console.warn(`[refresh-reach] Facebook batch scrape failed:`, err instanceof Error ? err.message : err);
+      continue;
+    }
+
+    const byRef = new Map<string, ApifyFacebookPost>();
+    for (const r of results) byRef.set(r.ref.toLowerCase(), r);
+
+    for (const post of batch) {
+      const ref = extractFacebookPostRef(post.permalink!)?.id.toLowerCase();
+      const r = ref ? byRef.get(ref) : undefined;
+      if (!r) {
+        failed++;
+        console.warn(`[refresh-reach] kept last-known metrics for ${post.permalink}: no Facebook result returned`);
+        continue;
+      }
+      await updatePostMetrics(post.id, {
+        likes: r.likes ?? post.likes,
+        comments: r.comments ?? post.comments,
+        views: r.views ?? post.views,
+        shares: r.shares,
+      });
+      refreshed++;
+    }
+  }
+
+  return { refreshed, failed };
+}
+
 // NOTE: the former scheduled auto-sync (9:00 AM & 5:00 PM IST) was removed by
 // request — syncing is now MANUAL ONLY: the "Sync now" button (POST
 // /api/outreach/sync) and the live-post refresh (POST /api/outreach/refresh-reach).
@@ -296,52 +394,29 @@ export async function refreshLivePostMetrics(
 
 /**
  * Per-campaign sync: re-scrapes ONLY the live posts attributed to the given
- * campaign (not the whole department's). Facebook rows can't be scraped until
- * the FB scraper is integrated — they're counted and reported, never attempted.
+ * campaign (not the whole department's) — both Instagram and Facebook, each
+ * routed to its own actor by refreshLivePostMetrics.
  */
 export async function syncCampaignPosts(campaignId: string): Promise<{
-  ok: true; refreshed: number; failed: number; facebook_skipped: number;
+  ok: true; refreshed: number; failed: number;
 }> {
   const campaign = await getCampaign(campaignId);
   if (!campaign) throw new Error("Campaign not found.");
-  const campaignPosts = await listPosts({ campaignId });
-  const facebook_skipped = campaignPosts.filter(p => p.platform === "facebook" && p.added_as_live).length;
   const { refreshed, failed } = await refreshLivePostMetrics({ campaignId });
-  return { ok: true, refreshed, failed, facebook_skipped };
-}
-
-// ── Facebook link parsing ──────────────────────────────────────────────────
-//
-// No Facebook scraper exists yet ("planned API scraper" — metrics stay 0 until
-// it lands), but campaign links must already be enterable and tracked. This
-// recognises the common shapes of a Facebook post / reel / video URL and
-// returns a stable id + inferred type.
-export function extractFacebookPostRef(url: string): { id: string; type: "static" | "reel" } | null {
-  if (!/(?:^|\.)?(?:facebook\.com|fb\.com|fb\.watch)\//i.test(url)) return null;
-  const patterns: { re: RegExp; type: "static" | "reel" }[] = [
-    { re: /facebook\.com\/reel\/([A-Za-z0-9]+)/i,                 type: "reel" },
-    { re: /facebook\.com\/[^/?#]+\/videos\/(\d+)/i,               type: "reel" },
-    { re: /facebook\.com\/watch\/?\?(?:.*&)?v=(\d+)/i,            type: "reel" },
-    { re: /fb\.watch\/([A-Za-z0-9_-]+)/i,                         type: "reel" },
-    { re: /facebook\.com\/share\/[rv]\/([A-Za-z0-9]+)/i,          type: "reel" },
-    { re: /facebook\.com\/share\/p\/([A-Za-z0-9]+)/i,             type: "static" },
-    { re: /facebook\.com\/[^/?#]+\/posts\/([A-Za-z0-9]+)/i,       type: "static" },
-    { re: /facebook\.com\/photo(?:\.php)?\/?\?(?:.*&)?fbid=(\d+)/i, type: "static" },
-    { re: /facebook\.com\/permalink\.php\?(?:.*&)?story_fbid=(\d+)/i, type: "static" },
-  ];
-  for (const { re, type } of patterns) {
-    const m = url.match(re);
-    if (m) return { id: m[1], type };
-  }
-  return null;
+  return { ok: true, refreshed, failed };
 }
 
 /**
- * Persists Facebook links as manual (unscrapeable-for-now) live posts under a
- * Facebook page: platform 'facebook', metrics 0, date = added-on date. The id
- * is namespaced ("fb:<id>") into the same UNIQUE column the IG ids use, so
- * re-adding a link updates the existing row instead of duplicating it. Once
- * the Facebook scraper is integrated these rows are the ones it will hydrate.
+ * Persists Facebook links as live posts under a Facebook page: platform
+ * 'facebook', scraped metrics, mirroring persistLivePost's Instagram path.
+ * The id is namespaced ("fb:<id>") into the same UNIQUE column the IG ids
+ * use, so re-adding a link updates the existing row instead of duplicating it.
+ *
+ * URLs that don't scrape (deleted post, transient error) are still persisted
+ * with zero metrics via extractFacebookPostRef's type inference — rather than
+ * rejecting the whole link — since the operator's intent (attach this URL to
+ * this campaign) is clear even when Apify can't confirm it yet; the next
+ * "Sync" on the campaign will pick up real numbers once available.
  */
 async function addFacebookLivePosts(ctx: {
   page: OutreachPage;
@@ -350,8 +425,7 @@ async function addFacebookLivePosts(ctx: {
   forceVariant?: string;
 }): Promise<AddLivePostsResult> {
   const skipped: AddLivePostsResult["skipped"] = [];
-  const persisted: OutreachPost[] = [];
-  const today = new Date().toISOString().slice(0, 10);
+  const validRefs: { url: string; ref: { id: string; type: "static" | "reel" } }[] = [];
   for (const raw of ctx.urls) {
     const url = raw.trim();
     if (!url) continue;
@@ -364,17 +438,39 @@ async function addFacebookLivePosts(ctx: {
       skipped.push({ url, reason: "Not a recognisable Facebook post / reel / video URL." });
       continue;
     }
+    validRefs.push({ url, ref });
+  }
+  if (validRefs.length === 0) return { ok: true, posts: [], skipped };
+
+  let scraped: ApifyFacebookPost[] = [];
+  try {
+    scraped = await fetchFacebookPostsByUrls(validRefs.map(v => v.url));
+  } catch (err) {
+    console.warn(`[add-live-posts] Facebook scrape failed, saving links with placeholder metrics:`, err instanceof Error ? err.message : err);
+  }
+  const byRef = new Map(scraped.map(s => [s.ref.toLowerCase(), s]));
+
+  const persisted: OutreachPost[] = [];
+  const today = new Date().toISOString().slice(0, 10);
+  const forceVariant = ctx.forceVariant && ctx.campaign?.creative_variants.includes(ctx.forceVariant) ? ctx.forceVariant : null;
+
+  for (const { url, ref } of validRefs) {
+    const s = byRef.get(ref.id.toLowerCase());
     const post = await upsertPostByInstagramId({
       instagram_id: `fb:${ref.id}`,
       platform: "facebook",
       page_id: ctx.page.id,
       campaign_id: ctx.campaign?.id ?? null,
-      date: today,
-      type: ref.type,
-      creative_variant: ctx.forceVariant && ctx.campaign?.creative_variants.includes(ctx.forceVariant) ? ctx.forceVariant : null,
-      caption: "",
+      date: s?.publishedAt ? s.publishedAt.slice(0, 10) : today,
+      type: s?.mediaType ?? ref.type,
+      creative_variant: forceVariant,
+      caption: s?.caption ?? "",
       status: "published",
-      likes: 0, comments: 0, views: 0, saves: 0, shares: 0,
+      likes: s?.likes ?? 0,
+      comments: s?.comments ?? 0,
+      views: s?.views ?? 0,
+      saves: 0,
+      shares: s?.shares ?? 0,
       media_url: null,
       permalink: url,
       added_as_live: true,
