@@ -229,10 +229,10 @@ export const api = {
       body: JSON.stringify(handles ? { handles } : {}),
     }),
 
-  // Outreach — per-campaign sync: re-scrape only the live posts attributed to
-  // one campaign. Facebook posts are counted (facebook_skipped), not scraped.
+  // Outreach — per-campaign sync: re-scrape only the live posts (Instagram AND
+  // Facebook) attributed to one campaign.
   syncOutreachCampaign: (campaignId: string) =>
-    request<{ ok: true; refreshed: number; failed: number; facebook_skipped: number }>(
+    request<{ ok: true; refreshed: number; failed: number }>(
       `/outreach/campaigns/${campaignId}/sync`,
       { method: "POST", body: JSON.stringify({}) },
     ),

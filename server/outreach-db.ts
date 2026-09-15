@@ -26,8 +26,7 @@ export const PAGE_TYPES = ["state", "pu"] as const;
 export type PageType = typeof PAGE_TYPES[number];
 
 // Which social network a page / post lives on. Instagram is the original (and
-// default) platform; Facebook pages + links are tracked manually until the
-// Facebook API scraper is integrated.
+// default) platform; Facebook is synced via the Facebook Posts Scraper (Apify).
 export const PLATFORMS = ["instagram", "facebook"] as const;
 export type Platform = typeof PLATFORMS[number];
 
@@ -312,7 +311,7 @@ export async function bootstrapOutreach() {
   `);
 
   // Platform split for posts (Instagram / Facebook). Pre-existing rows are all
-  // Instagram. Facebook rows are manual (link-tracked) until the FB scraper lands.
+  // Instagram. Facebook rows are populated by the Facebook Posts Scraper.
   await pool.query(`ALTER TABLE outreach_posts ADD COLUMN IF NOT EXISTS platform TEXT NOT NULL DEFAULT 'instagram'`);
   await pool.query(`
     DO $$ BEGIN
@@ -958,10 +957,9 @@ export async function listLivePostsWithPermalink(
   const where: string[] = [
     `added_as_live = true`,
     `permalink IS NOT NULL AND permalink <> ''`,
-    // Only Instagram posts are re-scrapable today — Facebook rows are manual
-    // (link-tracked) until the FB scraper is integrated, and their URLs must
-    // never be sent to the Instagram Post Scraper.
-    `platform = 'instagram'`,
+    // Both platforms are re-scrapable now. The caller (refreshLivePostMetrics)
+    // splits by platform and routes each to its own actor — an Instagram URL
+    // must never reach the Facebook scraper, and vice versa.
   ];
   const values: unknown[] = [];
   let i = 1;
@@ -981,7 +979,7 @@ export async function listLivePostsWithPermalink(
  */
 export async function updatePostMetrics(
   id: string,
-  metrics: { likes: number; comments: number; views: number; media_url?: string | null },
+  metrics: { likes: number; comments: number; views: number; shares?: number; media_url?: string | null },
 ): Promise<OutreachPost | null> {
   const { rows } = await pool.query<OutreachPost>(
     `UPDATE outreach_posts
@@ -989,11 +987,14 @@ export async function updatePostMetrics(
             -- Monotonic clamp: a scrape missing videoPlayCount reports a much
             -- smaller count — never downgrade a previously captured views value.
             views = GREATEST(views, $4),
+            -- Instagram's scrapers can't read shares (always undefined here);
+            -- Facebook's can, so only overwrite when a real value is supplied.
+            shares = COALESCE($6, shares),
             media_url = COALESCE($5, media_url),
             synced_at = NOW()
       WHERE id = $1
       RETURNING *`,
-    [id, metrics.likes, metrics.comments, metrics.views, metrics.media_url ?? null],
+    [id, metrics.likes, metrics.comments, metrics.views, metrics.media_url ?? null, metrics.shares ?? null],
   );
   return rows[0] ? mapPostRow(rows[0]) : null;
 }

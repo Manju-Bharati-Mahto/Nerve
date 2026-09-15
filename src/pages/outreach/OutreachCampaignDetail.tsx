@@ -49,7 +49,6 @@ export default function OutreachCampaignDetail() {
       const r = await syncCampaignNow(campaign.id)
       const parts = [`${r.refreshed} post${r.refreshed === 1 ? '' : 's'} updated`]
       if (r.failed > 0) parts.push(`${r.failed} failed`)
-      if (r.facebook_skipped > 0) parts.push(`${r.facebook_skipped} Facebook link${r.facebook_skipped === 1 ? '' : 's'} pending FB scraper`)
       setSyncMsg(parts.join(' · '))
     } catch (err) {
       setSyncErr(err instanceof Error ? err.message : 'Campaign sync failed.')

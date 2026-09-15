@@ -2573,7 +2573,7 @@ function requireOutreach(res: express.Response): boolean {
 
 const outreachPageSchema = z.object({
   handle: z.string().min(1),
-  // Instagram (default) or Facebook. FB pages are manual until the FB scraper lands.
+  // Instagram (default) or Facebook.
   platform: z.enum(["instagram", "facebook"]).optional(),
   geography: z.string().min(1),
   state: z.string().min(1),
@@ -2795,7 +2795,7 @@ app.post("/api/outreach/sync", asyncHandler(async (req, res) => {
 
 // Per-campaign sync — re-scrapes ONLY the live posts attributed to one
 // campaign (paid Apify calls, but scoped far tighter than a full refresh).
-// Facebook posts are counted, not attempted, until the FB scraper exists.
+// Facebook posts are refreshed via the Facebook Posts Scraper (Apify).
 app.post("/api/outreach/campaigns/:id/sync", asyncHandler(async (req, res) => {
   if (!requireOutreach(res)) return;
   try {

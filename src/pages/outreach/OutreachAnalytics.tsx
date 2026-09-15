@@ -648,7 +648,7 @@ export function AddPageModal({ onClose, defaultPlatform = 'instagram' }: { onClo
             </div>
             {form.platform === 'facebook' && (
               <p className="text-[11px] text-muted-foreground mt-1">
-                Facebook pages are tracked manually for now — metrics sync starts once the Facebook scraper is integrated.
+                Facebook pages sync the same way Instagram pages do — pull real metrics via Sync now or Add live posts.
               </p>
             )}
           </div>
