@@ -7,6 +7,7 @@ import {
   Crown, UserCheck, User, Settings, Palette, FileText,
   Megaphone, Send, Calendar, BarChart3, Sparkles,
   Award, CalendarOff, Settings2, AlertTriangle,
+  Film, Inbox, Share2, CheckCircle2,
 } from 'lucide-react'
 import ProfileModal from './ProfileModal'
 import { useOutreachData, computeOutreachAlerts } from '@/lib/outreach-data'
@@ -147,8 +148,36 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/outreach/pages',    label: 'All Pages', icon: FileText },
       { path: '/outreach/creators', label: 'Creators',  icon: Users },
     ]},
+    { heading: 'Video workflow', items: [
+      { path: '/outreach/video/queue',        label: 'Publishing Queue', icon: Inbox },
+      { path: '/outreach/video/published',    label: 'Published',        icon: CheckCircle2 },
+      { path: '/outreach/video/social-pages', label: 'Social Pages',     icon: Share2 },
+    ]},
     { heading: 'AI', items: [
       { path: '/outreach/ai', label: 'AI', icon: Sparkles },
+    ]},
+  ]),
+
+  /* Media Agency Video Workflow PRD §27. The Editor's navigation deliberately
+     has no analytics entry anywhere — §8.2 puts performance data out of reach
+     for this role, and the API enforces it too. */
+  'outreach_editor:outreach': cfg('Video Editor', Film, 'text-orange-600', 'bg-orange-100', [
+    { items: [
+      { path: '/outreach/video/my-videos',    label: 'My Videos',  icon: Film },
+      { path: '/outreach/video/published',    label: 'Published',  icon: CheckCircle2 },
+    ]},
+    { heading: 'Reference', items: [
+      { path: '/outreach/video/social-pages', label: 'Social Media Pages', icon: Share2 },
+    ]},
+  ]),
+
+  'outreach_publisher:outreach': cfg('Publisher', Send, 'text-orange-600', 'bg-orange-100', [
+    { items: [
+      { path: '/outreach/video/queue',        label: 'Publishing Queue', icon: Inbox },
+      { path: '/outreach/video/published',    label: 'Published',        icon: CheckCircle2 },
+    ]},
+    { heading: 'Reference', items: [
+      { path: '/outreach/video/social-pages', label: 'Social Media Pages', icon: Share2 },
     ]},
   ]),
 }

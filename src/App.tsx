@@ -68,6 +68,11 @@ import OutreachCreators from "@/pages/outreach/OutreachCreators";
 import OutreachCreatorDetail from "@/pages/outreach/OutreachCreatorDetail";
 import OutreachPageDetail from "@/pages/outreach/OutreachPageDetail";
 import OutreachAI from "@/pages/outreach/OutreachAI";
+import VideoMyVideos from "@/pages/outreach/video/VideoMyVideos";
+import VideoDetail from "@/pages/outreach/video/VideoDetail";
+import VideoQueue from "@/pages/outreach/video/VideoQueue";
+import VideoPublished from "@/pages/outreach/video/VideoPublished";
+import VideoSocialPages from "@/pages/outreach/video/VideoSocialPages";
 
 import NotFound from "./pages/NotFound.tsx";
 
@@ -339,6 +344,35 @@ const App = () => (
               <Route path="/outreach/ai" element={
                 <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
                   <OutreachAI />
+                </RoleGuard>
+              } />
+
+              {/* ── Outreach video workflow (Media Agency Video Workflow PRD) ──
+                  Editors and publishers only reach their own areas; managers and
+                  super admins see everything, matching the §27 navigation. */}
+              <Route path="/outreach/video/my-videos" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor']} team="outreach">
+                  <VideoMyVideos />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/videos/:videoId" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach">
+                  <VideoDetail />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/queue" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_publisher']} team="outreach">
+                  <VideoQueue />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/published" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach">
+                  <VideoPublished />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/social-pages" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor']} team="outreach">
+                  <VideoSocialPages />
                 </RoleGuard>
               } />
 
