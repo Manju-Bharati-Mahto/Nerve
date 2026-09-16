@@ -2327,6 +2327,19 @@ function myApprovalQueue(actorId=S.me){
    assignableMemberIds(). Admin: everyone. Team Lead: their own team + self.
    Employee: only themselves. The server re-checks every assignment; this just
    keeps the pickers honest so we never offer someone who would 403. */
+/* Teams a project may be routed to. Read straight from the live team structure
+   — add a team or change its lead and this list follows on the next hydrate,
+   with nothing to configure anywhere else. A team with no lead, an archived
+   team, or one whose lead is no longer an active account is not offered,
+   because routing work to it would put the project in nobody's hands. The API
+   re-resolves the lead from the team id and enforces the same three rules. */
+function assignableTeams(){
+  return activeTeams().filter(t=>{
+    const lead=t.lead_user_id?user(t.lead_user_id):null;
+    return !!lead&&lead.is_active!==false;
+  });
+}
+
 function assignableMembers(uid=S.me){
   const u=user(uid)||{};
   const active=DB.users.filter(x=>x.is_active);
@@ -6618,7 +6631,20 @@ function projOverview(p,dls,crew,shoots,pr){
             <div class="f wrap gap2">${Object.entries(byStatus).map(([s,n])=>
               `<span class="chip">${statusPill(DELIV_STATUS,s)} ${n}</span>`).join('')}</div>
           </div>
-          <div class="fc gap2" style="min-width:150px">
+          <div class="fc gap2" style="min-width:170px">
+            ${(()=>{
+              /* Who the work was routed to, and how much of it has reached a
+                 person — the Coordinator's whole view of a project once they
+                 have handed it over. */
+              const t=p.team_id?team(p.team_id):null;
+              const unassigned=dls.filter(d=>!d.owner_id&&!['cancelled','not_required'].includes(d.status)).length;
+              return `<div class="between"><span class="small mut">Team</span>
+                  <b>${t?esc(t.name):'<span class="mut3">Not assigned</span>'}</b></div>
+                <div class="between"><span class="small mut">Team lead</span>
+                  <b>${p.owner_id?esc((user(p.owner_id)||{full_name:'—'}).full_name):'<span class="mut3">Unassigned</span>'}</b></div>
+                ${dls.length?`<div class="between"><span class="small mut">Allocated</span>
+                  <b style="${unassigned?'color:var(--warn)':''}">${dls.length-unassigned}/${dls.length}</b></div>`:''}`;
+            })()}
             <div class="between"><span class="small mut">Logged hours</span><b>${hours.toFixed(1)}h</b></div>
             <div class="between"><span class="small mut">Shoots</span><b>${shoots.filter(s=>s.status==='done').length}/${shoots.length}</b></div>
             <div class="between"><span class="small mut">Crew</span><b>${crew.length}</b></div>
@@ -6793,7 +6819,7 @@ function projDeliverablesTab(p,dls){
           <td><span title="${esc(dtype(d.deliverable_type_id).name)}" style="font-size:15px">${dtype(d.deliverable_type_id).icon}</span>
             <span class="small">${esc(dtype(d.deliverable_type_id).name)}</span></td>
           <td class="t-main">${esc(d.title)}</td>
-          <td>${avatar(d.owner_id,'sm')}</td>
+          <td data-stop>${delivOwnerCell(p,d)}</td>
           <td class="small">${d.scheduled_date
             ? `<span class="chip" title="Appears in the owner's Today's Assignments on this date">◷ ${D.fmt(d.scheduled_date)}</span>`
             : '<span class="mut3" title="Backlog — not in anyone\'s Today\'s Assignments">unscheduled</span>'}</td>
@@ -6825,6 +6851,28 @@ function projDeliverablesTab(p,dls){
       A version cannot be approved by its submitter (BR-5); Delivered requires an approved latest version except review-exempt types (BR-6).</div>
   </div>`;
 }
+/* ── Who executes this deliverable ────────────────────────────────────────
+   Work reaches a person here, and only here. A Coordinator routes the project
+   to a team and stops; the Team Lead of that team decides which of their people
+   does each piece. canScheduleWork() is the predicate that already governs
+   putting work on someone (Admin, a Team Lead, or the project's owner/PM), and
+   assignableMembers() is already scoped to the lead's own team — so a Team Lead
+   is offered their team, a Coordinator is offered nothing, and PATCH
+   /deliverables/:id re-checks both server-side regardless of what is rendered. */
+function delivOwnerCell(p,d){
+  if(d.owner_id)return avatar(d.owner_id,'sm');
+  if(!canScheduleWork(p))
+    return '<span class="chip mut3" title="The Team Lead has not allocated this yet">Unassigned</span>';
+  const opts=assignableMembers();
+  if(!opts.length)return '<span class="chip mut3">Unassigned</span>';
+  return `<select class="inp deliv-owner" data-did="${d.id}"
+      onchange="ACTIONS.assignDeliverable({did:${d.id}},this)"
+      style="height:26px;font-size:11.5px;width:132px;padding:0 6px"
+      title="Assign this deliverable to one of your team">
+    <option value="">Assign…</option>
+    ${opts.map(u=>`<option value="${u.id}">${esc(u.full_name)}</option>`).join('')}</select>`;
+}
+
 function projShootsTab(p,shoots){
   return `<div class="card"><div class="card-head"><h3>Shoots</h3>
       ${reqid('FR-3.7','Dated field sessions — what makes Today’s Shoots, scheduling and gear booking possible')}
@@ -10433,8 +10481,9 @@ function openTaskLog(taskId){
 function openNewProject(){
   const types=DB.project_types.filter(t=>t.is_active);
   modal(`<div class="mo-head"><div><h2>New project</h2>
-      <p>${can('project.approve')?'You can create projects directly.':
-        'As an employee, your project enters <b>Pending Approval</b> before it is reportable-against (BR-11) — approval is one click for a TL and auto-reminds after 24h.'}</p></div>
+      <p>${can('project.approve')?'You can create projects directly.'
+        :isCoord()?'You allocate the project to a team — that team’s lead assigns the individual crew.'
+        :'As an employee, your project enters <b>Pending Approval</b> before it is reportable-against (BR-11) — approval is one click for a TL and auto-reminds after 24h.'}</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
     <div class="mo-body">
       <div class="field"><label class="lbl">Name <span class="req">*</span></label>
@@ -10442,7 +10491,7 @@ function openNewProject(){
         <div id="np-dup"></div><div class="hint">3–120 characters (VR-6).</div></div>
       <div class="row">
         <div class="field"><label class="lbl">Type <span class="req">*</span></label>
-          <select class="inp" id="np-type" onchange="ACTIONS.templatePreview({},this)">
+          <select class="inp" id="np-type">
             ${types.map(t=>`<option value="${t.id}">${t.name}</option>`).join('')}</select></div>
         <div class="field"><label class="lbl">Priority</label>
           <select class="inp" id="np-pri"><option value="normal">Normal</option><option value="urgent">Urgent</option>
@@ -10460,19 +10509,29 @@ function openNewProject(){
         <div class="field"><label class="lbl">End date <span class="req">*</span></label><input class="inp" type="date" id="np-end" value="${D.add(rtoday(),7)}"></div>
       </div>
       <div class="field"><label class="lbl">Description</label><textarea class="inp" id="np-desc" placeholder="Scope, constraints, who asked for it…"></textarea></div>
-      <div class="field"><label class="lbl">Assign crew</label>
-        <div class="f wrap gap2" id="np-assign">${assignableMembers().map(x=>`<button type="button" class="chip ${x.id===S.me?'sel':''}" data-uid="${x.id}" onclick="this.classList.toggle('sel');ACTIONS.npCrewSync()">${esc(x.full_name)}</button>`).join('')}</div>
-        <div class="hint">${can('project.assign')?'Assigned crew see this project in their dashboard (§8).':'You can only assign the project to yourself.'}</div></div>
-      <div class="field"><label class="lbl">Template deliverables</label>
-        <div class="card"><div class="card-body tight" id="np-template"></div></div>
-        <div class="hint" id="np-assign-hint">Select crew above to assign deliverables.</div>
-        <div class="hint">Untick any you don’t need — the ticked ones are auto-created (FR-3.2). “due +N” is days after the project end date and applies to this project only.</div></div>
+      <div class="field"><label class="lbl">Assigned team</label>
+        <select class="inp" id="np-team">
+          <option value="">— Not assigned yet</option>
+          ${assignableTeams().map(t=>`<option value="${t.id}">${esc(t.name)} — ${esc(user(t.lead_user_id).full_name)}</option>`).join('')}
+        </select>
+        <div class="hint">The selected team lead will assign individual crew members to each deliverable.</div></div>
+      <div class="field">
+        <div class="between mb2"><label class="lbl" style="margin:0">Deliverables</label>
+          <button type="button" class="btn xs" data-act="npAddDeliverable">＋ Add deliverable</button></div>
+        <div id="np-delivs"></div>
+        <div class="hint">Describe what this project has to produce. Who does each one is the Team Lead’s call — deliverables start unassigned.</div></div>
     </div>
     <div class="mo-foot"><span class="left small mut3">Duplicate scan runs on create (AUTO-6)</span>
       <button class="btn" onclick="closeModal()">Cancel</button>
-      <button class="btn primary" data-act="createProject">${can('project.approve')?'Create project':'Propose project'}</button></div>`,{size:'wide'});
+      <button class="btn primary" data-act="createProject">${(can('project.approve')||isCoord())?'Create project':'Propose project'}</button></div>`,{size:'wide'});
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=e=>{e.stopPropagation();ACTIONS[n.dataset.act](n.dataset,n);});
-  ACTIONS.templatePreview({},$('#np-type'));
+  /* Autocomplete from what this crew has actually produced before — a hint
+     drawn from real history, never a list the creator must pick from. */
+  const seen=[...new Set(DB.deliverables.map(d=>String(d.title||'').trim()).filter(Boolean))].sort().slice(0,200);
+  const dl=document.createElement('datalist'); dl.id='np-d-suggest';
+  dl.innerHTML=seen.map(t=>`<option value="${esc(t)}"></option>`).join('');
+  $('#modal-layer').appendChild(dl);
+  ACTIONS.npDelivSync();
 }
 function openNewDeliverable(pid){
   const ps=canOwnProjects();
@@ -12009,55 +12068,43 @@ const ACTIONS = {
       ${hits.slice(0,2).map(p=>`<a href="#/media/projects/${p.id}" onclick="closeModal()">${esc(p.name)}</a> (${esc(ayear(p.academic_year_id))})`).join(', ')}.
       Exact name + same year + same type would block; this is a warning (VR-6).</div>`:'';
   },
-  templatePreview:(d,n)=>{
-    const tid=+n.value;const t=DB.project_templates.find(x=>x.project_type_id===tid);
-    const box=$('#np-template');if(!box)return;
-    if(!t){box.innerHTML='<span class="small mut3">No template for this type — create deliverables manually.</span>';return;}
-    const items=DB.template_deliverables.filter(x=>x.template_id===t.id);
-    /* Each deliverable is an assignment-configuration row: owners (from the crew
-       selected above), priority, estimated hours. Owners → auto assignments. */
-    box.innerHTML=`<div class="small b mb2">${esc(t.name)} — tick the deliverables to create; pick owners to auto-assign the work</div>
-      ${items.map(i=>`<div class="np-tpl-row" style="padding:8px 0;border-bottom:1px solid var(--border)">
-        <div class="between mb1"><label class="f ac gap2" style="cursor:pointer">
-          <input type="checkbox" class="np-tmpl-item" value="${i.id}" checked>
-          <b class="small">${dtype(i.deliverable_type_id).icon} ${esc(dtype(i.deliverable_type_id).name)}</b></label>
-          <span class="f ac gap1"><span class="xsmall mut3">due +</span>
-            <input class="inp np-due-item" data-tid="${i.id}" type="number" min="0" max="365" step="1"
-              value="${defaultOffsetFor(i)}" title="Days after the project end date — applies to this project only"
-              style="height:24px;font-size:11px;width:52px;text-align:center">
-            <span class="xsmall mut3">d</span></span></div>
-        <div class="f wrap gap2 ac" style="padding-left:24px">
-          <span class="xsmall mut3" style="min-width:72px">Assigned to</span>
-          <span class="f wrap gap1 np-own" data-tid="${i.id}"><span class="xsmall mut3">— select crew above —</span></span>
-          <select class="inp np-pri-item" data-tid="${i.id}" style="height:26px;font-size:11px;width:auto">
-            <option value="normal">Normal</option><option value="urgent">Urgent</option><option value="high">High</option><option value="low">Low</option></select>
-          <input class="inp np-est-item" data-tid="${i.id}" type="number" min="0" step="0.5" value="${Math.max(2,(i.default_weight||1)*4)}"
-            title="Estimated hours" style="height:26px;font-size:11px;width:58px"> <span class="xsmall mut3">h</span>
-        </div></div>`).join('')}`;
-    ACTIONS.npCrewSync();
+  /* ── Generic deliverable builder ──────────────────────────────────────────
+     One row per thing the project has to produce. The name is free text so the
+     creator is never boxed into a template's idea of the work; the type comes
+     from the existing catalogue, which is what gives the row its unit, icon and
+     review rules downstream. No row carries an assignee — that is the Team
+     Lead's decision, made later on the project page. */
+  npAddDeliverable:()=>{
+    const box=$('#np-delivs'); if(!box)return;
+    const empty=box.querySelector('.np-d-empty'); if(empty)empty.remove();
+    const n=box.querySelectorAll('.np-d').length;
+    const types=DB.deliverable_types.filter(t=>t.is_active&&!t.archived_at);
+    const row=document.createElement('div');
+    row.className='np-d';
+    row.style.cssText='border:1px solid var(--border);border-radius:var(--r);padding:10px;margin-bottom:8px;background:var(--surface-2)';
+    row.innerHTML=`<div class="f gap2 ac mb2">
+        <input class="inp np-d-title" placeholder="e.g. Event photography, Aftermovie, Highlight reel" style="flex:1"
+          list="np-d-suggest" autocomplete="off">
+        <button type="button" class="icon-btn np-d-del" title="Remove this deliverable" style="color:var(--danger)">🗑</button></div>
+      <div class="f gap2 wrap ac">
+        <select class="inp np-d-type" style="height:30px;font-size:12px;width:auto">
+          ${types.map(t=>`<option value="${t.id}">${t.icon||''} ${esc(t.name)}</option>`).join('')}</select>
+        <select class="inp np-d-pri" style="height:30px;font-size:12px;width:auto">
+          <option value="normal">Normal</option><option value="urgent">Urgent</option>
+          <option value="high">High</option><option value="low">Low</option></select>
+        <input class="inp np-d-due" type="date" style="height:30px;font-size:12px;width:auto" title="Due date">
+        <span class="f ac gap1"><input class="inp np-d-est" type="number" min="0" step="0.5" placeholder="—"
+          style="height:30px;font-size:12px;width:64px;text-align:center" title="Estimated effort"><span class="xsmall mut3">h</span></span>
+        <span class="chip mut3" style="margin-left:auto">Team Lead will assign</span></div>`;
+    row.querySelector('.np-d-del').onclick=()=>{row.remove();ACTIONS.npDelivSync();};
+    box.appendChild(row);
+    if(!n)row.querySelector('.np-d-title').focus();
   },
-  npCrewSync:()=>{
-    /* Owner pickers show ONLY the crew currently selected for this project.
-       Smart auto-assignment (PRD §1): with exactly ONE crew member every
-       deliverable is pre-assigned to them — there is nothing to choose. With
-       two or more we deliberately select nobody, so the lead makes an explicit
-       call. Runs on every crew change, so 1→3 clears and 3→1 re-fills. */
-    const crew=$$('#np-assign .chip.sel').map(c=>+c.dataset.uid);
-    const single=crew.length===1;
-    $$('#np-template .np-own').forEach(box=>{
-      const prev=$$('#np-template .np-own[data-tid="'+box.dataset.tid+'"] .np-owner.sel').map(c=>+c.dataset.uid);
-      const kept=single?[crew[0]]:prev.filter(u2=>crew.includes(u2)&&!box.dataset.auto);
-      box.innerHTML=crew.length?crew.map(u2=>`<button type="button" class="chip np-owner ${kept.includes(u2)?'sel':''}" data-uid="${u2}"
-        style="height:24px;font-size:11px;padding:0 8px" onclick="this.classList.toggle('sel');this.closest('.np-own').dataset.touched=1">${esc(user(u2).full_name.split(' ')[0])}</button>`).join('')
-        :'<span class="xsmall mut3">— select crew above —</span>';
-      /* Remember whether the current selection was automatic, so switching to
-         multi-crew can clear it without wiping a manual choice. */
-      if(single)box.dataset.auto='1'; else delete box.dataset.auto;
-    });
-    const hint=$('#np-assign-hint');
-    if(hint)hint.textContent=crew.length===0?'Select crew above to assign deliverables.'
-      :single?`Single crew member — every deliverable is pre-assigned to ${user(crew[0]).full_name.split(' ')[0]}. You can still change any of them.`
-      :`${crew.length} crew selected — assign each deliverable explicitly.`;
+  /* Redraw the empty state when the last row goes. */
+  npDelivSync:()=>{
+    const box=$('#np-delivs'); if(!box)return;
+    if(!box.querySelectorAll('.np-d').length)
+      box.innerHTML='<div class="np-d-empty small mut3" style="padding:10px 0">No deliverables added.</div>';
   },
   createProject:()=>{
     const name=$('#np-name').value.trim();
@@ -12066,40 +12113,54 @@ const ACTIONS = {
     if(end<start){toast('VR-6: end date must be on or after the start date','bad');return;}
     const tid=+$('#np-type').value;
     const id=Math.max(...DB.projects.map(p=>p.id))+1;
-    const gated=!can('project.approve');
+    // The API creates every project active; only the copy differs by role.
+    const gated=!(can('project.approve')||isCoord());
     const p={id,department_id:1,campus_id:1,academic_year_id:+$('#np-year').value,project_type_id:tid,
       code:'MC-2627-'+String(100+id),name,description:$('#np-desc').value.trim(),
       academic_unit_id:$('#np-unit').value?+$('#np-unit').value:null,status:gated?'proposed':'planning',priority:$('#np-pri').value,
-      owner_id:S.me,created_by:S.me,start_date:start,end_date:end,cover_image_url:null,type_meta:{},
+      team_id:$('#np-team').value?+$('#np-team').value:null,
+      owner_id:(()=>{const t=$('#np-team').value?team(+$('#np-team').value):null;
+        return t&&t.lead_user_id?t.lead_user_id:(isCoord()?null:S.me);})(),
+      created_by:S.me,start_date:start,end_date:end,cover_image_url:null,type_meta:{},
       source:'app',archived_at:null,deleted_at:null,tags:[]};
     DB.projects.push(p);
-    DB.project_assignments.push({id:Math.max(...DB.project_assignments.map(a=>a.id))+1,project_id:id,user_id:S.me,
-      capacity_role_id:5,is_project_manager:true,assigned_by:S.me,assigned_at:TODAY,removed_at:null});
-    const t=DB.project_templates.find(x=>x.project_type_id===tid);
+    if(p.owner_id)
+      DB.project_assignments.push({id:Math.max(...DB.project_assignments.map(a=>a.id))+1,project_id:id,user_id:p.owner_id,
+        capacity_role_id:5,is_project_manager:true,assigned_by:S.me,assigned_at:TODAY,removed_at:null});
+    /* Deliverables the creator typed. They go to the server unassigned — the
+       optimistic copy mirrors that so the screen never implies an owner the
+       Team Lead has not chosen. */
+    const delivs=$$('#np-delivs .np-d').map(r=>({
+      title:(r.querySelector('.np-d-title').value||'').trim(),
+      deliverable_type_id:+r.querySelector('.np-d-type').value,
+      priority:r.querySelector('.np-d-pri').value,
+      due_date:r.querySelector('.np-d-due').value||null,
+      estimated_hours:+(r.querySelector('.np-d-est').value||0)||null,
+    })).filter(d=>d.title);
     let made=0;
-    if(t){DB.template_deliverables.filter(x=>x.template_id===t.id).forEach(td=>{
-      const dt=dtype(td.deliverable_type_id);
+    delivs.forEach(d=>{
+      const dt=dtype(d.deliverable_type_id);
       DB.deliverables.push({id:Math.max(...DB.deliverables.map(x=>x.id))+1,project_id:id,
-        deliverable_type_id:td.deliverable_type_id,title:td.title_pattern.replace('{project}',name),
-        owner_id:S.me,due_date:D.add(end,td.days_offset_due),completed_at:null,quantity_target:null,
-        quantity_delivered:null,unit:dt.default_unit,spec_notes:'',weight:td.default_weight,status:'not_started',
+        deliverable_type_id:d.deliverable_type_id,title:d.title,
+        owner_id:null,due_date:d.due_date,completed_at:null,quantity_target:null,
+        quantity_delivered:null,unit:dt.default_unit,spec_notes:'',weight:1,status:'not_started',
+        priority:d.priority,estimated_hours:d.estimated_hours,
         social_status:'na',social_post_url:null,social_posted_at:null,mail_status:'na',mail_sent_at:null,deleted_at:null});
-      made++;});}
+      made++;});
     audit(S.me,'project.created','project',id,null,{name,status:p.status,deliverables_created:made});
+    /* The project goes to a TEAM. The server resolves that team's lead and makes
+       them the owner — no individual is named here, by anyone. */
     const _np={name,project_type_id:tid,priority:$('#np-pri').value,academic_unit_id:$('#np-unit').value?+$('#np-unit').value:null,
       start_date:start,end_date:end,description:$('#np-desc').value.trim(),academic_year_id:+$('#np-year').value,
-      apply_template:true,
-      template_config:$$('#np-template .np-tmpl-item:checked').map(c=>{const tid=+c.value;
-        return {id:tid,
-          owners:$$('#np-template .np-own[data-tid="'+tid+'"] .np-owner.sel').map(o=>ruid(+o.dataset.uid)),
-          due_offset:(()=>{const el=$('#np-template .np-due-item[data-tid="'+tid+'"]');return el&&el.value!==''?+el.value:null;})(),
-          priority:($('#np-template .np-pri-item[data-tid="'+tid+'"]')||{}).value||'normal',
-          est_hours:+((($('#np-template .np-est-item[data-tid="'+tid+'"]')||{}).value)||0)||null};}),
-      assignees:$$('#np-assign .chip.sel').map(c=>ruid(+c.dataset.uid))};
+      team_id:$('#np-team').value?+$('#np-team').value:null,
+      deliverables:delivs};
+    // Read off the form BEFORE closeModal() empties the modal layer.
+    const tname=p.team_id?team(p.team_id).name:null;
     closeModal();location.hash='#/media/projects/'+id;render();
     moSync(MO_API.post('/projects',_np), res=>{ if(res&&res.project) location.hash='#/media/projects/'+res.project.id; });
-    toast(gated?'Proposed — pending approval before it is reportable-against (BR-11)':
-      'Created with '+made+' deliverables from the template (FR-3.2)','ok');
+    toast(gated?'Proposed — pending approval before it is reportable-against (BR-11)'
+      :tname?`Created · ${made} deliverable${made===1?'':'s'} for ${tname} to allocate`
+            :`Created · ${made} deliverable${made===1?'':'s'} · no team assigned yet`,'ok');
   },
   createDeliverable:()=>{
     const title=$('#nd-title').value.trim();
@@ -12178,6 +12239,16 @@ const ACTIONS = {
   },
   watchProject:()=>{toast('Watching — you now receive this project’s notifications (FR-3.9)','ok');},
   applyTemplate:(d)=>{toast('Template re-applied — existing deliverables are never duplicated','ok');},
+  /* Team Lead allocates a deliverable to one of their people. Goes through the
+     ordinary deliverable PATCH, which re-runs the same team scoping server-side
+     — the picker's contents are a convenience, never the authority. */
+  assignDeliverable:(d,n)=>{
+    const uid=n.value; if(!uid)return;
+    const dl=DB.deliverables.find(x=>x.id===+d.did); if(!dl)return;
+    dl.owner_id=uidOf(uid);
+    moSync(MO_API.patch('/deliverables/'+d.did,{owner_id:ruid(uidOf(uid))}),
+      ()=>{render();toast(dl.title+' → '+user(uidOf(uid)).full_name,'ok');});
+  },
   postComment:(d)=>{
     const box=$('#newcomment');if(!box||!box.value.trim())return;
     const _cb=box.value.trim();

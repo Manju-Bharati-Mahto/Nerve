@@ -273,6 +273,26 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     return out;
   }
 
+  /* ── Team → Team Lead ──────────────────────────────────────────────────────
+     Work is routed to a TEAM; the team's lead becomes the project's production
+     owner, which is what routes deliverables, review and notifications. Both
+     creation paths (New project, Convert to Project) resolve it here so they can
+     never disagree about what a valid team is.
+
+     The lead must be ACTIVE: a removed lead is still on the row historically,
+     and handing them new work would put the project in nobody's hands. */
+  async function resolveTeamLead(teamId: number): Promise<{ leadId: string; teamName: string } | { error: string }> {
+    const t = (await pool.query(
+      `SELECT t.id, t.name, t.lead_user_id, u.status AS lead_status
+         FROM mo_teams t LEFT JOIN users u ON u.id = t.lead_user_id
+        WHERE t.id=$1 AND t.archived_at IS NULL AND t.is_active`, [teamId])).rows[0];
+    if (!t) return { error: "That team does not exist or is archived." };
+    if (!t.lead_user_id) return { error: `"${t.name}" has no Team Lead — give it one before routing work to it.` };
+    if (t.lead_status !== "active")
+      return { error: `The Team Lead of "${t.name}" is no longer active — assign a new lead before routing work to it.` };
+    return { leadId: String(t.lead_user_id), teamName: String(t.name) };
+  }
+
   /** Reject the request when any id falls outside the actor's assignable scope. */
   async function assertAssignable(res: express.Response, actor: CurrentUser, ids: string[]): Promise<boolean> {
     const wanted = ids.filter(Boolean);
@@ -783,17 +803,45 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       [name, typeId]);
     if (dup.rows[0] && b.force_duplicate !== true)
       return sendError(res, 409, `AUTO-6/VR-6: an identical project already exists (${dup.rows[0].code}). Rename it, or merge into the existing project.`);
-    // Only a Team Lead or Admin may create a project.
-    if (!(isMoAdmin(u) || isMoTL(u)))
-      return sendError(res, 403, "Only a Team Lead or Admin may create a project.");
-    // Every id the caller wants to put on this project must be inside their
-    // assignable scope — a Team Lead may not reach outside their own team.
+    /* Who may create a project. The Operations Coordinator owns intake, so they
+       belong here — the client's capability table has always said so, and this
+       gate refusing them is why the New project button appeared and then 403'd. */
+    const isCoord = await isCoordinator(u);
+    if (!(isMoAdmin(u) || isMoTL(u) || isCoord))
+      return sendError(res, 403, "Only a Team Lead, Coordinator or Admin may create a project.");
+
+    /* ── Team assignment ────────────────────────────────────────────────────
+       The hierarchy is Coordinator/Admin → Team → Team Lead → Employee. A
+       project is routed to a TEAM; that team's lead becomes the production
+       owner and PM, and the lead is who decides which individual executes each
+       deliverable. Resolved server-side from the team id, so a forged
+       lead_user_id from the browser cannot put work on someone who does not
+       lead that team. */
+    const teamId = b.team_id ? Number(b.team_id) : null;
+    let leadId: string | null = null, teamName: string | null = null;
+    if (teamId) {
+      const t = await resolveTeamLead(teamId);
+      if ("error" in t) return sendError(res, 400, t.error);
+      leadId = t.leadId; teamName = t.teamName;
+    }
+
+    /* A Coordinator allocates the TEAM and never the individual — that is the
+       distinction this whole flow exists to preserve. A Team Lead or Admin may
+       still name crew directly, inside the scope they already had. */
     const wantAssignees = Array.isArray(b.assignees) ? (b.assignees as unknown[]).map(String) : [];
-    const wantOwners = Array.isArray(b.template_config)
+    const wantOwners = Array.isArray(b.deliverables)
+      ? (b.deliverables as Array<Record<string, unknown>>).flatMap((d) => (d.owner_id ? [String(d.owner_id)] : []))
+      : [];
+    const wantTemplateOwners = Array.isArray(b.template_config)
       ? (b.template_config as Array<Record<string, unknown>>).flatMap((c) =>
           Array.isArray(c.owners) ? (c.owners as unknown[]).map(String) : [])
       : [];
-    if (!(await assertAssignable(res, u, [...wantAssignees, ...wantOwners, ...(b.owner_id ? [String(b.owner_id)] : [])]))) return;
+    const named = [...wantAssignees, ...wantOwners, ...wantTemplateOwners, ...(b.owner_id ? [String(b.owner_id)] : [])];
+    if (isCoord && !isMoAdmin(u) && named.some((id) => id !== u.id))
+      return sendError(res, 403,
+        "A Coordinator assigns the project to a team — the Team Lead assigns individual crew to each deliverable.");
+    // Every id a Team Lead or Admin names must still be inside their own scope.
+    if (!isCoord && !(await assertAssignable(res, u, named))) return;
     const gated = false;   // TL/Admin only ⇒ projects are created active
     const ay = await pool.query(`SELECT id FROM mo_academic_years WHERE is_current LIMIT 1`);
     // Academic Unit is master data — validate the reference and refuse a unit
@@ -805,20 +853,28 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       if (!au) return sendError(res, 400, "Unknown academic unit.");
       if (!au.is_active || au.archived_at) return sendError(res, 400, "That academic unit is archived or disabled — pick an active one.");
     }
+    /* Production ownership belongs to the Team Lead when a team was chosen. A
+       Coordinator is Created By and nothing more, so a project they raise with
+       no team is left OWNERLESS — which the pipeline already reads as "needs
+       assignment" — rather than silently landing in their lap. */
+    const ownerId = leadId ?? (isCoord && !isMoAdmin(u) ? null : u.id);
     const ins = await pool.query(
       `INSERT INTO mo_projects (department_id, campus_id, academic_year_id, project_type_id, code, name, description,
-         academic_unit_id, status, priority, owner_id, created_by, start_date, end_date, type_meta, source)
-       VALUES (1,1,$1,$2,'PENDING',$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,'app') RETURNING id`,
+         academic_unit_id, status, priority, owner_id, created_by, start_date, end_date, type_meta, source, team_id)
+       VALUES (1,1,$1,$2,'PENDING',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'app',$13) RETURNING id`,
       [ay.rows[0]?.id ?? null, typeId, name, String(b.description ?? ""), unitId,
-       gated ? "proposed" : "planning", (b.priority as string) || "normal", u.id, start, end,
-       JSON.stringify(b.type_meta ?? {})]);
+       gated ? "proposed" : "planning", (b.priority as string) || "normal", ownerId, u.id, start, end,
+       JSON.stringify(b.type_meta ?? {}), teamId]);
     const id = Number(ins.rows[0].id); // pg returns BIGINT as a string — coerce before arithmetic
     const code = `MC-2627-${100 + id}`;
     await pool.query(`UPDATE mo_projects SET code=$1 WHERE id=$2`, [code, id]);
-    // Creator becomes owner + PM (BR-2).
-    await pool.query(
-      `INSERT INTO mo_project_assignments (project_id, user_id, capacity_role_id, is_project_manager, assigned_by)
-       VALUES ($1,$2,(SELECT id FROM mo_capacity_roles WHERE name='Coordinator' LIMIT 1),true,$2)`, [id, u.id]);
+    /* The PM is whoever owns production — the Team Lead when a team was chosen,
+       otherwise the creator (BR-2). A Coordinator raising an unassigned project
+       is deliberately NOT made PM: nobody is, until a team is named. */
+    if (ownerId)
+      await pool.query(
+        `INSERT INTO mo_project_assignments (project_id, user_id, capacity_role_id, is_project_manager, assigned_by)
+         VALUES ($1,$2,(SELECT id FROM mo_capacity_roles WHERE name='Coordinator' LIMIT 1),true,$3)`, [id, ownerId, u.id]);
     // #8/#10: assign additional crew (real user ids) — only a TL/Admin may assign others.
     const assignees = Array.isArray(b.assignees) ? (b.assignees as unknown[]).map(String) : [];
     if (assignees.length && (isMoAdmin(u) || isMoTL(u))) {
@@ -846,10 +902,57 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         }))
       : null;
     const picked = cfg ? cfg.map((c) => c.id) : (Array.isArray(b.template_items) ? (b.template_items as unknown[]).map(Number) : null);
-    if (b.apply_template !== false)
+    /* A template is now applied only when a caller ASKS for one. Creating a
+       project no longer assumes a fixed pack of deliverables — the templates
+       themselves, their admin screens and Convert-to-Project are untouched. */
+    if (b.apply_template === true)
       made = await applyTemplateDeliverables({ projectId: id, typeId, projectName: name, end, picked, cfg });
+
+    /* ── Deliverables the creator typed ─────────────────────────────────────
+       Free-text scope, one row each, created UNASSIGNED: adding a deliverable
+       and deciding who does it are two different acts by two different people.
+       owner_id stays NULL until the Team Lead fills it in, which is what the
+       pipeline reads as "unassigned". */
+    if (Array.isArray(b.deliverables)) {
+      for (const raw of b.deliverables as Array<Record<string, unknown>>) {
+        const title = String(raw.title ?? "").trim();
+        if (!title) continue;                       // an empty row the creator never filled in
+        if (title.length > 160) return sendError(res, 400, "A deliverable title must be 160 characters or fewer.");
+        // The type comes from the existing catalogue; an unknown or archived id
+        // is refused rather than silently coerced.
+        const typeRow = raw.deliverable_type_id
+          ? (await pool.query(`SELECT id FROM mo_deliverable_types WHERE id=$1 AND archived_at IS NULL`,
+              [Number(raw.deliverable_type_id)])).rows[0]
+          : (await pool.query(`SELECT id FROM mo_deliverable_types WHERE archived_at IS NULL ORDER BY id LIMIT 1`)).rows[0];
+        if (!typeRow) return sendError(res, 400, "Unknown deliverable type.");
+        const pr = ["urgent", "high", "normal", "low"].includes(String(raw.priority)) ? String(raw.priority) : "normal";
+        const est = raw.estimated_hours != null && raw.estimated_hours !== "" && !Number.isNaN(Number(raw.estimated_hours))
+          ? Number(raw.estimated_hours) : null;
+        // A Coordinator never names an owner (blocked above); a TL/Admin may.
+        const dOwner = raw.owner_id ? String(raw.owner_id) : null;
+        await pool.query(
+          `INSERT INTO mo_deliverables (project_id, deliverable_type_id, title, owner_id, due_date, unit, weight,
+             status, priority, estimated_hours, due_date_source)
+           SELECT $1,$2,$3,$4,$5, dt.default_unit, 1,'not_started',$6,$7,'manual'
+             FROM mo_deliverable_types dt WHERE dt.id=$2`,
+          [id, typeRow.id, title, dOwner, (raw.due_date as string) || null, pr, est]);
+        made++;
+      }
+    }
+
     await audit(u, "project.created", "project", id, null,
-      { name, status: gated ? "proposed" : "planning", deliverables_created: made }, req);
+      { name, status: gated ? "proposed" : "planning", deliverables_created: made,
+        team_id: teamId, team: teamName, owner_id: ownerId }, req);
+    /* The lead learns they are leading it, the same way Convert-to-Project tells
+       them — one notification path, not two. */
+    if (leadId && leadId !== u.id) {
+      await audit(u, "project.team_assigned", "project", id, null, { team_id: teamId, team: teamName, lead: leadId }, req);
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'assignment',$2,$3,'project',$4)`,
+        [leadId, "You are leading a new project",
+         `${name} was assigned to ${teamName}. ${made} deliverable(s) to allocate.`, id]);
+    }
     const { rows } = await pool.query(`SELECT * FROM mo_projects WHERE id=$1`, [id]);
     res.status(201).json({ project: rows[0], deliverables_created: made });
   }));
@@ -3520,11 +3623,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const teamId = b.team_id ? Number(b.team_id) : (r.team_id ? Number(r.team_id) : null);
     let leadId: string | null = null;
     if (teamId) {
-      const t = (await pool.query(
-        `SELECT lead_user_id, name FROM mo_teams WHERE id=$1 AND archived_at IS NULL AND is_active`, [teamId])).rows[0];
-      if (!t) return sendError(res, 400, "That team does not exist or is archived.");
-      if (!t.lead_user_id) return sendError(res, 400, `"${t.name}" has no Team Lead — give it one before routing work to it.`);
-      leadId = String(t.lead_user_id);
+      const r = await resolveTeamLead(teamId);
+      if ("error" in r) return sendError(res, 400, r.error);
+      leadId = r.leadId;
     } else if (b.lead_user_id) leadId = String(toUid(b.lead_user_id));
     else if (r.lead_user_id) leadId = String(r.lead_user_id);
     const start = (b.start_date as string) || r.event_date || null;
@@ -3546,9 +3647,13 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // Hand the project to the Team Lead as PM so review routing lands correctly.
     if (leadId)
       await pool.query(
+        // idx_mo_assign_unique is PARTIAL, so the conflict target must repeat
+        // its predicate or no unique index matches and the insert throws.
         `INSERT INTO mo_project_assignments (project_id, user_id, is_project_manager, assigned_by)
-         VALUES ($1,$2,true,$3) ON CONFLICT (project_id, user_id) DO UPDATE SET is_project_manager=true`,
-        [made.id, leadId, u.id]).catch(() => {/* assignment table may lack the unique — non-fatal */});
+         VALUES ($1,$2,true,$3)
+         ON CONFLICT (project_id, user_id) WHERE removed_at IS NULL
+         DO UPDATE SET is_project_manager=true`,
+        [made.id, leadId, u.id]).catch(() => {/* the owner is already PM from creation — non-fatal */});
     await pool.query(
       `UPDATE mo_requests SET status='converted', project_id=$1, converted_by=$2, converted_at=NOW(),
          lead_user_id=COALESCE($3, lead_user_id), team_id=COALESCE($4, team_id), updated_at=NOW() WHERE id=$5`,
@@ -4204,8 +4309,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const cur = (await pool.query(`SELECT * FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [id])).rows[0];
     if (!cur) return sendError(res, 404, "Project not found.");
     const isPM = await pool.query(`SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND is_project_manager AND removed_at IS NULL`, [id, u.id]);
-    if (!(isMoAdmin(u) || isMoTL(u) || cur.owner_id === u.id || isPM.rows[0]))
-      return sendError(res, 403, "Only the owner/PM, a Team Lead or Admin may edit this project.");
+    // The Coordinator owns the operational record — metadata and which team it
+    // is routed to — without owning production.
+    const isCoord = await isCoordinator(u);
+    if (!(isMoAdmin(u) || isMoTL(u) || isCoord || cur.owner_id === u.id || isPM.rows[0]))
+      return sendError(res, 403, "Only the owner/PM, a Team Lead, Coordinator or Admin may edit this project.");
     const b = req.body as Record<string, unknown>;
     if (typeof b.name === "string" && (b.name.trim().length < 3 || b.name.trim().length > 120))
       return sendError(res, 400, "VR-6: name must be 3–120 characters.");
@@ -4219,9 +4327,19 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       if (!au) return sendError(res, 400, "Unknown academic unit.");
       if (!au.is_active || au.archived_at) return sendError(res, 400, "That academic unit is archived or disabled — pick an active one.");
     }
+    /* Re-routing to another team moves production ownership with it — the lead
+       is resolved from the team id server-side, never taken from the browser. */
+    let newLead: string | null = null, newTeamName: string | null = null;
+    if ("team_id" in b && b.team_id != null && Number(b.team_id) !== Number(cur.team_id)) {
+      const t = await resolveTeamLead(Number(b.team_id));
+      if ("error" in t) return sendError(res, 400, t.error);
+      newLead = t.leadId; newTeamName = t.teamName;
+    }
+
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
-    for (const k of ["name", "description", "academic_unit_id", "priority", "start_date", "end_date", "cover_image_url", "academic_year_id"])
+    for (const k of ["name", "description", "academic_unit_id", "priority", "start_date", "end_date", "cover_image_url", "academic_year_id", "team_id"])
       if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
+    if (newLead) { fields.push(`owner_id=$${i++}`); vals.push(newLead); }
     if (!fields.length) return res.json({ project: cur });
     vals.push(id);
     const { rows } = await pool.query(`UPDATE mo_projects SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals);
@@ -4239,6 +4357,34 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         await audit(u, "project.due_dates_recalculated", "project", id,
           { end_date: dOnly(cur.end_date) },
           { end_date: dOnly(rows[0].end_date), deliverables_updated: recalculated }, req);
+    }
+    if (newLead) {
+      /* The new lead takes over as PM. Order matters: idx_mo_one_pm allows a
+         single PM per project, so the outgoing one is stood down BEFORE the
+         incoming one is promoted. The outgoing lead keeps their assignment row
+         — they did the work already on this project, and that history is what
+         the audit trail and reports read.
+
+         The conflict target carries the index's own WHERE clause because
+         idx_mo_assign_unique is PARTIAL; without it Postgres matches no unique
+         index and the insert throws. */
+      await pool.query(
+        `UPDATE mo_project_assignments SET is_project_manager=false
+          WHERE project_id=$1 AND user_id<>$2 AND is_project_manager AND removed_at IS NULL`, [id, newLead]);
+      await pool.query(
+        `INSERT INTO mo_project_assignments (project_id, user_id, is_project_manager, assigned_by)
+         VALUES ($1,$2,true,$3)
+         ON CONFLICT (project_id, user_id) WHERE removed_at IS NULL
+         DO UPDATE SET is_project_manager=true`,
+        [id, newLead, u.id]);
+      await audit(u, "project.team_assigned", "project", id,
+        { team_id: cur.team_id, owner_id: cur.owner_id },
+        { team_id: Number(b.team_id), team: newTeamName, lead: newLead }, req);
+      if (newLead !== u.id)
+        await pool.query(
+          `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+           VALUES ($1,'assignment',$2,$3,'project',$4)`,
+          [newLead, "You are leading a project", `${rows[0].name} was routed to ${newTeamName}.`, id]);
     }
     await audit(u, "project.updated", "project", id, cur, rows[0], req);
     res.json({ project: rows[0], due_dates_recalculated: recalculated });
