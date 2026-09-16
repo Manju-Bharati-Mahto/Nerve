@@ -24,7 +24,8 @@ import { getAiProvider, getAiStatus, testAiConnection } from "./ai/index.js";
 import { runAiOrchestration } from "./ai/orchestrator.js";
 import { createAiToolRegistry } from "./ai/tools/registry.js";
 import { estimateAiCost, parseAiPricing } from "./ai/pricing.js";
-import { countAiRequestsToday, findOverdueDeliverables, getAiUsageSummary, recordAiRequest } from "./mediaops-queries.js";
+import { countAiRequestsToday, findOverdueDeliverables, getAiUsageSummary, nerveToday, recordAiRequest } from "./mediaops-queries.js";
+import { buildTvBoard, tvBoardAllowed, type TvBoard } from "./mediaops-tv.js";
 import { config } from "./config.js";
 import type { AiCapability, AiUserContext } from "./ai/types.js";
 
@@ -39,11 +40,11 @@ type Handlers = {
   otpVerifyLimiter: RequestHandler;
 };
 
-interface CurrentUser { id: string; role: string; team: string | null; full_name?: string; email?: string; }
+export interface CurrentUser { id: string; role: string; team: string | null; full_name?: string; email?: string; }
 
 // ── §16 role mapping + permission model ─────────────────────────────────────
 type MoRole = "admin" | "team_lead" | "employee" | null;
-function moRoleOf(u: CurrentUser): MoRole {
+export function moRoleOf(u: CurrentUser): MoRole {
   if (u.role === "super_admin") return "admin";      // platform superuser → full media-ops access
   /* An SMC member is an ordinary NERVE user who also carries SMC work — not a
      separate product. Resolving them to 'employee' is the same move the
@@ -60,7 +61,7 @@ function moRoleOf(u: CurrentUser): MoRole {
   if (u.role === "sub_admin") return "team_lead";
   return "employee";                                  // 'user'
 }
-const isMoAdmin = (u: CurrentUser) => moRoleOf(u) === "admin";
+export const isMoAdmin = (u: CurrentUser) => moRoleOf(u) === "admin";
 const isMoTL = (u: CurrentUser) => moRoleOf(u) === "team_lead";
 /* The Media Operations Coordinator is a MEDIA-department role stored on
    mo_user_profiles.mo_role, so Nerve-wide three-role parity is untouched: at the
@@ -99,7 +100,7 @@ async function hasModuleGrant(u: CurrentUser, key: string): Promise<boolean> {
    Returning null rather than an empty list matters: a group nobody has
    configured behaves exactly as it did before this table existed, so adding
    group defaults cannot silently revoke access from anyone. */
-async function effectiveModules(u: CurrentUser): Promise<string[] | null> {
+export async function effectiveModules(u: CurrentUser): Promise<string[] | null> {
   const row = (await pool.query(
     `SELECT allowed_modules FROM mo_user_profiles WHERE user_id=$1`, [u.id])).rows[0];
   const am = row?.allowed_modules;
@@ -270,6 +271,26 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       rows.forEach((r) => out.add(String(r.user_id)));
     }
     return out;
+  }
+
+  /* ── Team → Team Lead ──────────────────────────────────────────────────────
+     Work is routed to a TEAM; the team's lead becomes the project's production
+     owner, which is what routes deliverables, review and notifications. Both
+     creation paths (New project, Convert to Project) resolve it here so they can
+     never disagree about what a valid team is.
+
+     The lead must be ACTIVE: a removed lead is still on the row historically,
+     and handing them new work would put the project in nobody's hands. */
+  async function resolveTeamLead(teamId: number): Promise<{ leadId: string; teamName: string } | { error: string }> {
+    const t = (await pool.query(
+      `SELECT t.id, t.name, t.lead_user_id, u.status AS lead_status
+         FROM mo_teams t LEFT JOIN users u ON u.id = t.lead_user_id
+        WHERE t.id=$1 AND t.archived_at IS NULL AND t.is_active`, [teamId])).rows[0];
+    if (!t) return { error: "That team does not exist or is archived." };
+    if (!t.lead_user_id) return { error: `"${t.name}" has no Team Lead — give it one before routing work to it.` };
+    if (t.lead_status !== "active")
+      return { error: `The Team Lead of "${t.name}" is no longer active — assign a new lead before routing work to it.` };
+    return { leadId: String(t.lead_user_id), teamName: String(t.name) };
   }
 
   /** Reject the request when any id falls outside the actor's assignable scope. */
@@ -782,17 +803,45 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       [name, typeId]);
     if (dup.rows[0] && b.force_duplicate !== true)
       return sendError(res, 409, `AUTO-6/VR-6: an identical project already exists (${dup.rows[0].code}). Rename it, or merge into the existing project.`);
-    // Only a Team Lead or Admin may create a project.
-    if (!(isMoAdmin(u) || isMoTL(u)))
-      return sendError(res, 403, "Only a Team Lead or Admin may create a project.");
-    // Every id the caller wants to put on this project must be inside their
-    // assignable scope — a Team Lead may not reach outside their own team.
+    /* Who may create a project. The Operations Coordinator owns intake, so they
+       belong here — the client's capability table has always said so, and this
+       gate refusing them is why the New project button appeared and then 403'd. */
+    const isCoord = await isCoordinator(u);
+    if (!(isMoAdmin(u) || isMoTL(u) || isCoord))
+      return sendError(res, 403, "Only a Team Lead, Coordinator or Admin may create a project.");
+
+    /* ── Team assignment ────────────────────────────────────────────────────
+       The hierarchy is Coordinator/Admin → Team → Team Lead → Employee. A
+       project is routed to a TEAM; that team's lead becomes the production
+       owner and PM, and the lead is who decides which individual executes each
+       deliverable. Resolved server-side from the team id, so a forged
+       lead_user_id from the browser cannot put work on someone who does not
+       lead that team. */
+    const teamId = b.team_id ? Number(b.team_id) : null;
+    let leadId: string | null = null, teamName: string | null = null;
+    if (teamId) {
+      const t = await resolveTeamLead(teamId);
+      if ("error" in t) return sendError(res, 400, t.error);
+      leadId = t.leadId; teamName = t.teamName;
+    }
+
+    /* A Coordinator allocates the TEAM and never the individual — that is the
+       distinction this whole flow exists to preserve. A Team Lead or Admin may
+       still name crew directly, inside the scope they already had. */
     const wantAssignees = Array.isArray(b.assignees) ? (b.assignees as unknown[]).map(String) : [];
-    const wantOwners = Array.isArray(b.template_config)
+    const wantOwners = Array.isArray(b.deliverables)
+      ? (b.deliverables as Array<Record<string, unknown>>).flatMap((d) => (d.owner_id ? [String(d.owner_id)] : []))
+      : [];
+    const wantTemplateOwners = Array.isArray(b.template_config)
       ? (b.template_config as Array<Record<string, unknown>>).flatMap((c) =>
           Array.isArray(c.owners) ? (c.owners as unknown[]).map(String) : [])
       : [];
-    if (!(await assertAssignable(res, u, [...wantAssignees, ...wantOwners, ...(b.owner_id ? [String(b.owner_id)] : [])]))) return;
+    const named = [...wantAssignees, ...wantOwners, ...wantTemplateOwners, ...(b.owner_id ? [String(b.owner_id)] : [])];
+    if (isCoord && !isMoAdmin(u) && named.some((id) => id !== u.id))
+      return sendError(res, 403,
+        "A Coordinator assigns the project to a team — the Team Lead assigns individual crew to each deliverable.");
+    // Every id a Team Lead or Admin names must still be inside their own scope.
+    if (!isCoord && !(await assertAssignable(res, u, named))) return;
     const gated = false;   // TL/Admin only ⇒ projects are created active
     const ay = await pool.query(`SELECT id FROM mo_academic_years WHERE is_current LIMIT 1`);
     // Academic Unit is master data — validate the reference and refuse a unit
@@ -804,20 +853,28 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       if (!au) return sendError(res, 400, "Unknown academic unit.");
       if (!au.is_active || au.archived_at) return sendError(res, 400, "That academic unit is archived or disabled — pick an active one.");
     }
+    /* Production ownership belongs to the Team Lead when a team was chosen. A
+       Coordinator is Created By and nothing more, so a project they raise with
+       no team is left OWNERLESS — which the pipeline already reads as "needs
+       assignment" — rather than silently landing in their lap. */
+    const ownerId = leadId ?? (isCoord && !isMoAdmin(u) ? null : u.id);
     const ins = await pool.query(
       `INSERT INTO mo_projects (department_id, campus_id, academic_year_id, project_type_id, code, name, description,
-         academic_unit_id, status, priority, owner_id, created_by, start_date, end_date, type_meta, source)
-       VALUES (1,1,$1,$2,'PENDING',$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,'app') RETURNING id`,
+         academic_unit_id, status, priority, owner_id, created_by, start_date, end_date, type_meta, source, team_id)
+       VALUES (1,1,$1,$2,'PENDING',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'app',$13) RETURNING id`,
       [ay.rows[0]?.id ?? null, typeId, name, String(b.description ?? ""), unitId,
-       gated ? "proposed" : "planning", (b.priority as string) || "normal", u.id, start, end,
-       JSON.stringify(b.type_meta ?? {})]);
+       gated ? "proposed" : "planning", (b.priority as string) || "normal", ownerId, u.id, start, end,
+       JSON.stringify(b.type_meta ?? {}), teamId]);
     const id = Number(ins.rows[0].id); // pg returns BIGINT as a string — coerce before arithmetic
     const code = `MC-2627-${100 + id}`;
     await pool.query(`UPDATE mo_projects SET code=$1 WHERE id=$2`, [code, id]);
-    // Creator becomes owner + PM (BR-2).
-    await pool.query(
-      `INSERT INTO mo_project_assignments (project_id, user_id, capacity_role_id, is_project_manager, assigned_by)
-       VALUES ($1,$2,(SELECT id FROM mo_capacity_roles WHERE name='Coordinator' LIMIT 1),true,$2)`, [id, u.id]);
+    /* The PM is whoever owns production — the Team Lead when a team was chosen,
+       otherwise the creator (BR-2). A Coordinator raising an unassigned project
+       is deliberately NOT made PM: nobody is, until a team is named. */
+    if (ownerId)
+      await pool.query(
+        `INSERT INTO mo_project_assignments (project_id, user_id, capacity_role_id, is_project_manager, assigned_by)
+         VALUES ($1,$2,(SELECT id FROM mo_capacity_roles WHERE name='Coordinator' LIMIT 1),true,$3)`, [id, ownerId, u.id]);
     // #8/#10: assign additional crew (real user ids) — only a TL/Admin may assign others.
     const assignees = Array.isArray(b.assignees) ? (b.assignees as unknown[]).map(String) : [];
     if (assignees.length && (isMoAdmin(u) || isMoTL(u))) {
@@ -845,10 +902,57 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         }))
       : null;
     const picked = cfg ? cfg.map((c) => c.id) : (Array.isArray(b.template_items) ? (b.template_items as unknown[]).map(Number) : null);
-    if (b.apply_template !== false)
+    /* A template is now applied only when a caller ASKS for one. Creating a
+       project no longer assumes a fixed pack of deliverables — the templates
+       themselves, their admin screens and Convert-to-Project are untouched. */
+    if (b.apply_template === true)
       made = await applyTemplateDeliverables({ projectId: id, typeId, projectName: name, end, picked, cfg });
+
+    /* ── Deliverables the creator typed ─────────────────────────────────────
+       Free-text scope, one row each, created UNASSIGNED: adding a deliverable
+       and deciding who does it are two different acts by two different people.
+       owner_id stays NULL until the Team Lead fills it in, which is what the
+       pipeline reads as "unassigned". */
+    if (Array.isArray(b.deliverables)) {
+      for (const raw of b.deliverables as Array<Record<string, unknown>>) {
+        const title = String(raw.title ?? "").trim();
+        if (!title) continue;                       // an empty row the creator never filled in
+        if (title.length > 160) return sendError(res, 400, "A deliverable title must be 160 characters or fewer.");
+        // The type comes from the existing catalogue; an unknown or archived id
+        // is refused rather than silently coerced.
+        const typeRow = raw.deliverable_type_id
+          ? (await pool.query(`SELECT id FROM mo_deliverable_types WHERE id=$1 AND archived_at IS NULL`,
+              [Number(raw.deliverable_type_id)])).rows[0]
+          : (await pool.query(`SELECT id FROM mo_deliverable_types WHERE archived_at IS NULL ORDER BY id LIMIT 1`)).rows[0];
+        if (!typeRow) return sendError(res, 400, "Unknown deliverable type.");
+        const pr = ["urgent", "high", "normal", "low"].includes(String(raw.priority)) ? String(raw.priority) : "normal";
+        const est = raw.estimated_hours != null && raw.estimated_hours !== "" && !Number.isNaN(Number(raw.estimated_hours))
+          ? Number(raw.estimated_hours) : null;
+        // A Coordinator never names an owner (blocked above); a TL/Admin may.
+        const dOwner = raw.owner_id ? String(raw.owner_id) : null;
+        await pool.query(
+          `INSERT INTO mo_deliverables (project_id, deliverable_type_id, title, owner_id, due_date, unit, weight,
+             status, priority, estimated_hours, due_date_source)
+           SELECT $1,$2,$3,$4,$5, dt.default_unit, 1,'not_started',$6,$7,'manual'
+             FROM mo_deliverable_types dt WHERE dt.id=$2`,
+          [id, typeRow.id, title, dOwner, (raw.due_date as string) || null, pr, est]);
+        made++;
+      }
+    }
+
     await audit(u, "project.created", "project", id, null,
-      { name, status: gated ? "proposed" : "planning", deliverables_created: made }, req);
+      { name, status: gated ? "proposed" : "planning", deliverables_created: made,
+        team_id: teamId, team: teamName, owner_id: ownerId }, req);
+    /* The lead learns they are leading it, the same way Convert-to-Project tells
+       them — one notification path, not two. */
+    if (leadId && leadId !== u.id) {
+      await audit(u, "project.team_assigned", "project", id, null, { team_id: teamId, team: teamName, lead: leadId }, req);
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'assignment',$2,$3,'project',$4)`,
+        [leadId, "You are leading a new project",
+         `${name} was assigned to ${teamName}. ${made} deliverable(s) to allocate.`, id]);
+    }
     const { rows } = await pool.query(`SELECT * FROM mo_projects WHERE id=$1`, [id]);
     res.status(201).json({ project: rows[0], deliverables_created: made });
   }));
@@ -2282,13 +2386,75 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const t = (await pool.query(`SELECT status FROM users WHERE id=$1 AND team='media'`, [realId])).rows[0];
     if (!t) return sendError(res, 404, "That member is not on the media crew.");
     if (t.status === "active") return res.json({ ok: true, already: true });
-    // The password is NOT restored — it was destroyed on removal by design, so a
-    // restored member goes through a password reset like any new account.
+
+    /* An optional body lets Add Member reactivate through this same endpoint
+       rather than a second code path: the Admin filled in a role, designation
+       and modules for the person they were trying to add, and those should take
+       effect. Sent with no body — the Directory's Restore button — this behaves
+       exactly as it always did.
+
+       Only what is EXPLICITLY sent is applied. There are deliberately no role
+       default modules here: reactivation must not hand out access the Admin did
+       not tick, and an absent field leaves the prior value in place. */
+    const b = (req.body ?? {}) as Record<string, unknown>;
     await pool.query(
       `UPDATE users SET status='active', deactivated_at=NULL, deactivated_by=NULL, deactivation_reason=NULL WHERE id=$1`,
       [realId]);
-    await audit(u, "crew.restored", "user", null, { id: realId, status: t.status }, { id: realId, status: "active" }, req);
-    res.json({ ok: true, needs_password_reset: true });
+
+    /* Removal destroyed the password hash on purpose, so a reactivated account
+       cannot be signed into until one is set. Supplying it here is what makes
+       Add Member's reactivation a complete flow instead of half of one. */
+    const pw = String(b.password ?? "");
+    if (pw) {
+      if (pw.length < 6) return sendError(res, 400, "Password must be at least 6 characters.");
+      await pool.query(`UPDATE users SET password_hash=$1, email_verified=true WHERE id=$2`,
+        [await hashPassword(pw), realId]);
+    }
+    if (typeof b.full_name === "string" && b.full_name.trim())
+      await pool.query(`UPDATE users SET full_name=$1 WHERE id=$2`, [b.full_name.trim(), realId]);
+    if (typeof b.avatar_url === "string" && b.avatar_url.trim())
+      await pool.query(`UPDATE users SET avatar_url=$1 WHERE id=$2`, [b.avatar_url.trim(), realId]);
+
+    // Same mapping POST /crew uses, so a reactivated member and a new one with
+    // the same form values end up in the same state.
+    let moRole: string | null = null;
+    if (b.role) {
+      const ROLE_MAP: Record<string, string> = { admin: "admin", team_lead: "sub_admin", employee: "user", coordinator: "user" };
+      const MO_ROLE_MAP: Record<string, string> = { admin: "admin", sub_admin: "team_lead", user: "employee" };
+      const role = ROLE_MAP[String(b.role)] ?? "user";
+      moRole = String(b.role) === "coordinator" ? "coordinator" : MO_ROLE_MAP[role];
+      await pool.query(`UPDATE users SET role=$1 WHERE id=$2`, [role, realId]);
+    }
+    if (moRole || "designation" in b || "campus_id" in b || Array.isArray(b.allowed_modules))
+      await pool.query(
+        `INSERT INTO mo_user_profiles (user_id, designation, mo_role, allowed_modules, campus_id)
+         VALUES ($1, COALESCE($2,''), COALESCE($3,'employee'), $4, $5)
+         ON CONFLICT (user_id) DO UPDATE SET
+           designation     = COALESCE(NULLIF($2,''), mo_user_profiles.designation),
+           mo_role         = COALESCE($3, mo_user_profiles.mo_role),
+           allowed_modules = COALESCE($4, mo_user_profiles.allowed_modules),
+           campus_id       = COALESCE($5, mo_user_profiles.campus_id)`,
+        [realId, typeof b.designation === "string" ? b.designation.trim() : null, moRole,
+         Array.isArray(b.allowed_modules) ? JSON.stringify(b.allowed_modules) : null,
+         b.campus_id ? Number(b.campus_id) : null]);
+
+    // Team membership was cleared on removal, so putting them back on one is a
+    // re-add, not an edit. Mirrors POST /crew's lead_user_id handling.
+    if (b.lead_user_id) {
+      const leadId = String(b.lead_user_id);
+      let team = (await pool.query(`SELECT id FROM mo_teams WHERE lead_user_id=$1 AND is_active LIMIT 1`, [leadId])).rows[0];
+      if (!team) {
+        const lead = (await pool.query(`SELECT full_name FROM users WHERE id=$1`, [leadId])).rows[0];
+        team = (await pool.query(`INSERT INTO mo_teams (department_id, name, lead_user_id, is_active) VALUES (1,$1,$2,true) RETURNING id`,
+          [`${lead?.full_name ?? "Team"}'s team`, leadId])).rows[0];
+      }
+      await pool.query(`INSERT INTO mo_team_members (team_id, user_id, is_primary) VALUES ($1,$2,true) ON CONFLICT DO NOTHING`, [team.id, realId]);
+    }
+
+    await audit(u, "crew.restored", "user", null, { id: realId, status: t.status },
+      { id: realId, status: "active", role: b.role ?? null, password_set: !!pw,
+        allowed_modules: Array.isArray(b.allowed_modules) ? b.allowed_modules : null }, req);
+    res.json({ ok: true, id: realId, password_set: !!pw, needs_password_reset: !pw });
   }));
 
   // Change a member's role (and optionally team-lead) — #1. Admin only.
@@ -3457,11 +3623,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const teamId = b.team_id ? Number(b.team_id) : (r.team_id ? Number(r.team_id) : null);
     let leadId: string | null = null;
     if (teamId) {
-      const t = (await pool.query(
-        `SELECT lead_user_id, name FROM mo_teams WHERE id=$1 AND archived_at IS NULL AND is_active`, [teamId])).rows[0];
-      if (!t) return sendError(res, 400, "That team does not exist or is archived.");
-      if (!t.lead_user_id) return sendError(res, 400, `"${t.name}" has no Team Lead — give it one before routing work to it.`);
-      leadId = String(t.lead_user_id);
+      const r = await resolveTeamLead(teamId);
+      if ("error" in r) return sendError(res, 400, r.error);
+      leadId = r.leadId;
     } else if (b.lead_user_id) leadId = String(toUid(b.lead_user_id));
     else if (r.lead_user_id) leadId = String(r.lead_user_id);
     const start = (b.start_date as string) || r.event_date || null;
@@ -3483,9 +3647,13 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // Hand the project to the Team Lead as PM so review routing lands correctly.
     if (leadId)
       await pool.query(
+        // idx_mo_assign_unique is PARTIAL, so the conflict target must repeat
+        // its predicate or no unique index matches and the insert throws.
         `INSERT INTO mo_project_assignments (project_id, user_id, is_project_manager, assigned_by)
-         VALUES ($1,$2,true,$3) ON CONFLICT (project_id, user_id) DO UPDATE SET is_project_manager=true`,
-        [made.id, leadId, u.id]).catch(() => {/* assignment table may lack the unique — non-fatal */});
+         VALUES ($1,$2,true,$3)
+         ON CONFLICT (project_id, user_id) WHERE removed_at IS NULL
+         DO UPDATE SET is_project_manager=true`,
+        [made.id, leadId, u.id]).catch(() => {/* the owner is already PM from creation — non-fatal */});
     await pool.query(
       `UPDATE mo_requests SET status='converted', project_id=$1, converted_by=$2, converted_at=NOW(),
          lead_user_id=COALESCE($3, lead_user_id), team_id=COALESCE($4, team_id), updated_at=NOW() WHERE id=$5`,
@@ -3955,14 +4123,62 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (String(b.password ?? "").length < 6) return sendError(res, 400, "Password must be at least 6 characters.");
     // H2: photo is optional — initials avatar is the fallback (bulk onboarding).
     const role = ({ admin: "admin", team_lead: "sub_admin", employee: "user", coordinator: "user" } as Record<string, string>)[String(b.role)] ?? "user";
-    const exists = await pool.query(`SELECT 1 FROM users WHERE email=$1`, [email]);
-    if (exists.rows[0]) return sendError(res, 409, "A user with that email already exists.");
+    /* One identity per email — removal is a lifecycle state on the SAME row
+       (users.status='archived'), which is what keeps a person's reports,
+       assignments and audit trail attached to them. So a clash here is one of
+       two different situations and the Admin needs to be told which:
+
+         ACTIVE_DUPLICATE     someone is using this email. Refuse, as before.
+         REMOVED_USER_EXISTS  the identity exists but was removed. Creating a
+                              second row is exactly the wrong repair — it would
+                              orphan the history and give getUserByEmail() two
+                              rows to choose between. Offer reactivation instead.
+
+       Matched on LOWER(email) rather than the raw column because that is what
+       getUserByEmail() uses to decide who can log in: UNIQUE(email) is
+       case-sensitive, so a row stored as 'Rahul@…' would slip past `email=$1`
+       and become a second identity that login then picks between arbitrarily. */
+    const prior = (await pool.query(
+      `SELECT id, full_name, email, status, team, deactivated_at FROM users WHERE LOWER(email)=$1`,
+      [email])).rows[0];
+    if (prior && prior.status === "active")
+      return res.status(409).json({ code: "ACTIVE_DUPLICATE", message: "A user with that email already exists." });
+    if (prior) {
+      const sameTeam = prior.team === "media";
+      return res.status(409).json({
+        code: "REMOVED_USER_EXISTS",
+        message: sameTeam
+          ? "An account with this email was previously removed."
+          : "An account with this email was previously removed from another team.",
+        // Enough for the Admin to recognise the person and decide — no more.
+        user: { id: prior.id, full_name: prior.full_name, email: prior.email,
+                status: prior.status, deactivated_at: prior.deactivated_at, same_team: sameTeam },
+      });
+    }
     const id = `u-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const pw = await hashPassword(String(b.password));
-    await pool.query(
-      `INSERT INTO users (id, full_name, email, department, role, team, password_hash, email_verified, avatar_url)
-       VALUES ($1,$2,$3,'Media Crew',$4,'media',$5,true,$6)`,
-      [id, String(b.full_name ?? "New Member").trim() || "New Member", email, role, pw, (b.avatar_url as string) || null]);
+    /* The check above is a read followed by a write, so two Admins submitting
+       the same email at once can both pass it. UNIQUE(email) is what actually
+       guarantees one identity, and this turns its violation into the same
+       answer the pre-check would have given rather than a 500. */
+    try {
+      await pool.query(
+        `INSERT INTO users (id, full_name, email, department, role, team, password_hash, email_verified, avatar_url)
+         VALUES ($1,$2,$3,'Media Crew',$4,'media',$5,true,$6)`,
+        [id, String(b.full_name ?? "New Member").trim() || "New Member", email, role, pw, (b.avatar_url as string) || null]);
+    } catch (err) {
+      if ((err as { code?: string }).code !== "23505") throw err;
+      const raced = (await pool.query(
+        `SELECT id, full_name, email, status, team, deactivated_at FROM users WHERE LOWER(email)=$1`,
+        [email])).rows[0];
+      if (raced && raced.status !== "active")
+        return res.status(409).json({
+          code: "REMOVED_USER_EXISTS", message: "An account with this email was previously removed.",
+          user: { id: raced.id, full_name: raced.full_name, email: raced.email, status: raced.status,
+                  deactivated_at: raced.deactivated_at, same_team: raced.team === "media" },
+        });
+      return res.status(409).json({ code: "ACTIVE_DUPLICATE", message: "A user with that email already exists." });
+    }
     // 1.2 — default module sets per role, applied when no explicit selection is
     // made: onboarding must not depend on remembering ten checkboxes, and a missed
     // tick must never silently remove a right §16 grants.
@@ -4016,7 +4232,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (typeof b.full_name === "string" && b.full_name.trim())
       await pool.query(`UPDATE users SET full_name=$1 WHERE id=$2`, [b.full_name.trim(), realId]);
     if (typeof b.email === "string" && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(b.email.trim())) {
-      const clash = await pool.query(`SELECT 1 FROM users WHERE email=$1 AND id<>$2`, [b.email.trim().toLowerCase(), realId]);
+      /* LOWER(), for the same reason POST /crew uses it: UNIQUE(email) is
+         case-sensitive, so a raw comparison would let an Admin set an email that
+         differs only in case from an existing one — including an archived one —
+         and hand getUserByEmail() two rows to choose between at login. */
+      const clash = await pool.query(`SELECT 1 FROM users WHERE LOWER(email)=$1 AND id<>$2`, [b.email.trim().toLowerCase(), realId]);
       if (clash.rows[0]) return sendError(res, 409, "That email is already in use.");
       await pool.query(`UPDATE users SET email=$1 WHERE id=$2`, [b.email.trim().toLowerCase(), realId]);
     }
@@ -4089,8 +4309,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const cur = (await pool.query(`SELECT * FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [id])).rows[0];
     if (!cur) return sendError(res, 404, "Project not found.");
     const isPM = await pool.query(`SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND is_project_manager AND removed_at IS NULL`, [id, u.id]);
-    if (!(isMoAdmin(u) || isMoTL(u) || cur.owner_id === u.id || isPM.rows[0]))
-      return sendError(res, 403, "Only the owner/PM, a Team Lead or Admin may edit this project.");
+    // The Coordinator owns the operational record — metadata and which team it
+    // is routed to — without owning production.
+    const isCoord = await isCoordinator(u);
+    if (!(isMoAdmin(u) || isMoTL(u) || isCoord || cur.owner_id === u.id || isPM.rows[0]))
+      return sendError(res, 403, "Only the owner/PM, a Team Lead, Coordinator or Admin may edit this project.");
     const b = req.body as Record<string, unknown>;
     if (typeof b.name === "string" && (b.name.trim().length < 3 || b.name.trim().length > 120))
       return sendError(res, 400, "VR-6: name must be 3–120 characters.");
@@ -4104,9 +4327,19 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       if (!au) return sendError(res, 400, "Unknown academic unit.");
       if (!au.is_active || au.archived_at) return sendError(res, 400, "That academic unit is archived or disabled — pick an active one.");
     }
+    /* Re-routing to another team moves production ownership with it — the lead
+       is resolved from the team id server-side, never taken from the browser. */
+    let newLead: string | null = null, newTeamName: string | null = null;
+    if ("team_id" in b && b.team_id != null && Number(b.team_id) !== Number(cur.team_id)) {
+      const t = await resolveTeamLead(Number(b.team_id));
+      if ("error" in t) return sendError(res, 400, t.error);
+      newLead = t.leadId; newTeamName = t.teamName;
+    }
+
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
-    for (const k of ["name", "description", "academic_unit_id", "priority", "start_date", "end_date", "cover_image_url", "academic_year_id"])
+    for (const k of ["name", "description", "academic_unit_id", "priority", "start_date", "end_date", "cover_image_url", "academic_year_id", "team_id"])
       if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
+    if (newLead) { fields.push(`owner_id=$${i++}`); vals.push(newLead); }
     if (!fields.length) return res.json({ project: cur });
     vals.push(id);
     const { rows } = await pool.query(`UPDATE mo_projects SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals);
@@ -4124,6 +4357,34 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         await audit(u, "project.due_dates_recalculated", "project", id,
           { end_date: dOnly(cur.end_date) },
           { end_date: dOnly(rows[0].end_date), deliverables_updated: recalculated }, req);
+    }
+    if (newLead) {
+      /* The new lead takes over as PM. Order matters: idx_mo_one_pm allows a
+         single PM per project, so the outgoing one is stood down BEFORE the
+         incoming one is promoted. The outgoing lead keeps their assignment row
+         — they did the work already on this project, and that history is what
+         the audit trail and reports read.
+
+         The conflict target carries the index's own WHERE clause because
+         idx_mo_assign_unique is PARTIAL; without it Postgres matches no unique
+         index and the insert throws. */
+      await pool.query(
+        `UPDATE mo_project_assignments SET is_project_manager=false
+          WHERE project_id=$1 AND user_id<>$2 AND is_project_manager AND removed_at IS NULL`, [id, newLead]);
+      await pool.query(
+        `INSERT INTO mo_project_assignments (project_id, user_id, is_project_manager, assigned_by)
+         VALUES ($1,$2,true,$3)
+         ON CONFLICT (project_id, user_id) WHERE removed_at IS NULL
+         DO UPDATE SET is_project_manager=true`,
+        [id, newLead, u.id]);
+      await audit(u, "project.team_assigned", "project", id,
+        { team_id: cur.team_id, owner_id: cur.owner_id },
+        { team_id: Number(b.team_id), team: newTeamName, lead: newLead }, req);
+      if (newLead !== u.id)
+        await pool.query(
+          `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+           VALUES ($1,'assignment',$2,$3,'project',$4)`,
+          [newLead, "You are leading a project", `${rows[0].name} was routed to ${newTeamName}.`, id]);
     }
     await audit(u, "project.updated", "project", id, cur, rows[0], req);
     res.json({ project: rows[0], due_dates_recalculated: recalculated });
@@ -4801,6 +5062,50 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       active_projects: active.rows[0].c, deliverables_due_week: dueWeek.rows[0].c, overdue_deliverables: overdue.rows[0].c,
       shoots_today: shootsToday.rows[0].c, equipment_out: equipOut.rows[0].c, reports_to_review: pendingReports.rows[0].c,
     });
+  }));
+
+  /* ── TV Operations Board (/tv/board) ───────────────────────────────────────
+     The office display at /api/media-tv/ reads this and nothing else. It is a
+     SECOND, much smaller door onto the same data — deliberately not /state,
+     which ships ~60 tables (casting records, contact details) that have no
+     business on a screen the corridor can see.
+
+     Permission reuses the existing module model exactly as the client resolves
+     it (moduleAllowed): unrestricted or an explicit 'tv' grant, admins always.
+     No new role, no new permission table — an Admin creates a display account
+     in Users & Roles and grants it 'tv' alone, so if anyone opens the drawer on
+     the TV every other module is refused by the gates that already exist.
+
+     Cached briefly so several displays (and a 45 s poll) cost one query set
+     rather than one each — §24's "do not create unnecessary database load". */
+  /* The in-flight PROMISE is cached, not the resolved board: several displays
+     waking at the same moment would otherwise each start their own query set
+     the instant the entry expires. They now share one build. */
+  let tvCache: { at: number; day: string; body: Promise<TvBoard> } | null = null;
+  const TV_CACHE_MS = 20_000;
+
+  app.get(`${P}/tv/board`, asyncHandler(async (_req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const eff = await effectiveModules(u);
+    if (!tvBoardAllowed(isMoAdmin(u), eff))
+      return sendError(res, 403, "This account does not have the TV Display Board module.");
+
+    const day = nerveToday();
+    if (!tvCache || tvCache.day !== day || Date.now() - tvCache.at > TV_CACHE_MS) {
+      const entry = { at: Date.now(), day, body: buildTvBoard(day) };
+      // A failed build must not be cached, or every display stays broken for the
+      // full TTL after one transient database error.
+      entry.body.catch(() => { if (tvCache === entry) tvCache = null; });
+      tvCache = entry;
+    }
+    const board = await tvCache.body;
+    // A display that reloads must never be served a stale board by a proxy.
+    res.setHeader("Cache-Control", "no-store");
+    /* `modules` is per-caller, so it is merged in here rather than cached with
+       the board — the cached body must stay identical for every display. The
+       drawer uses it to hide links this account could not open anyway; the
+       routes behind them enforce the same answer independently. */
+    res.json({ ...board, modules: eff });
   }));
 
   // ── helpers ───────────────────────────────────────────────────────────────

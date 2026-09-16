@@ -238,6 +238,32 @@ export async function bootstrapMediaOpsDatabase() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_projects_fts ON mo_projects
                     USING GIN (to_tsvector('english', coalesce(name,'') || ' ' || coalesce(description,'')))`);
 
+  /* ── Which TEAM a project belongs to ──────────────────────────────────────
+     The hierarchy is Coordinator/Admin → Team → Team Lead → Employee: work is
+     routed to a team, and the team's lead decides who executes each
+     deliverable. owner_id already carries the LEAD (the project page labels it
+     "Team lead") and mo_deliverables.owner_id already carries the individual,
+     so the only link the schema was missing is the team itself.
+
+     Nullable on purpose. Every existing project keeps its owner, its crew and
+     its history untouched; a NULL here simply means the team was never recorded,
+     which is exactly true of anything created before this column. */
+  await pool.query(`ALTER TABLE mo_projects ADD COLUMN IF NOT EXISTS team_id BIGINT REFERENCES mo_teams(id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_projects_team ON mo_projects(team_id)`);
+  /* Converted projects already know their team — the coordinator picked one on
+     the request. Copying it across is recovering a fact we hold, not inventing
+     one, and the guard makes it idempotent and non-destructive. */
+  await pool.query(`
+    UPDATE mo_projects p SET team_id = r.team_id
+      FROM mo_requests r
+     WHERE r.project_id = p.id AND p.team_id IS NULL AND r.team_id IS NOT NULL`)
+    .catch((e) => {
+      // mo_requests is created further down, so it is absent on the very first
+      // bootstrap of an empty database — where there is nothing to backfill
+      // anyway. Anything else is a real error and must not be swallowed.
+      if ((e as { code?: string }).code !== "42P01") throw e;
+    });
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_project_assignments (
       id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
