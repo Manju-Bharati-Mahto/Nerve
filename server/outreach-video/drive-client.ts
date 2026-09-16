@@ -62,6 +62,18 @@ export interface DriveClient {
   updateTextFile(fileId: string, content: string, expectedRevisionId: string): Promise<DriveFileMeta>;
   /** Current metadata without transferring content — used to cheaply poll revisions. */
   getMeta(fileId: string): Promise<DriveFileMeta>;
+  /** Uploads a local file (the editor's video) and returns its Drive metadata. */
+  uploadBinaryFile(name: string, parentId: string, localPath: string, mimeType: string): Promise<DriveFileMeta>;
+  /**
+   * Opens a file's bytes for streaming to the browser. `range` is passed
+   * straight through so the video player can seek without pulling the whole
+   * file. Returns the upstream status so a 206 stays a 206.
+   */
+  openStream(fileId: string, range?: string): Promise<{
+    body: ReadableStream<Uint8Array> | null;
+    status: number;
+    headers: Headers;
+  }>;
 }
 
 // ── Google implementation ──────────────────────────────────────────────────
@@ -236,6 +248,43 @@ export class GoogleDriveClient implements DriveClient {
     await this.expectOk(res, "file update");
     return this.toMeta(await res.json() as Record<string, unknown>);
   }
+
+  async uploadBinaryFile(name: string, parentId: string, localPath: string, mimeType: string): Promise<DriveFileMeta> {
+    // Resumable upload: videos are far too large for a multipart body. We start
+    // the session, then send the bytes in one PUT — enough for agency-sized
+    // files, and the session URL is what would allow chunked retry later.
+    const fields = encodeURIComponent("id,name,mimeType,headRevisionId,version,modifiedTime");
+    const start = await this.api(`${DRIVE_UPLOAD_API}/files?uploadType=resumable&fields=${fields}&${SHARED_DRIVE_PARAMS}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=UTF-8" },
+      body: JSON.stringify({ name, parents: [parentId], mimeType }),
+    });
+    await this.expectOk(start, `upload session (${name})`);
+    const sessionUrl = start.headers.get("location");
+    if (!sessionUrl) throw new Error("Drive did not return a resumable upload session URL.");
+
+    const stat = await fs.stat(localPath);
+    const body = await fs.readFile(localPath);
+    const put = await fetch(sessionUrl, {
+      method: "PUT",
+      headers: { "Content-Type": mimeType, "Content-Length": String(stat.size) },
+      body: new Uint8Array(body),
+    });
+    await this.expectOk(put, `upload (${name})`);
+    return this.toMeta(await put.json() as Record<string, unknown>);
+  }
+
+  async openStream(fileId: string, range?: string) {
+    const token = await this.accessToken();
+    const headers = new Headers({ Authorization: `Bearer ${token}` });
+    if (range) headers.set("Range", range);
+    const res = await fetch(`${DRIVE_API}/files/${fileId}?alt=media&${SHARED_DRIVE_PARAMS}`, { headers });
+    if (!res.ok && res.status !== 206) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Drive stream failed (HTTP ${res.status}): ${text.slice(0, 200)}`);
+    }
+    return { body: res.body, status: res.status, headers: res.headers };
+  }
 }
 
 // ── Local filesystem implementation ────────────────────────────────────────
@@ -325,6 +374,43 @@ export class LocalDriveClient implements DriveClient {
     await fs.writeFile(this.resolve(fileId), content, "utf8");
     await this.bumpRevision(fileId);
     return this.metaOf(fileId);
+  }
+
+  async uploadBinaryFile(name: string, parentId: string, localPath: string, _mimeType: string): Promise<DriveFileMeta> {
+    const id = parentId === "root" ? name : path.join(parentId, name);
+    await fs.mkdir(path.dirname(this.resolve(id)), { recursive: true });
+    await fs.copyFile(localPath, this.resolve(id));
+    await this.bumpRevision(id);
+    return this.metaOf(id);
+  }
+
+  async openStream(fileId: string, range?: string) {
+    const full = this.resolve(fileId);
+    const stat = await fs.stat(full);
+    const buf = await fs.readFile(full);
+
+    // Honour Range the same way Drive does, so the player's seeking behaviour
+    // is identical in dev and production.
+    const match = range?.match(/bytes=(\d*)-(\d*)/);
+    if (match) {
+      const start = match[1] ? Number(match[1]) : 0;
+      const end = match[2] ? Number(match[2]) : stat.size - 1;
+      const slice = buf.subarray(start, end + 1);
+      return {
+        body: new Blob([new Uint8Array(slice)]).stream() as ReadableStream<Uint8Array>,
+        status: 206,
+        headers: new Headers({
+          "Content-Range": `bytes ${start}-${end}/${stat.size}`,
+          "Content-Length": String(slice.length),
+          "Accept-Ranges": "bytes",
+        }),
+      };
+    }
+    return {
+      body: new Blob([new Uint8Array(buf)]).stream() as ReadableStream<Uint8Array>,
+      status: 200,
+      headers: new Headers({ "Content-Length": String(stat.size), "Accept-Ranges": "bytes" }),
+    };
   }
 }
 

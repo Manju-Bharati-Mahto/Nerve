@@ -74,7 +74,16 @@ export interface VideoUser {
 /** §22.1 */
 export interface VideoRecord {
   id: string;
+  /**
+   * §9.1 — the auto-generated name ("<Campaign> Video 3"), which is also the
+   * Drive file name. §9 asks the editor for a "Video Title" while §9.1 says the
+   * auto-generated name is what's stored as Title; §9.1 is the more specific
+   * rule, so it wins here and the editor's own wording is kept in `editorTitle`
+   * rather than discarded.
+   */
   title: string;
+  /** What the editor typed in the "Video Title" field (§9). Display only. */
+  editorTitle: string;
   /** §9.1 — the campaign; also the Drive sub-folder name under Videos/. */
   client: string;
   editorId: string;
@@ -85,6 +94,15 @@ export interface VideoRecord {
   driveFileId: string;
   /** Kept alongside the id purely for display/debugging. */
   driveFileName: string;
+  /**
+   * §9.1 — the caption is also written to Drive as its own file whose name
+   * matches the video's exactly, so the pair can never drift apart. The caption
+   * text itself stays on this record as the authoritative copy.
+   */
+  captionFileId?: string | null;
+  /** Byte size + type of the uploaded video, for the preview/download path. */
+  sizeBytes?: number | null;
+  mimeType?: string | null;
   platform?: string | null;
   notes?: string | null;
   tags?: string[];
@@ -120,9 +138,19 @@ export interface EventRecord {
  * alongside the rows without another migration later.
  */
 export interface UserStoreDoc { version: 1; users: VideoUser[] }
-export interface WorkflowStoreDoc { version: 1; videos: VideoRecord[] }
+export interface WorkflowStoreDoc {
+  version: 1;
+  videos: VideoRecord[];
+  /**
+   * §9.1 "The system tracks the next available number per campaign so names
+   * never clash." Held explicitly rather than derived from max(videos) so a
+   * number stays consumed even if its upload later fails — a gap in the
+   * sequence is harmless, a reused name is not.
+   */
+  sequences?: Record<string, number>;
+}
 export interface EventStoreDoc { version: 1; events: EventRecord[] }
 
 export const EMPTY_USER_STORE: UserStoreDoc = { version: 1, users: [] };
-export const EMPTY_WORKFLOW_STORE: WorkflowStoreDoc = { version: 1, videos: [] };
+export const EMPTY_WORKFLOW_STORE: WorkflowStoreDoc = { version: 1, videos: [], sequences: {} };
 export const EMPTY_EVENT_STORE: EventStoreDoc = { version: 1, events: [] };
