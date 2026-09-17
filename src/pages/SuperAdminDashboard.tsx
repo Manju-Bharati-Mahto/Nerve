@@ -7,7 +7,7 @@ import {
   Shield, UserCheck, User, Image, FolderKanban, ClipboardCheck,
   ThumbsUp, ThumbsDown, Clock,
   Megaphone, Send, Calendar as CalendarIcon, BarChart3, Sparkles,
-  Video, Camera,
+  Video, Camera, Film, Inbox, ListChecks, History, UserCog, ClipboardList,
 } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
@@ -15,6 +15,7 @@ import { CONTENT_TYPES } from '@/lib/constants'
 import { brandingApi } from '@/lib/branding-api'
 import type { BrandingPortalStats } from '@/lib/branding-types'
 import { useOutreachData, campaignMetrics } from '@/lib/outreach-data'
+import { getKpis, formatHours, type WorkflowKpis } from '@/lib/outreach-video-data'
 
 const DASHBOARD_TABS = ['overview', 'branding', 'content', 'outreach', 'media'] as const
 
@@ -446,6 +447,167 @@ function OutreachTeamContent({ allUsers }: { allUsers: AppUser[] }) {
           </div>
         </div>
       </div>
+
+      {/* The department's other half — the video workflow (PRD §27). */}
+      <div className="border-t border-border pt-4">
+        <VideoWorkflowSection allUsers={allUsers} />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The video workflow half of the outreach department (Media Agency Video
+ * Workflow PRD). The campaign stats above come from the outreach store; these
+ * come from the workflow's own Drive-backed API, which super_admin reaches as
+ * the PRD's Admin role.
+ *
+ * The workflow refuses to answer until Drive is configured, so this degrades to
+ * dashes and a plain explanation rather than an error the super admin can't act
+ * on — the rest of the outreach tab stays usable either way.
+ */
+function VideoWorkflowSection({ allUsers }: { allUsers: AppUser[] }) {
+  const [kpis, setKpis] = useState<WorkflowKpis | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let live = true
+    getKpis()
+      .then(k => { if (live) setKpis(k) })
+      .catch(e => { if (live) setError(e instanceof Error ? e.message : String(e)) })
+    return () => { live = false }
+  }, [])
+
+  const editors    = allUsers.filter(u => u.role === 'outreach_editor')
+  const publishers = allUsers.filter(u => u.role === 'outreach_publisher')
+  const admins     = allUsers.filter(u => u.role === 'admin' && u.team === 'outreach')
+
+  const statCards = [
+    { label: 'Editors',    value: editors.length,    icon: Film,        bg: 'bg-orange-50',  color: 'text-orange-600' },
+    { label: 'Publishers', value: publishers.length, icon: Send,        bg: 'bg-violet-50',  color: 'text-violet-600' },
+    { label: 'Videos',     value: kpis?.totalVideos ?? '—',       icon: Video,        bg: 'bg-blue-50',    color: 'text-blue-600' },
+    { label: 'In queue',   value: kpis?.submittedVideos ?? '—',   icon: Inbox,        bg: 'bg-amber-50',   color: 'text-amber-600' },
+    { label: 'Published',  value: kpis?.publishedVideos ?? '—',   icon: ClipboardCheck, bg: 'bg-emerald-50', color: 'text-emerald-600' },
+    { label: 'Unassigned', value: kpis?.unassignedEvents ?? '—',  icon: ListChecks,   bg: 'bg-rose-50',    color: 'text-rose-600' },
+  ]
+
+  const roleGroups = [
+    { label: 'Admin',      items: admins,     badge: 'bg-purple-100 text-purple-700' },
+    { label: 'Editors',    items: editors,    badge: 'bg-orange-100 text-orange-700' },
+    { label: 'Publishers', items: publishers, badge: 'bg-violet-100 text-violet-700' },
+  ].filter(g => g.items.length > 0)
+
+  return (
+    <div className="space-y-4 pt-2">
+      <div className="flex items-center gap-2">
+        <Film className="w-4 h-4 text-orange-500" />
+        <h2 className="text-sm font-semibold text-foreground">Video workflow</h2>
+        <span className="text-xs text-muted-foreground">
+          Editors, publishers and the event calendar
+        </span>
+      </div>
+
+      {error && (
+        <div className="hub-card bg-amber-50 border-amber-200 text-xs text-amber-900">
+          Video workflow stats are unavailable: {error}
+        </div>
+      )}
+
+      <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+        {statCards.map(card => {
+          const Icon = card.icon
+          return (
+            <div key={card.label} className="hub-card flex items-center gap-2.5 py-3">
+              <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${card.bg} shrink-0`}>
+                <Icon className={`w-4 h-4 ${card.color}`} />
+              </div>
+              <div>
+                <div className={`text-xl font-serif leading-none ${kpis || typeof card.value === 'number' ? 'text-foreground' : 'text-muted-foreground'}`}>
+                  {card.value}
+                </div>
+                <div className="text-[10px] text-muted-foreground mt-0.5 leading-tight">{card.label}</div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <div className="grid grid-cols-5 gap-5">
+        <div className="col-span-3 hub-card">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-semibold text-foreground">Workflow team</h3>
+            <Link to="/outreach/video/users" className="text-xs text-primary hover:underline">Manage</Link>
+          </div>
+          {roleGroups.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-6">
+              No editors or publishers assigned yet.
+            </p>
+          ) : (
+            <div className="space-y-4">
+              {roleGroups.map(g => (
+                <div key={g.label}>
+                  <p className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1.5">{g.label}</p>
+                  {g.items.map(u => (
+                    <div key={u.id} className="flex items-center justify-between py-2 border-b border-border last:border-0">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-7 h-7 rounded-full bg-orange-100 flex items-center justify-center shrink-0">
+                          <span className="text-xs font-semibold text-orange-700">
+                            {(u.full_name || u.email)[0].toUpperCase()}
+                          </span>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-foreground truncate">{u.full_name || 'Unnamed'}</p>
+                          <p className="text-xs text-muted-foreground truncate">{u.email}</p>
+                        </div>
+                      </div>
+                      <span className={`hub-badge shrink-0 ${g.badge}`}>{g.label.replace(/s$/, '')}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="col-span-2 space-y-4">
+          <div className="hub-card">
+            <h3 className="text-sm font-semibold text-foreground mb-3">Throughput</h3>
+            <dl className="space-y-2 text-xs">
+              {[
+                ['Published this week',  kpis ? String(kpis.publishedThisWeek) : '—'],
+                ['Published this month', kpis ? String(kpis.publishedThisMonth) : '—'],
+                ['Avg. draft → submitted',   kpis ? formatHours(kpis.avgDraftToSubmittedHours) : '—'],
+                ['Avg. submitted → published', kpis ? formatHours(kpis.avgSubmittedToPublishedHours) : '—'],
+                ['Events upcoming',      kpis ? String(kpis.upcomingEvents) : '—'],
+                ['Events completed',     kpis ? String(kpis.completedEvents) : '—'],
+              ].map(([label, value]) => (
+                <div key={label} className="flex items-center justify-between gap-3">
+                  <dt className="text-muted-foreground">{label}</dt>
+                  <dd className="font-mono tabular-nums text-foreground shrink-0">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+
+          <div className="hub-card">
+            <h3 className="text-sm font-semibold text-foreground mb-2">Video workflow surfaces</h3>
+            {[
+              { to: '/outreach/video/dashboard',  icon: BarChart3,     label: 'Workflow Dashboard' },
+              { to: '/outreach/video/users',      icon: UserCog,       label: 'Workflow Users' },
+              { to: '/outreach/video/calendar',   icon: CalendarIcon,  label: 'Event Calendar' },
+              { to: '/outreach/video/all',        icon: Film,          label: 'All Videos' },
+              { to: '/outreach/video/queue',      icon: Inbox,         label: 'Publishing Queue' },
+              { to: '/outreach/video/editor-log', icon: ClipboardList, label: 'Editor Video Log' },
+              { to: '/outreach/video/activity',   icon: History,       label: 'Activity Logs' },
+            ].map(({ to, icon: Icon, label }) => (
+              <Link key={to} to={to}
+                className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-accent transition-colors text-sm text-foreground">
+                <Icon className="w-4 h-4 text-orange-500 shrink-0" />{label}
+              </Link>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -596,7 +758,9 @@ export default function SuperAdminDashboard() {
     totalEntries: entries.length,
     branding:     users.filter(u => u.team === 'branding').length,
     content:      users.filter(u => u.team === 'content').length,
-    outreach:     users.filter(u => u.role === 'outreach_manager').length,
+    // The department is four roles now, not just managers — an editor or
+    // publisher who wasn't counted here simply looked like nobody.
+    outreach:     users.filter(u => u.team === 'outreach' || u.role.startsWith('outreach_')).length,
     media:        users.filter(u => u.team === 'media').length,
   }), [users, entries])
 
