@@ -25,6 +25,11 @@ import {
   InvalidTransitionError, NotYourVideoError, VideoNotFoundError,
 } from "./videos.js";
 import { socialPagesForRole } from "./social-pages.js";
+import {
+  assignEvent, completeEvent, createEvent, eventCounts, getEvent, listEvents,
+  todoFor, updateEventDetails, EventNotFoundError, EventNotOpenError, NotYourEventError,
+} from "./events.js";
+import { listNotifications, markRead } from "./notifications.js";
 import type { VideoRole, VideoUser } from "./types.js";
 
 interface CurrentUser { id: string; role: string; team: string | null; full_name?: string; email?: string }
@@ -85,6 +90,9 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
   function fail(res: express.Response, err: unknown): void {
     if (err instanceof VideoNotFoundError) return sendError(res, 404, err.message);
     if (err instanceof NotYourVideoError) return sendError(res, 403, err.message);
+    if (err instanceof EventNotFoundError) return sendError(res, 404, err.message);
+    if (err instanceof NotYourEventError) return sendError(res, 403, err.message);
+    if (err instanceof EventNotOpenError) return sendError(res, 409, err.message);
     if (err instanceof InvalidTransitionError) return sendError(res, 409, err.message);
     if (err instanceof DriveNotConfiguredError) return sendError(res, 503, err.message);
     const msg = err instanceof Error ? err.message : "Something went wrong.";
@@ -244,6 +252,105 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
 
   app.get(`${P}/videos/:id/stream`, asyncHandler(async (req, res) => { await streamVideo(req, res, false); }));
   app.get(`${P}/videos/:id/download`, asyncHandler(async (req, res) => { await streamVideo(req, res, true); }));
+
+  // ── Events (§11, §12) ────────────────────────────────────────────────────
+
+  app.get(`${P}/events`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    const q = req.query as Record<string, string>;
+    // §8.1 — an editor's view of the calendar is their own To-Do List.
+    if (user.role === "editor") return res.json({ events: await todoFor(user.id) });
+    res.json({
+      events: await listEvents({
+        editorId: q.editor_id || undefined,
+        status: (q.status as never) || undefined,
+        from: q.from || undefined,
+        to: q.to || undefined,
+        client: q.client || undefined,
+      }),
+    });
+  }));
+
+  app.get(`${P}/events/counts`, asyncHandler(async (_req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["manager", "admin"])) return;
+    // The calendar day in the viewer's own terms, not UTC's.
+    const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+    res.json({ counts: await eventCounts(today) });
+  }));
+
+  app.get(`${P}/events/:id`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    try {
+      const event = await getEvent(getSingleParam(req.params.id));
+      if (user.role === "editor" && event.assignedEditorId !== user.id) {
+        return sendError(res, 403, "That event is assigned to another editor.");
+      }
+      res.json({ event });
+    } catch (err) { fail(res, err); }
+  }));
+
+  /** §11.1 — only a Manager (or Admin) maintains the calendar (§28). */
+  app.post(`${P}/events`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["manager", "admin"])) return;
+    const b = req.body as Record<string, string>;
+    try {
+      const event = await createEvent(user, {
+        title: b.title ?? "", description: b.description ?? "",
+        date: b.date ?? "", client: b.client ?? null,
+      });
+      res.status(201).json({ event });
+    } catch (err) { fail(res, err); }
+  }));
+
+  app.patch(`${P}/events/:id`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["manager", "admin"])) return;
+    const b = req.body as Record<string, string | null>;
+    try {
+      res.json({ event: await updateEventDetails(getSingleParam(req.params.id), user, {
+        title: b.title as string | undefined,
+        description: b.description as string | undefined,
+        date: b.date as string | undefined,
+        client: b.client as string | null | undefined,
+      }) });
+    } catch (err) { fail(res, err); }
+  }));
+
+  /** §11.2 / §28 — "Only the Manager (or Admin) can assign or reassign". */
+  app.post(`${P}/events/:id/assign`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["manager", "admin"])) return;
+    const editorId = String((req.body as Record<string, unknown>).editor_id ?? "");
+    if (!editorId) return sendError(res, 400, "Pick an editor to assign this event to.");
+    try {
+      res.json({ event: await assignEvent(getSingleParam(req.params.id), editorId, user) });
+    } catch (err) { fail(res, err); }
+  }));
+
+  /** §28 — "Editors can mark their own assigned events as Completed." */
+  app.post(`${P}/events/:id/complete`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["editor", "admin"])) return;
+    try {
+      res.json({ event: await completeEvent(getSingleParam(req.params.id), user) });
+    } catch (err) { fail(res, err); }
+  }));
+
+  // ── Notifications (§19) ──────────────────────────────────────────────────
+
+  app.get(`${P}/notifications`, asyncHandler(async (_req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    const notifications = await listNotifications(user.id);
+    res.json({ notifications, unread: notifications.filter(n => !n.readAt).length });
+  }));
+
+  app.post(`${P}/notifications/read`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    const ids = (req.body as { ids?: string[] }).ids;
+    res.json({ marked: await markRead(user.id, Array.isArray(ids) && ids.length ? ids : undefined) });
+  }));
 
   // ── People ───────────────────────────────────────────────────────────────
 

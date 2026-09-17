@@ -13,7 +13,8 @@ import { getDriveClient } from "./drive-client.js";
 import {
   ensureDriveStructure, mutateWorkflow, readWorkflow, VIDEOS_FOLDER,
 } from "./drive-store.js";
-import { activityEntry } from "./users.js";
+import { activityEntry, listActiveUsers } from "./users.js";
+import { notify } from "./notifications.js";
 import type {
   LiveUrlPlatform, VideoRecord, VideoStatus, VideoUser, WorkflowStoreDoc,
 } from "./types.js";
@@ -235,7 +236,7 @@ export async function updateCaption(id: string, caption: string, actor: Pick<Vid
 
 /** §9 step 8 — Draft → Submitted, which is what puts it in the Publisher's queue. */
 export async function submitVideo(id: string, actor: Pick<VideoUser, "id" | "name" | "email" | "role">): Promise<VideoRecord> {
-  return updateVideo(id, video => {
+  const video = await updateVideo(id, video => {
     if (video.editorId !== actor.id && actor.role !== "admin") throw new NotYourVideoError();
     if (!TRANSITIONS[video.status].includes("submitted")) {
       throw new InvalidTransitionError(video.status, "submitted");
@@ -245,6 +246,11 @@ export async function submitVideo(id: string, actor: Pick<VideoUser, "id" | "nam
     video.activity.push(activityEntry(actor, "video.submitted", { previousStatus: "draft", newStatus: "submitted" }));
     return { ...video };
   });
+
+  // §19 — "Publisher | Editor submits video | New video ready for publishing."
+  const publishers = (await listActiveUsers()).filter(u => u.role === "publisher");
+  await notify(publishers.map(p => p.id), "video_submitted", { type: "video", id }, `“${video.title}”`);
+  return video;
 }
 
 /** §14 — the Publisher's queue is exactly the submitted videos, oldest first. */

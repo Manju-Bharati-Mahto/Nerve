@@ -52,6 +52,27 @@ export interface ActivityEntry {
   notes?: string | null;
 }
 
+/** §19 — the four in-app notifications the workflow raises. */
+export const NOTIFICATION_KINDS = [
+  "video_submitted", "event_assigned", "event_reassigned", "event_completed",
+] as const;
+export type NotificationKind = typeof NOTIFICATION_KINDS[number];
+
+/**
+ * A notification sits on its recipient's user record rather than in a store of
+ * its own: §6 documents exactly three data stores, and a notification is
+ * per-person by nature, so this keeps the Drive layout as specified.
+ */
+export interface WorkflowNotification {
+  id: string;
+  kind: NotificationKind;
+  message: string;
+  createdAt: string;
+  readAt?: string | null;
+  /** What the notification is about, so the UI can link straight to it. */
+  subject?: { type: "video" | "event"; id: string } | null;
+}
+
 /** §6.2 / §4.2 — a registered user of the video workflow. */
 export interface VideoUser {
   id: string;
@@ -69,6 +90,8 @@ export interface VideoUser {
    * users are excluded from every listing and can never authenticate.
    */
   deletedAt?: string | null;
+  /** §19 — newest first, capped so the users document can't grow unbounded. */
+  notifications?: WorkflowNotification[];
 }
 
 /** §22.1 */

@@ -158,3 +158,86 @@ export function describeAction(action: string): string {
   const tail = action.replace(/^video\./, '').replace(/_/g, ' ')
   return tail.charAt(0).toUpperCase() + tail.slice(1)
 }
+
+// ── Events (§11, §12) ──────────────────────────────────────────────────────
+
+export type EventStatus = 'unassigned' | 'open' | 'completed'
+
+export interface EventRecord {
+  id: string
+  title: string
+  description: string
+  date: string
+  client?: string | null
+  assignedEditorId?: string | null
+  assignedBy?: string | null
+  status: EventStatus
+  createdAt: string
+  updatedAt: string
+  completedAt?: string | null
+  activity: ActivityEntry[]
+}
+
+export interface EventCounts {
+  total: number; upcoming: number; past: number; unassigned: number; completed: number
+}
+
+export const EVENT_STATUS_STYLE: Record<EventStatus, { label: string; cls: string; dot: string }> = {
+  unassigned: { label: 'Unassigned', cls: 'bg-slate-100 text-slate-700',   dot: 'bg-slate-400' },
+  open:       { label: 'Open',       cls: 'bg-amber-100 text-amber-800',   dot: 'bg-amber-400' },
+  completed:  { label: 'Completed',  cls: 'bg-emerald-100 text-emerald-700', dot: 'bg-emerald-500' },
+}
+
+export const listEvents = (params: { status?: EventStatus; from?: string; to?: string; editorId?: string } = {}) => {
+  const q = new URLSearchParams()
+  if (params.status) q.set('status', params.status)
+  if (params.from) q.set('from', params.from)
+  if (params.to) q.set('to', params.to)
+  if (params.editorId) q.set('editor_id', params.editorId)
+  const qs = q.toString()
+  return request<{ events: EventRecord[] }>(`/events${qs ? `?${qs}` : ''}`)
+}
+
+export const getEvent = (id: string) => request<{ event: EventRecord }>(`/events/${id}`)
+
+export const eventCounts = () => request<{ counts: EventCounts }>('/events/counts')
+
+export const createEvent = (input: { title: string; description?: string; date: string; client?: string | null }) =>
+  request<{ event: EventRecord }>('/events', { method: 'POST', body: JSON.stringify(input) }).then(r => r.event)
+
+export const updateEvent = (id: string, patch: Partial<{ title: string; description: string; date: string; client: string | null }>) =>
+  request<{ event: EventRecord }>(`/events/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }).then(r => r.event)
+
+export const assignEvent = (id: string, editorId: string) =>
+  request<{ event: EventRecord }>(`/events/${id}/assign`, {
+    method: 'POST', body: JSON.stringify({ editor_id: editorId }),
+  }).then(r => r.event)
+
+export const completeEvent = (id: string) =>
+  request<{ event: EventRecord }>(`/events/${id}/complete`, { method: 'POST' }).then(r => r.event)
+
+export const listEditors = () => request<{ editors: WorkflowUser[] }>('/editors')
+
+// ── Notifications (§19) ────────────────────────────────────────────────────
+
+export interface WorkflowNotification {
+  id: string
+  kind: 'video_submitted' | 'event_assigned' | 'event_reassigned' | 'event_completed'
+  message: string
+  createdAt: string
+  readAt?: string | null
+  subject?: { type: 'video' | 'event'; id: string } | null
+}
+
+export const listNotifications = () =>
+  request<{ notifications: WorkflowNotification[]; unread: number }>('/notifications')
+
+export const markNotificationsRead = (ids?: string[]) =>
+  request<{ marked: number }>('/notifications/read', {
+    method: 'POST', body: JSON.stringify(ids?.length ? { ids } : {}),
+  })
+
+/** Local calendar day as YYYY-MM-DD — never via toISOString, which shifts. */
+export function localDay(d: Date = new Date()): string {
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+}

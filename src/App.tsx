@@ -73,6 +73,10 @@ import VideoDetail from "@/pages/outreach/video/VideoDetail";
 import VideoQueue from "@/pages/outreach/video/VideoQueue";
 import VideoPublished from "@/pages/outreach/video/VideoPublished";
 import VideoSocialPages from "@/pages/outreach/video/VideoSocialPages";
+import VideoCalendar from "@/pages/outreach/video/VideoCalendar";
+import VideoEventDetail from "@/pages/outreach/video/VideoEventDetail";
+import VideoTodo from "@/pages/outreach/video/VideoTodo";
+import VideoNotifications from "@/pages/outreach/video/VideoNotifications";
 
 import NotFound from "./pages/NotFound.tsx";
 
@@ -373,6 +377,28 @@ const App = () => (
               <Route path="/outreach/video/social-pages" element={
                 <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor']} team="outreach">
                   <VideoSocialPages />
+                </RoleGuard>
+              } />
+              {/* §11 events: the manager keeps the calendar, the editor sees
+                  only the assignments on their own To-Do List. */}
+              <Route path="/outreach/video/calendar" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
+                  <VideoCalendar />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/todo" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor']} team="outreach">
+                  <VideoTodo />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/events/:eventId" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor']} team="outreach">
+                  <VideoEventDetail />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/notifications" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach">
+                  <VideoNotifications />
                 </RoleGuard>
               } />
 
