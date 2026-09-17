@@ -84,3 +84,5 @@ dist-ssr
 
 # Runtime user uploads
 uploads/avatars/
+# Staging area for videos in flight to Google Drive, which is where they live.
+uploads/outreach-video/

@@ -139,6 +139,7 @@ import {
 import * as designDb from "./design-db.js";
 import { bootstrapMediaOpsDatabase } from "./mediaops-db.js";
 import { registerMediaOpsApi, runMediaOpsAutomations } from "./mediaops-api.js";
+import { registerOutreachVideoApi, VIDEO_MIME_ALLOWLIST, videoFileName } from "./outreach-video/routes.js";
 
 const app = express();
 const PgStore = connectPgSimple(session);
@@ -180,6 +181,25 @@ const designUpload = multer({
   }),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
   fileFilter: imageFileFilter,
+});
+
+/* Outreach video workflow: a staging area for the editor's file on its way to
+   Google Drive, which is where it actually lives (PRD §6). The temp file is
+   removed as soon as the Drive upload resolves either way, so this directory
+   only ever holds in-flight uploads. */
+const VIDEO_STAGING_DIR = path.resolve("uploads/outreach-video");
+fs.mkdirSync(VIDEO_STAGING_DIR, { recursive: true });
+
+const videoUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, VIDEO_STAGING_DIR),
+    filename: (_req, file, cb) => cb(null, videoFileName(file.originalname)),
+  }),
+  limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2 GB
+  fileFilter: (_req, file, cb) => {
+    if (VIDEO_MIME_ALLOWLIST.includes(file.mimetype)) return cb(null, true);
+    cb(new Error("Only video files can be uploaded here."));
+  },
 });
 
 const DESIGN_PORTAL_UPLOADS_DIR = path.resolve("uploads/design");
@@ -273,7 +293,7 @@ type SessionRequest = express.Request & {
 
 // task_manager mirrors task_owner exactly (same dashboard + lead powers); it
 // exists so the branding head can hand out the role under a distinct title.
-const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "branding_reports_admin", "design_reports_admin", "task_owner", "task_manager"] as const;
+const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "outreach_editor", "outreach_publisher", "branding_reports_admin", "design_reports_admin", "task_owner", "task_manager"] as const;
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -598,6 +618,7 @@ app.use("/api/v1/media/ai/ask", aiAskLimiter);
 // The portals' email-verification endpoints reuse the same limiters that guard
 // the employee password-OTP endpoints, rather than declaring a second budget.
 registerMediaOpsApi(app, { asyncHandler, sendError, getSingleParam, otpSendLimiter, otpVerifyLimiter });
+registerOutreachVideoApi(app, { asyncHandler, sendError, getSingleParam, videoUpload });
 
 // ── App settings (super admin) ─────────────────────────────────────────────
 

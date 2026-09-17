@@ -68,6 +68,20 @@ import OutreachCreators from "@/pages/outreach/OutreachCreators";
 import OutreachCreatorDetail from "@/pages/outreach/OutreachCreatorDetail";
 import OutreachPageDetail from "@/pages/outreach/OutreachPageDetail";
 import OutreachAI from "@/pages/outreach/OutreachAI";
+import VideoMyVideos from "@/pages/outreach/video/VideoMyVideos";
+import VideoDetail from "@/pages/outreach/video/VideoDetail";
+import VideoQueue from "@/pages/outreach/video/VideoQueue";
+import VideoPublished from "@/pages/outreach/video/VideoPublished";
+import VideoSocialPages from "@/pages/outreach/video/VideoSocialPages";
+import VideoCalendar from "@/pages/outreach/video/VideoCalendar";
+import VideoEventDetail from "@/pages/outreach/video/VideoEventDetail";
+import VideoTodo from "@/pages/outreach/video/VideoTodo";
+import VideoNotifications from "@/pages/outreach/video/VideoNotifications";
+import VideoDashboard from "@/pages/outreach/video/VideoDashboard";
+import VideoSearch from "@/pages/outreach/video/VideoSearch";
+import VideoEditorLog from "@/pages/outreach/video/VideoEditorLog";
+import VideoUsers from "@/pages/outreach/video/VideoUsers";
+import VideoActivity from "@/pages/outreach/video/VideoActivity";
 
 import NotFound from "./pages/NotFound.tsx";
 
@@ -339,6 +353,86 @@ const App = () => (
               <Route path="/outreach/ai" element={
                 <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
                   <OutreachAI />
+                </RoleGuard>
+              } />
+
+              {/* ── Outreach video workflow (Media Agency Video Workflow PRD) ──
+                  Editors and publishers only reach their own areas; managers and
+                  super admins see everything, matching the §27 navigation. */}
+              <Route path="/outreach/video/my-videos" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor']} team="outreach">
+                  <VideoMyVideos />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/videos/:videoId" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach">
+                  <VideoDetail />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/queue" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_publisher']} team="outreach">
+                  <VideoQueue />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/published" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach">
+                  <VideoPublished />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/social-pages" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor']} team="outreach">
+                  <VideoSocialPages />
+                </RoleGuard>
+              } />
+              {/* §11 events: the manager keeps the calendar, the editor sees
+                  only the assignments on their own To-Do List. */}
+              <Route path="/outreach/video/calendar" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
+                  <VideoCalendar />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/todo" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor']} team="outreach">
+                  <VideoTodo />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/events/:eventId" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor']} team="outreach">
+                  <VideoEventDetail />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/notifications" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach">
+                  <VideoNotifications />
+                </RoleGuard>
+              } />
+              {/* §20 KPIs and §4.2 user management are Manager/Admin ground;
+                  §18 search is scoped per role by the API. */}
+              <Route path="/outreach/video/dashboard" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager']} team="outreach">
+                  <VideoDashboard />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/all" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach">
+                  <VideoSearch />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/editor-log" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_publisher']} team="outreach">
+                  <VideoEditorLog />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/users" element={
+                <RoleGuard allowed={['super_admin', 'admin']} team="outreach">
+                  <VideoUsers />
+                </RoleGuard>
+              } />
+              {/* §16 — every role gets an Activity view; the API scopes an
+                  editor's to their own videos and assigned events. */}
+              <Route path="/outreach/video/activity" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach">
+                  <VideoActivity />
                 </RoleGuard>
               } />
 

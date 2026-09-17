@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import {
@@ -7,12 +7,14 @@ import {
   Crown, UserCheck, User, Settings, Palette, FileText,
   Megaphone, Send, Calendar, BarChart3, Sparkles,
   Award, CalendarOff, Settings2, AlertTriangle,
+  Film, Inbox, Share2, CheckCircle2, ListChecks, Bell, ClipboardList, UserCog, History,
 } from 'lucide-react'
 import ProfileModal from './ProfileModal'
 import { useOutreachData, computeOutreachAlerts } from '@/lib/outreach-data'
+import { listNotifications } from '@/lib/outreach-video-data'
 
 type NavItem =
-  | { path: string; label: string; icon: React.ElementType; badge?: 'outreach-alerts' }
+  | { path: string; label: string; icon: React.ElementType; badge?: 'outreach-alerts' | 'video-notifications' }
   | { action: 'open-profile'; label: string; icon: React.ElementType }
 type SectionConfig = { heading?: string; items: NavItem[] }
 type RoleConfig = {
@@ -46,9 +48,34 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/browse',       label: 'Browse all',  icon: Search },
       { path: '/admin/export', label: 'Export data', icon: Download },
     ]},
+    { heading: 'Video workflow', items: [
+      { path: '/outreach/video/dashboard',  label: 'Video Dashboard',  icon: BarChart3 },
+      { path: '/outreach/video/users',      label: 'Workflow Users',   icon: UserCog },
+      { path: '/outreach/video/all',        label: 'All Videos',       icon: Film },
+      { path: '/outreach/video/calendar',   label: 'Event Calendar',   icon: Calendar },
+      { path: '/outreach/video/editor-log', label: 'Editor Video Log', icon: ClipboardList },
+      { path: '/outreach/video/activity',   label: 'Activity Logs',    icon: History },
+    ]},
     { heading: 'AI', items: [
       { path: '/ai/query',      label: 'Ask AI',     icon: MessageSquare },
       { path: '/ai/newsletter', label: 'Newsletter', icon: Newspaper },
+    ]},
+  ]),
+
+  /* The PRD's Admin role (§4.1) as it appears for a Nerve admin sitting on the
+     outreach team: full workflow management, no editor/manager/publisher gate. */
+  'admin:outreach': cfg('Video Workflow Admin', Crown, 'text-orange-600', 'bg-orange-100', [
+    { items: [
+      { path: '/outreach/video/dashboard',  label: 'Dashboard',        icon: LayoutDashboard },
+      { path: '/outreach/video/users',      label: 'Users',            icon: UserCog },
+      { path: '/outreach/video/all',        label: 'All Videos',       icon: Film },
+      { path: '/outreach/video/calendar',   label: 'Event Calendar',   icon: Calendar },
+    ]},
+    { heading: 'Reports', items: [
+      { path: '/outreach/video/editor-log', label: 'Editor Video Log', icon: ClipboardList },
+      { path: '/outreach/video/activity',   label: 'Activity Logs',    icon: History },
+      { path: '/outreach/video/published',  label: 'Published',        icon: CheckCircle2 },
+      { path: '/outreach/video/notifications', label: 'Notifications', icon: Bell, badge: 'video-notifications' },
     ]},
   ]),
 
@@ -147,8 +174,50 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/outreach/pages',    label: 'All Pages', icon: FileText },
       { path: '/outreach/creators', label: 'Creators',  icon: Users },
     ]},
+    { heading: 'Video workflow', items: [
+      { path: '/outreach/video/dashboard',    label: 'Video Dashboard',  icon: BarChart3 },
+      { path: '/outreach/video/calendar',     label: 'Event Calendar',   icon: Calendar },
+      { path: '/outreach/video/all',          label: 'All Videos',       icon: Film },
+      { path: '/outreach/video/queue',        label: 'Publishing Queue', icon: Inbox },
+      { path: '/outreach/video/published',    label: 'Published',        icon: CheckCircle2 },
+      { path: '/outreach/video/editor-log',   label: 'Editor Video Log', icon: ClipboardList },
+      { path: '/outreach/video/activity',     label: 'Activity',         icon: History },
+      { path: '/outreach/video/social-pages', label: 'Social Pages',     icon: Share2 },
+      { path: '/outreach/video/notifications', label: 'Notifications',   icon: Bell, badge: 'video-notifications' },
+    ]},
     { heading: 'AI', items: [
       { path: '/outreach/ai', label: 'AI', icon: Sparkles },
+    ]},
+  ]),
+
+  /* Media Agency Video Workflow PRD §27. The Editor's navigation deliberately
+     has no analytics entry anywhere — §8.2 puts performance data out of reach
+     for this role, and the API enforces it too. */
+  'outreach_editor:outreach': cfg('Video Editor', Film, 'text-orange-600', 'bg-orange-100', [
+    { items: [
+      { path: '/outreach/video/my-videos',    label: 'My Videos',   icon: Film },
+      { path: '/outreach/video/todo',         label: 'To-Do List',  icon: ListChecks },
+      { path: '/outreach/video/all',          label: 'Search',      icon: Search },
+      { path: '/outreach/video/published',    label: 'Published',   icon: CheckCircle2 },
+      { path: '/outreach/video/activity',     label: 'Activity',    icon: History },
+      { path: '/outreach/video/notifications', label: 'Notifications', icon: Bell, badge: 'video-notifications' },
+    ]},
+    { heading: 'Reference', items: [
+      { path: '/outreach/video/social-pages', label: 'Social Media Pages', icon: Share2 },
+    ]},
+  ]),
+
+  'outreach_publisher:outreach': cfg('Publisher', Send, 'text-orange-600', 'bg-orange-100', [
+    { items: [
+      { path: '/outreach/video/queue',        label: 'Publishing Queue', icon: Inbox },
+      { path: '/outreach/video/published',    label: 'Published',        icon: CheckCircle2 },
+      { path: '/outreach/video/all',          label: 'Search',           icon: Search },
+      { path: '/outreach/video/editor-log',   label: 'Editor Video Log', icon: ClipboardList },
+      { path: '/outreach/video/activity',     label: 'Activity',         icon: History },
+      { path: '/outreach/video/notifications', label: 'Notifications',   icon: Bell, badge: 'video-notifications' },
+    ]},
+    { heading: 'Reference', items: [
+      { path: '/outreach/video/social-pages', label: 'Social Media Pages', icon: Share2 },
     ]},
   ]),
 }
@@ -245,6 +314,7 @@ export default function AppSidebar() {
                   <item.icon className="w-4 h-4 shrink-0" />
                   <span className="flex-1 truncate">{item.label}</span>
                   {'badge' in item && item.badge === 'outreach-alerts' && <OutreachAlertsBadge />}
+                  {'badge' in item && item.badge === 'video-notifications' && <VideoNotificationsBadge />}
                 </Link>
               )
             })}
@@ -297,6 +367,30 @@ function OutreachAlertsBadge() {
   if (count === 0) return null
   return (
     <span className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-semibold inline-flex items-center justify-center">
+      {count > 99 ? '99+' : count}
+    </span>
+  )
+}
+
+// §19 — unread count on the Notifications nav item. Polls rather than pushes:
+// the workflow store lives in Drive, so a socket would buy very little over a
+// minute-scale refresh, and this only mounts for the four video roles.
+function VideoNotificationsBadge() {
+  const [count, setCount] = useState(0)
+  useEffect(() => {
+    let alive = true
+    const tick = () => {
+      listNotifications()
+        .then(r => { if (alive) setCount(r.unread) })
+        .catch(() => { /* an unreachable badge shouldn't shout */ })
+    }
+    tick()
+    const id = window.setInterval(tick, 60_000)
+    return () => { alive = false; window.clearInterval(id) }
+  }, [])
+  if (count === 0) return null
+  return (
+    <span className="shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-orange-600 text-white text-[10px] font-semibold inline-flex items-center justify-center">
       {count > 99 ? '99+' : count}
     </span>
   )

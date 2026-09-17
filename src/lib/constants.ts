@@ -41,7 +41,10 @@ export const ENTRY_TYPES = [...BRANDING_TYPES, ...CONTENT_TYPES]
 
 export const PRIORITIES = ['Normal', 'High', 'Key highlight'] as const
 
-export const ROLES = ['super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager', 'branding_reports_admin', 'design_reports_admin', 'task_owner', 'task_manager'] as const
+/* outreach_editor / outreach_publisher are the video-workflow roles from the
+   Media Agency Video Workflow PRD (§3). Its "Manager" and "Admin" are the
+   existing outreach_manager and super_admin/admin, so only these two are new. */
+export const ROLES = ['super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager', 'outreach_editor', 'outreach_publisher', 'branding_reports_admin', 'design_reports_admin', 'task_owner', 'task_manager'] as const
 export type AppRole = typeof ROLES[number]
 
 export const TEAMS = ['branding', 'design', 'media', 'content', 'outreach'] as const
