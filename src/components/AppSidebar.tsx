@@ -7,7 +7,7 @@ import {
   Crown, UserCheck, User, Settings, Palette, FileText,
   Megaphone, Send, Calendar, BarChart3, Sparkles,
   Award, CalendarOff, Settings2, AlertTriangle,
-  Film, Inbox, Share2, CheckCircle2, ListChecks, Bell, ClipboardList, UserCog,
+  Film, Inbox, Share2, CheckCircle2, ListChecks, Bell, ClipboardList, UserCog, History,
 } from 'lucide-react'
 import ProfileModal from './ProfileModal'
 import { useOutreachData, computeOutreachAlerts } from '@/lib/outreach-data'
@@ -54,6 +54,7 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/outreach/video/all',        label: 'All Videos',       icon: Film },
       { path: '/outreach/video/calendar',   label: 'Event Calendar',   icon: Calendar },
       { path: '/outreach/video/editor-log', label: 'Editor Video Log', icon: ClipboardList },
+      { path: '/outreach/video/activity',   label: 'Activity Logs',    icon: History },
     ]},
     { heading: 'AI', items: [
       { path: '/ai/query',      label: 'Ask AI',     icon: MessageSquare },
@@ -72,6 +73,7 @@ const SIDEBAR: Record<string, RoleConfig> = {
     ]},
     { heading: 'Reports', items: [
       { path: '/outreach/video/editor-log', label: 'Editor Video Log', icon: ClipboardList },
+      { path: '/outreach/video/activity',   label: 'Activity Logs',    icon: History },
       { path: '/outreach/video/published',  label: 'Published',        icon: CheckCircle2 },
       { path: '/outreach/video/notifications', label: 'Notifications', icon: Bell, badge: 'video-notifications' },
     ]},
@@ -179,6 +181,7 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/outreach/video/queue',        label: 'Publishing Queue', icon: Inbox },
       { path: '/outreach/video/published',    label: 'Published',        icon: CheckCircle2 },
       { path: '/outreach/video/editor-log',   label: 'Editor Video Log', icon: ClipboardList },
+      { path: '/outreach/video/activity',     label: 'Activity',         icon: History },
       { path: '/outreach/video/social-pages', label: 'Social Pages',     icon: Share2 },
       { path: '/outreach/video/notifications', label: 'Notifications',   icon: Bell, badge: 'video-notifications' },
     ]},
@@ -196,6 +199,7 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/outreach/video/todo',         label: 'To-Do List',  icon: ListChecks },
       { path: '/outreach/video/all',          label: 'Search',      icon: Search },
       { path: '/outreach/video/published',    label: 'Published',   icon: CheckCircle2 },
+      { path: '/outreach/video/activity',     label: 'Activity',    icon: History },
       { path: '/outreach/video/notifications', label: 'Notifications', icon: Bell, badge: 'video-notifications' },
     ]},
     { heading: 'Reference', items: [
@@ -209,6 +213,7 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/outreach/video/published',    label: 'Published',        icon: CheckCircle2 },
       { path: '/outreach/video/all',          label: 'Search',           icon: Search },
       { path: '/outreach/video/editor-log',   label: 'Editor Video Log', icon: ClipboardList },
+      { path: '/outreach/video/activity',     label: 'Activity',         icon: History },
       { path: '/outreach/video/notifications', label: 'Notifications',   icon: Bell, badge: 'video-notifications' },
     ]},
     { heading: 'Reference', items: [

@@ -368,3 +368,28 @@ export const deleteWorkflowUser = (id: string) =>
 export const ROLE_LABEL: Record<VideoRole, string> = {
   admin: 'Admin', editor: 'Editor', manager: 'Manager', publisher: 'Publisher',
 }
+
+// ── §16 Activity log ───────────────────────────────────────────────────────
+
+export interface FeedEntry extends ActivityEntry {
+  userEmail?: string
+  relatedEventId?: string | null
+  subject: { type: 'video' | 'event'; id: string; title: string }
+}
+
+export interface ActivityActor { id: string; name: string; role: VideoRole }
+
+export const listActivity = (params: {
+  q?: string; userId?: string; subject?: 'video' | 'event'; from?: string; to?: string
+} = {}) => {
+  const q = new URLSearchParams()
+  if (params.q) q.set('q', params.q)
+  if (params.userId) q.set('user_id', params.userId)
+  if (params.subject) q.set('subject', params.subject)
+  if (params.from) q.set('from', params.from)
+  if (params.to) q.set('to', params.to)
+  const qs = q.toString()
+  return request<{ entries: FeedEntry[] }>(`/activity${qs ? `?${qs}` : ''}`)
+}
+
+export const listActivityActors = () => request<{ actors: ActivityActor[] }>('/activity/actors')

@@ -33,6 +33,7 @@ import {
 import { listNotifications, markRead } from "./notifications.js";
 import { editorVideoLog, workflowKpis } from "./reports.js";
 import { filterOptions, search } from "./search.js";
+import { activityActors, activityFeed } from "./activity.js";
 import { VIDEO_ROLES, type VideoRole, type VideoUser } from "./types.js";
 
 interface CurrentUser { id: string; role: string; team: string | null; full_name?: string; email?: string }
@@ -450,6 +451,35 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
   app.get(`${P}/filter-options`, asyncHandler(async (_req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
     res.json(await filterOptions());
+  }));
+
+  // ── §16 Activity logging ─────────────────────────────────────────────────
+
+  /**
+   * §27 gives every role an "Activity" view (the Admin's is "Activity Logs").
+   * An editor's is scoped to their own videos and assigned events — they still
+   * see the publisher's actions on their work, just not anyone else's work.
+   */
+  app.get(`${P}/activity`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    const q = req.query as Record<string, string>;
+    const scope = user.role === "editor" ? { onlyEditorId: user.id } : {};
+    res.json({
+      entries: await activityFeed({
+        q: q.q || undefined,
+        userId: q.user_id || undefined,
+        subjectType: (q.subject as "video" | "event") || undefined,
+        from: q.from || undefined,
+        to: q.to || undefined,
+        limit: q.limit ? Number(q.limit) : undefined,
+      }, scope),
+    });
+  }));
+
+  app.get(`${P}/activity/actors`, asyncHandler(async (_req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["admin", "manager", "publisher"])) return;
+    res.json({ actors: await activityActors() });
   }));
 
   // ── §20 KPI dashboard and §11.3 / §14.1 Editor Video Log ─────────────────

@@ -81,6 +81,7 @@ import VideoDashboard from "@/pages/outreach/video/VideoDashboard";
 import VideoSearch from "@/pages/outreach/video/VideoSearch";
 import VideoEditorLog from "@/pages/outreach/video/VideoEditorLog";
 import VideoUsers from "@/pages/outreach/video/VideoUsers";
+import VideoActivity from "@/pages/outreach/video/VideoActivity";
 
 import NotFound from "./pages/NotFound.tsx";
 
@@ -425,6 +426,13 @@ const App = () => (
               <Route path="/outreach/video/users" element={
                 <RoleGuard allowed={['super_admin', 'admin']} team="outreach">
                   <VideoUsers />
+                </RoleGuard>
+              } />
+              {/* §16 — every role gets an Activity view; the API scopes an
+                  editor's to their own videos and assigned events. */}
+              <Route path="/outreach/video/activity" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach">
+                  <VideoActivity />
                 </RoleGuard>
               } />
 
