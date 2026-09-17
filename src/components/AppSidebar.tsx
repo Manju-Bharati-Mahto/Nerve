@@ -7,7 +7,7 @@ import {
   Crown, UserCheck, User, Settings, Palette, FileText,
   Megaphone, Send, Calendar, BarChart3, Sparkles,
   Award, CalendarOff, Settings2, AlertTriangle,
-  Film, Inbox, Share2, CheckCircle2, ListChecks, Bell,
+  Film, Inbox, Share2, CheckCircle2, ListChecks, Bell, ClipboardList, UserCog,
 } from 'lucide-react'
 import ProfileModal from './ProfileModal'
 import { useOutreachData, computeOutreachAlerts } from '@/lib/outreach-data'
@@ -48,9 +48,32 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/browse',       label: 'Browse all',  icon: Search },
       { path: '/admin/export', label: 'Export data', icon: Download },
     ]},
+    { heading: 'Video workflow', items: [
+      { path: '/outreach/video/dashboard',  label: 'Video Dashboard',  icon: BarChart3 },
+      { path: '/outreach/video/users',      label: 'Workflow Users',   icon: UserCog },
+      { path: '/outreach/video/all',        label: 'All Videos',       icon: Film },
+      { path: '/outreach/video/calendar',   label: 'Event Calendar',   icon: Calendar },
+      { path: '/outreach/video/editor-log', label: 'Editor Video Log', icon: ClipboardList },
+    ]},
     { heading: 'AI', items: [
       { path: '/ai/query',      label: 'Ask AI',     icon: MessageSquare },
       { path: '/ai/newsletter', label: 'Newsletter', icon: Newspaper },
+    ]},
+  ]),
+
+  /* The PRD's Admin role (§4.1) as it appears for a Nerve admin sitting on the
+     outreach team: full workflow management, no editor/manager/publisher gate. */
+  'admin:outreach': cfg('Video Workflow Admin', Crown, 'text-orange-600', 'bg-orange-100', [
+    { items: [
+      { path: '/outreach/video/dashboard',  label: 'Dashboard',        icon: LayoutDashboard },
+      { path: '/outreach/video/users',      label: 'Users',            icon: UserCog },
+      { path: '/outreach/video/all',        label: 'All Videos',       icon: Film },
+      { path: '/outreach/video/calendar',   label: 'Event Calendar',   icon: Calendar },
+    ]},
+    { heading: 'Reports', items: [
+      { path: '/outreach/video/editor-log', label: 'Editor Video Log', icon: ClipboardList },
+      { path: '/outreach/video/published',  label: 'Published',        icon: CheckCircle2 },
+      { path: '/outreach/video/notifications', label: 'Notifications', icon: Bell, badge: 'video-notifications' },
     ]},
   ]),
 
@@ -150,9 +173,12 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/outreach/creators', label: 'Creators',  icon: Users },
     ]},
     { heading: 'Video workflow', items: [
+      { path: '/outreach/video/dashboard',    label: 'Video Dashboard',  icon: BarChart3 },
       { path: '/outreach/video/calendar',     label: 'Event Calendar',   icon: Calendar },
+      { path: '/outreach/video/all',          label: 'All Videos',       icon: Film },
       { path: '/outreach/video/queue',        label: 'Publishing Queue', icon: Inbox },
       { path: '/outreach/video/published',    label: 'Published',        icon: CheckCircle2 },
+      { path: '/outreach/video/editor-log',   label: 'Editor Video Log', icon: ClipboardList },
       { path: '/outreach/video/social-pages', label: 'Social Pages',     icon: Share2 },
       { path: '/outreach/video/notifications', label: 'Notifications',   icon: Bell, badge: 'video-notifications' },
     ]},
@@ -168,6 +194,7 @@ const SIDEBAR: Record<string, RoleConfig> = {
     { items: [
       { path: '/outreach/video/my-videos',    label: 'My Videos',   icon: Film },
       { path: '/outreach/video/todo',         label: 'To-Do List',  icon: ListChecks },
+      { path: '/outreach/video/all',          label: 'Search',      icon: Search },
       { path: '/outreach/video/published',    label: 'Published',   icon: CheckCircle2 },
       { path: '/outreach/video/notifications', label: 'Notifications', icon: Bell, badge: 'video-notifications' },
     ]},
@@ -180,6 +207,8 @@ const SIDEBAR: Record<string, RoleConfig> = {
     { items: [
       { path: '/outreach/video/queue',        label: 'Publishing Queue', icon: Inbox },
       { path: '/outreach/video/published',    label: 'Published',        icon: CheckCircle2 },
+      { path: '/outreach/video/all',          label: 'Search',           icon: Search },
+      { path: '/outreach/video/editor-log',   label: 'Editor Video Log', icon: ClipboardList },
       { path: '/outreach/video/notifications', label: 'Notifications',   icon: Bell, badge: 'video-notifications' },
     ]},
     { heading: 'Reference', items: [

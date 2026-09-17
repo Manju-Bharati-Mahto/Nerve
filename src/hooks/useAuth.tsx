@@ -110,7 +110,9 @@ export function getRoleDashboard(role: AppRole | null, team: AppTeam | null): st
   // carry institute coverage, so they land there too rather than falling through
   // to the branding dashboard, which is a different product entirely.
   if (team === 'media' || team === 'smc') return '/media'
-  if (role === 'admin')                 return team === 'content' ? '/content/dashboard'   : team === 'design' ? '/design/dashboard' : '/branding/dashboard'
+  // An admin on the outreach team is the video workflow's Admin (PRD §4.1),
+  // whose home is the workflow dashboard rather than branding's.
+  if (role === 'admin')                 return team === 'content' ? '/content/dashboard'   : team === 'design' ? '/design/dashboard' : team === 'outreach' ? '/outreach/video/dashboard' : '/branding/dashboard'
   if (role === 'sub_admin')             return team === 'content' ? '/content/sub-admin'   : team === 'design' ? '/design/sub-admin' : '/branding/sub-admin'
   // Task Owner: a branding/design lead variant with project-assign rights. Lands
   // on the shared team dashboard (projects / reports / team / assign).

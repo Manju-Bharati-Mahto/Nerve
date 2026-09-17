@@ -16,8 +16,9 @@ import { Readable } from "node:stream";
 
 import { driveIsConfigured, driveIsLocal, getDriveClient, DriveNotConfiguredError } from "./drive-client.js";
 import {
-  addUser, findUserByEmail, listActiveEditors, listUsers, touchLastActivity,
-  videoRoleForNerveRole,
+  addUser, deleteUser, findUserByEmail, listActiveEditors, listUsers,
+  setUserActive, setUserRole, touchLastActivity, videoRoleForNerveRole,
+  UserExistsError,
 } from "./users.js";
 import {
   getVideo, listVideos, publishVideo, publishingQueue, setLiveUrls,
@@ -30,7 +31,9 @@ import {
   todoFor, updateEventDetails, EventNotFoundError, EventNotOpenError, NotYourEventError,
 } from "./events.js";
 import { listNotifications, markRead } from "./notifications.js";
-import type { VideoRole, VideoUser } from "./types.js";
+import { editorVideoLog, workflowKpis } from "./reports.js";
+import { filterOptions, search } from "./search.js";
+import { VIDEO_ROLES, type VideoRole, type VideoUser } from "./types.js";
 
 interface CurrentUser { id: string; role: string; team: string | null; full_name?: string; email?: string }
 
@@ -93,6 +96,7 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     if (err instanceof EventNotFoundError) return sendError(res, 404, err.message);
     if (err instanceof NotYourEventError) return sendError(res, 403, err.message);
     if (err instanceof EventNotOpenError) return sendError(res, 409, err.message);
+    if (err instanceof UserExistsError) return sendError(res, 409, err.message);
     if (err instanceof InvalidTransitionError) return sendError(res, 409, err.message);
     if (err instanceof DriveNotConfiguredError) return sendError(res, 503, err.message);
     const msg = err instanceof Error ? err.message : "Something went wrong.";
@@ -365,6 +369,104 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     const user = await requireVideoUser(res); if (!user) return;
     if (!requireRole(res, user, ["admin", "manager"])) return;
     res.json({ editors: await listActiveEditors() });
+  }));
+
+  /**
+   * §4.3 — Admin registers a user by email; §5 matches that email at sign-in.
+   * Admin-only: §25 "Restrict Admin privileges to explicitly configured Admin
+   * accounts", so a Manager cannot reach any of the four writes below.
+   */
+  app.post(`${P}/users`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["admin"])) return;
+    const b = req.body as Record<string, unknown>;
+    const name = String(b.name ?? "").trim();
+    const email = String(b.email ?? "").trim();
+    const role = String(b.role ?? "") as VideoRole;
+    if (!name) return sendError(res, 400, "A full name is required.");
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendError(res, 400, "A valid email address is required.");
+    if (!VIDEO_ROLES.includes(role)) return sendError(res, 400, "Pick one of Admin, Editor, Manager or Publisher.");
+    try {
+      res.status(201).json({ user: await addUser({ name, email, role, active: b.active !== false }) });
+    } catch (err) { fail(res, err); }
+  }));
+
+  /** §4.4 — takes effect on the user's next authenticated session. */
+  app.patch(`${P}/users/:id`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["admin"])) return;
+    const id = getSingleParam(req.params.id);
+    const b = req.body as Record<string, unknown>;
+    let updated = null;
+    if (b.role !== undefined) {
+      const role = String(b.role) as VideoRole;
+      if (!VIDEO_ROLES.includes(role)) return sendError(res, 400, "Pick one of Admin, Editor, Manager or Publisher.");
+      // §25 — an admin demoting themselves would lock the last door behind them.
+      if (id === user.id && role !== "admin") return sendError(res, 400, "You cannot change your own role.");
+      updated = await setUserRole(id, role);
+    }
+    if (b.active !== undefined) {
+      if (id === user.id && b.active === false) return sendError(res, 400, "You cannot disable your own account.");
+      updated = await setUserActive(id, b.active !== false);
+    }
+    if (!updated) return sendError(res, 404, "That user was not found.");
+    res.json({ user: updated });
+  }));
+
+  /**
+   * §4.6 — removes the user from the active list. Their videos, events and
+   * activity stay exactly as they were, with their name and email snapshotted
+   * on every historical entry.
+   */
+  app.delete(`${P}/users/:id`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["admin"])) return;
+    const id = getSingleParam(req.params.id);
+    if (id === user.id) return sendError(res, 400, "You cannot delete your own account.");
+    if (!await deleteUser(id)) return sendError(res, 404, "That user was not found.");
+    res.json({ deleted: true });
+  }));
+
+  // ── §18 Search & filtering ───────────────────────────────────────────────
+
+  app.get(`${P}/search`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    const q = req.query as Record<string, string>;
+    // §25 — an editor searches their own work only, whatever they ask for.
+    const scope = user.role === "editor" ? { onlyEditorId: user.id } : {};
+    res.json(await search({
+      q: q.q || undefined,
+      status: (q.status as never) || undefined,
+      eventStatus: (q.event_status as never) || undefined,
+      client: q.client || undefined,
+      editorId: q.editor_id || undefined,
+      publisherId: q.publisher_id || undefined,
+      platform: q.platform || undefined,
+      from: q.from || undefined,
+      to: q.to || undefined,
+    }, scope));
+  }));
+
+  app.get(`${P}/filter-options`, asyncHandler(async (_req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    res.json(await filterOptions());
+  }));
+
+  // ── §20 KPI dashboard and §11.3 / §14.1 Editor Video Log ─────────────────
+
+  /** §20 — "Admin and Manager should have access to overall workflow KPIs". */
+  app.get(`${P}/kpis`, asyncHandler(async (_req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["admin", "manager"])) return;
+    res.json({ kpis: await workflowKpis() });
+  }));
+
+  /** §11.3 Manager and §14.1 Publisher both get the monthly editor log. */
+  app.get(`${P}/editor-log`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["admin", "manager", "publisher"])) return;
+    const q = req.query as Record<string, string>;
+    res.json({ log: await editorVideoLog(q.month || undefined, q.client || undefined) });
   }));
 
   // ── §8.2 Social media pages ──────────────────────────────────────────────

@@ -70,7 +70,12 @@ export interface WorkflowUser {
   email: string
   role: VideoRole
   active: boolean
+  /** §4.2 "Date Added". */
+  createdAt?: string
+  updatedAt?: string
   lastActivityAt?: string | null
+  /** §4.6 — set on a deleted user, whose history stays intact. */
+  deletedAt?: string | null
 }
 
 /** §8.2 — what an editor is allowed to see about a page. */
@@ -240,4 +245,126 @@ export const markNotificationsRead = (ids?: string[]) =>
 /** Local calendar day as YYYY-MM-DD — never via toISOString, which shifts. */
 export function localDay(d: Date = new Date()): string {
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+}
+
+// ── §18 search & filtering ─────────────────────────────────────────────────
+
+export interface SearchParams {
+  q?: string
+  status?: VideoStatus
+  eventStatus?: EventStatus
+  client?: string
+  editorId?: string
+  publisherId?: string
+  platform?: string
+  from?: string
+  to?: string
+}
+
+export interface FilterOptions {
+  clients: string[]
+  platforms: string[]
+  editors: { id: string; name: string }[]
+  publishers: { id: string; name: string }[]
+}
+
+export const searchWorkflow = (params: SearchParams = {}) => {
+  const q = new URLSearchParams()
+  const map: Record<string, string | undefined> = {
+    q: params.q, status: params.status, event_status: params.eventStatus,
+    client: params.client, editor_id: params.editorId, publisher_id: params.publisherId,
+    platform: params.platform, from: params.from, to: params.to,
+  }
+  for (const [key, value] of Object.entries(map)) if (value) q.set(key, value)
+  const qs = q.toString()
+  return request<{ videos: VideoRecord[]; events: EventRecord[] }>(`/search${qs ? `?${qs}` : ''}`)
+}
+
+export const getFilterOptions = () => request<FilterOptions>('/filter-options')
+
+// ── §20 KPI dashboard ──────────────────────────────────────────────────────
+
+export interface CountRow { key: string; label: string; count: number }
+
+export interface WorkflowKpis {
+  totalVideos: number
+  draftVideos: number
+  submittedVideos: number
+  publishedVideos: number
+  avgDraftToSubmittedHours: number | null
+  avgSubmittedToPublishedHours: number | null
+  publishedThisWeek: number
+  publishedThisMonth: number
+  videosByEditor: CountRow[]
+  videosByClient: CountRow[]
+  totalEvents: number
+  upcomingEvents: number
+  pastEvents: number
+  unassignedEvents: number
+  completedEvents: number
+  eventsByEditor: CountRow[]
+}
+
+export const getKpis = () => request<{ kpis: WorkflowKpis }>('/kpis').then(r => r.kpis)
+
+/** Turns 31.5 hours into "1d 8h" — a KPI card nobody has to do arithmetic on. */
+export function formatHours(hours: number | null): string {
+  if (hours === null) return '—'
+  if (hours < 1) return `${Math.round(hours * 60)} min`
+  if (hours < 24) return `${Math.round(hours * 10) / 10} h`
+  const days = Math.floor(hours / 24)
+  const rest = Math.round(hours % 24)
+  return rest ? `${days}d ${rest}h` : `${days}d`
+}
+
+// ── §11.3 / §14.1 Editor Video Log (monthly) ───────────────────────────────
+
+export interface VideoLogEntry {
+  videoId: string
+  editorId: string
+  editorName: string
+  title: string
+  editorTitle: string
+  client: string
+  status: VideoStatus
+  date: string
+}
+
+export interface EditorVideoLog {
+  month: string
+  entries: VideoLogEntry[]
+  byEditor: { editorId: string; editorName: string; entries: VideoLogEntry[] }[]
+  availableMonths: string[]
+}
+
+export const getEditorLog = (params: { month?: string; client?: string } = {}) => {
+  const q = new URLSearchParams()
+  if (params.month) q.set('month', params.month)
+  if (params.client) q.set('client', params.client)
+  const qs = q.toString()
+  return request<{ log: EditorVideoLog }>(`/editor-log${qs ? `?${qs}` : ''}`).then(r => r.log)
+}
+
+/** "2026-09" → "September 2026". */
+export function formatMonth(month: string): string {
+  const [year, m] = month.split('-').map(Number)
+  if (!year || !m) return month
+  return new Date(year, m - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+}
+
+// ── §4.2 Admin user management ─────────────────────────────────────────────
+
+export const listWorkflowUsers = () => request<{ users: WorkflowUser[] }>('/users')
+
+export const addWorkflowUser = (input: { name: string; email: string; role: VideoRole; active?: boolean }) =>
+  request<{ user: WorkflowUser }>('/users', { method: 'POST', body: JSON.stringify(input) }).then(r => r.user)
+
+export const updateWorkflowUser = (id: string, patch: { role?: VideoRole; active?: boolean }) =>
+  request<{ user: WorkflowUser }>(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }).then(r => r.user)
+
+export const deleteWorkflowUser = (id: string) =>
+  request<{ deleted: boolean }>(`/users/${id}`, { method: 'DELETE' })
+
+export const ROLE_LABEL: Record<VideoRole, string> = {
+  admin: 'Admin', editor: 'Editor', manager: 'Manager', publisher: 'Publisher',
 }

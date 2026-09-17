@@ -77,6 +77,10 @@ import VideoCalendar from "@/pages/outreach/video/VideoCalendar";
 import VideoEventDetail from "@/pages/outreach/video/VideoEventDetail";
 import VideoTodo from "@/pages/outreach/video/VideoTodo";
 import VideoNotifications from "@/pages/outreach/video/VideoNotifications";
+import VideoDashboard from "@/pages/outreach/video/VideoDashboard";
+import VideoSearch from "@/pages/outreach/video/VideoSearch";
+import VideoEditorLog from "@/pages/outreach/video/VideoEditorLog";
+import VideoUsers from "@/pages/outreach/video/VideoUsers";
 
 import NotFound from "./pages/NotFound.tsx";
 
@@ -399,6 +403,28 @@ const App = () => (
               <Route path="/outreach/video/notifications" element={
                 <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach">
                   <VideoNotifications />
+                </RoleGuard>
+              } />
+              {/* §20 KPIs and §4.2 user management are Manager/Admin ground;
+                  §18 search is scoped per role by the API. */}
+              <Route path="/outreach/video/dashboard" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager']} team="outreach">
+                  <VideoDashboard />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/all" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach">
+                  <VideoSearch />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/editor-log" element={
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_publisher']} team="outreach">
+                  <VideoEditorLog />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/users" element={
+                <RoleGuard allowed={['super_admin', 'admin']} team="outreach">
+                  <VideoUsers />
                 </RoleGuard>
               } />
 

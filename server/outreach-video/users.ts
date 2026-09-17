@@ -38,6 +38,19 @@ export async function listUsers(): Promise<VideoUser[]> {
   return doc.users.filter(u => !u.deletedAt);
 }
 
+/**
+ * Every user the store has ever held, tombstones included.
+ *
+ * §4.6 requires historical records to keep resolving to the right person, so
+ * anything attributing past work — KPI breakdowns, the editor video log, a
+ * search by editor name — must read from here rather than from `listUsers`,
+ * which deliberately hides deleted accounts from the Admin table.
+ */
+export async function listAllUsers(): Promise<VideoUser[]> {
+  const doc = await readUsers();
+  return doc.users;
+}
+
 /** Active editors only — the dropdown the Manager assigns events from (§11.2). */
 export async function listActiveEditors(): Promise<VideoUser[]> {
   return (await listActiveUsers()).filter(u => u.role === "editor");
