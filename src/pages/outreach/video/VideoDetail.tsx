@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Send, Download, Copy, Check, AlertCircle, ExternalLink, Pencil,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import {
   getVideo, submitVideo, updateCaption, videoStreamUrl, videoDownloadUrl,
   STATUS_STYLE, formatBytes, formatWhen, describeAction,
@@ -175,7 +176,7 @@ function SubmitButton({ video, onDone }: { video: VideoRecord; onDone: () => Pro
         if (!confirm(`Submit "${video.title}" to the publisher? The caption can't be changed afterwards.`)) return
         setBusy(true)
         try { await submitVideo(video.id); await onDone() }
-        catch (err) { alert(err instanceof Error ? err.message : 'Could not submit.') }
+        catch (err) { toast.error(err instanceof Error ? err.message : 'Could not submit.') }
         finally { setBusy(false) }
       }}
       className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-600 text-white hover:opacity-90 disabled:opacity-40 inline-flex items-center gap-1">

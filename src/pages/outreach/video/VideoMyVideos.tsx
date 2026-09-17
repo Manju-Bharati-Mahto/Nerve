@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import {
   Film, Upload, Send, AlertCircle, Loader2, X, CheckCircle2, CloudOff,
 } from 'lucide-react'
+import { toast } from 'sonner'
 import {
   getVideoConfig, listVideos, uploadVideo, submitVideo,
   STATUS_STYLE, formatBytes, formatWhen,
@@ -62,7 +63,7 @@ export default function VideoMyVideos() {
       await submitVideo(video.id)
       await refresh()
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Could not submit.')
+      toast.error(err instanceof Error ? err.message : 'Could not submit.')
     }
   }
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ListChecks, CheckCircle2, AlertCircle, Circle } from 'lucide-react'
+import { toast } from 'sonner'
 import {
   listEvents, completeEvent, localDay,
   EVENT_STATUS_STYLE, type EventRecord,
@@ -44,9 +45,10 @@ export default function VideoTodo() {
     setBusyId(event.id)
     try {
       await completeEvent(event.id)
+      toast.success(`“${event.title}” marked completed.`)
       await refresh()
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Could not mark it completed.')
+      toast.error(err instanceof Error ? err.message : 'Could not mark it completed.')
     } finally {
       setBusyId(null)
     }

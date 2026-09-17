@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft, UserCheck, CheckCircle2, AlertCircle, Pencil, X } from 'lucide-react'
+import { toast } from 'sonner'
 import {
   getEvent, assignEvent, completeEvent, updateEvent, listEditors,
   EVENT_STATUS_STYLE, formatWhen, describeAction,
@@ -175,8 +176,8 @@ function CompleteButton({ event, onDone }: { event: EventRecord; onDone: () => P
     <button disabled={busy}
       onClick={async () => {
         setBusy(true)
-        try { await completeEvent(event.id); await onDone() }
-        catch (err) { alert(err instanceof Error ? err.message : 'Could not complete.') }
+        try { await completeEvent(event.id); toast.success('Marked completed.'); await onDone() }
+        catch (err) { toast.error(err instanceof Error ? err.message : 'Could not complete.') }
         finally { setBusy(false) }
       }}
       className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:opacity-90 disabled:opacity-40 inline-flex items-center gap-1">
