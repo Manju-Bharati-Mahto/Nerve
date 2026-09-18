@@ -5272,6 +5272,515 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ scope: scope.level, creators: creators.rows[0].n, teams: teams.rows[0].n });
   }));
 
+  /* ═══════════════════════════════════════════════════════════════════════
+     CREATOR NETWORK — Phase 1: directory, teams, hierarchy
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /** Who may CHANGE the network. Reading is scoped; writing is not delegated
+      below Creator Admin in this phase. Nerve Admins qualify the way they do
+      for every module — which still does not make them a Creator Admin. */
+  async function requireCreatorManage(res: express.Response, u: CurrentUser): Promise<boolean> {
+    if (isMoAdmin(u) || (await creatorRoleOf(u)) === "creator_admin") return true;
+    sendError(res, 403, "Only a Creator Admin may manage the Creator Network.");
+    return false;
+  }
+
+  /* One SELECT for every creator read, so the directory, the detail drawer and
+     a creator's own profile can never disagree about what a creator is. The
+     team and its lead are joined here rather than fetched per row — a thousand
+     creators must stay one query. */
+  const CREATOR_SELECT = `
+    SELECT c.user_id, c.creator_role, c.status, c.creator_type, c.joined_on, c.exited_on, c.notes,
+           COALESCE(NULLIF(c.display_name,''), u.full_name) AS display_name,
+           u.full_name, u.email, u.avatar_url, u.status AS account_status,
+           t.id AS team_id, t.name AS team_name,
+           l.id AS lead_id, l.full_name AS lead_name
+      FROM mo_creator_profiles c
+      JOIN users u              ON u.id = c.user_id
+      LEFT JOIN mo_creator_team_members m ON m.user_id = c.user_id AND m.is_primary
+      LEFT JOIN mo_creator_teams t        ON t.id = m.team_id
+      LEFT JOIN users l                   ON l.id = t.lead_user_id`;
+
+  /* Contact details are not directory data. A manager who runs the network sees
+     them; a Team Lead browsing their team does not. Redacted per row rather
+     than dropped, so the client renders a blank rather than breaking. */
+  const shapeCreator = (r: Record<string, unknown>, full: boolean) => ({
+    user_id: r.user_id, display_name: r.display_name, full_name: r.full_name,
+    creator_role: r.creator_role, status: r.status, creator_type: r.creator_type,
+    joined_on: dOnly(r.joined_on), exited_on: dOnly(r.exited_on),
+    avatar_url: r.avatar_url, account_status: r.account_status,
+    team: r.team_id ? { id: Number(r.team_id), name: r.team_name } : null,
+    lead: r.lead_id ? { id: r.lead_id, name: r.lead_name } : null,
+    email: full ? r.email : null,
+    notes: full ? r.notes : null,
+  });
+
+  /** The scope clause, as SQL. Every creator read goes through this — it is the
+      single place that decides who sees whom. */
+  function creatorScopeSql(scope: Awaited<ReturnType<typeof creatorScopeOf>>, params: unknown[]) {
+    if (scope.level === "all") return "";
+    if (scope.level === "team") {
+      // A Team Lead sees their teams' members, and themselves.
+      params.push(scope.teamIds, scope.userId);
+      return ` AND (m.team_id = ANY($${params.length - 1}::bigint[]) OR c.user_id = $${params.length})`;
+    }
+    params.push(scope.userId);
+    return ` AND c.user_id = $${params.length}`;
+  }
+
+  /* ── The shell payload ──────────────────────────────────────────────────
+     Deliberately small, and deliberately NOT /state. A creator cannot load the
+     Media Ops state (requireMedia refuses them, by design), so this is what
+     their surface boots from: who they are, their team, their lead, and what
+     the UI may offer them. Nothing about anybody else. */
+  app.get(`${P}/creator/state`, asyncHandler(async (_req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const role = await creatorRoleOf(u);
+    const scope = await creatorScopeOf(u);
+    const manage = isMoAdmin(u) || role === "creator_admin";
+
+    const me = (await pool.query(`${CREATOR_SELECT} WHERE c.user_id=$1`, [u.id])).rows[0];
+
+    /* Teams: the whole list for a manager (they need it for pickers and
+       filters), only their own for a Team Lead, only theirs for a creator.
+       Never the whole table by default. */
+    const teams = manage
+      ? (await pool.query(
+          `SELECT t.id, t.name, t.is_active, t.lead_user_id, l.full_name AS lead_name,
+                  (SELECT COUNT(*)::int FROM mo_creator_team_members mm WHERE mm.team_id=t.id) AS members
+             FROM mo_creator_teams t LEFT JOIN users l ON l.id = t.lead_user_id
+            WHERE t.archived_at IS NULL ORDER BY t.sort_order, t.name`)).rows
+      : scope.level === "team"
+        ? (await pool.query(
+            `SELECT t.id, t.name, t.is_active, t.lead_user_id, l.full_name AS lead_name,
+                    (SELECT COUNT(*)::int FROM mo_creator_team_members mm WHERE mm.team_id=t.id) AS members
+               FROM mo_creator_teams t LEFT JOIN users l ON l.id = t.lead_user_id
+              WHERE t.id = ANY($1::bigint[]) AND t.archived_at IS NULL ORDER BY t.name`,
+            [scope.teamIds])).rows
+        : me?.team_id
+          ? (await pool.query(
+              `SELECT t.id, t.name, t.is_active, t.lead_user_id, l.full_name AS lead_name, NULL::int AS members
+                 FROM mo_creator_teams t LEFT JOIN users l ON l.id = t.lead_user_id WHERE t.id=$1`,
+              [me.team_id])).rows
+          : [];
+
+    // Counts only where they mean something; a creator is not shown a headcount.
+    let counts: Record<string, number> | null = null;
+    if (scope.level !== "self") {
+      const params: unknown[] = [];
+      const where = creatorScopeSql(scope, params);
+      counts = (await pool.query(
+        `SELECT COUNT(*) FILTER (WHERE c.status='active')::int    active,
+                COUNT(*) FILTER (WHERE c.status='inactive')::int  inactive,
+                COUNT(*) FILTER (WHERE c.status='suspended')::int suspended,
+                COUNT(*) FILTER (WHERE c.status='archived')::int  archived
+           FROM mo_creator_profiles c
+           LEFT JOIN mo_creator_team_members m ON m.user_id = c.user_id AND m.is_primary
+          WHERE true${where}`, params)).rows[0];
+    }
+
+    res.json({
+      me: { id: u.id, full_name: u.full_name ?? null },
+      creator_role: role,
+      scope: scope.level,
+      can_manage_network: manage,
+      profile: me ? shapeCreator(me, true) : null,   // always your own, in full
+      // BIGINT arrives as a string from pg; coerced here so a team id is the
+      // same type on every creator endpoint and the client can compare it.
+      teams: teams.map((t) => ({ ...t, id: Number(t.id) })),
+      counts,
+    });
+  }));
+
+  /* ── Directory ──────────────────────────────────────────────────────────
+     Filtered and paginated in SQL. The browser never receives rows it then
+     hides: at a thousand creators that would be both slow and a disclosure. */
+  app.get(`${P}/creator/creators`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const scope = await creatorScopeOf(u);
+    const q = req.query as Record<string, string>;
+
+    const params: unknown[] = [];
+    let where = creatorScopeSql(scope, params);
+
+    const search = String(q.q ?? "").trim();
+    if (search) {
+      params.push(`%${search.toLowerCase()}%`);
+      where += ` AND (lower(u.full_name) LIKE $${params.length} OR lower(c.display_name) LIKE $${params.length}
+                      OR lower(u.email) LIKE $${params.length})`;
+    }
+    for (const [key, col] of [["status", "c.status"], ["role", "c.creator_role"]] as const) {
+      const v = String(q[key] ?? "").trim();
+      if (!v || v === "all") continue;
+      params.push(v);
+      where += ` AND ${col} = $${params.length}`;
+    }
+    if (q.team_id && String(q.team_id) !== "all") {
+      // A forged team_id narrows; it can never widen, because the scope clause
+      // above is already applied and this only adds to it.
+      params.push(Number(q.team_id));
+      where += ` AND m.team_id = $${params.length}`;
+    }
+
+    const limit = Math.min(200, Math.max(1, Number(q.limit) || 50));
+    const offset = Math.max(0, Number(q.offset) || 0);
+    const total = (await pool.query(
+      `SELECT COUNT(*)::int n FROM mo_creator_profiles c
+         JOIN users u ON u.id = c.user_id
+         LEFT JOIN mo_creator_team_members m ON m.user_id = c.user_id AND m.is_primary
+        WHERE true${where}`, params)).rows[0].n;
+
+    params.push(limit, offset);
+    const { rows } = await pool.query(
+      `${CREATOR_SELECT} WHERE true${where}
+        ORDER BY (c.status='active') DESC, COALESCE(NULLIF(c.display_name,''), u.full_name)
+        LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+
+    res.json({
+      creators: rows.map((r) => shapeCreator(r, scope.level === "all")),
+      total, limit, offset, scope: scope.level,
+    });
+  }));
+
+  /** One creator. The scope clause is applied to the lookup itself, so an id
+      outside the caller's scope is indistinguishable from one that does not
+      exist — no probing for who is on the network. */
+  app.get(`${P}/creator/creators/:id`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const scope = await creatorScopeOf(u);
+    const params: unknown[] = [getSingleParam(req.params.id)];
+    const where = creatorScopeSql(scope, params);
+    const row = (await pool.query(`${CREATOR_SELECT} WHERE c.user_id=$1${where}`, params)).rows[0];
+    if (!row) return sendError(res, 404, "Creator not found.");
+    // Your own record is always yours in full; someone else's depends on scope.
+    res.json({ creator: shapeCreator(row, scope.level === "all" || row.user_id === u.id) });
+  }));
+
+  /* ── Enrolling a creator ────────────────────────────────────────────────
+     ONE identity per person, as everywhere else in Nerve. Two ways in:
+
+       { user_id }                enrol somebody who already has a Nerve account
+       { email, full_name, ... }  create the account and enrol them in one step
+
+     The email path reuses the lifecycle rules the crew directory settled on:
+     match on LOWER(email) because UNIQUE(email) is case-sensitive, and answer
+     with WHICH conflict it is rather than a flat refusal. */
+  app.post(`${P}/creator/creators`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const b = req.body as Record<string, unknown>;
+
+    const role = ["creator_admin", "team_lead", "creator"].includes(String(b.creator_role))
+      ? String(b.creator_role) : "creator";
+    let targetId: string;
+
+    if (b.user_id) {
+      // Enrol an existing Nerve user — Media Ops staff becoming a Creator Admin,
+      // say. Their Nerve role and team are left exactly as they are.
+      targetId = String(b.user_id);
+      const exists = (await pool.query(`SELECT id, status FROM users WHERE id=$1`, [targetId])).rows[0];
+      if (!exists) return sendError(res, 404, "No such Nerve user.");
+      if (exists.status !== "active") return sendError(res, 400, "That account is not active.");
+      const already = (await pool.query(`SELECT 1 FROM mo_creator_profiles WHERE user_id=$1`, [targetId])).rows[0];
+      if (already) return res.status(409).json({ code: "CREATOR_EXISTS", message: "That person is already on the Creator Network." });
+    } else {
+      const email = String(b.email ?? "").trim().toLowerCase();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendError(res, 400, "A valid email is required.");
+      const name = String(b.full_name ?? "").trim();
+      if (name.length < 2) return sendError(res, 400, "A name is required.");
+      const pw = String(b.password ?? "");
+      if (pw.length < 6) return sendError(res, 400, "Password must be at least 6 characters.");
+
+      const prior = (await pool.query(
+        `SELECT u.id, u.full_name, u.status, c.user_id AS creator
+           FROM users u LEFT JOIN mo_creator_profiles c ON c.user_id = u.id
+          WHERE LOWER(u.email)=$1`, [email])).rows[0];
+      if (prior) {
+        // Never a second row for the same person — say what the situation is
+        // and let the admin enrol or reactivate the identity that exists.
+        if (prior.creator)
+          return res.status(409).json({ code: "CREATOR_EXISTS", message: "That person is already on the Creator Network.",
+            user: { id: prior.id, full_name: prior.full_name } });
+        return res.status(409).json({ code: "USER_EXISTS",
+          message: "A Nerve account with this email already exists — enrol that account instead of creating a second one.",
+          user: { id: prior.id, full_name: prior.full_name, status: prior.status } });
+      }
+
+      targetId = `u-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      try {
+        await pool.query(
+          `INSERT INTO users (id, full_name, email, department, role, team, password_hash, email_verified, status)
+           VALUES ($1,$2,$3,'Creator Network','user','creator',$4,true,'active')`,
+          [targetId, name, email, await hashPassword(pw)]);
+      } catch (err) {
+        // UNIQUE(email) is the real guarantee; two admins racing land here.
+        if ((err as { code?: string }).code !== "23505") throw err;
+        return res.status(409).json({ code: "USER_EXISTS", message: "A Nerve account with this email already exists." });
+      }
+    }
+
+    await pool.query(
+      `INSERT INTO mo_creator_profiles (user_id, creator_role, status, display_name, creator_type, notes, created_by)
+       VALUES ($1,$2,'active',$3,$4,$5,$6)`,
+      [targetId, role, (b.display_name as string) || null, (b.creator_type as string) || null,
+       String(b.notes ?? ""), u.id]);
+
+    if (b.team_id) await setCreatorTeam(u, targetId, Number(b.team_id), req);
+
+    await audit(u, "creator.created", "creator", null, null,
+      { user_id: targetId, creator_role: role, team_id: b.team_id ?? null }, req);
+    res.status(201).json({ ok: true, user_id: targetId, creator_role: role });
+  }));
+
+  /* Moving a creator between teams. One primary team, as Phase 0 settled —
+     the partial unique index enforces it, so the old row is cleared first. */
+  async function setCreatorTeam(actor: CurrentUser, userId: string, teamId: number | null, req: express.Request) {
+    const prev = (await pool.query(
+      `SELECT t.id, t.name FROM mo_creator_team_members m JOIN mo_creator_teams t ON t.id=m.team_id
+        WHERE m.user_id=$1 AND m.is_primary`, [userId])).rows[0];
+    if (prev && Number(prev.id) === teamId) return;
+    await pool.query(`DELETE FROM mo_creator_team_members WHERE user_id=$1 AND is_primary`, [userId]);
+    if (teamId) {
+      await pool.query(
+        `INSERT INTO mo_creator_team_members (team_id, user_id, is_primary, added_by) VALUES ($1,$2,true,$3)`,
+        [teamId, userId, actor.id]);
+    }
+    await audit(actor, prev && teamId ? "creator.team_moved" : teamId ? "creator.team_joined" : "creator.team_left",
+      "creator_team", teamId ?? (prev ? Number(prev.id) : null),
+      prev ? { team_id: Number(prev.id), team: prev.name } : null,
+      { user_id: userId, team_id: teamId }, req);
+  }
+
+  /* ── Changing a creator ─────────────────────────────────────────────────
+     Role and status are the two that matter, and both carry a self-service
+     guard: nobody edits their own standing in the network, so a Team Lead
+     cannot promote themselves and a creator cannot promote anybody. */
+  app.patch(`${P}/creator/creators/:id`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const id = getSingleParam(req.params.id);
+    const b = req.body as Record<string, unknown>;
+    const cur = (await pool.query(`SELECT * FROM mo_creator_profiles WHERE user_id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Creator not found.");
+
+    /* Self-promotion guard. A Creator Admin editing their own row could only
+       ever lower themselves or change cosmetics, and allowing the role field
+       would make "who may promote" circular. Nobody grades their own paper. */
+    if (id === u.id && ("creator_role" in b || "status" in b))
+      return sendError(res, 403, "You cannot change your own role or status in the network.");
+
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    if ("creator_role" in b) {
+      const r = String(b.creator_role);
+      if (!["creator_admin", "team_lead", "creator"].includes(r))
+        return sendError(res, 400, "Unknown creator role.");
+      fields.push(`creator_role=$${i++}`); vals.push(r);
+    }
+    if ("status" in b) {
+      const st = String(b.status);
+      if (!["active", "inactive", "suspended", "archived"].includes(st))
+        return sendError(res, 400, "Unknown creator status.");
+      fields.push(`status=$${i++}`); vals.push(st);
+      // Archiving records when they left; reactivating clears it.
+      fields.push(`exited_on=$${i++}`); vals.push(st === "archived" ? (b.exited_on as string) || new Date().toISOString().slice(0, 10) : null);
+    }
+    for (const k of ["display_name", "creator_type", "notes"])
+      if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
+
+    if (fields.length) {
+      fields.push(`updated_at=NOW()`);
+      vals.push(id);
+      await pool.query(`UPDATE mo_creator_profiles SET ${fields.join(",")} WHERE user_id=$${i}`, vals);
+    }
+    if ("team_id" in b) await setCreatorTeam(u, id, b.team_id ? Number(b.team_id) : null, req);
+
+    const after = (await pool.query(`SELECT * FROM mo_creator_profiles WHERE user_id=$1`, [id])).rows[0];
+    if (cur.creator_role !== after.creator_role)
+      await audit(u, "creator.role_changed", "creator", null,
+        { user_id: id, creator_role: cur.creator_role }, { user_id: id, creator_role: after.creator_role }, req);
+    if (cur.status !== after.status)
+      await audit(u, after.status === "archived" ? "creator.archived"
+        : cur.status === "archived" ? "creator.restored" : "creator.status_changed",
+        "creator", null, { user_id: id, status: cur.status }, { user_id: id, status: after.status }, req);
+    await audit(u, "creator.updated", "creator", null, cur, after, req);
+    res.json({ ok: true });
+  }));
+
+  /* ── Creator teams ──────────────────────────────────────────────────────
+     Database-driven throughout; no team name is seeded or assumed. */
+  app.get(`${P}/creator/teams`, asyncHandler(async (_req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const scope = await creatorScopeOf(u);
+    const params: unknown[] = [];
+    let where = "";
+    if (scope.level === "team") { params.push(scope.teamIds); where = ` AND t.id = ANY($1::bigint[])`; }
+    else if (scope.level === "self") {
+      // A creator sees the one team they are on, and nothing else.
+      params.push(u.id);
+      where = ` AND EXISTS (SELECT 1 FROM mo_creator_team_members mm WHERE mm.team_id=t.id AND mm.user_id=$1)`;
+    }
+    const { rows } = await pool.query(
+      `SELECT t.id, t.name, t.description, t.is_active, t.color, t.icon, t.sort_order,
+              t.lead_user_id, l.full_name AS lead_name,
+              (SELECT COUNT(*)::int FROM mo_creator_team_members mm WHERE mm.team_id=t.id) AS members
+         FROM mo_creator_teams t LEFT JOIN users l ON l.id = t.lead_user_id
+        WHERE t.archived_at IS NULL${where}
+        ORDER BY t.sort_order, t.name`, params);
+    res.json({ teams: rows.map((t) => ({ ...t, id: Number(t.id) })), scope: scope.level });
+  }));
+
+  /** One team and who is on it — scoped the same way the directory is. */
+  app.get(`${P}/creator/teams/:id`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const scope = await creatorScopeOf(u);
+    const id = Number(getSingleParam(req.params.id));
+    if (scope.level === "team" && !scope.teamIds.includes(id))
+      return sendError(res, 404, "Team not found.");
+    if (scope.level === "self") {
+      const mine = (await pool.query(
+        `SELECT 1 FROM mo_creator_team_members WHERE team_id=$1 AND user_id=$2`, [id, u.id])).rows[0];
+      if (!mine) return sendError(res, 404, "Team not found.");
+    }
+    const team = (await pool.query(
+      `SELECT t.id, t.name, t.description, t.is_active, t.lead_user_id, l.full_name AS lead_name
+         FROM mo_creator_teams t LEFT JOIN users l ON l.id = t.lead_user_id
+        WHERE t.id=$1 AND t.archived_at IS NULL`, [id])).rows[0];
+    if (!team) return sendError(res, 404, "Team not found.");
+    const members = (await pool.query(
+      `${CREATOR_SELECT} WHERE m.team_id=$1 ORDER BY COALESCE(NULLIF(c.display_name,''), u.full_name)`, [id])).rows;
+    res.json({
+      team: { ...team, id: Number(team.id) },
+      members: members.map((r) => shapeCreator(r, scope.level === "all")),
+    });
+  }));
+
+  app.post(`${P}/creator/teams`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const b = req.body as Record<string, unknown>;
+    const name = String(b.name ?? "").trim();
+    if (name.length < 2 || name.length > 80) return sendError(res, 400, "A team name of 2–80 characters is required.");
+    const lead = b.lead_user_id ? String(b.lead_user_id) : null;
+    if (lead && !(await assertCreatorLeadEligible(res, u, lead, req))) return;
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO mo_creator_teams (name, description, lead_user_id, color, icon, sort_order, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+        [name, String(b.description ?? ""), lead, (b.color as string) || null, (b.icon as string) || null,
+         Number(b.sort_order) || 0, u.id]);
+      const id = Number(rows[0].id);
+      await audit(u, "creator_team.created", "creator_team", id, null, { name, lead_user_id: lead }, req);
+      if (lead) await audit(u, "creator_team.lead_assigned", "creator_team", id, null, { lead_user_id: lead }, req);
+      res.status(201).json({ ok: true, id });
+    } catch (err) {
+      if ((err as { code?: string }).code === "23505")
+        return sendError(res, 409, "A creator team with that name already exists.");
+      throw err;
+    }
+  }));
+
+  /* A Creator Team Lead is an explicit creator-domain appointment — never
+     inferred from a Media Ops role or a Nerve one. The nominee must already be
+     on the network; if they are an ordinary creator, appointing them promotes
+     them, the way naming a Media Crew lead already does. */
+  async function assertCreatorLeadEligible(
+    res: express.Response, actor: CurrentUser, leadId: string, req: express.Request,
+  ): Promise<boolean> {
+    const p = (await pool.query(
+      `SELECT creator_role, status FROM mo_creator_profiles WHERE user_id=$1`, [leadId])).rows[0];
+    if (!p) { sendError(res, 400, "A Team Lead must be on the Creator Network — enrol them first."); return false; }
+    if (p.status !== "active") { sendError(res, 400, "That creator's network membership is not active."); return false; }
+    if (p.creator_role === "creator") {
+      await pool.query(
+        `UPDATE mo_creator_profiles SET creator_role='team_lead', updated_at=NOW() WHERE user_id=$1`, [leadId]);
+      await audit(actor, "creator.role_changed", "creator", null,
+        { user_id: leadId, creator_role: "creator" }, { user_id: leadId, creator_role: "team_lead" }, req);
+    }
+    return true;
+  }
+
+  app.patch(`${P}/creator/teams/:id`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const cur = (await pool.query(`SELECT * FROM mo_creator_teams WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Team not found.");
+    const b = req.body as Record<string, unknown>;
+
+    if ("lead_user_id" in b && b.lead_user_id
+        && String(b.lead_user_id) !== String(cur.lead_user_id ?? "")
+        && !(await assertCreatorLeadEligible(res, u, String(b.lead_user_id), req))) return;
+
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    if (typeof b.name === "string") {
+      const n = b.name.trim();
+      if (n.length < 2 || n.length > 80) return sendError(res, 400, "A team name of 2–80 characters is required.");
+      fields.push(`name=$${i++}`); vals.push(n);
+    }
+    for (const k of ["description", "color", "icon", "sort_order", "is_active", "lead_user_id"])
+      if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k] === "" ? null : b[k]); }
+    if (!fields.length) return res.json({ ok: true });
+    fields.push(`updated_at=NOW()`);
+    vals.push(id);
+    try {
+      const { rows } = await pool.query(
+        `UPDATE mo_creator_teams SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals);
+      if (String(cur.name) !== String(rows[0].name))
+        await audit(u, "creator_team.renamed", "creator_team", id, { name: cur.name }, { name: rows[0].name }, req);
+      if (cur.is_active !== rows[0].is_active)
+        await audit(u, "creator_team.status_changed", "creator_team", id,
+          { is_active: cur.is_active }, { is_active: rows[0].is_active }, req);
+      if (String(cur.lead_user_id ?? "") !== String(rows[0].lead_user_id ?? ""))
+        await audit(u, "creator_team.lead_changed", "creator_team", id,
+          { lead_user_id: cur.lead_user_id }, { lead_user_id: rows[0].lead_user_id }, req);
+      res.json({ ok: true, team: { ...rows[0], id: Number(rows[0].id) } });
+    } catch (err) {
+      if ((err as { code?: string }).code === "23505")
+        return sendError(res, 409, "A creator team with that name already exists.");
+      throw err;
+    }
+  }));
+
+  /** Add a creator to a team. One primary team, so this is a move. */
+  app.post(`${P}/creator/teams/:id/members`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const team = (await pool.query(`SELECT id FROM mo_creator_teams WHERE id=$1 AND archived_at IS NULL`, [id])).rows[0];
+    if (!team) return sendError(res, 404, "Team not found.");
+    const userId = String((req.body as Record<string, unknown>).user_id ?? "");
+    const p = (await pool.query(`SELECT status FROM mo_creator_profiles WHERE user_id=$1`, [userId])).rows[0];
+    if (!p) return sendError(res, 400, "That person is not on the Creator Network.");
+    /* A suspended creator does not come back through a team. Membership is not
+       a way around status — the same rule the network gate enforces. */
+    if (p.status !== "active") return sendError(res, 400, "That creator's membership is not active.");
+    await setCreatorTeam(u, userId, id, req);
+    res.status(201).json({ ok: true });
+  }));
+
+  app.delete(`${P}/creator/teams/:id/members/:userId`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const userId = getSingleParam(req.params.userId);
+    const r = await pool.query(
+      `DELETE FROM mo_creator_team_members WHERE team_id=$1 AND user_id=$2`, [id, userId]);
+    if (!r.rowCount) return sendError(res, 404, "That creator is not on this team.");
+    await audit(u, "creator.team_left", "creator_team", id, { user_id: userId, team_id: id }, null, req);
+    res.json({ ok: true });
+  }));
+
   // ── helpers ───────────────────────────────────────────────────────────────
   async function refreshReportTotal(rid: number) {
     await pool.query(`UPDATE mo_daily_reports SET total_minutes=(SELECT COALESCE(SUM(minutes),0) FROM mo_report_tasks WHERE daily_report_id=$1) WHERE id=$1`, [rid]);

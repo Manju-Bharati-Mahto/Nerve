@@ -7772,59 +7772,183 @@ function renderRemoveModal(uid,impact){
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
 }
 
-/* ── Creator Network (Phase 0) ─────────────────────────────────────────────
-   A foundation screen, not a dashboard. Phase 0 deliberately builds no creator
-   UI: this exists to prove the chain — module grant → navigation → route →
-   authenticated API → server-resolved scope — and to say plainly what is not
-   built yet. Phase 1 replaces the body with the creator directory and teams.
+/* ── Creator Network ───────────────────────────────────────────────────────
+   Parul's creator workforce. Three audiences, one page:
 
-   The caller's standing comes from GET /creator/context. It is never inferred
-   here: the client renders what the server decided. */
-const CREATOR_CTX = {loaded:false, data:null, err:null};
+     Creator Admin / Nerve Admin  directory + teams for the whole network
+     Creator Team Lead            their team, read-only
+     Creator                      their own standing, and nothing else
+
+   Which one you get is NOT decided here. Every endpoint resolves scope
+   server-side and returns only what the caller may have; this renders what
+   came back. The tabs a manager sees are a convenience, not a permission. */
+const CREATOR_STATE = {loaded:false, data:null, err:null};
+const CREATOR_LIST  = {loaded:false, rows:[], total:0, err:null,
+                       f:{q:'', status:'all', role:'all', team_id:'all'}, offset:0};
+const CREATOR_PAGE  = 25;
+
+function creatorReload(what){
+  if(what==='state'){CREATOR_STATE.loaded=false;CREATOR_STATE.data=null;}
+  if(what!=='state'){CREATOR_LIST.loaded=false;}
+  render();
+}
 
 function viewCreatorNetwork(){
-  if(!CREATOR_CTX.loaded){
-    MO_API.get('/creator/context')
-      .then(d=>{CREATOR_CTX.data=d;})
-      .catch(e=>{CREATOR_CTX.err=e.message;})
-      .finally(()=>{CREATOR_CTX.loaded=true;render();});
+  if(!CREATOR_STATE.loaded){
+    MO_API.get('/creator/state')
+      .then(d=>{CREATOR_STATE.data=d;})
+      .catch(e=>{CREATOR_STATE.err=e.message;})
+      .finally(()=>{CREATOR_STATE.loaded=true;render();});
     return `<div class="page-head"><div><h1 class="page-title">Creator Network</h1>
-      <div class="page-sub">Loading your access…</div></div></div>`;
+      <div class="page-sub">Loading…</div></div></div>`;
   }
-  if(CREATOR_CTX.err) return roleDenied(CREATOR_CTX.err);
-  const c=CREATOR_CTX.data||{};
-  const ROLE={creator_admin:'Creator Admin', team_lead:'Creator Team Lead', creator:'Creator'};
-  const SCOPE={all:'the whole network', team:'your creator teams', self:'your own records'};
+  if(CREATOR_STATE.err) return roleDenied(CREATOR_STATE.err);
+  const st=CREATOR_STATE.data||{};
+  // A creator gets their own card and stops there.
+  if(!st.can_manage_network && st.scope==='self') return creatorSelfView(st);
+  return creatorManageView(st);
+}
+
+const CN_ROLE   = {creator_admin:'Creator Admin', team_lead:'Team Lead', creator:'Creator'};
+const CN_STATUS = {active:{l:'Active',c:'st-success',i:'✓'}, inactive:{l:'Inactive',c:'st-neutral',i:'◌'},
+                   suspended:{l:'Suspended',c:'st-warn',i:'⚑'}, archived:{l:'Archived',c:'st-neutral',i:'⛁'}};
+const cnStatus = s=>{const m=CN_STATUS[s]||CN_STATUS.inactive;
+  return `<span class="status ${m.c}"><span class="si">${m.i}</span>${m.l}</span>`;};
+
+/* ── A creator's own view (§12) ─────────────────────────────────────────── */
+function creatorSelfView(st){
+  const p=st.profile||{};
   return `
   <div class="page-head"><div>
-    <h1 class="page-title">Creator Network</h1>
-    <div class="page-sub">Parul University's creator workforce — points, ranks and payouts, inside Nerve.</div>
+    <h1 class="page-title">${esc(p.display_name||p.full_name||'My Creator Profile')}</h1>
+    <div class="page-sub">Your standing in the Parul Creator Network.</div>
   </div></div>
   <div class="grid g2 sec">
-    <div class="card"><div class="card-head"><h3>Your access</h3></div>
-      <div class="card-body pad">
-        <dl class="kv">
-          <dt>In this network</dt><dd>${c.creator_role?esc(ROLE[c.creator_role]||c.creator_role)
-            :'<span class="mut3">Not a creator — you are here through module access</span>'}</dd>
-          <dt>You can see</dt><dd>${esc(SCOPE[c.scope]||c.scope||'—')}</dd>
-          <dt>Manage the network</dt><dd>${c.can_manage_network?'Yes':'No'}</dd>
-        </dl>
-        <div class="hint mt3">Holding the module lets you open this section. Being a
-          <b>Creator Admin</b> is a separate thing — it is a role inside the network, and it does not
-          make anyone a Nerve administrator.</div>
-      </div></div>
-    <div class="card"><div class="card-head"><h3>Phase 0 — foundation</h3></div>
-      <div class="card-body pad">
-        <p class="small">The architecture is in place: creator identity, creator roles, creator teams,
-          module permission, server-side scope and audit all reuse Nerve's existing systems rather than
-          duplicating them.</p>
-        <div class="small b mt3 mb2">Not built yet</div>
-        <div class="f wrap gap2">${['Creators','Teams','Tasks','Events','Submissions','Leaderboard',
-          'Points &amp; Ranks','Payouts','War Zone','Analytics']
-          .map(x=>`<span class="chip mut3">${x}</span>`).join('')}</div>
-        <div class="hint mt3">Phase 1 adds the creator directory, creator teams and the hierarchy.</div>
+    <div class="card"><div class="card-head"><h3>My profile</h3></div>
+      <div class="card-body pad"><dl class="kv">
+        <dt>Name</dt><dd>${esc(p.full_name||'—')}</dd>
+        <dt>Role</dt><dd>${esc(CN_ROLE[p.creator_role]||p.creator_role||'—')}</dd>
+        <dt>Status</dt><dd>${cnStatus(p.status)}</dd>
+        ${p.creator_type?`<dt>Type</dt><dd>${esc(p.creator_type)}</dd>`:''}
+        <dt>Joined</dt><dd>${p.joined_on?D.fmt(p.joined_on):'—'}</dd>
+      </dl></div></div>
+    <div class="card"><div class="card-head"><h3>My team</h3></div>
+      <div class="card-body pad">${p.team?`<dl class="kv">
+        <dt>Team</dt><dd>${esc(p.team.name)}</dd>
+        <dt>Team Lead</dt><dd>${p.lead?esc(p.lead.name):'<span class="mut3">Not assigned</span>'}</dd>
+      </dl>`:'<div class="empty" style="padding:20px"><p>You are not on a creator team yet.</p></div>'}
+      <div class="hint mt3">Tasks, submissions, points and payouts arrive in later phases.</div>
       </div></div>
   </div>`;
+}
+
+/* ── Manager / Team Lead view ───────────────────────────────────────────── */
+function creatorManageView(st){
+  const tab=S.tab.creator||'creators';
+  const manage=!!st.can_manage_network;
+  const c=st.counts||{};
+  return `
+  <div class="page-head">
+    <div><h1 class="page-title">Creator Network</h1>
+      <div class="page-sub">${manage?'Directory, teams and hierarchy for the whole network.'
+        :'Your creator team.'}</div></div>
+    ${manage?`<div class="page-actions">
+      <button class="btn" data-act="crNewTeam">＋ Team</button>
+      <button class="btn primary" data-act="crNewCreator">＋ Creator</button></div>`:''}
+  </div>
+  ${st.counts?`<div class="grid g4 sec">
+    ${[['Active','active'],['Inactive','inactive'],['Suspended','suspended'],['Archived','archived']]
+      .map(([l,k])=>`<div class="stat"><span class="stat-main">
+        <span class="stat-label">${l}</span><span class="stat-val">${c[k]||0}</span></span></div>`).join('')}
+  </div>`:''}
+  <div class="tabs sec">
+    <button class="tab ${tab==='creators'?'on':''}" data-tab="creators" data-tabkey="creator">Creators</button>
+    <button class="tab ${tab==='teams'?'on':''}" data-tab="teams" data-tabkey="creator">Teams</button>
+  </div>
+  ${tab==='teams'?creatorTeamsTab(st,manage):creatorDirectoryTab(st,manage)}`;
+}
+
+/* ── Directory: filtered and paged on the SERVER ────────────────────────── */
+function creatorDirectoryTab(st,manage){
+  const f=CREATOR_LIST.f;
+  if(!CREATOR_LIST.loaded){
+    const qs=new URLSearchParams({q:f.q, status:f.status, role:f.role, team_id:String(f.team_id),
+      limit:String(CREATOR_PAGE), offset:String(CREATOR_LIST.offset)});
+    MO_API.get('/creator/creators?'+qs)
+      .then(d=>{CREATOR_LIST.rows=d.creators||[];CREATOR_LIST.total=d.total||0;CREATOR_LIST.err=null;})
+      .catch(e=>{CREATOR_LIST.err=e.message;})
+      .finally(()=>{CREATOR_LIST.loaded=true;render();});
+  }
+  const rows=CREATOR_LIST.rows;
+  const from=CREATOR_LIST.offset, to=Math.min(from+CREATOR_PAGE, CREATOR_LIST.total);
+  return `
+  <div class="card">
+    <div class="card-head" style="gap:8px;flex-wrap:wrap">
+      <input class="inp" id="cr-q" placeholder="Search creators…" value="${esc(f.q)}"
+        onkeydown="if(event.key==='Enter')ACTIONS.crFilter({k:'q'},this)" style="max-width:260px">
+      <select class="inp" style="width:auto" onchange="ACTIONS.crFilter({k:'status'},this)">
+        ${['all','active','inactive','suspended','archived'].map(v=>
+          `<option value="${v}" ${f.status===v?'selected':''}>${v==='all'?'All statuses':CN_STATUS[v].l}</option>`).join('')}
+      </select>
+      <select class="inp" style="width:auto" onchange="ACTIONS.crFilter({k:'role'},this)">
+        ${['all','creator_admin','team_lead','creator'].map(v=>
+          `<option value="${v}" ${f.role===v?'selected':''}>${v==='all'?'All roles':CN_ROLE[v]}</option>`).join('')}
+      </select>
+      <select class="inp" style="width:auto" onchange="ACTIONS.crFilter({k:'team_id'},this)">
+        <option value="all">All teams</option>
+        ${(st.teams||[]).map(t=>`<option value="${t.id}" ${String(f.team_id)===String(t.id)?'selected':''}>${esc(t.name)}</option>`).join('')}
+      </select>
+      <span class="chip ml-auto">${CREATOR_LIST.total} creator${CREATOR_LIST.total===1?'':'s'}</span>
+    </div>
+    <div class="card-body flush">
+      ${CREATOR_LIST.err?`<div class="empty" style="padding:26px"><p>${esc(CREATOR_LIST.err)}</p></div>`
+       :!CREATOR_LIST.loaded?'<div class="empty" style="padding:26px"><p>Loading…</p></div>'
+       :!rows.length?`<div class="empty" style="padding:26px"><div class="e-ico">◌</div>
+          <h4>No creators match</h4><p>Adjust the filters${manage?', or add the first creator':''}.</p></div>`
+       :`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>Creator</th><th>Role</th><th>Team</th><th>Team Lead</th><th>Status</th><th>Joined</th>
+          ${manage?'<th class="num">Actions</th>':''}</tr></thead>
+        <tbody>${rows.map(r=>`<tr>
+          <td class="t-main">${esc(r.display_name||r.full_name)}
+            ${r.email?`<div class="t-sub">${esc(r.email)}</div>`:''}</td>
+          <td><span class="chip ${r.creator_role==='creator_admin'?'sel':''}">${esc(CN_ROLE[r.creator_role]||r.creator_role)}</span></td>
+          <td class="small">${r.team?esc(r.team.name):'<span class="mut3">—</span>'}</td>
+          <td class="small">${r.lead?esc(r.lead.name):'<span class="mut3">—</span>'}</td>
+          <td>${cnStatus(r.status)}</td>
+          <td class="small">${r.joined_on?D.fmt(r.joined_on):'—'}</td>
+          ${manage?`<td class="num nowrap">
+            <button class="btn xs" data-act="crEdit" data-uid="${esc(r.user_id)}">Edit</button></td>`:''}
+        </tr>`).join('')}</tbody></table></div>`}
+    </div>
+    ${CREATOR_LIST.total>CREATOR_PAGE?`<div class="card-foot f ac gap2">
+      <span class="small mut3">Showing ${from+1}–${to} of ${CREATOR_LIST.total}</span>
+      <span class="ml-auto f gap2">
+        <button class="btn xs" ${from===0?'disabled':''} data-act="crPage" data-d="-1">← Previous</button>
+        <button class="btn xs" ${to>=CREATOR_LIST.total?'disabled':''} data-act="crPage" data-d="1">Next →</button>
+      </span></div>`:''}
+  </div>`;
+}
+
+/* ── Teams ──────────────────────────────────────────────────────────────── */
+function creatorTeamsTab(st,manage){
+  const teams=st.teams||[];
+  if(!teams.length) return `<div class="card"><div class="empty" style="padding:40px">
+    <div class="e-ico">◎</div><h4>No creator teams yet</h4>
+    <p>${manage?'Create the first team — Reels, Vlogs, Campus, whatever the network needs.'
+      :'You are not leading a creator team.'}</p>
+    ${manage?'<button class="btn primary mt3" data-act="crNewTeam">＋ Team</button>':''}</div></div>`;
+  return `<div class="grid g3 sec">${teams.map(t=>`
+    <div class="card"><div class="card-body pad">
+      <div class="between mb2"><b>${esc(t.name)}</b>
+        ${t.is_active===false?'<span class="status st-neutral"><span class="si">◌</span>Inactive</span>':''}</div>
+      <dl class="kv">
+        <dt>Team Lead</dt><dd>${t.lead_name?esc(t.lead_name):'<span class="mut3">Not assigned</span>'}</dd>
+        <dt>Members</dt><dd>${t.members==null?'—':t.members}</dd>
+      </dl>
+      ${manage?`<div class="f gap2 mt3">
+        <button class="btn xs" data-act="crEditTeam" data-tid="${t.id}">Edit</button>
+        <button class="btn xs ghost" data-act="crTeamMembers" data-tid="${t.id}">Members</button></div>`:''}
+    </div></div>`).join('')}</div>`;
 }
 
 /* ── Re-adding someone who was removed ─────────────────────────────────────
@@ -13206,6 +13330,170 @@ const ACTIONS = {
           bits.push(r.teams_unassigned.map(t=>t.name).join(', ')+' now has no lead');
         toast(bits.join(' · '),'ok');});
   },
+  /* ── Creator Network ──────────────────────────────────────────────────
+     Every one of these posts to a scoped endpoint that re-checks the caller;
+     the buttons are only rendered for a manager as a convenience, never as the
+     permission itself. */
+  crFilter:(d,n)=>{
+    CREATOR_LIST.f[d.k]=n.value; CREATOR_LIST.offset=0; creatorReload('list');
+  },
+  crPage:(d)=>{
+    CREATOR_LIST.offset=Math.max(0, CREATOR_LIST.offset + (+d.d)*CREATOR_PAGE);
+    creatorReload('list');
+  },
+  crNewCreator:()=>{
+    const teams=(CREATOR_STATE.data||{}).teams||[];
+    modal(`<div class="mo-head"><div><h2>Add creator</h2>
+        <p>Creates a Nerve account on the Creator Network. One identity per person —
+        if the email already exists you will be told whose it is.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Full name <span class="req">*</span></label>
+          <input class="inp" id="cn-name" placeholder="e.g. Misha Patel"></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Email <span class="req">*</span></label>
+            <input class="inp" id="cn-email" type="email" placeholder="name@paruluniversity.ac.in"></div>
+          <div class="field"><label class="lbl">Password <span class="req">*</span></label>
+            <input class="inp" id="cn-pass" type="password" placeholder="At least 6 characters"></div>
+        </div>
+        <div class="row">
+          <div class="field"><label class="lbl">Creator role</label>
+            <select class="inp" id="cn-role">
+              <option value="creator">Creator</option><option value="team_lead">Team Lead</option>
+              <option value="creator_admin">Creator Admin</option></select></div>
+          <div class="field"><label class="lbl">Team</label>
+            <select class="inp" id="cn-team"><option value="">— None yet</option>
+              ${teams.map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>
+        </div>
+        <div class="field"><label class="lbl">Creator type</label>
+          <input class="inp" id="cn-type" placeholder="e.g. Reels, Vlogs, Photography"></div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="crCreateGo">Add creator</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  crCreateGo:()=>{
+    const name=$('#cn-name').value.trim(), email=$('#cn-email').value.trim(), pass=$('#cn-pass').value;
+    if(name.length<2){toast('A name is required','bad');return;}
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){toast('A valid email is required','bad');return;}
+    if(pass.length<6){toast('Password must be at least 6 characters','bad');return;}
+    const body={full_name:name, email, password:pass,
+      creator_role:$('#cn-role').value, creator_type:$('#cn-type').value.trim()||null,
+      team_id:$('#cn-team').value?+$('#cn-team').value:null};
+    closeModal();
+    MO_API.post('/creator/creators',body)
+      .then(()=>{toast(name+' added to the Creator Network','ok');creatorReload('state');creatorReload('list');})
+      .catch(e=>{
+        const c=(e.body||{}).code;
+        /* One identity per person: say whose account it is rather than letting
+           an admin make a second one. */
+        toast(c==='USER_EXISTS'?'That email already has a Nerve account — enrol that account instead.'
+             :c==='CREATOR_EXISTS'?'That person is already on the Creator Network.'
+             :e.message,'bad');
+      });
+  },
+  crEdit:(d)=>{
+    const uid=String(d.uid);
+    const r=(CREATOR_LIST.rows||[]).find(x=>String(x.user_id)===uid); if(!r)return;
+    const teams=(CREATOR_STATE.data||{}).teams||[];
+    const self=String((CREATOR_STATE.data||{}).me?.id||'')===uid;
+    modal(`<div class="mo-head"><div><h2>${esc(r.display_name||r.full_name)}</h2>
+        <p>Creator Network standing. Their Nerve account and role are not touched here.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="row">
+          <div class="field"><label class="lbl">Creator role</label>
+            <select class="inp" id="ce-role" ${self?'disabled':''}>
+              ${['creator','team_lead','creator_admin'].map(v=>
+                `<option value="${v}" ${r.creator_role===v?'selected':''}>${CN_ROLE[v]}</option>`).join('')}</select></div>
+          <div class="field"><label class="lbl">Status</label>
+            <select class="inp" id="ce-status" ${self?'disabled':''}>
+              ${['active','inactive','suspended','archived'].map(v=>
+                `<option value="${v}" ${r.status===v?'selected':''}>${CN_STATUS[v].l}</option>`).join('')}</select></div>
+        </div>
+        ${self?'<div class="hint">You cannot change your own role or status — ask another Creator Admin.</div>':''}
+        <div class="row">
+          <div class="field"><label class="lbl">Team</label>
+            <select class="inp" id="ce-team"><option value="">— None</option>
+              ${teams.map(t=>`<option value="${t.id}" ${r.team&&r.team.id===t.id?'selected':''}>${esc(t.name)}</option>`).join('')}</select></div>
+          <div class="field"><label class="lbl">Creator type</label>
+            <input class="inp" id="ce-type" value="${esc(r.creator_type||'')}"></div>
+        </div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="crEditGo" data-uid="${esc(uid)}" data-self="${self?'1':''}">Save</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  crEditGo:(d)=>{
+    const body={creator_type:$('#ce-type').value.trim()||null,
+      team_id:$('#ce-team').value?+$('#ce-team').value:null};
+    // Omitted entirely when editing yourself — the server refuses it anyway.
+    if(!d.self){body.creator_role=$('#ce-role').value;body.status=$('#ce-status').value;}
+    closeModal();
+    MO_API.patch('/creator/creators/'+d.uid,body)
+      .then(()=>{toast('Creator updated','ok');creatorReload('state');creatorReload('list');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  crNewTeam:()=>ACTIONS.crTeamForm({}),
+  crEditTeam:(d)=>{
+    const t=((CREATOR_STATE.data||{}).teams||[]).find(x=>String(x.id)===String(d.tid));
+    ACTIONS.crTeamForm(t||{});
+  },
+  crTeamForm:(t)=>{
+    const rows=CREATOR_LIST.rows||[];
+    modal(`<div class="mo-head"><div><h2>${t.id?'Edit team':'New creator team'}</h2>
+        <p>Creator teams are their own structure — separate from Media Crew teams.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Team name <span class="req">*</span></label>
+          <input class="inp" id="ct-name" value="${esc(t.name||'')}" placeholder="e.g. Reels Team"></div>
+        <div class="field"><label class="lbl">Team Lead</label>
+          <select class="inp" id="ct-lead"><option value="">— Not assigned</option>
+            ${rows.filter(r=>r.status==='active').map(r=>
+              `<option value="${esc(r.user_id)}" ${String(t.lead_user_id||'')===String(r.user_id)?'selected':''}
+                >${esc(r.display_name||r.full_name)}</option>`).join('')}</select>
+          <div class="hint">Must already be on the Creator Network. Appointing an ordinary
+            creator promotes them to Team Lead.</div></div>
+        ${t.id?`<div class="field"><label class="chk"><input type="checkbox" id="ct-active"
+          ${t.is_active!==false?'checked':''}> Active</label></div>`:''}
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="crTeamGo" data-tid="${t.id||''}">${t.id?'Save':'Create team'}</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  crTeamGo:(d)=>{
+    const name=$('#ct-name').value.trim();
+    if(name.length<2){toast('A team name is required','bad');return;}
+    const body={name, lead_user_id:$('#ct-lead').value||null};
+    const act=$('#ct-active'); if(act) body.is_active=act.checked;
+    closeModal();
+    (d.tid?MO_API.patch('/creator/teams/'+d.tid,body):MO_API.post('/creator/teams',body))
+      .then(()=>{toast(d.tid?'Team updated':name+' created','ok');creatorReload('state');creatorReload('list');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  crTeamMembers:(d)=>{
+    MO_API.get('/creator/teams/'+d.tid).then(r=>{
+      const m=r.members||[];
+      modal(`<div class="mo-head"><div><h2>${esc(r.team.name)}</h2>
+          <p>${m.length} member${m.length===1?'':'s'} · Lead: ${r.team.lead_name?esc(r.team.lead_name):'not assigned'}</p></div>
+          <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+        <div class="mo-body">${m.length?`<table class="tbl"><tbody>${m.map(x=>`<tr>
+            <td class="t-main">${esc(x.display_name||x.full_name)}</td>
+            <td><span class="chip">${esc(CN_ROLE[x.creator_role]||x.creator_role)}</span></td>
+            <td>${cnStatus(x.status)}</td>
+            <td class="num"><button class="btn xs ghost" data-act="crRemoveMember"
+              data-tid="${d.tid}" data-uid="${esc(x.user_id)}">Remove</button></td></tr>`).join('')}</tbody></table>`
+          :'<div class="empty" style="padding:24px"><p>No creators on this team yet.</p></div>'}</div>
+        <div class="mo-foot"><button class="btn primary" onclick="closeModal()">Close</button></div>`);
+      $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+    }).catch(e=>toast(e.message,'bad'));
+  },
+  crRemoveMember:(d)=>{
+    closeModal();
+    MO_API.del('/creator/teams/'+d.tid+'/members/'+d.uid)
+      .then(()=>{toast('Removed from the team','ok');creatorReload('state');creatorReload('list');})
+      .catch(e=>toast(e.message,'bad'));
+  },
   /* Add Member found a removed identity and the Admin confirmed. Reuses the
      SAME restore endpoint the Directory's Restore button calls — one service,
      two entry points — passing the form values so the member comes back
@@ -14862,6 +15150,40 @@ async function moSync(promise, onOk){
     try{ await hydrateFromServer(); render(); }catch(_){/* stay on optimistic state */}
   }
 }
+/* ── Creator-only shell ────────────────────────────────────────────────────
+   A creator has no Media Ops state and must never be shown the seed one. This
+   swaps the app onto GET /creator/state: one user (them), no Media Ops tables,
+   and a module set of exactly ['creator'] — so every existing gate the sidebar
+   and router already run resolves to the Creator Network and nothing else. No
+   new permission logic; the same moduleAllowed() decides, on a smaller truth.
+
+   Returns false if the caller is not a creator either, so the ordinary seed
+   fallback still covers a genuinely offline run. */
+async function hydrateCreatorShell(){
+  let st;
+  try{ st=await MO_API.get('/creator/state'); }catch(_){ return false; }
+  if(!st||!st.profile) return false;
+
+  // Nothing from the seed survives — a creator sees no Media Ops data at all.
+  Object.keys(DB).forEach(k=>{ if(Array.isArray(DB[k])) DB[k]=[]; });
+
+  const p=st.profile, name=p.display_name||p.full_name||'Creator';
+  DB.users=[{id:p.user_id, nerve_user_id:null, full_name:name, email:p.email||'',
+    role:'employee', is_active:true, designation:'Creator', color:'#0891B2',
+    avatar_url:p.avatar_url||null, allowed_modules:['creator'],
+    initials:name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase()}];
+  S.me=p.user_id;
+  DB.module_defaults={creator:['creator']};
+  DB.my_module_group='creator';
+  DB.notifications=[];
+
+  S.creatorOnly=true;
+  CREATOR_STATE.data=st; CREATOR_STATE.loaded=true;
+  window.__MO_LIVE__=true;
+  location.hash='#/media/creator';
+  return true;
+}
+
 /* PWA service worker (Phase 4). The app is served under /api/media-ops/, so the SW
    scope is its own directory. First unregister any stale worker from the earlier
    /media-ops/ static path so it can't serve a cached shell. Guarded throughout. */
@@ -14878,7 +15200,14 @@ if('serviceWorker' in navigator){ try{
   // not the demo seed). If hydration fails (no session/standalone), the seed identity
   // is used as a fallback so the app still runs.
   try{ live=await hydrateFromServer(); }
-  catch(e){ console.warn('[Media Ops] server hydration failed — running on seed data:', e.message); }
+  catch(e){
+    /* A Creator Network member is refused /state by design — requireMedia()
+       does not admit them, and it must not start. Falling through to the seed
+       data would show them a demo Media Crew, so try the scoped creator shell
+       instead. Only a genuine offline/standalone run reaches the seed now. */
+    if(!(await hydrateCreatorShell()))
+      console.warn('[Media Ops] server hydration failed — running on seed data:', e.message);
+  }
   render();
   /* Live counters refresh — FR-1.1 requires ≤ 60 s */
   setInterval(()=>{if(S.route==='#/media/home'&&!$('#modal-layer').classList.contains('on')&&
