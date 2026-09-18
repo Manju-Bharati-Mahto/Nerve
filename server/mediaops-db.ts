@@ -1552,7 +1552,123 @@ export async function bootstrapMediaOpsDatabase() {
   await pool.query(`ALTER TABLE mo_requests ADD CONSTRAINT mo_requests_status_check
                     CHECK (status IN ('new','under_review','needs_clarification','ready','converted','closed','rejected'))`);
 
+  await bootstrapCreatorNetwork();
   await seedMediaOpsLookups();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CREATOR NETWORK — Phase 0 foundation
+
+   Parul's creator network is an incentive-based content workforce, not Media
+   Crew staff. It is built the way SMC was: the creator is an ordinary NERVE
+   user (one identity, one login, one session) carrying a profile row that says
+   what they are inside this vertical. Nothing here is a second product.
+
+   What is REUSED, not rebuilt:
+     identity + login → users / getSessionUser      module access → mo_module_defaults
+     audit            → mo_audit_logs                notifications → mo_notifications
+     soft delete      → users.status + archived_at   timestamps    → created_at/updated_at
+
+   Only three things are genuinely new: which creators exist, which creator team
+   they belong to, and what they are inside the network. Everything Phases 1–8
+   add (tasks, submissions, points, payouts, competitions) references
+   mo_creator_profiles.user_id — a TEXT user id, exactly as mo_smc_submissions
+   already references users.
+
+   NAMING: Outreach owns `outreach_creators`, which are EXTERNAL influencer
+   accounts it tracks. Unrelated. Everything here is mo_creator_* and touches no
+   Outreach table.
+   ═══════════════════════════════════════════════════════════════════════════ */
+/** Exported so the tests can prove it is idempotent by running it twice. */
+export async function bootstrapCreatorNetwork() {
+  /* The vertical is a built-in team, like SMC. This is what makes the whole
+     thing safe by default: moRoleOf() returns null for any team outside
+     media/smc, so a creator is refused by every pre-existing Media Ops route
+     with no new denial code — the same mechanism that already contains SMC. */
+  await pool.query(`
+    INSERT INTO teams (id, name, color, is_built_in)
+    SELECT 'creator','Creator Network','#0891B2',true
+     WHERE NOT EXISTS (SELECT 1 FROM teams WHERE id='creator')`);
+
+  /* What a person IS inside the network. Keyed by user_id like every other
+     profile table (mo_user_profiles, mo_smc_profiles) so there is exactly one
+     identity per human and no second id to keep in step.
+
+     creator_role is deliberately NOT a Nerve role and not mo_role: nothing in
+     moRoleOf() or effectiveModules() reads this column, so a Creator Admin can
+     never become a Nerve Admin by holding it, and a Media Ops Team Lead never
+     becomes a Creator Team Lead by holding theirs.
+
+     status is the network's own lifecycle, separate from users.status: a
+     creator can be suspended from the network while their Nerve account stays
+     active, and archiving keeps every point, submission and payout attached. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_profiles (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      creator_role TEXT NOT NULL DEFAULT 'creator'
+        CHECK (creator_role IN ('creator_admin','team_lead','creator')),
+      status TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active','inactive','suspended','archived')),
+      display_name TEXT,
+      creator_type TEXT,
+      joined_on DATE NOT NULL DEFAULT CURRENT_DATE,
+      exited_on DATE,
+      notes TEXT NOT NULL DEFAULT '',
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_creator_role ON mo_creator_profiles(creator_role, status)`);
+
+  /* Creator teams are their own structure, NOT mo_teams. mo_teams drives Media
+     Crew project routing, assignableMemberIds() and workload; putting creators
+     in it would surface them in Media Ops pickers and hand Media Team Leads
+     scope over creators. Separate tables keep the two hierarchies from
+     inheriting each other. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_teams (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      lead_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      color TEXT, icon TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      archived_at TIMESTAMPTZ,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_creator_teams_name ON mo_creator_teams(lower(name))`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_creator_teams_lead ON mo_creator_teams(lead_user_id) WHERE archived_at IS NULL`);
+
+  // One primary team per creator, mirroring mo_team_members' own rule.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_team_members (
+      team_id BIGINT NOT NULL REFERENCES mo_creator_teams(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      is_primary BOOLEAN NOT NULL DEFAULT true,
+      added_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (team_id, user_id)
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_creator_primary_team
+                    ON mo_creator_team_members(user_id) WHERE is_primary`);
+
+  /* SECURITY — this row is not optional.
+
+     effectiveModules() returns null when a group has no defaults row, and
+     requireModule() reads null as "unrestricted". Without this, a creator would
+     pass EVERY module gate in Media Ops. Seeding the group closed (no modules
+     beyond the network itself) is what makes the vertical deny-by-default at
+     the module layer as well as the role layer.
+
+     Written only when absent, so an administrator's later edits are never
+     overwritten on the next boot. */
+  await pool.query(`
+    INSERT INTO mo_module_defaults (role, modules)
+    SELECT 'creator', '["creator"]'::jsonb
+     WHERE NOT EXISTS (SELECT 1 FROM mo_module_defaults WHERE role='creator')`);
 }
 
 // ── Lookup / reference seed (idempotent, NFR-10 config-driven) ──────────────

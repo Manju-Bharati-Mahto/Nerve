@@ -248,15 +248,19 @@ describe("module defaults — opt-in, not automatic", () => {
 /* ── Nothing else moved ───────────────────────────────────────────────────── */
 
 describe("no collateral change to other modules", () => {
-  it("withholds EXACTLY one module from the derived defaults, and it is tv", () => {
-    /* The `!m.optIn` filter added to defaultModulesFor() must subtract the wall
-       display and nothing else. Comparing the two sets proves that directly,
-       rather than pinning a module list that legitimately grows over time. */
+  it("withholds from the derived defaults exactly the opt-in modules, no others", () => {
+    /* defaultModulesFor() subtracts `optIn` modules and nothing else. Comparing
+       the withheld set against the optIn set proves that directly, and keeps
+       holding as more opt-in modules arrive (the Creator Network is the second)
+       while still catching a module withheld by accident. */
     for (const r of ["employee", "team_lead", "admin"]) {
-      const eligible = H.MODULES.filter((m) => H.moduleRoleOk(m, r)).map((m) => m.key);
-      const withheld = eligible.filter((k) => !H.defaultModulesFor(r).includes(k));
-      expect(withheld, `unexpected modules withheld from ${r}`).toEqual([TV_MODULE_KEY]);
+      const eligible = H.MODULES.filter((m) => H.moduleRoleOk(m, r));
+      const withheld = eligible.filter((m) => !H.defaultModulesFor(r).includes(m.key)).map((m) => m.key);
+      const optIn = eligible.filter((m) => m.optIn).map((m) => m.key);
+      expect(withheld.sort(), `unexpected modules withheld from ${r}`).toEqual(optIn.sort());
     }
+    // The wall display is one of them, and is never handed out by a role.
+    expect(H.defaultModulesFor("employee")).not.toContain(TV_MODULE_KEY);
   });
 
   it("still hands kiosk to the derived defaults, exactly as before", () => {

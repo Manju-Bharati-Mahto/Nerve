@@ -116,10 +116,52 @@ export async function effectiveModules(u: CurrentUser): Promise<string[] | null>
    them, so the modal an admin edits is the one that takes effect. */
 async function moduleGroupOf(u: CurrentUser): Promise<string | null> {
   if (u.team === "smc") return "smc_member";
+  /* Creator Network members resolve to their own group BEFORE anything else.
+     Returning null here would make effectiveModules() answer null, which
+     requireModule() reads as "unrestricted" — a creator would pass every module
+     gate in Media Ops. The seeded 'creator' defaults row is what closes it. */
+  if (u.team === "creator") return "creator";
   if (await isCoordinator(u)) return "coordinator";
   const r = moRoleOf(u);
   return r === "admin" ? "admin" : r === "team_lead" ? "team_lead" : r === "employee" ? "employee" : null;
 }
+
+/* ── Creator Network ───────────────────────────────────────────────────────
+   Parul's incentive-based content workforce. Built exactly like SMC: an
+   ordinary NERVE user carrying a profile row that says what they are here.
+
+   The three creator roles are a SEPARATE vocabulary from Nerve's. Nothing in
+   moRoleOf(), effectiveModules() or any Media Ops gate reads creator_role, and
+   nothing here reads mo_role — which is what stops the two hierarchies
+   inheriting each other in either direction:
+
+     a Creator Admin is not a Nerve Admin      (creator_role is invisible to moRoleOf)
+     a Media Team Lead is not a Creator TL     (mo_role is invisible to creatorRoleOf)
+     a creator is not a Media Ops employee     (team='creator' ⇒ moRoleOf null ⇒ requireMedia 403)
+
+   MODULE ACCESS AND CREATOR ROLE ARE DIFFERENT QUESTIONS. A Nerve Admin reaches
+   the network through the module, as they reach every module; that does not
+   make them a Creator Admin, because they hold no profile. Reading the network
+   asks the module; acting inside the domain asks the role. */
+/* The sidebar route is '#/media/creator', and the client derives its module key
+   by stripping that prefix — so the key is 'creator' on both sides, named here
+   once rather than typed as a literal wherever it is checked. */
+export const CREATOR_MODULE = "creator";
+
+export type CreatorRole = "creator_admin" | "team_lead" | "creator" | null;
+
+/** What this user is INSIDE the network. null for everyone else, and for a
+    creator whose network membership is not currently active — a suspended or
+    archived creator keeps every record and loses every right. */
+export async function creatorRoleOf(u: CurrentUser): Promise<CreatorRole> {
+  const r = (await pool.query(
+    `SELECT creator_role, status FROM mo_creator_profiles WHERE user_id=$1`, [u.id])).rows[0];
+  if (!r || r.status !== "active") return null;
+  return String(r.creator_role) as CreatorRole;
+}
+
+export const isCreatorAdmin = async (u: CurrentUser) => (await creatorRoleOf(u)) === "creator_admin";
+export const isCreatorTeamLead = async (u: CurrentUser) => (await creatorRoleOf(u)) === "team_lead";
 
 /* ── SMC — Social Media Council ────────────────────────────────────────────
    An SMC member is an institute student on the coverage network, not Media
@@ -5106,6 +5148,128 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        drawer uses it to hide links this account could not open anyway; the
        routes behind them enforce the same answer independently. */
     res.json({ ...board, modules: eff });
+  }));
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     CREATOR NETWORK — Phase 0 API foundation
+
+     Three read-only endpoints, enough to prove the architecture end to end and
+     nothing more. Phases 1–8 add behaviour on top of these gates; they do not
+     replace them.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /* Who may open the network at all.
+
+     Two independent doors, deliberately: the MODULE (how every other Media Ops
+     surface is reached, admins included) and the creator ROLE (how someone who
+     is not Media Ops staff at all gets in). A student creator has no module
+     grant worth speaking of and must still reach their own corner; an Admin has
+     no creator profile and must still be able to look. */
+  async function requireCreatorNetwork(res: express.Response, u: CurrentUser): Promise<boolean> {
+    if (isMoAdmin(u)) return true;
+    if (await creatorRoleOf(u)) return true;
+
+    /* Someone on the creator TEAM who has no active role is suspended,
+       archived, or never onboarded. They must be refused here and not fall
+       through to the module check below: the 'creator' module reaches them
+       through their team's group defaults, so without this a suspended creator
+       would be let straight back in by the very grant that makes the vertical
+       work. Membership is revoked by status; the module is not what decides it. */
+    if (u.team === "creator") {
+      sendError(res, 403, "Your Creator Network membership is not active.");
+      return false;
+    }
+
+    const eff = await effectiveModules(u);
+    if (eff !== null && eff.includes(CREATOR_MODULE)) return true;
+    sendError(res, 403, "You do not have access to the Creator Network.");
+    return false;
+  }
+
+  /* What this caller may SEE. Resolved here, server-side, from the session —
+     never from the request. Phases 1–8 must filter every creator query through
+     this and must never accept a user id or team id from the client as the
+     thing being scoped to. */
+  type CreatorScope =
+    | { level: "all" }
+    | { level: "team"; teamIds: number[]; userId: string }
+    | { level: "self"; userId: string };
+
+  async function creatorScopeOf(u: CurrentUser): Promise<CreatorScope> {
+    const role = await creatorRoleOf(u);
+    // An Admin sees the network for the same reason they see every module.
+    if (isMoAdmin(u) || role === "creator_admin") return { level: "all" };
+    if (role === "team_lead") {
+      const { rows } = await pool.query(
+        `SELECT id FROM mo_creator_teams
+          WHERE lead_user_id=$1 AND is_active AND archived_at IS NULL`, [u.id]);
+      return { level: "team", teamIds: rows.map((r) => Number(r.id)), userId: u.id };
+    }
+    // Everyone else who got through the gate — a creator, or a staff member
+    // holding the module — sees only themselves until a phase grants more.
+    return { level: "self", userId: u.id };
+  }
+
+  /* The caller's own standing in the network. The client renders from this
+     rather than deciding anything itself; every endpoint re-derives it. */
+  app.get(`${P}/creator/context`, asyncHandler(async (_req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const role = await creatorRoleOf(u);
+    const scope = await creatorScopeOf(u);
+    res.json({
+      creator_role: role,                       // null for staff who are not creators
+      scope: scope.level,
+      team_ids: scope.level === "team" ? scope.teamIds : [],
+      // Stated separately on purpose: holding the module is not the same as
+      // being a Creator Admin, and the UI must not conflate them.
+      is_nerve_admin: isMoAdmin(u),
+      can_manage_network: isMoAdmin(u) || role === "creator_admin",
+    });
+  }));
+
+  /* The signed-in creator's own profile. There is deliberately no variant that
+     takes an id — that is what stops this becoming a creator directory before
+     Phase 1 decides who may read one. */
+  app.get(`${P}/creator/me`, asyncHandler(async (_req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const p = (await pool.query(
+      `SELECT c.user_id, c.creator_role, c.status, c.creator_type, c.joined_on,
+              COALESCE(c.display_name, u.full_name) AS display_name,
+              t.id AS team_id, t.name AS team_name
+         FROM mo_creator_profiles c
+         JOIN users u ON u.id = c.user_id
+         LEFT JOIN mo_creator_team_members m ON m.user_id = c.user_id AND m.is_primary
+         LEFT JOIN mo_creator_teams t ON t.id = m.team_id
+        WHERE c.user_id=$1`, [u.id])).rows[0];
+    // A staff member with the module has no profile — not an error, just no
+    // creator identity of their own.
+    res.json({ profile: p ?? null });
+  }));
+
+  /* Whether the network is set up, and how big it is within what the caller may
+     see. The shape stays the same at every scope so the client has one thing to
+     render; the numbers narrow. */
+  app.get(`${P}/creator/status`, asyncHandler(async (_req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const scope = await creatorScopeOf(u);
+    if (scope.level === "self") {
+      const own = await creatorRoleOf(u);
+      return res.json({ scope: "self", creators: own ? 1 : 0, teams: 0 });
+    }
+    const teamFilter = scope.level === "team"
+      ? `AND m.team_id = ANY($1::bigint[])` : "";
+    const args = scope.level === "team" ? [scope.teamIds] : [];
+    const creators = await pool.query(
+      `SELECT COUNT(DISTINCT c.user_id)::int n FROM mo_creator_profiles c
+         LEFT JOIN mo_creator_team_members m ON m.user_id = c.user_id
+        WHERE c.status='active' ${teamFilter}`, args);
+    const teams = scope.level === "team"
+      ? { rows: [{ n: scope.teamIds.length }] }
+      : await pool.query(`SELECT COUNT(*)::int n FROM mo_creator_teams WHERE is_active AND archived_at IS NULL`);
+    res.json({ scope: scope.level, creators: creators.rows[0].n, teams: teams.rows[0].n });
   }));
 
   // ── helpers ───────────────────────────────────────────────────────────────

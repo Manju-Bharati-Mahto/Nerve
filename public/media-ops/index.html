@@ -2995,6 +2995,13 @@ const NAV = [
     {r:'#/media/performance',i:'trend',l:'Performance'},
     {r:'#/media/ai',      i:'sparkles',l:'AI Assist'}
   ]},
+  {group:'Creator Network',items:[
+    /* Parul's incentive-based content workforce — a vertical inside Media Ops,
+       like SMC. Gated by the 'creator' module, which the key derives from this
+       route; a user without it never sees the group at all, because renderNav()
+       drops a group whose items all filter out. */
+    {r:'#/media/creator', i:'sparkles', l:'Creator Network', optIn:true}
+  ]},
   {group:'System',items:[
     /* The office TV board. It lives at its own page (/api/media-tv/) rather than
        a view here, so the route below hands the browser over — but it is an
@@ -3189,6 +3196,7 @@ const ROUTES = [
      top-level browser over. replace() rather than assign(): Back from the board
      then returns to wherever the user was, instead of re-entering this route and
      being thrown straight back out again. */
+  [/^#\/media\/creator$/,              ()=>viewCreatorNetwork()],
   [/^#\/media\/tv$/,                   ()=>{ location.replace('/api/media-tv/');
     return `<div class="empty" style="padding:64px 20px"><div class="e-ico">▤</div>
       <h4>Opening the TV board…</h4><p>Taking you to the Media Crew operations display.</p></div>`; }]
@@ -7762,6 +7770,61 @@ function renderRemoveModal(uid,impact){
       <button class="btn danger" data-act="removeGo" data-uid="${uid}" data-force="${hot?'1':'0'}" ${hot?'disabled':''}>
         ${hot?'Force remove member':'Remove member'}</button></div>`,{size:'wide'});
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+}
+
+/* ── Creator Network (Phase 0) ─────────────────────────────────────────────
+   A foundation screen, not a dashboard. Phase 0 deliberately builds no creator
+   UI: this exists to prove the chain — module grant → navigation → route →
+   authenticated API → server-resolved scope — and to say plainly what is not
+   built yet. Phase 1 replaces the body with the creator directory and teams.
+
+   The caller's standing comes from GET /creator/context. It is never inferred
+   here: the client renders what the server decided. */
+const CREATOR_CTX = {loaded:false, data:null, err:null};
+
+function viewCreatorNetwork(){
+  if(!CREATOR_CTX.loaded){
+    MO_API.get('/creator/context')
+      .then(d=>{CREATOR_CTX.data=d;})
+      .catch(e=>{CREATOR_CTX.err=e.message;})
+      .finally(()=>{CREATOR_CTX.loaded=true;render();});
+    return `<div class="page-head"><div><h1 class="page-title">Creator Network</h1>
+      <div class="page-sub">Loading your access…</div></div></div>`;
+  }
+  if(CREATOR_CTX.err) return roleDenied(CREATOR_CTX.err);
+  const c=CREATOR_CTX.data||{};
+  const ROLE={creator_admin:'Creator Admin', team_lead:'Creator Team Lead', creator:'Creator'};
+  const SCOPE={all:'the whole network', team:'your creator teams', self:'your own records'};
+  return `
+  <div class="page-head"><div>
+    <h1 class="page-title">Creator Network</h1>
+    <div class="page-sub">Parul University's creator workforce — points, ranks and payouts, inside Nerve.</div>
+  </div></div>
+  <div class="grid g2 sec">
+    <div class="card"><div class="card-head"><h3>Your access</h3></div>
+      <div class="card-body pad">
+        <dl class="kv">
+          <dt>In this network</dt><dd>${c.creator_role?esc(ROLE[c.creator_role]||c.creator_role)
+            :'<span class="mut3">Not a creator — you are here through module access</span>'}</dd>
+          <dt>You can see</dt><dd>${esc(SCOPE[c.scope]||c.scope||'—')}</dd>
+          <dt>Manage the network</dt><dd>${c.can_manage_network?'Yes':'No'}</dd>
+        </dl>
+        <div class="hint mt3">Holding the module lets you open this section. Being a
+          <b>Creator Admin</b> is a separate thing — it is a role inside the network, and it does not
+          make anyone a Nerve administrator.</div>
+      </div></div>
+    <div class="card"><div class="card-head"><h3>Phase 0 — foundation</h3></div>
+      <div class="card-body pad">
+        <p class="small">The architecture is in place: creator identity, creator roles, creator teams,
+          module permission, server-side scope and audit all reuse Nerve's existing systems rather than
+          duplicating them.</p>
+        <div class="small b mt3 mb2">Not built yet</div>
+        <div class="f wrap gap2">${['Creators','Teams','Tasks','Events','Submissions','Leaderboard',
+          'Points &amp; Ranks','Payouts','War Zone','Analytics']
+          .map(x=>`<span class="chip mut3">${x}</span>`).join('')}</div>
+        <div class="hint mt3">Phase 1 adds the creator directory, creator teams and the hierarchy.</div>
+      </div></div>
+  </div>`;
 }
 
 /* ── Re-adding someone who was removed ─────────────────────────────────────
