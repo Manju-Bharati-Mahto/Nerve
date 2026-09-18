@@ -6288,8 +6288,18 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const { rows } = await pool.query(
       `SELECT a.*, COALESCE(NULLIF(c.display_name,''), usr.full_name) AS creator_name,
               t.name AS team_name, o.title AS opportunity_title,
-              e.id AS event_id, e.title AS event_title, e.event_date, e.venue AS event_venue
+              e.id AS event_id, e.title AS event_title, e.event_date, e.venue AS event_venue,
+              /* The latest submission rides along, so the task list can show
+                 where the work stands without a query per row. */
+              sub.version_no AS submission_version, sub.status AS submission_status,
+              sub.review_comment AS submission_comment, sub.id AS submission_id,
+              rev.full_name AS submission_reviewer, sub.reviewed_at AS submission_reviewed_at,
+              (SELECT COUNT(*)::int FROM mo_creator_submissions v WHERE v.assignment_id = a.id) AS submission_count
          FROM mo_creator_assignments a
+         LEFT JOIN LATERAL (
+           SELECT * FROM mo_creator_submissions v WHERE v.assignment_id = a.id
+            ORDER BY v.version_no DESC LIMIT 1) sub ON true
+         LEFT JOIN users rev ON rev.id = sub.reviewed_by
          JOIN users usr ON usr.id = a.user_id
          LEFT JOIN mo_creator_profiles c ON c.user_id = a.user_id
          LEFT JOIN mo_creator_teams t ON t.id = a.team_id
@@ -6301,7 +6311,10 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({
       tasks: rows.map((r) => ({ ...r, id: Number(r.id), opportunity_id: Number(r.opportunity_id),
         event_id: Number(r.event_id), team_id: r.team_id ? Number(r.team_id) : null,
-        deadline: dOnly(r.deadline), scheduled_date: dOnly(r.scheduled_date), event_date: dOnly(r.event_date) })),
+        deadline: dOnly(r.deadline), scheduled_date: dOnly(r.scheduled_date), event_date: dOnly(r.event_date),
+        submission_id: r.submission_id ? Number(r.submission_id) : null,
+        submission_version: r.submission_version ? Number(r.submission_version) : null,
+        submission_count: Number(r.submission_count) })),
       scope: scope.level,
     });
   }));
@@ -6355,6 +6368,282 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       await notifyCreator(String(cur.user_id), "assignment", "An assignment was cancelled",
         String(cur.title), "creator_assignment", id);
     res.json({ ok: true, status: to });
+  }));
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     CREATOR NETWORK — Phase 3: content submission and review
+
+     COMPLETION IS NOT APPROVAL. A creator marking a task complete says the
+     work is done and ready to look at; the verdict is management's separate
+     act, and it lives on the submission. The assignment does not move.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /* A content link, not a file. Nerve stores no Drive credentials and mirrors
+     nothing — the creator shares a link and we keep it. https only: that is
+     what rules out javascript:, data: and file:, which is the whole attack
+     this validation exists for. No host allow-list, because creators legit-
+     imately post to Drive, YouTube and Instagram. */
+  function validContentUrl(raw: unknown): string | null {
+    const v = String(raw ?? "").trim();
+    if (v.length < 8 || v.length > 2000) return null;
+    let parsed: URL;
+    try { parsed = new URL(v); } catch { return null; }
+    if (parsed.protocol !== "https:") return null;
+    if (!parsed.hostname || parsed.hostname.length > 255) return null;
+    return v;
+  }
+
+  /** The assignment, if it is genuinely this caller's to submit against.
+      Ownership is resolved from the session — the browser never names it. */
+  async function ownedAssignment(userId: string, id: number) {
+    return (await pool.query(
+      `SELECT a.*, o.title AS opportunity_title, e.title AS event_title, e.id AS event_id
+         FROM mo_creator_assignments a
+         JOIN mo_creator_opportunities o ON o.id = a.opportunity_id
+         JOIN mo_creator_events e ON e.id = o.event_id
+        WHERE a.id=$1 AND a.user_id=$2`, [id, userId])).rows[0] ?? null;
+  }
+
+  /** Who may pass a verdict. Review stays with Creator Admin, as Phase 2 left
+      selection — a Team Lead reads their team's work but does not rule on it. */
+  async function requireCreatorReviewer(res: express.Response, u: CurrentUser): Promise<boolean> {
+    if (isMoAdmin(u) || (await creatorRoleOf(u)) === "creator_admin") return true;
+    sendError(res, 403, "Only a Creator Admin may review submissions.");
+    return false;
+  }
+
+  const shapeSubmission = (r: Record<string, unknown>) => ({
+    id: Number(r.id), assignment_id: Number(r.assignment_id), version_no: Number(r.version_no),
+    content_url: r.content_url, submission_type: r.submission_type, note: r.note,
+    status: r.status, submitted_by: r.submitted_by, submitted_at: r.submitted_at,
+    reviewed_by: r.reviewed_by, reviewed_at: r.reviewed_at, review_comment: r.review_comment,
+    reviewer_name: r.reviewer_name ?? null,
+  });
+
+  /* ── Submit a version ───────────────────────────────────────────────────
+     The creator sends a link and a note. Everything else — who they are,
+     which event, which team, which version — is derived here. */
+  app.post(`${P}/creator/assignments/:id/submissions`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await activeCreator(u.id)))
+      return sendError(res, 403, "Only an active Creator Network member can submit work.");
+
+    const id = Number(getSingleParam(req.params.id));
+    const a = await ownedAssignment(u.id, id);
+    // Somebody else's assignment is indistinguishable from one that is not there.
+    if (!a) return sendError(res, 404, "Task not found.");
+    if (a.status === "cancelled") return sendError(res, 400, "That assignment was cancelled.");
+    if (a.status === "declined") return sendError(res, 400, "You declined that assignment.");
+    /* Submission follows completion: marking the work done is what says it is
+       ready to be looked at. */
+    if (a.status !== "completed")
+      return sendError(res, 400, "Mark the task complete first — then submit the work for review.");
+
+    const url = validContentUrl((req.body as Record<string, unknown>).content_url);
+    if (!url) return sendError(res, 400, "A valid https content link is required.");
+
+    const prior = (await pool.query(
+      `SELECT status FROM mo_creator_submissions WHERE assignment_id=$1`, [id])).rows;
+    if (prior.some((p) => p.status === "approved"))
+      return sendError(res, 409, "This work has already been approved.");
+    if (prior.some((p) => p.status === "rejected"))
+      return sendError(res, 409, "This submission was rejected — speak to a Creator Admin.");
+    if (prior.some((p) => p.status === "submitted"))
+      return sendError(res, 409, "Your latest version is still awaiting review.");
+
+    const note = String((req.body as Record<string, unknown>).note ?? "").slice(0, 2000);
+    const type = String((req.body as Record<string, unknown>).submission_type ?? "").slice(0, 60) || null;
+
+    /* Race-safe versioning. MAX+1 alone is not enough — two requests read the
+       same maximum and both aim at the same number. UNIQUE(assignment_id,
+       version_no) is what actually decides it, and the loser recomputes rather
+       than failing, so concurrent submits become V2 and V3, never V2 twice.
+       The retry is bounded; the pending-review index stops a real duplicate. */
+    let row: Record<string, unknown> | null = null;
+    for (let attempt = 0; attempt < 4 && !row; attempt++) {
+      try {
+        const ins = await pool.query(
+          `INSERT INTO mo_creator_submissions
+             (assignment_id, version_no, content_url, submission_type, note, status, submitted_by)
+           SELECT $1, COALESCE(MAX(version_no),0) + 1, $2, $3, $4, 'submitted', $5
+             FROM mo_creator_submissions WHERE assignment_id=$1
+           RETURNING *`, [id, url, type, note, u.id]);
+        row = ins.rows[0];
+      } catch (err) {
+        const code = (err as { code?: string }).code;
+        if (code !== "23505") throw err;
+        /* Either another version took this number (retry), or a pending review
+           already exists (a retried request — do not open a second one). */
+        const pending = (await pool.query(
+          `SELECT 1 FROM mo_creator_submissions WHERE assignment_id=$1 AND status='submitted'`, [id])).rows[0];
+        if (pending) return sendError(res, 409, "Your latest version is still awaiting review.");
+      }
+    }
+    if (!row) return sendError(res, 409, "Could not record the submission — please try again.");
+
+    const version = Number(row.version_no);
+    await audit(u, "creator_submission.submitted", "creator_submission", Number(row.id), null,
+      { assignment_id: id, version_no: version }, req);
+
+    /* Tell whoever assigned the work that there is something to look at. */
+    if (a.assigned_by)
+      await notifyCreator(String(a.assigned_by), "review", "A creator submission needs review",
+        `${a.title} · V${version} from ${u.full_name ?? "a creator"}`, "creator_submission", Number(row.id));
+    res.status(201).json({ ok: true, submission: shapeSubmission(row), version_no: version });
+  }));
+
+  /** Every version of one task, oldest first — the history, not just the last
+      word. Visible to its creator, their Team Lead, and management. */
+  app.get(`${P}/creator/assignments/:id/submissions`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const scope = await creatorScopeOf(u);
+    const a = (await pool.query(
+      `SELECT user_id, team_id FROM mo_creator_assignments WHERE id=$1`, [id])).rows[0];
+    if (!a) return sendError(res, 404, "Task not found.");
+    const visible = scope.level === "all"
+      || (scope.level === "team" && (scope.teamIds.includes(Number(a.team_id)) || a.user_id === u.id))
+      || (scope.level === "self" && a.user_id === u.id);
+    if (!visible) return sendError(res, 404, "Task not found.");
+    const { rows } = await pool.query(
+      `SELECT s.*, r.full_name AS reviewer_name FROM mo_creator_submissions s
+         LEFT JOIN users r ON r.id = s.reviewed_by
+        WHERE s.assignment_id=$1 ORDER BY s.version_no`, [id]);
+    res.json({ submissions: rows.map(shapeSubmission) });
+  }));
+
+  /* ── The review queue ───────────────────────────────────────────────────
+     Scoped the way everything else is, filtered and paged in SQL, and joined
+     once so a page of fifty is one query rather than fifty. */
+  app.get(`${P}/creator/submissions`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const scope = await creatorScopeOf(u);
+    const q = req.query as Record<string, string>;
+    const params: unknown[] = [];
+    let where = "";
+    if (scope.level === "team") {
+      params.push(scope.teamIds, scope.userId);
+      where += ` AND (a.team_id = ANY($${params.length - 1}::bigint[]) OR a.user_id = $${params.length})`;
+    } else if (scope.level === "self") { params.push(u.id); where += ` AND a.user_id = $${params.length}`; }
+
+    for (const [key, col] of [["status", "s.status"], ["creator_id", "a.user_id"],
+                              ["team_id", "a.team_id"], ["event_id", "e.id"],
+                              ["opportunity_id", "o.id"]] as const) {
+      const v = String(q[key] ?? "").trim();
+      if (!v || v === "all") continue;
+      params.push(key === "status" || key === "creator_id" ? v : Number(v));
+      // A forged id only ever ADDS to the scope clause above; it cannot widen.
+      where += ` AND ${col} = $${params.length}`;
+    }
+    if (q.since) { params.push(q.since); where += ` AND s.submitted_at >= $${params.length}::date`; }
+    // Only the newest version of each task unless the caller asks for all.
+    const latestOnly = q.all !== "1";
+    if (latestOnly) where += ` AND s.version_no = (SELECT MAX(v.version_no) FROM mo_creator_submissions v
+                                                    WHERE v.assignment_id = s.assignment_id)`;
+
+    const limit = Math.min(200, Math.max(1, Number(q.limit) || 50));
+    const offset = Math.max(0, Number(q.offset) || 0);
+    const total = (await pool.query(
+      `SELECT COUNT(*)::int n FROM mo_creator_submissions s
+         JOIN mo_creator_assignments a ON a.id = s.assignment_id
+         JOIN mo_creator_opportunities o ON o.id = a.opportunity_id
+         JOIN mo_creator_events e ON e.id = o.event_id
+        WHERE true${where}`, params)).rows[0].n;
+    params.push(limit, offset);
+    const { rows } = await pool.query(
+      `SELECT s.*, r.full_name AS reviewer_name,
+              a.title AS task_title, a.deadline, a.user_id AS creator_id,
+              COALESCE(NULLIF(c.display_name,''), usr.full_name) AS creator_name,
+              t.id AS team_id, t.name AS team_name,
+              o.id AS opportunity_id, o.title AS opportunity_title,
+              e.id AS event_id, e.title AS event_title, e.event_date,
+              (SELECT COUNT(*)::int FROM mo_creator_submissions v WHERE v.assignment_id = s.assignment_id) AS versions
+         FROM mo_creator_submissions s
+         JOIN mo_creator_assignments a ON a.id = s.assignment_id
+         JOIN users usr ON usr.id = a.user_id
+         LEFT JOIN mo_creator_profiles c ON c.user_id = a.user_id
+         LEFT JOIN mo_creator_teams t ON t.id = a.team_id
+         LEFT JOIN users r ON r.id = s.reviewed_by
+         JOIN mo_creator_opportunities o ON o.id = a.opportunity_id
+         JOIN mo_creator_events e ON e.id = o.event_id
+        WHERE true${where}
+        ORDER BY (s.status='submitted') DESC, s.submitted_at DESC
+        LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+
+    res.json({
+      submissions: rows.map((r) => ({
+        ...shapeSubmission(r),
+        task_title: r.task_title, deadline: dOnly(r.deadline),
+        creator_id: r.creator_id, creator_name: r.creator_name,
+        team: r.team_id ? { id: Number(r.team_id), name: r.team_name } : null,
+        opportunity: { id: Number(r.opportunity_id), title: r.opportunity_title },
+        event: { id: Number(r.event_id), title: r.event_title, date: dOnly(r.event_date) },
+        versions: Number(r.versions),
+      })),
+      total, limit, offset, scope: scope.level,
+      can_review: isMoAdmin(u) || (await creatorRoleOf(u)) === "creator_admin",
+    });
+  }));
+
+  /* ── The verdict ────────────────────────────────────────────────────────
+     One endpoint with an outcome, the way POST /deliverables/:id/review
+     already works. It writes onto the version reviewed and never touches the
+     content — an approved version is immutable by construction, because
+     nothing in this codebase updates content_url after insert. */
+  app.post(`${P}/creator/submissions/:id/review`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorReviewer(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const b = req.body as Record<string, unknown>;
+    const outcome = String(b.outcome ?? "");
+    if (!["approved", "changes_requested", "rejected"].includes(outcome))
+      return sendError(res, 400, "Outcome must be approved, changes_requested or rejected.");
+
+    const s = (await pool.query(
+      `SELECT s.*, a.user_id AS creator_id, a.title AS task_title
+         FROM mo_creator_submissions s JOIN mo_creator_assignments a ON a.id = s.assignment_id
+        WHERE s.id=$1`, [id])).rows[0];
+    if (!s) return sendError(res, 404, "Submission not found.");
+
+    /* Only a version actually awaiting a verdict can receive one. This is what
+       stops two reviewers acting at once, and stops an approved or rejected
+       version being re-decided. */
+    if (s.status !== "submitted")
+      return sendError(res, 409, `That version has already been ${String(s.status).replace("_", " ")}.`);
+    // BR-5, as the deliverable review already has it.
+    if (String(s.submitted_by) === u.id)
+      return sendError(res, 403, "A submission cannot be reviewed by the person who submitted it.");
+
+    /* A verdict the creator has to act on must say what to fix; "we are not
+       taking this" owes them a reason too. Approval needs no justification. */
+    const comment = String(b.comment ?? "").trim().slice(0, 2000);
+    if (outcome !== "approved" && comment.length < 3)
+      return sendError(res, 400, "Tell the creator what to change — a comment is required.");
+
+    /* Guarded by the status in the WHERE clause, so two simultaneous reviewers
+       cannot both write a verdict: the second updates nothing and is told. */
+    const upd = await pool.query(
+      `UPDATE mo_creator_submissions
+          SET status=$1, reviewed_by=$2, reviewed_at=NOW(), review_comment=$3, updated_at=NOW()
+        WHERE id=$4 AND status='submitted' RETURNING *`, [outcome, u.id, comment, id]);
+    if (!upd.rowCount) return sendError(res, 409, "That version was reviewed a moment ago.");
+
+    await audit(u, `creator_submission.${outcome}`, "creator_submission", id,
+      { status: "submitted" }, { status: outcome, version_no: Number(s.version_no) }, req);
+
+    const titles: Record<string, [string, string]> = {
+      approved: ["Your submission was approved", "Nothing further is needed."],
+      changes_requested: ["Changes requested on your submission", comment],
+      rejected: ["Your submission was not accepted", comment],
+    };
+    const [title, body] = titles[outcome];
+    await notifyCreator(String(s.creator_id), "review", title,
+      `${s.task_title} · V${s.version_no} — ${body}`, "creator_submission", id);
+    res.json({ ok: true, status: outcome, submission: shapeSubmission(upd.rows[0]) });
   }));
 
   // ── helpers ───────────────────────────────────────────────────────────────

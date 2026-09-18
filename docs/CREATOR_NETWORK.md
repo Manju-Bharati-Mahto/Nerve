@@ -1,8 +1,8 @@
 # Nerve Creator Network — Architecture
 
 > Living document. Reference for every Creator Network phase.
-> Status: **Phase 2 complete** — events, opportunities, interest, selection,
-> assignment and tasks are live. Phase 3 (content submission) has not started.
+> Status: **Phase 3 complete** — content submission and review are live.
+> Phase 4 (points, ranks, cycles) has not started.
 
 Parul University runs a creator network: an incentive-based content workforce
 producing reels, shorts, vlogs, event and campus content, paid in points, ranks
@@ -273,7 +273,7 @@ onto it. Media Ops `/state` was not touched.
 | **0 ✅** | Architecture, identity, roles, teams, RBAC, scope, nav, API foundation |
 | **1 ✅** | Creator directory, creator teams, hierarchy, scoped shell |
 | **2 ✅** | Events, opportunities, interest, selection, assignment, tasks |
-| 3 | Content submission + review workflow |
+| **3 ✅** | Content submission, versioning, review and verdicts |
 | 4 | Points, point ledger, rank engine, cycles |
 | 5 | Payouts, financial ledger, audit |
 | 6 | Leaderboard, achievements, Creator of the Cycle, War Zone |
@@ -445,3 +445,130 @@ role writes `NULL` so the insert can never silently fail again.
 **Phase 3 starts here:** content submission against a **completed** task —
 `mo_creator_assignments.id` is the anchor — then review and approval. Nothing in
 Phase 2 needs to change first.
+
+---
+
+## PHASE 3 — content submission and review
+
+### Completion is not approval
+
+A creator marking a task **complete** says the work is done and ready to look
+at. The **verdict** is management's separate act and lives on the submission.
+The assignment never moves because of a review — a test asserts it stays
+`completed` through the whole cycle.
+
+### Built on the convention that already existed
+
+`mo_deliverable_versions` is already how Nerve does a versioned submission
+carrying a review verdict. `mo_creator_submissions` uses the same shape and the
+same words — `version_no`, `submitted_by`, `reviewed_by`, `review_comment`,
+`UNIQUE(assignment_id, version_no)` — so the codebase has one convention, not
+two. The review endpoint mirrors `POST /deliverables/:id/review`: one route, an
+`outcome` in the body, and **BR-5** (a submission cannot be reviewed by the
+person who submitted it).
+
+### Schema
+
+`mo_creator_submissions` — anchored on `assignment_id`, which Phase 2 made the
+single ownership anchor. Nothing else is needed: creator, team, opportunity and
+event are all reachable through it, so none of them is a field a client could
+forge.
+
+| Constraint | Stops |
+|---|---|
+| `UNIQUE (assignment_id, version_no)` | two versions claiming the same number |
+| partial unique on `status='submitted'` | stacking V2 on an unreviewed V1; a retried request opening a second review |
+| partial unique on `status='approved'` | a task with two approved versions |
+| `CHECK (version_no > 0)` | nonsense numbering |
+
+Indexed on `(status, submitted_at)` and `(reviewed_by, reviewed_at)`.
+
+### Four states, not six
+
+`submitted → changes_requested → (resubmit as a new row) → approved | rejected`
+
+`submitted` **is** under review — a separate `UNDER_REVIEW` would be a status
+nothing ever sets, and there is no draft step in this workflow. Both terminal
+states are kept because "fix it" and "we are not taking this" are different
+answers to a creator.
+
+Nothing leaves `approved` or `rejected`. A verdict is only accepted on a
+version whose status is still `submitted`, enforced in the `WHERE` clause — so
+two reviewers acting at once produce one verdict and one 409, and an approved
+version cannot be re-decided.
+
+### Versioning, and the race
+
+V1 is immutable. Changes requested means the creator submits a **new row** as
+V2; V1 keeps its content, its comment and its reviewer forever.
+
+`MAX(version_no)+1` alone is not safe — two requests read the same maximum.
+`UNIQUE(assignment_id, version_no)` is what actually decides it, and the loser
+**recomputes and retries** (bounded) rather than erroring. Four concurrent
+submissions produce exactly one new version and three 409s, asserted by test.
+
+### Ownership
+
+A submission carries **no creator id, team id, event id or opportunity id**.
+The server resolves the assignment from the session and refuses anything that
+is not the caller's — a foreign assignment answers **404**, indistinguishable
+from one that does not exist.
+
+### Content links, not files
+
+Nerve stores a URL and mirrors nothing; no Drive credentials are held. `https`
+only — that is what rules out `javascript:`, `data:` and `file:`. No host
+allow-list, because creators legitimately post to Drive, YouTube and Instagram.
+
+### Who may do what
+
+| | Creator | Team Lead | Creator Admin / Nerve Admin |
+|---|---|---|---|
+| Submit | own completed tasks | — | — |
+| See submissions | own | their team's | all |
+| Verdict | — | **no** | yes |
+
+Review authority stays where Phase 2 left selection. A Team Lead reads their
+team's work and does not rule on it.
+
+### API
+
+| Endpoint | Does |
+|---|---|
+| `POST /creator/assignments/:id/submissions` | submit the next version |
+| `GET /creator/assignments/:id/submissions` | full version history, scoped |
+| `GET /creator/submissions` | review queue — `status`, `creator_id`, `team_id`, `event_id`, `opportunity_id`, `since`, paged |
+| `POST /creator/submissions/:id/review` | `outcome: approved \| changes_requested \| rejected` |
+
+`changes_requested` and `rejected` require a comment; `approved` does not.
+
+### Audit and notifications
+
+`creator_submission.submitted`, `.changes_requested`, `.approved`,
+`.rejected` on `mo_audit_logs`. Notifications on `mo_notifications`: the
+assigner is told there is something to review, the creator is told the verdict
+and reads the comment.
+
+**The Phase 2 audit regression is directly guarded here.** Submitting is a
+creator action, so a test asserts the row exists *and* that `actor_role` is
+`'creator'` — the exact failure that silently emptied the creator trail before.
+
+### Phase 4 anchor
+
+Points attach to an **approved submission**: `mo_creator_submissions` where
+`status='approved'`, one per assignment by construction, carrying
+`reviewed_by`, `reviewed_at` and a path to creator, team, opportunity and
+event. Nothing in Phase 3 needs to change for a point ledger to reference it.
+
+---
+
+## PHASE 3 COMPLETE
+
+**Implementation notes**
+
+- No Phase 0/1/2 behaviour changed; `/creator/tasks` gained the latest
+  submission via a lateral join so the task list stays one query.
+- Submission requires the task to be `completed`, which is the documented
+  meaning of completion in §2.
+- A rejected submission closes the task to further versions. If reopening is
+  ever wanted it should be an explicit management action, not a silent path.

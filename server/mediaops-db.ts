@@ -1789,6 +1789,56 @@ export async function bootstrapCreatorNetwork() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_assign_deadline ON mo_creator_assignments(deadline)
                     WHERE status NOT IN ('completed','declined','cancelled')`);
 
+  /* ── Phase 3: content submission and review ─────────────────────────────
+     Modelled on mo_deliverable_versions, which is already how Nerve does a
+     versioned submission with a review verdict on it. Same shape, same words
+     (version_no, submitted_by, reviewed_by, review_comment), so there is one
+     convention in the codebase rather than two.
+
+     COMPLETION IS NOT APPROVAL. The assignment stays 'completed' — that is the
+     creator saying the work is done and ready to look at. The verdict lives
+     here, on the submission, and is management's separate act.
+
+     Versions are immutable. A verdict writes reviewer, timestamp and comment
+     onto the row that was reviewed; it never edits the content, and a
+     resubmission is always a NEW row. V1 stays readable forever. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_submissions (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      assignment_id BIGINT NOT NULL REFERENCES mo_creator_assignments(id) ON DELETE CASCADE,
+      version_no SMALLINT NOT NULL CHECK (version_no > 0),
+      content_url TEXT NOT NULL,
+      submission_type TEXT,
+      note TEXT NOT NULL DEFAULT '',
+      /* Four states, not six. 'submitted' IS under review — a separate
+         UNDER_REVIEW would be a status nothing ever sets, and there is no
+         draft step in this workflow. Both terminal states are kept distinct
+         because "fix it" and "we are not taking this" are different answers. */
+      status TEXT NOT NULL DEFAULT 'submitted'
+        CHECK (status IN ('submitted','changes_requested','approved','rejected')),
+      submitted_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      reviewed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      reviewed_at TIMESTAMPTZ,
+      review_comment TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      /* The version invariant, held by the database. Two simultaneous
+         submissions cannot both become V2: one wins and the other is told to
+         retry, rather than both being written. */
+      UNIQUE (assignment_id, version_no)
+    )`);
+  /* One version awaiting a verdict at a time — a creator cannot stack V2 on
+     top of an unreviewed V1, and a duplicate request from a retried network
+     call cannot open a second review. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_sub_pending
+                    ON mo_creator_submissions(assignment_id) WHERE status='submitted'`);
+  /* Approval is final for the whole assignment: at most one approved version. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_sub_approved
+                    ON mo_creator_submissions(assignment_id) WHERE status='approved'`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_sub_status ON mo_creator_submissions(status, submitted_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_sub_reviewer ON mo_creator_submissions(reviewed_by, reviewed_at DESC)`);
+
   /* SECURITY — this row is not optional.
 
      effectiveModules() returns null when a group has no defaults row, and

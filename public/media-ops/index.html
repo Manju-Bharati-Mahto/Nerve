@@ -7792,13 +7792,26 @@ const CN_EVENTS = {loaded:false, rows:[], err:null};
 const CN_TASKS  = {loaded:false, rows:[], err:null, status:'all'};
 const CN_OPPS   = {loaded:false, rows:[], err:null};
 const CN_EVENT  = {id:null, loaded:false, data:null, interests:[], err:null};
+const CN_REVIEW = {loaded:false, rows:[], total:0, err:null, status:'submitted', canReview:false};
+const CN_HIST   = {aid:null, rows:[]};
 function cnReload(...what){
   if(what.includes('events')) CN_EVENTS.loaded=false;
   if(what.includes('tasks'))  CN_TASKS.loaded=false;
   if(what.includes('opps'))   CN_OPPS.loaded=false;
   if(what.includes('event'))  CN_EVENT.loaded=false;
+  if(what.includes('review')) CN_REVIEW.loaded=false;
   render();
 }
+
+/* Submission review states. 'submitted' IS under review — there is no separate
+   waiting state to display, because there is none to be in. */
+const CN_SUB = {
+  submitted:        {l:'Under review',     c:'st-info'},
+  changes_requested:{l:'Changes requested',c:'st-warn'},
+  approved:         {l:'Approved',         c:'st-success'},
+  rejected:         {l:'Not accepted',     c:'st-neutral'},
+};
+const cnSubPill = s=>{const m=CN_SUB[s]; return m?`<span class="status ${m.c}">${esc(m.l)}</span>`:'';};
 
 function creatorReload(what){
   if(what==='state'){CREATOR_STATE.loaded=false;CREATOR_STATE.data=null;}
@@ -7887,12 +7900,13 @@ function creatorManageView(st){
         <span class="stat-label">${l}</span><span class="stat-val">${c[k]||0}</span></span></div>`).join('')}
   </div>`:''}
   <div class="tabs sec">
-    ${[['creators','Creators'],['teams','Teams'],['events','Events'],['tasks','Tasks']].map(([k,l])=>
+    ${[['creators','Creators'],['teams','Teams'],['events','Events'],['tasks','Tasks'],['review','Review']].map(([k,l])=>
       `<button class="tab ${tab===k?'on':''}" data-tab="${k}" data-tabkey="creator">${l}</button>`).join('')}
   </div>
   ${tab==='teams'?creatorTeamsTab(st,manage)
    :tab==='events'?(CN_EVENT.id?cnEventDetail(manage):cnEventsTab(manage))
    :tab==='tasks'?cnTasksTab(manage,false)
+   :tab==='review'?cnReviewTab()
    :creatorDirectoryTab(st,manage)}`;
 }
 
@@ -8109,16 +8123,34 @@ function cnTasksTab(manage,own){
           `<option value="${v}" ${CN_TASKS.status===v?'selected':''}>${v==='all'?'All':CN_TASK[v].l}</option>`).join('')}
       </select></div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
-      <thead><tr>${own?'':'<th>Creator</th>'}<th>Task</th><th>Event</th><th>Due</th><th>Status</th>
-        <th class="num">Actions</th></tr></thead>
+      <thead><tr>${own?'':'<th>Creator</th>'}<th>Task</th><th>Event</th><th>Due</th><th>Task status</th>
+        <th>Submission</th><th class="num">Actions</th></tr></thead>
       <tbody>${rows.map(t=>`<tr>
         ${own?'':`<td class="t-main">${esc(t.creator_name)}<div class="t-sub">${esc(t.team_name||'—')}</div></td>`}
         <td class="t-main">${esc(t.title)}</td>
         <td class="small">${esc(t.event_title)}${t.event_date?`<div class="t-sub">${D.fmt(t.event_date)}</div>`:''}</td>
         <td class="small">${t.deadline?D.fmt(t.deadline):'—'}</td>
         <td>${cnTaskPill(t.status)}</td>
+        <td class="small">${cnSubCell(t)}</td>
         <td class="num nowrap">${cnTaskActions(t,manage,own)}</td></tr>`).join('')}
       </tbody></table></div></div></div>`;
+}
+
+/* Where the work stands. Completion is not approval, so this column is about
+   the SUBMISSION, separately from the task status beside it. */
+function cnSubCell(t){
+  if(!t.submission_status)
+    return t.status==='completed'?'<span class="mut3">Not submitted</span>':'<span class="mut3">—</span>';
+  const v=`<span class="chip">V${t.submission_version}</span> ${cnSubPill(t.submission_status)}`;
+  // A creator has to know exactly what to fix, so the comment is shown, not hidden.
+  const why=t.submission_status==='changes_requested'||t.submission_status==='rejected';
+  return v+(why&&t.submission_comment
+    ? `<div class="t-sub" style="white-space:normal;max-width:280px">${esc(t.submission_comment)}
+        ${t.submission_reviewer?`<span class="mut3">— ${esc(t.submission_reviewer)}`
+          +`${t.submission_reviewed_at?', '+D.fmt(String(t.submission_reviewed_at).slice(0,10)):''}</span>`:''}</div>`
+    :'')
+    +(t.submission_count>1?`<div class="t-sub"><button class="btn xs ghost" data-act="cnHistory"
+        data-aid="${t.id}">${t.submission_count} versions</button></div>`:'');
 }
 
 /* The buttons offered are only ever the transitions the server would allow —
@@ -8132,8 +8164,62 @@ function cnTaskActions(t,manage,own){
   }
   if(manage&&!['completed','declined','cancelled'].includes(t.status))
     b.push(['cancelled','Cancel','ghost']);
-  return b.map(([to,l,c])=>`<button class="btn xs ${c==='primary'?'primary':'ghost'}"
-    data-act="cnTaskMove" data-tid="${t.id}" data-to="${to}">${l}</button>`).join(' ')||'<span class="mut3">—</span>';
+  const out=b.map(([to,l,c])=>`<button class="btn xs ${c==='primary'?'primary':'ghost'}"
+    data-act="cnTaskMove" data-tid="${t.id}" data-to="${to}">${l}</button>`);
+  /* Submitting only appears where the server would accept it: the task is
+     complete, and nothing is approved, rejected or already awaiting review. */
+  if(own&&t.status==='completed'&&!['submitted','approved','rejected'].includes(t.submission_status||''))
+    out.push(`<button class="btn xs primary" data-act="cnSubmitWork" data-tid="${t.id}"
+      data-title="${esc(t.title)}" data-v="${(t.submission_version||0)+1}">
+      ${t.submission_status==='changes_requested'?`Submit V${(t.submission_version||0)+1}`:'Submit work'}</button>`);
+  if(t.submission_count>0&&!out.length)
+    out.push(`<button class="btn xs ghost" data-act="cnHistory" data-aid="${t.id}">History</button>`);
+  return out.join(' ')||'<span class="mut3">—</span>';
+}
+
+/* ── The review queue ─────────────────────────────────────────────────── */
+function cnReviewTab(){
+  if(!CN_REVIEW.loaded){
+    const qs=CN_REVIEW.status==='all'?'?limit=200':'?limit=200&status='+CN_REVIEW.status;
+    MO_API.get('/creator/submissions'+qs)
+      .then(d=>{CN_REVIEW.rows=d.submissions||[];CN_REVIEW.total=d.total||0;
+                CN_REVIEW.canReview=!!d.can_review;CN_REVIEW.err=null;})
+      .catch(e=>{CN_REVIEW.err=e.message;})
+      .finally(()=>{CN_REVIEW.loaded=true;render();});
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading submissions…</p></div></div>';
+  }
+  if(CN_REVIEW.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_REVIEW.err)}</p></div></div>`;
+  const rows=CN_REVIEW.rows;
+  return `<div class="card">
+    <div class="card-head"><h3>Submissions</h3>
+      <div class="ca f gap2 ac">
+        <span class="chip">${CN_REVIEW.total}</span>
+        <select class="inp" style="width:auto;height:30px;font-size:12px" onchange="ACTIONS.cnReviewFilter({},this)">
+          ${[['submitted','Awaiting review'],['changes_requested','Changes requested'],
+             ['approved','Approved'],['rejected','Not accepted'],['all','All']].map(([v,l])=>
+            `<option value="${v}" ${CN_REVIEW.status===v?'selected':''}>${l}</option>`).join('')}
+        </select></div></div>
+    <div class="card-body flush">
+      ${!rows.length?`<div class="empty" style="padding:36px"><div class="e-ico">◌</div>
+        <h4>Nothing here</h4><p>Submissions appear as creators send work in.</p></div>`
+      :`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>Creator</th><th>Task</th><th>Event</th><th>Version</th><th>Status</th>
+          <th>Content</th><th class="num">Review</th></tr></thead>
+        <tbody>${rows.map(r=>`<tr>
+          <td class="t-main">${esc(r.creator_name)}<div class="t-sub">${esc(r.team?r.team.name:'—')}</div></td>
+          <td class="t-main">${esc(r.task_title)}</td>
+          <td class="small">${esc(r.event.title)}${r.event.date?`<div class="t-sub">${D.fmt(r.event.date)}</div>`:''}</td>
+          <td class="small">V${r.version_no}${r.versions>1?`<div class="t-sub">
+            <button class="btn xs ghost" data-act="cnHistory" data-aid="${r.assignment_id}">${r.versions} versions</button></div>`:''}</td>
+          <td>${cnSubPill(r.status)}${r.review_comment?`<div class="t-sub" style="white-space:normal;max-width:240px">${esc(r.review_comment)}</div>`:''}</td>
+          <td class="small"><a href="${esc(r.content_url)}" target="_blank" rel="noopener noreferrer">Open content ↗</a></td>
+          <td class="num nowrap">${CN_REVIEW.canReview&&r.status==='submitted'
+            ? `<button class="btn xs primary" data-act="cnReview" data-sid="${r.id}" data-o="approved">Approve</button>
+               <button class="btn xs" data-act="cnReview" data-sid="${r.id}" data-o="changes_requested">Changes</button>
+               <button class="btn xs ghost" data-act="cnReview" data-sid="${r.id}" data-o="rejected">Reject</button>`
+            : '<span class="mut3">—</span>'}</td></tr>`).join('')}
+        </tbody></table></div>`}
+    </div></div>`;
 }
 
 /* ── Open opportunities, from a creator's side ─────────────────────────── */
@@ -13548,6 +13634,90 @@ const ACTIONS = {
         if(r&&r.teams_unassigned&&r.teams_unassigned.length&&!(r&&r.new_lead))
           bits.push(r.teams_unassigned.map(t=>t.name).join(', ')+' now has no lead');
         toast(bits.join(' · '),'ok');});
+  },
+  /* ── Creator Network Phase 3 — submission and review ─────────────────
+     The creator sends a link; the server derives everything else. The review
+     buttons only appear on a version awaiting a verdict, and the server
+     re-checks that anyway. */
+  cnSubmitWork:(d)=>{
+    modal(`<div class="mo-head"><div><h2>Submit work</h2>
+        <p>${esc(d.title)} — this will be <b>V${esc(d.v)}</b>. Earlier versions are kept.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Content link <span class="req">*</span></label>
+          <input class="inp" id="sw-url" placeholder="https://drive.google.com/… or the published post">
+          <div class="hint">Anything reachable over https — Drive, YouTube, Instagram. Nerve stores the
+            link, never a copy, so make sure whoever reviews it can open it.</div></div>
+        <div class="field"><label class="lbl">Type</label>
+          <input class="inp" id="sw-type" placeholder="e.g. Reel, Vlog, Photo set"></div>
+        <div class="field"><label class="lbl">Notes for the reviewer</label>
+          <textarea class="inp" id="sw-note" placeholder="Anything they should know…"></textarea></div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="cnSubmitGo" data-tid="${d.tid}">Submit for review</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnSubmitGo:(d)=>{
+    const url=$('#sw-url').value.trim();
+    if(!/^https:\/\/\S+$/i.test(url)){toast('A valid https link is required','bad');return;}
+    const body={content_url:url, submission_type:$('#sw-type').value.trim()||null,
+      note:$('#sw-note').value.trim()};
+    closeModal();
+    MO_API.post('/creator/assignments/'+d.tid+'/submissions',body)
+      .then(r=>{toast(`Submitted as V${r.version_no} — it is with a reviewer now`,'ok');cnReload('tasks','review');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnHistory:(d)=>{
+    MO_API.get('/creator/assignments/'+d.aid+'/submissions').then(r=>{
+      const v=r.submissions||[];
+      modal(`<div class="mo-head"><div><h2>Submission history</h2>
+          <p>Every version is kept. Nothing here can be edited after the fact.</p></div>
+          <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+        <div class="mo-body">${v.map(x=>`
+          <div style="border-left:3px solid var(--border);padding:0 0 14px 14px;margin-bottom:4px">
+            <div class="f ac gap2 mb1"><b>V${x.version_no}</b>${cnSubPill(x.status)}
+              <span class="small mut3 ml-auto">${D.fmt(String(x.submitted_at).slice(0,10))}</span></div>
+            <div class="small"><a href="${esc(x.content_url)}" target="_blank" rel="noopener noreferrer">Open content ↗</a>
+              ${x.submission_type?` · ${esc(x.submission_type)}`:''}</div>
+            ${x.note?`<div class="small mut3 mt1">${esc(x.note)}</div>`:''}
+            ${x.review_comment?`<div class="small mt2" style="background:var(--surface-2);padding:8px 10px;border-radius:var(--r)">
+              <b>${esc(x.reviewer_name||'Reviewer')}</b>${x.reviewed_at?` · ${D.fmt(String(x.reviewed_at).slice(0,10))}`:''}
+              <div>${esc(x.review_comment)}</div></div>`:''}
+          </div>`).join('')||'<div class="empty" style="padding:20px"><p>No versions yet.</p></div>'}</div>
+        <div class="mo-foot"><button class="btn primary" onclick="closeModal()">Close</button></div>`);
+    }).catch(e=>toast(e.message,'bad'));
+  },
+  cnReviewFilter:(d,n)=>{CN_REVIEW.status=n.value;cnReload('review');},
+  cnReview:(d)=>{
+    /* Approving needs no justification; the other two owe the creator one, and
+       the server refuses them without it. */
+    if(d.o==='approved'){
+      MO_API.post('/creator/submissions/'+d.sid+'/review',{outcome:'approved'})
+        .then(()=>{toast('Approved','ok');cnReload('review','tasks');})
+        .catch(e=>toast(e.message,'bad'));
+      return;
+    }
+    const heading=d.o==='rejected'?'Not accepting this submission':'Request changes';
+    modal(`<div class="mo-head"><div><h2>${heading}</h2>
+        <p>${d.o==='rejected'?'The creator will see this reason, and the task closes to further versions.'
+          :'Say exactly what needs to change — the creator submits the next version against this.'}</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><div class="field"><label class="lbl">Comment <span class="req">*</span></label>
+        <textarea class="inp" id="rv-comment" rows="4"
+          placeholder="e.g. Please replace the opening shot and re-export at 1080p."></textarea></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn ${d.o==='rejected'?'danger':'primary'}" data-act="cnReviewGo"
+          data-sid="${d.sid}" data-o="${d.o}">${d.o==='rejected'?'Reject':'Request changes'}</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnReviewGo:(d)=>{
+    const comment=($('#rv-comment')||{}).value||'';
+    if(comment.trim().length<3){toast('A comment is required','bad');return;}
+    closeModal();
+    MO_API.post('/creator/submissions/'+d.sid+'/review',{outcome:d.o,comment})
+      .then(()=>{toast(d.o==='rejected'?'Recorded as not accepted':'Changes requested','ok');
+        cnReload('review','tasks');})
+      .catch(e=>toast(e.message,'bad'));
   },
   /* ── Creator Network Phase 2 ─────────────────────────────────────────
      Every button here names an intent; the server decides whether it is
