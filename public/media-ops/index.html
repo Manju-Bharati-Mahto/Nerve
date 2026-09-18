@@ -7786,6 +7786,19 @@ const CREATOR_STATE = {loaded:false, data:null, err:null};
 const CREATOR_LIST  = {loaded:false, rows:[], total:0, err:null,
                        f:{q:'', status:'all', role:'all', team_id:'all'}, offset:0};
 const CREATOR_PAGE  = 25;
+/* Phase 2 surfaces. Each loads once per render cycle and re-renders when it
+   arrives — the same pattern the directory uses. */
+const CN_EVENTS = {loaded:false, rows:[], err:null};
+const CN_TASKS  = {loaded:false, rows:[], err:null, status:'all'};
+const CN_OPPS   = {loaded:false, rows:[], err:null};
+const CN_EVENT  = {id:null, loaded:false, data:null, interests:[], err:null};
+function cnReload(...what){
+  if(what.includes('events')) CN_EVENTS.loaded=false;
+  if(what.includes('tasks'))  CN_TASKS.loaded=false;
+  if(what.includes('opps'))   CN_OPPS.loaded=false;
+  if(what.includes('event'))  CN_EVENT.loaded=false;
+  render();
+}
 
 function creatorReload(what){
   if(what==='state'){CREATOR_STATE.loaded=false;CREATOR_STATE.data=null;}
@@ -7818,11 +7831,22 @@ const cnStatus = s=>{const m=CN_STATUS[s]||CN_STATUS.inactive;
 /* ── A creator's own view (§12) ─────────────────────────────────────────── */
 function creatorSelfView(st){
   const p=st.profile||{};
+  const tab=S.tab.creator||'opps';
   return `
   <div class="page-head"><div>
     <h1 class="page-title">${esc(p.display_name||p.full_name||'My Creator Profile')}</h1>
     <div class="page-sub">Your standing in the Parul Creator Network.</div>
   </div></div>
+  <div class="tabs sec">
+    ${[['opps','Opportunities'],['tasks','My Tasks'],['profile','My Profile']].map(([k,l])=>
+      `<button class="tab ${tab===k?'on':''}" data-tab="${k}" data-tabkey="creator">${l}</button>`).join('')}
+  </div>
+  ${tab==='opps'?cnOppsTab():tab==='tasks'?cnTasksTab(false,true):creatorProfileCards(st)}`;
+}
+
+function creatorProfileCards(st){
+  const p=st.profile||{};
+  return `
   <div class="grid g2 sec">
     <div class="card"><div class="card-head"><h3>My profile</h3></div>
       <div class="card-body pad"><dl class="kv">
@@ -7854,6 +7878,7 @@ function creatorManageView(st){
         :'Your creator team.'}</div></div>
     ${manage?`<div class="page-actions">
       <button class="btn" data-act="crNewTeam">＋ Team</button>
+      <button class="btn" data-act="cnNewEvent">＋ Event</button>
       <button class="btn primary" data-act="crNewCreator">＋ Creator</button></div>`:''}
   </div>
   ${st.counts?`<div class="grid g4 sec">
@@ -7862,10 +7887,13 @@ function creatorManageView(st){
         <span class="stat-label">${l}</span><span class="stat-val">${c[k]||0}</span></span></div>`).join('')}
   </div>`:''}
   <div class="tabs sec">
-    <button class="tab ${tab==='creators'?'on':''}" data-tab="creators" data-tabkey="creator">Creators</button>
-    <button class="tab ${tab==='teams'?'on':''}" data-tab="teams" data-tabkey="creator">Teams</button>
+    ${[['creators','Creators'],['teams','Teams'],['events','Events'],['tasks','Tasks']].map(([k,l])=>
+      `<button class="tab ${tab===k?'on':''}" data-tab="${k}" data-tabkey="creator">${l}</button>`).join('')}
   </div>
-  ${tab==='teams'?creatorTeamsTab(st,manage):creatorDirectoryTab(st,manage)}`;
+  ${tab==='teams'?creatorTeamsTab(st,manage)
+   :tab==='events'?(CN_EVENT.id?cnEventDetail(manage):cnEventsTab(manage))
+   :tab==='tasks'?cnTasksTab(manage,false)
+   :creatorDirectoryTab(st,manage)}`;
 }
 
 /* ── Directory: filtered and paged on the SERVER ────────────────────────── */
@@ -7949,6 +7977,197 @@ function creatorTeamsTab(st,manage){
         <button class="btn xs" data-act="crEditTeam" data-tid="${t.id}">Edit</button>
         <button class="btn xs ghost" data-act="crTeamMembers" data-tid="${t.id}">Members</button></div>`:''}
     </div></div>`).join('')}</div>`;
+}
+
+/* ── Creator Network Phase 2 — events, opportunities, interest, tasks ──────
+   Interest and assignment are kept visibly apart here too: an opportunity card
+   shows "18 interested · 5 of 5 assigned", and selecting somebody is an action
+   an admin takes on an interest, not a state the creator reached by applying. */
+const CN_TASK = {
+  assigned:   {l:'Assigned',    c:'st-info'},
+  accepted:   {l:'Accepted',    c:'st-info'},
+  in_progress:{l:'In progress', c:'st-warn'},
+  completed:  {l:'Completed',   c:'st-success'},
+  declined:   {l:'Declined',    c:'st-neutral'},
+  cancelled:  {l:'Cancelled',   c:'st-neutral'},
+};
+const cnTaskPill = s=>{const m=CN_TASK[s]||CN_TASK.assigned;
+  return `<span class="status ${m.c}">${esc(m.l)}</span>`;};
+const CN_EV_STATUS = {draft:'Draft', open:'Open', closed:'Closed', completed:'Completed',
+                      cancelled:'Cancelled', archived:'Archived'};
+
+/* ── Events (manager) ─────────────────────────────────────────────────── */
+function cnEventsTab(manage){
+  if(!CN_EVENTS.loaded){
+    MO_API.get('/creator/events?limit=100')
+      .then(d=>{CN_EVENTS.rows=d.events||[];CN_EVENTS.err=null;})
+      .catch(e=>{CN_EVENTS.err=e.message;})
+      .finally(()=>{CN_EVENTS.loaded=true;render();});
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading events…</p></div></div>';
+  }
+  if(CN_EVENTS.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_EVENTS.err)}</p></div></div>`;
+  if(!CN_EVENTS.rows.length) return `<div class="card"><div class="empty" style="padding:40px">
+    <div class="e-ico">◎</div><h4>No events yet</h4>
+    <p>${manage?'Create an event and say what it needs — 5 reel creators, 2 vloggers, and so on.'
+      :'Nothing has been published to the network.'}</p>
+    ${manage?'<button class="btn primary mt3" data-act="cnNewEvent">＋ Event</button>':''}</div></div>`;
+  return `<div class="card"><div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th>Event</th><th>Date</th><th>Venue</th><th>Requirements</th><th>Status</th><th class="num"></th></tr></thead>
+    <tbody>${CN_EVENTS.rows.map(e=>`<tr class="click" data-act="cnViewEvent" data-eid="${e.id}">
+      <td class="t-main">${esc(e.title)}${e.unit_name?`<div class="t-sub">${esc(e.unit_name)}</div>`:''}</td>
+      <td class="small">${e.event_date?D.fmt(e.event_date):'—'}</td>
+      <td class="small">${esc(e.venue||'—')}</td>
+      <td class="small">${e.opportunities} role${e.opportunities===1?'':'s'}${e.required?` · ${e.required} needed`:''}</td>
+      <td><span class="chip ${e.status==='open'?'sel':''}">${esc(CN_EV_STATUS[e.status]||e.status)}</span></td>
+      <td class="num"><button class="btn xs" data-act="cnViewEvent" data-eid="${e.id}">Open</button></td>
+    </tr>`).join('')}</tbody></table></div></div></div>`;
+}
+
+/* ── One event: its requirements, and who wants them ──────────────────── */
+function cnEventDetail(manage){
+  if(!CN_EVENT.loaded){
+    Promise.all([
+      MO_API.get('/creator/events/'+CN_EVENT.id),
+      MO_API.get('/creator/interests?limit=200'),
+    ]).then(([d,i])=>{CN_EVENT.data=d;CN_EVENT.interests=i.interests||[];CN_EVENT.err=null;})
+      .catch(e=>{CN_EVENT.err=e.message;})
+      .finally(()=>{CN_EVENT.loaded=true;render();});
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading…</p></div></div>';
+  }
+  if(CN_EVENT.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_EVENT.err)}</p></div>
+    <div class="card-foot"><button class="btn xs" data-act="cnBackToEvents">← All events</button></div></div>`;
+  const d=CN_EVENT.data||{}, ev=d.event||{}, opps=d.opportunities||[];
+  return `
+  <div class="between mb3">
+    <button class="btn xs" data-act="cnBackToEvents">← All events</button>
+    ${manage?`<span class="f gap2">
+      ${ev.status==='draft'?`<button class="btn xs primary" data-act="cnEventStatus" data-eid="${ev.id}" data-to="open">Open event</button>`:''}
+      ${ev.status==='open'?`<button class="btn xs" data-act="cnEventStatus" data-eid="${ev.id}" data-to="closed">Close</button>`:''}
+      <button class="btn xs" data-act="cnAddOpp" data-eid="${ev.id}">＋ Requirement</button></span>`:''}
+  </div>
+  <div class="card mb4"><div class="card-body pad">
+    <div class="between"><div><b style="font-size:16px">${esc(ev.title)}</b>
+      <div class="small mut3">${[ev.event_date?D.fmt(ev.event_date):null, ev.venue, ev.unit_name]
+        .filter(Boolean).map(esc).join(' · ')||'—'}</div></div>
+      <span class="chip ${ev.status==='open'?'sel':''}">${esc(CN_EV_STATUS[ev.status]||ev.status)}</span></div>
+    ${ev.description?`<div class="small mt3">${esc(ev.description)}</div>`:''}
+  </div></div>
+  ${opps.length?opps.map(o=>cnOppCard(o,manage)).join(''):`<div class="card"><div class="empty" style="padding:30px">
+    <p>No requirements on this event yet.</p></div></div>`}`;
+}
+
+function cnOppCard(o,manage){
+  const mine=CN_EVENT.interests.filter(i=>i.opportunity_id===o.id);
+  const waiting=mine.filter(i=>i.status==='interested');
+  return `<div class="card mb4">
+    <div class="card-head"><h3>${esc(o.title)}${o.creator_type?` · ${esc(o.creator_type)}`:''}</h3>
+      <div class="ca f gap2 ac">
+        <span class="chip">${o.interested} interested</span>
+        <span class="chip ${o.assigned>=o.required_count?'sel':''}">${o.assigned} of ${o.required_count} assigned</span>
+        <span class="chip ${o.status==='open'?'sel':''}">${esc(o.status)}</span>
+        ${manage&&o.status==='draft'?`<button class="btn xs primary" data-act="cnOppStatus" data-oid="${o.id}" data-to="open">Open</button>`:''}
+        ${manage&&o.status==='open'?`<button class="btn xs" data-act="cnOppStatus" data-oid="${o.id}" data-to="closed">Close</button>`:''}
+      </div></div>
+    <div class="card-body ${waiting.length?'flush':'pad'}">
+      ${o.task_deadline?`<div class="hint" style="padding:8px 20px 0">Work due ${D.fmt(o.task_deadline)}</div>`:''}
+      ${!waiting.length?`<div class="small mut3">${mine.length?'Every interest has been decided.':'No interest yet.'}</div>`
+      :`<table class="tbl"><thead><tr><th>Creator</th><th>Team</th><th>Status</th><th>Raised</th>
+        ${manage?'<th class="num">Decision</th>':''}</tr></thead>
+        <tbody>${waiting.map(i=>`<tr>
+          <td class="t-main">${esc(i.display_name)}</td>
+          <td class="small">${esc(i.team_name||'—')}</td>
+          <td>${cnStatus(i.creator_status)}</td>
+          <td class="small">${D.fmt(String(i.created_at).slice(0,10))}</td>
+          ${manage?`<td class="num nowrap">
+            <button class="btn xs primary" data-act="cnSelect" data-oid="${o.id}" data-uid="${esc(i.user_id)}">Select</button>
+            <button class="btn xs ghost" data-act="cnReject" data-iid="${i.id}">Not selected</button></td>`:''}
+        </tr>`).join('')}</tbody></table>`}
+    </div></div>`;
+}
+
+/* ── Tasks (manager/lead see their scope; a creator sees their own) ────── */
+function cnTasksTab(manage,own){
+  if(!CN_TASKS.loaded){
+    const qs=CN_TASKS.status==='all'?'':'&status='+CN_TASKS.status;
+    MO_API.get('/creator/tasks?limit=200'+qs)
+      .then(d=>{CN_TASKS.rows=d.tasks||[];CN_TASKS.err=null;})
+      .catch(e=>{CN_TASKS.err=e.message;})
+      .finally(()=>{CN_TASKS.loaded=true;render();});
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading…</p></div></div>';
+  }
+  if(CN_TASKS.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_TASKS.err)}</p></div></div>`;
+  const rows=CN_TASKS.rows;
+  if(!rows.length) return `<div class="card"><div class="empty" style="padding:40px"><div class="e-ico">◌</div>
+    <h4>${own?'No work assigned yet':'No tasks'}</h4>
+    <p>${own?'Register interest in an open opportunity and a Creator Admin will take it from there.'
+      :'Assignments will appear here once creators are selected.'}</p></div></div>`;
+  return `<div class="card"><div class="card-head">
+      <h3>${own?'My tasks':'Tasks'}</h3>
+      <div class="ca"><select class="inp" style="width:auto;height:30px;font-size:12px"
+        onchange="ACTIONS.cnTaskFilter({},this)">
+        ${['all','assigned','accepted','in_progress','completed','declined','cancelled'].map(v=>
+          `<option value="${v}" ${CN_TASKS.status===v?'selected':''}>${v==='all'?'All':CN_TASK[v].l}</option>`).join('')}
+      </select></div></div>
+    <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
+      <thead><tr>${own?'':'<th>Creator</th>'}<th>Task</th><th>Event</th><th>Due</th><th>Status</th>
+        <th class="num">Actions</th></tr></thead>
+      <tbody>${rows.map(t=>`<tr>
+        ${own?'':`<td class="t-main">${esc(t.creator_name)}<div class="t-sub">${esc(t.team_name||'—')}</div></td>`}
+        <td class="t-main">${esc(t.title)}</td>
+        <td class="small">${esc(t.event_title)}${t.event_date?`<div class="t-sub">${D.fmt(t.event_date)}</div>`:''}</td>
+        <td class="small">${t.deadline?D.fmt(t.deadline):'—'}</td>
+        <td>${cnTaskPill(t.status)}</td>
+        <td class="num nowrap">${cnTaskActions(t,manage,own)}</td></tr>`).join('')}
+      </tbody></table></div></div></div>`;
+}
+
+/* The buttons offered are only ever the transitions the server would allow —
+   the same table, mirrored. It still re-checks. */
+function cnTaskActions(t,manage,own){
+  const b=[];
+  if(own){
+    if(t.status==='assigned') b.push(['accepted','Accept','primary'],['declined','Decline','ghost']);
+    if(t.status==='accepted') b.push(['in_progress','Start','primary'],['declined','Decline','ghost']);
+    if(t.status==='in_progress') b.push(['completed','Mark complete','primary']);
+  }
+  if(manage&&!['completed','declined','cancelled'].includes(t.status))
+    b.push(['cancelled','Cancel','ghost']);
+  return b.map(([to,l,c])=>`<button class="btn xs ${c==='primary'?'primary':'ghost'}"
+    data-act="cnTaskMove" data-tid="${t.id}" data-to="${to}">${l}</button>`).join(' ')||'<span class="mut3">—</span>';
+}
+
+/* ── Open opportunities, from a creator's side ─────────────────────────── */
+function cnOppsTab(){
+  if(!CN_OPPS.loaded){
+    MO_API.get('/creator/opportunities?limit=100')
+      .then(d=>{CN_OPPS.rows=d.opportunities||[];CN_OPPS.err=null;})
+      .catch(e=>{CN_OPPS.err=e.message;})
+      .finally(()=>{CN_OPPS.loaded=true;render();});
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading opportunities…</p></div></div>';
+  }
+  if(CN_OPPS.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_OPPS.err)}</p></div></div>`;
+  if(!CN_OPPS.rows.length) return `<div class="card"><div class="empty" style="padding:40px">
+    <div class="e-ico">◌</div><h4>Nothing open right now</h4>
+    <p>New opportunities appear here as soon as the network publishes them.</p></div></div>`;
+  return `<div class="grid g2 sec">${CN_OPPS.rows.map(o=>{
+    const full=o.assigned>=o.required_count;
+    return `<div class="card"><div class="card-body pad">
+      <div class="between mb2"><b>${esc(o.title)}</b>
+        <span class="chip">${o.assigned}/${o.required_count} filled</span></div>
+      <div class="small mut3 mb2">${esc(o.event_title)}${o.event_date?` · ${D.fmt(o.event_date)}`:''}
+        ${o.event_venue?` · ${esc(o.event_venue)}`:''}</div>
+      ${o.description?`<div class="small mb3">${esc(o.description)}</div>`:''}
+      ${o.task_deadline?`<div class="hint mb3">Work due ${D.fmt(o.task_deadline)}</div>`:''}
+      <div class="f ac gap2">
+        ${o.my_assignment?`<span class="status st-success"><span class="si">✓</span>Assigned to you</span>`
+        :o.my_interest==='selected'?'<span class="status st-success"><span class="si">✓</span>Selected</span>'
+        :o.my_interest==='not_selected'?'<span class="status st-neutral"><span class="si">◌</span>Not selected</span>'
+        :o.my_interest==='interested'?`<span class="status st-info"><span class="si">◔</span>Interest registered</span>
+           <button class="btn xs ghost" data-act="cnWithdraw" data-oid="${o.id}">Withdraw</button>`
+        :full?'<span class="chip mut3">Fully assigned</span>'
+        :`<button class="btn xs primary" data-act="cnInterest" data-oid="${o.id}">I'm interested</button>`}
+      </div>
+    </div></div>`;}).join('')}</div>`;
 }
 
 /* ── Re-adding someone who was removed ─────────────────────────────────────
@@ -13329,6 +13548,165 @@ const ACTIONS = {
         if(r&&r.teams_unassigned&&r.teams_unassigned.length&&!(r&&r.new_lead))
           bits.push(r.teams_unassigned.map(t=>t.name).join(', ')+' now has no lead');
         toast(bits.join(' · '),'ok');});
+  },
+  /* ── Creator Network Phase 2 ─────────────────────────────────────────
+     Every button here names an intent; the server decides whether it is
+     allowed and what it means. Nothing below sends a creator id — the two
+     creator-side actions (interest, task transitions) are written from the
+     session, which is why there is nothing to forge. */
+  cnNewEvent:()=>{
+    modal(`<div class="mo-head"><div><h2>New creator event</h2>
+        <p>Describe the event, then say what it needs. It stays a draft until you open it.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Event name <span class="req">*</span></label>
+          <input class="inp" id="ce-title" placeholder="e.g. Navratri 2026"></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Event date</label><input class="inp" type="date" id="ce-date"></div>
+          <div class="field"><label class="lbl">Venue</label><input class="inp" id="ce-venue" placeholder="e.g. Campus Ground"></div>
+        </div>
+        <div class="row">
+          <div class="field"><label class="lbl">Start time</label><input class="inp" type="time" id="ce-start"></div>
+          <div class="field"><label class="lbl">End time</label><input class="inp" type="time" id="ce-end"></div>
+        </div>
+        <div class="field"><label class="lbl">Description</label>
+          <textarea class="inp" id="ce-desc" placeholder="What the coverage is for…"></textarea></div>
+        <div class="field">
+          <div class="between mb2"><label class="lbl" style="margin:0">Creator requirements</label>
+            <button type="button" class="btn xs" data-act="cnAddOppRow">＋ Add requirement</button></div>
+          <div id="ce-opps"><div class="ce-empty small mut3" style="padding:8px 0">None yet.</div></div>
+          <div class="hint">The event date and the work deadline are separate — set the deadline per requirement.</div></div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="cnEventGo">Create event</button></div>`,{size:'wide'});
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnAddOppRow:()=>{
+    const box=$('#ce-opps'); if(!box)return;
+    const e=box.querySelector('.ce-empty'); if(e)e.remove();
+    const row=document.createElement('div');
+    row.className='ce-opp';
+    row.style.cssText='border:1px solid var(--border);border-radius:var(--r);padding:10px;margin-bottom:8px;background:var(--surface-2)';
+    row.innerHTML=`<div class="f gap2 ac mb2">
+        <input class="inp co-title" placeholder="e.g. Reel Creator" style="flex:1">
+        <button type="button" class="icon-btn co-del" style="color:var(--danger)" title="Remove">🗑</button></div>
+      <div class="f gap2 wrap ac">
+        <input class="inp co-type" placeholder="Type (Reels, Vlogs…)" style="width:170px;height:30px;font-size:12px">
+        <span class="f ac gap1"><span class="xsmall mut3">Need</span>
+          <input class="inp co-count" type="number" min="1" max="999" value="1"
+            style="width:64px;height:30px;font-size:12px;text-align:center"></span>
+        <span class="f ac gap1"><span class="xsmall mut3">Work due</span>
+          <input class="inp co-due" type="date" style="width:auto;height:30px;font-size:12px"></span>
+      </div>`;
+    row.querySelector('.co-del').onclick=()=>{row.remove();
+      if(!box.querySelectorAll('.ce-opp').length)
+        box.innerHTML='<div class="ce-empty small mut3" style="padding:8px 0">None yet.</div>';};
+    box.appendChild(row);
+    row.querySelector('.co-title').focus();
+  },
+  cnEventGo:()=>{
+    const title=$('#ce-title').value.trim();
+    if(title.length<3){toast('An event name is required','bad');return;}
+    const opportunities=$$('#ce-opps .ce-opp').map(r=>({
+      title:(r.querySelector('.co-title').value||'').trim(),
+      creator_type:(r.querySelector('.co-type').value||'').trim()||null,
+      required_count:+(r.querySelector('.co-count').value||1)||1,
+      task_deadline:r.querySelector('.co-due').value||null,
+    })).filter(o=>o.title);
+    const body={title, description:$('#ce-desc').value.trim(),
+      event_date:$('#ce-date').value||null, venue:$('#ce-venue').value.trim()||null,
+      start_time:$('#ce-start').value||null, end_time:$('#ce-end').value||null, opportunities};
+    closeModal();
+    MO_API.post('/creator/events',body)
+      .then(r=>{toast(`${title} created${r.opportunities_created?` · ${r.opportunities_created} requirement(s)`:''} — open it when ready`,'ok');
+        cnReload('events');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnViewEvent:(d)=>{CN_EVENT.id=+d.eid;CN_EVENT.loaded=false;S.tab.creator='events';render();},
+  cnBackToEvents:()=>{CN_EVENT.id=null;CN_EVENT.data=null;cnReload('events');},
+  cnEventStatus:(d)=>{
+    MO_API.patch('/creator/events/'+d.eid,{status:d.to})
+      .then(()=>{toast('Event '+d.to,'ok');cnReload('event','events');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnOppStatus:(d)=>{
+    MO_API.patch('/creator/opportunities/'+d.oid,{status:d.to})
+      .then(()=>{toast('Requirement '+d.to,'ok');cnReload('event');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnAddOpp:(d)=>{
+    modal(`<div class="mo-head"><div><h2>Add requirement</h2>
+        <p>What this event needs, and how many.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Title <span class="req">*</span></label>
+          <input class="inp" id="ao-title" placeholder="e.g. Event Photographer"></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Creator type</label><input class="inp" id="ao-type" placeholder="e.g. Photography"></div>
+          <div class="field"><label class="lbl">How many <span class="req">*</span></label>
+            <input class="inp" type="number" id="ao-count" min="1" max="999" value="1"></div>
+        </div>
+        <div class="field"><label class="lbl">Work deadline</label><input class="inp" type="date" id="ao-due"></div>
+        <div class="field"><label class="lbl">Description</label><textarea class="inp" id="ao-desc"></textarea></div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="cnAddOppGo" data-eid="${d.eid}">Add</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnAddOppGo:(d)=>{
+    const title=$('#ao-title').value.trim();
+    if(title.length<2){toast('A title is required','bad');return;}
+    const body={event_id:+d.eid, title, creator_type:$('#ao-type').value.trim()||null,
+      required_count:+$('#ao-count').value||1, task_deadline:$('#ao-due').value||null,
+      description:$('#ao-desc').value.trim()};
+    closeModal();
+    MO_API.post('/creator/opportunities',body)
+      .then(()=>{toast(title+' added','ok');cnReload('event');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  /* Selecting is the moment interest becomes work. One call makes both records. */
+  cnSelect:(d)=>{
+    MO_API.post('/creator/assignments',{opportunity_id:+d.oid, user_id:String(d.uid)})
+      .then(()=>{toast('Selected and assigned','ok');cnReload('event','tasks');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnReject:(d)=>{
+    MO_API.post('/creator/interests/'+d.iid+'/reject',{})
+      .then(()=>{toast('Recorded as not selected','ok');cnReload('event');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnTaskFilter:(d,n)=>{CN_TASKS.status=n.value;cnReload('tasks');},
+  cnTaskMove:(d)=>{
+    const go=(reason)=>MO_API.patch('/creator/assignments/'+d.tid,
+        Object.assign({status:d.to}, reason?{reason}:{}))
+      .then(()=>{toast('Task '+CN_TASK[d.to].l.toLowerCase(),'ok');cnReload('tasks','event');})
+      .catch(e=>toast(e.message,'bad'));
+    if(d.to!=='declined')return go();
+    modal(`<div class="mo-head"><div><h2>Decline this assignment</h2>
+        <p>The record is kept either way — a reason helps whoever reassigns it.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><div class="field"><label class="lbl">Reason</label>
+        <textarea class="inp" id="dc-reason" placeholder="e.g. Exams that week"></textarea></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn danger" data-act="cnDeclineGo" data-tid="${d.tid}">Decline</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnDeclineGo:(d)=>{
+    const reason=($('#dc-reason')||{}).value||'';
+    closeModal();
+    MO_API.patch('/creator/assignments/'+d.tid,{status:'declined',reason})
+      .then(()=>{toast('Assignment declined','ok');cnReload('tasks','event');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnInterest:(d)=>{
+    MO_API.post('/creator/opportunities/'+d.oid+'/interest',{})
+      .then(()=>{toast("Interest registered — you'll hear if you're selected",'ok');cnReload('opps');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnWithdraw:(d)=>{
+    MO_API.del('/creator/opportunities/'+d.oid+'/interest')
+      .then(()=>{toast('Interest withdrawn','ok');cnReload('opps');})
+      .catch(e=>toast(e.message,'bad'));
   },
   /* ── Creator Network ──────────────────────────────────────────────────
      Every one of these posts to a scoped endpoint that re-checks the caller;

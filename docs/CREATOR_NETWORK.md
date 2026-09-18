@@ -1,8 +1,8 @@
 # Nerve Creator Network — Architecture
 
 > Living document. Reference for every Creator Network phase.
-> Status: **Phase 1 complete** — directory, teams and hierarchy are live.
-> Phase 2 (events and tasks) has not started.
+> Status: **Phase 2 complete** — events, opportunities, interest, selection,
+> assignment and tasks are live. Phase 3 (content submission) has not started.
 
 Parul University runs a creator network: an incentive-based content workforce
 producing reels, shorts, vlogs, event and campus content, paid in points, ranks
@@ -272,7 +272,7 @@ onto it. Media Ops `/state` was not touched.
 |---|---|
 | **0 ✅** | Architecture, identity, roles, teams, RBAC, scope, nav, API foundation |
 | **1 ✅** | Creator directory, creator teams, hierarchy, scoped shell |
-| 2 | Events, tasks, interest, assignment |
+| **2 ✅** | Events, opportunities, interest, selection, assignment, tasks |
 | 3 | Content submission + review workflow |
 | 4 | Points, point ledger, rank engine, cycles |
 | 5 | Payouts, financial ledger, audit |
@@ -312,3 +312,136 @@ creator admin, creator admin → Nerve Admin, and module grant → creator role.
 `mo_creator_profiles.user_id`, scoped through `creatorScopeOf()`, with interest
 registration and assignment as separate steps. Nothing in Phase 1 needs to
 change first.
+
+---
+
+## PHASE 2 — events → opportunity → interest → selection → assignment → task
+
+### The rule the phase turns on
+
+**Interest is not assignment.** A creator raising a hand is a claim; being
+chosen is a decision somebody makes; the assignment is its consequence. Three
+records, three actors, three timestamps — so months later the network can still
+answer *who applied, who was chosen, and who was passed over*.
+
+The counts on an opportunity card say it out loud: `18 interested · 5 of 5
+assigned`.
+
+### Why these are new tables
+
+Two reuse paths were checked and both are blocked by evidence, not preference:
+
+- **`mo_projects`** feeds the production pipeline, the dashboard and the office
+  TV board. A creator event put there would appear on all three.
+- **`mo_assignments.project_id` is `NOT NULL`** against `mo_projects`, so
+  creator work could only live there by dropping a constraint on a live Media
+  Ops table.
+
+A test asserts no creator event reaches either table.
+
+### Entities
+
+| Table | Holds |
+|---|---|
+| `mo_creator_events` | the event — title, unit, venue, date, times, status |
+| `mo_creator_opportunities` | what it needs — title, creator type, **required_count**, task deadline, status |
+| `mo_creator_interests` | a claim and its decision — status, `decided_by`, `decided_at` |
+| `mo_creator_assignments` | **the assignment, which is also the task** |
+
+```
+mo_creator_events 1─* mo_creator_opportunities ─┬─* mo_creator_interests
+                                                └─* mo_creator_assignments
+```
+
+**Assignment and task are one row.** In this phase they are strictly 1:1 — same
+creator, same opportunity, one shared lifecycle — so a separate task table would
+repeat every column and add no fact. Selection and assignment, which *are*
+different events, stay separate. If a later phase needs several tasks per
+assignment, a child table can be added without disturbing any of this.
+
+### State machines
+
+Controlled server-side. The client names a **transition**, never a status.
+
+```
+event        draft → open → closed → completed → archived   (cancelled from most)
+opportunity  draft → open → closed                          (cancelled from most)
+interest     interested → withdrawn | selected | not_selected
+assignment   assigned → accepted → in_progress → completed
+                    ↘ declined (from assigned or accepted)
+                    ↘ cancelled (manager only)
+```
+
+Nothing leads out of `declined` or `completed`. **A declined task can never
+become a completed one** — it takes a fresh assignment, which the partial unique
+index permits because it only covers live rows.
+
+Who may move what: the creator owns `accepted`, `in_progress`, `completed` and
+`declined` on their own row; a manager may only `cancel`. A suspended creator
+cannot move anything, even work already assigned to them.
+
+### Ownership is not a field
+
+The two creator-side writes — registering interest, and moving a task — take
+**no creator id at all**. The row is written from the session. That is stronger
+than validating an id, because there is nothing to forge. `assigned_by` and
+`team_id` are resolved server-side too; sending them changes nothing.
+
+### Integrity in the database, not the form
+
+- one **live** interest per creator per opportunity (partial unique index, so a
+  withdrawal frees them to re-apply and the withdrawn row is kept)
+- one **live** assignment per creator per opportunity (declined and cancelled
+  rows stay as history and do not block reassignment)
+- assignment only to an **active** network member
+
+### Dates
+
+`event_date` and `task_deadline` are separate fields and separate concepts — the
+festival is on the 20th, the reels are due on the 22nd. Every DATE is returned
+through `dOnly()`, and a test asserts both survive the round trip unshifted.
+
+### API
+
+| Endpoint | Does |
+|---|---|
+| `GET/POST /creator/events` · `GET/PATCH /creator/events/:id` | events, with requirements creatable inline |
+| `GET/POST /creator/opportunities` · `PATCH /creator/opportunities/:id` | requirements |
+| `POST/DELETE /creator/opportunities/:id/interest` | register / withdraw — **no id in the payload** |
+| `GET /creator/interests` | scoped; `opportunity_id`, `status` |
+| `POST /creator/interests/:id/reject` | records `not_selected`, never deletes |
+| `POST /creator/assignments` | **selection** — marks the interest and creates the task |
+| `GET /creator/tasks` · `PATCH /creator/assignments/:id` | the work, and its transitions |
+
+Opportunities are a **noticeboard**: every active creator may read what is open.
+Interests and tasks are private and scoped.
+
+### Audit and notifications
+
+`mo_audit_logs` and `mo_notifications`, both existing. Events, opportunities,
+interests, assignments and every task transition are logged with actor, action,
+entity and timestamp.
+
+**A bug this phase found and fixed:** `mo_audit_actor_role_chk` allowed only
+`admin | team_lead | employee | system`, and `audit()` wrote the raw platform
+role for anyone outside those tiers. A creator's `'user'` violated the CHECK,
+`audit()` swallows its own errors — so **every creator-initiated action was
+going unlogged**. The vocabulary now includes `'creator'`, and an unrecognised
+role writes `NULL` so the insert can never silently fail again.
+
+---
+
+## PHASE 2 COMPLETE
+
+**Implementation notes**
+
+- No change to Phase 0 or Phase 1 behaviour; the only edit outside new code was
+  the audit vocabulary fix above.
+- The bootstrap's constraint widening is a single `DO $$` statement with a
+  duplicate-object guard, so parallel boots cannot race between drop and add.
+- A Team Lead reads their team's interests and tasks but cannot assign in this
+  phase — §5 gives selection to Creator Admin. Widening it is a one-line change.
+
+**Phase 3 starts here:** content submission against a **completed** task —
+`mo_creator_assignments.id` is the anchor — then review and approval. Nothing in
+Phase 2 needs to change first.

@@ -1655,6 +1655,140 @@ export async function bootstrapCreatorNetwork() {
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_creator_primary_team
                     ON mo_creator_team_members(user_id) WHERE is_primary`);
 
+  /* AUDIT VOCABULARY — a Creator Network member is none of the Media Ops tiers, so every action
+     they took was writing actor_role='user' — which this CHECK rejected, and
+     audit() swallows its own errors, so their trail was silently EMPTY.
+     'creator' is admitted rather than mapping them onto 'employee', because a
+     creator is deliberately not one. Widening a CHECK touches no existing row. */
+  /* One statement, so a second process booting at the same moment cannot land
+     between the drop and the add — and it re-checks whether the widening is
+     already in place, so a rerun is a no-op rather than a churn. */
+  await pool.query(`DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                    WHERE conname='mo_audit_actor_role_chk'
+                      AND pg_get_constraintdef(oid) LIKE '%creator%') THEN
+      ALTER TABLE mo_audit_logs DROP CONSTRAINT IF EXISTS mo_audit_actor_role_chk;
+      ALTER TABLE mo_audit_logs ADD CONSTRAINT mo_audit_actor_role_chk
+        CHECK (actor_role IS NULL OR actor_role IN ('admin','team_lead','employee','system','creator'));
+    END IF;
+  EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+
+  /* ── Phase 2: events → opportunities → interest → assignment/task ────────
+     WHY THESE ARE NEW TABLES, not the Media Ops ones they resemble:
+
+       mo_projects  feeds the production pipeline, the dashboard and the office
+                    TV board. A creator event put there would appear on all
+                    three — a visible regression, not a tidy reuse.
+       mo_assignments.project_id is NOT NULL against mo_projects, so creator
+                    work could only live there by dropping a constraint on a
+                    live Media Ops table.
+
+     So the boundary is explicit, as Phase 0 made it for identity.
+
+     ASSIGNMENT AND TASK ARE ONE ROW. In this phase they are strictly 1:1 — the
+     same creator, the same opportunity, one shared lifecycle — so a separate
+     task table would repeat every column and add no fact. Selection and
+     assignment, which ARE different events, stay separate: the interest keeps
+     the decision, the assignment is its operational consequence. If a later
+     phase needs several tasks per assignment, a child table can be added
+     without disturbing any of this. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_events (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      academic_unit_id BIGINT REFERENCES mo_academic_units(id),
+      venue TEXT,
+      event_date DATE,
+      start_time TEXT, end_time TEXT,
+      status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft','open','closed','completed','cancelled','archived')),
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_events_status ON mo_creator_events(status, event_date)`);
+
+  /* What the event needs, and how many of them. Kept apart from the event
+     because a future phase attaches points, payout rules and submission rules
+     HERE, not to the event. creator_type is free text from the admin — the
+     network invents roles faster than a CHECK constraint could follow. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_opportunities (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      event_id BIGINT NOT NULL REFERENCES mo_creator_events(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      creator_type TEXT,
+      description TEXT NOT NULL DEFAULT '',
+      required_count INTEGER NOT NULL DEFAULT 1 CHECK (required_count > 0),
+      starts_at_time TEXT, ends_at_time TEXT,
+      venue TEXT,
+      -- The event happens on one day; the work is often due on another (§17).
+      task_deadline DATE,
+      status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft','open','closed','cancelled')),
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_opps_event ON mo_creator_opportunities(event_id, status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_opps_open ON mo_creator_opportunities(status) WHERE status='open'`);
+
+  /* Interest is a claim, not a promise of work. It keeps its own decision
+     history — who asked, when, what was decided and by whom — so "who was
+     considered and passed over" survives even after the assignment exists. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_interests (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      opportunity_id BIGINT NOT NULL REFERENCES mo_creator_opportunities(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'interested'
+        CHECK (status IN ('interested','withdrawn','selected','not_selected')),
+      note TEXT NOT NULL DEFAULT '',
+      decided_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      decided_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  /* One LIVE interest per creator per opportunity, enforced by the database
+     rather than by the form. A withdrawn interest does not block re-applying,
+     and the withdrawn row is kept. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_interest_live
+                    ON mo_creator_interests(opportunity_id, user_id) WHERE status <> 'withdrawn'`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_interest_user ON mo_creator_interests(user_id, status)`);
+
+  /* The assignment IS the task — see the note above. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_assignments (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      opportunity_id BIGINT NOT NULL REFERENCES mo_creator_opportunities(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      -- Resolved from the creator's own membership at assignment time, never
+      -- taken from the request, and kept so history survives a team move.
+      team_id BIGINT REFERENCES mo_creator_teams(id) ON DELETE SET NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      deadline DATE,
+      scheduled_date DATE,
+      status TEXT NOT NULL DEFAULT 'assigned'
+        CHECK (status IN ('assigned','accepted','in_progress','completed','declined','cancelled')),
+      decline_reason TEXT,
+      assigned_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      accepted_at TIMESTAMPTZ, started_at TIMESTAMPTZ,
+      completed_at TIMESTAMPTZ, declined_at TIMESTAMPTZ, cancelled_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  // One LIVE assignment per creator per opportunity; declined and cancelled
+  // rows stay as history and do not block a reassignment.
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_assign_live
+                    ON mo_creator_assignments(opportunity_id, user_id)
+                    WHERE status NOT IN ('declined','cancelled')`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_assign_user ON mo_creator_assignments(user_id, status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_assign_team ON mo_creator_assignments(team_id, status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_assign_deadline ON mo_creator_assignments(deadline)
+                    WHERE status NOT IN ('completed','declined','cancelled')`);
+
   /* SECURITY — this row is not optional.
 
      effectiveModules() returns null when a group has no defaults row, and

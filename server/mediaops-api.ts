@@ -377,7 +377,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       await pool.query(
         `INSERT INTO mo_audit_logs (actor_id, actor_role, action, entity_type, entity_id, before, after, ip, user_agent)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [actor.id, moRoleOf(actor) ?? actor.role /* D4: one role vocabulary in the trail */, action, entityType, entityId,
+        /* D4: one role vocabulary in the trail. A Creator Network member has no
+           Media Ops tier, so they are recorded as 'creator' rather than as the
+           raw platform role — which the CHECK rejects, silently costing us
+           their entire trail. Anything still unrecognised is written NULL, so
+           an unknown role can never make the insert fail again. */
+        [actor.id, moRoleOf(actor) ?? (actor.team === "creator" ? "creator" : null), action, entityType, entityId,
          before ? JSON.stringify(before) : null, after ? JSON.stringify(after) : null,
          req.ip ?? null, (req.headers["user-agent"] as string) ?? null],
       );
@@ -5779,6 +5784,577 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!r.rowCount) return sendError(res, 404, "That creator is not on this team.");
     await audit(u, "creator.team_left", "creator_team", id, { user_id: userId, team_id: id }, null, req);
     res.json({ ok: true });
+  }));
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     CREATOR NETWORK — Phase 2: events → opportunities → interest → assignment
+
+     The rule the whole phase turns on: INTEREST IS NOT ASSIGNMENT. A creator
+     raising a hand is a claim; being chosen is a decision somebody makes; the
+     assignment is its consequence. Three records, three timestamps, three
+     actors — so "who was considered and passed over" is still answerable
+     months later.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /* Controlled state machines. The client never sends a status it invents —
+     it names a transition, and these decide whether it is legal. */
+  const EVENT_FLOW: Record<string, string[]> = {
+    draft: ["open", "cancelled", "archived"],
+    open: ["closed", "cancelled"],
+    closed: ["open", "completed", "cancelled"],
+    completed: ["archived"],
+    cancelled: ["archived"],
+    archived: [],
+  };
+  const OPP_FLOW: Record<string, string[]> = {
+    draft: ["open", "cancelled"],
+    open: ["closed", "cancelled"],
+    closed: ["open", "cancelled"],
+    cancelled: [],
+  };
+  /* Who may move an assignment, and to where. The creator owns the middle of
+     this; an admin may only cancel. Note what is absent: nothing leads out of
+     'declined' or 'completed', so a declined task can never quietly become a
+     completed one — it takes a fresh assignment. */
+  const ASSIGN_FLOW: Record<string, Array<{ to: string; by: "creator" | "manager" }>> = {
+    assigned:    [{ to: "accepted", by: "creator" }, { to: "declined", by: "creator" },
+                  { to: "cancelled", by: "manager" }],
+    accepted:    [{ to: "in_progress", by: "creator" }, { to: "declined", by: "creator" },
+                  { to: "cancelled", by: "manager" }],
+    in_progress: [{ to: "completed", by: "creator" }, { to: "cancelled", by: "manager" }],
+    completed:   [],
+    declined:    [],
+    cancelled:   [],
+  };
+
+  const notifyCreator = async (userId: string, kind: string, title: string, body: string,
+                               entity: string, entityId: number | null) => {
+    try {
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,$2,$3,$4,$5,$6)`, [userId, kind, title, body, entity, entityId]);
+    } catch { /* a notification must never break the workflow */ }
+  };
+
+  /** The creator's own live team, resolved from their membership — never from
+      the request. Stamped onto an assignment so history survives a team move. */
+  const creatorTeamOf = async (userId: string): Promise<number | null> => {
+    const r = (await pool.query(
+      `SELECT team_id FROM mo_creator_team_members WHERE user_id=$1 AND is_primary`, [userId])).rows[0];
+    return r ? Number(r.team_id) : null;
+  };
+
+  /** An ACTIVE network member, or null. The one check every creator-side
+      action starts from: suspension and archiving must not be escapable. */
+  const activeCreator = async (userId: string) => (await pool.query(
+    `SELECT user_id, creator_role FROM mo_creator_profiles WHERE user_id=$1 AND status='active'`,
+    [userId])).rows[0] ?? null;
+
+  /* ── Events ─────────────────────────────────────────────────────────────
+     Opportunities are a noticeboard: every active creator may read what is
+     OPEN, which is the point of the phase. Drafts, closed and cancelled work
+     stays with the people who run the network. Interests and assignments —
+     the private half — are scoped separately below. */
+  app.get(`${P}/creator/events`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const scope = await creatorScopeOf(u);
+    const manage = isMoAdmin(u) || (await creatorRoleOf(u)) === "creator_admin";
+    const q = req.query as Record<string, string>;
+    const params: unknown[] = [];
+    let where = "";
+
+    if (!manage && scope.level !== "team") {
+      /* A creator sees an event that is open for applications, or one they are
+         already involved in — never the whole calendar. */
+      params.push(u.id);
+      where = ` AND (e.status='open' OR EXISTS (
+        SELECT 1 FROM mo_creator_opportunities o
+          LEFT JOIN mo_creator_interests i  ON i.opportunity_id = o.id AND i.user_id = $1
+          LEFT JOIN mo_creator_assignments a ON a.opportunity_id = o.id AND a.user_id = $1
+         WHERE o.event_id = e.id AND (i.id IS NOT NULL OR a.id IS NOT NULL)))`;
+    }
+    if (q.status && q.status !== "all") { params.push(q.status); where += ` AND e.status = $${params.length}`; }
+    else if (!manage) where += ` AND e.status <> 'archived'`;
+
+    const limit = Math.min(100, Math.max(1, Number(q.limit) || 50));
+    const offset = Math.max(0, Number(q.offset) || 0);
+    const total = (await pool.query(
+      `SELECT COUNT(*)::int n FROM mo_creator_events e WHERE true${where}`, params)).rows[0].n;
+    params.push(limit, offset);
+    const { rows } = await pool.query(
+      `SELECT e.*, au.name AS unit_name,
+              (SELECT COUNT(*)::int FROM mo_creator_opportunities o WHERE o.event_id=e.id) AS opportunities,
+              (SELECT COALESCE(SUM(o.required_count),0)::int FROM mo_creator_opportunities o
+                WHERE o.event_id=e.id AND o.status<>'cancelled') AS required
+         FROM mo_creator_events e
+         LEFT JOIN mo_academic_units au ON au.id = e.academic_unit_id
+        WHERE true${where}
+        ORDER BY e.event_date DESC NULLS LAST, e.id DESC
+        LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+    res.json({
+      events: rows.map((e) => ({ ...e, id: Number(e.id), event_date: dOnly(e.event_date) })),
+      total, limit, offset, can_manage: manage,
+    });
+  }));
+
+  app.get(`${P}/creator/events/:id`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const manage = isMoAdmin(u) || (await creatorRoleOf(u)) === "creator_admin";
+    const id = Number(getSingleParam(req.params.id));
+    const e = (await pool.query(
+      `SELECT e.*, au.name AS unit_name FROM mo_creator_events e
+         LEFT JOIN mo_academic_units au ON au.id = e.academic_unit_id WHERE e.id=$1`, [id])).rows[0];
+    if (!e) return sendError(res, 404, "Event not found.");
+    if (!manage && ["draft", "archived"].includes(String(e.status)))
+      return sendError(res, 404, "Event not found.");
+
+    /* Opportunities with the three counts that matter, computed in SQL. The
+       creator's own standing rides along so the page needs one call. */
+    const opps = (await pool.query(
+      `SELECT o.*,
+              (SELECT COUNT(*)::int FROM mo_creator_interests i
+                WHERE i.opportunity_id=o.id AND i.status='interested')    AS interested,
+              (SELECT COUNT(*)::int FROM mo_creator_interests i
+                WHERE i.opportunity_id=o.id AND i.status='selected')      AS selected,
+              (SELECT COUNT(*)::int FROM mo_creator_assignments a
+                WHERE a.opportunity_id=o.id AND a.status NOT IN ('declined','cancelled')) AS assigned,
+              (SELECT i.status FROM mo_creator_interests i
+                WHERE i.opportunity_id=o.id AND i.user_id=$2 AND i.status<>'withdrawn' LIMIT 1) AS my_interest,
+              (SELECT a.status FROM mo_creator_assignments a
+                WHERE a.opportunity_id=o.id AND a.user_id=$2 LIMIT 1) AS my_assignment
+         FROM mo_creator_opportunities o
+        WHERE o.event_id=$1 ${manage ? "" : "AND o.status <> 'draft'"}
+        ORDER BY o.id`, [id, u.id])).rows;
+    res.json({
+      event: { ...e, id: Number(e.id), event_date: dOnly(e.event_date) },
+      opportunities: opps.map((o) => ({ ...o, id: Number(o.id), event_id: Number(o.event_id),
+        task_deadline: dOnly(o.task_deadline) })),
+      can_manage: manage,
+    });
+  }));
+
+  app.post(`${P}/creator/events`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const b = req.body as Record<string, unknown>;
+    const title = String(b.title ?? "").trim();
+    if (title.length < 3 || title.length > 140) return sendError(res, 400, "A title of 3–140 characters is required.");
+    const unit = b.academic_unit_id ? Number(b.academic_unit_id) : null;
+    if (unit !== null && !(await pool.query(`SELECT 1 FROM mo_academic_units WHERE id=$1`, [unit])).rows[0])
+      return sendError(res, 400, "Unknown academic unit.");
+    const { rows } = await pool.query(
+      `INSERT INTO mo_creator_events (title, description, academic_unit_id, venue, event_date,
+         start_time, end_time, status, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',$8) RETURNING *`,
+      [title, String(b.description ?? ""), unit, (b.venue as string) || null,
+       (b.event_date as string) || null, (b.start_time as string) || null, (b.end_time as string) || null, u.id]);
+    const id = Number(rows[0].id);
+    await audit(u, "creator_event.created", "creator_event", id, null, { title }, req);
+
+    /* Opportunities can arrive with the event — one form, one action, which is
+       how an admin actually thinks about "this event needs 5 reels and 2 vlogs". */
+    let made = 0;
+    if (Array.isArray(b.opportunities))
+      for (const raw of b.opportunities as Array<Record<string, unknown>>) {
+        const t = String(raw.title ?? "").trim();
+        if (!t) continue;
+        const n = Math.max(1, Math.min(999, Number(raw.required_count) || 1));
+        const o = await pool.query(
+          `INSERT INTO mo_creator_opportunities (event_id, title, creator_type, description,
+             required_count, task_deadline, venue, status, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'draft',$8) RETURNING id`,
+          [id, t.slice(0, 140), (raw.creator_type as string) || null, String(raw.description ?? ""),
+           n, (raw.task_deadline as string) || null, (raw.venue as string) || null, u.id]);
+        await audit(u, "creator_opportunity.created", "creator_opportunity", Number(o.rows[0].id),
+          null, { event_id: id, title: t, required_count: n }, req);
+        made++;
+      }
+    res.status(201).json({ ok: true, id, opportunities_created: made });
+  }));
+
+  app.patch(`${P}/creator/events/:id`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const cur = (await pool.query(`SELECT * FROM mo_creator_events WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Event not found.");
+    const b = req.body as Record<string, unknown>;
+
+    if ("status" in b) {
+      const to = String(b.status);
+      if (!(EVENT_FLOW[String(cur.status)] ?? []).includes(to))
+        return sendError(res, 400, `An event cannot go from ${cur.status} to ${to}.`);
+    }
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    if (typeof b.title === "string") {
+      const t = b.title.trim();
+      if (t.length < 3 || t.length > 140) return sendError(res, 400, "A title of 3–140 characters is required.");
+      fields.push(`title=$${i++}`); vals.push(t);
+    }
+    for (const k of ["description", "venue", "event_date", "start_time", "end_time", "academic_unit_id", "status"])
+      if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k] === "" ? null : b[k]); }
+    if (!fields.length) return res.json({ ok: true });
+    fields.push(`updated_at=NOW()`);
+    vals.push(id);
+    const { rows } = await pool.query(
+      `UPDATE mo_creator_events SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals);
+    if (String(cur.status) !== String(rows[0].status))
+      await audit(u, `creator_event.${rows[0].status}`, "creator_event", id,
+        { status: cur.status }, { status: rows[0].status }, req);
+    await audit(u, "creator_event.updated", "creator_event", id, cur, rows[0], req);
+    res.json({ ok: true, event: { ...rows[0], id: Number(rows[0].id), event_date: dOnly(rows[0].event_date) } });
+  }));
+
+  /* ── Opportunities ──────────────────────────────────────────────────── */
+  app.post(`${P}/creator/opportunities`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const b = req.body as Record<string, unknown>;
+    const eventId = Number(b.event_id);
+    const ev = (await pool.query(`SELECT id, status FROM mo_creator_events WHERE id=$1`, [eventId])).rows[0];
+    if (!ev) return sendError(res, 400, "Unknown event.");
+    if (["cancelled", "archived"].includes(String(ev.status)))
+      return sendError(res, 400, "That event is closed to new requirements.");
+    const title = String(b.title ?? "").trim();
+    if (title.length < 2 || title.length > 140) return sendError(res, 400, "A title of 2–140 characters is required.");
+    const n = Math.max(1, Math.min(999, Number(b.required_count) || 1));
+    const { rows } = await pool.query(
+      `INSERT INTO mo_creator_opportunities (event_id, title, creator_type, description, required_count,
+         starts_at_time, ends_at_time, venue, task_deadline, status, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draft',$10) RETURNING *`,
+      [eventId, title, (b.creator_type as string) || null, String(b.description ?? ""), n,
+       (b.starts_at_time as string) || null, (b.ends_at_time as string) || null,
+       (b.venue as string) || null, (b.task_deadline as string) || null, u.id]);
+    const id = Number(rows[0].id);
+    await audit(u, "creator_opportunity.created", "creator_opportunity", id, null,
+      { event_id: eventId, title, required_count: n }, req);
+    res.status(201).json({ ok: true, id });
+  }));
+
+  app.patch(`${P}/creator/opportunities/:id`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const cur = (await pool.query(`SELECT * FROM mo_creator_opportunities WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Opportunity not found.");
+    const b = req.body as Record<string, unknown>;
+    if ("status" in b) {
+      const to = String(b.status);
+      if (!(OPP_FLOW[String(cur.status)] ?? []).includes(to))
+        return sendError(res, 400, `An opportunity cannot go from ${cur.status} to ${to}.`);
+    }
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    if ("required_count" in b) {
+      const n = Number(b.required_count);
+      if (!Number.isFinite(n) || n < 1 || n > 999) return sendError(res, 400, "Required count must be 1–999.");
+      fields.push(`required_count=$${i++}`); vals.push(n);
+    }
+    for (const k of ["title", "creator_type", "description", "starts_at_time", "ends_at_time",
+                     "venue", "task_deadline", "status"])
+      if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k] === "" ? null : b[k]); }
+    if (!fields.length) return res.json({ ok: true });
+    fields.push(`updated_at=NOW()`);
+    vals.push(id);
+    const { rows } = await pool.query(
+      `UPDATE mo_creator_opportunities SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals);
+    if (String(cur.status) !== String(rows[0].status))
+      await audit(u, `creator_opportunity.${rows[0].status}`, "creator_opportunity", id,
+        { status: cur.status }, { status: rows[0].status }, req);
+    await audit(u, "creator_opportunity.updated", "creator_opportunity", id, cur, rows[0], req);
+    res.json({ ok: true });
+  }));
+
+  /** Open opportunities a creator can actually apply to, plus their standing. */
+  app.get(`${P}/creator/opportunities`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const q = req.query as Record<string, string>;
+    const params: unknown[] = [u.id];
+    let where = "";
+    if (q.event_id) { params.push(Number(q.event_id)); where += ` AND o.event_id = $${params.length}`; }
+    if (q.status && q.status !== "all") { params.push(q.status); where += ` AND o.status = $${params.length}`; }
+    else where += ` AND o.status = 'open'`;
+    const limit = Math.min(100, Math.max(1, Number(q.limit) || 50));
+    params.push(limit);
+    const { rows } = await pool.query(
+      `SELECT o.*, e.title AS event_title, e.event_date, e.venue AS event_venue, e.status AS event_status,
+              (SELECT COUNT(*)::int FROM mo_creator_interests i
+                WHERE i.opportunity_id=o.id AND i.status='interested') AS interested,
+              (SELECT COUNT(*)::int FROM mo_creator_assignments a
+                WHERE a.opportunity_id=o.id AND a.status NOT IN ('declined','cancelled')) AS assigned,
+              (SELECT i.status FROM mo_creator_interests i
+                WHERE i.opportunity_id=o.id AND i.user_id=$1 AND i.status<>'withdrawn' LIMIT 1) AS my_interest,
+              (SELECT a.status FROM mo_creator_assignments a
+                WHERE a.opportunity_id=o.id AND a.user_id=$1 LIMIT 1) AS my_assignment
+         FROM mo_creator_opportunities o JOIN mo_creator_events e ON e.id = o.event_id
+        WHERE e.status IN ('open','closed')${where}
+        ORDER BY e.event_date NULLS LAST, o.id LIMIT $${params.length}`, params);
+    res.json({ opportunities: rows.map((o) => ({ ...o, id: Number(o.id), event_id: Number(o.event_id),
+      event_date: dOnly(o.event_date), task_deadline: dOnly(o.task_deadline) })) });
+  }));
+
+  /* ── Interest ───────────────────────────────────────────────────────────
+     Raised BY the creator, FOR themselves. There is no creator_id in the
+     payload — the row is written from the session, which is what makes
+     impersonation impossible rather than merely checked for. */
+  app.post(`${P}/creator/opportunities/:id/interest`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const me = await activeCreator(u.id);
+    if (!me) return sendError(res, 403, "Only an active Creator Network member can register interest.");
+    const id = Number(getSingleParam(req.params.id));
+    const o = (await pool.query(
+      `SELECT o.id, o.status, o.title, e.status AS event_status FROM mo_creator_opportunities o
+         JOIN mo_creator_events e ON e.id = o.event_id WHERE o.id=$1`, [id])).rows[0];
+    if (!o) return sendError(res, 404, "Opportunity not found.");
+    if (o.status !== "open" || o.event_status !== "open")
+      return sendError(res, 400, "That opportunity is not open for interest.");
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO mo_creator_interests (opportunity_id, user_id, note) VALUES ($1,$2,$3) RETURNING id`,
+        [id, u.id, String((req.body as Record<string, unknown>)?.note ?? "")]);
+      await audit(u, "creator_interest.created", "creator_opportunity", id, null,
+        { user_id: u.id, opportunity_id: id }, req);
+      res.status(201).json({ ok: true, id: Number(rows[0].id) });
+    } catch (err) {
+      // The partial unique index is the real guarantee against a double tap.
+      if ((err as { code?: string }).code === "23505")
+        return sendError(res, 409, "You have already registered interest in this opportunity.");
+      throw err;
+    }
+  }));
+
+  /** Withdraw — only your own, and only before a decision is made. */
+  app.delete(`${P}/creator/opportunities/:id/interest`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const cur = (await pool.query(
+      `SELECT id, status FROM mo_creator_interests
+        WHERE opportunity_id=$1 AND user_id=$2 AND status<>'withdrawn'`, [id, u.id])).rows[0];
+    if (!cur) return sendError(res, 404, "You have no live interest in that opportunity.");
+    if (cur.status !== "interested")
+      return sendError(res, 400, "That interest has already been decided — speak to a Creator Admin.");
+    await pool.query(
+      `UPDATE mo_creator_interests SET status='withdrawn', updated_at=NOW() WHERE id=$1`, [cur.id]);
+    await audit(u, "creator_interest.withdrawn", "creator_opportunity", id,
+      { status: "interested" }, { user_id: u.id, status: "withdrawn" }, req);
+    res.json({ ok: true });
+  }));
+
+  /* Who is interested — scoped. A Team Lead sees their own team's hands, a
+     creator sees only their own, and the network manager sees everyone. */
+  app.get(`${P}/creator/interests`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const scope = await creatorScopeOf(u);
+    const q = req.query as Record<string, string>;
+    const params: unknown[] = [];
+    let where = "";
+    if (scope.level === "team") {
+      params.push(scope.teamIds, scope.userId);
+      where += ` AND (m.team_id = ANY($${params.length - 1}::bigint[]) OR i.user_id = $${params.length})`;
+    } else if (scope.level === "self") { params.push(u.id); where += ` AND i.user_id = $${params.length}`; }
+    if (q.opportunity_id) { params.push(Number(q.opportunity_id)); where += ` AND i.opportunity_id = $${params.length}`; }
+    if (q.status && q.status !== "all") { params.push(q.status); where += ` AND i.status = $${params.length}`; }
+    const limit = Math.min(200, Math.max(1, Number(q.limit) || 100));
+    params.push(limit);
+    const { rows } = await pool.query(
+      `SELECT i.id, i.opportunity_id, i.user_id, i.status, i.note, i.created_at, i.decided_at,
+              COALESCE(NULLIF(c.display_name,''), usr.full_name) AS display_name,
+              c.creator_role, c.status AS creator_status,
+              t.id AS team_id, t.name AS team_name,
+              o.title AS opportunity_title, o.required_count, e.title AS event_title, e.event_date
+         FROM mo_creator_interests i
+         JOIN users usr ON usr.id = i.user_id
+         LEFT JOIN mo_creator_profiles c ON c.user_id = i.user_id
+         LEFT JOIN mo_creator_team_members m ON m.user_id = i.user_id AND m.is_primary
+         LEFT JOIN mo_creator_teams t ON t.id = m.team_id
+         JOIN mo_creator_opportunities o ON o.id = i.opportunity_id
+         JOIN mo_creator_events e ON e.id = o.event_id
+        WHERE true${where}
+        ORDER BY i.created_at DESC LIMIT $${params.length}`, params);
+    res.json({
+      interests: rows.map((r) => ({ ...r, id: Number(r.id), opportunity_id: Number(r.opportunity_id),
+        team_id: r.team_id ? Number(r.team_id) : null, event_date: dOnly(r.event_date) })),
+      scope: scope.level,
+    });
+  }));
+
+  /* ── Selection → assignment ─────────────────────────────────────────────
+     One call, two records, on purpose. Deciding someone is IN is a judgement
+     that belongs on their interest; the assignment is the work that follows.
+     Keeping both means the directory can still answer "who applied and was
+     passed over" after the assignment has been completed or cancelled. */
+  app.post(`${P}/creator/assignments`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const b = req.body as Record<string, unknown>;
+    const oppId = Number(b.opportunity_id);
+    const userId = String(b.user_id ?? "");
+    if (!oppId || !userId) return sendError(res, 400, "An opportunity and a creator are required.");
+
+    const o = (await pool.query(
+      `SELECT o.*, e.title AS event_title, e.event_date, e.status AS event_status
+         FROM mo_creator_opportunities o JOIN mo_creator_events e ON e.id = o.event_id
+        WHERE o.id=$1`, [oppId])).rows[0];
+    if (!o) return sendError(res, 404, "Opportunity not found.");
+    if (["cancelled"].includes(String(o.status)) || ["cancelled", "archived"].includes(String(o.event_status)))
+      return sendError(res, 400, "That opportunity is cancelled.");
+
+    /* The target must be an ACTIVE network member. Assigning a suspended or
+       archived creator would hand work to someone the gate refuses. */
+    const target = await activeCreator(userId);
+    if (!target) return sendError(res, 400, "That creator is not an active Creator Network member.");
+
+    // Resolved from their own membership — assigned_by and team are never taken
+    // from the payload.
+    const teamId = await creatorTeamOf(userId);
+    const title = String(b.title ?? "").trim() || `${o.title} — ${o.event_title}`;
+    const deadline = (b.deadline as string) || dOnly(o.task_deadline) || dOnly(o.event_date);
+
+    let id: number;
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO mo_creator_assignments (opportunity_id, user_id, team_id, title, description,
+           deadline, scheduled_date, status, assigned_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'assigned',$8) RETURNING id`,
+        [oppId, userId, teamId, title.slice(0, 160), String(b.description ?? o.description ?? ""),
+         deadline, (b.scheduled_date as string) || dOnly(o.event_date), u.id]);
+      id = Number(rows[0].id);
+    } catch (err) {
+      if ((err as { code?: string }).code === "23505")
+        return sendError(res, 409, "That creator already has a live assignment for this opportunity.");
+      throw err;
+    }
+
+    /* Mark the interest selected if there is one. An admin may assign someone
+       who never applied — that is legitimate — so a missing interest is not an
+       error, and nothing is invented to stand in for it. */
+    await pool.query(
+      `UPDATE mo_creator_interests SET status='selected', decided_by=$1, decided_at=NOW(), updated_at=NOW()
+        WHERE opportunity_id=$2 AND user_id=$3 AND status='interested'`, [u.id, oppId, userId]);
+
+    await audit(u, "creator_assignment.created", "creator_assignment", id, null,
+      { opportunity_id: oppId, user_id: userId, team_id: teamId }, req);
+    await notifyCreator(userId, "assignment", "You have been assigned",
+      `${title} · ${o.event_title}${deadline ? ` · due ${deadline}` : ""}`, "creator_assignment", id);
+    res.status(201).json({ ok: true, id });
+  }));
+
+  /** Not selected — recorded, never deleted, so the history stays answerable. */
+  app.post(`${P}/creator/interests/:id/reject`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const cur = (await pool.query(`SELECT * FROM mo_creator_interests WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Interest not found.");
+    if (cur.status !== "interested")
+      return sendError(res, 400, `That interest is already ${cur.status}.`);
+    await pool.query(
+      `UPDATE mo_creator_interests SET status='not_selected', decided_by=$1, decided_at=NOW(), updated_at=NOW()
+        WHERE id=$2`, [u.id, id]);
+    await audit(u, "creator_interest.not_selected", "creator_opportunity", Number(cur.opportunity_id),
+      { status: "interested" }, { user_id: cur.user_id, status: "not_selected" }, req);
+    res.json({ ok: true });
+  }));
+
+  /* ── Tasks (the assignment, seen from the work side) ────────────────────
+     Same rows, scoped. A creator gets theirs, a Team Lead their team's, a
+     manager everyone's. */
+  app.get(`${P}/creator/tasks`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const scope = await creatorScopeOf(u);
+    const q = req.query as Record<string, string>;
+    const params: unknown[] = [];
+    let where = "";
+    if (scope.level === "team") {
+      params.push(scope.teamIds, scope.userId);
+      where += ` AND (a.team_id = ANY($${params.length - 1}::bigint[]) OR a.user_id = $${params.length})`;
+    } else if (scope.level === "self") { params.push(u.id); where += ` AND a.user_id = $${params.length}`; }
+    if (q.status && q.status !== "all") { params.push(q.status); where += ` AND a.status = $${params.length}`; }
+    if (q.opportunity_id) { params.push(Number(q.opportunity_id)); where += ` AND a.opportunity_id = $${params.length}`; }
+    const limit = Math.min(200, Math.max(1, Number(q.limit) || 100));
+    params.push(limit);
+    const { rows } = await pool.query(
+      `SELECT a.*, COALESCE(NULLIF(c.display_name,''), usr.full_name) AS creator_name,
+              t.name AS team_name, o.title AS opportunity_title,
+              e.id AS event_id, e.title AS event_title, e.event_date, e.venue AS event_venue
+         FROM mo_creator_assignments a
+         JOIN users usr ON usr.id = a.user_id
+         LEFT JOIN mo_creator_profiles c ON c.user_id = a.user_id
+         LEFT JOIN mo_creator_teams t ON t.id = a.team_id
+         JOIN mo_creator_opportunities o ON o.id = a.opportunity_id
+         JOIN mo_creator_events e ON e.id = o.event_id
+        WHERE true${where}
+        ORDER BY (a.status IN ('completed','declined','cancelled')), a.deadline NULLS LAST, a.id DESC
+        LIMIT $${params.length}`, params);
+    res.json({
+      tasks: rows.map((r) => ({ ...r, id: Number(r.id), opportunity_id: Number(r.opportunity_id),
+        event_id: Number(r.event_id), team_id: r.team_id ? Number(r.team_id) : null,
+        deadline: dOnly(r.deadline), scheduled_date: dOnly(r.scheduled_date), event_date: dOnly(r.event_date) })),
+      scope: scope.level,
+    });
+  }));
+
+  /* The one write a creator makes. It names a TRANSITION, never a status: the
+     flow table decides whether it is legal, and who may make it.
+
+     Ownership is not a field here. A creator may only move their own row, a
+     manager may only cancel — so a user_id in the payload changes nothing. */
+  app.patch(`${P}/creator/assignments/:id`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const cur = (await pool.query(`SELECT * FROM mo_creator_assignments WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Task not found.");
+
+    const manage = isMoAdmin(u) || (await creatorRoleOf(u)) === "creator_admin";
+    const mine = String(cur.user_id) === u.id;
+    // Someone else's task is not theirs to see, let alone move.
+    if (!manage && !mine) return sendError(res, 404, "Task not found.");
+
+    const to = String((req.body as Record<string, unknown>).status ?? "");
+    const legal = (ASSIGN_FLOW[String(cur.status)] ?? []).find((t) => t.to === to);
+    if (!legal)
+      return sendError(res, 400, `A task cannot go from ${cur.status} to ${to || "(nothing)"}.`);
+    if (legal.by === "creator" && !mine)
+      return sendError(res, 403, "Only the assigned creator can do that.");
+    if (legal.by === "manager" && !manage)
+      return sendError(res, 403, "Only a Creator Admin can cancel a task.");
+    /* A suspended creator cannot pick their work back up. Their history stays;
+       their ability to act on it does not. */
+    if (legal.by === "creator" && !(await activeCreator(u.id)))
+      return sendError(res, 403, "Your Creator Network membership is not active.");
+
+    const stamp = { accepted: "accepted_at", in_progress: "started_at", completed: "completed_at",
+                    declined: "declined_at", cancelled: "cancelled_at" }[to];
+    const reason = to === "declined" ? String((req.body as Record<string, unknown>).reason ?? "").slice(0, 400) : null;
+    await pool.query(
+      `UPDATE mo_creator_assignments
+          SET status=$1, ${stamp}=NOW(), decline_reason=COALESCE($2, decline_reason), updated_at=NOW()
+        WHERE id=$3`, [to, reason, id]);
+
+    await audit(u, `creator_assignment.${to}`, "creator_assignment", id,
+      { status: cur.status }, { status: to, reason }, req);
+
+    /* Tell the people who need to know, and only them. */
+    if (to === "declined" && cur.assigned_by)
+      await notifyCreator(String(cur.assigned_by), "assignment", "A creator declined an assignment",
+        `${cur.title}${reason ? ` — ${reason}` : ""}`, "creator_assignment", id);
+    if (to === "cancelled" && !mine)
+      await notifyCreator(String(cur.user_id), "assignment", "An assignment was cancelled",
+        String(cur.title), "creator_assignment", id);
+    res.json({ ok: true, status: to });
   }));
 
   // ── helpers ───────────────────────────────────────────────────────────────
