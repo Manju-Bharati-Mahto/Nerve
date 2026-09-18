@@ -1,8 +1,8 @@
 # Nerve Creator Network — Architecture
 
 > Living document. Reference for every Creator Network phase.
-> Status: **Phase 3 complete** — content submission and review are live.
-> Phase 4 (points, ranks, cycles) has not started.
+> Status: **Phase 4 complete** — points, the ledger, cycles and rank are live.
+> Phase 5 (payouts) has not started.
 
 Parul University runs a creator network: an incentive-based content workforce
 producing reels, shorts, vlogs, event and campus content, paid in points, ranks
@@ -83,6 +83,14 @@ These answer different questions and must not be conflated:
 | `mo_creator_profiles` | `user_id TEXT` PK → `users` | role, status, display name, type, joined/exited |
 | `mo_creator_teams` | `id BIGINT` | name, lead, colour/icon, active/archived |
 | `mo_creator_team_members` | `(team_id, user_id)` | membership, one primary per creator |
+| `mo_creator_events` | `id BIGINT` | an event needing coverage (Phase 2) |
+| `mo_creator_opportunities` | `id BIGINT` | a role on an event, and the rule it earns |
+| `mo_creator_interests` | `(opportunity_id, user_id)` | interest — never an assignment |
+| `mo_creator_assignments` | `id BIGINT` | the work itself, the ownership anchor |
+| `mo_creator_submissions` | `id BIGINT` | a version of the content, and its verdict (Phase 3) |
+| `mo_creator_point_rules` | `id BIGINT` | what a thing is worth (Phase 4) |
+| `mo_creator_cycles` | `id BIGINT` | the period points count towards |
+| `mo_creator_point_ledger` | `id BIGINT` | **every point transaction — the source of truth** |
 
 `teams` gains a built-in `creator` row (the 7th).
 
@@ -274,7 +282,7 @@ onto it. Media Ops `/state` was not touched.
 | **1 ✅** | Creator directory, creator teams, hierarchy, scoped shell |
 | **2 ✅** | Events, opportunities, interest, selection, assignment, tasks |
 | **3 ✅** | Content submission, versioning, review and verdicts |
-| 4 | Points, point ledger, rank engine, cycles |
+| **4 ✅** | Point rules, point ledger, cycles, rank engine |
 | 5 | Payouts, financial ledger, audit |
 | 6 | Leaderboard, achievements, Creator of the Cycle, War Zone |
 | 7 | Analytics, creator growth, management intelligence |
@@ -572,3 +580,165 @@ event. Nothing in Phase 3 needs to change for a point ledger to reference it.
   meaning of completion in §2.
 - A rejected submission closes the task to further versions. If reopening is
   ever wanted it should be an explicit management action, not a silent path.
+
+---
+
+## PHASE 4 — points, the ledger, cycles and rank
+
+### THE POINT LEDGER IS THE SOURCE OF TRUTH
+
+There is no `total_points` column. Not on `mo_creator_profiles`, not anywhere —
+a test asserts that no table in the network has a column matching `%point%`,
+`%rank%` or `%score%`, so one cannot quietly appear later.
+
+A creator's balance is `SUM(points)` over `mo_creator_point_ledger`. A rank is
+computed from those sums when the board is asked for. Both are **derived every
+time**, which is the whole reason they cannot drift: there is no second number
+to disagree with the transactions.
+
+Points are financial-ledger-like data, so the ledger behaves like one:
+
+| Property | How it is held |
+|---|---|
+| Append-only | no endpoint updates or deletes a row — asserted against the source, not just by convention |
+| Explainable | every row carries a `reason`, and for an award the rule name and the task |
+| Idempotent | a unique index, not an if-not-exists |
+| Immutable amounts | the value is **copied onto the row** at award time |
+| Correctable | a reversal is a new, opposite row; the original stays |
+
+The single exception to append-only is `claim-pending`, which sets `cycle_id`
+on rows that have none. It changes no amount and no owner, and it is audited.
+
+### Schema
+
+```
+mo_creator_point_rules   name (unique, case-insensitive), points, source_type, is_active
+mo_creator_cycles        label (unique), starts_on, ends_on, status, CHECK (ends_on >= starts_on)
+mo_creator_point_ledger  user_id, cycle_id (NULL = waiting), rule_id, points,
+                         source_type, source_id, reason, reversal_of_id, created_by
+mo_creator_opportunities + point_rule_id   — which rule this role earns
+```
+
+| Index | Holds |
+|---|---|
+| `idx_mo_cr_cycle_one_active` — unique on `(status)` where `status='active'` | **at most one active cycle**, in the database rather than in a check the next writer can skip |
+| `idx_mo_cr_ledger_source` — unique on `(source_type, source_id, rule_id)` where `source_type='approved_submission'` | **one approved submission earns once**, however many requests arrive |
+| `idx_mo_cr_ledger_reversal` — unique on `reversal_of_id` | a transaction is reversed once and never twice |
+
+Foreign keys to cycles, rules and reversed rows are `ON DELETE RESTRICT`:
+history cannot be half-deleted. A rule that has awarded points is **retired**,
+never deleted, because the rows pointing at it must keep resolving.
+
+### Approval is what earns
+
+There is no "award points" endpoint. Points are written inside
+`POST /creator/submissions/:id/review` when the outcome is `approved`, from the
+record that was just approved:
+
+- **who** comes from the assignment, never the request
+- **how much** comes from the rule, never the request
+- **which cycle** is whichever is active now, never a date the browser sent
+
+A forged `user_id`, `points` or `cycle_id` on the review body changes nothing —
+asserted by test.
+
+### Which rule an approved submission earns
+
+The opportunity names it (`point_rule_id`), set by a Creator Admin against a
+rule that exists and is still active. Failing that, if the network has exactly
+**one** active rule, that is unambiguous and is used. With several and no
+choice recorded, **nothing is awarded** and the response says
+`rule_ambiguous` — a silent wrong number is worse than a visible zero.
+
+### No active cycle: the points wait
+
+Approval is never blocked by accounting. With no active cycle the transaction
+is written with `cycle_id = NULL` — recorded, not lost, not guessed into a
+month, and not allowed to invent a cycle. An Admin later places the waiting
+rows into a cycle explicitly through `POST /creator/cycles/:id/claim-pending`,
+which is audited.
+
+### Cycles
+
+`draft → active → closed → (reopen | archived)`; a draft may also be archived.
+Only a **draft** is editable: once a cycle has been active it may own
+transactions, and moving its boundaries would silently restate history. A
+closed cycle is never restated — a manual adjustment naming one is refused, and
+corrections belong in an open cycle.
+
+### Rank
+
+One grouped aggregate for the whole board — not a `SUM` per creator — with
+`RANK() OVER (ORDER BY total DESC)`. That is **competition ranking**: equal
+totals share a place and the next one skips, so 50/40/40/20 ranks 1, 2, 2, 4.
+Display ties break by name then user id, so the order is deterministic rather
+than whatever the planner returns.
+
+A creator with no transactions is simply absent from the board. A zero balance
+is a place on it. An **archived creator keeps their points and their place** —
+history does not change because someone left.
+
+### Who may do what
+
+| | Creator | Team Lead | Creator Admin / Nerve Admin |
+|---|---|---|---|
+| See own points and ledger | yes | yes | yes |
+| See the ledger | own | their team's | all |
+| Leaderboard | yes | their team's | whole network |
+| Create rules or cycles | — | — | yes |
+| Manual adjustment / reversal | — | **no** | yes |
+
+A Team Lead reads their team's standing and changes none of it — the same line
+Phase 3 drew for verdicts.
+
+### API
+
+| Endpoint | Does |
+|---|---|
+| `GET /creator/rules` · `POST` · `PATCH /:id` | what things are worth; `PATCH` retires with `is_active` |
+| `GET /creator/cycles` · `POST` · `PATCH /:id` | periods, and their lifecycle; the response carries what is waiting |
+| `POST /creator/cycles/:id/claim-pending` | place waiting transactions into a cycle |
+| `GET /creator/points` | the caller's own balance, lifetime, rank and recent rows |
+| `GET /creator/points/ledger` | transactions — scoped, filtered by cycle, source or pending, paged |
+| `GET /creator/leaderboard` | the board for a cycle (`cycle_id`, or the active one) |
+| `POST /creator/points/adjust` | a manual transaction: whole non-zero amount, reason required |
+| `POST /creator/points/:id/reverse` | the opposite transaction; reason required, once only |
+
+`GET /api/v1/media/state` is untouched: none of this is on it.
+
+### Audit and notifications
+
+`creator_point_rule.created|updated|activated|deactivated`,
+`creator_cycle.created|active|closed|archived|updated`,
+`creator_points.awarded|adjusted|reversed|cycle_assigned`. Every award records
+the creator, the amount, the rule, how the rule was chosen, the submission and
+the cycle. A creator is notified when they earn, when an adjustment is made,
+and when one is reversed.
+
+No password, token, key or secret is written to either — asserted by test
+against the actual rows.
+
+### Phase 5 anchor
+
+A payout reads the ledger. It never writes to it, and it never becomes the
+place a balance is stored: `SUM(points)` for a creator in a closed cycle is the
+figure a payout is computed from, and it stays reproducible because nothing
+restates a closed cycle.
+
+---
+
+## PHASE 4 COMPLETE
+
+**Implementation notes**
+
+- Nothing in Phases 0–3 changed in behaviour. The review endpoint gained one
+  line — the award — and its response gained a `points` object saying what
+  happened, including when nothing was awarded and why.
+- `mo_creator_opportunities.point_rule_id` is additive and nullable: existing
+  opportunities keep working and earn nothing until a rule is named.
+- `mo_projects`, `mo_assignments` and `mo_deliverable_versions` are untouched
+  by Phase 4 — asserted by a test that reads the source of the phase itself.
+- 51 integration tests: the required end-to-end scenario, ten simultaneous
+  approvals producing one transaction, ten simultaneous awards at the database
+  producing one row, rule changes not rewriting history, the rank engine
+  including ties and archived creators, and the security matrix.

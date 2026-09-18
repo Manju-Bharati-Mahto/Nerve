@@ -7794,14 +7794,49 @@ const CN_OPPS   = {loaded:false, rows:[], err:null};
 const CN_EVENT  = {id:null, loaded:false, data:null, interests:[], err:null};
 const CN_REVIEW = {loaded:false, rows:[], total:0, err:null, status:'submitted', canReview:false};
 const CN_HIST   = {aid:null, rows:[]};
+/* Phase 4 surfaces. THE LEDGER IS THE SOURCE OF TRUTH: every figure below is
+   a sum the server computed from transactions when it was asked. Nothing here
+   caches a balance, and the browser never adds points up itself. */
+const CN_PTS    = {loaded:false, data:null, err:null};
+const CN_BOARD  = {loaded:false, cycle:null, rows:[], err:null, cycleId:'active'};
+const CN_LEDGER = {loaded:false, rows:[], total:0, sum:0, scope:'self', err:null, offset:0,
+                   f:{cycle_id:'all', source_type:'all'}};
+const CN_RULES  = {loaded:false, rows:[], err:null};
+const CN_CYCLES = {loaded:false, rows:[], pending:{count:0,points:0}, err:null};
+const CN_LEDGER_PAGE = 25;
 function cnReload(...what){
   if(what.includes('events')) CN_EVENTS.loaded=false;
   if(what.includes('tasks'))  CN_TASKS.loaded=false;
   if(what.includes('opps'))   CN_OPPS.loaded=false;
   if(what.includes('event'))  CN_EVENT.loaded=false;
   if(what.includes('review')) CN_REVIEW.loaded=false;
+  if(what.includes('points')) CN_PTS.loaded=false;
+  if(what.includes('board'))  CN_BOARD.loaded=false;
+  if(what.includes('ledger')) CN_LEDGER.loaded=false;
+  if(what.includes('rules'))  CN_RULES.loaded=false;
+  if(what.includes('cycles')) CN_CYCLES.loaded=false;
   render();
 }
+/* A rule or cycle list several screens need. Fetched once, re-rendered when it
+   lands — the same shape every other surface on this page uses. */
+function cnEnsureRules(){
+  if(CN_RULES.loaded) return;
+  CN_RULES.loaded=true;
+  MO_API.get('/creator/rules')
+    .then(d=>{CN_RULES.rows=d.rules||[];CN_RULES.err=null;})
+    .catch(e=>{CN_RULES.err=e.message;})
+    .finally(()=>render());
+}
+function cnEnsureCycles(){
+  if(CN_CYCLES.loaded) return;
+  CN_CYCLES.loaded=true;
+  MO_API.get('/creator/cycles')
+    .then(d=>{CN_CYCLES.rows=d.cycles||[];CN_CYCLES.pending=d.pending||{count:0,points:0};CN_CYCLES.err=null;})
+    .catch(e=>{CN_CYCLES.err=e.message;})
+    .finally(()=>render());
+}
+const cnPts = n=>`${n>0?'+':''}${n}`;
+const cnPtsCell = n=>`<span style="color:var(--${n<0?'danger':'success'});font-variant-numeric:tabular-nums">${cnPts(n)}</span>`;
 
 /* Submission review states. 'submitted' IS under review — there is no separate
    waiting state to display, because there is none to be in. */
@@ -7851,10 +7886,11 @@ function creatorSelfView(st){
     <div class="page-sub">Your standing in the Parul Creator Network.</div>
   </div></div>
   <div class="tabs sec">
-    ${[['opps','Opportunities'],['tasks','My Tasks'],['profile','My Profile']].map(([k,l])=>
+    ${[['opps','Opportunities'],['tasks','My Tasks'],['points','My Points'],['profile','My Profile']].map(([k,l])=>
       `<button class="tab ${tab===k?'on':''}" data-tab="${k}" data-tabkey="creator">${l}</button>`).join('')}
   </div>
-  ${tab==='opps'?cnOppsTab():tab==='tasks'?cnTasksTab(false,true):creatorProfileCards(st)}`;
+  ${tab==='opps'?cnOppsTab():tab==='tasks'?cnTasksTab(false,true)
+   :tab==='points'?cnMyPointsTab():creatorProfileCards(st)}`;
 }
 
 function creatorProfileCards(st){
@@ -7874,7 +7910,7 @@ function creatorProfileCards(st){
         <dt>Team</dt><dd>${esc(p.team.name)}</dd>
         <dt>Team Lead</dt><dd>${p.lead?esc(p.lead.name):'<span class="mut3">Not assigned</span>'}</dd>
       </dl>`:'<div class="empty" style="padding:20px"><p>You are not on a creator team yet.</p></div>'}
-      <div class="hint mt3">Tasks, submissions, points and payouts arrive in later phases.</div>
+      <div class="hint mt3">Your points and standing are under My Points. Payouts arrive in a later phase.</div>
       </div></div>
   </div>`;
 }
@@ -7900,13 +7936,15 @@ function creatorManageView(st){
         <span class="stat-label">${l}</span><span class="stat-val">${c[k]||0}</span></span></div>`).join('')}
   </div>`:''}
   <div class="tabs sec">
-    ${[['creators','Creators'],['teams','Teams'],['events','Events'],['tasks','Tasks'],['review','Review']].map(([k,l])=>
+    ${[['creators','Creators'],['teams','Teams'],['events','Events'],['tasks','Tasks'],
+       ['review','Review'],['points','Points']].map(([k,l])=>
       `<button class="tab ${tab===k?'on':''}" data-tab="${k}" data-tabkey="creator">${l}</button>`).join('')}
   </div>
   ${tab==='teams'?creatorTeamsTab(st,manage)
    :tab==='events'?(CN_EVENT.id?cnEventDetail(manage):cnEventsTab(manage))
    :tab==='tasks'?cnTasksTab(manage,false)
    :tab==='review'?cnReviewTab()
+   :tab==='points'?cnPointsTab(manage)
    :creatorDirectoryTab(st,manage)}`;
 }
 
@@ -8073,9 +8111,23 @@ function cnEventDetail(manage){
 function cnOppCard(o,manage){
   const mine=CN_EVENT.interests.filter(i=>i.opportunity_id===o.id);
   const waiting=mine.filter(i=>i.status==='interested');
+  if(manage) cnEnsureRules();
+  /* What this role earns when its work is approved. Naming the rule here is
+     what lets the approval path award without guessing; leaving it unset is a
+     legitimate answer, and then the role simply earns nothing. */
+  const rules=(CN_RULES.rows||[]).filter(r=>r.is_active||r.id===o.point_rule_id);
+  const earns=manage
+    ? `<select class="inp" title="What this role earns when approved"
+         style="width:auto;height:28px;font-size:12px" onchange="ACTIONS.cnOppRule({oid:'${o.id}'},this)">
+         <option value="">Earns nothing</option>
+         ${rules.map(r=>`<option value="${r.id}" ${o.point_rule_id===r.id?'selected':''}
+           >${esc(r.name)} · ${r.points>0?'+':''}${r.points}</option>`).join('')}
+       </select>`
+    : o.point_rule_name?`<span class="chip">Earns ${o.point_rule_points>0?'+':''}${o.point_rule_points}</span>`:'';
   return `<div class="card mb4">
     <div class="card-head"><h3>${esc(o.title)}${o.creator_type?` · ${esc(o.creator_type)}`:''}</h3>
       <div class="ca f gap2 ac">
+        ${earns}
         <span class="chip">${o.interested} interested</span>
         <span class="chip ${o.assigned>=o.required_count?'sel':''}">${o.assigned} of ${o.required_count} assigned</span>
         <span class="chip ${o.status==='open'?'sel':''}">${esc(o.status)}</span>
@@ -8256,6 +8308,245 @@ function cnOppsTab(){
     </div></div>`;}).join('')}</div>`;
 }
 
+/* ── Points, the ledger, cycles and rank (Phase 4) ─────────────────────────
+   THE POINT LEDGER IS THE SOURCE OF TRUTH. There is no stored total behind
+   any of these screens: a balance is the sum of transactions, a rank is
+   computed from those sums when the board is asked for, and a correction is a
+   new row rather than an edit. Nothing here can change a transaction, because
+   there is no endpoint that would. */
+const CN_SOURCE = {approved_submission:'Approved work', manual:'Manual adjustment', reversal:'Reversal'};
+/* What may follow what, mirrored from the server's CYCLE_FLOW. The server
+   decides; these are only the buttons worth offering. */
+const CN_CYCLE_NEXT = {
+  draft:   [['active','Activate','primary'],['archived','Archive','ghost']],
+  active:  [['closed','Close','']],
+  closed:  [['active','Reopen','ghost'],['archived','Archive','ghost']],
+  archived:[],
+};
+
+function cnPointsTab(manage){
+  const sub=S.tab.cnpts||'board';
+  const subs=[['board','Leaderboard'],['ledger','Ledger']].concat(manage?[['setup','Rules & cycles']]:[]);
+  return `
+  <div class="f ac gap2 sec" style="flex-wrap:wrap">
+    ${subs.map(([k,l])=>`<button class="btn xs${sub===k?' primary':''}" data-tab="${k}" data-tabkey="cnpts">${l}</button>`).join('')}
+    ${manage?`<button class="btn xs ml-auto" data-act="cnAdjust">Manual adjustment</button>`:''}
+  </div>
+  ${sub==='ledger'?cnLedgerCard(manage):sub==='setup'&&manage?cnSetupCards():cnBoardCard()}`;
+}
+
+/* A creator's own standing. Four figures, all of them the server's. */
+function cnMyPointsTab(){
+  if(!CN_PTS.loaded){
+    MO_API.get('/creator/points')
+      .then(d=>{CN_PTS.data=d;CN_PTS.err=null;})
+      .catch(e=>{CN_PTS.err=e.message;})
+      .finally(()=>{CN_PTS.loaded=true;render();});
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading your points…</p></div></div>';
+  }
+  if(CN_PTS.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_PTS.err)}</p></div></div>`;
+  const d=CN_PTS.data||{}, c=d.cycle;
+  return `
+  <div class="grid g4 sec">
+    ${[[c?esc(c.label):'This cycle', d.points||0],
+       ['Lifetime', d.lifetime||0],
+       ['Rank', d.rank?`${d.rank}${d.of?` of ${d.of}`:''}`:'—'],
+       ['Approved submissions', d.approved_submissions||0]]
+      .map(([l,v])=>`<div class="stat"><span class="stat-main">
+        <span class="stat-label">${l}</span><span class="stat-val">${v}</span></span></div>`).join('')}
+  </div>
+  ${!c?`<div class="hint sec">No scoring cycle is running. Points you earn now are recorded and placed into
+    a cycle by an Admin — nothing is lost while there is no cycle.</div>`:''}
+  ${cnLedgerCard(false)}`;
+}
+
+/* ── The board ──────────────────────────────────────────────────────────
+   Rank comes down from the server already worked out. Equal totals share a
+   place and the next one skips it, so two creators on 40 are both 2nd and the
+   creator below them is 4th. */
+function cnBoardCard(){
+  cnEnsureCycles();
+  if(!CN_BOARD.loaded){
+    CN_BOARD.loaded=true;
+    MO_API.get('/creator/leaderboard?limit=100&cycle_id='+encodeURIComponent(CN_BOARD.cycleId))
+      .then(d=>{CN_BOARD.cycle=d.cycle||null;CN_BOARD.rows=d.rows||[];CN_BOARD.err=null;})
+      .catch(e=>{CN_BOARD.err=e.message;})
+      .finally(()=>render());
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading the board…</p></div></div>';
+  }
+  if(CN_BOARD.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_BOARD.err)}</p></div></div>`;
+  const c=CN_BOARD.cycle, rows=CN_BOARD.rows;
+  return `<div class="card">
+    <div class="card-head"><h3>${c?esc(c.label):'Leaderboard'}</h3>
+      <div class="ca f gap2 ac">
+        ${c?`<span class="chip ${c.status==='active'?'sel':''}">${esc(titleCase(c.status))}</span>
+             <span class="small mut3">${D.fmt(c.starts_on)} – ${D.fmt(c.ends_on)}</span>`:''}
+        ${cnCycleSelect(CN_BOARD.cycleId,'cnBoardCycle','Active cycle')}
+      </div></div>
+    <div class="card-body flush">
+      ${!c?`<div class="empty" style="padding:36px"><div class="e-ico">◌</div>
+        <h4>No scoring cycle is running</h4>
+        <p>Open Rules &amp; cycles to start one. Points earned meanwhile are kept and placed into a cycle later.</p></div>`
+      :!rows.length?`<div class="empty" style="padding:36px"><div class="e-ico">◌</div>
+        <h4>Nothing earned yet in ${esc(c.label)}</h4>
+        <p>The board fills as submissions are approved.</p></div>`
+      :`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th style="width:64px">Place</th><th>Creator</th><th>Team</th>
+          <th class="num">Points</th></tr></thead>
+        <tbody>${rows.map(r=>`<tr>
+          <td class="num">${r.place<=3?`<b>${r.place}</b>`:r.place}</td>
+          <td class="t-main">${esc(r.creator_name)}${r.creator_status&&r.creator_status!=='active'
+            ?`<div class="t-sub">${esc(titleCase(r.creator_status))}</div>`:''}</td>
+          <td class="small">${esc(r.team||'—')}</td>
+          <td class="num"><b style="font-variant-numeric:tabular-nums">${r.points}</b></td></tr>`).join('')}
+        </tbody></table></div>`}
+    </div></div>`;
+}
+
+/* A cycle picker shared by the board and the ledger. */
+function cnCycleSelect(value,act,allLabel){
+  const rows=CN_CYCLES.rows||[];
+  return `<select class="inp" style="width:auto;height:30px;font-size:12px" onchange="ACTIONS.${act}({},this)">
+    <option value="${act==='cnBoardCycle'?'active':'all'}">${allLabel}</option>
+    ${act!=='cnBoardCycle'?`<option value="pending" ${value==='pending'?'selected':''}>Waiting for a cycle</option>`:''}
+    ${rows.map(c=>`<option value="${c.id}" ${String(value)===String(c.id)?'selected':''}>${esc(c.label)}</option>`).join('')}
+  </select>`;
+}
+
+/* ── The ledger ─────────────────────────────────────────────────────────
+   Every transaction, in the order it happened, each one saying what it was
+   for. A manager sees their scope; a creator sees their own rows. Scope is
+   the server's decision — this only renders what came back. */
+function cnLedgerCard(manage){
+  cnEnsureCycles();
+  const f=CN_LEDGER.f;
+  if(!CN_LEDGER.loaded){
+    CN_LEDGER.loaded=true;
+    const q=new URLSearchParams({source_type:f.source_type, limit:String(CN_LEDGER_PAGE),
+      offset:String(CN_LEDGER.offset)});
+    if(f.cycle_id==='pending') q.set('pending','1'); else q.set('cycle_id',String(f.cycle_id));
+    MO_API.get('/creator/points/ledger?'+q)
+      .then(d=>{CN_LEDGER.rows=d.entries||[];CN_LEDGER.total=d.total||0;CN_LEDGER.sum=d.sum||0;
+                CN_LEDGER.scope=d.scope||'self';CN_LEDGER.err=null;})
+      .catch(e=>{CN_LEDGER.err=e.message;})
+      .finally(()=>render());
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading the ledger…</p></div></div>';
+  }
+  if(CN_LEDGER.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_LEDGER.err)}</p></div></div>`;
+  const rows=CN_LEDGER.rows, own=CN_LEDGER.scope==='self';
+  // Rows already reversed on this page; the server is still the authority.
+  const reversed=new Set(rows.filter(r=>r.reversal_of_id).map(r=>r.reversal_of_id));
+  const from=CN_LEDGER.offset, to=Math.min(from+CN_LEDGER_PAGE, CN_LEDGER.total);
+  return `<div class="card">
+    <div class="card-head" style="gap:8px;flex-wrap:wrap"><h3>${own?'My transactions':'Ledger'}</h3>
+      <div class="ca f gap2 ac" style="flex-wrap:wrap">
+        <span class="chip">${CN_LEDGER.total} entr${CN_LEDGER.total===1?'y':'ies'} · ${cnPts(CN_LEDGER.sum)}</span>
+        ${cnCycleSelect(f.cycle_id,'cnLedgerCycle','All cycles')}
+        <select class="inp" style="width:auto;height:30px;font-size:12px" onchange="ACTIONS.cnLedgerFilter({k:'source_type'},this)">
+          ${[['all','Every source'],['approved_submission','Approved work'],
+             ['manual','Manual adjustment'],['reversal','Reversal']].map(([v,l])=>
+            `<option value="${v}" ${f.source_type===v?'selected':''}>${l}</option>`).join('')}
+        </select>
+      </div></div>
+    <div class="card-body flush">
+      ${!rows.length?`<div class="empty" style="padding:36px"><div class="e-ico">◌</div>
+        <h4>No transactions</h4><p>${own?'Points appear here as your work is approved.'
+          :'Points appear here as work is approved or an adjustment is recorded.'}</p></div>`
+      :`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>When</th>${own?'':'<th>Creator</th>'}<th class="num">Points</th>
+          <th>What for</th><th>Cycle</th>${own?'':'<th>Recorded by</th>'}
+          ${manage?'<th class="num">Correct</th>':''}</tr></thead>
+        <tbody>${rows.map(r=>`<tr>
+          <td class="small nowrap">${D.fmt(String(r.created_at).slice(0,10))}</td>
+          ${own?'':`<td class="t-main">${esc(r.creator_name||'—')}</td>`}
+          <td class="num">${cnPtsCell(r.points)}</td>
+          <td class="t-main" style="white-space:normal">${esc(r.reason||'—')}
+            <div class="t-sub">${r.rule?esc(r.rule)+' · ':''}${esc(CN_SOURCE[r.source_type]||r.source_type)}</div></td>
+          <td class="small">${r.cycle?esc(r.cycle):'<span class="mut3">Waiting for a cycle</span>'}</td>
+          ${own?'':`<td class="small">${esc(r.actor||'—')}</td>`}
+          ${manage?`<td class="num nowrap">${r.source_type==='reversal'||reversed.has(r.id)
+            ?'<span class="mut3">—</span>'
+            :`<button class="btn xs ghost" data-act="cnReverse" data-lid="${r.id}" data-p="${r.points}"
+                data-who="${esc(r.creator_name||'')}">Reverse</button>`}</td>`:''}
+        </tr>`).join('')}</tbody></table></div>`}
+    </div>
+    <div class="card-foot between" style="gap:12px;flex-wrap:wrap">
+      <span class="hint">Nothing here can be edited or deleted. A mistake is corrected by a reversal,
+        which is a new transaction of its own.</span>
+      ${CN_LEDGER.total>CN_LEDGER_PAGE?`<span class="f gap2 ac">
+        <span class="small mut3">${from+1}–${to} of ${CN_LEDGER.total}</span>
+        <button class="btn xs" data-act="cnLedgerPage" data-d="-1" ${from<=0?'disabled':''}>← Previous</button>
+        <button class="btn xs" data-act="cnLedgerPage" data-d="1" ${to>=CN_LEDGER.total?'disabled':''}>Next →</button>
+      </span>`:''}
+    </div>
+  </div>`;
+}
+
+/* ── Rules and cycles ───────────────────────────────────────────────────
+   What a thing is worth, and the period it counts towards. Both are explicit
+   objects an Admin maintains: no number is hard-coded into the approval path,
+   and the current month is never assumed to be a cycle. */
+function cnSetupCards(){
+  cnEnsureRules(); cnEnsureCycles();
+  const pend=CN_CYCLES.pending||{count:0,points:0};
+  const placeable=(CN_CYCLES.rows||[]).filter(c=>c.status==='active'||c.status==='draft');
+  return `
+  ${pend.count?`<div class="card mb4"><div class="card-body pad between" style="gap:12px;flex-wrap:wrap">
+    <div><b>${pend.count} transaction${pend.count===1?'':'s'} (${cnPts(pend.points)}) ${pend.count===1?'is':'are'} waiting for a cycle</b>
+      <div class="small mut3">Earned while no cycle was running. They are recorded, not lost — place them
+        into a cycle when you are ready.</div></div>
+    ${placeable.length?`<select class="inp" style="width:auto" id="cn-claim">
+        ${placeable.map(c=>`<option value="${c.id}">${esc(c.label)}</option>`).join('')}
+      </select>
+      <button class="btn primary" data-act="cnClaimPending">Place into cycle</button>`
+     :`<span class="small mut3">Create a cycle first.</span>`}
+  </div></div>`:''}
+  <div class="grid g2">
+    <div class="card"><div class="card-head"><h3>Point rules</h3>
+      <button class="ca btn xs primary" data-act="cnNewRule">＋ Rule</button></div>
+      <div class="card-body flush">
+        ${!CN_RULES.rows.length?`<div class="empty" style="padding:30px"><div class="e-ico">◌</div>
+          <h4>No rules yet</h4><p>A rule says what approved work is worth. Without one, approving
+          a submission awards nothing.</p></div>`
+        :`<div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>Rule</th><th class="num">Points</th><th class="num">Awarded</th><th class="num"></th></tr></thead>
+          <tbody>${CN_RULES.rows.map(r=>`<tr>
+            <td class="t-main">${esc(r.name)}${r.description?`<div class="t-sub" style="white-space:normal">${esc(r.description)}</div>`:''}
+              ${r.is_active?'':'<div class="t-sub">Retired</div>'}</td>
+            <td class="num"><b>${cnPts(r.points)}</b></td>
+            <td class="num small">${r.used||0}</td>
+            <td class="num nowrap">
+              <button class="btn xs ghost" data-act="cnEditRule" data-rid="${r.id}">Edit</button>
+              <button class="btn xs ghost" data-act="cnRuleActive" data-rid="${r.id}" data-to="${r.is_active?'0':'1'}"
+                >${r.is_active?'Retire':'Restore'}</button></td></tr>`).join('')}
+          </tbody></table></div>`}
+      </div>
+      <div class="card-foot"><span class="hint">Changing a rule affects future awards only — what was
+        already earned keeps the value it was awarded at. A rule that has awarded points is retired,
+        never deleted.</span></div></div>
+
+    <div class="card"><div class="card-head"><h3>Cycles</h3>
+      <button class="ca btn xs primary" data-act="cnNewCycle">＋ Cycle</button></div>
+      <div class="card-body flush">
+        ${!CN_CYCLES.rows.length?`<div class="empty" style="padding:30px"><div class="e-ico">◌</div>
+          <h4>No cycles yet</h4><p>A cycle is the period points count towards.</p></div>`
+        :`<div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>Cycle</th><th>Status</th><th class="num">Creators</th><th class="num">Points</th>
+            <th class="num"></th></tr></thead>
+          <tbody>${CN_CYCLES.rows.map(c=>`<tr>
+            <td class="t-main">${esc(c.label)}<div class="t-sub">${D.fmt(c.starts_on)} – ${D.fmt(c.ends_on)}</div></td>
+            <td><span class="chip ${c.status==='active'?'sel':''}">${esc(titleCase(c.status))}</span></td>
+            <td class="num small">${c.creators||0}</td>
+            <td class="num small">${c.total_points||0}</td>
+            <td class="num nowrap">${(CN_CYCLE_NEXT[c.status]||[]).map(([to,l,cls])=>
+              `<button class="btn xs ${cls}" data-act="cnCycleStatus" data-cid="${c.id}" data-to="${to}"
+                 data-label="${esc(c.label)}">${l}</button>`).join('')||'<span class="mut3">—</span>'}</td>
+          </tr>`).join('')}</tbody></table></div>`}
+      </div>
+      <div class="card-foot"><span class="hint">One cycle is active at a time, and the database holds that
+        rule. A closed cycle is never restated — corrections belong in an open one.</span></div></div>
+  </div>`;
+}
 /* ── Re-adding someone who was removed ─────────────────────────────────────
    Nerve keeps ONE identity per email: removal archives the row rather than
    deleting it, which is what keeps that person's reports, assignments, leave
@@ -13693,7 +13984,12 @@ const ACTIONS = {
        the server refuses them without it. */
     if(d.o==='approved'){
       MO_API.post('/creator/submissions/'+d.sid+'/review',{outcome:'approved'})
-        .then(()=>{toast('Approved','ok');cnReload('review','tasks');})
+        .then(r=>{const p=r.points||{};
+          toast(p.awarded?`Approved · ${cnPts(p.awarded)} points${p.pending?' (waiting for a cycle)':''}`
+               :p.reason==='rule_ambiguous'?'Approved · no points: more than one rule could apply, so none was assumed'
+               :p.reason==='no_rule'?'Approved · no points: no rule is set up yet'
+               :'Approved','ok');
+          cnReload('review','tasks','ledger','board','points','cycles');})
         .catch(e=>toast(e.message,'bad'));
       return;
     }
@@ -13877,6 +14173,208 @@ const ACTIONS = {
     MO_API.del('/creator/opportunities/'+d.oid+'/interest')
       .then(()=>{toast('Interest withdrawn','ok');cnReload('opps');})
       .catch(e=>toast(e.message,'bad'));
+  },
+  /* ── Creator Network Phase 4: points ─────────────────────────────────
+     Not one of these sends a balance, a rank, or a total. They post an
+     intent — a rule, a cycle, an adjustment, a reversal — and the server
+     writes the transaction that follows from it. The ledger is the source of
+     truth, and nothing below can edit a row that is already in it. */
+  cnBoardCycle:(d,n)=>{CN_BOARD.cycleId=n.value;cnReload('board');},
+  cnLedgerCycle:(d,n)=>{CN_LEDGER.f.cycle_id=n.value;CN_LEDGER.offset=0;cnReload('ledger');},
+  cnLedgerFilter:(d,n)=>{CN_LEDGER.f[d.k]=n.value;CN_LEDGER.offset=0;cnReload('ledger');},
+  cnLedgerPage:(d)=>{
+    CN_LEDGER.offset=Math.max(0, CN_LEDGER.offset + (+d.d)*CN_LEDGER_PAGE);
+    cnReload('ledger');
+  },
+  cnNewRule:()=>{
+    modal(`<div class="mo-head"><div><h2>New point rule</h2>
+        <p>What a piece of approved work is worth. The value is copied onto each transaction as it is
+        awarded, so changing this later never rewrites what has already been earned.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Name <span class="req">*</span></label>
+          <input class="inp" id="pr-name" placeholder="e.g. Approved Reel"></div>
+        <div class="field"><label class="lbl">Points <span class="req">*</span></label>
+          <input class="inp" type="number" id="pr-points" value="10" step="1"></div>
+        <div class="field"><label class="lbl">Description</label>
+          <textarea class="inp" id="pr-desc" placeholder="When this applies…"></textarea></div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="cnNewRuleGo">Create rule</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnNewRuleGo:()=>{
+    const name=$('#pr-name').value.trim(), points=+$('#pr-points').value;
+    if(name.length<2){toast('A rule name is required','bad');return;}
+    if(!Number.isInteger(points)||points===0){toast('Points must be a whole number, and not zero','bad');return;}
+    const desc=$('#pr-desc').value.trim();
+    closeModal();
+    MO_API.post('/creator/rules',{name,points,description:desc})
+      .then(()=>{toast(name+' created','ok');cnReload('rules');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnEditRule:(d)=>{
+    const r=(CN_RULES.rows||[]).find(x=>String(x.id)===String(d.rid));
+    if(!r)return;
+    modal(`<div class="mo-head"><div><h2>${esc(r.name)}</h2>
+        <p>${r.used?`This rule has awarded ${r.used} transaction${r.used===1?'':'s'}. Those keep the value they
+          were awarded at — a change here applies to future awards only.`
+          :'No points have been awarded under this rule yet.'}</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Name <span class="req">*</span></label>
+          <input class="inp" id="pr-name" value="${esc(r.name)}"></div>
+        <div class="field"><label class="lbl">Points <span class="req">*</span></label>
+          <input class="inp" type="number" id="pr-points" value="${r.points}" step="1"></div>
+        <div class="field"><label class="lbl">Description</label>
+          <textarea class="inp" id="pr-desc">${esc(r.description||'')}</textarea></div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="cnEditRuleGo" data-rid="${r.id}">Save</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnEditRuleGo:(d)=>{
+    const name=$('#pr-name').value.trim(), points=+$('#pr-points').value;
+    if(name.length<2){toast('A rule name is required','bad');return;}
+    if(!Number.isInteger(points)||points===0){toast('Points must be a whole number, and not zero','bad');return;}
+    const description=$('#pr-desc').value.trim();
+    closeModal();
+    MO_API.patch('/creator/rules/'+d.rid,{name,points,description})
+      .then(()=>{toast('Rule updated','ok');cnReload('rules');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  /* Retiring, not deleting: historical transactions point at this rule and
+     must keep resolving. */
+  cnRuleActive:(d)=>{
+    MO_API.patch('/creator/rules/'+d.rid,{is_active:d.to==='1'})
+      .then(()=>{toast(d.to==='1'?'Rule restored':'Rule retired','ok');cnReload('rules');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnNewCycle:()=>{
+    modal(`<div class="mo-head"><div><h2>New cycle</h2>
+        <p>The period points count towards. It starts as a draft and takes nothing until you activate it —
+        and only one cycle can be active at a time.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Name <span class="req">*</span></label>
+          <input class="inp" id="pc-label" placeholder="e.g. September 2026"></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Starts <span class="req">*</span></label>
+            <input class="inp" type="date" id="pc-from"></div>
+          <div class="field"><label class="lbl">Ends <span class="req">*</span></label>
+            <input class="inp" type="date" id="pc-to"></div>
+        </div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="cnNewCycleGo">Create cycle</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnNewCycleGo:()=>{
+    const label=$('#pc-label').value.trim(), from=$('#pc-from').value, to=$('#pc-to').value;
+    if(label.length<2){toast('A cycle name is required','bad');return;}
+    if(!from||!to){toast('A start and an end date are required','bad');return;}
+    if(to<from){toast('The end date must be on or after the start date','bad');return;}
+    closeModal();
+    MO_API.post('/creator/cycles',{label,starts_on:from,ends_on:to})
+      .then(()=>{toast(label+' created — activate it when you are ready','ok');cnReload('cycles','board');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnCycleStatus:(d)=>{
+    const go=()=>MO_API.patch('/creator/cycles/'+d.cid,{status:d.to})
+      .then(()=>{toast('Cycle '+d.to,'ok');cnReload('cycles','board','ledger');})
+      .catch(e=>toast(e.message,'bad'));
+    if(d.to!=='closed')return go();
+    modal(`<div class="mo-head"><div><h2>Close ${esc(d.label)}</h2>
+        <p>The standings stay exactly as they are and remain readable. Nothing new is added to a closed
+        cycle, and it is never restated — later corrections belong in an open cycle. Points earned while
+        no cycle is running are kept, waiting to be placed.</p></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="cnCycleCloseGo" data-cid="${d.cid}">Close cycle</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnCycleCloseGo:(d)=>{
+    closeModal();
+    MO_API.patch('/creator/cycles/'+d.cid,{status:'closed'})
+      .then(()=>{toast('Cycle closed','ok');cnReload('cycles','board','ledger');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnClaimPending:()=>{
+    const sel=$('#cn-claim'); if(!sel)return;
+    const id=sel.value, label=sel.options[sel.selectedIndex].text;
+    MO_API.post('/creator/cycles/'+id+'/claim-pending',{})
+      .then(r=>{toast(`${r.moved} transaction${r.moved===1?'':'s'} placed into ${label}`,'ok');
+        cnReload('cycles','board','ledger');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  /* A manual entry is a new transaction with a reason, never an edit. */
+  cnAdjust:()=>{
+    MO_API.get('/creator/creators?limit=200&status=active').then(r=>{
+      const people=r.creators||[];
+      const cycles=(CN_CYCLES.rows||[]).filter(c=>c.status==='active'||c.status==='draft');
+      modal(`<div class="mo-head"><div><h2>Manual adjustment</h2>
+          <p>Adds a transaction to the ledger. Use a positive number to award and a negative one to take
+          back. The reason is shown to the creator and kept on the record.</p></div>
+          <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+        <div class="mo-body">
+          <div class="field"><label class="lbl">Creator <span class="req">*</span></label>
+            <select class="inp" id="pa-user">${people.map(x=>
+              `<option value="${esc(x.user_id)}">${esc(x.display_name||x.full_name)}</option>`).join('')}</select></div>
+          <div class="row">
+            <div class="field"><label class="lbl">Points <span class="req">*</span></label>
+              <input class="inp" type="number" id="pa-points" step="1" placeholder="e.g. 5 or -5"></div>
+            <div class="field"><label class="lbl">Cycle</label>
+              <select class="inp" id="pa-cycle"><option value="">The active cycle</option>
+                ${cycles.map(c=>`<option value="${c.id}">${esc(c.label)}</option>`).join('')}</select></div>
+          </div>
+          <div class="field"><label class="lbl">Reason <span class="req">*</span></label>
+            <textarea class="inp" id="pa-reason" rows="3"
+              placeholder="e.g. Covered the closing ceremony at short notice"></textarea></div>
+        </div>
+        <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+          <button class="btn primary" data-act="cnAdjustGo">Record adjustment</button></div>`);
+      $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+    }).catch(e=>toast(e.message,'bad'));
+  },
+  cnAdjustGo:()=>{
+    const user_id=$('#pa-user').value, points=+$('#pa-points').value, reason=$('#pa-reason').value.trim();
+    if(!user_id){toast('Choose a creator','bad');return;}
+    if(!Number.isInteger(points)||points===0){toast('Points must be a whole number, and not zero','bad');return;}
+    if(reason.length<3){toast('A reason is required','bad');return;}
+    const cycle_id=$('#pa-cycle').value||null;
+    closeModal();
+    MO_API.post('/creator/points/adjust',Object.assign({user_id,points,reason},cycle_id?{cycle_id:+cycle_id}:{}))
+      .then(()=>{toast('Adjustment recorded','ok');cnReload('ledger','board','cycles','points');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  /* Reversing writes the opposite transaction. The original stays where it is
+     — that is what makes the history trustworthy. */
+  cnReverse:(d)=>{
+    modal(`<div class="mo-head"><div><h2>Reverse this transaction</h2>
+        <p>A compensating entry of ${esc(String(-(+d.p)))} point${Math.abs(+d.p)===1?'':'s'} is added
+        ${d.who?`to ${esc(d.who)}'s ledger`:''}. The original transaction is not changed, deleted or hidden —
+        both stay on the record, and a reversal cannot itself be reversed.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><div class="field"><label class="lbl">Reason <span class="req">*</span></label>
+        <textarea class="inp" id="pv-reason" rows="3"
+          placeholder="e.g. Awarded under the wrong rule"></textarea></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn danger" data-act="cnReverseGo" data-lid="${d.lid}">Reverse</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnReverseGo:(d)=>{
+    const reason=(($('#pv-reason')||{}).value||'').trim();
+    if(reason.length<3){toast('A reason is required','bad');return;}
+    closeModal();
+    MO_API.post('/creator/points/'+d.lid+'/reverse',{reason})
+      .then(()=>{toast('Transaction reversed','ok');cnReload('ledger','board','cycles','points');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  /* What a role earns when its work is approved. Set on the requirement so the
+     approval path never has to guess from a free-text type. */
+  cnOppRule:(d,n)=>{
+    MO_API.patch('/creator/opportunities/'+d.oid,{point_rule_id:n.value||null})
+      .then(()=>{toast(n.value?'Points rule set':'This role now earns nothing','ok');cnReload('event');})
+      .catch(e=>{toast(e.message,'bad');cnReload('event');});
   },
   /* ── Creator Network ──────────────────────────────────────────────────
      Every one of these posts to a scoped endpoint that re-checks the caller;

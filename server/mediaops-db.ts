@@ -1839,6 +1839,102 @@ export async function bootstrapCreatorNetwork() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_sub_status ON mo_creator_submissions(status, submitted_at DESC)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_sub_reviewer ON mo_creator_submissions(reviewed_by, reviewed_at DESC)`);
 
+  /* ── Phase 4: point rules, ledger, cycles ───────────────────────────────
+     THE LEDGER IS THE SOURCE OF TRUTH. There is deliberately no
+     creator.total_points column: a balance is SUM(points) over the ledger,
+     filtered by cycle. Nothing increments a stored total, so no total can
+     drift away from the rows that explain it.
+
+     Points are accounting data. Every row says who, how many, why, from what
+     source, who created it, when, and in which cycle — and no row is ever
+     edited or deleted. A mistake is corrected by a compensating row, never by
+     changing history. */
+
+  /* What a thing is worth. Configurable, so nothing hard-codes a number into
+     the approval path — and the amount is COPIED onto the ledger row at award
+     time, so changing a rule tomorrow cannot rewrite what was earned today. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_point_rules (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      points INTEGER NOT NULL,
+      /* Only the two sources Phase 4 actually has. A rule is either what an
+         approved submission earns, or the basis for a manual entry. */
+      source_type TEXT NOT NULL DEFAULT 'approved_submission'
+        CHECK (source_type IN ('approved_submission','manual')),
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_rule_name ON mo_creator_point_rules(lower(name))`);
+
+  /* The scoring period. Named after mo_kra_cycles, which is how Nerve already
+     spells a cycle (label / starts_on / ends_on / status). Explicit business
+     objects — the current calendar month is never assumed. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_cycles (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      label TEXT NOT NULL,
+      starts_on DATE NOT NULL,
+      ends_on DATE NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft','active','closed','archived')),
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT mo_creator_cycle_dates CHECK (ends_on >= starts_on)
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_cycle_label ON mo_creator_cycles(lower(label))`);
+  /* At most one active cycle, held by the database rather than by a check the
+     next writer might skip. A unique index over a constant column value is
+     what makes "only one row may be active" an invariant. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_cycle_one_active
+                    ON mo_creator_cycles((status)) WHERE status='active'`);
+
+  /* The ledger. Append-only by construction: no endpoint updates a row, and
+     corrections are compensating rows carrying reversal_of_id. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_point_ledger (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      /* NULL means "earned, but no cycle was active when it happened". The
+         points are recorded rather than lost or guessed into a month; an Admin
+         assigns them to a cycle explicitly. */
+      cycle_id BIGINT REFERENCES mo_creator_cycles(id) ON DELETE RESTRICT,
+      rule_id BIGINT REFERENCES mo_creator_point_rules(id) ON DELETE RESTRICT,
+      /* The amount as it was awarded. Copied, never looked up again — this is
+         what makes a later rule change unable to rewrite history. */
+      points INTEGER NOT NULL,
+      source_type TEXT NOT NULL
+        CHECK (source_type IN ('approved_submission','manual','reversal')),
+      source_id BIGINT,
+      reason TEXT NOT NULL DEFAULT '',
+      reversal_of_id BIGINT REFERENCES mo_creator_point_ledger(id) ON DELETE RESTRICT,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  /* IDEMPOTENCY. One approved submission earns its rule exactly once, however
+     many times the request arrives — a double click, a retry, a browser
+     refresh, two reviewers racing. The database decides, not an
+     if-not-exists-then-insert the next thread can interleave with. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_ledger_source
+                    ON mo_creator_point_ledger(source_type, source_id, rule_id)
+                    WHERE source_id IS NOT NULL AND source_type='approved_submission'`);
+  // A transaction can be reversed once, and never twice.
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_ledger_reversal
+                    ON mo_creator_point_ledger(reversal_of_id) WHERE reversal_of_id IS NOT NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_ledger_cycle ON mo_creator_point_ledger(cycle_id, user_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_ledger_user ON mo_creator_point_ledger(user_id, created_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_ledger_pending ON mo_creator_point_ledger(created_at) WHERE cycle_id IS NULL`);
+
+  /* Which rule an opportunity earns. Additive and nullable: existing
+     opportunities keep working, and an admin says "this Reel role pays the
+     Approved Reel rule" rather than the code guessing from a free-text type. */
+  await pool.query(`ALTER TABLE mo_creator_opportunities
+                    ADD COLUMN IF NOT EXISTS point_rule_id BIGINT REFERENCES mo_creator_point_rules(id)`);
+
   /* SECURITY — this row is not optional.
 
      effectiveModules() returns null when a group has no defaults row, and
