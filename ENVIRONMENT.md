@@ -180,6 +180,37 @@ None of this is required. With no `AI_*` set, Nerve boots and runs identically �
 the assistant reports "not configured", and every dashboard, brief and
 automation still works, because none of them asks a model for a number.
 
+### Demo data for the Creator Network
+
+An empty Creator Network shows empty screens, which makes it impossible to see
+how anything is maintained. This fills it with a small network that genuinely
+happened:
+
+```bash
+npm run seed:creator           # create it
+npm run seed:creator -- --clear   # remove it again
+```
+
+It refuses to run against anything but a loopback `DATABASE_URL`.
+
+It does not insert rows. It mounts the real handlers and walks the real
+lifecycle — roles opened, interest expressed, work assigned, submitted,
+reviewed, points awarded by the approval path, a cycle closed, payouts priced
+by the calculator, recognition decided by the evaluator. So the leaderboard
+agrees with the ledger and every payout's gross equals points × rate, because
+the same code produced both.
+
+Sign in as `priya.desai@paruluniversity.ac.in` (Creator Admin). Every account
+it creates shares the password `CreatorAdmin123!` — which is exactly why it is
+local-only.
+
+**Clear it before running the test suite.** Several Creator Network invariants
+are network-wide singletons — one active cycle, non-overlapping payout rates —
+and the demo legitimately occupies those slots. Measured on this machine: the
+suite is 869/869 green with the demo cleared, and 19 tests across three files
+fail with it present. Those failures are the guard rails working, not a
+regression.
+
 ## Secret Handling
 
 What changed
