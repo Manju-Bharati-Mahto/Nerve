@@ -15,14 +15,16 @@ import AuthShell from '@/components/AuthShell'
 import LoginForm from './LoginForm'
 
 export default function LoginPage() {
-  const { user, role } = useAuth()
+  const { user, role, team } = useAuth()
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const expired = params.get('expired') === '1'
 
   useEffect(() => {
-    if (user && role) navigate(getRoleDashboard(role, null))
-  }, [user, role, navigate])
+    // `team` matters here: passing null sent an already-signed-in media user
+    // to the branding dashboard instead of /media.
+    if (user && role) navigate(getRoleDashboard(role, team, user.creator))
+  }, [user, role, team, navigate])
 
   return (
     <AuthShell>

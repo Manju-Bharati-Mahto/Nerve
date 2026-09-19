@@ -1553,3 +1553,101 @@ configured at all.
   arguments and no provider: the 30-case security matrix, prompt injection from
   five sources, confirmation binding and expiry, automation deduplication under
   concurrent passes, and the ledger fingerprints.
+
+---
+
+## POST-PHASE-8 AUDIT — WHICH APPLICATION A CREATOR OPENS
+
+Reported from browser testing: creators created through the Creator Admin UI
+signed in and landed on the Parul University Knowledge Hub, with "Creator
+Team" and "Browse" in the sidebar and an empty middle.
+
+### Root cause
+
+One missing fact on the session, and two gates that had no way to ask for it.
+
+A Creator Network member is an ordinary Nerve user — `users.role = 'user'`,
+`users.team = 'creator'` — whose membership lives in `mo_creator_profiles`.
+That separation is deliberate and stays. But `/api/auth/me` and
+`/api/auth/login` returned only the Nerve role and team, so nothing the client
+received could distinguish a Creator Admin from somebody with no membership at
+all. From there:
+
+1. `getRoleDashboard()` knew `media` and `smc`, not `creator`. All three
+   creator roles fell through to the final `role === 'user'` branch and were
+   sent to `/branding/user`.
+2. `/branding/user` is guarded `team="branding"`. It refused them and
+   redirected to `getRoleDashboard()` — which returned `/branding/user` again.
+   **That loop is the blank page**: the route never resolved to a component.
+3. `AppSidebar` keys on `` `${role}:${team}` ``. There is no `user:creator`
+   entry, so it fell back to the generic config — a single "Browse" link — and
+   the team badge rendered the team slug as "Creator Team".
+4. `/media` is guarded `team={['media','smc']}`, so even a hand-typed URL
+   bounced back.
+
+Everything else was already right, which is why this was invisible for eight
+phases. Creation writes the `users` row, the profile, the role, the status and
+the team membership in one call. `requireCreatorNetwork()`, `creatorScopeOf()`
+and `creatorFinanceScope()` resolve all three roles correctly from the profile.
+The Media Ops app already had `hydrateCreatorShell()`, which swaps to
+`/creator/state` and renders the Creator Network. Creators simply never
+arrived at the door.
+
+It read as "Creator Admin works" because the account being tested was
+`rahul.joshi` — Media Ops `admin` on `team='media'`, who reaches the network
+through the module like any other Nerve Admin. Every account holding an actual
+`creator_admin` profile was broken in exactly the same way as the creators.
+
+### The fix
+
+`creatorStandingOf(userId)` reads `mo_creator_profiles` and returns
+`{creator_role, status}`. Both auth endpoints carry it as `user.creator`.
+
+Standing, not the team string, decides (§8). `isActiveCreator()` requires
+`status === 'active'`, so a suspended or archived member is not routed into the
+network — matching the server, which refuses them at `requireCreatorNetwork()`.
+`getRoleDashboard()` gained one branch after the media/smc line, so enrolled
+Media Ops staff keep their existing route in. `RoleGuard` gained
+`allowActiveCreator`, set only on `/media`.
+
+It is a routing hint and nothing else. Every endpoint re-derives the same
+standing server-side; the hint opens a shell, never a record.
+
+### Role experience
+
+`GET /creator/state` already returns the three shapes the UI needs, and the UI
+now has three tab lists rather than two:
+
+| | scope | can_manage | view | tabs |
+|---|---|---|---|---|
+| Creator Admin | `all` | true | `creatorManageView` | Creators, Teams, Events, Tasks, Review, Points, **Payouts**, Recognition, Analytics, Assistant |
+| Team Lead | `team` | false | `creatorManageView` | My Team, Events, Tasks, Review, Points, Recognition, Analytics, Assistant |
+| Creator | `self` | — | `creatorSelfView` | Assistant, Opportunities, My Tasks, Leaderboard, War Zone, Achievements, My Analytics, My Points, My Payouts, My Profile |
+
+A Team Lead previously saw the Creator Admin's tab list, Payouts included.
+That was never a data leak — `creatorFinanceScope()` returns `self` for a Team
+Lead, so the screen could only ever show their own money — but it was a wrong
+door, and it is gone. Hiding a tab removes the door; the lock is server-side
+and unchanged.
+
+### Failure is explicit now
+
+A creator whose `/creator/state` fails no longer falls through to the Media
+Ops seed. Showing somebody a demo department is worse than showing them
+nothing, because it looks real. A refusal the server actually issued produces
+either "Your Creator Network membership is not active" or "Creator Network
+could not be loaded" with a Retry. Only a transport failure — no HTTP status,
+meaning nothing was reached — still falls back to seed, which is what that
+fallback was for.
+
+### Regression cover
+
+- `src/hooks/creator-routing.test.ts` — the resolver, all three roles, both
+  inactive states, and every pre-existing destination unchanged.
+- `server/mediaops-creator-routing.integration.test.ts` — create through the
+  real endpoint, assert the records, read the standing, resolve the
+  application. It imports the client's own resolver rather than restating what
+  it should return, so it fails when the product is broken.
+- `src/test/creator-shell.ui.test.ts` — boots the real `index.html` in jsdom
+  and reads the rendered DOM: the shell, the sidebar, the tab list per role,
+  and both failure states.

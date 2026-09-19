@@ -7977,10 +7977,34 @@ function creatorProfileCards(st){
   </div>`;
 }
 
-/* ── Manager / Team Lead view ───────────────────────────────────────────── */
+/* ── Manager / Team Lead view ─────────────────────────────────────────────
+   Two audiences, one view, one tab list per audience.
+
+   A Creator Admin runs the network: the directory, money, and the rules that
+   produce both. A Team Lead runs a team — they see their own people, their
+   work and how it is going, and no money at all beyond their own, which lives
+   in their personal payout screen rather than here. The tab list is therefore
+   not the same list with buttons removed; the network-wide Creators directory
+   and Payouts simply are not a Team Lead's screens.
+
+   This is presentation. Every tab below is a server-scoped read: a Team Lead
+   asking for the payout list gets "self" from creatorFinanceScope() and the
+   directory is filtered by creatorScopeSql() to their own teams, so hiding a
+   tab removes a wrong door, not the lock. */
+const CN_TABS_ADMIN = [['creators','Creators'],['teams','Teams'],['events','Events'],['tasks','Tasks'],
+  ['review','Review'],['points','Points'],['payouts','Payouts'],['recognition','Recognition'],
+  ['analytics','Analytics'],['assistant','Assistant']];
+const CN_TABS_LEAD = [['teams','My Team'],['events','Events'],['tasks','Tasks'],
+  ['review','Review'],['points','Points'],['recognition','Recognition'],
+  ['analytics','Analytics'],['assistant','Assistant']];
+
 function creatorManageView(st){
-  const tab=S.tab.creator||'creators';
   const manage=!!st.can_manage_network;
+  const tabs=manage?CN_TABS_ADMIN:CN_TABS_LEAD;
+  /* A remembered tab from a previous role — or a hand-edited one — must not
+     survive into a view that has no such screen. */
+  const want=S.tab.creator||tabs[0][0];
+  const tab=tabs.some(([k])=>k===want)?want:tabs[0][0];
   const c=st.counts||{};
   return `
   <div class="page-head">
@@ -7998,9 +8022,7 @@ function creatorManageView(st){
         <span class="stat-label">${l}</span><span class="stat-val">${c[k]||0}</span></span></div>`).join('')}
   </div>`:''}
   <div class="tabs sec">
-    ${[['creators','Creators'],['teams','Teams'],['events','Events'],['tasks','Tasks'],
-       ['review','Review'],['points','Points'],['payouts','Payouts'],['recognition','Recognition'],
-       ['analytics','Analytics'],['assistant','Assistant']].map(([k,l])=>
+    ${tabs.map(([k,l])=>
       `<button class="tab ${tab===k?'on':''}" data-tab="${k}" data-tabkey="creator">${l}</button>`).join('')}
   </div>
   ${tab==='teams'?creatorTeamsTab(st,manage)
@@ -18471,7 +18493,20 @@ async function moSync(promise, onOk){
    fallback still covers a genuinely offline run. */
 async function hydrateCreatorShell(){
   let st;
-  try{ st=await MO_API.get('/creator/state'); }catch(_){ return false; }
+  try{ st=await MO_API.get('/creator/state'); }
+  catch(e){
+    /* THE SERVER ANSWERED, AND THE ANSWER WAS NO. That is not an offline run,
+       and it must never fall through to the Media Crew seed: showing a creator
+       a demo department is worse than showing them nothing, because it looks
+       real. A creator whose membership was suspended gets told so; anything
+       else the server refused or failed on gets an explicit error and a retry.
+
+       Only a transport failure — no status at all, meaning the request never
+       reached a server — is a genuine standalone run, and only that returns
+       false so the seed fallback can still cover it. */
+    if(e && e.status) { creatorShellFailure(e); return 'blocked'; }
+    return false;
+  }
   if(!st||!st.profile) return false;
 
   // Nothing from the seed survives — a creator sees no Media Ops data at all.
@@ -18494,6 +18529,30 @@ async function hydrateCreatorShell(){
   return true;
 }
 
+/* An explicit dead end, rather than a blank page or somebody else's data.
+   Replaces the shell outright: at this point there is no DB, no identity and
+   no nav to render into, so the ordinary view pipeline cannot run. */
+function creatorShellFailure(e){
+  const suspended = e.status===403 && /membership is not active/i.test(e.message||'');
+  const title = suspended ? 'Your Creator Network membership is not active'
+                          : 'Creator Network could not be loaded';
+  const detail = suspended
+    ? 'Your records are intact. A Creator Admin can restore your access.'
+    : esc(e.message||('HTTP '+e.status));
+  document.getElementById('app').innerHTML =
+    `<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px">
+       <div style="max-width:420px;text-align:center">
+         <div style="font-size:34px;line-height:1;margin-bottom:14px">${suspended?'⚑':'⚠'}</div>
+         <h1 style="font-size:19px;margin:0 0 8px">${esc(title)}</h1>
+         <p style="color:#64748b;font-size:14px;margin:0 0 18px">${detail}</p>
+         ${suspended?'':`<button id="cn-retry" style="font:inherit;padding:8px 18px;border-radius:8px;
+            border:1px solid #cbd5e1;background:#fff;cursor:pointer">Retry</button>`}
+       </div>
+     </div>`;
+  const b=document.getElementById('cn-retry');
+  if(b) b.onclick=()=>location.reload();
+}
+
 /* PWA service worker (Phase 4). The app is served under /api/media-ops/, so the SW
    scope is its own directory. First unregister any stale worker from the earlier
    /media-ops/ static path so it can't serve a cached shell. Guarded throughout. */
@@ -18505,24 +18564,39 @@ if('serviceWorker' in navigator){ try{
 }catch(_){} }
 (async function boot(){
   if(!location.hash)location.hash='#/media/home';
-  let live=null;
+  let live=null, creatorShell=false;
+  /* A Creator Network member goes straight to the creator-scoped state. They
+     have no Media Ops state to ask for, and asking anyway meant every creator
+     began with a 403 they then recovered from. Nerve set this flag on the way
+     in; if it is wrong, nothing is lost — the ordinary path runs below. */
+  if(/[?&]as=creator\b/.test(location.search)){
+    const cn=await hydrateCreatorShell();
+    if(cn==='blocked') return;
+    if(cn) creatorShell=true;
+  }
   // Identity is bound inside hydrateFromServer() from /state's `me` (the real crew,
   // not the demo seed). If hydration fails (no session/standalone), the seed identity
   // is used as a fallback so the app still runs.
-  try{ live=await hydrateFromServer(); }
+  try{ if(!creatorShell) live=await hydrateFromServer(); }
   catch(e){
     /* A Creator Network member is refused /state by design — requireMedia()
        does not admit them, and it must not start. Falling through to the seed
        data would show them a demo Media Crew, so try the scoped creator shell
        instead. Only a genuine offline/standalone run reaches the seed now. */
-    if(!(await hydrateCreatorShell()))
-      console.warn('[Media Ops] server hydration failed — running on seed data:', e.message);
+    const cn=await hydrateCreatorShell();
+    if(cn==='blocked') return;          // an explicit state is already on screen
+    if(cn) creatorShell=true;
+    else console.warn('[Media Ops] server hydration failed — running on seed data:', e.message);
   }
   render();
   /* Live counters refresh — FR-1.1 requires ≤ 60 s */
   setInterval(()=>{if(S.route==='#/media/home'&&!$('#modal-layer').classList.contains('on')&&
     !$('#drawer').classList.contains('on')&&!$('#palette').classList.contains('on')){/* silent no-op re-render guard */}},60000);
   setTimeout(()=>{
+    /* A creator IS live and IS signed in — they simply have no Media Ops
+       project to count. Telling them to sign in would be both wrong and
+       alarming. */
+    if(creatorShell) return toast(`Creator Network · signed in as ${me().full_name}.`,'ok');
     toast(live
       ? `Live · ${live.projects} projects and ${live.reports} daily reports from the server. Signed in as ${me().full_name}.`
       : 'Running on seed data — sign in to Nerve to load live data.', live?'ok':'warn');

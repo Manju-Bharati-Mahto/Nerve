@@ -165,6 +165,23 @@ export async function creatorRoleOf(u: CurrentUser): Promise<CreatorRole> {
   return String(r.creator_role) as CreatorRole;
 }
 
+/** The standing the SESSION needs to know: which application to open, and —
+    when membership is not active — enough to say so rather than show a blank
+    page. Role AND status, because creatorRoleOf() deliberately collapses every
+    non-active state to null and the sign-in payload has to tell a suspended
+    creator apart from somebody who was never on the network at all.
+
+    This is the authoritative answer (§8): it reads mo_creator_profiles. The
+    Nerve team column says where a person sits in Nerve; it never says what
+    they are on the network, and nothing here infers one from the other. */
+export async function creatorStandingOf(
+  userId: string,
+): Promise<{ creator_role: string; status: string } | null> {
+  const r = (await pool.query(
+    `SELECT creator_role, status FROM mo_creator_profiles WHERE user_id=$1`, [userId])).rows[0];
+  return r ? { creator_role: String(r.creator_role), status: String(r.status) } : null;
+}
+
 export const isCreatorAdmin = async (u: CurrentUser) => (await creatorRoleOf(u)) === "creator_admin";
 export const isCreatorTeamLead = async (u: CurrentUser) => (await creatorRoleOf(u)) === "team_lead";
 
