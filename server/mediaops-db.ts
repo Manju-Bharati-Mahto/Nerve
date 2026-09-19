@@ -22,6 +22,7 @@
 //   §11.8 immutable audit + version tables; trigger-maintained denormalisations
 // ═══════════════════════════════════════════════════════════════════════════
 import { pool } from "./db.js";
+import { seedCreatorAutomationRules } from "./creator-automations.js";
 
 export async function bootstrapMediaOpsDatabase() {
   // Postgres range-overlap exclusion for equipment bookings (AC-7 / VR-8).
@@ -2285,6 +2286,11 @@ export async function bootstrapCreatorNetwork() {
        'competition','competition_result',1,true)
     ) AS seed(code, name, description, icon, scope, criteria_type, criteria_value, is_seeded)
      WHERE NOT EXISTS (SELECT 1 FROM mo_creator_achievements a WHERE a.code = seed.code)`);
+
+  /* Phase 8 — the Creator Network's automation rules, in the table Media Ops
+     already uses and on the same five-minute tick. Seeded only when absent,
+     so an operator's toggle is never overwritten on the next boot. */
+  await seedCreatorAutomationRules();
 
   /* SECURITY — this row is not optional.
 

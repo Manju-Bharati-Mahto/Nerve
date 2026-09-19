@@ -23,9 +23,13 @@ import {
 import { getAiProvider, getAiStatus, testAiConnection } from "./ai/index.js";
 import { runAiOrchestration } from "./ai/orchestrator.js";
 import { createAiToolRegistry } from "./ai/tools/registry.js";
+import { CREATOR_AI_SYSTEM_EXTRA } from "./ai/prompts.js";
 import { estimateAiCost, parseAiPricing } from "./ai/pricing.js";
 import { countAiRequestsToday, findOverdueDeliverables, getAiUsageSummary, nerveToday, recordAiRequest } from "./mediaops-queries.js";
 import * as CA from "./creator-analytics.js";
+import * as CQ from "./creator-queries.js";
+import { creatorAutomationState } from "./creator-automations.js";
+import { listCreatorIntegrations } from "./creator-integrations.js";
 import { buildTvBoard, tvBoardAllowed, type TvBoard } from "./mediaops-tv.js";
 import { config } from "./config.js";
 import type { AiCapability, AiUserContext } from "./ai/types.js";
@@ -229,6 +233,27 @@ export async function canUseAiCommand(u: CurrentUser): Promise<boolean> {
   return isMoAdmin(u);
 }
 
+/**
+ * Who may use the CREATOR NETWORK assistant (Phase 8).
+ *
+ * Deliberately a different predicate from canUseAiCommand(). That one guards
+ * Ask Nerve AI, which reaches Media Ops data and is Admin-only; this one
+ * guards a creator's own assistant, which reaches only what the Creator
+ * Network would already show them.
+ *
+ * Any active member of the network qualifies — the point of a self-scoped
+ * assistant is that it is self-scoped — and the existing per-user daily limit
+ * caps the cost. A Nerve Admin qualifies the way they do for every creator
+ * module, which still does not make them a Creator Admin.
+ */
+export async function canUseCreatorAi(u: CurrentUser): Promise<boolean> {
+  if (isMoAdmin(u)) return true;
+  if (!(await creatorRoleOf(u))) return false;    // no active creator identity
+  // The module is how an Admin revokes this per person, with no new machinery.
+  const eff = await effectiveModules(u);
+  return eff === null || eff.includes(CREATOR_MODULE);
+}
+
 export async function buildAiUserContext(u: CurrentUser): Promise<AiUserContext> {
   const role = moRoleOf(u);                       // admin | team_lead | employee | null
   const caps = new Set<AiCapability>();
@@ -242,7 +267,32 @@ export async function buildAiUserContext(u: CurrentUser): Promise<AiUserContext>
   const projectScope: "all" | "own" =
     (role === "admin" || role === "team_lead") ? "all" : "own";
 
-  if (!role) return { id: u.id, role: "none", capabilities: caps, projectScope: "own" };
+  /* CREATOR NETWORK (Phase 8). Resolved from the vertical's OWN helpers, not
+     from the Media Ops role: a Media Ops Admin is not automatically a Creator
+     Admin, and a creator has no Media Ops standing at all. This runs before
+     the media gate below precisely because a creator is not Media Crew — they
+     must still get their own assistant. */
+  const creatorRole = await creatorRoleOf(u);
+  const creatorAdmin = isMoAdmin(u) || creatorRole === "creator_admin";
+  let creatorScope: AiUserContext["creatorScope"] = "none";
+  let creatorTeamIds: number[] = [];
+  if (creatorAdmin) {
+    creatorScope = "all";
+    caps.add("creator.self").add("creator.team").add("creator.network");
+  } else if (creatorRole === "team_lead") {
+    creatorTeamIds = (await pool.query(
+      `SELECT id FROM mo_creator_teams WHERE lead_user_id=$1 AND is_active AND archived_at IS NULL`,
+      [u.id])).rows.map((r) => Number(r.id));
+    creatorScope = "team";
+    caps.add("creator.self").add("creator.team");
+  } else if (creatorRole) {
+    creatorScope = "self";
+    caps.add("creator.self");
+  }
+
+  if (!role)
+    return { id: u.id, role: creatorRole ? "creator" : "none", capabilities: caps,
+             projectScope: "own", creatorScope, creatorTeamIds };
   caps.add("media.read");
 
   /* Module keys below are the REAL ones the sidebar and mo_module_defaults use
@@ -267,7 +317,7 @@ export async function buildAiUserContext(u: CurrentUser): Promise<AiUserContext>
   // SMC Management is a duty, resolved by the existing isSmcManager().
   if (await isSmcManager(u)) caps.add("smc.read");
 
-  return { id: u.id, role, capabilities: caps, projectScope };
+  return { id: u.id, role, capabilities: caps, projectScope, creatorScope, creatorTeamIds };
 }
 
 /* Module access is the second half of Nerve's model (§ Module Access): a role
@@ -9325,6 +9375,274 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     await audit(u, "creator_analytics.exported", "creator_analytics", null, null,
       { dataset, from: range.from, to: range.to, rows: rows.length, scope: scope.level }, req);
     res.send(CA.toCsv(headers, rows));
+  }));
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     CREATOR NETWORK — Phase 8: assistant, briefs, discussion
+
+     ONE AI SYSTEM. These routes reuse the same provider, orchestrator,
+     registry, egress sanitisation, telemetry and daily limit that Ask Nerve AI
+     uses. There is no second framework, no second key and no second meter —
+     the Creator Network is another controlled domain inside the existing one.
+
+     The assistant a person gets is decided entirely by their resolved
+     capabilities: the same registry hands a creator seven self-scoped tools
+     and a Creator Admin the full set, because a tool a user lacks the
+     capability for is never even advertised.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /** Whether the Creator assistant can run at all, and for whom. */
+  app.get(`${P}/creator/ai/status`, asyncHandler(async (_req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const status = getAiStatus();
+    const ctx = await buildAiUserContext(u);
+    res.json({
+      enabled: status.enabled, provider: status.provider, model: status.model,
+      canAsk: await canUseCreatorAi(u),
+      scope: ctx.creatorScope,
+      // What this person's assistant can actually reach, so the UI never
+      // offers a capability the API would refuse.
+      tools: aiRegistry.definitionsFor(ctx)
+        .filter((d) => d.name.startsWith("creator_")).map((d) => d.name),
+      dailyLimit: Math.max(1, Number(config.ai.dailyRequestLimit) || 50),
+      usedToday: await countAiRequestsToday(u.id),
+    });
+  }));
+
+  app.post(`${P}/creator/ai/ask`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await canUseCreatorAi(u)))
+      return sendError(res, 403, "The Creator assistant is not enabled for your account.");
+
+    const b = req.body as Record<string, unknown> | null;
+    const question = typeof b?.question === "string" ? b.question.trim() : "";
+    if (!question) return sendError(res, 400, "Please enter a question.");
+    if (question.length > AI_QUESTION_MAX_CHARS)
+      return sendError(res, 400, `Please keep your question under ${AI_QUESTION_MAX_CHARS} characters.`);
+
+    const provider = getAiProvider();
+    if (!provider)
+      return res.status(503).json({ code: "AI_NOT_CONFIGURED",
+        message: "The assistant is not configured on this server." });
+
+    /* The SAME daily meter as Ask Nerve AI. One budget per person across both
+       assistants — two separate allowances would be two ways to spend the
+       same money. */
+    const dailyLimit = Math.max(1, Number(config.ai.dailyRequestLimit) || 50);
+    const usedToday = await countAiRequestsToday(u.id);
+    if (usedToday >= dailyLimit) {
+      await recordAiRequest({ requestId: randomUUID(), userId: u.id, feature: "creator_ask",
+        status: "failed", failureCategory: "daily_limit", questionChars: question.length });
+      return res.status(429).json({ code: "AI_DAILY_LIMIT_REACHED",
+        message: "You have reached today's assistant limit. It resets at midnight." });
+    }
+
+    const user = await buildAiUserContext(u);
+    const info = provider.info();
+    const startedAt = Date.now();
+    const result = await runAiOrchestration({
+      provider, registry: aiRegistry, user, question,
+      systemExtra: CREATOR_AI_SYSTEM_EXTRA,
+      finalizeStructured: true,
+    });
+
+    const failed = result.stopReason === "provider_error" || result.stopReason === "timeout";
+    await recordAiRequest({
+      requestId: result.requestId, userId: u.id, feature: "creator_ask",
+      provider: info.provider, model: result.model ?? info.model,
+      status: failed ? "failed" : "ok",
+      failureCategory: result.stopReason === "timeout" ? "orchestration_timeout"
+                     : result.stopReason === "provider_error" ? "provider_error" : null,
+      stopReason: result.stopReason,
+      durationMs: Date.now() - startedAt,
+      tools: result.answer.sources ?? [],
+      toolRounds: result.rounds,
+      promptTokens: result.usage?.promptTokens ?? null,
+      completionTokens: result.usage?.completionTokens ?? null,
+      totalTokens: result.usage?.totalTokens ?? null,
+      estimatedCost: estimateAiCost(aiPricing, result.model ?? info.model,
+                                    result.usage?.promptTokens ?? null,
+                                    result.usage?.completionTokens ?? null),
+      questionChars: question.length,
+    });
+
+    /* A tool that CHANGED something is reported separately from the tools that
+       merely read, so the UI can show "this actually sent a notification"
+       rather than leaving it in the prose. */
+    const acted = result.toolEvents.some((e) => e.toolName === "creator_send_notification" && e.success);
+    res.json({
+      requestId: result.requestId,
+      answer: result.answer.answer,
+      facts: result.answer.facts ?? [],
+      recommendations: result.answer.recommendations ?? [],
+      warnings: result.answer.warnings ?? [],
+      sources: result.answer.sources ?? [],
+      stopReason: result.stopReason,
+      usedAction: acted,
+      scope: user.creatorScope,
+    });
+  }));
+
+  /* ── Briefs ─────────────────────────────────────────────────────────────
+     DETERMINISTIC FIRST. Every figure in a brief is computed by Phase 7 and
+     the creator service; the model is never asked to add anything up. If a
+     provider is configured the brief can additionally carry a short written
+     summary, and if it is not, the brief still works — which is the right way
+     round for something a manager reads every morning. */
+  app.get(`${P}/creator/ai/brief`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const ctx = await buildAiUserContext(u);
+    if (ctx.creatorScope === "none")
+      return sendError(res, 403, "You are not on the Creator Network.");
+    const reach: CQ.CreatorReach = { level: "self", userId: u.id };
+    const [identity, work, standing, analytics] = await Promise.all([
+      CQ.aiCreatorIdentity(u.id), CQ.aiCreatorWork(u.id),
+      CQ.aiCreatorStanding(u.id), CQ.aiProduction(reach, "30d"),
+    ]);
+    const payouts = await CQ.aiCreatorPayouts(u.id);
+    res.json({
+      generatedAt: new Date().toISOString(), mode: "deterministic",
+      creator: identity,
+      dueSoon: work.filter((w) => w.deadline && !w.overdue && w.status !== "completed").slice(0, 5),
+      overdue: work.filter((w) => w.overdue),
+      awaitingSubmission: work.filter((w) => w.awaitingSubmission),
+      awaitingReview: (await CQ.aiCreatorContent(u.id)).filter((s) => s.status === "submitted"),
+      standing, period: analytics.period, production: analytics.current, trends: analytics.trends,
+      payouts: { outstanding: payouts.outstanding, latest: payouts.payouts[0] ?? null },
+    });
+  }));
+
+  app.get(`${P}/creator/ai/management-brief`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const ctx = await buildAiUserContext(u);
+    if (ctx.creatorScope !== "all" && ctx.creatorScope !== "team")
+      return sendError(res, 403, "The management brief is for Team Leads and Creator Admins.");
+    const reach: CQ.CreatorReach = ctx.creatorScope === "all"
+      ? { level: "all", userId: u.id }
+      : { level: "team", teamIds: [...ctx.creatorTeamIds], userId: u.id };
+    const period = String((req.query as Record<string, string>).period ?? "30d");
+
+    const [prod, funnel, timings, teams, signals, recognition, backlog, comps] = await Promise.all([
+      CQ.aiProduction(reach, period), CQ.aiFunnel(reach, period), CQ.aiTimings(reach, period),
+      CQ.aiTeams(reach, period), CQ.aiSignals(reach), CQ.aiRecognition(reach, period),
+      CQ.aiReviewBacklog(reach), CQ.aiCompetitions(),
+    ]);
+    // Money only for a Creator Admin — Phase 5's line, unchanged.
+    const money = ctx.creatorScope === "all" ? (await CQ.aiMoney(reach, period)).money : null;
+    res.json({
+      generatedAt: new Date().toISOString(), mode: "deterministic",
+      scope: ctx.creatorScope, period: prod.period,
+      production: prod.current, trends: prod.trends,
+      funnel: funnel.funnel, review: timings.review, backlog, teams: teams.teams,
+      recognition: recognition.recognition, competitions: comps,
+      money, signals: signals.signals, thresholds: signals.thresholds,
+    });
+  }));
+
+  /* ── Discussion ─────────────────────────────────────────────────────────
+     Reuses mo_comments, the table Nerve already uses to attach a thread to a
+     record. A discussion belongs to the work it is about: there is no
+     conversation id to forge, because the permission is the WORK's permission,
+     re-derived from the record on every call. */
+  const threadKind = (raw: string) =>
+    raw === "assignments" ? "creator_assignment" as const
+    : raw === "opportunities" ? "creator_opportunity" as const : null;
+
+  app.get(`${P}/creator/:kind/:id/comments`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const kind = threadKind(String(getSingleParam(req.params.kind)));
+    if (!kind) return sendError(res, 404, "Not found.");
+    const id = Number(getSingleParam(req.params.id));
+    const scope = await creatorScopeOf(u);
+    const reach: CQ.CreatorReach = scope.level === "all" ? { level: "all", userId: u.id }
+      : scope.level === "team" ? { level: "team", teamIds: scope.teamIds, userId: u.id }
+      : { level: "self", userId: u.id };
+    if (!(await CQ.aiCanAccessThread(reach, kind, id)))
+      return sendError(res, 404, "Not found.");
+    res.json({ messages: await CQ.aiThread(kind, id), kind, id });
+  }));
+
+  app.post(`${P}/creator/:kind/:id/comments`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const kind = threadKind(String(getSingleParam(req.params.kind)));
+    if (!kind) return sendError(res, 404, "Not found.");
+    const id = Number(getSingleParam(req.params.id));
+    const body = String((req.body as Record<string, unknown>).body ?? "").trim();
+    if (body.length < 1 || body.length > 2000)
+      return sendError(res, 400, "A message of 1–2000 characters is required.");
+    const scope = await creatorScopeOf(u);
+    const reach: CQ.CreatorReach = scope.level === "all" ? { level: "all", userId: u.id }
+      : scope.level === "team" ? { level: "team", teamIds: scope.teamIds, userId: u.id }
+      : { level: "self", userId: u.id };
+    if (!(await CQ.aiCanAccessThread(reach, kind, id)))
+      return sendError(res, 404, "Not found.");
+
+    const { rows } = await pool.query(
+      `INSERT INTO mo_comments (entity_type, entity_id, user_id, body) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [kind, id, u.id, body]);
+    const cid = Number(rows[0].id);
+    await audit(u, "creator_discussion.posted", kind, id, null,
+      { comment_id: cid, chars: body.length }, req);
+
+    /* Tell the other side of the conversation, once. On an assignment that is
+       the creator when somebody else writes, and the assigner when they do. */
+    if (kind === "creator_assignment") {
+      const a = (await pool.query(
+        `SELECT user_id, assigned_by, title FROM mo_creator_assignments WHERE id=$1`, [id])).rows[0];
+      const target = a && String(a.user_id) !== u.id ? String(a.user_id)
+                   : a?.assigned_by && String(a.assigned_by) !== u.id ? String(a.assigned_by) : null;
+      if (target)
+        await notifyCreator(target, "discussion", "New message on your assignment",
+          `${a.title}: ${body.slice(0, 120)}`, "creator_assignment", id);
+    }
+    res.status(201).json({ ok: true, id: cid });
+  }));
+
+  /* ── Automations, as an operator sees them ──────────────────────────── */
+  app.get(`${P}/creator/automations`, asyncHandler(async (_req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const { rows } = await pool.query(
+      `SELECT rule_key, name, trigger, action, is_enabled, config, updated_at
+         FROM mo_automation_rules WHERE rule_key LIKE 'CN-%' ORDER BY rule_key`);
+    res.json({ automations: rows.map((r) => ({
+      key: r.rule_key, name: r.name, trigger: r.trigger, action: r.action,
+      enabled: !!r.is_enabled, config: r.config, updatedAt: r.updated_at,
+    })), lastRun: creatorAutomationState() });
+  }));
+
+  app.patch(`${P}/creator/automations/:key`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const key = String(getSingleParam(req.params.key));
+    if (!/^CN-\d+$/.test(key)) return sendError(res, 404, "Automation not found.");
+    const enabled = Boolean((req.body as Record<string, unknown>).enabled);
+    const upd = await pool.query(
+      `UPDATE mo_automation_rules SET is_enabled=$1, updated_by=$2, updated_at=NOW()
+        WHERE rule_key=$3 RETURNING name`, [enabled, u.id, key]);
+    if (!upd.rowCount) return sendError(res, 404, "Automation not found.");
+    await audit(u, enabled ? "creator_automation.enabled" : "creator_automation.disabled",
+      "creator_automation", null, null, { key, name: upd.rows[0].name }, req);
+    res.json({ ok: true, enabled });
+  }));
+
+  /* ── External integrations ──────────────────────────────────────────────
+     Status only. No platform is connected, because no credentials exist for
+     one — see server/creator-integrations.ts, which ships the adapter contract
+     and a test provider and nothing that pretends to be live. */
+  app.get(`${P}/creator/integrations`, asyncHandler(async (_req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    res.json({ providers: listCreatorIntegrations() });
   }));
 
   // ── helpers ───────────────────────────────────────────────────────────────

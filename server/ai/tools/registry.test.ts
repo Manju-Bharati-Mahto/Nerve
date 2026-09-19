@@ -21,18 +21,55 @@ export function mockTool(name: string, requires: AiCapability, run?: AiTool["run
 }
 
 export const userWith = (id: string, role: string, caps: AiCapability[]): AiUserContext =>
-  ({ id, role, capabilities: new Set(caps), projectScope: role === "employee" ? "own" : "all" });
+  ({ id, role, capabilities: new Set(caps), projectScope: role === "employee" ? "own" : "all",
+     creatorScope: caps.includes("creator.network") ? "all"
+                 : caps.includes("creator.team") ? "team"
+                 : caps.includes("creator.self") ? "self" : "none",
+     creatorTeamIds: [] });
 
-describe("the shipped registry in Phase 3", () => {
-  it("registers exactly three real Nerve tools", () => {
-    expect(createAiToolRegistry().size()).toBe(3);
+describe("the shipped registry", () => {
+  it("registers the Media Ops slice plus the Creator Network set", () => {
+    const names = createAiToolRegistry().listAll().map((t) => t.name);
+    expect(names.filter((n) => !n.startsWith("creator_"))).toHaveLength(3);
+    expect(names.filter((n) => n.startsWith("creator_"))).toHaveLength(18);
+    expect(createAiToolRegistry().size()).toBe(21);
   });
 
-  it("gives an admin all three, and a capability-less user none", () => {
-    const admin = userWith("u1", "admin", [...AI_CAPABILITIES]);
-    expect(createAiToolRegistry().definitionsFor(admin).map((d) => d.name).sort())
-      .toEqual(["get_current_user", "get_my_day", "get_overdue_deliverables"]);
+  it("gives a capability-less user nothing at all", () => {
     expect(createAiToolRegistry().definitionsFor(userWith("u2", "employee", []))).toEqual([]);
+  });
+
+  it("gives a creator only the self-scoped Creator tools", () => {
+    /* The whole permission model in one assertion: the same registry produces
+       a different assistant for a creator than for a Creator Admin, because a
+       tool a user lacks the capability for is never even advertised. */
+    const creator = userWith("u3", "employee", ["creator.self"]);
+    const names = createAiToolRegistry().definitionsFor(creator).map((d) => d.name).sort();
+    expect(names).toEqual([
+      "creator_get_discussion", "creator_get_my_analytics", "creator_get_my_content",
+      "creator_get_my_payouts", "creator_get_my_profile", "creator_get_my_standing",
+      "creator_get_my_work",
+    ]);
+    // No management tool, and above all no way to send anything.
+    expect(names).not.toContain("creator_send_notification");
+    expect(names).not.toContain("creator_get_payout_summary");
+  });
+
+  it("gives a team lead their team's tools but not the network's money or actions", () => {
+    const lead = userWith("u4", "employee", ["creator.self", "creator.team"]);
+    const names = createAiToolRegistry().definitionsFor(lead).map((d) => d.name);
+    expect(names).toContain("creator_get_team_analytics");
+    expect(names).toContain("creator_get_review_backlog");
+    expect(names).not.toContain("creator_get_payout_summary");
+    expect(names).not.toContain("creator_send_notification");
+  });
+
+  it("gives a Creator Admin everything Creator, including the one action", () => {
+    const admin = userWith("u5", "admin", [...AI_CAPABILITIES]);
+    const names = createAiToolRegistry().definitionsFor(admin).map((d) => d.name);
+    expect(names).toContain("creator_get_payout_summary");
+    expect(names).toContain("creator_send_notification");
+    expect(names).toHaveLength(21);
   });
 });
 
@@ -117,7 +154,10 @@ describe("the capability model stays anchored to Nerve's own permissions", () =>
   });
 
   it("stays small — a taxonomy, not a second RBAC", () => {
-    expect(AI_CAPABILITIES.length).toBeLessThanOrEqual(12);
+    /* A whole vertical was added in Phase 8 and cost three capabilities. The
+       ceiling exists to stop a capability being minted per screen; it moves
+       when a vertical arrives, not when a feature does. */
+    expect(AI_CAPABILITIES.length).toBeLessThanOrEqual(15);
     expect(new Set(AI_CAPABILITIES).size).toBe(AI_CAPABILITIES.length);
   });
 });

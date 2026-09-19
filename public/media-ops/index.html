@@ -7929,19 +7929,22 @@ const cnStatus = s=>{const m=CN_STATUS[s]||CN_STATUS.inactive;
 /* ── A creator's own view (§12) ─────────────────────────────────────────── */
 function creatorSelfView(st){
   const p=st.profile||{};
-  const tab=S.tab.creator||'opps';
+  /* The brief lands first: what needs doing today, and where they stand. */
+  const tab=S.tab.creator||'assistant';
   return `
   <div class="page-head"><div>
     <h1 class="page-title">${esc(p.display_name||p.full_name||'My Creator Profile')}</h1>
     <div class="page-sub">Your standing in the Parul Creator Network.</div>
   </div></div>
   <div class="tabs sec">
-    ${[['opps','Opportunities'],['tasks','My Tasks'],['board','Leaderboard'],
-       ['warzone','War Zone'],['achievements','Achievements'],['analytics','My Analytics'],
-       ['points','My Points'],['payouts','My Payouts'],['profile','My Profile']].map(([k,l])=>
+    ${[['assistant','Assistant'],['opps','Opportunities'],['tasks','My Tasks'],
+       ['board','Leaderboard'],['warzone','War Zone'],['achievements','Achievements'],
+       ['analytics','My Analytics'],['points','My Points'],['payouts','My Payouts'],
+       ['profile','My Profile']].map(([k,l])=>
       `<button class="tab ${tab===k?'on':''}" data-tab="${k}" data-tabkey="creator">${l}</button>`).join('')}
   </div>
-  ${tab==='opps'?cnOppsTab():tab==='tasks'?cnTasksTab(false,true)
+  ${tab==='assistant'?cnAssistantTab(false)
+   :tab==='opps'?cnOppsTab():tab==='tasks'?cnTasksTab(false,true)
    :tab==='board'?cnBoardTab()
    :tab==='warzone'?cnWarZoneTab(false)
    :tab==='achievements'?cnAchievementsTab(false)
@@ -7997,7 +8000,7 @@ function creatorManageView(st){
   <div class="tabs sec">
     ${[['creators','Creators'],['teams','Teams'],['events','Events'],['tasks','Tasks'],
        ['review','Review'],['points','Points'],['payouts','Payouts'],['recognition','Recognition'],
-       ['analytics','Analytics']].map(([k,l])=>
+       ['analytics','Analytics'],['assistant','Assistant']].map(([k,l])=>
       `<button class="tab ${tab===k?'on':''}" data-tab="${k}" data-tabkey="creator">${l}</button>`).join('')}
   </div>
   ${tab==='teams'?creatorTeamsTab(st,manage)
@@ -8008,6 +8011,7 @@ function creatorManageView(st){
    :tab==='payouts'?cnPayoutsTab(manage)
    :tab==='recognition'?cnRecognitionHub(manage)
    :tab==='analytics'?cnAnalyticsTab(manage)
+   :tab==='assistant'?`${cnAssistantTab(manage)}${manage?cnAutomationsCard()+cnIntegrationsCard():''}`
    :creatorDirectoryTab(st,manage)}`;
 }
 
@@ -9596,7 +9600,10 @@ function cnAnSignals(){
   if(!cnAnLoad()) return cnAnWait();
   if(CN_AN.err) return cnAnFail();
   const d=CN_AN.data||{};
-  return `<div class="card"><div class="card-head"><h3>Operational signals</h3>${cnFresh(d.freshness)}</div>
+  return `<div class="card"><div class="card-head"><h3>Operational signals</h3>
+    <span class="ca f gap2 ac">${cnFresh(d.freshness)}
+      <button class="btn xs ghost" data-act="cnExplain"
+        data-q="What operational signals need attention, and what is behind them?">Ask AI</button></span>
     <div class="card-body flush">${cnSignalRows(d.signals||[])}</div>
     <div class="card-foot"><span class="hint">A signal describes a CONDITION — a backlog, a deadline, a
       balance — never a person. Thresholds are fixed constants documented in the metric dictionary, so
@@ -9721,6 +9728,282 @@ function cnAnCreators(manage){
       produced in. It measures spread over time, not quality — a creator can be consistent and still be
       asked for revisions.</span></div>
   </div>`;
+}
+
+/* ── The assistant, briefs and automations (Phase 8) ──────────────────────
+   The model writes prose; every FIGURE on these screens came from a tool that
+   read a Nerve system. So the UI keeps the two visibly apart: the answer, then
+   the evidence it was built from, then anything the model inferred, labelled
+   as inference. A recommendation never looks like a reading. */
+const CN_ASK = {loaded:false, status:null, err:null, question:'', busy:false,
+                history:[], lastError:null};
+const CN_BRIEF = {loaded:false, data:null, err:null};
+const CN_MBRIEF = {loaded:false, data:null, err:null, period:'30d'};
+const CN_AUTO = {loaded:false, rows:[], lastRun:null, err:null};
+
+/* Suggested questions. Deliberately the ones a tool can actually answer — an
+   assistant that invites a question it must refuse teaches people not to
+   trust it. */
+const CN_ASK_CREATOR = [
+  "What do I need to finish?",
+  "How many approved submissions did I have this month?",
+  "How many points did I earn this cycle?",
+  "What is my current payout status?",
+  "Summarise my last 30 days.",
+];
+const CN_ASK_MANAGER = [
+  "Give me today's Creator Network summary.",
+  "What's the review backlog?",
+  "Which teams completed the most content this month?",
+  "Which opportunities are converting into approved content?",
+  "What operational signals need attention?",
+];
+
+function cnAssistantTab(manage){
+  const st=CN_ASK;
+  if(!st.loaded){
+    st.loaded=true;
+    MO_API.get('/creator/ai/status')
+      .then(d=>{st.status=d;st.err=null;})
+      .catch(e=>{st.err=e.message;})
+      .finally(()=>render());
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading the assistant…</p></div></div>';
+  }
+  if(st.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(st.err)}</p></div></div>`;
+  const s=st.status||{};
+  const prompts=manage?CN_ASK_MANAGER:CN_ASK_CREATOR;
+  return `
+  ${!s.enabled?`<div class="card mb4"><div class="card-body pad">
+    <b>The assistant is not configured on this server.</b>
+    <div class="small mut3 mt1">Briefs below still work — every figure in them is computed by Nerve,
+      not written by a model.</div></div></div>`:''}
+  ${s.canAsk&&s.enabled?`<div class="card mb4">
+    <div class="card-head"><h3>Ask</h3>
+      <span class="ca small mut3">${s.usedToday??0} of ${s.dailyLimit??0} today · ${
+        (s.tools||[]).length} tool${(s.tools||[]).length===1?'':'s'} in your scope</span></div>
+    <div class="card-body pad">
+      <textarea class="inp" id="ai-q" rows="2" ${st.busy?'disabled':''}
+        placeholder="${esc(prompts[0])}"
+        onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey))ACTIONS.cnAskGo({},this)"
+        >${esc(st.question)}</textarea>
+      <div class="between mt2" style="gap:8px;flex-wrap:wrap">
+        <span class="f gap2" style="flex-wrap:wrap">
+          ${prompts.slice(0,3).map(q=>`<button class="btn xs ghost" data-act="cnAskPreset"
+            data-q="${esc(q)}">${esc(q)}</button>`).join('')}
+        </span>
+        <button class="btn primary" data-act="cnAskGo" ${st.busy?'disabled':''}
+          >${st.busy?'Thinking…':'Ask'}</button>
+      </div>
+      <div class="hint mt2">Answers come from your own Creator Network data. The assistant cannot
+        award points, move money or approve work${manage?', and it asks before sending anything':''}.</div>
+    </div></div>`:''}
+  ${st.lastError?`<div class="card mb4"><div class="card-body pad">
+    <b style="color:var(--danger)">${esc(st.lastError)}</b></div></div>`:''}
+  ${st.history.map(cnAnswerCard).join('')}
+  ${manage?cnManagementBrief():cnCreatorBrief()}`;
+}
+
+/* One answer. Fact, then evidence, then interpretation — in that order and
+   visibly separated, because the whole value of a grounded assistant is lost
+   if a reading and a guess are rendered the same way. */
+function cnAnswerCard(a,i){
+  return `<div class="card mb4">
+    <div class="card-head"><h3 style="font-weight:600">${esc(a.question)}</h3>
+      ${a.usedAction?'<span class="ca status st-warn">Action taken</span>':''}</div>
+    <div class="card-body pad">
+      <div style="white-space:pre-wrap">${esc(a.answer)}</div>
+      ${(a.facts||[]).length?`<div class="mt3">
+        <div class="small mut3 mb1">From your Creator Network data</div>
+        <ul class="small" style="margin:0;padding-left:18px">
+          ${a.facts.map(f=>`<li>${esc(f)}</li>`).join('')}</ul></div>`:''}
+      ${(a.recommendations||[]).length?`<div class="mt3">
+        <div class="small mut3 mb1">Suggested — the assistant's interpretation, not a Nerve figure</div>
+        <ul class="small" style="margin:0;padding-left:18px">
+          ${a.recommendations.map(f=>`<li>${esc(f)}</li>`).join('')}</ul></div>`:''}
+      ${(a.warnings||[]).length?`<div class="hint mt3" style="color:var(--warn)">
+        ${a.warnings.map(esc).join(' · ')}</div>`:''}
+    </div>
+    ${(a.sources||[]).length?`<div class="card-foot"><span class="hint">Read from ${
+      a.sources.map(s=>esc(String(s).replace(/^creator_get_/,'').replace(/_/g,' '))).join(', ')}${
+      a.stopReason&&a.stopReason!=='final_answer'?` · stopped: ${esc(a.stopReason)}`:''}</span></div>`:''}
+  </div>`;
+}
+
+/* ── A creator's brief ────────────────────────────────────────────────── */
+function cnCreatorBrief(){
+  const st=CN_BRIEF;
+  if(!st.loaded){
+    st.loaded=true;
+    MO_API.get('/creator/ai/brief')
+      .then(d=>{st.data=d;st.err=null;})
+      .catch(e=>{st.err=e.message;})
+      .finally(()=>render());
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Building your brief…</p></div></div>';
+  }
+  if(st.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(st.err)}</p></div></div>`;
+  const d=st.data||{}, p=d.production||{}, t=d.trends||{}, s=d.standing||{};
+  const list=(rows,empty,fmt)=>rows&&rows.length
+    ? `<ul class="small" style="margin:0;padding-left:18px">${rows.map(fmt).join('')}</ul>`
+    : `<div class="small mut3">${empty}</div>`;
+  return `
+  <div class="card"><div class="card-head"><h3>My brief</h3>
+    <span class="ca small mut3">Computed by Nerve · ${cnWhen(d.generatedAt)}</span></div>
+    <div class="card-body pad">
+      <div class="grid g2" style="gap:24px">
+        <div>
+          <div class="small mut3 mb2">Needs you</div>
+          ${(d.overdue||[]).length?`<div class="mb2"><b style="color:var(--danger)">Past deadline</b>
+            ${list(d.overdue,'',w=>`<li>${esc(w.title)} — due ${w.deadline?D.fmt(w.deadline):'—'}</li>`)}</div>`:''}
+          ${(d.awaitingSubmission||[]).length?`<div class="mb2"><b>Finished but not submitted</b>
+            ${list(d.awaitingSubmission,'',w=>`<li>${esc(w.title)}</li>`)}</div>`:''}
+          ${(d.dueSoon||[]).length?`<div class="mb2"><b>Due soon</b>
+            ${list(d.dueSoon,'',w=>`<li>${esc(w.title)} — ${w.deadline?D.fmt(w.deadline):'—'}</li>`)}</div>`:''}
+          ${(d.awaitingReview||[]).length?`<div class="mb2"><b>With a reviewer</b>
+            ${list(d.awaitingReview,'',x=>`<li>${esc(x.task)} · V${x.version}</li>`)}</div>`:''}
+          ${!(d.overdue||[]).length&&!(d.awaitingSubmission||[]).length&&!(d.dueSoon||[]).length
+            ?'<div class="small mut3">Nothing is waiting on you.</div>':''}
+        </div>
+        <div>
+          <div class="small mut3 mb2">Where you stand</div>
+          <table class="tbl compact"><tbody>
+            <tr><td>Points${s.cycle?` · ${esc(s.cycle.label)}`:''}</td>
+              <td class="num"><b>${s.pointsThisCycle??0}</b></td></tr>
+            <tr><td>Rank</td><td class="num">${s.rank?'#'+s.rank:'<span class="mut3">—</span>'}${
+              s.of?` <span class="mut3">of ${s.of}</span>`:''}</td></tr>
+            <tr><td>Approved (30 days)</td><td class="num">${p.approved??0} ${cnTrend(t.approved)}</td></tr>
+            <tr><td>Approval rate</td><td class="num">${cnPct(p.approval_rate)}</td></tr>
+            <tr><td>Achievements</td><td class="num">${(s.achievements||[]).length}</td></tr>
+            ${d.payouts?`<tr><td>Outstanding</td><td class="num">${rupees(d.payouts.outstanding)}</td></tr>`:''}
+          </tbody></table>
+        </div>
+      </div>
+    </div>
+    <div class="card-foot"><span class="hint">Every figure here is read from your points, submissions
+      and payouts — no model wrote any of them.</span></div></div>`;
+}
+
+/* ── The management brief ─────────────────────────────────────────────── */
+function cnManagementBrief(){
+  const st=CN_MBRIEF;
+  if(!st.loaded){
+    st.loaded=true;
+    MO_API.get('/creator/ai/management-brief?period='+encodeURIComponent(st.period))
+      .then(d=>{st.data=d;st.err=null;})
+      .catch(e=>{st.err=e.message;})
+      .finally(()=>render());
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Building the brief…</p></div></div>';
+  }
+  if(st.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(st.err)}</p></div></div>`;
+  const d=st.data||{}, p=d.production||{}, t=d.trends||{}, f=d.funnel||{},
+        rv=d.review||{}, bl=d.backlog||{}, m=d.money, rec=d.recognition||{};
+  return `
+  <div class="card"><div class="card-head" style="gap:8px;flex-wrap:wrap">
+    <h3>Management brief</h3>
+    <div class="ca f gap2 ac">
+      <span class="small mut3">Computed by Nerve · ${cnWhen(d.generatedAt)}</span>
+      <select class="inp" style="width:auto;height:30px;font-size:12px" onchange="ACTIONS.cnMBriefPeriod({},this)">
+        ${CN_RANGES.filter(([v])=>v!=='custom').map(([v,l])=>
+          `<option value="${v}" ${st.period===v?'selected':''}>${l}</option>`).join('')}
+      </select>
+      <button class="btn xs" data-act="cnCopyBrief">Copy</button>
+    </div></div>
+    <div class="card-body pad" id="cn-brief-body">
+      <div class="small mut3 mb2">${esc((d.period||{}).label||'')}</div>
+      <div class="grid g2" style="gap:24px">
+        <div>
+          <div class="small mut3 mb2">Production</div>
+          <table class="tbl compact"><tbody>
+            <tr><td>Operationally active creators</td>
+              <td class="num">${p.operationally_active??0} ${cnTrend(t.operationally_active)}</td></tr>
+            <tr><td>Assignments completed</td><td class="num">${p.completed??0} ${cnTrend(t.completed)}</td></tr>
+            <tr><td>Submissions</td><td class="num">${p.submissions??0} ${cnTrend(t.submissions)}</td></tr>
+            <tr><td>Approved</td><td class="num"><b>${p.approved??0}</b> ${cnTrend(t.approved)}</td></tr>
+            <tr><td>Approval rate</td><td class="num">${cnPct(p.approval_rate)}</td></tr>
+            <tr><td>First-pass approvals</td><td class="num">${cnPct(f.first_pass_rate)}</td></tr>
+            <tr><td>Points earned</td><td class="num">${p.points??0} ${cnTrend(t.points)}</td></tr>
+          </tbody></table>
+        </div>
+        <div>
+          <div class="small mut3 mb2">Review and recognition</div>
+          <table class="tbl compact"><tbody>
+            <tr><td>Awaiting review</td><td class="num"><b>${bl.total??0}</b></td></tr>
+            <tr><td>Waiting over 24 hours</td><td class="num">${bl.olderThan24h??0}</td></tr>
+            <tr><td>Median review time</td><td class="num">${cnHrs(rv.median_review_hours)}</td></tr>
+            <tr><td>Achievements earned</td><td class="num">${rec.achievements??0}</td></tr>
+            <tr><td>Creator of the Cycle awards</td><td class="num">${rec.cycle_awards??0}</td></tr>
+            <tr><td>Competitions running</td>
+              <td class="num">${(d.competitions||[]).filter(k=>k.status==='active').length}</td></tr>
+          </tbody></table>
+        </div>
+      </div>
+      ${m?`<div class="mt3"><div class="small mut3 mb2">Money</div>
+        <table class="tbl compact"><tbody>
+          <tr><td>Calculated</td><td class="num">${rupees(m.gross)}</td></tr>
+          <tr><td>Paid</td><td class="num"><b>${rupees(m.paid)}</b></td></tr>
+          <tr><td>Outstanding <span class="mut3">(all time)</span></td>
+            <td class="num">${rupees(m.outstanding)}</td></tr>
+        </tbody></table></div>`:''}
+      ${(d.signals||[]).length?`<div class="mt3">
+        <div class="small mut3 mb2">Operational signals</div>
+        ${d.signals.map(s=>`<div class="small mb1">
+          <span class="status ${s.severity==='critical'?'st-danger':s.severity==='attention'?'st-warn':'st-info'}"
+            >${esc(titleCase(s.severity))}</span> ${esc(s.message)}</div>`).join('')}</div>`
+      :'<div class="hint mt3">No operational signal is above its threshold.</div>'}
+    </div>
+    <div class="card-foot"><span class="hint">Deterministic: every figure is computed from the point
+      ledger, the submissions, the payouts and the recognition records. Nothing here was written by a
+      model, and nothing here changed anything.</span></div></div>`;
+}
+
+/* ── Automations ──────────────────────────────────────────────────────── */
+function cnAutomationsCard(){
+  const st=CN_AUTO;
+  if(!st.loaded){
+    st.loaded=true;
+    MO_API.get('/creator/automations')
+      .then(d=>{st.rows=d.automations||[];st.lastRun=d.lastRun||null;st.err=null;})
+      .catch(e=>{st.err=e.message;})
+      .finally(()=>render());
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading automations…</p></div></div>';
+  }
+  if(st.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(st.err)}</p></div></div>`;
+  const r=st.lastRun;
+  return `<div class="card">
+    <div class="card-head"><h3>Automations</h3>
+      <span class="ca small mut3">${r
+        ? `Last run ${cnWhen(r.at)} · ${r.notified} notification${r.notified===1?'':'s'}${
+            (r.failures||[]).length?` · ${r.failures.length} failed`:''}`
+        : 'Has not run yet in this process'}</span></div>
+    <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Rule</th><th>When it fires</th><th>What it does</th><th class="num">Status</th></tr></thead>
+      <tbody>${st.rows.map(a=>`<tr>
+        <td class="t-main">${esc(a.name)}<div class="t-sub">${esc(a.key)}</div></td>
+        <td class="small" style="white-space:normal">${esc(a.trigger||'—')}</td>
+        <td class="small" style="white-space:normal">${esc(a.action||'—')}</td>
+        <td class="num nowrap">
+          <span class="status ${a.enabled?'st-success':'st-neutral'}">${a.enabled?'On':'Off'}</span>
+          <button class="btn xs ghost" data-act="cnAutoToggle" data-key="${esc(a.key)}"
+            data-to="${a.enabled?'0':'1'}">${a.enabled?'Disable':'Enable'}</button></td>
+      </tr>`).join('')}</tbody></table></div></div>
+    ${r&&(r.failures||[]).length?`<div class="card-foot">
+      <span class="hint" style="color:var(--danger)">Last run reported: ${
+        r.failures.map(esc).join(' · ')}</span></div>`:''}
+    <div class="card-foot"><span class="hint">These run on Nerve's existing five-minute tick, alongside
+      the Media Ops rules. Each one notices a condition and notifies somebody; none awards points, moves
+      money or calls a model. A repeated notification is suppressed while the first is still unread.</span></div>
+  </div>`;
+}
+
+function cnIntegrationsCard(){
+  return `<div class="card sec"><div class="card-head"><h3>External platforms</h3></div>
+    <div class="card-body pad">
+      <div class="small mut3">No platform is connected. Nerve holds no credentials for Instagram,
+        YouTube or any other service in this deployment, so nothing is published, imported or measured
+        from one.</div>
+      <div class="hint mt2">The adapter contract exists and is tested, so a platform can be added when
+        access is granted. When one is: external metrics stay separate from Creator points, and tokens
+        stay server-side — never in a browser, a prompt or an audit row.</div>
+    </div></div>`;
 }
 
 /* ── Re-adding someone who was removed ─────────────────────────────────────
@@ -16292,6 +16575,63 @@ const ACTIONS = {
     a.download='';
     document.body.appendChild(a); a.click(); a.remove();
     toast('Export downloading','ok');
+  },
+  /* ── Creator Network Phase 8: the assistant ──────────────────────────
+     A question goes up; an answer with its evidence comes back. Nothing here
+     decides anything: the server resolves who is asking, which tools they may
+     reach, and whether an action is allowed. */
+  cnAskPreset:(d)=>{CN_ASK.question=d.q;render();
+    const el=$('#ai-q'); if(el){el.value=d.q;el.focus();}},
+  cnAskGo:()=>{
+    const el=$('#ai-q');
+    const question=((el||{}).value||'').trim();
+    if(question.length<3){toast('Ask a question first','bad');return;}
+    if(CN_ASK.busy)return;
+    CN_ASK.busy=true; CN_ASK.question=question; CN_ASK.lastError=null; render();
+    MO_API.post('/creator/ai/ask',{question})
+      .then(r=>{
+        CN_ASK.history.unshift({question, answer:r.answer, facts:r.facts,
+          recommendations:r.recommendations, warnings:r.warnings, sources:r.sources,
+          stopReason:r.stopReason, usedAction:r.usedAction});
+        CN_ASK.history=CN_ASK.history.slice(0,8);
+        CN_ASK.question='';
+        // An action actually happened: the affected screens are now stale.
+        if(r.usedAction) cnReload('payouts');
+      })
+      .catch(e=>{
+        /* A refusal is information, not a crash. The daily limit and an
+           absent provider are ordinary states and are said plainly. */
+        CN_ASK.lastError = e.status===429
+          ? "You have reached today's assistant limit. It resets at midnight."
+          : e.status===503 ? 'The assistant is not configured on this server.'
+          : e.message;
+      })
+      .finally(()=>{CN_ASK.busy=false;CN_ASK.status=null;CN_ASK.loaded=false;render();});
+  },
+  cnMBriefPeriod:(d,n)=>{CN_MBRIEF.period=n.value;CN_MBRIEF.loaded=false;render();},
+  cnCopyBrief:()=>{
+    const el=$('#cn-brief-body');
+    if(!el)return;
+    const text=el.innerText.replace(/\n{3,}/g,'\n\n').trim();
+    (navigator.clipboard?navigator.clipboard.writeText(text):Promise.reject())
+      .then(()=>toast('Brief copied','ok'))
+      .catch(()=>toast('Select the brief and copy it','bad'));
+  },
+  cnAutoToggle:(d)=>{
+    MO_API.patch('/creator/automations/'+encodeURIComponent(d.key),{enabled:d.to==='1'})
+      .then(()=>{toast(d.to==='1'?'Automation enabled':'Automation disabled','ok');
+        CN_AUTO.loaded=false;render();})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  /* Contextual "explain this". Sends a question the tools can answer rather
+     than the numbers already on screen — the assistant re-reads them itself,
+     so what it says is grounded rather than echoed back. */
+  cnExplain:(d)=>{
+    S.tab.creator='assistant';
+    CN_ASK.question=d.q||'What needs attention right now?';
+    CN_ASK.loaded=false;
+    render();
+    setTimeout(()=>{const el=$('#ai-q'); if(el){el.value=CN_ASK.question;} ACTIONS.cnAskGo({});}, 60);
   },
   /* What a role earns when its work is approved. Set on the requirement so the
      approval path never has to guess from a free-text type. */

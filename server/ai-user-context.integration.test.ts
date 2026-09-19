@@ -179,10 +179,14 @@ describe("10. SMC members use the unified identity model", () => {
 });
 
 describe("the context carries nothing sensitive", () => {
-  maybe()("exposes only id, role, capabilities and scope", async () => {
+  maybe()("exposes only id, role, capabilities and the two scopes", async () => {
     const emp = await mkUser("shape", "user", "media", null);
     const ctx = await build(emp);
-    expect(Object.keys(ctx).sort()).toEqual(["capabilities", "id", "projectScope", "role"]);
+    /* Phase 8 added the Creator Network reach. Still an id, a role and resolved
+       scope — no name, no email, no profile, nothing that would be a problem
+       sitting in a prompt. */
+    expect(Object.keys(ctx).sort()).toEqual(
+      ["capabilities", "creatorScope", "creatorTeamIds", "id", "projectScope", "role"]);
     const json = JSON.stringify({ ...ctx, capabilities: [...ctx.capabilities] });
     for (const banned of ["password", "email", "phone", "hash", "token", "secret"])
       expect(json.toLowerCase()).not.toContain(banned);

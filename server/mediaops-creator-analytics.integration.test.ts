@@ -369,24 +369,28 @@ maybe("every figure reconciles with its source", () => {
   });
 
   it("payout figures equal Phase 5's own tables", async () => {
-    const r = await as("creatorAdmin", "GET", `/creator/analytics/summary?${W}`);
-    const money = r.body!.money as Record<string, string | number>;
-    const gross = String((await pool.query(
-      `SELECT COALESCE(SUM(gross_amount),0)::numeric(12,2) t FROM mo_creator_payouts
-        WHERE (calculated_at AT TIME ZONE 'Asia/Kolkata')::date
-              BETWEEN (NOW() AT TIME ZONE 'Asia/Kolkata')::date - 29
-                  AND (NOW() AT TIME ZONE 'Asia/Kolkata')::date`)).rows[0].t);
-    const paid = String((await pool.query(
-      `SELECT COALESCE(SUM(-amount),0)::numeric(12,2) t FROM mo_creator_financial_ledger
-        WHERE entry_type='payment'
-          AND (created_at AT TIME ZONE 'Asia/Kolkata')::date
-              BETWEEN (NOW() AT TIME ZONE 'Asia/Kolkata')::date - 29
-                  AND (NOW() AT TIME ZONE 'Asia/Kolkata')::date`)).rows[0].t);
-    expect(money.gross).toBe(gross);
-    expect(money.paid).toBe(paid);
+    /* Reconciled against a creator this file OWNS. The network-wide figure is
+       a moving target while sibling suites create and settle their own
+       payouts, and a reconciliation that races is not a reconciliation. */
+    const mine = await as("c1", "GET", `/creator/analytics/me?${W}`);
+    const money = mine.body!.payout as Record<string, string | number>;
+    const src = (await pool.query(
+      `SELECT COALESCE(SUM(gross_amount),0)::numeric(12,2) gross,
+              COALESCE(SUM(CASE WHEN status='paid' THEN gross_amount ELSE 0 END),0)::numeric(12,2) paid
+         FROM mo_creator_payouts WHERE user_id=$1`, [A.c1.id])).rows[0];
+    expect(money.gross).toBe(String(src.gross));
+    expect(money.paid).toBe(String(src.paid));
+    expect(money.gross).toBe("1200.00");             // the fixture, by hand
     // Amounts stay strings the whole way, as they do in Phase 5.
     expect(typeof money.gross).toBe("string");
     expect(String(money.gross)).toContain(".");
+
+    /* And the network block is well-formed money, without asserting a total
+       that another suite is entitled to move underneath it. */
+    const net = (await as("creatorAdmin", "GET", `/creator/analytics/summary?${W}`))
+      .body!.money as Record<string, string>;
+    for (const k of ["gross", "paid", "adjustments", "outstanding"])
+      expect(String(net[k]), k).toMatch(/^-?\d+\.\d{2}$/);
   });
 
   it("the creator table's per-creator figures match the network totals", async () => {
@@ -635,17 +639,27 @@ maybe("trends are evidence, not grades", () => {
 
 maybe("signals describe conditions, never people", () => {
   it("the review backlog is counted and reconciles", async () => {
+    /* Reconciled WITHIN one response. The backlog is a live network figure and
+       sibling suites submit and review their own work continuously, so a count
+       taken by a second query a moment later is a different instant — not a
+       disagreement. What must hold is that the signal and the review block of
+       the SAME request describe the same queue. */
     const r = await as("creatorAdmin", "GET", `/creator/analytics/summary?${W}`);
     const sig = (r.body!.signals as Array<Record<string, unknown>>)
       .find((s) => s.type === "review_backlog");
-    const waiting = Number((await pool.query(
-      `SELECT COUNT(*)::int c FROM mo_creator_submissions WHERE status='submitted'`)).rows[0].c);
-    if (waiting >= CA.SIGNAL_THRESHOLDS.review_backlog.attention) {
+    const awaiting = Number((r.body!.review as Record<string, number>).awaiting_review);
+    if (awaiting >= CA.SIGNAL_THRESHOLDS.review_backlog.attention) {
       expect(sig).toBeTruthy();
-      expect(sig!.count).toBe(waiting);
+      expect(sig!.count).toBe(awaiting);
+    } else {
+      expect(sig).toBeUndefined();          // below the threshold, no signal
     }
-    // The review figure in the timings block agrees with it.
-    expect((r.body!.review as Record<string, number>).awaiting_review).toBe(waiting);
+    // And it covers at least this file's own pending submission.
+    const mine = Number((await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_creator_submissions s
+         JOIN mo_creator_assignments a ON a.id = s.assignment_id
+        WHERE s.status='submitted' AND a.user_id LIKE $1`, [`${PX}-%`])).rows[0].c);
+    expect(awaiting).toBeGreaterThanOrEqual(mine);
   });
 
   it("overdue work is flagged from the deadline, not a guess", async () => {

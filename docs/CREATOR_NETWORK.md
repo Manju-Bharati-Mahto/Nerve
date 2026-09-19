@@ -1,8 +1,9 @@
 # Nerve Creator Network — Architecture
 
 > Living document. Reference for every Creator Network phase.
-> Status: **Phase 7 complete** — analytics, growth intelligence and management
-> intelligence are live. Phase 8 (AI and automation) has not started.
+> Status: **Phase 8 complete** — the Creator Network is finished. AI assistant,
+> automation, discussion and the integration contract are live.
+> AI architecture in detail: `docs/CREATOR_AI.md`.
 
 Parul University runs a creator network: an incentive-based content workforce
 producing reels, shorts, vlogs, event and campus content, paid in points, ranks
@@ -296,7 +297,7 @@ onto it. Media Ops `/state` was not touched.
 | **5 ✅** | Payout rates, payouts, financial ledger, payment, statements |
 | **6 ✅** | Leaderboard, achievements, Creator of the Cycle, War Zone |
 | **7 ✅** | Analytics, growth intelligence, management intelligence |
-| 8 | Notifications, automation, chat, AI, platform integrations |
+| **8 ✅** | AI assistant, automation, discussion, integration contract |
 
 Each phase owns its database changes, service layer, APIs, permissions,
 frontend, validation, audit, tests and regression run. Phases are not combined.
@@ -1447,3 +1448,108 @@ anything it says can be checked against the same SQL these tests use.
   fingerprints, the 20-case security matrix, trend edge cases, signal
   thresholds, and a 100-creator/1,000-assignment performance fixture proving
   the query count does not move with the row count.
+
+---
+
+## PHASE 8 — AI, automation, discussion, integrations
+
+> Full AI architecture: **`docs/CREATOR_AI.md`**. This section is the summary
+> and the parts that belong with the rest of the Creator Network.
+
+### The rule the whole phase turns on
+
+**The assistant reads Nerve. It is not where anything lives.** Points come from
+the point ledger, money from the financial ledger, rank from the rank engine,
+figures from Phase 7 — and the assistant quotes them through tools. It computes
+nothing, stores nothing and, with one narrow exception, changes nothing.
+
+### No second anything
+
+Phase 8 added no AI framework, no scheduler, no notification table and no chat
+table. It plugs into what existed: `server/ai/` for the model, the five-minute
+tick in `server/index.ts` for time, `mo_automation_rules` for configuration,
+`mo_notifications` for delivery, `mo_comments` for discussion.
+
+### Who gets an assistant
+
+Any **active** Creator Network member, gated by the creator module so an Admin
+can revoke it per person with no new machinery. The same registry produces a
+different assistant for each role, because a tool a user lacks the capability
+for is never advertised:
+
+| | Tools | Money | Can act |
+|---|---|---|---|
+| Creator | 7, all self-scoped | own only | no |
+| Team Lead | + team analytics, backlog, signals | **none** | no |
+| Creator Admin / Nerve Admin | all 18 | network | one, confirmed |
+
+### Actions
+
+`READ → DRAFT → CONFIRM → EXECUTE`. One mutation exists —
+`creator_send_notification` — and it needs a signed confirmation bound to the
+caller, the action, the resolved recipients, the text and an expiry. Money,
+points, verdicts and creator identity are **read-only to the assistant**.
+
+### Automations
+
+Six rules in `mo_automation_rules`, on Nerve's existing tick, each with its own
+`is_enabled` toggle and a management screen showing the last run honestly —
+including failures.
+
+| Key | Fires when | Tells |
+|---|---|---|
+| `CN-1` | review backlog reaches 15 | Creator Admins |
+| `CN-2` | an assignment is past its deadline | the creator |
+| `CN-3` | completed 3+ days ago, nothing submitted | the creator |
+| `CN-4` | a submission has waited over 48 hours | Creator Admins |
+| `CN-5` | a competition a creator entered closes within 48 hours | participants |
+| `CN-6` | the financial ledger carries a balance | Creator Admins |
+
+Every one deduplicates on an identical unread notification, so a rule running
+every five minutes produces one notification rather than 288 a day, and a
+duplicated event produces no second effect. None awards a point, moves money or
+calls a model. A recipient removed between reading the list and writing is
+skipped rather than failing the pass.
+
+### Discussion
+
+`mo_comments` with `creator_assignment` and `creator_opportunity` entity types.
+A creator sees their own assignment's thread, a Team Lead their team's, a
+Creator Admin all — derived from the **record**, so there is no conversation id
+to forge. No new table.
+
+### External platforms
+
+Nothing is connected, because no credentials exist. The adapter contract and a
+test provider ship; the status screen says `not_configured` rather than
+implying a connection. Tokens, when there are any, stay server-side and never
+enter a prompt, a browser or an audit row; external metrics never become
+Creator points.
+
+### Briefs
+
+Deterministic. A creator's brief and the management brief are computed entirely
+from Phase 7 and the creator service, and they work with no AI provider
+configured at all.
+
+---
+
+## PHASE 8 COMPLETE — THE CREATOR NETWORK IS FINISHED
+
+**Implementation notes**
+
+- Phases 0–7 are unchanged in behaviour. `AiUserContext` gained
+  `creatorScope`/`creatorTeamIds`, three capabilities were added, and the
+  Phase-3 "this slice has three tools" guards were updated to assert Phase 8's
+  reality rather than relaxed.
+- Two real findings the tests produced. Importing the tool registry pulled in
+  the database, which would have made every AI unit test open a pool — the
+  creator service now reaches the pool lazily, so building a registry still
+  costs nothing. And an automation could be taken down by a recipient removed
+  between reading the list and writing to them; that violation is now caught
+  and the recipient skipped, because losing one notification is correct and
+  losing the pass is not.
+- 49 integration tests for Phase 8, run against the real tools with hostile
+  arguments and no provider: the 30-case security matrix, prompt injection from
+  five sources, confirmation binding and expiry, automation deduplication under
+  concurrent passes, and the ledger fingerprints.

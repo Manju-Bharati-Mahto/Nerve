@@ -139,6 +139,7 @@ import {
 import * as designDb from "./design-db.js";
 import { bootstrapMediaOpsDatabase } from "./mediaops-db.js";
 import { registerMediaOpsApi, runMediaOpsAutomations } from "./mediaops-api.js";
+import { runCreatorNetworkAutomations } from "./creator-automations.js";
 
 const app = express();
 const PgStore = connectPgSimple(session);
@@ -2863,9 +2864,14 @@ bootstrapDatabase()
       runMediaOpsAutomations()
         .then(r => { if (r.autoApproved || r.notified) console.log(`Media Ops automations: ${r.autoApproved} report(s) auto-approved, ${r.notified} notification(s) queued.`); })
         .catch(e => console.error('Media Ops automations failed:', e));
+      // The Creator Network rides the same tick — Nerve has one clock.
+      runCreatorNetworkAutomations()
+        .then(r => { if (r.notified || r.failures.length) console.log(`Creator Network automations: ${r.notified} notification(s) queued${r.failures.length ? `, ${r.failures.length} rule(s) failed` : ''}.`); })
+        .catch(e => console.error('Creator Network automations failed:', e));
     }, 5 * 60 * 1000).unref();
     // Boot run so notifications / auto-approve don't wait for the first 5-min tick.
     setTimeout(() => { runMediaOpsAutomations().catch(e => console.error('Media Ops automations (boot) failed:', e)); }, 8000).unref();
+    setTimeout(() => { runCreatorNetworkAutomations().catch(e => console.error('Creator Network automations (boot) failed:', e)); }, 9000).unref();
 
     app.listen(config.apiPort, () => {
       console.log(`Nerve API listening on ${config.apiPort}`);
