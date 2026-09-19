@@ -126,11 +126,59 @@ Recommended local values:
 | `SUPER_ADMIN_EMAIL` | Yes | Seeded local super-admin login email | `super@parul.ac.in` |
 | `SUPER_ADMIN_PASSWORD` | Yes | Seeded local super-admin login password | strong temporary password |
 
-Local dev entrypoint:
+Local dev entrypoints — pick the one that matches your machine:
 
 ```bash
-npm run dev:local
+npm run dev:local     # PostgreSQL in Docker (the script starts and stops it)
+npm run dev:native    # PostgreSQL already running natively (Homebrew, Postgres.app)
 ```
+
+Both start the API on `API_PORT` and Vite on 8080, and stop both on Ctrl-C.
+`dev:native` checks the things that actually go wrong first — database
+reachable, ports free, engine present — and names the one that failed instead
+of letting a process die three layers down.
+
+With Homebrew PostgreSQL, `DATABASE_URL` points at your own server rather than
+the container, and `POSTGRES_*` / `POSTGRES_DATA_DIR` are unused:
+
+```bash
+brew services start postgresql@17
+createdb nerve      # once; Nerve creates its own tables on first boot
+```
+
+### Running a local AI model
+
+The only adapter Nerve has speaks the OpenAI `/chat/completions` format, which
+is also what Ollama, LM Studio and llama.cpp serve — so a model on your laptop
+needs **no code change**, only these variables. `http://` is accepted here
+because `127.0.0.1` is loopback; Nerve refuses plaintext to any remote host, so
+an API key can never go over the wire in clear.
+
+```bash
+ollama serve
+ollama pull llama3.1:8b        # supports tool calling — the assistant needs it
+```
+
+```dotenv
+AI_PROVIDER=openai-compatible
+AI_BASE_URL=http://127.0.0.1:11434/v1
+AI_API_KEY=ollama-local        # Ollama ignores it; Nerve requires one to be set
+AI_MODEL=llama3.1:8b
+AI_DAILY_REQUEST_LIMIT=200     # local inference is free; the cap is just a guard
+```
+
+**Pick a model that supports tool calling.** The Creator assistant answers every
+factual question by calling a tool; a model that cannot call one will either
+refuse or make a number up. `llama3.1`, `llama3.2`, `qwen2.5`, `qwen3` and
+`mistral-nemo` support tools in Ollama. Gemma does not.
+
+A local model is slower and less reliable at following the structured-answer
+format than a hosted one. That degrades gracefully: the orchestrator falls back
+to plain prose and adds a warning rather than failing the request.
+
+None of this is required. With no `AI_*` set, Nerve boots and runs identically —
+the assistant reports "not configured", and every dashboard, brief and
+automation still works, because none of them asks a model for a number.
 
 ## Secret Handling
 
