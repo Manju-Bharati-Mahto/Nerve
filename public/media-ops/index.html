@@ -7937,7 +7937,7 @@ function creatorSelfView(st){
   </div></div>
   <div class="tabs sec">
     ${[['opps','Opportunities'],['tasks','My Tasks'],['board','Leaderboard'],
-       ['warzone','War Zone'],['achievements','Achievements'],
+       ['warzone','War Zone'],['achievements','Achievements'],['analytics','My Analytics'],
        ['points','My Points'],['payouts','My Payouts'],['profile','My Profile']].map(([k,l])=>
       `<button class="tab ${tab===k?'on':''}" data-tab="${k}" data-tabkey="creator">${l}</button>`).join('')}
   </div>
@@ -7945,6 +7945,7 @@ function creatorSelfView(st){
    :tab==='board'?cnBoardTab()
    :tab==='warzone'?cnWarZoneTab(false)
    :tab==='achievements'?cnAchievementsTab(false)
+   :tab==='analytics'?cnMyAnalytics()
    :tab==='points'?cnMyPointsTab()
    :tab==='payouts'?(CN_PAYOUT.id?cnPayoutStatement(false):cnPayoutList(false))
    :creatorProfileCards(st)}`;
@@ -7995,7 +7996,8 @@ function creatorManageView(st){
   </div>`:''}
   <div class="tabs sec">
     ${[['creators','Creators'],['teams','Teams'],['events','Events'],['tasks','Tasks'],
-       ['review','Review'],['points','Points'],['payouts','Payouts'],['recognition','Recognition']].map(([k,l])=>
+       ['review','Review'],['points','Points'],['payouts','Payouts'],['recognition','Recognition'],
+       ['analytics','Analytics']].map(([k,l])=>
       `<button class="tab ${tab===k?'on':''}" data-tab="${k}" data-tabkey="creator">${l}</button>`).join('')}
   </div>
   ${tab==='teams'?creatorTeamsTab(st,manage)
@@ -8005,6 +8007,7 @@ function creatorManageView(st){
    :tab==='points'?cnPointsTab(manage)
    :tab==='payouts'?cnPayoutsTab(manage)
    :tab==='recognition'?cnRecognitionHub(manage)
+   :tab==='analytics'?cnAnalyticsTab(manage)
    :creatorDirectoryTab(st,manage)}`;
 }
 
@@ -9301,6 +9304,423 @@ function cnCompetitionDetail(manage){
                 data-name="${esc(p.creator_name)}">Disqualify</button>`:'<span class="mut3">—</span>'}</td>`:''}
         </tr>`).join('')}</tbody></table></div>`}
     </div></div>`;
+}
+
+/* ── Analytics (Phase 7) ──────────────────────────────────────────────────
+   ANALYTICS IS DERIVED DATA. Every figure below arrives computed from the
+   server; this file renders and never calculates. Where a number cannot
+   honestly be stated — no baseline, too little history, a rate over nothing —
+   it says so rather than showing a confident zero. */
+const CN_AN = {loaded:false, data:null, err:null, range:'30d', from:'', to:'', team:'all', view:'overview'};
+const CN_ANME = {loaded:false, data:null, err:null, range:'30d'};
+const CN_ANLIST = {loaded:false, rows:[], total:0, err:null, offset:0};
+const CN_AN_PAGE = 25;
+
+const CN_RANGES = [['today','Today'],['7d','Last 7 days'],['30d','Last 30 days'],
+                   ['90d','Last 90 days'],['cycle','Current cycle'],['previous_cycle','Previous cycle'],
+                   ['custom','Custom range…']];
+/* A trend, said in words. No arrow without a number behind it, and no number
+   where the data cannot support one. */
+function cnTrend(t){
+  if(!t) return '';
+  if(t.direction==='no_baseline') return '<span class="t-sub">No previous-period baseline</span>';
+  if(t.direction==='insufficient') return '<span class="t-sub">Insufficient history</span>';
+  const up=t.change>0, flat=t.direction==='stable';
+  const col=flat?'var(--text-2)':up?'var(--success)':'var(--danger)';
+  return `<span class="t-sub" style="color:${col}">${flat?'→':up?'↑':'↓'} ${
+    Math.abs(t.change)}${t.change_pct==null?'':` (${t.change_pct>0?'+':''}${t.change_pct}%)`} vs previous</span>`;
+}
+const cnPct = v=>v==null?'<span class="mut3">—</span>':`${v}%`;
+const cnHrs = v=>v==null?'<span class="mut3">—</span>':v<1?`${Math.round(v*60)}m`:v<48?`${v}h`:`${Math.round(v/24)}d`;
+const cnRangeQuery = (st)=>{
+  const q=new URLSearchParams({range:st.range});
+  if(st.range==='custom'){ q.set('from',st.from||''); q.set('to',st.to||''); }
+  return q.toString();
+};
+function cnRangePicker(st,act){
+  return `<span class="f gap2 ac" style="flex-wrap:wrap">
+    <select class="inp" style="width:auto;height:30px;font-size:12px" onchange="ACTIONS.${act}({k:'range'},this)">
+      ${CN_RANGES.map(([v,l])=>`<option value="${v}" ${st.range===v?'selected':''}>${l}</option>`).join('')}
+    </select>
+    ${st.range==='custom'?`
+      <input class="inp" type="date" style="width:auto;height:30px;font-size:12px" value="${esc(st.from||'')}"
+        onchange="ACTIONS.${act}({k:'from'},this)">
+      <input class="inp" type="date" style="width:auto;height:30px;font-size:12px" value="${esc(st.to||'')}"
+        onchange="ACTIONS.${act}({k:'to'},this)">`:''}
+  </span>`;
+}
+/* Freshness, stated plainly. It says "Live" because it is — every figure was
+   computed by the request that drew the page. */
+const cnFresh = f=>!f?'':`<span class="small mut3">${f.mode==='live'?'Live'
+  :`Updated ${cnWhen(f.computed_at)}`} · ${cnWhen(f.computed_at)}</span>`;
+
+/* ── A creator's own analytics ────────────────────────────────────────── */
+function cnMyAnalytics(){
+  const st=CN_ANME;
+  if(!st.loaded){
+    st.loaded=true;
+    MO_API.get('/creator/analytics/me?'+cnRangeQuery(st))
+      .then(d=>{st.data=d;st.err=null;})
+      .catch(e=>{st.err=e.message;})
+      .finally(()=>render());
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Working out your numbers…</p></div></div>';
+  }
+  if(st.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(st.err)}</p></div></div>`;
+  const d=st.data||{}, p=d.production||{}, t=d.trends||{}, f=d.funnel||{}, rv=d.review||{},
+        rk=d.rank||{}, rec=d.recognition||{}, pay=d.payout, con=d.consistency||{};
+  return `
+  <div class="between mb3" style="gap:8px;flex-wrap:wrap">
+    <div class="small mut3">${esc((d.period||{}).label||'')} · ${cnFresh(d.freshness)}</div>
+    ${cnRangePicker(st,'cnMyAnRange')}
+  </div>
+  <div class="grid g4 sec">
+    ${[['Approved content', p.approved, t.approved],
+       ['Submitted', p.submissions, t.submissions],
+       ['Completed assignments', p.completed, t.completed],
+       ['Points earned', p.points, t.points]]
+      .map(([l,v,tr])=>`<div class="stat"><span class="stat-main">
+        <span class="stat-label">${l}</span><span class="stat-val">${v??0}</span>
+        ${cnTrend(tr)}</span></div>`).join('')}
+  </div>
+  <div class="grid g2 sec">
+    <div class="card"><div class="card-head"><h3>Your content</h3></div>
+      <div class="card-body pad"><table class="tbl compact"><tbody>
+        <tr><td>Assignments in the period</td><td class="num">${f.assigned??0}</td></tr>
+        <tr><td>Completed</td><td class="num">${f.completed??0}</td></tr>
+        <tr><td>Sent for review</td><td class="num">${f.submitted??0}</td></tr>
+        <tr><td>Approved</td><td class="num"><b>${f.approved??0}</b></td></tr>
+        <tr><td>Approval rate <span class="mut3">(of reviewed versions)</span></td>
+          <td class="num">${cnPct(p.approval_rate)}</td></tr>
+        <tr><td>Approved without a revision</td><td class="num">${cnPct(f.first_pass_rate)}</td></tr>
+        <tr><td>Versions per approved piece</td>
+          <td class="num">${f.avg_versions_to_approval??'<span class="mut3">—</span>'}</td></tr>
+      </tbody></table>
+      <div class="hint mt2">Approval rate counts reviewed versions, not assignments — a piece sent back
+        once and then approved is two reviews.</div></div></div>
+
+    <div class="card"><div class="card-head"><h3>Where you stand</h3></div>
+      <div class="card-body pad"><table class="tbl compact"><tbody>
+        <tr><td>Rank${rk.cycle?` · ${esc(rk.cycle)}`:''}</td>
+          <td class="num"><b>${rk.place?'#'+rk.place:'<span class="mut3">—</span>'}</b>${
+            rk.of?` <span class="mut3">of ${rk.of}</span>`:''}</td></tr>
+        <tr><td>Points this cycle</td><td class="num">${rk.points??0}</td></tr>
+        ${rk.previous_cycle?`<tr><td>${esc(rk.previous_cycle)}</td>
+          <td class="num">${rk.previous_place?'#'+rk.previous_place:'<span class="mut3">—</span>'}
+            <span class="mut3">· ${rk.previous_points??0} pts</span></td></tr>`:''}
+        <tr><td>Weeks you produced in</td>
+          <td class="num">${con.active_weeks??0} of ${con.weeks??0} ${
+            con.pct==null?'':`<span class="mut3">(${con.pct}%)</span>`}</td></tr>
+        <tr><td>Achievements earned</td><td class="num">${rec.achievements??0}</td></tr>
+        <tr><td>Competition results</td><td class="num">${rec.competition_results??0}${
+          rec.competition_wins?` <span class="mut3">· ${rec.competition_wins} won</span>`:''}</td></tr>
+      </tbody></table>
+      <div class="hint mt2">Rank comes from the Creator Network rank engine. Where a cycle was tied, both
+        ranks are shown rather than a movement, because the difference would not mean one thing.</div></div></div>
+  </div>
+  <div class="grid g2 sec">
+    <div class="card"><div class="card-head"><h3>Your wait on review</h3></div>
+      <div class="card-body pad"><table class="tbl compact"><tbody>
+        <tr><td>Typical review time <span class="mut3">(median)</span></td>
+          <td class="num">${cnHrs(rv.median_review_hours)}</td></tr>
+        <tr><td>Average review time</td><td class="num">${cnHrs(rv.avg_review_hours)}</td></tr>
+        <tr><td>Awaiting a verdict now</td><td class="num">${rv.awaiting_review??0}</td></tr>
+        ${rv.oldest_waiting_hours!=null?`<tr><td>Longest currently waiting</td>
+          <td class="num">${cnHrs(rv.oldest_waiting_hours)}</td></tr>`:''}
+      </tbody></table>
+      <div class="hint mt2">This is how long reviewers took on your work, not something you did.</div></div></div>
+    ${pay?`<div class="card"><div class="card-head"><h3>Your payouts</h3></div>
+      <div class="card-body pad"><table class="tbl compact"><tbody>
+        <tr><td>Payouts</td><td class="num">${pay.payouts}</td></tr>
+        <tr><td>Calculated</td><td class="num">${rupees(pay.gross)}</td></tr>
+        <tr><td>Paid</td><td class="num"><b>${rupees(pay.paid)}</b></td></tr>
+        ${pay.outstanding!=='0.00'?`<tr><td>${String(pay.outstanding).startsWith('-')?'Overpaid':'Outstanding'}</td>
+          <td class="num">${rupees(pay.outstanding)}</td></tr>`:''}
+      </tbody></table>
+      <div class="hint mt2">Money comes from the financial ledger. Full statements are under My Payouts.</div></div></div>`:''}
+  </div>`;
+}
+
+/* ── Management and team analytics ────────────────────────────────────── */
+function cnAnalyticsTab(manage){
+  const st=CN_AN;
+  const views=[['overview','Overview'],['creators','Creators'],['teams','Teams'],
+               ['content','Content & review']].concat(manage?[['signals','Signals']]:[]);
+  return `
+  <div class="between mb3" style="gap:8px;flex-wrap:wrap">
+    <span class="f ac gap2" style="flex-wrap:wrap">
+      ${views.map(([k,l])=>`<button class="btn xs${st.view===k?' primary':''}"
+        data-act="cnAnView" data-v="${k}">${l}</button>`).join('')}
+    </span>
+    <span class="f gap2 ac" style="flex-wrap:wrap">
+      ${cnRangePicker(st,'cnAnRange')}
+      <button class="btn xs" data-act="cnAnExport" data-ds="${st.view==='teams'?'teams':st.view==='content'?'opportunities':'creators'}">Export CSV</button>
+    </span>
+  </div>
+  ${st.view==='creators'?cnAnCreators(manage)
+   :st.view==='content'?cnAnContent()
+   :st.view==='teams'?cnAnTeams()
+   :st.view==='signals'?cnAnSignals()
+   :cnAnOverview(manage)}`;
+}
+
+function cnAnLoad(){
+  const st=CN_AN;
+  if(st.loaded) return true;
+  st.loaded=true;
+  const path=st.view==='teams'?'/creator/analytics/team'
+    :st.view==='content'?'/creator/analytics/content':'/creator/analytics/summary';
+  const q=cnRangeQuery(st)+(st.view==='teams'&&st.team!=='all'?`&team_id=${st.team}`:'');
+  MO_API.get(path+'?'+q)
+    .then(d=>{st.data=d;st.err=null;})
+    .catch(e=>{st.err=e.message;st.data=null;})
+    .finally(()=>render());
+  return false;
+}
+const cnAnWait = ()=>'<div class="card"><div class="empty" style="padding:26px"><p>Computing…</p></div></div>';
+const cnAnFail = ()=>`<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_AN.err)}</p></div></div>`;
+
+function cnAnOverview(manage){
+  if(!cnAnLoad()) return cnAnWait();
+  if(CN_AN.err) return cnAnFail();
+  const d=CN_AN.data||{}, p=d.production||{}, t=d.trends||{}, ro=d.roster||{},
+        f=d.funnel||{}, rv=d.review||{}, m=d.money, rec=d.recognition||{};
+  const sig=(d.signals||[]).slice(0,4);
+  return `
+  <div class="between mb2"><div class="small mut3">${esc((d.period||{}).label||'')}</div>${cnFresh(d.freshness)}</div>
+  <div class="grid g4 sec">
+    ${[['Operationally active', p.operationally_active, t.operationally_active,
+        `of ${ro.on_network??0} on the network`],
+       ['Approved content', p.approved, t.approved, `${p.reviewed??0} reviewed`],
+       ['Approval rate', p.approval_rate==null?'—':p.approval_rate+'%', t.approval_rate, 'of reviewed versions'],
+       ['Points earned', p.points, t.points, 'from the point ledger']]
+      .map(([l,v,tr,meta])=>`<div class="stat"><span class="stat-main">
+        <span class="stat-label">${l}</span><span class="stat-val">${v??0}</span>
+        ${cnTrend(tr)}</span><span class="stat-meta">${esc(meta)}</span></div>`).join('')}
+  </div>
+  ${sig.length?`<div class="card mb4"><div class="card-head"><h3>Signals</h3>
+    <button class="ca btn xs ghost" data-act="cnAnView" data-v="signals">All signals</button></div>
+    <div class="card-body flush">${cnSignalRows(sig)}</div></div>`:''}
+  <div class="grid g2 sec">
+    ${cnFunnelCard(f)}
+    <div class="card"><div class="card-head"><h3>Review performance</h3></div>
+      <div class="card-body pad"><table class="tbl compact"><tbody>
+        <tr><td>Median review time</td><td class="num"><b>${cnHrs(rv.median_review_hours)}</b></td></tr>
+        <tr><td>Average review time</td><td class="num">${cnHrs(rv.avg_review_hours)}</td></tr>
+        <tr><td>Completion → submission</td><td class="num">${cnHrs(rv.avg_completion_to_submission_hours)}</td></tr>
+        <tr><td>Changes requested → next version</td><td class="num">${cnHrs(rv.avg_resubmission_hours)}</td></tr>
+        <tr><td>Awaiting review now</td><td class="num"><b>${rv.awaiting_review??0}</b></td></tr>
+        <tr><td>Longest currently waiting</td><td class="num">${cnHrs(rv.oldest_waiting_hours)}</td></tr>
+      </tbody></table>
+      <div class="hint mt2">Median sits beside average because one submission left for a fortnight should
+        not describe the week.</div></div></div>
+  </div>
+  ${manage&&m?`<div class="grid g2 sec">
+    <div class="card"><div class="card-head"><h3>Cost</h3></div>
+      <div class="card-body pad"><table class="tbl compact"><tbody>
+        <tr><td>Calculated in the period</td><td class="num">${rupees(m.gross)}</td></tr>
+        <tr><td>Actually paid</td><td class="num"><b>${rupees(m.paid)}</b></td></tr>
+        <tr><td>Adjustments</td><td class="num">${rupees(m.adjustments)}</td></tr>
+        <tr><td>Outstanding <span class="mut3">(all time)</span></td><td class="num">${rupees(m.outstanding)}</td></tr>
+        <tr><td>Per approved piece <span class="mut3">(calculated)</span></td>
+          <td class="num">${m.cost_per_approved_gross?rupees(m.cost_per_approved_gross):'<span class="mut3">—</span>'}</td></tr>
+        <tr><td>Per approved piece <span class="mut3">(paid)</span></td>
+          <td class="num">${m.cost_per_approved_paid?rupees(m.cost_per_approved_paid):'<span class="mut3">—</span>'}</td></tr>
+      </tbody></table>
+      <div class="hint mt2">Calculated and paid are shown apart, because approving a payout is not paying
+        it. Outstanding is a balance across the whole ledger, not the selected period.</div></div></div>
+    <div class="card"><div class="card-head"><h3>Recognition</h3></div>
+      <div class="card-body pad"><table class="tbl compact"><tbody>
+        <tr><td>Achievements earned</td><td class="num">${rec.achievements??0}</td></tr>
+        <tr><td>Creators recognised</td><td class="num">${rec.creators_recognised??0}</td></tr>
+        <tr><td>Creator of the Cycle awards</td><td class="num">${rec.cycle_awards??0}</td></tr>
+        <tr><td>Competition results</td><td class="num">${rec.competition_results??0}</td></tr>
+      </tbody></table>
+      ${(rec.most_earned||[]).length?`<div class="mt3"><div class="small mut3 mb1">Most earned</div>
+        ${rec.most_earned.map(a=>`<div class="small">${esc(a.icon||'★')} ${esc(a.name)}
+          <span class="mut3">· ${a.times}</span></div>`).join('')}</div>`:''}
+      <div class="hint mt2">Competition scores are not Creator points and are never added to them.</div>
+    </div></div>
+  </div>`:''}
+  ${(d.data_quality||[]).length?`<div class="card sec"><div class="card-head"><h3>Data quality</h3></div>
+    <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Condition</th><th class="num">Records</th><th>Examples</th></tr></thead>
+      <tbody>${d.data_quality.map(q=>`<tr>
+        <td class="t-main" style="white-space:normal">${esc(q.message)}</td>
+        <td class="num">${q.count}</td>
+        <td class="small mut3">#${(q.sample||[]).join(', #')}</td></tr>`).join('')}</tbody>
+    </table></div></div>
+    <div class="card-foot"><span class="hint">These records disagree with themselves. They are surfaced,
+      never repaired here — analytics does not edit the systems it reads.</span></div></div>`:''}`;
+}
+
+function cnFunnelCard(f){
+  const stages=[['Assigned',f.assigned],['Accepted',f.accepted],['Completed',f.completed],
+                ['Sent for review',f.submitted],['Approved',f.approved]];
+  const top=Math.max(1,...stages.map(s=>s[1]||0));
+  return `<div class="card"><div class="card-head"><h3>Content funnel</h3>
+    <span class="ca small mut3">unique assignments</span></div>
+    <div class="card-body pad">
+      ${stages.map(([l,v])=>`<div class="mb2">
+        <div class="between small"><span>${l}</span><b>${v??0}</b></div>
+        <span class="bar" style="width:100%"><i style="display:block;height:100%;width:${
+          Math.round(((v||0)/top)*100)}%;background:var(--brand-500)"></i></span></div>`).join('')}
+      <table class="tbl compact mt3"><tbody>
+        <tr><td>Completion rate</td><td class="num">${cnPct(f.completion_rate)}</td></tr>
+        <tr><td>Submission rate <span class="mut3">(of completed)</span></td>
+          <td class="num">${cnPct(f.submission_rate)}</td></tr>
+        <tr><td>Approval rate <span class="mut3">(of submitted)</span></td>
+          <td class="num">${cnPct(f.approval_rate)}</td></tr>
+        <tr><td>Approved without a revision</td><td class="num">${cnPct(f.first_pass_rate)}</td></tr>
+        <tr><td>Changes requested</td><td class="num">${f.changes_requested??0}</td></tr>
+        <tr><td>Rejected</td><td class="num">${f.rejected??0}</td></tr>
+      </tbody></table>
+      <div class="hint mt2">Every stage counts UNIQUE ASSIGNMENTS from the period, followed to where they
+        have reached. Review decisions are counted separately — one assignment can produce several.</div>
+    </div></div>`;
+}
+
+function cnSignalRows(sig){
+  const tone={critical:'st-danger',attention:'st-warn',info:'st-info'};
+  if(!sig.length) return '<div class="empty" style="padding:26px"><div class="e-ico">✓</div>'
+    +'<h4>Nothing needs attention</h4><p>No operational signal is above its threshold.</p></div>';
+  return `<div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th style="width:120px">Severity</th><th>Condition</th></tr></thead>
+    <tbody>${sig.map(s=>`<tr>
+      <td><span class="status ${tone[s.severity]||'st-info'}">${esc(titleCase(s.severity))}</span></td>
+      <td class="t-main" style="white-space:normal">${esc(s.message)}
+        <div class="t-sub">${esc(String(s.type).replace(/_/g,' '))}</div></td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+
+function cnAnSignals(){
+  if(!cnAnLoad()) return cnAnWait();
+  if(CN_AN.err) return cnAnFail();
+  const d=CN_AN.data||{};
+  return `<div class="card"><div class="card-head"><h3>Operational signals</h3>${cnFresh(d.freshness)}</div>
+    <div class="card-body flush">${cnSignalRows(d.signals||[])}</div>
+    <div class="card-foot"><span class="hint">A signal describes a CONDITION — a backlog, a deadline, a
+      balance — never a person. Thresholds are fixed constants documented in the metric dictionary, so
+      "critical" always means the same thing.</span></div></div>`;
+}
+
+function cnAnTeams(){
+  if(!cnAnLoad()) return cnAnWait();
+  if(CN_AN.err) return cnAnFail();
+  const d=CN_AN.data||{}, teams=d.teams||[];
+  return `<div class="card"><div class="card-head"><h3>Teams</h3>${cnFresh(d.freshness)}</div>
+    <div class="card-body flush">
+      ${!teams.length?'<div class="empty" style="padding:30px"><p>No team activity in this period.</p></div>'
+      :`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>Team</th><th class="num">Members</th><th class="num">Produced</th>
+          <th class="num">Assignments</th><th class="num">Completed</th><th class="num">Submitted</th>
+          <th class="num">Approved</th><th class="num">Approval</th><th class="num">Points</th></tr></thead>
+        <tbody>${teams.map(t=>`<tr>
+          <td class="t-main">${esc(t.team)}</td>
+          <td class="num small">${t.members}</td>
+          <td class="num small">${t.operationally_active}</td>
+          <td class="num small">${t.assignments}</td>
+          <td class="num small">${t.completed}</td>
+          <td class="num small">${t.submissions}</td>
+          <td class="num"><b>${t.approved}</b></td>
+          <td class="num small">${cnPct(t.approval_rate)}</td>
+          <td class="num">${t.points}</td></tr>`).join('')}</tbody></table></div>`}
+    </div>
+    <div class="card-foot"><span class="hint">Figures are the members' own, summed on read — no team total
+      is stored. "Produced" means a member completed an assignment or submitted content in the period.
+      These are counts, not a ranking of teams.</span></div></div>`;
+}
+
+function cnAnContent(){
+  if(!cnAnLoad()) return cnAnWait();
+  if(CN_AN.err) return cnAnFail();
+  const d=CN_AN.data||{}, opps=d.opportunities||[], events=d.events||[];
+  return `
+  <div class="grid g2 sec">${cnFunnelCard(d.funnel||{})}
+    <div class="card"><div class="card-head"><h3>Review</h3></div>
+      <div class="card-body pad"><table class="tbl compact"><tbody>
+        <tr><td>Reviewed in the period</td><td class="num">${(d.review||{}).reviewed??0}</td></tr>
+        <tr><td>Median review time</td><td class="num"><b>${cnHrs((d.review||{}).median_review_hours)}</b></td></tr>
+        <tr><td>Average review time</td><td class="num">${cnHrs((d.review||{}).avg_review_hours)}</td></tr>
+        <tr><td>Awaiting review</td><td class="num">${(d.review||{}).awaiting_review??0}</td></tr>
+      </tbody></table></div></div>
+  </div>
+  <div class="card mb4"><div class="card-head"><h3>What converts into content</h3></div>
+    <div class="card-body flush">
+      ${!opps.length?'<div class="empty" style="padding:30px"><p>No opportunities in this period.</p></div>'
+      :`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>Requirement</th><th>Event</th><th class="num">Interested</th>
+          <th class="num">Assigned</th><th class="num">Completed</th><th class="num">Approved</th>
+          <th class="num">Interest→Selected</th><th class="num">Assigned→Done</th></tr></thead>
+        <tbody>${opps.map(o=>`<tr>
+          <td class="t-main">${esc(o.title)}</td>
+          <td class="small">${esc(o.event||'—')}${o.event_date?`<div class="t-sub">${D.fmt(o.event_date)}</div>`:''}</td>
+          <td class="num small">${o.interested}</td>
+          <td class="num small">${o.assigned}</td>
+          <td class="num small">${o.completed}</td>
+          <td class="num"><b>${o.approved}</b></td>
+          <td class="num small">${cnPct(o.interest_to_selection)}</td>
+          <td class="num small">${cnPct(o.assignment_to_completion)}</td></tr>`).join('')}</tbody></table></div>`}
+    </div></div>
+  ${events.length?`<div class="card"><div class="card-head"><h3>Events</h3></div>
+    <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>Event</th><th>Date</th><th class="num">Requirements</th><th class="num">Creators</th>
+        <th class="num">Assignments</th><th class="num">Completed</th><th class="num">Approved</th></tr></thead>
+      <tbody>${events.map(e=>`<tr>
+        <td class="t-main">${esc(e.title)}</td>
+        <td class="small">${e.event_date?D.fmt(e.event_date):'—'}</td>
+        <td class="num small">${e.opportunities}</td>
+        <td class="num small">${e.creators}</td>
+        <td class="num small">${e.assignments}</td>
+        <td class="num small">${e.completed}</td>
+        <td class="num"><b>${e.approved}</b></td></tr>`).join('')}</tbody></table></div></div></div>`:''}`;
+}
+
+function cnAnCreators(manage){
+  const st=CN_ANLIST;
+  if(!st.loaded){
+    st.loaded=true;
+    MO_API.get('/creator/analytics/creators?'+cnRangeQuery(CN_AN)
+      +`&limit=${CN_AN_PAGE}&offset=${st.offset}`)
+      .then(d=>{st.rows=d.creators||[];st.total=d.total||0;st.err=null;})
+      .catch(e=>{st.err=e.message;})
+      .finally(()=>render());
+    return cnAnWait();
+  }
+  if(st.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(st.err)}</p></div></div>`;
+  const from=st.offset, to=Math.min(from+CN_AN_PAGE, st.total);
+  return `<div class="card">
+    <div class="card-head"><h3>Creators</h3><span class="ca chip">${st.total}</span></div>
+    <div class="card-body flush">
+      ${!st.rows.length?'<div class="empty" style="padding:30px"><p>No creators in scope.</p></div>'
+      :`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>Creator</th><th>Team</th><th class="num">Assigned</th><th class="num">Completed</th>
+          <th class="num">Submitted</th><th class="num">Approved</th><th class="num">Approval</th>
+          <th class="num">Weeks active</th><th class="num">Points</th>
+          ${manage?'<th class="num"></th>':''}</tr></thead>
+        <tbody>${st.rows.map(c=>`<tr>
+          <td class="t-main">${esc(c.creator_name)}${c.status!=='active'
+            ?`<div class="t-sub">${esc(titleCase(c.status))}</div>`:''}</td>
+          <td class="small">${esc(c.team||'—')}</td>
+          <td class="num small">${c.assignments}</td>
+          <td class="num small">${c.completed}</td>
+          <td class="num small">${c.submissions}</td>
+          <td class="num"><b>${c.approved}</b></td>
+          <td class="num small">${cnPct(c.approval_rate)}</td>
+          <td class="num small">${c.active_weeks}${c.consistency==null?'':` <span class="mut3">(${c.consistency}%)</span>`}</td>
+          <td class="num">${c.points}</td>
+          ${manage?`<td class="num nowrap"><button class="btn xs ghost" data-act="cnAnCreator"
+            data-uid="${esc(c.user_id)}">Open</button></td>`:''}</tr>`).join('')}</tbody></table></div>`}
+    </div>
+    ${st.total>CN_AN_PAGE?`<div class="card-foot between">
+      <span class="small mut3">${from+1}–${to} of ${st.total}</span>
+      <span class="f gap2">
+        <button class="btn xs" data-act="cnAnPage" data-d="-1" ${from<=0?'disabled':''}>← Previous</button>
+        <button class="btn xs" data-act="cnAnPage" data-d="1" ${to>=st.total?'disabled':''}>Next →</button>
+      </span></div>`:''}
+    <div class="card-foot"><span class="hint">"Weeks active" is how many weeks of the period the creator
+      produced in. It measures spread over time, not quality — a creator can be consistent and still be
+      asked for revisions.</span></div>
+  </div>`;
 }
 
 /* ── Re-adding someone who was removed ─────────────────────────────────────
@@ -15801,6 +16221,77 @@ const ACTIONS = {
         toast(names?(r.shared?`Shared win — ${names}`:`Winner: ${names}`):'Results finalised','ok');
         cnReload('comp','comps','ach','awards');})
       .catch(e=>toast(e.message,'bad'));
+  },
+  /* ── Creator Network Phase 7: analytics ──────────────────────────────
+     Filters and nothing else. Every number is the server's; these actions
+     change which window and which scope it was asked for, never what it
+     answered. */
+  cnAnView:(d)=>{CN_AN.view=d.v;CN_AN.loaded=false;CN_ANLIST.loaded=false;render();},
+  cnAnRange:(d,n)=>{
+    CN_AN[d.k]=n.value;
+    // A custom range waits for both ends before it is worth asking for.
+    if(CN_AN.range==='custom'&&!(CN_AN.from&&CN_AN.to)){render();return;}
+    CN_AN.loaded=false;CN_ANLIST.loaded=false;CN_ANLIST.offset=0;render();
+  },
+  cnMyAnRange:(d,n)=>{
+    CN_ANME[d.k]=n.value;
+    if(CN_ANME.range==='custom'&&!(CN_ANME.from&&CN_ANME.to)){render();return;}
+    CN_ANME.loaded=false;render();
+  },
+  cnAnPage:(d)=>{
+    CN_ANLIST.offset=Math.max(0, CN_ANLIST.offset + (+d.d)*CN_AN_PAGE);
+    CN_ANLIST.loaded=false;render();
+  },
+  cnAnCreator:(d)=>{
+    MO_API.get('/creator/analytics/creators/'+encodeURIComponent(d.uid)+'?'+cnRangeQuery(CN_AN))
+      .then(r=>{
+        const p=r.production||{}, t=r.trends||{}, f=r.funnel||{}, rk=r.rank||{},
+              rv=r.review||{}, c=r.consistency||{}, pay=r.payout;
+        modal(`<div class="mo-head"><div><h2>${esc((r.creator||{}).name||'Creator')}</h2>
+            <p>${esc((r.creator||{}).team||'No team')} · ${esc((r.period||{}).label||'')}. Every figure is
+            computed from the point ledger, the submissions and the assignments — there is no score here.</p></div>
+            <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+          <div class="mo-body">
+            <div class="grid g2" style="gap:20px">
+              <div><div class="small mut3 mb2">Production</div>
+                <table class="tbl compact"><tbody>
+                  <tr><td>Assignments</td><td class="num">${f.assigned??0}</td></tr>
+                  <tr><td>Completed</td><td class="num">${f.completed??0} ${cnTrend(t.completed)}</td></tr>
+                  <tr><td>Submitted versions</td><td class="num">${p.submissions??0} ${cnTrend(t.submissions)}</td></tr>
+                  <tr><td>Approved</td><td class="num"><b>${p.approved??0}</b> ${cnTrend(t.approved)}</td></tr>
+                  <tr><td>Approval rate</td><td class="num">${cnPct(p.approval_rate)}</td></tr>
+                  <tr><td>First-pass approvals</td><td class="num">${cnPct(f.first_pass_rate)}</td></tr>
+                  <tr><td>Weeks produced in</td><td class="num">${c.active_weeks??0} of ${c.weeks??0}</td></tr>
+                </tbody></table></div>
+              <div><div class="small mut3 mb2">Standing</div>
+                <table class="tbl compact"><tbody>
+                  <tr><td>Rank${rk.cycle?` · ${esc(rk.cycle)}`:''}</td>
+                    <td class="num">${rk.place?'#'+rk.place:'—'}${rk.of?` <span class="mut3">of ${rk.of}</span>`:''}</td></tr>
+                  ${rk.previous_cycle?`<tr><td>${esc(rk.previous_cycle)}</td>
+                    <td class="num">${rk.previous_place?'#'+rk.previous_place:'—'}</td></tr>`:''}
+                  <tr><td>Points in the period</td><td class="num">${p.points??0} ${cnTrend(t.points)}</td></tr>
+                  <tr><td>Median review wait</td><td class="num">${cnHrs(rv.median_review_hours)}</td></tr>
+                  <tr><td>Achievements</td><td class="num">${(r.recognition||{}).achievements??0}</td></tr>
+                  ${pay?`<tr><td>Paid</td><td class="num">${rupees(pay.paid)}</td></tr>`:''}
+                </tbody></table>
+                ${pay?'':'<div class="hint mt2">Payout figures are not part of a team view.</div>'}</div>
+            </div>
+          </div>
+          <div class="mo-foot"><button class="btn primary" onclick="closeModal()">Close</button></div>`);
+      }).catch(e=>toast(e.message,'bad'));
+  },
+  /* An export is the same authorised read in another format — the server
+     applies the identical scope, so a Team Lead's file holds their team. */
+  cnAnExport:(d)=>{
+    /* Same origin, same session, same scope: the server applies exactly the
+       rules it applies to the screen, so the file can hold nothing the reader
+       could not already see. */
+    const q=cnRangeQuery(CN_AN)+`&dataset=${encodeURIComponent(d.ds||'creators')}`;
+    const a=document.createElement('a');
+    a.href=MO_API.base+'/creator/analytics/export?'+q;
+    a.download='';
+    document.body.appendChild(a); a.click(); a.remove();
+    toast('Export downloading','ok');
   },
   /* What a role earns when its work is approved. Set on the requirement so the
      approval path never has to guess from a free-text type. */

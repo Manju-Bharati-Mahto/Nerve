@@ -1,8 +1,8 @@
 # Nerve Creator Network — Architecture
 
 > Living document. Reference for every Creator Network phase.
-> Status: **Phase 6 complete** — leaderboard, achievements, Creator of the
-> Cycle and the War Zone are live. Phase 7 (analytics) has not started.
+> Status: **Phase 7 complete** — analytics, growth intelligence and management
+> intelligence are live. Phase 8 (AI and automation) has not started.
 
 Parul University runs a creator network: an incentive-based content workforce
 producing reels, shorts, vlogs, event and campus content, paid in points, ranks
@@ -295,7 +295,7 @@ onto it. Media Ops `/state` was not touched.
 | **4 ✅** | Point rules, point ledger, cycles, rank engine |
 | **5 ✅** | Payout rates, payouts, financial ledger, payment, statements |
 | **6 ✅** | Leaderboard, achievements, Creator of the Cycle, War Zone |
-| 7 | Analytics, creator growth, management intelligence |
+| **7 ✅** | Analytics, growth intelligence, management intelligence |
 | 8 | Notifications, automation, chat, AI, platform integrations |
 
 Each phase owns its database changes, service layer, APIs, permissions,
@@ -1184,3 +1184,266 @@ copy of a number another system owns.**
 - 51 integration tests: the required end-to-end, both tie policies, targeted
   evaluation and idempotency, the revoke model, four concurrency cases, the
   security matrix, and the triple-ledger fingerprint.
+
+---
+
+## PHASE 7 — analytics, growth intelligence, management intelligence
+
+### ANALYTICS IS DERIVED DATA. IT IS NOT A SOURCE OF TRUTH.
+
+Every figure is computed, on request, from the system that owns it. Nothing is
+stored: no snapshot table, no materialised view, no counter on any record.
+`server/creator-analytics.ts` contains **only `SELECT`** — asserted by a test
+that reads the file — and a second test fingerprints the point ledger, the
+financial ledger, the payouts, the submissions and the assignments before and
+after every dashboard read, export and signal computation and requires them to
+be byte-identical.
+
+| Question | Owner | Phase 7's role |
+|---|---|---|
+| points, performance | `mo_creator_point_ledger` | reads |
+| rank | the Phase 4 rank engine | reads, and reconciles against it |
+| work, content | `mo_creator_assignments`, `mo_creator_submissions` | reads |
+| money | `mo_creator_financial_ledger`, `mo_creator_payouts` | reads |
+| recognition | the Phase 6 tables | reads |
+
+### Time
+
+Every window is a range of **IST calendar days**, inclusive, resolved on the
+server. A timestamp is compared as `(ts AT TIME ZONE 'Asia/Kolkata')::date` —
+the conversion Nerve already uses for day boundaries. The browser's clock
+decides nothing.
+
+`today` · `7d` · `30d` (default) · `90d` · `cycle` · `previous_cycle` ·
+`custom` (`from`/`to`, `start <= end`, at most **two years**). A cycle window is
+the cycle's own `starts_on`/`ends_on`, so "this cycle" is exactly the cycle
+Phase 4 scored. An unknown preset falls back to 30 days rather than failing.
+
+### The metric dictionary
+
+Each metric: **definition · formula · source · window column**. All are scoped
+by the caller's permissions before anything is counted.
+
+#### Population
+
+| Metric | Formula | Source | Window |
+|---|---|---|---|
+| On the network | `COUNT(*) WHERE status='active'` | `mo_creator_profiles` | none — a state, not a period |
+| **Operationally active** | `COUNT(DISTINCT creator)` who **completed an assignment OR submitted content** in the window | assignments, submissions | `completed_at`, `submitted_at` |
+
+> Activity is **never** called simply "active". Being on the network and having
+> produced are different numbers with different names, and login is not used as
+> a proxy for production anywhere.
+
+#### Production
+
+| Metric | Formula | Source | Window |
+|---|---|---|---|
+| Assignments | `COUNT(*)` | assignments | `created_at` |
+| Completed | `COUNT(*) WHERE completed_at IS NOT NULL` | assignments | `completed_at` |
+| Submissions | `COUNT(*)` — **versions** | submissions | `submitted_at` |
+| Reviewed | `COUNT(*) WHERE reviewed_at IS NOT NULL` | submissions | `reviewed_at` |
+| Approved / Changes requested / Rejected | the same, by `status` | submissions | `reviewed_at` |
+| **Approval rate** | `approved ÷ reviewed` | submissions | `reviewed_at` |
+| Revision rate | `changes_requested ÷ reviewed` | submissions | `reviewed_at` |
+| Rejection rate | `rejected ÷ reviewed` | submissions | `reviewed_at` |
+| Points earned | `SUM(points)` | point ledger | `created_at` |
+
+> **Approval rate is over reviewed versions, never over assignments.** A piece
+> sent back once and then approved is two reviews.
+> A rate with an empty denominator is **null**, not 0% — unknown and zero are
+> different answers.
+
+#### The funnel — unique assignments
+
+| Stage | Meaning |
+|---|---|
+| Assigned | assignments **created in the window** (a cohort) |
+| Accepted / Completed | that cohort, `accepted_at` / `completed_at` set |
+| Sent for review | that cohort with ≥ 1 submission |
+| Approved / Changes requested / Rejected | that cohort with ≥ 1 version in that state |
+
+> **The funnel counts UNIQUE ASSIGNMENTS**, followed to wherever they have
+> reached. Review *decisions* are counted separately, where the unit is a
+> version. The two are never added together.
+
+| Rate | Formula |
+|---|---|
+| Completion rate | `completed ÷ assigned` |
+| Submission rate | `submitted ÷ completed` |
+| Approval rate (funnel) | `approved ÷ submitted` |
+| **First-pass approval** | assignments whose **version 1 was approved** ÷ assignments that reached approval |
+| Versions to approval | `AVG(version_no of the approved version)` |
+
+First-pass is read from the version history. Because a version is immutable and
+`changes_requested` is its own row, "V1 approved" *is* "no revision was ever
+asked for" — it is never inferred from the latest row.
+
+#### Review performance
+
+| Metric | Formula |
+|---|---|
+| Average / **median** review time | `reviewed_at − submitted_at`, hours |
+| Completion → submission | `submitted_at(v1) − completed_at`, hours |
+| Changes requested → next version | `submitted_at(v+1) − reviewed_at(v)`, hours |
+| Awaiting review | `COUNT(*) WHERE status='submitted'` — now, not windowed |
+
+Median sits beside average because operational data is skewed: one submission
+left for a fortnight should not describe the week.
+
+#### Consistency
+
+`distinct IST weeks with a submission ÷ weeks in the period`.
+
+> Consistency is **production spread over time and nothing else**. It is not
+> quality: a creator can be perfectly consistent and still be asked for
+> revisions, and the two are reported apart.
+
+#### Money (Creator Admin only)
+
+| Metric | Formula | Window |
+|---|---|---|
+| Calculated (gross) | `SUM(gross_amount)` | `calculated_at` |
+| Paid | `SUM(−amount) WHERE entry_type='payment'` | `created_at` |
+| Adjustments | `SUM(amount) WHERE entry_type IN ('adjustment','reversal')` | `created_at` |
+| Outstanding | `SUM(amount)` over the **whole** ledger | none — a balance |
+| Cost per approved (calculated) | `gross ÷ approved` | the selected window |
+| Cost per approved (paid) | `paid ÷ approved` | the selected window |
+
+**Calculated and paid are never mixed**, and cost per approved is offered both
+ways, each labelled: what the work is worth, and what has actually left the
+bank. Amounts stay **strings** end to end, as in Phase 5.
+
+### Trends
+
+Current window against the **comparable window immediately before it**.
+
+| Direction | When |
+|---|---|
+| `no_baseline` | the previous window is empty — never "0%", never infinity |
+| `insufficient` | fewer than **3** events across both windows |
+| `increasing` / `decreasing` | beyond ±**5%** |
+| `stable` | within ±5% |
+
+The 5% deadband and the 3-event floor exist so ordinary noise is not reported
+as movement. **Rank movement is shown as two ranks, not a computed "places
+gained"** — with shared places a tie makes the difference ambiguous.
+
+> There is **no** `performance_score`, `creator_score`, `growth_score` or
+> `quality_score`, and no grade or label. Analytics describes evidence.
+
+### Operational signals
+
+Facts about **conditions**, never judgements about people. Computed live —
+nothing is persisted while real-time computation suffices. Thresholds are
+documented constants in `SIGNAL_THRESHOLDS`, so "critical" always means the
+same thing and changing it is a commit somebody can read.
+
+| Signal | Measure | Attention | Critical |
+|---|---|---|---|
+| `review_backlog` | submissions awaiting a verdict | 15 | 50 |
+| `overdue_work` | past `deadline`, not completed/declined/cancelled | 1 | 10 |
+| `completed_not_sent` | completed > **3 days** ago with no submission | 1 | 10 |
+| `low_activity` | eligible creators with no production in **30 days** | 1 | 10 |
+| `high_revision_rate` | changes requested ÷ reviewed, last 30 days, min **10** reviewed | 40% | 60% |
+| `low_participation` | open competitions with < **3** entries | info | — |
+| `outstanding_payable` | ledger balance > 0 (Creator Admin only) | any | — |
+
+**Low activity counts only creators who could reasonably have produced**: an
+active profile that was actually given work in the window. A new joiner, a
+suspended creator and somebody nobody assigned anything to are not evidence of
+a problem. No signal names a person; severity describes the condition.
+
+### Data quality
+
+Source records that cannot all be true at once are **surfaced with the record
+named and repaired by nobody**: approved submissions with no review timestamp,
+completed assignments with no completion timestamp, paid payouts with no
+payment entry, competition results with no participant. Analytics does not edit
+the systems it reads.
+
+### Scope
+
+| | Creator | Team Lead | Creator Admin / Nerve Admin |
+|---|---|---|---|
+| Own analytics, own payout summary | yes | yes | yes |
+| Management summary, team analytics | **no** | their teams | network |
+| Another creator's detail | **404** | their team | all |
+| Money | own only | **none** | all |
+| Export | own rows | their team | network |
+
+One helper builds the creator filter for every query, so no query can forget
+it. A `team_id` a Team Lead does not lead **narrows to nothing** rather than
+widening to it, and a creator out of scope answers 404 — the same answer Phases
+5 and 6 give, so analytics cannot be used to enumerate people.
+
+### Export
+
+`GET /creator/analytics/export?dataset=creators|teams|opportunities` returns
+CSV through the **same scope, filters and permissions as the screen it
+mirrors** — a Team Lead's file can only ever hold their team. RFC 4180 quoting,
+and any cell beginning `= + - @` is prefixed with an apostrophe: an export is
+data, not something that should execute when a spreadsheet opens it.
+
+An export is the **documented exception** to §62: reads are not audited, but an
+export leaves the system, so it writes `creator_analytics.exported` with the
+dataset, window, row count and scope.
+
+### Performance
+
+Direct SQL, no cache — §34 says caches come after profiling shows the need, and
+they do not yet. Each section is one grouped aggregate or one `LATERAL` join
+per creator *row of the page*, never a query per creator in the network. Tested
+against **100 creators, 1,000 assignments and ~3,000 submission versions**: the
+management summary is a fixed number of queries (< 20) whatever the size, and
+the creator table costs the **same number of queries for 200 creators as for
+one**. Every list is paged and every limit clamped.
+
+If a cache is ever added it must be rebuildable from the authoritative tables,
+carry explicit freshness, and never be treated as the source of truth. Until
+then every response says `freshness: { mode: "live" }`, because it is.
+
+### API
+
+| Endpoint | Returns |
+|---|---|
+| `GET /creator/analytics/summary` | roster, production, trends, funnel, review, teams, money, recognition, signals, data quality |
+| `GET /creator/analytics/me` | a creator's own period, trends, rank, consistency and payout summary |
+| `GET /creator/analytics/creators` | the creator table, scoped and paged |
+| `GET /creator/analytics/creators/:id` | one creator, for management |
+| `GET /creator/analytics/team` | team analytics, Team Lead scope enforced server-side |
+| `GET /creator/analytics/content` | funnel, review performance, opportunity and event conversion |
+| `GET /creator/analytics/export` | CSV, same scope |
+
+`GET /api/v1/media/state` carries none of it.
+
+### Phase 8 anchor
+
+Phase 8 can consume these endpoints exactly as a person does — they are
+deterministic, scoped and explainable. The rule is the one every phase since 4
+has followed, and it is what keeps an AI layer safe here: **a model may read,
+summarise and draft; it may not become the place a number lives.** A total, a
+rate, a rank and an amount must still come from the systems that own them, so
+any assistant built on this is quoting evidence rather than producing it — and
+anything it says can be checked against the same SQL these tests use.
+
+---
+
+## PHASE 7 COMPLETE
+
+**Implementation notes**
+
+- Phases 0–6 are unchanged. Two additive touches: `/creator/analytics/me`
+  reuses the same creator-analytics function a manager sees, and the rank block
+  now also reports the `cycle_id` it used so a figure can be checked against
+  the right period.
+- No table, no column, no index and no materialised view was added. Phase 7 is
+  one new file plus seven read endpoints.
+- Three real bugs the tests caught: DATE columns arrive as JS `Date`, so
+  `String(d).slice(0,10)` produced `"Mon Sep 01"` and broke every cycle window;
+  a count query bound a parameter its SQL no longer referenced; and
+  `/creator/analytics/me` withheld the creator's own payout summary.
+- 54 integration tests: reconciliation against every source, non-mutation
+  fingerprints, the 20-case security matrix, trend edge cases, signal
+  thresholds, and a 100-creator/1,000-assignment performance fixture proving
+  the query count does not move with the row count.

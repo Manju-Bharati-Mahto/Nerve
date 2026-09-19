@@ -25,6 +25,7 @@ import { runAiOrchestration } from "./ai/orchestrator.js";
 import { createAiToolRegistry } from "./ai/tools/registry.js";
 import { estimateAiCost, parseAiPricing } from "./ai/pricing.js";
 import { countAiRequestsToday, findOverdueDeliverables, getAiUsageSummary, nerveToday, recordAiRequest } from "./mediaops-queries.js";
+import * as CA from "./creator-analytics.js";
 import { buildTvBoard, tvBoardAllowed, type TvBoard } from "./mediaops-tv.js";
 import { config } from "./config.js";
 import type { AiCapability, AiUserContext } from "./ai/types.js";
@@ -9018,6 +9019,312 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       // Counts are the length of the lists above. There is no stored total.
       counts: { achievements: ach.rowCount, cycle_awards: cyc.rowCount, competitions: comp.rowCount },
     });
+  }));
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     CREATOR NETWORK — Phase 7: analytics
+
+     ANALYTICS IS DERIVED DATA. IT IS NOT A SOURCE OF TRUTH.
+
+     These handlers are deliberately thin: they resolve who is asking and what
+     window they asked for, hand both to the analytics service, and return what
+     comes back. Every figure is computed on request from Phases 2–6, nothing
+     is stored, and no route below writes anything at all — the service file
+     contains only SELECT, asserted by test.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /** The window, or a 400 explaining why not. */
+  async function analyticsRange(req: express.Request, res: express.Response) {
+    const r = await CA.resolveRange(pool, req.query as Record<string, string | undefined>);
+    if ("error" in r) { sendError(res, 400, r.error); return null; }
+    return r;
+  }
+  /** Who is asking, in the analytics service's vocabulary. Resolved from the
+      session by the same Phase 1 helper every other creator read uses. */
+  async function analyticsScope(res: express.Response, u: CurrentUser): Promise<CA.AnalyticsScope | null> {
+    if (!(await requireCreatorNetwork(res, u))) return null;
+    const s = await creatorScopeOf(u);
+    return s.level === "all" ? { level: "all" }
+      : s.level === "team" ? { level: "team", teamIds: s.teamIds, userId: s.userId }
+      : { level: "self", userId: s.userId };
+  }
+
+  /* ── The management summary (§48) ───────────────────────────────────── */
+  app.get(`${P}/creator/analytics/summary`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    const scope = await analyticsScope(res, u); if (!scope) return;
+    if (scope.level === "self")
+      return sendError(res, 403, "The management summary is for Team Leads and Creator Admins.");
+    const range = await analyticsRange(req, res); if (!range) return;
+    const prev = CA.previousRange(range);
+
+    const [now, before, fun, tim, sig, teams, money, rec, quality] = await Promise.all([
+      CA.production(pool, scope, range),
+      CA.production(pool, scope, prev),
+      CA.funnel(pool, scope, range),
+      CA.timings(pool, scope, range),
+      CA.signals(pool, scope),
+      CA.teamTable(pool, scope, range),
+      CA.production(pool, scope, range).then((p) => CA.money(pool, scope, range, p.approved)),
+      CA.recognition(pool, scope, range),
+      CA.dataQuality(pool, scope),
+    ]);
+    const roster = (await pool.query(
+      `SELECT COUNT(*) FILTER (WHERE status='active')::int  AS active,
+              COUNT(*) FILTER (WHERE status<>'active')::int AS other,
+              COUNT(*)::int                                  AS total
+         FROM mo_creator_profiles`)).rows[0];
+
+    res.json({
+      period: { ...range, previous: { from: prev.from, to: prev.to, label: prev.label } },
+      // "Live" because it is: every number was computed by this request.
+      freshness: { mode: "live", computed_at: new Date().toISOString() },
+      roster: { on_network: Number(roster.active), not_active: Number(roster.other),
+                total: Number(roster.total) },
+      production: now,
+      trends: {
+        operationally_active: CA.trend(now.operationally_active, before.operationally_active),
+        assignments: CA.trend(now.assignments, before.assignments),
+        completed: CA.trend(now.completed, before.completed),
+        submissions: CA.trend(now.submissions, before.submissions),
+        approved: CA.trend(now.approved, before.approved),
+        points: CA.trend(now.points, before.points),
+        approval_rate: CA.trend(now.approval_rate ?? 0, before.approval_rate ?? 0),
+      },
+      funnel: fun, review: tim, teams, money, recognition: rec,
+      signals: sig, data_quality: quality,
+      scope: scope.level,
+    });
+  }));
+
+  /* ── A creator's own analytics (§49) ────────────────────────────────── */
+  app.get(`${P}/creator/analytics/me`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const range = await analyticsRange(req, res); if (!range) return;
+    res.json(await creatorAnalytics(u.id, range, true));   // their own money, and only theirs
+  }));
+
+  /* ── One creator, for management (§51) ──────────────────────────────── */
+  app.get(`${P}/creator/analytics/creators/:id`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    const scope = await analyticsScope(res, u); if (!scope) return;
+    const id = String(getSingleParam(req.params.id));
+    /* Out of scope is indistinguishable from not existing — the same answer
+       Phases 5 and 6 give, so analytics cannot be used to enumerate people. */
+    if (scope.level === "self" && id !== u.id) return sendError(res, 404, "Creator not found.");
+    if (scope.level === "team") {
+      const mine = (await pool.query(
+        `SELECT 1 FROM mo_creator_team_members WHERE user_id=$1 AND team_id = ANY($2::bigint[])`,
+        [id, scope.teamIds])).rows[0];
+      if (!mine && id !== u.id) return sendError(res, 404, "Creator not found.");
+    }
+    const exists = (await pool.query(
+      `SELECT 1 FROM mo_creator_profiles WHERE user_id=$1`, [id])).rows[0];
+    if (!exists) return sendError(res, 404, "Creator not found.");
+    const range = await analyticsRange(req, res); if (!range) return;
+    // Money on a creator's own record is theirs and their Admin's; a Team Lead
+    // sees their team's work and none of its money.
+    res.json(await creatorAnalytics(id, range, CA.seesMoney(scope) || id === u.id));
+  }));
+
+  /* One creator's numbers, current window against the comparable one before
+     it. Used by both endpoints above so a creator and their manager are
+     always looking at the same arithmetic. */
+  async function creatorAnalytics(userId: string, range: CA.Range, withMoney: boolean) {
+    const self: CA.AnalyticsScope = { level: "self", userId };
+    const prev = CA.previousRange(range);
+    const cycles = await CA.recentCycles(pool, 2);
+    const [now, before, fun, tim, timBefore, rec] = await Promise.all([
+      CA.production(pool, self, range),
+      CA.production(pool, self, prev),
+      CA.funnel(pool, self, range),
+      CA.timings(pool, self, range),
+      CA.timings(pool, self, prev),
+      CA.recognition(pool, self, range),
+    ]);
+    /* Rank comes from the Phase 4 engine for the cycle it belongs to. Movement
+       is shown as two ranks, not as a computed "places gained": with shared
+       places a tie makes the difference ambiguous, and §25 says to show both
+       rather than invent an interpretation. */
+    const [cur, pre] = await Promise.all([
+      CA.rankFor(pool, userId, cycles[0]?.id ?? null),
+      CA.rankFor(pool, userId, cycles[1]?.id ?? null),
+    ]);
+    const profile = (await pool.query(
+      `SELECT c.status, c.joined_on, COALESCE(NULLIF(c.display_name,''), u.full_name) AS name,
+              t.name AS team
+         FROM mo_creator_profiles c JOIN users u ON u.id = c.user_id
+         LEFT JOIN mo_creator_team_members m ON m.user_id = c.user_id AND m.is_primary
+         LEFT JOIN mo_creator_teams t ON t.id = m.team_id
+        WHERE c.user_id=$1`, [userId])).rows[0];
+
+    let payout = null;
+    if (withMoney) {
+      const p = (await pool.query(
+        `SELECT COUNT(*)::int payouts,
+                COALESCE(SUM(p.gross_amount),0)::numeric(12,2) gross,
+                COALESCE(SUM(CASE WHEN p.status='paid' THEN p.gross_amount ELSE 0 END),0)::numeric(12,2) paid_gross
+           FROM mo_creator_payouts p WHERE p.user_id=$1`, [userId])).rows[0];
+      const owed = (await pool.query(
+        `SELECT COALESCE(SUM(amount),0)::numeric(12,2) t FROM mo_creator_financial_ledger
+          WHERE user_id=$1`, [userId])).rows[0];
+      payout = { payouts: Number(p.payouts), gross: String(p.gross),
+                 paid: String(p.paid_gross), outstanding: String(owed.t), currency: "INR" };
+    }
+    const weeks = Math.max(1, Math.ceil(range.days / 7));
+    const activeWeeks = Number((await pool.query(
+      `SELECT COUNT(DISTINCT DATE_TRUNC('week', (s.submitted_at AT TIME ZONE '${CA.NERVE_TZ}')))::int n
+         FROM mo_creator_submissions s JOIN mo_creator_assignments a ON a.id = s.assignment_id
+        WHERE a.user_id=$1 AND (s.submitted_at AT TIME ZONE '${CA.NERVE_TZ}')::date BETWEEN $2 AND $3`,
+      [userId, range.from, range.to])).rows[0].n);
+
+    return {
+      creator: { user_id: userId, name: profile?.name ?? null, team: profile?.team ?? null,
+                 status: profile?.status ?? null, joined_on: dOnly(profile?.joined_on) },
+      period: { ...range, previous: { from: prev.from, to: prev.to, label: prev.label } },
+      freshness: { mode: "live", computed_at: new Date().toISOString() },
+      production: now,
+      trends: {
+        completed: CA.trend(now.completed, before.completed),
+        submissions: CA.trend(now.submissions, before.submissions),
+        approved: CA.trend(now.approved, before.approved),
+        points: CA.trend(now.points, before.points),
+        approval_rate: CA.trend(now.approval_rate ?? 0, before.approval_rate ?? 0),
+        /* Review time is the reviewers' turnaround on this creator's work, not
+           the creator's own doing — it is here because it explains their wait,
+           and a falling number is an improvement. */
+        review_hours: CA.trend(tim.median_review_hours ?? 0, timBefore.median_review_hours ?? 0),
+      },
+      funnel: fun, review: tim, recognition: rec, payout,
+      rank: {
+        cycle: cycles[0]?.label ?? null, cycle_id: cycles[0]?.id ?? null,
+        place: cur.place, of: cur.of, points: cur.points,
+        previous_cycle: cycles[1]?.label ?? null, previous_cycle_id: cycles[1]?.id ?? null,
+        previous_place: pre.place, previous_points: pre.points,
+      },
+      // Consistency is production spread over time, and is not a quality score.
+      consistency: { active_weeks: activeWeeks, weeks, pct: CA.rate(activeWeeks, weeks) },
+    };
+  }
+
+  /* ── Teams (§50) ────────────────────────────────────────────────────── */
+  app.get(`${P}/creator/analytics/team`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    const scope = await analyticsScope(res, u); if (!scope) return;
+    if (scope.level === "self")
+      return sendError(res, 403, "Team analytics are for Team Leads and Creator Admins.");
+    const range = await analyticsRange(req, res); if (!range) return;
+
+    /* A Creator Admin may narrow to one team. A Team Lead's scope is already
+       their own teams, so a team_id they do not lead narrows to nothing
+       rather than widening anything. */
+    let view: CA.AnalyticsScope = scope;
+    const asked = String((req.query as Record<string, string>).team_id ?? "").trim();
+    if (asked && asked !== "all") {
+      const id = Number(asked);
+      const allowed = scope.level === "all" || scope.teamIds.includes(id);
+      view = allowed
+        ? { level: "team", teamIds: [id], userId: u.id }
+        : { level: "team", teamIds: [], userId: u.id };
+    }
+    const [teams, prod, before, fun, tim, sig] = await Promise.all([
+      CA.teamTable(pool, view, range),
+      CA.production(pool, view, range),
+      CA.production(pool, view, CA.previousRange(range)),
+      CA.funnel(pool, view, range),
+      CA.timings(pool, view, range),
+      CA.signals(pool, view),
+    ]);
+    res.json({
+      period: range, freshness: { mode: "live", computed_at: new Date().toISOString() },
+      teams, production: prod,
+      trends: {
+        completed: CA.trend(prod.completed, before.completed),
+        approved: CA.trend(prod.approved, before.approved),
+        points: CA.trend(prod.points, before.points),
+      },
+      funnel: fun, review: tim, signals: sig,
+      // Money is never in a team view: Phase 5 gave Team Leads none of it.
+      money: null, scope: scope.level,
+    });
+  }));
+
+  /* ── The creator table (§7) ─────────────────────────────────────────── */
+  app.get(`${P}/creator/analytics/creators`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    const scope = await analyticsScope(res, u); if (!scope) return;
+    const range = await analyticsRange(req, res); if (!range) return;
+    const q = req.query as Record<string, string>;
+    const limit = Math.min(200, Math.max(1, Number(q.limit) || 50));
+    const offset = Math.max(0, Number(q.offset) || 0);
+    const { rows, total } = await CA.creatorTable(pool, scope, range, limit, offset);
+    res.json({ period: range, creators: rows, total, limit, offset, scope: scope.level });
+  }));
+
+  /* ── Content (§52) ──────────────────────────────────────────────────── */
+  app.get(`${P}/creator/analytics/content`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    const scope = await analyticsScope(res, u); if (!scope) return;
+    const range = await analyticsRange(req, res); if (!range) return;
+    const [fun, tim, conv, prod] = await Promise.all([
+      CA.funnel(pool, scope, range),
+      CA.timings(pool, scope, range),
+      CA.conversion(pool, scope, range),
+      CA.production(pool, scope, range),
+    ]);
+    res.json({ period: range, freshness: { mode: "live", computed_at: new Date().toISOString() },
+      funnel: fun, review: tim, production: prod,
+      opportunities: conv.opportunities, events: conv.events, scope: scope.level });
+  }));
+
+  /* ── Export (§53) ───────────────────────────────────────────────────────
+     The same scope, the same filters and the same permissions as the screen
+     it mirrors — an export is a different rendering of an authorised read,
+     never a way around one. A Team Lead's file can only ever hold their team. */
+  app.get(`${P}/creator/analytics/export`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    const scope = await analyticsScope(res, u); if (!scope) return;
+    const range = await analyticsRange(req, res); if (!range) return;
+    const dataset = String((req.query as Record<string, string>).dataset ?? "creators");
+
+    let headers: string[] = [], rows: Array<Array<string | number | null>> = [];
+    if (dataset === "creators") {
+      const t = await CA.creatorTable(pool, scope, range, 5000, 0);
+      headers = ["creator", "team", "status", "assignments", "completed", "submissions",
+                 "reviewed", "approved", "changes_requested", "approval_rate_pct", "points",
+                 "achievements", "active_weeks", "consistency_pct"];
+      rows = t.rows.map((c) => [c.creator_name, c.team, c.status, c.assignments, c.completed,
+        c.submissions, c.reviewed, c.approved, c.changes_requested, c.approval_rate, c.points,
+        c.achievements, c.active_weeks, c.consistency]);
+    } else if (dataset === "teams") {
+      if (scope.level === "self") return sendError(res, 403, "Team data is not part of your analytics.");
+      const t = await CA.teamTable(pool, scope, range);
+      headers = ["team", "members", "operationally_active", "assignments", "completed",
+                 "submissions", "approved", "approval_rate_pct", "points"];
+      rows = t.map((x) => [x.team, x.members, x.operationally_active, x.assignments, x.completed,
+        x.submissions, x.approved, x.approval_rate, x.points]);
+    } else if (dataset === "opportunities") {
+      if (scope.level === "self") return sendError(res, 403, "Opportunity data is not part of your analytics.");
+      const c = await CA.conversion(pool, scope, range, 500);
+      headers = ["opportunity", "event", "event_date", "required", "interested", "selected",
+                 "assigned", "completed", "submitted", "approved",
+                 "interest_to_selection_pct", "assignment_to_completion_pct", "completion_to_approval_pct"];
+      rows = c.opportunities.map((o) => [o.title, o.event, o.event_date, o.required, o.interested,
+        o.selected, o.assigned, o.completed, o.submitted, o.approved,
+        o.interest_to_selection, o.assignment_to_completion, o.completion_to_approval]);
+    } else {
+      return sendError(res, 400, "Unknown dataset. Choose creators, teams or opportunities.");
+    }
+
+    const name = `nerve-creator-${dataset}-${range.from}-to-${range.to}.csv`;
+    res.set("Content-Type", "text/csv; charset=utf-8");
+    res.set("Content-Disposition", `attachment; filename="${name}"`);
+    /* An export leaves the system, so it is audited — §62 says reads are not
+       audited, and this is the documented exception. */
+    await audit(u, "creator_analytics.exported", "creator_analytics", null, null,
+      { dataset, from: range.from, to: range.to, rows: rows.length, scope: scope.level }, req);
+    res.send(CA.toCsv(headers, rows));
   }));
 
   // ── helpers ───────────────────────────────────────────────────────────────
