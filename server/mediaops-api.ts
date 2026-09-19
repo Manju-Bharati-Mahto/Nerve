@@ -6897,6 +6897,20 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       const to = String(b.status);
       if (!(CYCLE_FLOW[String(cur.status)] ?? []).includes(to))
         return sendError(res, 400, `A cycle cannot go from ${cur.status} to ${to}.`);
+      /* Phase 5: once a cycle has priced a payout, the close is an accounting
+         boundary and not just a status. Reopening it would let points move
+         underneath a calculation that has already been approved or paid —
+         exactly the silent restatement the financial layer exists to prevent.
+         A correction after this point is a financial adjustment, which leaves
+         both the points and the payout saying what they always said. */
+      if (String(cur.status) === "closed" && to === "active") {
+        const n = Number((await pool.query(
+          `SELECT COUNT(*)::int n FROM mo_creator_payouts
+            WHERE cycle_id=$1 AND status NOT IN ('rejected','voided')`, [id])).rows[0].n);
+        if (n) return sendError(res, 409,
+          `${cur.label} has ${n} payout${n === 1 ? "" : "s"} calculated from its totals and cannot be ` +
+          "reopened. Correct the money with a payout adjustment instead.");
+      }
       try {
         await pool.query(`UPDATE mo_creator_cycles SET status=$1, updated_at=NOW() WHERE id=$2`, [to, id]);
       } catch (err) {
@@ -7166,6 +7180,747 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     } catch (err) {
       if ((err as { code?: string }).code === "23505")
         return sendError(res, 409, "That transaction has already been reversed.");
+      throw err;
+    }
+  }));
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     CREATOR NETWORK — Phase 5: payouts, the financial ledger, payment
+
+     TWO LEDGERS, TWO JOBS.
+
+       THE POINT LEDGER IS THE SOURCE OF TRUTH FOR PERFORMANCE — points,
+       ranking, cycles. Phase 4 owns it and Phase 5 only ever reads it.
+
+       THE FINANCIAL LEDGER IS THE SOURCE OF TRUTH FOR MONEY — what is owed,
+       what was corrected, what was paid.
+
+     A payout reads points. A payout never writes points. A financial
+     correction is money moving, never a creator's performance being edited,
+     and a test compares a checksum of the whole point ledger across every
+     payout operation to prove it.
+
+     Money is NUMERIC from end to end. Every monetary calculation happens in
+     Postgres; an amount arriving from a client is validated as text and handed
+     over as text, so it is never a JavaScript float on either leg.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /* An amount from a request.
+
+     Kept as a STRING the whole way. `0.1 + 0.2` in a browser is
+     0.30000000000000004, and a client that sends that is refused rather than
+     quietly rounded — money that cannot be written down exactly is not money
+     Nerve will record. Postgres does the arithmetic. */
+  const MONEY_RE = /^-?\d{1,9}(\.\d{1,2})?$/;
+  const RATE_RE = /^\d{1,8}(\.\d{1,4})?$/;
+  function moneyIn(raw: unknown): string | null {
+    const s = String(raw ?? "").trim();
+    if (!MONEY_RE.test(s)) return null;
+    if (/^-?0+(\.0{1,2})?$/.test(s)) return null;      // zero is not a movement
+    return s;
+  }
+  /** A payment reference, not a credential. Free text, bounded, never a secret. */
+  const SECRETISH = /\b(password|passwd|pin|otp|cvv|api[_ -]?key|secret|token|credential)\b/i;
+
+  /** Who may see money here, resolved from the session.
+
+      A Team Lead reads their team's POINTS in Phase 4 and no money at all: a
+      lead is not a financial authority, and nothing about leading a team makes
+      one. They still see their own payout, as any creator does. */
+  async function creatorFinanceScope(res: express.Response, u: CurrentUser): Promise<"all" | "self" | null> {
+    if (!(await requireCreatorNetwork(res, u))) return null;
+    if (isMoAdmin(u) || (await creatorRoleOf(u)) === "creator_admin") return "all";
+    if (await creatorRoleOf(u)) return "self";
+    // Staff holding the creator module but with no creator identity: no money.
+    sendError(res, 403, "Creator payouts are visible to Creator Admins and to the creator they belong to.");
+    return null;
+  }
+
+  /* The rate that applies to a cycle.
+
+     Chosen by the cycle's END DATE, because that is the accounting boundary
+     the cycle closed on — not by today, which would make September's payout
+     drift every time a rate changed. Overlapping windows are an ambiguity the
+     server refuses rather than resolves: a wrong rate is money. */
+  async function payoutRuleForCycle(cycle: { ends_on: unknown }) {
+    const rows = (await pool.query(
+      `SELECT * FROM mo_creator_payout_rules
+        WHERE is_active AND effective_from <= $1::date
+          AND (effective_to IS NULL OR effective_to >= $1::date)
+        ORDER BY effective_from DESC LIMIT 2`, [dOnly(cycle.ends_on)])).rows;
+    if (rows.length === 1) return { rule: rows[0], why: "ok" as const };
+    return { rule: null, why: rows.length ? ("ambiguous" as const) : ("none" as const) };
+  }
+
+  const shapePayout = (p: Record<string, unknown>) => ({
+    id: Number(p.id), user_id: p.user_id, creator_name: p.creator_name ?? null,
+    team: p.team_name ?? null,
+    cycle_id: Number(p.cycle_id), cycle: p.cycle_label ?? null,
+    cycle_starts_on: p.starts_on ? dOnly(p.starts_on) : null,
+    cycle_ends_on: p.ends_on ? dOnly(p.ends_on) : null,
+    points_basis: Number(p.points_basis),
+    /* Strings, deliberately. NUMERIC comes out of pg as a string and leaves as
+       one — turning it into a JavaScript number here is exactly the bug this
+       phase is built to avoid. */
+    rate: String(p.rate), currency: String(p.currency),
+    gross_amount: String(p.gross_amount),
+    adjustments: String(p.adjustments ?? "0.00"),
+    net_amount: String(p.net_amount ?? p.gross_amount),
+    paid_amount: String(p.paid_amount ?? "0.00"),
+    outstanding: String(p.outstanding ?? "0.00"),
+    status: p.status, payment_reference: p.payment_reference ?? null,
+    decision_reason: p.decision_reason ?? null,
+    calculated_at: p.calculated_at, approved_at: p.approved_at, paid_at: p.paid_at,
+    calculated_by: p.calculated_by_name ?? null, approved_by: p.approved_by_name ?? null,
+    paid_by: p.paid_by_name ?? null,
+  });
+
+  /* Every payout read joins ONE grouped aggregate over the financial ledger,
+     never a query per row. Net and outstanding are derived here and stored
+     nowhere: gross is the snapshot, the ledger is the money. */
+  const PAYOUT_SELECT = `
+    SELECT p.*,
+           COALESCE(NULLIF(cp.display_name,''), usr.full_name) AS creator_name,
+           tm.name AS team_name,
+           c.label AS cycle_label, c.starts_on, c.ends_on,
+           calc.full_name AS calculated_by_name, appr.full_name AS approved_by_name,
+           payr.full_name AS paid_by_name,
+           COALESCE(f.adjustments, 0)::numeric(12,2) AS adjustments,
+           (p.gross_amount + COALESCE(f.adjustments, 0))::numeric(12,2) AS net_amount,
+           COALESCE(f.paid_amount, 0)::numeric(12,2) AS paid_amount,
+           COALESCE(f.outstanding, 0)::numeric(12,2) AS outstanding
+      FROM mo_creator_payouts p
+      JOIN users usr ON usr.id = p.user_id
+      LEFT JOIN mo_creator_profiles cp ON cp.user_id = p.user_id
+      LEFT JOIN mo_creator_team_members mm ON mm.user_id = p.user_id AND mm.is_primary
+      LEFT JOIN mo_creator_teams tm ON tm.id = mm.team_id
+      JOIN mo_creator_cycles c ON c.id = p.cycle_id
+      LEFT JOIN users calc ON calc.id = p.calculated_by
+      LEFT JOIN users appr ON appr.id = p.approved_by
+      LEFT JOIN users payr ON payr.id = p.paid_by
+      LEFT JOIN (
+        SELECT payout_id,
+               SUM(amount) FILTER (WHERE entry_type IN ('adjustment','reversal')) AS adjustments,
+               SUM(-amount) FILTER (WHERE entry_type = 'payment')                 AS paid_amount,
+               SUM(amount)                                                        AS outstanding
+          FROM mo_creator_financial_ledger GROUP BY payout_id
+      ) f ON f.payout_id = p.id`;
+
+  /* ── Payout rates ───────────────────────────────────────────────────── */
+  app.get(`${P}/creator/payout-rules`, asyncHandler(async (_req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    const scope = await creatorFinanceScope(res, u); if (!scope) return;
+    if (scope !== "all") return sendError(res, 403, "Only a Creator Admin may see payout rates.");
+    const { rows } = await pool.query(
+      `SELECT r.*, (SELECT COUNT(*)::int FROM mo_creator_payouts p WHERE p.payout_rule_id=r.id) AS used
+         FROM mo_creator_payout_rules r
+        ORDER BY r.is_active DESC, r.effective_from DESC, r.id DESC`);
+    res.json({ rules: rows.map((r) => ({ ...r, id: Number(r.id), rate: String(r.rate),
+      effective_from: dOnly(r.effective_from), effective_to: r.effective_to ? dOnly(r.effective_to) : null })) });
+  }));
+
+  app.post(`${P}/creator/payout-rules`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const b = req.body as Record<string, unknown>;
+    const name = String(b.name ?? "").trim();
+    if (name.length < 2 || name.length > 80) return sendError(res, 400, "A rate name of 2–80 characters is required.");
+    const rate = String(b.rate ?? "").trim();
+    if (!RATE_RE.test(rate) || Number(rate) <= 0)
+      return sendError(res, 400, "A rate must be a positive amount with at most four decimal places.");
+    const from = String(b.effective_from ?? "");
+    const to = b.effective_to ? String(b.effective_to) : null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) return sendError(res, 400, "An effective-from date is required (YYYY-MM-DD).");
+    if (to && (!/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from))
+      return sendError(res, 400, "The effective-to date must be on or after the effective-from date.");
+    /* Two active rates covering the same day would make a payout ambiguous, so
+       the overlap is refused here rather than discovered at calculation time. */
+    const clash = (await pool.query(
+      `SELECT name FROM mo_creator_payout_rules
+        WHERE is_active AND effective_from <= COALESCE($2::date, 'infinity'::date)
+          AND COALESCE(effective_to, 'infinity'::date) >= $1::date LIMIT 1`, [from, to])).rows[0];
+    if (clash) return sendError(res, 409,
+      `Those dates overlap the active rate "${clash.name}". End that one first — a day cannot have two rates.`);
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO mo_creator_payout_rules (name, description, rate, effective_from, effective_to, created_by)
+         VALUES ($1,$2,$3::numeric,$4,$5,$6) RETURNING id`,
+        [name, String(b.description ?? ""), rate, from, to, u.id]);
+      const id = Number(rows[0].id);
+      await audit(u, "creator_payout_rule.created", "creator_payout_rule", id, null,
+        { name, rate, effective_from: from, effective_to: to }, req);
+      res.status(201).json({ ok: true, id });
+    } catch (err) {
+      if ((err as { code?: string }).code === "23505")
+        return sendError(res, 409, "A rate with that name already exists.");
+      throw err;
+    }
+  }));
+
+  /* A rate that has priced a payout is never deleted and its rate is never
+     edited: the payouts carry their own copy, but the row has to keep telling
+     the truth about what it was. Ending it and starting a new one is how a
+     rate changes — that is what keeps September at ₹10 when October is ₹12. */
+  app.patch(`${P}/creator/payout-rules/:id`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const cur = (await pool.query(`SELECT * FROM mo_creator_payout_rules WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Rate not found.");
+    const used = Number((await pool.query(
+      `SELECT COUNT(*)::int n FROM mo_creator_payouts WHERE payout_rule_id=$1`, [id])).rows[0].n);
+    const b = req.body as Record<string, unknown>;
+    const fields: string[] = [], vals: unknown[] = []; let i = 1;
+    if ("rate" in b) {
+      if (used) return sendError(res, 409,
+        `This rate has priced ${used} payout${used === 1 ? "" : "s"}. End it and create a new rate — ` +
+        "changing the figure here would leave those payouts citing a rate that no longer says what they paid.");
+      const rate = String(b.rate ?? "").trim();
+      if (!RATE_RE.test(rate) || Number(rate) <= 0)
+        return sendError(res, 400, "A rate must be a positive amount with at most four decimal places.");
+      fields.push(`rate=$${i++}::numeric`); vals.push(rate);
+    }
+    if ("effective_to" in b) {
+      const to = b.effective_to ? String(b.effective_to) : null;
+      const from = dOnly(cur.effective_from) ?? "";
+      if (to && (!/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from))
+        return sendError(res, 400, "The effective-to date must be on or after the effective-from date.");
+      fields.push(`effective_to=$${i++}`); vals.push(to);
+    }
+    for (const k of ["name", "description", "is_active"])
+      if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
+    if (!fields.length) return res.json({ ok: true });
+    fields.push(`updated_at=NOW()`);
+    vals.push(id);
+    const { rows } = await pool.query(
+      `UPDATE mo_creator_payout_rules SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals);
+    if (cur.is_active !== rows[0].is_active)
+      await audit(u, rows[0].is_active ? "creator_payout_rule.activated" : "creator_payout_rule.deactivated",
+        "creator_payout_rule", id, { is_active: cur.is_active }, { is_active: rows[0].is_active }, req);
+    await audit(u, "creator_payout_rule.updated", "creator_payout_rule", id,
+      { rate: String(cur.rate), effective_to: cur.effective_to, name: cur.name },
+      { rate: String(rows[0].rate), effective_to: rows[0].effective_to, name: rows[0].name }, req);
+    res.json({ ok: true });
+  }));
+
+
+  /* ── Generating payouts for a closed cycle ──────────────────────────────
+
+     Only a CLOSED cycle. An active cycle's totals are still moving, and a
+     payout calculated from a moving total is a number nobody can defend. The
+     close is the accounting boundary.
+
+     ONE statement for the whole cycle: a grouped aggregate over the point
+     ledger feeds an INSERT … SELECT, so a network of a thousand creators is
+     one round trip rather than a thousand. The multiplication happens in
+     Postgres on NUMERIC — no JavaScript arithmetic touches the money.
+
+     Idempotent by index, not by checking first: ten simultaneous requests
+     produce one payout per creator because ON CONFLICT DO NOTHING lands on
+     the unique index, and the losers become no-ops instead of duplicates. */
+  app.post(`${P}/creator/cycles/:id/payouts`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const cycleId = Number(getSingleParam(req.params.id));
+    const cycle = (await pool.query(
+      `SELECT id, label, status, starts_on, ends_on FROM mo_creator_cycles WHERE id=$1`, [cycleId])).rows[0];
+    if (!cycle) return sendError(res, 404, "Cycle not found.");
+    if (String(cycle.status) !== "closed")
+      return sendError(res, 400,
+        `Payouts are calculated from a closed cycle. ${cycle.label} is ${cycle.status} — ` +
+        "its totals are still moving, so there is nothing settled to pay.");
+
+    const { rule, why } = await payoutRuleForCycle(cycle);
+    if (!rule) return sendError(res, 400, why === "ambiguous"
+      ? "More than one active rate covers this cycle's end date. End one of them — a day cannot have two rates."
+      : "No active payout rate covers this cycle's end date. Create one before calculating.");
+
+    const { rows } = await pool.query(
+      `INSERT INTO mo_creator_payouts
+         (user_id, cycle_id, points_basis, payout_rule_id, rate, currency, gross_amount, calculated_by)
+       SELECT t.user_id, $1, t.total, $2, $3::numeric, $4,
+              ROUND(t.total::numeric * $3::numeric, 2), $5
+         FROM (SELECT user_id, SUM(points)::int AS total
+                 FROM mo_creator_point_ledger WHERE cycle_id=$1 GROUP BY user_id) t
+        WHERE t.total > 0
+       ON CONFLICT DO NOTHING
+       RETURNING id, user_id, points_basis, gross_amount`,
+      [cycleId, rule.id, String(rule.rate), String(rule.currency), u.id]);
+
+    if (rows.length) {
+      const ids = rows.map((r) => Number(r.id));
+      // One audit row per payout — money is traced per record, not per run.
+      await pool.query(
+        `INSERT INTO mo_audit_logs (actor_id, actor_role, action, entity_type, entity_id, after, ip, user_agent)
+         SELECT $1, $2, 'creator_payout.calculated', 'creator_payout', p.id,
+                jsonb_build_object('user_id', p.user_id, 'cycle_id', p.cycle_id,
+                  'points_basis', p.points_basis, 'rate', p.rate::text,
+                  'gross_amount', p.gross_amount::text, 'currency', p.currency,
+                  'payout_rule', $3::text),
+                $4, $5
+           FROM mo_creator_payouts p WHERE p.id = ANY($6::bigint[])`,
+        [u.id, moRoleOf(u) ?? (u.team === "creator" ? "creator" : null), rule.name,
+         req.ip ?? null, (req.headers["user-agent"] as string) ?? null, ids]);
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         SELECT p.user_id, 'payout', 'Your ' || $2 || ' payout has been calculated',
+                p.points_basis || ' points × ₹' || p.rate::text || ' = ₹' || p.gross_amount::text
+                  || ' — awaiting review',
+                'creator_payout', p.id
+           FROM mo_creator_payouts p WHERE p.id = ANY($1::bigint[])`, [ids, cycle.label]);
+    }
+    const skipped = Number((await pool.query(
+      `SELECT COUNT(DISTINCT user_id)::int n FROM mo_creator_point_ledger
+        WHERE cycle_id=$1 AND user_id NOT IN (SELECT user_id FROM mo_creator_payouts
+          WHERE cycle_id=$1 AND status NOT IN ('rejected','voided'))`, [cycleId])).rows[0].n);
+    res.json({ ok: true, created: rows.length, skipped,
+      rate: String(rule.rate), rule: rule.name, cycle: cycle.label });
+  }));
+
+  /* ── Reading payouts ────────────────────────────────────────────────── */
+  app.get(`${P}/creator/payouts`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    const scope = await creatorFinanceScope(res, u); if (!scope) return;
+    const q = req.query as Record<string, string>;
+    const params: unknown[] = [];
+    let where = "";
+    // A creator sees their own. A forged creator_id can only ever narrow.
+    if (scope === "self") { params.push(u.id); where += ` AND p.user_id = $${params.length}`; }
+    for (const [key, col] of [["creator_id", "p.user_id"], ["cycle_id", "p.cycle_id"],
+                              ["status", "p.status"]] as const) {
+      const v = String(q[key] ?? "").trim();
+      if (!v || v === "all") continue;
+      params.push(key === "cycle_id" ? Number(v) : v);
+      where += ` AND ${col} = $${params.length}`;
+    }
+    if (q.team_id && q.team_id !== "all" && scope === "all") {
+      params.push(Number(q.team_id)); where += ` AND mm.team_id = $${params.length}`;
+    }
+    if (q.since) { params.push(q.since); where += ` AND p.calculated_at >= $${params.length}::date`; }
+    if (q.unpaid === "1") where += ` AND p.status IN ('calculated','approved')`;
+    const limit = Math.min(200, Math.max(1, Number(q.limit) || 25));
+    const offset = Math.max(0, Number(q.offset) || 0);
+    const totals = (await pool.query(
+      `SELECT COUNT(*)::int n FROM mo_creator_payouts p
+         LEFT JOIN mo_creator_team_members mm ON mm.user_id = p.user_id AND mm.is_primary
+        WHERE true${where}`, params)).rows[0];
+    params.push(limit, offset);
+    const { rows } = await pool.query(
+      `${PAYOUT_SELECT} WHERE true${where}
+        ORDER BY p.calculated_at DESC, p.id DESC
+        LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+    res.json({ payouts: rows.map(shapePayout), total: Number(totals.n), limit, offset, scope });
+  }));
+
+  /* One payout, and everything behind the number: the point transactions that
+     made the basis, and the financial entries that made the money. §6 — no
+     unexplained monetary amount. */
+  app.get(`${P}/creator/payouts/:id`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    const scope = await creatorFinanceScope(res, u); if (!scope) return;
+    const id = Number(getSingleParam(req.params.id));
+    const p = (await pool.query(`${PAYOUT_SELECT} WHERE p.id=$1`, [id])).rows[0];
+    // Someone else's payout is indistinguishable from one that does not exist.
+    if (!p || (scope === "self" && p.user_id !== u.id)) return sendError(res, 404, "Payout not found.");
+
+    const basis = (await pool.query(
+      `SELECT l.id, l.points, l.reason, l.source_type, l.created_at, r.name AS rule
+         FROM mo_creator_point_ledger l
+         LEFT JOIN mo_creator_point_rules r ON r.id = l.rule_id
+        WHERE l.user_id=$1 AND l.cycle_id=$2
+        ORDER BY l.created_at, l.id`, [p.user_id, p.cycle_id])).rows;
+    const entries = (await pool.query(
+      `SELECT f.*, act.full_name AS actor_name FROM mo_creator_financial_ledger f
+         LEFT JOIN users act ON act.id = f.created_by
+        WHERE f.payout_id=$1 ORDER BY f.created_at, f.id`, [id])).rows;
+    /* The basis is the snapshot, not today's total. When they differ — a
+       reopened cycle, a later correction — the statement says so rather than
+       quietly showing a number that no longer matches what was paid. */
+    const currentPoints = Number((await pool.query(
+      `SELECT COALESCE(SUM(points),0)::int t FROM mo_creator_point_ledger
+        WHERE user_id=$1 AND cycle_id=$2`, [p.user_id, p.cycle_id])).rows[0].t);
+    res.json({
+      payout: shapePayout(p),
+      points_basis_entries: basis.map((r) => ({ ...r, id: Number(r.id), points: Number(r.points) })),
+      current_points: currentPoints,
+      basis_matches_current: currentPoints === Number(p.points_basis),
+      financial_entries: entries.map((f) => ({
+        id: Number(f.id), entry_type: f.entry_type, amount: String(f.amount),
+        currency: f.currency, description: f.description, reference: f.reference,
+        reversal_of_id: f.reversal_of_id ? Number(f.reversal_of_id) : null,
+        created_at: f.created_at, actor: f.actor_name,
+      })),
+      can_manage: scope === "all",
+    });
+  }));
+
+  /** What the Creator Admin's payout dashboard needs, in one query. */
+  app.get(`${P}/creator/payouts/summary/:cycleId`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    const scope = await creatorFinanceScope(res, u); if (!scope) return;
+    if (scope !== "all") return sendError(res, 403, "Only a Creator Admin may see the payout summary.");
+    const raw = getSingleParam(req.params.cycleId);
+    const params: unknown[] = [];
+    let filter = "";
+    if (raw && raw !== "all") { params.push(Number(raw)); filter = ` AND p.cycle_id = $${params.length}`; }
+    const s = (await pool.query(
+      `SELECT COUNT(*)::int payouts,
+              COUNT(*) FILTER (WHERE p.status='calculated')::int awaiting_review,
+              COUNT(*) FILTER (WHERE p.status='approved')::int approved,
+              COUNT(*) FILTER (WHERE p.status='paid')::int paid,
+              COALESCE(SUM(p.gross_amount),0)::numeric(12,2) gross,
+              COALESCE(SUM(p.gross_amount) FILTER (WHERE p.status='approved'),0)::numeric(12,2) approved_gross,
+              COALESCE(SUM(p.gross_amount) FILTER (WHERE p.status='paid'),0)::numeric(12,2) paid_gross
+         FROM mo_creator_payouts p WHERE true${filter}`, params)).rows[0];
+    /* Outstanding comes from the ledger, not from the payout statuses: what is
+       owed is the sum of the money movements, which is the only figure that
+       stays right after an adjustment. */
+    const o = (await pool.query(
+      `SELECT COALESCE(SUM(f.amount),0)::numeric(12,2) outstanding,
+              COALESCE(SUM(-f.amount) FILTER (WHERE f.entry_type='payment'),0)::numeric(12,2) settled
+         FROM mo_creator_financial_ledger f
+         LEFT JOIN mo_creator_payouts p ON p.id = f.payout_id
+        WHERE true${filter}`, params)).rows[0];
+    res.json({
+      payouts: Number(s.payouts), awaiting_review: Number(s.awaiting_review),
+      approved: Number(s.approved), paid: Number(s.paid),
+      gross: String(s.gross), approved_gross: String(s.approved_gross), paid_gross: String(s.paid_gross),
+      outstanding: String(o.outstanding), settled: String(o.settled), currency: "INR",
+    });
+  }));
+
+
+  /* ── The payout lifecycle ───────────────────────────────────────────────
+
+       calculated ──> approved ──> paid
+            │             │
+            └> rejected   └> voided
+
+     APPROVED is not PAID. Approving recognises a liability — the university
+     owes this — and writes the money into the financial ledger. Paying records
+     that cash actually moved, and carries the reference that proves it. A
+     manager approving a payout has not paid anybody, and the system never
+     says they have.
+
+     Every transition is guarded in the WHERE clause, so two managers acting at
+     once produce one transition and one 409. Each one that moves money does it
+     in a transaction with the ledger write, because a payout that says PAID
+     with no financial entry behind it would be a lie the database told. */
+
+  /** Run a payout transition and its ledger entry as one unit. */
+  async function payoutTx<T>(fn: (c: import("pg").PoolClient) => Promise<T>): Promise<T | { failed: Error }> {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const out = await fn(client);
+      await client.query("COMMIT");
+      return out;
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      return { failed: e as Error };
+    } finally {
+      client.release();
+    }
+  }
+  const txFailed = <T,>(r: T | { failed: Error }): r is { failed: Error } =>
+    !!r && typeof r === "object" && "failed" in (r as object);
+
+  app.post(`${P}/creator/payouts/:id/approve`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const cur = (await pool.query(`SELECT * FROM mo_creator_payouts WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Payout not found.");
+    if (String(cur.status) !== "calculated")
+      return sendError(res, 409, `That payout is already ${cur.status}.`);
+    // Nobody approves their own money, whatever else they are.
+    if (String(cur.user_id) === u.id)
+      return sendError(res, 403, "A payout cannot be approved by the creator it belongs to.");
+
+    const out = await payoutTx(async (c) => {
+      const upd = await c.query(
+        `UPDATE mo_creator_payouts SET status='approved', approved_by=$1, approved_at=NOW(), updated_at=NOW()
+          WHERE id=$2 AND status='calculated' RETURNING *`, [u.id, id]);
+      if (!upd.rowCount) return { raced: true as const };
+      const p = upd.rows[0];
+      // The liability. One per payout — the index makes a double approval impossible.
+      await c.query(
+        `INSERT INTO mo_creator_financial_ledger
+           (user_id, payout_id, cycle_id, entry_type, amount, currency, description, created_by)
+         VALUES ($1,$2,$3,'payout',$4::numeric,$5,$6,$7)`,
+        [p.user_id, id, p.cycle_id, String(p.gross_amount), p.currency,
+         `Payout approved — ${p.points_basis} points × ${p.rate}`, u.id]);
+      return { p };
+    });
+    if (txFailed(out)) return sendError(res, 409, "That payout was acted on a moment ago.");
+    if ("raced" in out) return sendError(res, 409, "That payout was acted on a moment ago.");
+
+    const p = out.p;
+    const cyc = (await pool.query(`SELECT label FROM mo_creator_cycles WHERE id=$1`, [p.cycle_id])).rows[0];
+    await audit(u, "creator_payout.approved", "creator_payout", id,
+      { status: "calculated" },
+      { status: "approved", gross_amount: String(p.gross_amount), currency: p.currency,
+        user_id: p.user_id, cycle_id: Number(p.cycle_id) }, req);
+    await notifyCreator(String(p.user_id), "payout", `Your ${cyc?.label ?? "cycle"} payout has been approved`,
+      `₹${String(p.gross_amount)} approved — payment follows.`, "creator_payout", id);
+    res.json({ ok: true, status: "approved" });
+  }));
+
+  app.post(`${P}/creator/payouts/:id/reject`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const reason = String((req.body as Record<string, unknown>).reason ?? "").trim();
+    if (reason.length < 3) return sendError(res, 400, "A reason is required to reject a payout.");
+    const upd = await pool.query(
+      `UPDATE mo_creator_payouts SET status='rejected', decision_reason=$1, approved_by=$2,
+              approved_at=NOW(), updated_at=NOW()
+        WHERE id=$3 AND status='calculated' RETURNING *`, [reason.slice(0, 500), u.id, id]);
+    if (!upd.rowCount) {
+      const exists = (await pool.query(`SELECT status FROM mo_creator_payouts WHERE id=$1`, [id])).rows[0];
+      if (!exists) return sendError(res, 404, "Payout not found.");
+      return sendError(res, 409, `Only a payout awaiting review can be rejected — that one is ${exists.status}.`);
+    }
+    /* Nothing financial was ever recognised, so there is nothing to reverse.
+       The statement is closed, and the cycle can be calculated again. */
+    await audit(u, "creator_payout.rejected", "creator_payout", id, { status: "calculated" },
+      { status: "rejected", reason: reason.slice(0, 500) }, req);
+    res.json({ ok: true, status: "rejected" });
+  }));
+
+  /* PAID — cash actually moved.
+
+     The amount settled is the OUTSTANDING balance computed in SQL at this
+     moment, so an adjustment made between approval and payment is paid too
+     rather than silently dropped. The payment reference is required: a payment
+     nobody can trace in the bank is not a payment Nerve will claim happened. */
+  app.post(`${P}/creator/payouts/:id/pay`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const b = req.body as Record<string, unknown>;
+    const reference = String(b.payment_reference ?? "").trim();
+    if (reference.length < 4 || reference.length > 120)
+      return sendError(res, 400, "A payment reference of 4–120 characters is required — a UTR, voucher or bank reference.");
+    if (SECRETISH.test(reference))
+      return sendError(res, 400, "That looks like a credential. Record only a safe payment reference.");
+    const cur = (await pool.query(`SELECT * FROM mo_creator_payouts WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Payout not found.");
+    if (String(cur.status) !== "approved")
+      return sendError(res, 409, String(cur.status) === "paid"
+        ? "That payout is already paid."
+        : `Only an approved payout can be paid — that one is ${cur.status}.`);
+    const owed = String((await pool.query(
+      `SELECT COALESCE(SUM(amount),0)::numeric(12,2) t FROM mo_creator_financial_ledger WHERE payout_id=$1`,
+      [id])).rows[0].t);
+    if (!(Number(owed) > 0))
+      return sendError(res, 400, `There is nothing outstanding on this payout (balance ₹${owed}).`);
+
+    const out = await payoutTx(async (c) => {
+      const upd = await c.query(
+        `UPDATE mo_creator_payouts SET status='paid', paid_by=$1, paid_at=NOW(),
+                payment_reference=$2, updated_at=NOW()
+          WHERE id=$3 AND status='approved' RETURNING *`, [u.id, reference.slice(0, 120), id]);
+      if (!upd.rowCount) return { raced: true as const };
+      /* Settle whatever is outstanding right now, computed in the database.
+         One payment entry per payout — the index makes a double payment
+         impossible even if two requests get this far together. */
+      const ins = await c.query(
+        `INSERT INTO mo_creator_financial_ledger
+           (user_id, payout_id, cycle_id, entry_type, amount, currency, description, reference, created_by)
+         SELECT p.user_id, p.id, p.cycle_id, 'payment',
+                -(SELECT COALESCE(SUM(amount),0) FROM mo_creator_financial_ledger WHERE payout_id=p.id),
+                p.currency, 'Payment recorded', $2, $3
+           FROM mo_creator_payouts p WHERE p.id=$1
+         RETURNING (-amount)::numeric(12,2) AS settled`, [id, reference.slice(0, 120), u.id]);
+      return { p: upd.rows[0], settled: String(ins.rows[0].settled) };
+    });
+    if (txFailed(out) || "raced" in out) return sendError(res, 409, "That payout was paid a moment ago.");
+
+    const p = out.p;
+    const cyc = (await pool.query(`SELECT label FROM mo_creator_cycles WHERE id=$1`, [p.cycle_id])).rows[0];
+    await audit(u, "creator_payout.paid", "creator_payout", id, { status: "approved" },
+      { status: "paid", amount_settled: out.settled, currency: p.currency,
+        payment_reference: reference.slice(0, 120), user_id: p.user_id }, req);
+    await notifyCreator(String(p.user_id), "payout", `Your ${cyc?.label ?? "cycle"} payout has been paid`,
+      `₹${out.settled} paid · reference ${reference.slice(0, 120)}`, "creator_payout", id);
+    res.json({ ok: true, status: "paid", settled: out.settled });
+  }));
+
+  /* VOID — cancel an approved payout that has not been paid.
+
+     Every open entry on the statement is reversed in one statement, so the
+     balance goes to zero and the history stays intact. A PAID payout is never
+     voided: money that moved is corrected with an adjustment, not erased. */
+  app.post(`${P}/creator/payouts/:id/void`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const reason = String((req.body as Record<string, unknown>).reason ?? "").trim();
+    if (reason.length < 3) return sendError(res, 400, "A reason is required to void a payout.");
+    const cur = (await pool.query(`SELECT * FROM mo_creator_payouts WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Payout not found.");
+    if (String(cur.status) === "paid")
+      return sendError(res, 400,
+        "A paid payout is not voided — the money moved. Record a financial adjustment instead.");
+    if (String(cur.status) !== "approved")
+      return sendError(res, 409, `Only an approved payout can be voided — that one is ${cur.status}.`);
+
+    const out = await payoutTx(async (c) => {
+      const upd = await c.query(
+        `UPDATE mo_creator_payouts SET status='voided', decision_reason=$1, updated_at=NOW()
+          WHERE id=$2 AND status='approved' RETURNING *`, [reason.slice(0, 500), id]);
+      if (!upd.rowCount) return { raced: true as const };
+      const rev = await c.query(
+        `INSERT INTO mo_creator_financial_ledger
+           (user_id, payout_id, cycle_id, entry_type, amount, currency, description, reversal_of_id, created_by)
+         SELECT l.user_id, l.payout_id, l.cycle_id, 'reversal', -l.amount, l.currency, $2, l.id, $3
+           FROM mo_creator_financial_ledger l
+          WHERE l.payout_id=$1 AND l.entry_type IN ('payout','adjustment')
+            AND NOT EXISTS (SELECT 1 FROM mo_creator_financial_ledger r WHERE r.reversal_of_id = l.id)
+         RETURNING id`, [id, `Voided — ${reason.slice(0, 400)}`, u.id]);
+      return { p: upd.rows[0], reversed: rev.rowCount ?? 0 };
+    });
+    if (txFailed(out) || "raced" in out) return sendError(res, 409, "That payout was acted on a moment ago.");
+
+    await audit(u, "creator_payout.voided", "creator_payout", id, { status: "approved" },
+      { status: "voided", reason: reason.slice(0, 500), entries_reversed: out.reversed }, req);
+    res.json({ ok: true, status: "voided", entries_reversed: out.reversed });
+  }));
+
+  /* ── Financial adjustments ──────────────────────────────────────────────
+
+     A bonus, or a correction. Money only: THE POINT LEDGER IS NOT TOUCHED, and
+     a creator on 184 points still has 184 points after a ₹200 bonus. The
+     reason is mandatory, because an unexplained amount is what this whole
+     phase exists to prevent.
+
+     Allowed on a paid payout too — that is exactly how a paid statement is
+     corrected, leaving the original payment where it is and the difference
+     visible as a balance. */
+  app.post(`${P}/creator/payouts/:id/adjust`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const b = req.body as Record<string, unknown>;
+    const amount = moneyIn(b.amount);
+    if (!amount) return sendError(res, 400,
+      "An amount is required: a non-zero figure with at most two decimal places.");
+    const reason = String(b.reason ?? "").trim();
+    if (reason.length < 3) return sendError(res, 400, "A reason is required for a financial adjustment.");
+    const p = (await pool.query(`SELECT * FROM mo_creator_payouts WHERE id=$1`, [id])).rows[0];
+    if (!p) return sendError(res, 404, "Payout not found.");
+    if (["rejected", "voided"].includes(String(p.status)))
+      return sendError(res, 400, `A ${p.status} payout carries no money to adjust.`);
+
+    const { rows } = await pool.query(
+      `INSERT INTO mo_creator_financial_ledger
+         (user_id, payout_id, cycle_id, entry_type, amount, currency, description, created_by)
+       VALUES ($1,$2,$3,'adjustment',$4::numeric,$5,$6,$7) RETURNING id, amount`,
+      [p.user_id, id, p.cycle_id, amount, p.currency, reason.slice(0, 500), u.id]);
+    const fid = Number(rows[0].id);
+    await audit(u, "creator_payout.adjusted", "creator_financial_entry", fid, null,
+      { payout_id: id, user_id: p.user_id, amount: String(rows[0].amount), currency: p.currency,
+        reason: reason.slice(0, 500), payout_status: p.status }, req);
+    await notifyCreator(String(p.user_id), "payout",
+      `${Number(amount) > 0 ? "+" : ""}₹${amount} adjustment on your payout`,
+      reason.slice(0, 200), "creator_payout", id);
+    res.status(201).json({ ok: true, id: fid, amount: String(rows[0].amount) });
+  }));
+
+  /* ── The financial ledger ───────────────────────────────────────────── */
+  app.get(`${P}/creator/finance/ledger`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    const scope = await creatorFinanceScope(res, u); if (!scope) return;
+    const q = req.query as Record<string, string>;
+    const params: unknown[] = [];
+    let where = "";
+    if (scope === "self") { params.push(u.id); where += ` AND f.user_id = $${params.length}`; }
+    for (const [key, col] of [["creator_id", "f.user_id"], ["cycle_id", "f.cycle_id"],
+                              ["payout_id", "f.payout_id"], ["entry_type", "f.entry_type"]] as const) {
+      const v = String(q[key] ?? "").trim();
+      if (!v || v === "all") continue;
+      params.push(["cycle_id", "payout_id"].includes(key) ? Number(v) : v);
+      where += ` AND ${col} = $${params.length}`;
+    }
+    if (q.since) { params.push(q.since); where += ` AND f.created_at >= $${params.length}::date`; }
+    const limit = Math.min(200, Math.max(1, Number(q.limit) || 25));
+    const offset = Math.max(0, Number(q.offset) || 0);
+    const totals = (await pool.query(
+      `SELECT COUNT(*)::int n, COALESCE(SUM(f.amount),0)::numeric(12,2) s
+         FROM mo_creator_financial_ledger f WHERE true${where}`, params)).rows[0];
+    params.push(limit, offset);
+    const { rows } = await pool.query(
+      `SELECT f.*, COALESCE(NULLIF(cp.display_name,''), usr.full_name) AS creator_name,
+              c.label AS cycle_label, act.full_name AS actor_name, p.status AS payout_status
+         FROM mo_creator_financial_ledger f
+         JOIN users usr ON usr.id = f.user_id
+         LEFT JOIN mo_creator_profiles cp ON cp.user_id = f.user_id
+         LEFT JOIN mo_creator_cycles c ON c.id = f.cycle_id
+         LEFT JOIN mo_creator_payouts p ON p.id = f.payout_id
+         LEFT JOIN users act ON act.id = f.created_by
+        WHERE true${where}
+        ORDER BY f.created_at DESC, f.id DESC
+        LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
+    res.json({
+      entries: rows.map((f) => ({
+        id: Number(f.id), user_id: f.user_id, creator_name: f.creator_name,
+        payout_id: f.payout_id ? Number(f.payout_id) : null, payout_status: f.payout_status ?? null,
+        cycle_id: f.cycle_id ? Number(f.cycle_id) : null, cycle: f.cycle_label ?? null,
+        entry_type: f.entry_type, amount: String(f.amount), currency: f.currency,
+        description: f.description, reference: f.reference,
+        reversal_of_id: f.reversal_of_id ? Number(f.reversal_of_id) : null,
+        created_at: f.created_at, actor: f.actor_name,
+      })),
+      total: Number(totals.n), sum: String(totals.s), limit, offset, scope,
+    });
+  }));
+
+  /* Reverse one adjustment. The entry stays exactly where it is and an equal
+     and opposite one is written beside it — the financial ledger is never
+     edited and never deleted.
+
+     Only an adjustment: cancelling a whole statement is Void, and a payment is
+     not un-made by a database row. Both are refused here with the action that
+     is actually meant. */
+  app.post(`${P}/creator/finance/:id/reverse`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    if (!(await requireCreatorManage(res, u))) return;
+    const id = Number(getSingleParam(req.params.id));
+    const reason = String((req.body as Record<string, unknown>).reason ?? "").trim();
+    if (reason.length < 3) return sendError(res, 400, "A reason is required to reverse a financial entry.");
+    const orig = (await pool.query(`SELECT * FROM mo_creator_financial_ledger WHERE id=$1`, [id])).rows[0];
+    if (!orig) return sendError(res, 404, "Entry not found.");
+    if (orig.entry_type === "reversal")
+      return sendError(res, 400, "A reversal cannot itself be reversed.");
+    if (orig.entry_type === "payment")
+      return sendError(res, 400, "A recorded payment is not reversed here — correct it with an adjustment.");
+    if (orig.entry_type === "payout")
+      return sendError(res, 400, "The payout entry is cancelled by voiding the payout, not reversed on its own.");
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO mo_creator_financial_ledger
+           (user_id, payout_id, cycle_id, entry_type, amount, currency, description, reversal_of_id, created_by)
+         VALUES ($1,$2,$3,'reversal',-$4::numeric,$5,$6,$7,$8) RETURNING id, amount`,
+        [orig.user_id, orig.payout_id, orig.cycle_id, String(orig.amount), orig.currency,
+         reason.slice(0, 500), id, u.id]);
+      const rid = Number(rows[0].id);
+      await audit(u, "creator_financial_entry.reversed", "creator_financial_entry", rid,
+        { original_id: id, amount: String(orig.amount) },
+        { amount: String(rows[0].amount), reason: reason.slice(0, 500) }, req);
+      res.status(201).json({ ok: true, id: rid, amount: String(rows[0].amount) });
+    } catch (err) {
+      if ((err as { code?: string }).code === "23505")
+        return sendError(res, 409, "That entry has already been reversed.");
       throw err;
     }
   }));

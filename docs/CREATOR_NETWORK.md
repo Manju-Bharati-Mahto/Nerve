@@ -1,8 +1,8 @@
 # Nerve Creator Network — Architecture
 
 > Living document. Reference for every Creator Network phase.
-> Status: **Phase 4 complete** — points, the ledger, cycles and rank are live.
-> Phase 5 (payouts) has not started.
+> Status: **Phase 5 complete** — payouts, the financial ledger and payment are live.
+> Phase 6 (leaderboard competitions, achievements) has not started.
 
 Parul University runs a creator network: an incentive-based content workforce
 producing reels, shorts, vlogs, event and campus content, paid in points, ranks
@@ -90,7 +90,10 @@ These answer different questions and must not be conflated:
 | `mo_creator_submissions` | `id BIGINT` | a version of the content, and its verdict (Phase 3) |
 | `mo_creator_point_rules` | `id BIGINT` | what a thing is worth (Phase 4) |
 | `mo_creator_cycles` | `id BIGINT` | the period points count towards |
-| `mo_creator_point_ledger` | `id BIGINT` | **every point transaction — the source of truth** |
+| `mo_creator_point_ledger` | `id BIGINT` | **every point transaction — the source of truth for performance** |
+| `mo_creator_payout_rules` | `id BIGINT` | ₹ per point, with an effective window (Phase 5) |
+| `mo_creator_payouts` | `id BIGINT` | one statement per creator per cycle: the calculation snapshot |
+| `mo_creator_financial_ledger` | `id BIGINT` | **every money movement — the source of truth for money** |
 
 `teams` gains a built-in `creator` row (the 7th).
 
@@ -283,7 +286,7 @@ onto it. Media Ops `/state` was not touched.
 | **2 ✅** | Events, opportunities, interest, selection, assignment, tasks |
 | **3 ✅** | Content submission, versioning, review and verdicts |
 | **4 ✅** | Point rules, point ledger, cycles, rank engine |
-| 5 | Payouts, financial ledger, audit |
+| **5 ✅** | Payout rates, payouts, financial ledger, payment, statements |
 | 6 | Leaderboard, achievements, Creator of the Cycle, War Zone |
 | 7 | Analytics, creator growth, management intelligence |
 | 8 | Notifications, automation, chat, AI, platform integrations |
@@ -742,3 +745,250 @@ restates a closed cycle.
   approvals producing one transaction, ten simultaneous awards at the database
   producing one row, rule changes not rewriting history, the rank engine
   including ties and archived creators, and the security matrix.
+
+---
+
+## PHASE 5 — payouts, the financial ledger and payment
+
+### TWO LEDGERS, TWO JOBS
+
+> **THE POINT LEDGER IS THE SOURCE OF TRUTH FOR PERFORMANCE.**
+> Points, ranking, cycles. Phase 4 owns it.
+>
+> **THE FINANCIAL LEDGER IS THE SOURCE OF TRUTH FOR MONEY.**
+> Amounts owed, corrected and paid. Phase 5 owns it.
+
+A payout **reads** points. A payout **never writes** points. A ₹200 bonus is a
+financial entry, never twenty points; a point correction is a point
+transaction, never a payment. Every test that moves money takes an `md5`
+fingerprint of the point ledger before and after and asserts it is identical.
+
+The two are joined at exactly one place: a payout's `points_basis`, copied from
+`SUM(points)` for that creator in that cycle at the moment of calculation, and
+never read again.
+
+### Money is NUMERIC, never a float
+
+Nerve's established monetary type is `NUMERIC(12,2)` (`mo_requests.budget`,
+`mo_equipment_items.purchase_cost`, `mo_vendor_activities.amount`), and Phase 5
+follows it. `node-postgres` returns `NUMERIC` as a **string**, so an amount is
+never a JavaScript number on either leg:
+
+- arriving, an amount is validated as text against `/^-?\d{1,9}(\.\d{1,2})?$/`
+  and handed to Postgres as text. A client that computed `0.1 + 0.2` and sent
+  `0.30000000000000004` is **refused**, not silently rounded.
+- in the database, every calculation is SQL on `NUMERIC`.
+- leaving, amounts are serialised as strings and the browser formats them
+  without arithmetic.
+
+A rate is `NUMERIC(12,4)` — a rate is not an amount, and ₹7.50 and ₹0.0125 per
+point are both legitimate. The precedent for a finer NUMERIC is
+`mo_ai_requests.estimated_cost`.
+
+**Rounding, stated explicitly** (no prior Nerve finance code defined one):
+`ROUND(points × rate, 2)` in Postgres — half away from zero, to two decimal
+places, once, at calculation time. 3 × ₹0.3333 = ₹1.00; 7 × ₹1.005 = ₹7.04.
+
+**Currency** is a column, defaulting to `'INR'`, carried from the rate onto the
+payout and onto every entry. Nothing mixes currencies; the university operates
+in one.
+
+### The payout model
+
+Confirmed before implementation, because no PRD in the repository defines it:
+**points × rate, plus manual financial adjustments.**
+
+```
+approved content → points → closed cycle → rate → payout → financial ledger → payment
+```
+
+| Question | Answered by |
+|---|---|
+| How much? | `gross_amount`, and the ledger for net |
+| Why? | `points_basis`, traceable to the point transactions behind it |
+| For which cycle? | `cycle_id` |
+| At what rate? | `rate`, snapshotted |
+| Approved? | `approved_by`, `approved_at` |
+| Paid? | `paid_at`, `payment_reference`, and a `payment` entry |
+
+### Rates and effective windows
+
+A rate has `effective_from` / `effective_to`. A payout is priced by the rate
+covering its **cycle's end date** — the accounting boundary the cycle closed
+on, not today. Two active rates covering the same day are refused when created,
+so a payout can never be ambiguous; a cycle with no covering rate is refused at
+calculation rather than guessed.
+
+Changing a rate means **ending the current one and starting the next**. The
+figure on a rate that has already priced a payout cannot be edited at all —
+those payouts carry their own copy, but the row has to keep telling the truth
+about what it was. September stays at ₹10 when October becomes ₹12, asserted by
+test.
+
+### The snapshot
+
+At calculation time the payout copies `points_basis`, `payout_rule_id`, `rate`,
+`currency` and `gross_amount`. Nothing is recomputed for display, ever. When the
+cycle's current total later differs from the basis, the statement **says so**
+rather than quietly showing a number that no longer matches what was paid.
+
+There is deliberately **no `net_amount` column**. Net is `gross + SUM(ledger)`,
+derived on read — the same reason Phase 4 has no stored point total.
+
+### Generation: closed cycles only, and once
+
+Only a `closed` cycle. An active cycle's totals are still moving, and a payout
+calculated from a moving total is a number nobody can defend.
+
+One statement, in one SQL round trip for the whole network:
+
+```sql
+INSERT INTO mo_creator_payouts (…)
+SELECT t.user_id, …, ROUND(t.total::numeric * $rate, 2), …
+  FROM (SELECT user_id, SUM(points)::int AS total
+          FROM mo_creator_point_ledger WHERE cycle_id=$1 GROUP BY user_id) t
+ WHERE t.total > 0
+ON CONFLICT DO NOTHING
+```
+
+No N+1. A creator on zero or negative points gets no payout.
+
+**Idempotency is the index**, not a read-then-write:
+`UNIQUE (user_id, cycle_id) WHERE status NOT IN ('rejected','voided')`. Ten
+simultaneous requests produce one payout; the losers are no-ops, not errors.
+Rejected and voided statements are excluded so a cycle can be recalculated
+after a mistake.
+
+### Lifecycle
+
+```
+calculated ──> approved ──> paid
+     │             │
+     └> rejected   └> voided
+```
+
+**APPROVED IS NOT PAID.** Approving recognises a liability and writes the money
+into the financial ledger. Paying records that cash actually moved and carries
+the reference that proves it. A manager who approved a payout has not paid
+anybody, and no screen says they have.
+
+Every transition is guarded in the `WHERE` clause, so two managers acting at
+once produce one transition and one 409. Each transition that moves money runs
+in a transaction with its ledger write — a payout reading PAID with no
+financial entry behind it would be a lie the database told.
+
+A payout is never approved by the creator it belongs to. A **paid** payout is
+never voided and never edited; it is corrected with an adjustment.
+
+### The financial ledger
+
+Entries are amounts **owed**, which is what makes the arithmetic mean something:
+
+| Entry | Sign | When |
+|---|---|---|
+| `payout` | + gross | on approval — the liability |
+| `adjustment` | ± | a bonus or a correction, any time before or after payment |
+| `reversal` | ∓ | cancels exactly one entry |
+| `payment` | − outstanding | on payment — the cash |
+
+`SUM(amount)` over a payout is therefore **what is still outstanding**, and zero
+means settled. "Approved but unpaid" is a number, not an opinion, and the
+dashboard's outstanding figure comes from the ledger rather than from statuses.
+
+**Immutable.** No endpoint updates or deletes an entry — asserted against the
+source of `mediaops-api.ts`, not only by convention. Indexes hold the rest: one
+`payout` entry per payout, one `payment` entry per payout, one reversal per
+entry. Every foreign key is `ON DELETE RESTRICT`: financial history cannot be
+half-deleted, and an archived or suspended creator keeps every payout and entry.
+
+### Corrections
+
+| Situation | What happens |
+|---|---|
+| Wrong before approval | reject; nothing financial was recorded |
+| Wrong after approval, before payment | **void** — every open entry is reversed in one statement, balance returns to zero, originals stay |
+| Wrong after payment | **adjustment** — ₹2,040 paid, −₹140 recorded; the payment stays at ₹2,040, net becomes ₹1,900, and the balance reads −₹140 |
+| A mistaken adjustment | **reverse** it — an equal and opposite entry, once only |
+
+A `payment` entry is never reversed (correct it with an adjustment) and the
+`payout` entry is never reversed on its own (that is what void is for). A
+residual balance after a post-payment correction stays visible as outstanding
+for finance to settle.
+
+### Reopening a closed cycle
+
+Phase 4 allows `closed → active`. Phase 5 **blocks it once the cycle has a live
+payout**: reopening would let points move underneath a calculation that has
+already been approved or paid. The close is an accounting boundary, not just a
+status. Corrections after that point are financial, which leaves both the
+points and the payout saying what they always said.
+
+### Permissions
+
+| | Creator | Team Lead | Creator Admin / Nerve Admin |
+|---|---|---|---|
+| Own payouts and statements | yes | yes | yes |
+| Other people's payouts | — | **no** | all |
+| Financial ledger | own | **no** | all |
+| Rates, calculate, approve, reject, pay, void, adjust, reverse | — | **no** | yes |
+
+**A Team Lead has no financial authority and no financial visibility.** Leading
+a team is not a financial role, and nothing about it makes one — the lead keeps
+their Phase 4 view of their team's points and sees only their own money. This is
+the narrowest defensible line and is reversible later.
+
+A payment reference is required, bounded to 4–120 characters, and rejected if it
+looks like a credential. Nerve stores a UTR, a voucher or a bank reference and
+**never** a password, PIN, API key or secret.
+
+### API
+
+| Endpoint | Does |
+|---|---|
+| `GET/POST/PATCH /creator/payout-rules` | rates and their windows |
+| `POST /creator/cycles/:id/payouts` | calculate a closed cycle, idempotently |
+| `GET /creator/payouts` | scoped, filtered by cycle, creator, status, team; paged |
+| `GET /creator/payouts/:id` | the statement: snapshot, financial entries, and the point transactions behind the basis |
+| `GET /creator/payouts/summary/:cycleId` | the admin dashboard, in two queries |
+| `POST /creator/payouts/:id/approve` · `/reject` · `/pay` · `/void` · `/adjust` | the lifecycle |
+| `GET /creator/finance/ledger` | the financial ledger, scoped and paged |
+| `POST /creator/finance/:id/reverse` | reverse one adjustment |
+
+`GET /api/v1/media/state` carries none of this.
+
+### Audit and notifications
+
+`creator_payout_rule.created|updated|activated|deactivated`,
+`creator_payout.calculated|approved|rejected|paid|voided|adjusted`,
+`creator_financial_entry.reversed`. Calculation writes **one audit row per
+payout**, batched in a single statement — money is traced per record, not per
+run. A creator is notified when their payout is calculated, approved, adjusted
+and paid.
+
+No password, token, key or secret reaches either — asserted by test against the
+actual rows.
+
+### Phase 6 anchor
+
+Leaderboards, achievements, Creator of the Cycle and War Zone all consume
+`mo_creator_point_ledger` and the rank engine, which Phase 5 does not touch.
+Nothing in Phase 6 needs to read or write a payout: a competition is decided on
+points, and money follows the cycle it was earned in.
+
+---
+
+## PHASE 5 COMPLETE
+
+**Implementation notes**
+
+- No Phase 0–4 behaviour changed, with one deliberate addition: reopening a
+  closed cycle that has payouts is now refused (§29 requires exactly this).
+- `mo_creator_opportunities.point_rule_id` gained an API in Phase 4; nothing
+  else in the earlier phases was touched.
+- One real bug was caught by these tests and fixed: the settled amount was
+  being negated with `Number()` before going into the audit row, turning
+  `-2040.00` into `2040`. Postgres negates it now — a reminder of why the rule
+  is *no JavaScript arithmetic on money*, not *be careful with it*.
+- 64 integration tests: the required end-to-end, the bonus and correction
+  scenarios, four concurrency cases, financial precision, the security matrix,
+  and regression fingerprints over the point ledger.

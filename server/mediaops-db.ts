@@ -1935,6 +1935,142 @@ export async function bootstrapCreatorNetwork() {
   await pool.query(`ALTER TABLE mo_creator_opportunities
                     ADD COLUMN IF NOT EXISTS point_rule_id BIGINT REFERENCES mo_creator_point_rules(id)`);
 
+  /* ═══════════════════════════════════════════════════════════════════════
+     CREATOR NETWORK — Phase 5: payouts, the financial ledger, payment
+
+     TWO LEDGERS, TWO JOBS.
+
+       mo_creator_point_ledger      performance. Points, ranking, cycles.
+       mo_creator_financial_ledger  money. Amounts payable, paid, corrected.
+
+     A payout READS points and never writes them. Nothing in this block
+     references mo_creator_point_ledger except as a source to sum, which is
+     what keeps a financial correction from ever becoming a change to what
+     somebody earned.
+
+     Money is NUMERIC end to end. node-postgres returns NUMERIC as a string, so
+     an amount is never a JavaScript float on either leg of the journey, and
+     every arithmetic operation on money happens in Postgres.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /* The rate. ₹ per point, with an effective window, because a rate that
+     changes in October must not restate September.
+
+     NUMERIC(12,4) rather than the (12,2) Nerve uses for amounts: a rate is not
+     an amount, and ₹7.50 and ₹0.0125 per point are both legitimate. The
+     precedent for a finer NUMERIC is mo_ai_requests.estimated_cost. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_payout_rules (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      rate NUMERIC(12,4) NOT NULL CHECK (rate > 0),
+      currency TEXT NOT NULL DEFAULT 'INR',
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      effective_from DATE NOT NULL,
+      effective_to DATE,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT mo_creator_payout_rule_dates CHECK (effective_to IS NULL OR effective_to >= effective_from)
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_payrule_name
+                    ON mo_creator_payout_rules(lower(name))`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_payrule_window
+                    ON mo_creator_payout_rules(effective_from, effective_to) WHERE is_active`);
+
+  /* The payout: one statement for one creator in one cycle.
+
+     Everything that decided the amount is COPIED here at calculation time —
+     the point total, the rate, the rule it came from and the gross it produced.
+     A later rate change, a later point correction and a later cycle edit all
+     leave this row saying exactly what was calculated and when. Nothing
+     recomputes it for display.
+
+     There is deliberately no net_amount column. Net is gross plus whatever the
+     financial ledger holds against this payout, derived on read, for the same
+     reason Phase 4 has no stored point total: a second number is a number that
+     can disagree. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_payouts (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      cycle_id BIGINT NOT NULL REFERENCES mo_creator_cycles(id) ON DELETE RESTRICT,
+      -- The snapshot.
+      points_basis INTEGER NOT NULL,
+      payout_rule_id BIGINT REFERENCES mo_creator_payout_rules(id) ON DELETE RESTRICT,
+      rate NUMERIC(12,4) NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'INR',
+      gross_amount NUMERIC(12,2) NOT NULL,
+      status TEXT NOT NULL DEFAULT 'calculated'
+        CHECK (status IN ('calculated','approved','paid','rejected','voided')),
+      calculated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      calculated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      approved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      approved_at TIMESTAMPTZ,
+      paid_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      paid_at TIMESTAMPTZ,
+      payment_reference TEXT,
+      decision_reason TEXT,
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  /* IDEMPOTENCY. One live payout per creator per cycle, whatever arrives and
+     however often. Ten simultaneous generate requests produce one row because
+     the index says so, not because a read-then-write got lucky.
+
+     Rejected and voided statements are excluded: those are closed outcomes, and
+     a cycle whose payout was rejected must be able to be calculated again. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_payout_one
+                    ON mo_creator_payouts(user_id, cycle_id)
+                    WHERE status NOT IN ('rejected','voided')`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_payout_cycle ON mo_creator_payouts(cycle_id, status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_payout_user ON mo_creator_payouts(user_id, calculated_at DESC)`);
+
+  /* THE FINANCIAL LEDGER — the source of truth for money.
+
+     Entries are amounts OWED. A payout recognises the liability (+), an
+     adjustment moves it either way, a reversal cancels one entry exactly, and
+     a payment settles it (−). So the sum over a payout is what is still
+     outstanding, and zero means settled — no status field has to be trusted
+     for that, and "approved but unpaid" is a number rather than an opinion.
+
+     Append-only. No endpoint updates or deletes a row here. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_financial_ledger (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      payout_id BIGINT REFERENCES mo_creator_payouts(id) ON DELETE RESTRICT,
+      cycle_id BIGINT REFERENCES mo_creator_cycles(id) ON DELETE RESTRICT,
+      entry_type TEXT NOT NULL
+        CHECK (entry_type IN ('payout','adjustment','reversal','payment')),
+      amount NUMERIC(12,2) NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'INR',
+      description TEXT NOT NULL,
+      /* A safe payment reference only — a UTR, a voucher number, a bank
+         reference. Never a credential: no password, no UPI PIN, no API key. */
+      reference TEXT,
+      reversal_of_id BIGINT REFERENCES mo_creator_financial_ledger(id) ON DELETE RESTRICT,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  /* One liability entry per payout, and one payment per payout. Approving
+     twice cannot recognise the money twice; paying twice cannot send it twice.
+     Both are held by the database rather than by a status check. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_fin_one_payout
+                    ON mo_creator_financial_ledger(payout_id)
+                    WHERE entry_type='payout' AND payout_id IS NOT NULL`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_fin_one_payment
+                    ON mo_creator_financial_ledger(payout_id)
+                    WHERE entry_type='payment' AND payout_id IS NOT NULL`);
+  // An entry is reversed once and never twice.
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_fin_reversal
+                    ON mo_creator_financial_ledger(reversal_of_id) WHERE reversal_of_id IS NOT NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_fin_user ON mo_creator_financial_ledger(user_id, created_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_fin_payout ON mo_creator_financial_ledger(payout_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_fin_cycle ON mo_creator_financial_ledger(cycle_id, entry_type)`);
+
   /* SECURITY — this row is not optional.
 
      effectiveModules() returns null when a group has no defaults row, and

@@ -7815,6 +7815,10 @@ function cnReload(...what){
   if(what.includes('ledger')) CN_LEDGER.loaded=false;
   if(what.includes('rules'))  CN_RULES.loaded=false;
   if(what.includes('cycles')) CN_CYCLES.loaded=false;
+  if(what.includes('payouts')){CN_PAYOUTS.loaded=false;CN_SUMMARY.loaded=false;}
+  if(what.includes('payout'))  CN_PAYOUT.loaded=false;
+  if(what.includes('finance')) CN_FIN.loaded=false;
+  if(what.includes('rates'))   CN_RATES.loaded=false;
   render();
 }
 /* A rule or cycle list several screens need. Fetched once, re-rendered when it
@@ -7835,8 +7839,49 @@ function cnEnsureCycles(){
     .catch(e=>{CN_CYCLES.err=e.message;})
     .finally(()=>render());
 }
+/* Phase 5 surfaces. Money arrives as decimal STRINGS and stays that way: the
+   only arithmetic on an amount anywhere in Nerve happens in Postgres. */
+const CN_PAYOUTS = {loaded:false, rows:[], total:0, scope:'self', err:null, offset:0,
+                    f:{cycle_id:'all', status:'all', creator_id:'all'}};
+const CN_PAYOUT  = {id:null, loaded:false, data:null, err:null};
+const CN_FIN     = {loaded:false, rows:[], total:0, sum:'0.00', err:null, offset:0,
+                    f:{cycle_id:'all', entry_type:'all'}};
+const CN_RATES   = {loaded:false, rows:[], err:null};
+const CN_SUMMARY = {loaded:false, data:null, err:null, cycleId:'all'};
+const CN_PAYOUT_PAGE = 25;
+
 const cnPts = n=>`${n>0?'+':''}${n}`;
 const cnPtsCell = n=>`<span style="color:var(--${n<0?'danger':'success'});font-variant-numeric:tabular-nums">${cnPts(n)}</span>`;
+
+/* Rupees from a decimal string. The existing money() takes a number, which
+   would drop the paise on the way through Number().toLocaleString — so the
+   integer part is grouped and the two decimals are carried across untouched. */
+function rupees(v){
+  const s=String(v==null?'0':v).trim(), neg=s.startsWith('-');
+  const [whole,frac='0']=s.replace('-','').split('.');
+  return (neg?'−₹':'₹')+Number(whole||0).toLocaleString('en-IN')+'.'+(frac+'00').slice(0,2);
+}
+/* A RATE is not an amount. It carries four decimal places and they matter —
+   ₹0.3333 per point is not ₹0.33 — so trailing zeros go but nothing else does,
+   and never below the two places money is written in. */
+function rupeesRate(v){
+  const s=String(v==null?'0':v).trim();
+  const [whole,frac='']=s.split('.');
+  const places=Math.max(2,(frac+'00').replace(/0+$/,'').length);
+  return '₹'+Number(whole||0).toLocaleString('en-IN')+'.'+(frac+'0000').slice(0,places);
+}
+const cnMoneyCell = v=>`<span style="color:var(--${String(v).startsWith('-')?'danger':'text'});`
+  +`font-variant-numeric:tabular-nums;white-space:nowrap">${rupees(v)}</span>`;
+const CN_PAYSTATUS = {
+  calculated:{l:'Awaiting review', c:'st-info'},
+  approved:  {l:'Approved · payable', c:'st-warn'},
+  paid:      {l:'Paid',            c:'st-success'},
+  rejected:  {l:'Rejected',        c:'st-neutral'},
+  voided:    {l:'Voided',          c:'st-neutral'},
+};
+const cnPayPill = s=>{const m=CN_PAYSTATUS[s]||CN_PAYSTATUS.calculated;
+  return `<span class="status ${m.c}">${esc(m.l)}</span>`;};
+const CN_ENTRY = {payout:'Payout', adjustment:'Adjustment', reversal:'Reversal', payment:'Payment'};
 
 /* Submission review states. 'submitted' IS under review — there is no separate
    waiting state to display, because there is none to be in. */
@@ -7886,11 +7931,14 @@ function creatorSelfView(st){
     <div class="page-sub">Your standing in the Parul Creator Network.</div>
   </div></div>
   <div class="tabs sec">
-    ${[['opps','Opportunities'],['tasks','My Tasks'],['points','My Points'],['profile','My Profile']].map(([k,l])=>
+    ${[['opps','Opportunities'],['tasks','My Tasks'],['points','My Points'],
+       ['payouts','My Payouts'],['profile','My Profile']].map(([k,l])=>
       `<button class="tab ${tab===k?'on':''}" data-tab="${k}" data-tabkey="creator">${l}</button>`).join('')}
   </div>
   ${tab==='opps'?cnOppsTab():tab==='tasks'?cnTasksTab(false,true)
-   :tab==='points'?cnMyPointsTab():creatorProfileCards(st)}`;
+   :tab==='points'?cnMyPointsTab()
+   :tab==='payouts'?(CN_PAYOUT.id?cnPayoutStatement(false):cnPayoutList(false))
+   :creatorProfileCards(st)}`;
 }
 
 function creatorProfileCards(st){
@@ -7910,7 +7958,8 @@ function creatorProfileCards(st){
         <dt>Team</dt><dd>${esc(p.team.name)}</dd>
         <dt>Team Lead</dt><dd>${p.lead?esc(p.lead.name):'<span class="mut3">Not assigned</span>'}</dd>
       </dl>`:'<div class="empty" style="padding:20px"><p>You are not on a creator team yet.</p></div>'}
-      <div class="hint mt3">Your points and standing are under My Points. Payouts arrive in a later phase.</div>
+      <div class="hint mt3">Your points and standing are under My Points; what they were worth is
+        under My Payouts.</div>
       </div></div>
   </div>`;
 }
@@ -7937,7 +7986,7 @@ function creatorManageView(st){
   </div>`:''}
   <div class="tabs sec">
     ${[['creators','Creators'],['teams','Teams'],['events','Events'],['tasks','Tasks'],
-       ['review','Review'],['points','Points']].map(([k,l])=>
+       ['review','Review'],['points','Points'],['payouts','Payouts']].map(([k,l])=>
       `<button class="tab ${tab===k?'on':''}" data-tab="${k}" data-tabkey="creator">${l}</button>`).join('')}
   </div>
   ${tab==='teams'?creatorTeamsTab(st,manage)
@@ -7945,6 +7994,7 @@ function creatorManageView(st){
    :tab==='tasks'?cnTasksTab(manage,false)
    :tab==='review'?cnReviewTab()
    :tab==='points'?cnPointsTab(manage)
+   :tab==='payouts'?cnPayoutsTab(manage)
    :creatorDirectoryTab(st,manage)}`;
 }
 
@@ -8547,6 +8597,341 @@ function cnSetupCards(){
         rule. A closed cycle is never restated — corrections belong in an open one.</span></div></div>
   </div>`;
 }
+/* ── Payouts (Phase 5) ─────────────────────────────────────────────────────
+   POINTS ARE PERFORMANCE; MONEY IS MONEY. Everything on these screens is a
+   figure the server computed from the financial ledger — the browser adds up
+   nothing and stores no balance, and an amount is a decimal string the whole
+   way so the paise survive.
+
+   A payout says how much, why, for which cycle, at what rate, who approved it
+   and whether it has actually been paid. Every one of those is on the page. */
+function cnPayoutsTab(manage){
+  if(CN_PAYOUT.id) return cnPayoutStatement(manage);
+  const sub=S.tab.cnpay||'queue';
+  const subs=[['queue','Payout queue'],['history','All payouts']]
+    .concat(manage?[['ledger','Financial ledger'],['rates','Rates']]:[]);
+  return `
+  <div class="f ac gap2 sec" style="flex-wrap:wrap">
+    ${subs.map(([k,l])=>`<button class="btn xs${sub===k?' primary':''}" data-tab="${k}" data-tabkey="cnpay">${l}</button>`).join('')}
+    ${manage?`<button class="btn xs primary ml-auto" data-act="cnGenPayouts">Calculate a cycle</button>`:''}
+  </div>
+  ${manage?cnPayoutSummary():''}
+  ${sub==='ledger'&&manage?cnFinanceCard()
+   :sub==='rates'&&manage?cnRatesCard()
+   :cnPayoutList(manage, sub==='queue')}`;
+}
+
+/* §24 — what the Creator Admin needs to see first: what is owed, and to whom. */
+function cnPayoutSummary(){
+  cnEnsureCycles();
+  if(!CN_SUMMARY.loaded){
+    CN_SUMMARY.loaded=true;
+    MO_API.get('/creator/payouts/summary/'+encodeURIComponent(CN_SUMMARY.cycleId))
+      .then(d=>{CN_SUMMARY.data=d;CN_SUMMARY.err=null;})
+      .catch(e=>{CN_SUMMARY.err=e.message;})
+      .finally(()=>render());
+    return '';
+  }
+  if(CN_SUMMARY.err||!CN_SUMMARY.data) return '';
+  const d=CN_SUMMARY.data;
+  return `
+  <div class="between mb2" style="gap:8px;flex-wrap:wrap">
+    <div class="small mut3">Across ${CN_SUMMARY.cycleId==='all'?'every cycle':'the selected cycle'}</div>
+    <select class="inp" style="width:auto;height:30px;font-size:12px" onchange="ACTIONS.cnSummaryCycle({},this)">
+      <option value="all">Every cycle</option>
+      ${(CN_CYCLES.rows||[]).map(c=>`<option value="${c.id}" ${String(CN_SUMMARY.cycleId)===String(c.id)?'selected':''}>${esc(c.label)}</option>`).join('')}
+    </select>
+  </div>
+  <div class="grid g4 sec">
+    ${[['Calculated', rupees(d.gross), `${d.payouts} payout${d.payouts===1?'':'s'}`],
+       ['Awaiting review', String(d.awaiting_review), 'to approve'],
+       ['Paid', rupees(d.paid_gross), `${d.paid} settled`],
+       ['Outstanding', rupees(d.outstanding), 'still owed']]
+      .map(([l,v,m])=>`<div class="stat"><span class="stat-main">
+        <span class="stat-label">${l}</span><span class="stat-val">${v}</span></span>
+        <span class="stat-meta">${esc(m)}</span></div>`).join('')}
+  </div>`;
+}
+
+function cnPayoutList(manage, queueOnly){
+  cnEnsureCycles();
+  const f=CN_PAYOUTS.f;
+  if(!CN_PAYOUTS.loaded){
+    CN_PAYOUTS.loaded=true;
+    const q=new URLSearchParams({cycle_id:String(f.cycle_id), status:String(f.status),
+      limit:String(CN_PAYOUT_PAGE), offset:String(CN_PAYOUTS.offset)});
+    if(queueOnly&&f.status==='all') q.set('unpaid','1');
+    MO_API.get('/creator/payouts?'+q)
+      .then(d=>{CN_PAYOUTS.rows=d.payouts||[];CN_PAYOUTS.total=d.total||0;
+                CN_PAYOUTS.scope=d.scope||'self';CN_PAYOUTS.err=null;})
+      .catch(e=>{CN_PAYOUTS.err=e.message;})
+      .finally(()=>render());
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading payouts…</p></div></div>';
+  }
+  if(CN_PAYOUTS.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_PAYOUTS.err)}</p></div></div>`;
+  const rows=CN_PAYOUTS.rows, own=CN_PAYOUTS.scope==='self';
+  const from=CN_PAYOUTS.offset, to=Math.min(from+CN_PAYOUT_PAGE, CN_PAYOUTS.total);
+  return `<div class="card">
+    <div class="card-head" style="gap:8px;flex-wrap:wrap">
+      <h3>${own?'My payouts':queueOnly?'Awaiting review or payment':'All payouts'}</h3>
+      <div class="ca f gap2 ac" style="flex-wrap:wrap">
+        <span class="chip">${CN_PAYOUTS.total}</span>
+        <select class="inp" style="width:auto;height:30px;font-size:12px" onchange="ACTIONS.cnPayoutFilter({k:'cycle_id'},this)">
+          <option value="all">Every cycle</option>
+          ${(CN_CYCLES.rows||[]).map(c=>`<option value="${c.id}" ${String(f.cycle_id)===String(c.id)?'selected':''}>${esc(c.label)}</option>`).join('')}
+        </select>
+        <select class="inp" style="width:auto;height:30px;font-size:12px" onchange="ACTIONS.cnPayoutFilter({k:'status'},this)">
+          <option value="all">Every status</option>
+          ${Object.entries(CN_PAYSTATUS).map(([k,v])=>
+            `<option value="${k}" ${f.status===k?'selected':''}>${esc(v.l)}</option>`).join('')}
+        </select>
+      </div></div>
+    <div class="card-body flush">
+      ${!rows.length?`<div class="empty" style="padding:36px"><div class="e-ico">◌</div>
+        <h4>No payouts${f.cycle_id!=='all'||f.status!=='all'?' match that':''}</h4>
+        <p>${own?'A payout appears once the cycle you earned in is closed and calculated.'
+          :'Close a cycle and calculate it to create payouts.'}</p></div>`
+      :`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr>${own?'':'<th>Creator</th>'}<th>Cycle</th><th class="num">Points</th>
+          <th class="num">Rate</th><th class="num">Gross</th><th class="num">Adjust</th>
+          <th class="num">Net</th><th>Status</th><th class="num"></th></tr></thead>
+        <tbody>${rows.map(p=>`<tr class="click" data-act="cnViewPayout" data-pid="${p.id}">
+          ${own?'':`<td class="t-main">${esc(p.creator_name||'—')}<div class="t-sub">${esc(p.team||'—')}</div></td>`}
+          <td class="t-main">${esc(p.cycle||'—')}</td>
+          <td class="num small">${p.points_basis}</td>
+          <td class="num small">${rupeesRate(p.rate)}</td>
+          <td class="num">${cnMoneyCell(p.gross_amount)}</td>
+          <td class="num small">${p.adjustments==='0.00'?'<span class="mut3">—</span>':cnMoneyCell(p.adjustments)}</td>
+          <td class="num"><b>${rupees(p.net_amount)}</b></td>
+          <td>${cnPayPill(p.status)}${p.status==='paid'&&p.payment_reference
+            ?`<div class="t-sub">${esc(p.payment_reference)}</div>`:''}</td>
+          <td class="num nowrap"><button class="btn xs ghost" data-act="cnViewPayout" data-pid="${p.id}">Open</button></td>
+        </tr>`).join('')}</tbody></table></div>`}
+    </div>
+    ${CN_PAYOUTS.total>CN_PAYOUT_PAGE?`<div class="card-foot between">
+      <span class="small mut3">${from+1}–${to} of ${CN_PAYOUTS.total}</span>
+      <span class="f gap2">
+        <button class="btn xs" data-act="cnPayoutPage" data-d="-1" ${from<=0?'disabled':''}>← Previous</button>
+        <button class="btn xs" data-act="cnPayoutPage" data-d="1" ${to>=CN_PAYOUTS.total?'disabled':''}>Next →</button>
+      </span></div>`:''}
+  </div>`;
+}
+
+/* ── One payout statement ───────────────────────────────────────────────
+   §37 — the calculation has to be understandable by the person it pays. The
+   arithmetic is shown as a sentence, the money as a ledger, and the points
+   that made the basis as the transactions they actually were. */
+function cnPayoutStatement(manage){
+  if(!CN_PAYOUT.loaded){
+    CN_PAYOUT.loaded=true;
+    MO_API.get('/creator/payouts/'+CN_PAYOUT.id)
+      .then(d=>{CN_PAYOUT.data=d;CN_PAYOUT.err=null;})
+      .catch(e=>{CN_PAYOUT.err=e.message;})
+      .finally(()=>render());
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading the statement…</p></div></div>';
+  }
+  if(CN_PAYOUT.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_PAYOUT.err)}</p></div>
+    <div class="card-foot"><button class="btn xs" data-act="cnBackToPayouts">← All payouts</button></div></div>`;
+  const d=CN_PAYOUT.data||{}, p=d.payout||{}, can=!!d.can_manage;
+  const entries=d.financial_entries||[], basis=d.points_basis_entries||[];
+  return `
+  <div class="between mb3" style="gap:8px;flex-wrap:wrap">
+    <button class="btn xs" data-act="cnBackToPayouts">← All payouts</button>
+    ${can?`<span class="f gap2" style="flex-wrap:wrap">
+      ${p.status==='calculated'?`
+        <button class="btn xs primary" data-act="cnApprovePayout" data-pid="${p.id}">Approve</button>
+        <button class="btn xs ghost" data-act="cnRejectPayout" data-pid="${p.id}">Reject</button>`:''}
+      ${p.status==='approved'?`
+        <button class="btn xs primary" data-act="cnPayPayout" data-pid="${p.id}">Record payment</button>
+        <button class="btn xs ghost" data-act="cnVoidPayout" data-pid="${p.id}">Void</button>`:''}
+      ${['calculated','approved','paid'].includes(p.status)
+        ?`<button class="btn xs" data-act="cnAdjustPayout" data-pid="${p.id}">Adjustment</button>`:''}
+    </span>`:''}
+  </div>
+
+  <div class="card mb4"><div class="card-body pad">
+    <div class="between" style="gap:12px;flex-wrap:wrap">
+      <div><b style="font-size:16px">${esc(p.creator_name||'This payout')}</b>
+        <div class="small mut3">${esc(p.cycle||'')}${p.cycle_starts_on
+          ?` · ${D.fmt(p.cycle_starts_on)} – ${D.fmt(p.cycle_ends_on)}`:''}</div></div>
+      ${cnPayPill(p.status)}
+    </div>
+    <div class="sep"></div>
+    <div class="grid g2" style="gap:24px">
+      <div>
+        <div class="small mut3 mb2">How this was calculated</div>
+        <table class="tbl compact"><tbody>
+          <tr><td>Points in the cycle</td><td class="num">${p.points_basis}</td></tr>
+          <tr><td>Rate</td><td class="num">${rupeesRate(p.rate)} per point</td></tr>
+          <tr><td><b>Gross</b></td><td class="num"><b>${rupees(p.gross_amount)}</b></td></tr>
+          ${p.adjustments!=='0.00'?`<tr><td>Adjustments</td><td class="num">${cnMoneyCell(p.adjustments)}</td></tr>`:''}
+          <tr><td><b>Net</b></td><td class="num"><b>${rupees(p.net_amount)}</b></td></tr>
+          ${p.paid_amount!=='0.00'?`<tr><td>Paid</td><td class="num">${rupees(p.paid_amount)}</td></tr>`:''}
+          ${p.outstanding!=='0.00'?`<tr><td>${String(p.outstanding).startsWith('-')?'Overpaid':'Outstanding'}</td>
+            <td class="num">${cnMoneyCell(p.outstanding)}</td></tr>`:''}
+        </tbody></table>
+        ${d.basis_matches_current===false?`<div class="hint mt2" style="color:var(--warn)">
+          The cycle now totals ${d.current_points} points. This payout keeps the ${p.points_basis} it was
+          calculated from — a correction belongs in the money, not in the points.</div>`:''}
+      </div>
+      <div>
+        <div class="small mut3 mb2">Where it is</div>
+        <dl class="kv">
+          <dt>Calculated</dt><dd>${p.calculated_at?D.fmt(String(p.calculated_at).slice(0,10)):'—'}
+            ${p.calculated_by?`<span class="mut3">· ${esc(p.calculated_by)}</span>`:''}</dd>
+          <dt>${p.status==='rejected'?'Rejected':'Approved'}</dt>
+          <dd>${p.approved_at?D.fmt(String(p.approved_at).slice(0,10)):'<span class="mut3">Not yet</span>'}
+            ${p.approved_by?`<span class="mut3">· ${esc(p.approved_by)}</span>`:''}</dd>
+          <dt>Paid</dt><dd>${p.paid_at?D.fmt(String(p.paid_at).slice(0,10)):'<span class="mut3">Not yet</span>'}
+            ${p.paid_by?`<span class="mut3">· ${esc(p.paid_by)}</span>`:''}</dd>
+          ${p.payment_reference?`<dt>Reference</dt><dd>${esc(p.payment_reference)}</dd>`:''}
+          ${p.decision_reason?`<dt>Reason</dt><dd>${esc(p.decision_reason)}</dd>`:''}
+        </dl>
+      </div>
+    </div>
+  </div></div>
+
+  <div class="card mb4"><div class="card-head"><h3>Financial ledger</h3>
+    <span class="ca small mut3">Every movement on this payout</span></div>
+    <div class="card-body flush">
+      ${!entries.length?`<div class="empty" style="padding:26px">
+        <p>Nothing yet — approving this payout is what records the money.</p></div>`
+      :`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>When</th><th>Type</th><th class="num">Amount</th><th>Description</th>
+          <th>Reference</th>${can?'<th class="num"></th>':''}</tr></thead>
+        <tbody>${entries.map(e=>`<tr>
+          <td class="small nowrap">${D.fmt(String(e.created_at).slice(0,10))}</td>
+          <td><span class="chip ${e.entry_type==='payment'?'sel':''}">${esc(CN_ENTRY[e.entry_type]||e.entry_type)}</span></td>
+          <td class="num">${cnMoneyCell(e.amount)}</td>
+          <td class="small" style="white-space:normal">${esc(e.description)}
+            ${e.actor?`<div class="t-sub">${esc(e.actor)}</div>`:''}</td>
+          <td class="small">${e.reference?esc(e.reference):'—'}</td>
+          ${can?`<td class="num nowrap">${e.entry_type==='adjustment'
+            && !entries.some(x=>x.reversal_of_id===e.id)
+            ?`<button class="btn xs ghost" data-act="cnReverseEntry" data-fid="${e.id}" data-amt="${esc(e.amount)}">Reverse</button>`
+            :'<span class="mut3">—</span>'}</td>`:''}
+        </tr>`).join('')}</tbody></table></div>`}
+    </div>
+    <div class="card-foot"><span class="hint">Nothing here is ever edited or deleted. A correction is an
+      entry of its own, sitting beside the one it corrects.</span></div></div>
+
+  <div class="card"><div class="card-head"><h3>The points behind it</h3>
+    <span class="ca chip">${p.points_basis} points</span></div>
+    <div class="card-body flush">
+      ${!basis.length?'<div class="empty" style="padding:26px"><p>No point transactions in this cycle.</p></div>'
+      :`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>When</th><th class="num">Points</th><th>What for</th></tr></thead>
+        <tbody>${basis.map(b=>`<tr>
+          <td class="small nowrap">${D.fmt(String(b.created_at).slice(0,10))}</td>
+          <td class="num">${cnPtsCell(b.points)}</td>
+          <td class="small" style="white-space:normal">${esc(b.reason||'—')}
+            ${b.rule?`<div class="t-sub">${esc(b.rule)}</div>`:''}</td>
+        </tr>`).join('')}</tbody></table></div>`}
+    </div>
+    <div class="card-foot"><span class="hint">These are performance records. Money moving never changes
+      them — a bonus is an entry in the ledger above, not a point awarded here.</span></div></div>`;
+}
+
+/* ── The financial ledger, across everybody ─────────────────────────────── */
+function cnFinanceCard(){
+  cnEnsureCycles();
+  const f=CN_FIN.f;
+  if(!CN_FIN.loaded){
+    CN_FIN.loaded=true;
+    const q=new URLSearchParams({cycle_id:String(f.cycle_id), entry_type:String(f.entry_type),
+      limit:String(CN_PAYOUT_PAGE), offset:String(CN_FIN.offset)});
+    MO_API.get('/creator/finance/ledger?'+q)
+      .then(d=>{CN_FIN.rows=d.entries||[];CN_FIN.total=d.total||0;CN_FIN.sum=d.sum||'0.00';CN_FIN.err=null;})
+      .catch(e=>{CN_FIN.err=e.message;})
+      .finally(()=>render());
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading the ledger…</p></div></div>';
+  }
+  if(CN_FIN.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_FIN.err)}</p></div></div>`;
+  const rows=CN_FIN.rows;
+  const from=CN_FIN.offset, to=Math.min(from+CN_PAYOUT_PAGE, CN_FIN.total);
+  return `<div class="card">
+    <div class="card-head" style="gap:8px;flex-wrap:wrap"><h3>Financial ledger</h3>
+      <div class="ca f gap2 ac" style="flex-wrap:wrap">
+        <span class="chip">${CN_FIN.total} · balance ${rupees(CN_FIN.sum)}</span>
+        <select class="inp" style="width:auto;height:30px;font-size:12px" onchange="ACTIONS.cnFinFilter({k:'cycle_id'},this)">
+          <option value="all">Every cycle</option>
+          ${(CN_CYCLES.rows||[]).map(c=>`<option value="${c.id}" ${String(f.cycle_id)===String(c.id)?'selected':''}>${esc(c.label)}</option>`).join('')}
+        </select>
+        <select class="inp" style="width:auto;height:30px;font-size:12px" onchange="ACTIONS.cnFinFilter({k:'entry_type'},this)">
+          <option value="all">Every type</option>
+          ${Object.entries(CN_ENTRY).map(([k,l])=>
+            `<option value="${k}" ${f.entry_type===k?'selected':''}>${esc(l)}</option>`).join('')}
+        </select>
+      </div></div>
+    <div class="card-body flush">
+      ${!rows.length?`<div class="empty" style="padding:36px"><div class="e-ico">◌</div>
+        <h4>No financial entries</h4><p>Money appears here as payouts are approved and paid.</p></div>`
+      :`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>When</th><th>Creator</th><th>Cycle</th><th>Type</th><th class="num">Amount</th>
+          <th>Description</th><th>Reference</th><th class="num">Payout</th></tr></thead>
+        <tbody>${rows.map(e=>`<tr>
+          <td class="small nowrap">${D.fmt(String(e.created_at).slice(0,10))}</td>
+          <td class="t-main">${esc(e.creator_name||'—')}</td>
+          <td class="small">${esc(e.cycle||'—')}</td>
+          <td><span class="chip ${e.entry_type==='payment'?'sel':''}">${esc(CN_ENTRY[e.entry_type]||e.entry_type)}</span></td>
+          <td class="num">${cnMoneyCell(e.amount)}</td>
+          <td class="small" style="white-space:normal">${esc(e.description)}
+            ${e.actor?`<div class="t-sub">${esc(e.actor)}</div>`:''}</td>
+          <td class="small">${e.reference?esc(e.reference):'—'}</td>
+          <td class="num nowrap">${e.payout_id
+            ?`<button class="btn xs ghost" data-act="cnViewPayout" data-pid="${e.payout_id}">View</button>`
+            :'<span class="mut3">—</span>'}</td>
+        </tr>`).join('')}</tbody></table></div>`}
+    </div>
+    <div class="card-foot between" style="gap:12px;flex-wrap:wrap">
+      <span class="hint">Entries are amounts owed: a payout adds, a payment settles. The balance is
+        what is still outstanding.</span>
+      ${CN_FIN.total>CN_PAYOUT_PAGE?`<span class="f gap2 ac">
+        <span class="small mut3">${from+1}–${to} of ${CN_FIN.total}</span>
+        <button class="btn xs" data-act="cnFinPage" data-d="-1" ${from<=0?'disabled':''}>← Previous</button>
+        <button class="btn xs" data-act="cnFinPage" data-d="1" ${to>=CN_FIN.total?'disabled':''}>Next →</button>
+      </span>`:''}
+    </div></div>`;
+}
+
+/* ── Rates ──────────────────────────────────────────────────────────────── */
+function cnRatesCard(){
+  if(!CN_RATES.loaded){
+    CN_RATES.loaded=true;
+    MO_API.get('/creator/payout-rules')
+      .then(d=>{CN_RATES.rows=d.rules||[];CN_RATES.err=null;})
+      .catch(e=>{CN_RATES.err=e.message;})
+      .finally(()=>render());
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading rates…</p></div></div>';
+  }
+  if(CN_RATES.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_RATES.err)}</p></div></div>`;
+  return `<div class="card">
+    <div class="card-head"><h3>Payout rates</h3>
+      <button class="ca btn xs primary" data-act="cnNewRate">＋ Rate</button></div>
+    <div class="card-body flush">
+      ${!CN_RATES.rows.length?`<div class="empty" style="padding:30px"><div class="e-ico">◌</div>
+        <h4>No rate yet</h4><p>A rate says what a point is worth. Without one covering a cycle's
+        end date, that cycle cannot be calculated.</p></div>`
+      :`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>Rate</th><th class="num">Per point</th><th>Applies</th>
+          <th class="num">Payouts</th><th class="num"></th></tr></thead>
+        <tbody>${CN_RATES.rows.map(r=>`<tr>
+          <td class="t-main">${esc(r.name)}${r.description?`<div class="t-sub" style="white-space:normal">${esc(r.description)}</div>`:''}
+            ${r.is_active?'':'<div class="t-sub">Retired</div>'}</td>
+          <td class="num"><b>${rupeesRate(r.rate)}</b></td>
+          <td class="small">${D.fmt(r.effective_from)} → ${r.effective_to?D.fmt(r.effective_to):'open'}</td>
+          <td class="num small">${r.used||0}</td>
+          <td class="num nowrap">
+            <button class="btn xs ghost" data-act="cnEditRate" data-rid="${r.id}">Edit</button>
+            <button class="btn xs ghost" data-act="cnRateActive" data-rid="${r.id}" data-to="${r.is_active?'0':'1'}"
+              >${r.is_active?'Retire':'Restore'}</button></td>
+        </tr>`).join('')}</tbody></table></div>`}
+    </div>
+    <div class="card-foot"><span class="hint">A rate changes by ending the current one and starting a new
+      one. Payouts already calculated keep the rate they were calculated at — September stays at
+      September's rate however many times the figure changes afterwards.</span></div></div>`;
+}
+
 /* ── Re-adding someone who was removed ─────────────────────────────────────
    Nerve keeps ONE identity per email: removal archives the row rather than
    deleting it, which is what keeps that person's reports, assignments, leave
@@ -14367,6 +14752,286 @@ const ACTIONS = {
     closeModal();
     MO_API.post('/creator/points/'+d.lid+'/reverse',{reason})
       .then(()=>{toast('Transaction reversed','ok');cnReload('ledger','board','cycles','points');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  /* ── Creator Network Phase 5: money ──────────────────────────────────
+     Every one of these posts an intent and lets the server decide what it
+     means. Nothing below sends an amount it calculated itself, and nothing
+     sends a creator id, a cycle id or a rate — those come off the payout row
+     on the server. The only figures travelling from this browser are ones a
+     human typed into a box, and they travel as text. */
+  cnSummaryCycle:(d,n)=>{CN_SUMMARY.cycleId=n.value;CN_SUMMARY.loaded=false;render();},
+  cnPayoutFilter:(d,n)=>{CN_PAYOUTS.f[d.k]=n.value;CN_PAYOUTS.offset=0;cnReload('payouts');},
+  cnPayoutPage:(d)=>{
+    CN_PAYOUTS.offset=Math.max(0, CN_PAYOUTS.offset + (+d.d)*CN_PAYOUT_PAGE);
+    cnReload('payouts');
+  },
+  cnFinFilter:(d,n)=>{CN_FIN.f[d.k]=n.value;CN_FIN.offset=0;cnReload('finance');},
+  cnFinPage:(d)=>{
+    CN_FIN.offset=Math.max(0, CN_FIN.offset + (+d.d)*CN_PAYOUT_PAGE);
+    cnReload('finance');
+  },
+  cnViewPayout:(d)=>{CN_PAYOUT.id=+d.pid;CN_PAYOUT.loaded=false;render();},
+  cnBackToPayouts:()=>{CN_PAYOUT.id=null;CN_PAYOUT.data=null;cnReload('payouts');},
+
+  /* Calculating a cycle. Only a closed one is offered, because only a closed
+     one has a total that has stopped moving. */
+  cnGenPayouts:()=>{
+    MO_API.get('/creator/cycles').then(r=>{
+      const closed=(r.cycles||[]).filter(c=>c.status==='closed');
+      modal(`<div class="mo-head"><div><h2>Calculate payouts</h2>
+          <p>Every creator with points in the cycle gets one payout, priced at the rate covering the
+          cycle's end date. Running this again changes nothing — a creator already has their payout.</p></div>
+          <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+        <div class="mo-body">
+          ${closed.length?`<div class="field"><label class="lbl">Closed cycle <span class="req">*</span></label>
+            <select class="inp" id="gp-cycle">${closed.map(c=>
+              `<option value="${c.id}">${esc(c.label)} · ${c.creators} creator(s), ${c.total_points} points</option>`).join('')}</select></div>
+            <div class="hint">Nothing is paid by this. Each payout goes into review first.</div>`
+          :`<div class="empty" style="padding:24px"><div class="e-ico">◌</div>
+             <h4>No closed cycle</h4><p>Close a cycle under Points → Rules &amp; cycles first. An active
+             cycle's totals are still changing, so there is nothing settled to pay.</p></div>`}
+        </div>
+        <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+          ${closed.length?'<button class="btn primary" data-act="cnGenPayoutsGo">Calculate</button>':''}</div>`);
+      $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+    }).catch(e=>toast(e.message,'bad'));
+  },
+  cnGenPayoutsGo:()=>{
+    const id=$('#gp-cycle').value;
+    closeModal();
+    MO_API.post('/creator/cycles/'+id+'/payouts',{})
+      .then(r=>{toast(r.created
+        ? `${r.created} payout${r.created===1?'':'s'} calculated at ${rupeesRate(r.rate)}/point`
+        : 'Every creator in that cycle already has a payout','ok');
+        cnReload('payouts','finance');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+
+  /* Approving recognises the money. It does not pay it, and the wording says so. */
+  cnApprovePayout:(d)=>{
+    const p=(CN_PAYOUT.data||{}).payout||{};
+    modal(`<div class="mo-head"><div><h2>Approve ${esc(p.creator_name||'this payout')}</h2>
+        <p>This records <b>${rupees(p.net_amount)}</b> as owed for ${esc(p.cycle||'the cycle')} and puts it in
+        the financial ledger. It does <b>not</b> pay anybody — recording the payment is a separate step,
+        with a reference.</p></div></div>
+      <div class="mo-body"><table class="tbl compact"><tbody>
+        <tr><td>Points</td><td class="num">${p.points_basis}</td></tr>
+        <tr><td>Rate</td><td class="num">${rupeesRate(p.rate)} per point</td></tr>
+        <tr><td>Gross</td><td class="num">${rupees(p.gross_amount)}</td></tr>
+        ${p.adjustments!=='0.00'?`<tr><td>Adjustments</td><td class="num">${rupees(p.adjustments)}</td></tr>`:''}
+        <tr><td><b>Payable</b></td><td class="num"><b>${rupees(p.net_amount)}</b></td></tr>
+      </tbody></table></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="cnApprovePayoutGo" data-pid="${d.pid}">Approve</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnApprovePayoutGo:(d)=>{
+    closeModal();
+    MO_API.post('/creator/payouts/'+d.pid+'/approve',{})
+      .then(()=>{toast('Approved — now payable','ok');cnReload('payout','payouts','finance');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnRejectPayout:(d)=>{
+    modal(`<div class="mo-head"><div><h2>Reject this payout</h2>
+        <p>Nothing financial has been recorded yet, so nothing is reversed. The statement closes and the
+        cycle can be calculated again once whatever was wrong is fixed.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><div class="field"><label class="lbl">Reason <span class="req">*</span></label>
+        <textarea class="inp" id="rj-reason" rows="3"
+          placeholder="e.g. Points were awarded against the wrong event"></textarea></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn danger" data-act="cnRejectPayoutGo" data-pid="${d.pid}">Reject</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnRejectPayoutGo:(d)=>{
+    const reason=(($('#rj-reason')||{}).value||'').trim();
+    if(reason.length<3){toast('A reason is required','bad');return;}
+    closeModal();
+    MO_API.post('/creator/payouts/'+d.pid+'/reject',{reason})
+      .then(()=>{toast('Rejected','ok');cnReload('payout','payouts');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+
+  /* Paying records that cash actually moved, and will not do so without a
+     reference somebody can find in the bank. */
+  cnPayPayout:(d)=>{
+    const p=(CN_PAYOUT.data||{}).payout||{};
+    modal(`<div class="mo-head"><div><h2>Record payment</h2>
+        <p>Settles the <b>${rupees(p.outstanding)}</b> outstanding on this payout. Record this only once the
+        money has actually been sent — approval is a liability, this is the cash.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Payment reference <span class="req">*</span></label>
+          <input class="inp" id="pp-ref" placeholder="e.g. UTR 0099123456, or a voucher number"></div>
+        <div class="hint">A UTR, transaction reference or finance voucher number — never a password,
+          a UPI PIN or any other credential.</div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="cnPayPayoutGo" data-pid="${d.pid}">Record payment</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnPayPayoutGo:(d)=>{
+    const ref=(($('#pp-ref')||{}).value||'').trim();
+    if(ref.length<4){toast('A payment reference is required','bad');return;}
+    closeModal();
+    MO_API.post('/creator/payouts/'+d.pid+'/pay',{payment_reference:ref})
+      .then(r=>{toast(`${rupees(r.settled)} recorded as paid`,'ok');cnReload('payout','payouts','finance');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnVoidPayout:(d)=>{
+    modal(`<div class="mo-head"><div><h2>Void this payout</h2>
+        <p>Cancels an approved payout that has not been paid. Every entry on it is reversed, so the
+        balance goes to zero — and every original entry stays exactly where it is.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><div class="field"><label class="lbl">Reason <span class="req">*</span></label>
+        <textarea class="inp" id="vd-reason" rows="3"
+          placeholder="e.g. The cycle is being recalculated"></textarea></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn danger" data-act="cnVoidPayoutGo" data-pid="${d.pid}">Void</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnVoidPayoutGo:(d)=>{
+    const reason=(($('#vd-reason')||{}).value||'').trim();
+    if(reason.length<3){toast('A reason is required','bad');return;}
+    closeModal();
+    MO_API.post('/creator/payouts/'+d.pid+'/void',{reason})
+      .then(r=>{toast(`Voided · ${r.entries_reversed} entr${r.entries_reversed===1?'y':'ies'} reversed`,'ok');
+        cnReload('payout','payouts','finance');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+
+  /* An adjustment is money, and only money. The modal says so, because the
+     temptation to "just add some points" is exactly what must not happen. */
+  cnAdjustPayout:(d)=>{
+    const p=(CN_PAYOUT.data||{}).payout||{};
+    modal(`<div class="mo-head"><div><h2>Financial adjustment</h2>
+        <p>A bonus, or a correction. Positive adds, negative takes back. This moves money only —
+        ${esc(p.creator_name||'the creator')} keeps their ${p.points_basis} points either way.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Amount (₹) <span class="req">*</span></label>
+          <input class="inp" id="pa-amt" inputmode="decimal" placeholder="e.g. 200.00 or -140.00"></div>
+        <div class="field"><label class="lbl">Reason <span class="req">*</span></label>
+          <textarea class="inp" id="pa-why" rows="3"
+            placeholder="e.g. Bonus — covered the closing ceremony at short notice"></textarea></div>
+        ${p.status==='paid'?`<div class="hint">This payout is already paid. The adjustment does not change
+          what was paid — it leaves a balance showing what is still owed or overpaid.</div>`:''}
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="cnAdjustPayoutGo" data-pid="${d.pid}">Record adjustment</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnAdjustPayoutGo:(d)=>{
+    /* The amount is sent as the TEXT that was typed. Parsing it into a number
+       here is how 1.005 becomes 1.00499999 — the server validates the string
+       and Postgres does the arithmetic. */
+    const amount=(($('#pa-amt')||{}).value||'').trim();
+    const reason=(($('#pa-why')||{}).value||'').trim();
+    if(!/^-?\d{1,9}(\.\d{1,2})?$/.test(amount)||/^-?0+(\.0{1,2})?$/.test(amount)){
+      toast('An amount in rupees and paise, and not zero','bad');return;}
+    if(reason.length<3){toast('A reason is required','bad');return;}
+    closeModal();
+    MO_API.post('/creator/payouts/'+d.pid+'/adjust',{amount,reason})
+      .then(r=>{toast(`${rupees(r.amount)} recorded`,'ok');cnReload('payout','payouts','finance');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnReverseEntry:(d)=>{
+    modal(`<div class="mo-head"><div><h2>Reverse this entry</h2>
+        <p>Writes an opposite entry of <b>${rupees(String(d.amt).startsWith('-')?String(d.amt).slice(1):'-'+d.amt)}</b>
+        beside it. The original stays on the record — that is what makes the history worth trusting.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><div class="field"><label class="lbl">Reason <span class="req">*</span></label>
+        <textarea class="inp" id="fr-reason" rows="3"
+          placeholder="e.g. The bonus was recorded against the wrong cycle"></textarea></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn danger" data-act="cnReverseEntryGo" data-fid="${d.fid}">Reverse</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnReverseEntryGo:(d)=>{
+    const reason=(($('#fr-reason')||{}).value||'').trim();
+    if(reason.length<3){toast('A reason is required','bad');return;}
+    closeModal();
+    MO_API.post('/creator/finance/'+d.fid+'/reverse',{reason})
+      .then(()=>{toast('Entry reversed','ok');cnReload('payout','payouts','finance');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+
+  /* ── Rates ─────────────────────────────────────────────────────────── */
+  cnNewRate:()=>{
+    modal(`<div class="mo-head"><div><h2>New payout rate</h2>
+        <p>What one point is worth, and the period it applies to. A payout is priced by the rate covering
+        its cycle's end date, and keeps that figure forever — changing the rate later never restates a
+        payout that has already been calculated.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Name <span class="req">*</span></label>
+          <input class="inp" id="pr-rname" placeholder="e.g. Standard 2026-27"></div>
+        <div class="field"><label class="lbl">₹ per point <span class="req">*</span></label>
+          <input class="inp" id="pr-rate" inputmode="decimal" placeholder="e.g. 10.00"></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Effective from <span class="req">*</span></label>
+            <input class="inp" type="date" id="pr-from"></div>
+          <div class="field"><label class="lbl">Effective to</label>
+            <input class="inp" type="date" id="pr-to"></div>
+        </div>
+        <div class="hint">Leave the end date empty for an open-ended rate. Two active rates cannot cover
+          the same day — end the current one first.</div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="cnNewRateGo">Create rate</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnNewRateGo:()=>{
+    const name=$('#pr-rname').value.trim(), rate=$('#pr-rate').value.trim();
+    const from=$('#pr-from').value, to=$('#pr-to').value||null;
+    if(name.length<2){toast('A name is required','bad');return;}
+    if(!/^\d{1,8}(\.\d{1,4})?$/.test(rate)||!(+rate>0)){toast('A positive rate, to at most four decimals','bad');return;}
+    if(!from){toast('An effective-from date is required','bad');return;}
+    if(to&&to<from){toast('The end date must be on or after the start date','bad');return;}
+    closeModal();
+    MO_API.post('/creator/payout-rules',{name,rate,effective_from:from,effective_to:to})
+      .then(()=>{toast(name+' created','ok');cnReload('rates');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnEditRate:(d)=>{
+    const r=(CN_RATES.rows||[]).find(x=>String(x.id)===String(d.rid));
+    if(!r)return;
+    modal(`<div class="mo-head"><div><h2>${esc(r.name)}</h2>
+        <p>${r.used?`This rate has priced ${r.used} payout${r.used===1?'':'s'}, so the figure itself is fixed —
+          end it here and create the new rate instead. Those payouts keep what they were calculated at.`
+          :'No payout has been priced at this rate yet, so it can still be changed.'}</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Name</label>
+          <input class="inp" id="pr-rname" value="${esc(r.name)}"></div>
+        ${r.used?'':`<div class="field"><label class="lbl">₹ per point</label>
+          <input class="inp" id="pr-rate" inputmode="decimal" value="${esc(r.rate)}"></div>`}
+        <div class="field"><label class="lbl">Effective to</label>
+          <input class="inp" type="date" id="pr-to" value="${r.effective_to||''}"></div>
+        <div class="hint">From ${D.fmt(r.effective_from)}. Ending a rate is how the next one begins.</div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="cnEditRateGo" data-rid="${r.id}">Save</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnEditRateGo:(d)=>{
+    const body={name:$('#pr-rname').value.trim(), effective_to:$('#pr-to').value||null};
+    const rateEl=$('#pr-rate');
+    if(rateEl){
+      const rate=rateEl.value.trim();
+      if(!/^\d{1,8}(\.\d{1,4})?$/.test(rate)||!(+rate>0)){toast('A positive rate, to at most four decimals','bad');return;}
+      body.rate=rate;
+    }
+    if(body.name.length<2){toast('A name is required','bad');return;}
+    closeModal();
+    MO_API.patch('/creator/payout-rules/'+d.rid,body)
+      .then(()=>{toast('Rate updated','ok');cnReload('rates');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnRateActive:(d)=>{
+    MO_API.patch('/creator/payout-rules/'+d.rid,{is_active:d.to==='1'})
+      .then(()=>{toast(d.to==='1'?'Rate restored':'Rate retired','ok');cnReload('rates');})
       .catch(e=>toast(e.message,'bad'));
   },
   /* What a role earns when its work is approved. Set on the requirement so the
