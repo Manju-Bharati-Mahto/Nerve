@@ -169,6 +169,11 @@ async function seed() {
 }
 
 async function cleanup() {
+  /* Phase 6 recognition first: an achievement award is RESTRICT-protected on
+     purpose — recognition outlives a suspension or an archive — so a fixture
+     has to take its own down before its people and its cycles. */
+  await pool.query(`DELETE FROM mo_creator_achievement_awards WHERE user_id LIKE $1 OR awarded_by LIKE $1`, [`${PX}-%`]);
+  await pool.query(`DELETE FROM mo_creator_cycle_awards WHERE user_id LIKE $1 OR awarded_by LIKE $1`, [`${PX}-%`]);
   /* Financial history is RESTRICT all the way down — deliberately, so it
      cannot be half-deleted. It therefore has to come apart in order:
      reversals, then the entries they point at, then payouts, then the cycles
@@ -1017,8 +1022,8 @@ maybe("the rest of Nerve is exactly where it was", () => {
     const board = await as("creatorAdmin", "GET", `/creator/leaderboard?cycle_id=${cycleRow.id}`);
     const rows = (board.body.rows as Array<{ user_id: string; points: number }>)
       .filter((r) => r.user_id.startsWith(`${PX}-`));
-    expect(rows).toEqual([{ user_id: A.c1.id, creator_name: expect.any(String), team: expect.anything(),
-      points: 184, place: 1, creator_status: "active" }]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ user_id: A.c1.id, points: 184, place: 1, creator_status: "active" });
     // The point total the payout was built from is still exactly that.
     expect(Number((await pool.query(
       `SELECT COALESCE(SUM(points),0)::int t FROM mo_creator_point_ledger

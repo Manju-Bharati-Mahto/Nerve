@@ -1,8 +1,8 @@
 # Nerve Creator Network — Architecture
 
 > Living document. Reference for every Creator Network phase.
-> Status: **Phase 5 complete** — payouts, the financial ledger and payment are live.
-> Phase 6 (leaderboard competitions, achievements) has not started.
+> Status: **Phase 6 complete** — leaderboard, achievements, Creator of the
+> Cycle and the War Zone are live. Phase 7 (analytics) has not started.
 
 Parul University runs a creator network: an incentive-based content workforce
 producing reels, shorts, vlogs, event and campus content, paid in points, ranks
@@ -94,6 +94,13 @@ These answer different questions and must not be conflated:
 | `mo_creator_payout_rules` | `id BIGINT` | ₹ per point, with an effective window (Phase 5) |
 | `mo_creator_payouts` | `id BIGINT` | one statement per creator per cycle: the calculation snapshot |
 | `mo_creator_financial_ledger` | `id BIGINT` | **every money movement — the source of truth for money** |
+| `mo_creator_achievements` | `id BIGINT` | what can be earned — a definition (Phase 6) |
+| `mo_creator_achievement_awards` | `id BIGINT` | what was earned, revocable but never deleted |
+| `mo_creator_cycle_awards` | `id BIGINT` | Creator of the Cycle, with the rank and points that justified it |
+| `mo_creator_competitions` | `id BIGINT` | a War Zone competition |
+| `mo_creator_competition_participants` | `(competition_id, user_id)` | who entered |
+| `mo_creator_competition_scores` | `id BIGINT` | competition score entries — **not Creator points** |
+| `mo_creator_competition_results` | `id BIGINT` | the finalised places, snapshotted |
 
 `teams` gains a built-in `creator` row (the 7th).
 
@@ -287,7 +294,7 @@ onto it. Media Ops `/state` was not touched.
 | **3 ✅** | Content submission, versioning, review and verdicts |
 | **4 ✅** | Point rules, point ledger, cycles, rank engine |
 | **5 ✅** | Payout rates, payouts, financial ledger, payment, statements |
-| 6 | Leaderboard, achievements, Creator of the Cycle, War Zone |
+| **6 ✅** | Leaderboard, achievements, Creator of the Cycle, War Zone |
 | 7 | Analytics, creator growth, management intelligence |
 | 8 | Notifications, automation, chat, AI, platform integrations |
 
@@ -992,3 +999,188 @@ points, and money follows the cycle it was earned in.
 - 64 integration tests: the required end-to-end, the bonus and correction
   scenarios, four concurrency cases, financial precision, the security matrix,
   and regression fingerprints over the point ledger.
+
+---
+
+## PHASE 6 — leaderboard, achievements, Creator of the Cycle, War Zone
+
+### PHASE 6 DOES NOT OWN PERFORMANCE ACCOUNTING
+
+> The **point ledger** stays the source of truth for points.
+> The **rank engine** stays the source of truth for rank.
+> The **financial ledger** stays the source of truth for money.
+>
+> Phase 6 **consumes** all three and writes to none of them.
+
+A test fingerprints the point ledger, the financial ledger and the payouts
+before and after every recognition operation — awarding, finalising a cycle,
+creating and completing a competition — and asserts all three are byte-identical.
+A second test reads the Phase 6 source and fails on any `INSERT`, `UPDATE` or
+`DELETE` against them. No counter was added to `mo_creator_profiles`,
+`mo_creator_teams` or `users`: "12 achievements" is twelve rows.
+
+Four ideas are kept apart because they are not the same thing: a rank is not an
+achievement, Creator of the Cycle is not rank #1 renamed, and a War Zone score
+is not a Creator point.
+
+### Leaderboard
+
+Built **on** the Phase 4 rank engine, not beside it — one endpoint, so two
+leaderboards can never disagree. `GET /creator/leaderboard` keeps every Phase 4
+field and default and gains `team_id`, `q`, `offset`, a per-row `approved`
+count, a `total`, and a `me` block.
+
+Ranking is computed over the **whole board first**, then the page is taken, so
+paging and searching never change the rank anybody holds: #17 is #17 on page
+one, on page two and in a search for their own name. Competition ranking is
+unchanged — 50/40/40/20 is 1, 2, 2, 4.
+
+**Visibility is Phase 4's and was not touched:** a Team Lead sees their own
+team; everyone else — creators included — sees the network. Narrowing by
+`team_id` is a filter that can only ever narrow; a Team Lead asking for another
+team still gets their own. §7 is honoured literally: a creator at #17 is told
+#17 and is highlighted in place, never promoted.
+
+### Achievements
+
+A **definition** and an **award** are separate tables.
+
+Criteria are **structured data** — a type from a closed set plus a number —
+never an expression and never a string that becomes code or SQL:
+
+| `criteria_type` | Evaluated from |
+|---|---|
+| `point_threshold` | `SUM(points)` in the point ledger |
+| `approved_content_count` | approved submissions |
+| `cycle_rank` | the cycle's ranking |
+| `creator_of_cycle` | a Creator of the Cycle award |
+| `competition_result` | a finalised competition place |
+| `manual` | an Admin, by hand |
+
+Adding a criterion means adding a branch to the evaluator. An admin configures
+what is already possible and cannot invent execution.
+
+**Scope is explicit**: `lifetime`, `cycle` or `competition`, never mixed.
+
+**Evaluation is targeted** (§14/§46), never a sweep: an approval evaluates one
+creator, a cycle close evaluates one cycle, a completion evaluates one
+competition. Each is a single `INSERT … SELECT` that lands on the uniqueness
+index, so a thousand-creator network is one statement and ten simultaneous
+evaluations award once.
+
+**Idempotency** is one index covering all three scopes:
+`UNIQUE (user_id, achievement_id, COALESCE(cycle_id,0), COALESCE(source_id,0)) WHERE revoked_at IS NULL`.
+Postgres treats NULLs as distinct, so the `COALESCE` is what stops a lifetime
+badge being awarded twice. The partial clause lets a revoked award stay in
+history without blocking the badge being earned properly later.
+
+**Seeded starters** (all editable and retirable by a Creator Admin, written
+only when absent): `first_content`, `ten_contents`, `hundred_points`,
+`top_three_cycle`, `creator_of_cycle`, `war_zone_winner`. The thresholds are
+starting points, not business policy.
+
+**Recognition is history.** An award survives a team move, a suspension and an
+archive — all asserted. A mistake is **revoked** with a reason and an actor and
+stays visible; there is no endpoint that deletes one. The criterion of an
+achievement people already hold cannot be changed: those awards were earned
+against what it said.
+
+### Creator of the Cycle
+
+A recognition record in its own right, in its own table — not rank #1 with a
+different label. Today's rule is the top of the **closed** cycle by the Phase 4
+rank engine, and the row keeps `rank_at_award`, `points_at_award` and the
+criteria in words, so a later point correction cannot rewrite why somebody was
+recognised.
+
+**A tie means two winners, and the system says so.** `UNIQUE (cycle_id, user_id)`
+— one award per creator per cycle, not one per cycle — so everybody at rank 1 is
+recognised and the response returns `shared: true` with every winner named.
+Nothing picks between them by a rule nobody wrote down.
+
+Finalisation is one statement with `ON CONFLICT DO NOTHING`: ten simultaneous
+requests produce one award.
+
+### War Zone
+
+A competition is not the leaderboard, not the point ledger and not the payout
+system. `draft → open → active → completed`, with `cancelled` reachable from
+the first three. There is deliberately **no reopen**: results that can be
+reopened are not results.
+
+**Scoring is separate, by design.** Entries in `mo_creator_competition_scores`
+sum to a participant's score, the same shape as the point ledger and for the
+same reason — no stored total, and a correction is a compensating entry.
+Writing any of it into `mo_creator_point_ledger` would make a judged contest
+alter a permanent performance record and, through Phase 5, somebody's pay.
+
+**Participation**: a creator enters themselves and nobody else — a forged
+`user_id` is refused. Registration closes when the competition does. Eligibility
+is the network's: an active profile, plus team membership for a team
+competition. A competition out of scope answers **404**, exactly as one that
+does not exist, so its existence is never confirmed.
+
+**Results** snapshot the place and score at finalisation. Ties share a place,
+the same competition ranking the rank engine uses: two on 92 are both 1st and
+both `winner`, and the next is 3rd. Finalisation runs in a transaction guarded
+by the status, so ten simultaneous requests produce one result set.
+
+**Prizes are words.** A competition stores a `recognition` description. Money
+belongs to Phase 5's financial architecture and is never created by winning.
+
+### Permissions
+
+| | Creator | Team Lead | Creator Admin / Nerve Admin |
+|---|---|---|---|
+| Leaderboard | network (Phase 4) | own team (Phase 4) | network |
+| Own achievements, recognition, results | yes | yes | yes |
+| Others' achievement awards | — | own team | all |
+| Enter a competition | themselves only | themselves only | may enter others |
+| Define or award achievements, revoke | — | **no** | yes |
+| Create, open, score, finalise, cancel a competition | — | **no** | yes |
+| Finalise Creator of the Cycle | — | **no** | yes |
+
+A Team Lead has no recognition authority, exactly as they have no financial
+authority in Phase 5.
+
+### Audit and notifications
+
+`creator_achievement.created|updated|activated|deactivated|awarded|revoked`,
+`creator_cycle_award.created`,
+`creator_competition.created|updated|opened|started|completed|cancelled|
+result_finalized|participant_added|participant_withdrawn|participant_disqualified|
+score_recorded`.
+
+Notifications: an achievement earned, Creator of the Cycle, a competition
+opened (to the eligible network or team), started, cancelled, and results.
+**A leaderboard read notifies nobody** — asserted by test.
+
+### Phase 7 anchor
+
+Analytics and Creator Growth Intelligence consume what already exists: the
+point ledger for performance, the rank engine for standing, the recognition
+tables for outcomes, the financial ledger for cost. Phase 7 needs no new source
+of truth and should create none — it reads, aggregates and presents. The rule
+Phase 6 followed is the one Phase 7 inherits: **derive, never store a second
+copy of a number another system owns.**
+
+---
+
+## PHASE 6 COMPLETE
+
+**Implementation notes**
+
+- Phases 0–5 are unchanged in behaviour. Two additive touches: the review
+  endpoint now also evaluates that one creator's lifetime achievements and
+  returns an `achievements` count, and the leaderboard gained optional filters
+  plus a `me` block while keeping every existing field and default.
+- Every creator test fixture now clears its own recognition rows before its
+  people: an achievement award is `RESTRICT`-protected on purpose, which is
+  the schema saying that recognition outlives the creator record's edits.
+- Two real bugs the tests caught: a count query that bound a parameter its SQL
+  never referenced (so a Creator Admin's competition list failed outright), and
+  an existence leak where entering a team competition you could not see replied
+  "that is for another team" instead of 404.
+- 51 integration tests: the required end-to-end, both tie policies, targeted
+  evaluation and idempotency, the revoke model, four concurrency cases, the
+  security matrix, and the triple-ledger fingerprint.

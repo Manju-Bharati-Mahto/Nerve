@@ -178,6 +178,11 @@ async function seed() {
 }
 
 async function cleanup() {
+  /* Phase 6 recognition first: an achievement award is RESTRICT-protected on
+     purpose — recognition outlives a suspension or an archive — so a fixture
+     has to take its own down before its people and its cycles. */
+  await pool.query(`DELETE FROM mo_creator_achievement_awards WHERE user_id LIKE $1 OR awarded_by LIKE $1`, [`${PX}-%`]);
+  await pool.query(`DELETE FROM mo_creator_cycle_awards WHERE user_id LIKE $1 OR awarded_by LIKE $1`, [`${PX}-%`]);
   /* Ledger first, and reversals before the rows they point at — every foreign
      key here is RESTRICT, which is the point: history cannot be half-deleted.
      Rows are matched by creator, by actor, and by rule or cycle, so nothing

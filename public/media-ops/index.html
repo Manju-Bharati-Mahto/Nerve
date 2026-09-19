@@ -7819,6 +7819,11 @@ function cnReload(...what){
   if(what.includes('payout'))  CN_PAYOUT.loaded=false;
   if(what.includes('finance')) CN_FIN.loaded=false;
   if(what.includes('rates'))   CN_RATES.loaded=false;
+  if(what.includes('board6'))  CN_BOARD6.loaded=false;
+  if(what.includes('ach'))     CN_ACH.loaded=false;
+  if(what.includes('awards')){ CN_AWARDS.loaded=false; CN_COCS.loaded=false; }
+  if(what.includes('comps'))   CN_COMPS.loaded=false;
+  if(what.includes('comp'))    CN_COMP.loaded=false;
   render();
 }
 /* A rule or cycle list several screens need. Fetched once, re-rendered when it
@@ -7931,11 +7936,15 @@ function creatorSelfView(st){
     <div class="page-sub">Your standing in the Parul Creator Network.</div>
   </div></div>
   <div class="tabs sec">
-    ${[['opps','Opportunities'],['tasks','My Tasks'],['points','My Points'],
-       ['payouts','My Payouts'],['profile','My Profile']].map(([k,l])=>
+    ${[['opps','Opportunities'],['tasks','My Tasks'],['board','Leaderboard'],
+       ['warzone','War Zone'],['achievements','Achievements'],
+       ['points','My Points'],['payouts','My Payouts'],['profile','My Profile']].map(([k,l])=>
       `<button class="tab ${tab===k?'on':''}" data-tab="${k}" data-tabkey="creator">${l}</button>`).join('')}
   </div>
   ${tab==='opps'?cnOppsTab():tab==='tasks'?cnTasksTab(false,true)
+   :tab==='board'?cnBoardTab()
+   :tab==='warzone'?cnWarZoneTab(false)
+   :tab==='achievements'?cnAchievementsTab(false)
    :tab==='points'?cnMyPointsTab()
    :tab==='payouts'?(CN_PAYOUT.id?cnPayoutStatement(false):cnPayoutList(false))
    :creatorProfileCards(st)}`;
@@ -7986,7 +7995,7 @@ function creatorManageView(st){
   </div>`:''}
   <div class="tabs sec">
     ${[['creators','Creators'],['teams','Teams'],['events','Events'],['tasks','Tasks'],
-       ['review','Review'],['points','Points'],['payouts','Payouts']].map(([k,l])=>
+       ['review','Review'],['points','Points'],['payouts','Payouts'],['recognition','Recognition']].map(([k,l])=>
       `<button class="tab ${tab===k?'on':''}" data-tab="${k}" data-tabkey="creator">${l}</button>`).join('')}
   </div>
   ${tab==='teams'?creatorTeamsTab(st,manage)
@@ -7995,6 +8004,7 @@ function creatorManageView(st){
    :tab==='review'?cnReviewTab()
    :tab==='points'?cnPointsTab(manage)
    :tab==='payouts'?cnPayoutsTab(manage)
+   :tab==='recognition'?cnRecognitionHub(manage)
    :creatorDirectoryTab(st,manage)}`;
 }
 
@@ -8930,6 +8940,367 @@ function cnRatesCard(){
     <div class="card-foot"><span class="hint">A rate changes by ending the current one and starting a new
       one. Payouts already calculated keep the rate they were calculated at — September stays at
       September's rate however many times the figure changes afterwards.</span></div></div>`;
+}
+
+/* ── Recognition and the War Zone (Phase 6) ───────────────────────────────
+   PHASE 6 DOES NOT OWN PERFORMANCE ACCOUNTING. Every number on these screens
+   is the rank engine's or the recognition record's; nothing here computes a
+   score, and a competition's score is never shown as a Creator point. */
+const CN_BOARD6  = {loaded:false, cycle:null, rows:[], me:null, total:0, err:null,
+                    cycleId:'active', teamId:'all', q:'', offset:0};
+const CN_ACH     = {loaded:false, rows:[], canManage:false, err:null};
+const CN_AWARDS  = {loaded:false, rows:[], total:0, scope:'self', err:null, offset:0};
+const CN_COCS    = {loaded:false, rows:[], err:null};
+const CN_COMPS   = {loaded:false, rows:[], total:0, canManage:false, err:null, offset:0, status:'all'};
+const CN_COMP    = {id:null, loaded:false, data:null, err:null};
+const CN_REC     = {loaded:false, data:null, err:null};
+const CN_REC_PAGE = 25;
+
+const CN_COMPSTATUS = {
+  draft:    {l:'Draft',     c:'st-neutral'},
+  open:     {l:'Open for entries', c:'st-info'},
+  active:   {l:'Running',   c:'st-success'},
+  completed:{l:'Finished',  c:'st-neutral'},
+  cancelled:{l:'Cancelled', c:'st-neutral'},
+};
+const cnCompPill = s=>{const m=CN_COMPSTATUS[s]||CN_COMPSTATUS.draft;
+  return `<span class="status ${m.c}">${esc(m.l)}</span>`;};
+const CN_PLACE = {winner:'Winner', runner_up:'Runner-up', finalist:'Finalist', participant:'Took part'};
+const cnOrdinal = n=>n===1?'1st':n===2?'2nd':n===3?'3rd':n+'th';
+const cnWhen = v=>v?D.fmt(String(v).slice(0,10)):'—';
+
+/* Recognition, for a manager: the board, what can be earned, who has been
+   recognised, and the War Zone. One tab rather than four, because they are
+   one job — and each still says plainly which system it reads. */
+function cnRecognitionHub(manage){
+  const sub=S.tab.cnrec||'board';
+  return `
+  <div class="f ac gap2 sec" style="flex-wrap:wrap">
+    ${[['board','Leaderboard'],['achievements','Achievements'],
+       ['history','Recognition history'],['warzone','War Zone']].map(([k,l])=>
+      `<button class="btn xs${sub===k?' primary':''}" data-tab="${k}" data-tabkey="cnrec">${l}</button>`).join('')}
+  </div>
+  ${sub==='achievements'?cnAchievementsTab(manage)
+   :sub==='history'?cnRecognitionTab(manage)
+   :sub==='warzone'?cnWarZoneTab(manage)
+   :cnBoardTab()}`;
+}
+
+/* ── The leaderboard ──────────────────────────────────────────────────── */
+function cnBoardTab(){
+  cnEnsureCycles();
+  const f=CN_BOARD6;
+  if(!f.loaded){
+    f.loaded=true;
+    const q=new URLSearchParams({cycle_id:String(f.cycleId), team_id:String(f.teamId),
+      limit:String(CN_REC_PAGE), offset:String(f.offset)});
+    if(f.q) q.set('q', f.q);
+    MO_API.get('/creator/leaderboard?'+q)
+      .then(d=>{f.cycle=d.cycle||null;f.rows=d.rows||[];f.me=d.me||null;f.total=d.total||0;f.err=null;})
+      .catch(e=>{f.err=e.message;})
+      .finally(()=>render());
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading the leaderboard…</p></div></div>';
+  }
+  if(f.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(f.err)}</p></div></div>`;
+  const meId=S.me;              // the signed-in creator, highlighted but never re-ranked
+  const from=f.offset, to=Math.min(from+CN_REC_PAGE, f.total);
+  return `
+  ${f.me?`<div class="grid g4 sec">
+    <div class="stat"><span class="stat-main"><span class="stat-label">Your rank</span>
+      <span class="stat-val">#${f.me.place}</span></span>
+      <span class="stat-meta">${f.total} creator${f.total===1?'':'s'} on the board</span></div>
+    <div class="stat"><span class="stat-main"><span class="stat-label">Your points</span>
+      <span class="stat-val">${f.me.points}</span></span>
+      <span class="stat-meta">${f.cycle?esc(f.cycle.label):'this cycle'}</span></div>
+  </div>`:''}
+  <div class="card">
+    <div class="card-head" style="gap:8px;flex-wrap:wrap">
+      <h3>${f.cycle?esc(f.cycle.label):'Leaderboard'}</h3>
+      <div class="ca f gap2 ac" style="flex-wrap:wrap">
+        ${f.cycle?`<span class="chip ${f.cycle.status==='active'?'sel':''}">${esc(titleCase(f.cycle.status))}</span>`:''}
+        <input class="inp" id="lb-q" placeholder="Find a creator…" value="${esc(f.q)}"
+          onkeydown="if(event.key==='Enter')ACTIONS.cnBoardSearch({},this)" style="max-width:190px;height:30px;font-size:12px">
+        <select class="inp" style="width:auto;height:30px;font-size:12px" onchange="ACTIONS.cnBoardCycle6({},this)">
+          <option value="active">Active cycle</option>
+          ${(CN_CYCLES.rows||[]).map(c=>`<option value="${c.id}" ${String(f.cycleId)===String(c.id)?'selected':''}>${esc(c.label)}</option>`).join('')}
+        </select>
+      </div></div>
+    <div class="card-body flush">
+      ${!f.cycle?`<div class="empty" style="padding:36px"><div class="e-ico">◌</div>
+        <h4>No scoring cycle is running</h4><p>Pick a previous cycle to see how it finished.</p></div>`
+      :!f.rows.length?`<div class="empty" style="padding:36px"><div class="e-ico">◌</div>
+        <h4>Nothing on the board yet</h4><p>It fills as submissions are approved.</p></div>`
+      :`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th style="width:64px">Rank</th><th>Creator</th><th>Team</th>
+          <th class="num">Approved</th><th class="num">Points</th></tr></thead>
+        <tbody>${f.rows.map(r=>`<tr${r.user_id===meId?' style="background:var(--surface-2)"':''}>
+          <td class="num">${r.place<=3?`<b>${r.place}</b>`:r.place}</td>
+          <td class="t-main">${esc(r.creator_name)}${r.user_id===meId?' <span class="chip sel">You</span>':''}
+            ${r.creator_status&&r.creator_status!=='active'?`<div class="t-sub">${esc(titleCase(r.creator_status))}</div>`:''}</td>
+          <td class="small">${esc(r.team||'—')}</td>
+          <td class="num small">${r.approved}</td>
+          <td class="num"><b style="font-variant-numeric:tabular-nums">${r.points}</b></td></tr>`).join('')}
+        </tbody></table></div>`}
+    </div>
+    ${f.total>CN_REC_PAGE?`<div class="card-foot between">
+      <span class="small mut3">${from+1}–${to} of ${f.total}</span>
+      <span class="f gap2">
+        <button class="btn xs" data-act="cnBoardPage" data-d="-1" ${from<=0?'disabled':''}>← Previous</button>
+        <button class="btn xs" data-act="cnBoardPage" data-d="1" ${to>=f.total?'disabled':''}>Next →</button>
+      </span></div>`:''}
+    <div class="card-foot"><span class="hint">Ranking is the Creator Network rank engine: equal points share
+      a place and the next one skips it. Paging and searching never change the rank anybody holds.</span></div>
+  </div>`;
+}
+
+/* ── Achievements ─────────────────────────────────────────────────────── */
+function cnAchievementsTab(manage){
+  if(!CN_ACH.loaded){
+    CN_ACH.loaded=true;
+    MO_API.get('/creator/achievements')
+      .then(d=>{CN_ACH.rows=d.achievements||[];CN_ACH.canManage=!!d.can_manage;CN_ACH.err=null;})
+      .catch(e=>{CN_ACH.err=e.message;})
+      .finally(()=>render());
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading achievements…</p></div></div>';
+  }
+  if(CN_ACH.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_ACH.err)}</p></div></div>`;
+  const earned=CN_ACH.rows.filter(a=>a.earned), locked=CN_ACH.rows.filter(a=>!a.earned&&a.is_active);
+  const retired=CN_ACH.rows.filter(a=>!a.is_active);
+  const card=a=>`<div class="card"><div class="card-body pad">
+    <div class="f ac gap2" style="align-items:flex-start">
+      <div style="font-size:26px;line-height:1;opacity:${a.earned?'1':'.35'}">${esc(a.icon||'★')}</div>
+      <div style="flex:1;min-width:0">
+        <div class="between" style="gap:8px"><b>${esc(a.name)}</b>
+          ${a.earned?'<span class="status st-success"><span class="si">✓</span>Earned</span>':''}</div>
+        ${a.description?`<div class="small mut3" style="white-space:normal">${esc(a.description)}</div>`:''}
+        <div class="f ac gap2 mt2" style="flex-wrap:wrap">
+          <span class="chip">${esc(titleCase(a.scope))}</span>
+          ${a.earned&&a.award?`<span class="small mut3">${cnWhen(a.award.awarded_at)}${a.award.cycle?' · '+esc(a.award.cycle):''}</span>`:''}
+          ${!a.earned&&a.progress?`<span class="small mut3">${a.progress.have} of ${a.progress.need}</span>`:''}
+          ${manage?`<span class="small mut3">${a.holders} holder${a.holders===1?'':'s'}</span>`:''}
+        </div>
+        ${!a.earned&&a.progress?`<div class="bar mt2"><span class="fill" style="display:block;width:${
+          Math.min(100, Math.round(a.progress.have/a.progress.need*100))}%"></span></div>`:''}
+        ${manage?`<div class="f gap2 mt2">
+          <button class="btn xs ghost" data-act="cnEditAch" data-aid="${a.id}">Edit</button>
+          <button class="btn xs ghost" data-act="cnAchActive" data-aid="${a.id}" data-to="${a.is_active?'0':'1'}"
+            >${a.is_active?'Retire':'Restore'}</button></div>`:''}
+      </div>
+    </div></div></div>`;
+  return `
+  ${manage?`<div class="f gap2 sec" style="flex-wrap:wrap">
+    <button class="btn xs primary" data-act="cnNewAch">＋ Achievement</button>
+    <button class="btn xs" data-act="cnAwardAch">Award by hand</button></div>`:''}
+  <div class="sec"><div class="small mut3 mb2">Earned${earned.length?` · ${earned.length}`:''}</div>
+    ${earned.length?`<div class="grid g2">${earned.map(card).join('')}</div>`
+    :`<div class="card"><div class="empty" style="padding:30px"><div class="e-ico">◌</div>
+       <h4>Nothing earned yet</h4><p>Achievements arrive as work is approved and cycles finish.</p></div></div>`}
+  </div>
+  ${locked.length?`<div class="sec"><div class="small mut3 mb2">Still to earn</div>
+    <div class="grid g2">${locked.map(card).join('')}</div></div>`:''}
+  ${manage&&retired.length?`<div class="sec"><div class="small mut3 mb2">Retired</div>
+    <div class="grid g2">${retired.map(card).join('')}</div></div>`:''}`;
+}
+
+/* Recognition history — every award, and every Creator of the Cycle. */
+function cnRecognitionTab(manage){
+  if(!CN_AWARDS.loaded){
+    CN_AWARDS.loaded=true;
+    MO_API.get('/creator/achievement-awards?limit='+CN_REC_PAGE+'&offset='+CN_AWARDS.offset)
+      .then(d=>{CN_AWARDS.rows=d.awards||[];CN_AWARDS.total=d.total||0;
+                CN_AWARDS.scope=d.scope||'self';CN_AWARDS.err=null;})
+      .catch(e=>{CN_AWARDS.err=e.message;})
+      .finally(()=>render());
+  }
+  if(!CN_COCS.loaded){
+    CN_COCS.loaded=true;
+    MO_API.get('/creator/cycle-awards?limit=50')
+      .then(d=>{CN_COCS.rows=d.awards||[];CN_COCS.err=null;})
+      .catch(e=>{CN_COCS.err=e.message;})
+      .finally(()=>render());
+  }
+  const from=CN_AWARDS.offset, to=Math.min(from+CN_REC_PAGE, CN_AWARDS.total);
+  return `
+  <div class="card mb4"><div class="card-head"><h3>Creator of the Cycle</h3>
+    ${manage?'<button class="ca btn xs primary" data-act="cnFinalizeRec">Finalise a cycle</button>':''}</div>
+    <div class="card-body flush">
+      ${!CN_COCS.rows.length?`<div class="empty" style="padding:30px"><div class="e-ico">👑</div>
+        <h4>No cycle has been finalised yet</h4>
+        <p>${manage?'Close a cycle, then finalise its recognition.'
+          :'Recognition is awarded once a cycle closes.'}</p></div>`
+      :`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>Cycle</th><th>Creator</th><th class="num">Rank</th><th class="num">Points</th>
+          <th>Recognised</th></tr></thead>
+        <tbody>${CN_COCS.rows.map(w=>`<tr>
+          <td class="t-main">${esc(w.cycle)}<div class="t-sub">${cnWhen(w.cycle_starts_on)} – ${cnWhen(w.cycle_ends_on)}</div></td>
+          <td class="t-main">👑 ${esc(w.creator_name)}</td>
+          <td class="num small">#${w.rank}</td>
+          <td class="num"><b>${w.points}</b></td>
+          <td class="small">${cnWhen(w.awarded_at)}${w.awarded_by?`<div class="t-sub">${esc(w.awarded_by)}</div>`:''}</td>
+        </tr>`).join('')}</tbody></table></div>`}
+    </div>
+    <div class="card-foot"><span class="hint">The rank and points are the ones that justified the
+      recognition at the time. A later correction never rewrites them, and a tied cycle has two winners.</span></div></div>
+
+  <div class="card"><div class="card-head"><h3>Achievement history</h3>
+    <span class="ca chip">${CN_AWARDS.total}</span></div>
+    <div class="card-body flush">
+      ${!CN_AWARDS.rows.length?`<div class="empty" style="padding:30px"><p>No achievements awarded yet.</p></div>`
+      :`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>When</th>${CN_AWARDS.scope==='self'?'':'<th>Creator</th>'}<th>Achievement</th>
+          <th>Cycle</th><th>How</th>${manage?'<th class="num"></th>':''}</tr></thead>
+        <tbody>${CN_AWARDS.rows.map(w=>`<tr>
+          <td class="small nowrap">${cnWhen(w.awarded_at)}</td>
+          ${CN_AWARDS.scope==='self'?'':`<td class="t-main">${esc(w.creator_name||'—')}</td>`}
+          <td class="t-main">${esc(w.icon||'★')} ${esc(w.name)}
+            ${w.revoked_at?'<div class="t-sub">Revoked</div>':''}</td>
+          <td class="small">${w.cycle?esc(w.cycle):'—'}</td>
+          <td class="small">${w.source_type==='auto'?'Automatic':esc(w.awarded_by||'By hand')}</td>
+          ${manage?`<td class="num nowrap">${w.revoked_at?'<span class="mut3">—</span>'
+            :`<button class="btn xs ghost" data-act="cnRevokeAward" data-wid="${w.id}"
+                data-name="${esc(w.name)}">Revoke</button>`}</td>`:''}
+        </tr>`).join('')}</tbody></table></div>`}
+    </div>
+    ${CN_AWARDS.total>CN_REC_PAGE?`<div class="card-foot between">
+      <span class="small mut3">${from+1}–${to} of ${CN_AWARDS.total}</span>
+      <span class="f gap2">
+        <button class="btn xs" data-act="cnAwardPage" data-d="-1" ${from<=0?'disabled':''}>← Previous</button>
+        <button class="btn xs" data-act="cnAwardPage" data-d="1" ${to>=CN_AWARDS.total?'disabled':''}>Next →</button>
+      </span></div>`:''}
+    <div class="card-foot"><span class="hint">An award given by mistake is revoked with a reason and stays
+      on the record. Recognition that can quietly disappear is recognition nobody can trust.</span></div>
+  </div>`;
+}
+
+/* ── War Zone ─────────────────────────────────────────────────────────── */
+function cnWarZoneTab(manage){
+  if(CN_COMP.id) return cnCompetitionDetail(manage);
+  if(!CN_COMPS.loaded){
+    CN_COMPS.loaded=true;
+    const q=new URLSearchParams({status:CN_COMPS.status, limit:String(CN_REC_PAGE),
+      offset:String(CN_COMPS.offset)});
+    MO_API.get('/creator/competitions?'+q)
+      .then(d=>{CN_COMPS.rows=d.competitions||[];CN_COMPS.total=d.total||0;
+                CN_COMPS.canManage=!!d.can_manage;CN_COMPS.err=null;})
+      .catch(e=>{CN_COMPS.err=e.message;})
+      .finally(()=>render());
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading the War Zone…</p></div></div>';
+  }
+  if(CN_COMPS.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_COMPS.err)}</p></div></div>`;
+  const from=CN_COMPS.offset, to=Math.min(from+CN_REC_PAGE, CN_COMPS.total);
+  return `
+  <div class="between mb3" style="gap:8px;flex-wrap:wrap">
+    <div class="hint" style="max-width:520px">The War Zone is a competition, not the leaderboard. It has its
+      own score, and winning one changes nobody's Creator points.</div>
+    <span class="f gap2 ac">
+      <select class="inp" style="width:auto;height:30px;font-size:12px" onchange="ACTIONS.cnCompFilter({},this)">
+        <option value="all">Every competition</option>
+        ${Object.entries(CN_COMPSTATUS).map(([k,v])=>
+          `<option value="${k}" ${CN_COMPS.status===k?'selected':''}>${esc(v.l)}</option>`).join('')}
+      </select>
+      ${manage?'<button class="btn xs primary" data-act="cnNewComp">＋ Competition</button>':''}
+    </span>
+  </div>
+  ${!CN_COMPS.rows.length?`<div class="card"><div class="empty" style="padding:40px"><div class="e-ico">⚔️</div>
+    <h4>Nothing in the War Zone</h4><p>${manage?'Create a competition to get started.'
+      :'New competitions appear here as soon as they open.'}</p></div></div>`
+  :`<div class="grid g2">${CN_COMPS.rows.map(k=>`
+    <div class="card"><div class="card-body pad">
+      <div class="between mb2" style="gap:8px"><b>${esc(k.name)}</b>${cnCompPill(k.status)}</div>
+      <div class="small mut3 mb2">${cnWhen(k.starts_at)} – ${cnWhen(k.ends_at)}
+        ${k.scope==='team'?` · ${esc(k.team||'one team')} only`:' · whole network'}</div>
+      ${k.description?`<div class="small mb2" style="white-space:normal">${esc(k.description)}</div>`:''}
+      ${k.recognition?`<div class="hint mb2">${esc(k.recognition)}</div>`:''}
+      <div class="f ac gap2" style="flex-wrap:wrap">
+        <span class="chip">${k.participants} entered</span>
+        ${k.my_place?`<span class="status st-success"><span class="si">✓</span>You finished ${cnOrdinal(k.my_place)}</span>`
+        :k.my_status==='registered'?'<span class="status st-info"><span class="si">◔</span>You are entered</span>'
+        :k.my_status==='withdrawn'?'<span class="chip mut3">You withdrew</span>'
+        :k.my_status==='disqualified'?'<span class="status st-warn"><span class="si">⚑</span>Disqualified</span>':''}
+        <button class="btn xs ghost ml-auto" data-act="cnViewComp" data-kid="${k.id}">Open</button>
+      </div>
+    </div></div>`).join('')}</div>`}
+  ${CN_COMPS.total>CN_REC_PAGE?`<div class="between sec">
+    <span class="small mut3">${from+1}–${to} of ${CN_COMPS.total}</span>
+    <span class="f gap2">
+      <button class="btn xs" data-act="cnCompPage" data-d="-1" ${from<=0?'disabled':''}>← Previous</button>
+      <button class="btn xs" data-act="cnCompPage" data-d="1" ${to>=CN_COMPS.total?'disabled':''}>Next →</button>
+    </span></div>`:''}`;
+}
+
+function cnCompetitionDetail(manage){
+  if(!CN_COMP.loaded){
+    CN_COMP.loaded=true;
+    MO_API.get('/creator/competitions/'+CN_COMP.id)
+      .then(d=>{CN_COMP.data=d;CN_COMP.err=null;})
+      .catch(e=>{CN_COMP.err=e.message;})
+      .finally(()=>render());
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading…</p></div></div>';
+  }
+  if(CN_COMP.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_COMP.err)}</p></div>
+    <div class="card-foot"><button class="btn xs" data-act="cnBackToComps">← War Zone</button></div></div>`;
+  const d=CN_COMP.data||{}, k=d.competition||{}, can=!!d.can_manage;
+  const parts=d.participants||[], results=d.results||[];
+  const open=['open','active'].includes(k.status);
+  return `
+  <div class="between mb3" style="gap:8px;flex-wrap:wrap">
+    <button class="btn xs" data-act="cnBackToComps">← War Zone</button>
+    <span class="f gap2" style="flex-wrap:wrap">
+      ${!can&&open&&!d.my_status?`<button class="btn xs primary" data-act="cnJoinComp" data-kid="${k.id}">Enter</button>`:''}
+      ${!can&&d.my_status==='registered'?`<button class="btn xs ghost" data-act="cnLeaveComp" data-kid="${k.id}">Withdraw</button>`:''}
+      ${can&&k.status==='draft'?`<button class="btn xs primary" data-act="cnCompStatus" data-kid="${k.id}" data-to="open">Open for entries</button>`:''}
+      ${can&&k.status==='open'?`<button class="btn xs primary" data-act="cnCompStatus" data-kid="${k.id}" data-to="start">Start</button>`:''}
+      ${can&&k.status==='active'?`<button class="btn xs" data-act="cnScoreComp" data-kid="${k.id}">Record a score</button>
+        <button class="btn xs primary" data-act="cnCompleteComp" data-kid="${k.id}">Finalise results</button>`:''}
+      ${can&&['draft','open','active'].includes(k.status)
+        ?`<button class="btn xs ghost" data-act="cnCancelComp" data-kid="${k.id}">Cancel</button>`:''}
+    </span>
+  </div>
+  <div class="card mb4"><div class="card-body pad">
+    <div class="between" style="gap:12px;flex-wrap:wrap">
+      <div><b style="font-size:16px">${esc(k.name)}</b>
+        <div class="small mut3">${cnWhen(k.starts_at)} – ${cnWhen(k.ends_at)}
+          ${k.scope==='team'?` · ${esc(k.team||'one team')} only`:' · whole network'}</div></div>
+      ${cnCompPill(k.status)}
+    </div>
+    ${k.description?`<div class="small mt3" style="white-space:normal">${esc(k.description)}</div>`:''}
+    ${k.rules?`<div class="mt3"><div class="small mut3 mb1">Rules</div>
+      <div class="small" style="white-space:pre-wrap">${esc(k.rules)}</div></div>`:''}
+    ${k.recognition?`<div class="hint mt3">${esc(k.recognition)}</div>`:''}
+    ${k.decision_reason?`<div class="hint mt3">${esc(k.decision_reason)}</div>`:''}
+  </div></div>
+
+  ${results.length?`<div class="card mb4"><div class="card-head"><h3>Results</h3>
+    <span class="ca small mut3">Finalised ${cnWhen(k.completed_at)}</span></div>
+    <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th style="width:64px">Place</th><th>Creator</th><th class="num">Score</th><th></th></tr></thead>
+      <tbody>${results.map(r=>`<tr>
+        <td class="num">${r.place<=3?`<b>${r.place}</b>`:r.place}</td>
+        <td class="t-main">${r.place===1?'🏆 ':''}${esc(r.creator_name)}</td>
+        <td class="num"><b>${r.score}</b></td>
+        <td><span class="chip ${r.result_type==='winner'?'sel':''}">${esc(CN_PLACE[r.result_type]||r.result_type)}</span></td>
+      </tr>`).join('')}</tbody></table></div></div>
+    <div class="card-foot"><span class="hint">The place and score are as they stood when the competition was
+      finalised. These are competition points — they are not Creator Network points and change nobody's rank.</span></div></div>`:''}
+
+  <div class="card"><div class="card-head"><h3>${results.length?'Entries':'Entered'}</h3>
+    <span class="ca chip">${d.participants_total||parts.length}</span></div>
+    <div class="card-body flush">
+      ${!parts.length?'<div class="empty" style="padding:30px"><p>Nobody has entered yet.</p></div>'
+      :`<div class="tbl-wrap"><table class="tbl">
+        <thead><tr><th>Creator</th><th>Team</th><th>Status</th>
+          ${can||k.status!=='open'?'<th class="num">Score</th>':''}${can?'<th class="num"></th>':''}</tr></thead>
+        <tbody>${parts.map(p=>`<tr>
+          <td class="t-main">${esc(p.creator_name)}</td>
+          <td class="small">${esc(p.team||'—')}</td>
+          <td><span class="chip ${p.status==='registered'?'sel':''}">${esc(titleCase(p.status))}</span>
+            ${p.note?`<div class="t-sub" style="white-space:normal">${esc(p.note)}</div>`:''}</td>
+          ${can||k.status!=='open'?`<td class="num">${p.score}</td>`:''}
+          ${can?`<td class="num nowrap">${p.status==='registered'&&k.status!=='completed'
+            ?`<button class="btn xs ghost" data-act="cnDisqualify" data-kid="${k.id}" data-uid="${esc(p.user_id)}"
+                data-name="${esc(p.creator_name)}">Disqualify</button>`:'<span class="mut3">—</span>'}</td>`:''}
+        </tr>`).join('')}</tbody></table></div>`}
+    </div></div>`;
 }
 
 /* ── Re-adding someone who was removed ─────────────────────────────────────
@@ -15032,6 +15403,403 @@ const ACTIONS = {
   cnRateActive:(d)=>{
     MO_API.patch('/creator/payout-rules/'+d.rid,{is_active:d.to==='1'})
       .then(()=>{toast(d.to==='1'?'Rate restored':'Rate retired','ok');cnReload('rates');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  /* ── Creator Network Phase 6: recognition and the War Zone ───────────
+     Nothing here sends a rank, a score total or a point. The server derives
+     every outcome from the systems that own it; these buttons name an intent
+     and the server decides what it means. */
+  cnBoardCycle6:(d,n)=>{CN_BOARD6.cycleId=n.value;CN_BOARD6.offset=0;cnReload('board6');},
+  cnBoardSearch:(d,n)=>{CN_BOARD6.q=n.value.trim();CN_BOARD6.offset=0;cnReload('board6');},
+  cnBoardPage:(d)=>{
+    CN_BOARD6.offset=Math.max(0, CN_BOARD6.offset + (+d.d)*CN_REC_PAGE);
+    cnReload('board6');
+  },
+  cnAwardPage:(d)=>{
+    CN_AWARDS.offset=Math.max(0, CN_AWARDS.offset + (+d.d)*CN_REC_PAGE);
+    cnReload('awards');
+  },
+  cnCompPage:(d)=>{
+    CN_COMPS.offset=Math.max(0, CN_COMPS.offset + (+d.d)*CN_REC_PAGE);
+    cnReload('comps');
+  },
+  cnCompFilter:(d,n)=>{CN_COMPS.status=n.value;CN_COMPS.offset=0;cnReload('comps');},
+
+  /* ── Achievements ──────────────────────────────────────────────────── */
+  cnNewAch:()=>{
+    modal(`<div class="mo-head"><div><h2>New achievement</h2>
+        <p>What can be earned, and how. Criteria are chosen from what the system can actually evaluate —
+        there is no free-text rule, because a rule nobody can check is not a rule.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="row">
+          <div class="field" style="flex:3"><label class="lbl">Name <span class="req">*</span></label>
+            <input class="inp" id="ac-name" placeholder="e.g. 25 Approved Contents"></div>
+          <div class="field" style="flex:1"><label class="lbl">Icon</label>
+            <input class="inp" id="ac-icon" value="★" maxlength="4"></div>
+        </div>
+        <div class="field"><label class="lbl">Description</label>
+          <textarea class="inp" id="ac-desc" placeholder="What earns it, in words a creator will read…"></textarea></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Scope <span class="req">*</span></label>
+            <select class="inp" id="ac-scope">
+              <option value="lifetime">Lifetime — earned once, ever</option>
+              <option value="cycle">Cycle — earned per scoring cycle</option>
+              <option value="competition">Competition — earned per competition</option>
+            </select></div>
+          <div class="field"><label class="lbl">Criterion <span class="req">*</span></label>
+            <select class="inp" id="ac-crit" onchange="ACTIONS.cnAchCritChanged({},this)">
+              <option value="approved_content_count">Approved contents reaches…</option>
+              <option value="point_threshold">Points reach…</option>
+              <option value="cycle_rank">Finishes a cycle at rank or better…</option>
+              <option value="competition_result">Finishes a competition at place or better…</option>
+              <option value="creator_of_cycle">Is Creator of the Cycle</option>
+              <option value="manual">Awarded by hand</option>
+            </select></div>
+        </div>
+        <div class="field" id="ac-valwrap"><label class="lbl">Number <span class="req">*</span></label>
+          <input class="inp" type="number" id="ac-value" min="1" value="10"></div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="cnNewAchGo">Create</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnAchCritChanged:(d,n)=>{
+    // The event-shaped criteria take no number; hiding it stops a value being
+    // set that nothing would ever read.
+    const w=$('#ac-valwrap'); if(w) w.style.display=['creator_of_cycle','manual'].includes(n.value)?'none':'';
+  },
+  cnNewAchGo:()=>{
+    const name=$('#ac-name').value.trim();
+    if(name.length<2){toast('A name is required','bad');return;}
+    const criteria_type=$('#ac-crit').value;
+    const body={name, description:$('#ac-desc').value.trim(), icon:$('#ac-icon').value.trim()||'★',
+      scope:$('#ac-scope').value, criteria_type};
+    if(!['creator_of_cycle','manual'].includes(criteria_type)){
+      const v=+$('#ac-value').value;
+      if(!Number.isInteger(v)||v<1){toast('That criterion needs a whole number of at least 1','bad');return;}
+      body.criteria_value=v;
+    }
+    closeModal();
+    MO_API.post('/creator/achievements',body)
+      .then(()=>{toast(name+' created','ok');cnReload('ach');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnEditAch:(d)=>{
+    const a=(CN_ACH.rows||[]).find(x=>String(x.id)===String(d.aid));
+    if(!a)return;
+    modal(`<div class="mo-head"><div><h2>${esc(a.icon||'★')} ${esc(a.name)}</h2>
+        <p>${a.holders?`${a.holders} creator${a.holders===1?'':'s'} already hold${a.holders===1?'s':''} this, so the
+          criterion is fixed — those awards were earned against what it says. Retire it and define a new one
+          if the bar should move.`:'Nobody holds this yet, so everything is still editable.'}</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="row">
+          <div class="field" style="flex:3"><label class="lbl">Name</label>
+            <input class="inp" id="ac-name" value="${esc(a.name)}"></div>
+          <div class="field" style="flex:1"><label class="lbl">Icon</label>
+            <input class="inp" id="ac-icon" value="${esc(a.icon||'★')}" maxlength="4"></div>
+        </div>
+        <div class="field"><label class="lbl">Description</label>
+          <textarea class="inp" id="ac-desc">${esc(a.description||'')}</textarea></div>
+        ${!a.holders&&a.criteria_value!=null?`<div class="field"><label class="lbl">Number</label>
+          <input class="inp" type="number" id="ac-value" min="1" value="${a.criteria_value}"></div>`:''}
+        <div class="hint">${esc(titleCase(a.scope))} · ${esc(a.criteria_type.replace(/_/g,' '))}${
+          a.criteria_value!=null?` · ${a.criteria_value}`:''}</div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="cnEditAchGo" data-aid="${a.id}">Save</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnEditAchGo:(d)=>{
+    const body={name:$('#ac-name').value.trim(), description:$('#ac-desc').value.trim(),
+      icon:$('#ac-icon').value.trim()||'★'};
+    if(body.name.length<2){toast('A name is required','bad');return;}
+    const v=$('#ac-value');
+    if(v){ const n=+v.value; if(!Number.isInteger(n)||n<1){toast('A whole number of at least 1','bad');return;}
+      body.criteria_value=n; }
+    closeModal();
+    MO_API.patch('/creator/achievements/'+d.aid,body)
+      .then(()=>{toast('Achievement updated','ok');cnReload('ach');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnAchActive:(d)=>{
+    MO_API.patch('/creator/achievements/'+d.aid,{is_active:d.to==='1'})
+      .then(()=>{toast(d.to==='1'?'Achievement restored':'Achievement retired','ok');cnReload('ach');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnAwardAch:()=>{
+    Promise.all([MO_API.get('/creator/creators?limit=200&status=active'), MO_API.get('/creator/cycles')])
+      .then(([p,c])=>{
+        const people=p.creators||[], cycles=(c.cycles||[]);
+        const options=(CN_ACH.rows||[]).filter(a=>a.is_active);
+        modal(`<div class="mo-head"><div><h2>Award by hand</h2>
+            <p>For recognition the rules do not cover. It is recorded like any other award — with who gave
+            it — and can be revoked but never deleted.</p></div>
+            <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+          <div class="mo-body">
+            <div class="field"><label class="lbl">Creator <span class="req">*</span></label>
+              <select class="inp" id="aw-user">${people.map(x=>
+                `<option value="${esc(x.user_id)}">${esc(x.display_name||x.full_name)}</option>`).join('')}</select></div>
+            <div class="field"><label class="lbl">Achievement <span class="req">*</span></label>
+              <select class="inp" id="aw-ach" onchange="ACTIONS.cnAwardScopeChanged({},this)">
+                ${options.map(a=>`<option value="${a.id}" data-scope="${a.scope}">${esc(a.icon||'★')} ${esc(a.name)} · ${esc(a.scope)}</option>`).join('')}
+              </select></div>
+            <div class="field" id="aw-cyclewrap" style="display:none">
+              <label class="lbl">Cycle <span class="req">*</span></label>
+              <select class="inp" id="aw-cycle">${cycles.map(x=>
+                `<option value="${x.id}">${esc(x.label)}</option>`).join('')}</select></div>
+            <div class="field"><label class="lbl">Note</label>
+              <textarea class="inp" id="aw-note" placeholder="Why this creator, in a sentence…"></textarea></div>
+          </div>
+          <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+            <button class="btn primary" data-act="cnAwardAchGo">Award</button></div>`);
+        $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+        ACTIONS.cnAwardScopeChanged({}, $('#aw-ach'));
+      }).catch(e=>toast(e.message,'bad'));
+  },
+  cnAwardScopeChanged:(d,n)=>{
+    if(!n)return;
+    const scope=n.options[n.selectedIndex]?.dataset.scope;
+    const w=$('#aw-cyclewrap'); if(w) w.style.display=scope==='cycle'?'':'none';
+  },
+  cnAwardAchGo:()=>{
+    const body={user_id:$('#aw-user').value, achievement_id:+$('#aw-ach').value,
+      note:$('#aw-note').value.trim()};
+    const cw=$('#aw-cyclewrap');
+    if(cw&&cw.style.display!=='none') body.cycle_id=+$('#aw-cycle').value;
+    closeModal();
+    MO_API.post('/creator/achievement-awards',body)
+      .then(()=>{toast('Awarded','ok');cnReload('ach','awards');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnRevokeAward:(d)=>{
+    modal(`<div class="mo-head"><div><h2>Revoke ${esc(d.name||'this achievement')}</h2>
+        <p>The award stays on the record, marked revoked, with your reason and your name against it.
+        Recognition is history — it is corrected in the open, never deleted.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><div class="field"><label class="lbl">Reason <span class="req">*</span></label>
+        <textarea class="inp" id="rv-why" rows="3" placeholder="e.g. Awarded to the wrong creator"></textarea></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn danger" data-act="cnRevokeAwardGo" data-wid="${d.wid}">Revoke</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnRevokeAwardGo:(d)=>{
+    const reason=(($('#rv-why')||{}).value||'').trim();
+    if(reason.length<3){toast('A reason is required','bad');return;}
+    closeModal();
+    MO_API.post('/creator/achievement-awards/'+d.wid+'/revoke',{reason})
+      .then(()=>{toast('Revoked','ok');cnReload('ach','awards');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+
+  /* ── Creator of the Cycle ──────────────────────────────────────────── */
+  cnFinalizeRec:()=>{
+    MO_API.get('/creator/cycles').then(r=>{
+      const closed=(r.cycles||[]).filter(c=>c.status==='closed');
+      modal(`<div class="mo-head"><div><h2>Finalise recognition</h2>
+          <p>Names the Creator of the Cycle from the closed cycle's ranking and awards the cycle
+          achievements. A tie means two winners, and you will be told. Running it again changes nothing.</p></div>
+          <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+        <div class="mo-body">
+          ${closed.length?`<div class="field"><label class="lbl">Closed cycle <span class="req">*</span></label>
+            <select class="inp" id="fr-cycle">${closed.map(c=>
+              `<option value="${c.id}">${esc(c.label)} · ${c.creators} creator(s), ${c.total_points} points</option>`).join('')}</select></div>
+            <div class="hint">Points, ranks and payouts are untouched by this — it only records recognition.</div>`
+          :`<div class="empty" style="padding:24px"><div class="e-ico">◌</div><h4>No closed cycle</h4>
+             <p>Close a cycle under Points → Rules &amp; cycles first.</p></div>`}
+        </div>
+        <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+          ${closed.length?'<button class="btn primary" data-act="cnFinalizeRecGo">Finalise</button>':''}</div>`);
+      $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+    }).catch(e=>toast(e.message,'bad'));
+  },
+  cnFinalizeRecGo:()=>{
+    const id=$('#fr-cycle').value;
+    closeModal();
+    MO_API.post('/creator/cycles/'+id+'/finalize-recognition',{})
+      .then(r=>{
+        const names=(r.winners||[]).map(w=>w.creator_name).join(' and ');
+        toast(r.awarded
+          ? (r.shared?`Shared — Creator of the Cycle: ${names}`:`Creator of the Cycle: ${names}`)
+          : 'Recognition was already finalised for that cycle','ok');
+        cnReload('awards','ach');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+
+  /* ── War Zone ──────────────────────────────────────────────────────── */
+  cnViewComp:(d)=>{CN_COMP.id=+d.kid;CN_COMP.loaded=false;render();},
+  cnBackToComps:()=>{CN_COMP.id=null;CN_COMP.data=null;cnReload('comps');},
+  cnNewComp:()=>{
+    const teams=(CREATOR_STATE.data||{}).teams||[];
+    modal(`<div class="mo-head"><div><h2>New competition</h2>
+        <p>A War Zone has its own window, its own entries and its own score. Winning one is recognition —
+        it does not change anybody's Creator points, rank or pay.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Name <span class="req">*</span></label>
+          <input class="inp" id="wz-name" placeholder="e.g. Navratri Reel Battle"></div>
+        <div class="field"><label class="lbl">Description</label>
+          <textarea class="inp" id="wz-desc" placeholder="What the competition is…"></textarea></div>
+        <div class="row">
+          <div class="field"><label class="lbl">Starts <span class="req">*</span></label>
+            <input class="inp" type="datetime-local" id="wz-from"></div>
+          <div class="field"><label class="lbl">Ends <span class="req">*</span></label>
+            <input class="inp" type="datetime-local" id="wz-to"></div>
+        </div>
+        <div class="field"><label class="lbl">Who can enter</label>
+          <select class="inp" id="wz-scope" onchange="ACTIONS.cnCompScopeChanged({},this)">
+            <option value="network">The whole network</option>
+            <option value="team">One team only</option>
+          </select></div>
+        <div class="field" id="wz-teamwrap" style="display:none">
+          <label class="lbl">Team <span class="req">*</span></label>
+          <select class="inp" id="wz-team">${teams.map(t=>
+            `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select></div>
+        <div class="field"><label class="lbl">Rules</label>
+          <textarea class="inp" id="wz-rules" rows="3" placeholder="How it is judged, and what counts…"></textarea></div>
+        <div class="field"><label class="lbl">Recognition</label>
+          <input class="inp" id="wz-recog" placeholder="e.g. War Zone Winner badge"></div>
+        <div class="hint">Recognition is words and badges. A cash prize belongs in the payout workflow,
+          not here — winning a competition never creates money.</div>
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="cnNewCompGo">Create as draft</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnCompScopeChanged:(d,n)=>{
+    const w=$('#wz-teamwrap'); if(w) w.style.display=n.value==='team'?'':'none';
+  },
+  cnNewCompGo:()=>{
+    const name=$('#wz-name').value.trim(), from=$('#wz-from').value, to=$('#wz-to').value;
+    if(name.length<2){toast('A name is required','bad');return;}
+    if(!from||!to){toast('A start and an end are required','bad');return;}
+    if(to<=from){toast('It must end after it starts','bad');return;}
+    const scope=$('#wz-scope').value;
+    const body={name, description:$('#wz-desc').value.trim(), rules:$('#wz-rules').value.trim(),
+      recognition:$('#wz-recog').value.trim(), starts_at:new Date(from).toISOString(),
+      ends_at:new Date(to).toISOString(), scope};
+    if(scope==='team') body.team_id=+$('#wz-team').value;
+    closeModal();
+    MO_API.post('/creator/competitions',body)
+      .then(()=>{toast(name+' created — open it when the rules are final','ok');cnReload('comps');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnCompStatus:(d)=>{
+    MO_API.post('/creator/competitions/'+d.kid+'/'+d.to,{})
+      .then(()=>{toast(d.to==='open'?'Open for entries':'Competition started','ok');
+        cnReload('comp','comps');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnCancelComp:(d)=>{
+    modal(`<div class="mo-head"><div><h2>Cancel this competition</h2>
+        <p>Everyone entered is told. Nothing is deleted — the competition and its entries stay on the
+        record, marked cancelled.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><div class="field"><label class="lbl">Reason <span class="req">*</span></label>
+        <textarea class="inp" id="wz-why" rows="3" placeholder="e.g. The event it was tied to moved"></textarea></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Keep it</button>
+        <button class="btn danger" data-act="cnCancelCompGo" data-kid="${d.kid}">Cancel competition</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnCancelCompGo:(d)=>{
+    const reason=(($('#wz-why')||{}).value||'').trim();
+    if(reason.length<3){toast('A reason is required','bad');return;}
+    closeModal();
+    MO_API.post('/creator/competitions/'+d.kid+'/cancel',{reason})
+      .then(()=>{toast('Competition cancelled','ok');cnReload('comp','comps');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnJoinComp:(d)=>{
+    MO_API.post('/creator/competitions/'+d.kid+'/participants',{})
+      .then(()=>{toast("You're in — good luck",'ok');cnReload('comp','comps');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnLeaveComp:(d)=>{
+    MO_API.post('/creator/competitions/'+d.kid+'/participants/withdraw',{})
+      .then(()=>{toast('Withdrawn','ok');cnReload('comp','comps');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnDisqualify:(d)=>{
+    modal(`<div class="mo-head"><div><h2>Disqualify ${esc(d.name||'this entry')}</h2>
+        <p>The entry stays on the record, marked disqualified with your reason. They are left out of the
+        results and cannot re-enter this competition.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><div class="field"><label class="lbl">Reason <span class="req">*</span></label>
+        <textarea class="inp" id="dq-why" rows="3" placeholder="e.g. Entry did not follow the brief"></textarea></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn danger" data-act="cnDisqualifyGo" data-kid="${d.kid}" data-uid="${esc(d.uid)}">Disqualify</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnDisqualifyGo:(d)=>{
+    const note=(($('#dq-why')||{}).value||'').trim();
+    if(note.length<3){toast('A reason is required','bad');return;}
+    closeModal();
+    MO_API.patch('/creator/competitions/'+d.kid+'/participants/'+encodeURIComponent(d.uid),
+        {status:'disqualified', note})
+      .then(()=>{toast('Entry disqualified','ok');cnReload('comp');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnScoreComp:(d)=>{
+    const parts=((CN_COMP.data||{}).participants||[]).filter(p=>p.status==='registered');
+    modal(`<div class="mo-head"><div><h2>Record a score</h2>
+        <p>Scores add up — record each round as its own entry rather than replacing a total. A correction
+        is a negative entry. <b>This is a competition score, not a Creator point:</b> it changes nobody's
+        rank and nobody's pay.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        ${parts.length?`<div class="field"><label class="lbl">Creator <span class="req">*</span></label>
+          <select class="inp" id="sc-user">${parts.map(p=>
+            `<option value="${esc(p.user_id)}">${esc(p.creator_name)} · ${p.score} so far</option>`).join('')}</select></div>
+          <div class="field"><label class="lbl">Score <span class="req">*</span></label>
+            <input class="inp" type="number" id="sc-score" step="1" placeholder="e.g. 25, or -5 to correct"></div>
+          <div class="field"><label class="lbl">Reason <span class="req">*</span></label>
+            <input class="inp" id="sc-why" placeholder="e.g. Judging round one"></div>`
+        :'<div class="empty" style="padding:24px"><p>Nobody is entered yet.</p></div>'}
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        ${parts.length?`<button class="btn primary" data-act="cnScoreCompGo" data-kid="${d.kid}">Record</button>`:''}</div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnScoreCompGo:(d)=>{
+    const score=+$('#sc-score').value, reason=$('#sc-why').value.trim();
+    if(!Number.isInteger(score)||score===0){toast('A whole score, and not zero','bad');return;}
+    if(reason.length<3){toast('A reason is required','bad');return;}
+    const user_id=$('#sc-user').value;
+    closeModal();
+    MO_API.post('/creator/competitions/'+d.kid+'/scores',{user_id,score,reason})
+      .then(()=>{toast('Score recorded','ok');cnReload('comp');})
+      .catch(e=>toast(e.message,'bad'));
+  },
+  cnCompleteComp:(d)=>{
+    const parts=((CN_COMP.data||{}).participants||[]).filter(p=>p.status==='registered');
+    const top=parts.length?Math.max(...parts.map(p=>p.score)):0;
+    const tied=parts.filter(p=>p.score===top);
+    modal(`<div class="mo-head"><div><h2>Finalise the results</h2>
+        <p>Ranks everyone entered by their score and writes the result, keeping the places and scores
+        exactly as they stand now. This cannot be undone — a finalised competition is finished.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">
+        ${tied.length>1?`<div class="hint mb3" style="color:var(--warn)">
+          ${tied.length} creators are tied on ${top}. They will all be recorded as winners — nothing picks
+          between them.</div>`:''}
+        ${parts.length?`<table class="tbl compact"><tbody>${
+          [...parts].sort((a,b)=>b.score-a.score).slice(0,8).map((p,i)=>
+            `<tr><td>${i+1}</td><td>${esc(p.creator_name)}</td><td class="num"><b>${p.score}</b></td></tr>`).join('')
+          }</tbody></table>`
+        :'<div class="empty" style="padding:24px"><p>Nobody is entered — there is nothing to finalise.</p></div>'}
+      </div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="cnCompleteCompGo" data-kid="${d.kid}">Finalise</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  cnCompleteCompGo:(d)=>{
+    closeModal();
+    MO_API.post('/creator/competitions/'+d.kid+'/complete',{})
+      .then(r=>{
+        const names=(r.winners||[]).map(w=>w.creator_name).join(' and ');
+        toast(names?(r.shared?`Shared win — ${names}`:`Winner: ${names}`):'Results finalised','ok');
+        cnReload('comp','comps','ach','awards');})
       .catch(e=>toast(e.message,'bad'));
   },
   /* What a role earns when its work is approved. Set on the requirement so the

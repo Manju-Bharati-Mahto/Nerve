@@ -137,6 +137,11 @@ async function seed() {
 }
 
 async function cleanup() {
+  /* Phase 6 recognition first: an achievement award is RESTRICT-protected on
+     purpose — recognition outlives a suspension or an archive — so a fixture
+     has to take its own down before its people and its cycles. */
+  await pool.query(`DELETE FROM mo_creator_achievement_awards WHERE user_id LIKE $1 OR awarded_by LIKE $1`, [`${PX}-%`]);
+  await pool.query(`DELETE FROM mo_creator_cycle_awards WHERE user_id LIKE $1 OR awarded_by LIKE $1`, [`${PX}-%`]);
   await pool.query(`DELETE FROM mo_creator_team_members WHERE user_id LIKE $1 OR user_id IN
                       (SELECT id FROM users WHERE email LIKE '%@cdir.invalid')`, [`${PX}-%`]);
   await pool.query(`DELETE FROM mo_creator_teams WHERE name LIKE $1`, [`${PX} %`]);

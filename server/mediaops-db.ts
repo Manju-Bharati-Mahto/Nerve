@@ -2071,6 +2071,221 @@ export async function bootstrapCreatorNetwork() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_fin_payout ON mo_creator_financial_ledger(payout_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_fin_cycle ON mo_creator_financial_ledger(cycle_id, entry_type)`);
 
+  /* ═══════════════════════════════════════════════════════════════════════
+     CREATOR NETWORK — Phase 6: recognition and competition
+
+     PHASE 6 DOES NOT OWN PERFORMANCE ACCOUNTING.
+
+     It consumes it. The point ledger stays the source of truth for points and
+     rank; the financial ledger stays the source of truth for money. Nothing in
+     this block stores a point total, a rank, an achievement score or a
+     competition score inside either of them, and nothing in Phase 6 writes to
+     either at all.
+
+     Four concepts, deliberately four tables, because they are not the same
+     thing: an achievement is not a rank, Creator of the Cycle is not "rank #1
+     renamed", and a War Zone score is not a Creator point.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /* What can be earned. A DEFINITION, not an award.
+
+     Criteria are STRUCTURED DATA — a closed set of types plus a number — never
+     an expression, never a string that becomes code or SQL. Adding a criterion
+     means adding a branch to the evaluator, which is the point: an admin
+     configures what is already possible and cannot invent execution. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_achievements (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      icon TEXT NOT NULL DEFAULT '★',
+      /* LIFETIME, CYCLE and COMPETITION are not interchangeable: "100 approved
+         contents" is earned once ever, "Top 3" is earned per cycle, and a
+         competition badge belongs to one competition. */
+      scope TEXT NOT NULL DEFAULT 'lifetime'
+        CHECK (scope IN ('lifetime','cycle','competition')),
+      criteria_type TEXT NOT NULL DEFAULT 'manual'
+        CHECK (criteria_type IN ('point_threshold','approved_content_count','cycle_rank',
+                                 'creator_of_cycle','competition_result','manual')),
+      criteria_value INTEGER,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      is_seeded BOOLEAN NOT NULL DEFAULT false,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_ach_code ON mo_creator_achievements(code)`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_ach_name ON mo_creator_achievements(lower(name))`);
+
+  /* What was earned. Recognition is history: an award survives the creator
+     leaving the team, going inactive, being suspended or being archived.
+     A mistake is REVOKED — recorded, with a reason and an actor — never
+     deleted. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_achievement_awards (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      achievement_id BIGINT NOT NULL REFERENCES mo_creator_achievements(id) ON DELETE RESTRICT,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      cycle_id BIGINT REFERENCES mo_creator_cycles(id) ON DELETE RESTRICT,
+      source_type TEXT NOT NULL DEFAULT 'manual'
+        CHECK (source_type IN ('auto','manual')),
+      source_id BIGINT,
+      note TEXT NOT NULL DEFAULT '',
+      awarded_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      awarded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      revoked_at TIMESTAMPTZ,
+      revoked_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      revoke_reason TEXT
+    )`);
+  /* IDEMPOTENCY, across all three scopes at once. A lifetime achievement has
+     no cycle and no source, so both COALESCE to 0 and the key is (creator,
+     achievement) — Postgres treats NULLs as distinct, which would otherwise
+     let a lifetime badge be awarded twice. A cycle achievement keys on the
+     cycle, a competition one on the competition.
+
+     Live awards only: a revoked award stays in history and does not stop the
+     same badge being earned properly later. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_ach_award_once
+                    ON mo_creator_achievement_awards
+                       (user_id, achievement_id, COALESCE(cycle_id, 0), COALESCE(source_id, 0))
+                    WHERE revoked_at IS NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_ach_award_user
+                    ON mo_creator_achievement_awards(user_id, awarded_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_ach_award_cycle
+                    ON mo_creator_achievement_awards(cycle_id)`);
+
+  /* CREATOR OF THE CYCLE — a recognition record in its own right.
+
+     Not "rank #1 with a nicer name". Today the rule is the top of the closed
+     cycle, and the row records the rank and the points that justified it so a
+     later point correction cannot rewrite why somebody was recognised. Keeping
+     it separate is what lets the rule change later without rewriting history.
+
+     UNIQUE (cycle_id, user_id), not (cycle_id): a tie means the cycle has two
+     winners and both are named, which is the honest answer and needs no
+     invented tie-breaker. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_cycle_awards (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      cycle_id BIGINT NOT NULL REFERENCES mo_creator_cycles(id) ON DELETE RESTRICT,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      rank_at_award INTEGER NOT NULL,
+      points_at_award INTEGER NOT NULL,
+      criteria TEXT NOT NULL DEFAULT '',
+      awarded_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      awarded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_cycle_award_once
+                    ON mo_creator_cycle_awards(cycle_id, user_id)`);
+
+  /* ── WAR ZONE ───────────────────────────────────────────────────────────
+     A competition is not the leaderboard and not the point ledger. It has its
+     own window, its own participants and its own score, and winning one does
+     not change what anybody has earned in the network. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_competitions (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      rules TEXT NOT NULL DEFAULT '',
+      /* Recognition only. A prize here is words — money belongs to Phase 5's
+         financial architecture and is never created by winning a competition. */
+      recognition TEXT NOT NULL DEFAULT '',
+      starts_at TIMESTAMPTZ NOT NULL,
+      ends_at TIMESTAMPTZ NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft','open','active','completed','cancelled')),
+      scope TEXT NOT NULL DEFAULT 'network' CHECK (scope IN ('network','team')),
+      team_id BIGINT REFERENCES mo_creator_teams(id) ON DELETE RESTRICT,
+      completed_at TIMESTAMPTZ,
+      decision_reason TEXT,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT mo_creator_comp_window CHECK (ends_at > starts_at),
+      CONSTRAINT mo_creator_comp_scope CHECK (scope <> 'team' OR team_id IS NOT NULL)
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_comp_name ON mo_creator_competitions(lower(name))`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_comp_status ON mo_creator_competitions(status, starts_at DESC)`);
+
+  /* One row per creator per competition — registering twice is the same
+     registration, held by the index rather than by a check. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_competition_participants (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      competition_id BIGINT NOT NULL REFERENCES mo_creator_competitions(id) ON DELETE RESTRICT,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      status TEXT NOT NULL DEFAULT 'registered'
+        CHECK (status IN ('registered','withdrawn','disqualified')),
+      note TEXT NOT NULL DEFAULT '',
+      joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_comp_part_once
+                    ON mo_creator_competition_participants(competition_id, user_id)`);
+
+  /* THE COMPETITION SCORE, AND IT IS NOT A CREATOR POINT.
+
+     Entries sum to a participant's score, the same shape as the point ledger
+     and for the same reason: no stored total to drift, and a correction is a
+     compensating entry rather than an edit. Writing any of this into
+     mo_creator_point_ledger would make a judged contest change somebody's
+     permanent performance record and, through Phase 5, their pay. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_competition_scores (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      competition_id BIGINT NOT NULL REFERENCES mo_creator_competitions(id) ON DELETE RESTRICT,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      score INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      recorded_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_comp_score
+                    ON mo_creator_competition_scores(competition_id, user_id)`);
+
+  /* The result, snapshotted at finalisation: the place and the score exactly
+     as they stood. A score corrected afterwards does not silently rewrite who
+     won, and the competition stays explainable forever. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_competition_results (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      competition_id BIGINT NOT NULL REFERENCES mo_creator_competitions(id) ON DELETE RESTRICT,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      place INTEGER NOT NULL,
+      score INTEGER NOT NULL,
+      result_type TEXT NOT NULL
+        CHECK (result_type IN ('winner','runner_up','finalist','participant')),
+      finalized_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      finalized_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  // One result per creator per competition: finalising twice changes nothing.
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_comp_result_once
+                    ON mo_creator_competition_results(competition_id, user_id)`);
+
+  /* Starter achievements, so the framework is usable on day one rather than an
+     empty screen. Every one is editable and retirable by a Creator Admin, and
+     seeded only when absent so later edits are never overwritten on boot.
+     Thresholds here are starting points, not business policy. */
+  await pool.query(`
+    INSERT INTO mo_creator_achievements (code, name, description, icon, scope, criteria_type, criteria_value, is_seeded)
+    SELECT * FROM (VALUES
+      ('first_content','First Approved Content','Your first piece of content passed review.','🌱',
+       'lifetime','approved_content_count',1,true),
+      ('ten_contents','10 Approved Contents','Ten pieces of approved content.','🎬',
+       'lifetime','approved_content_count',10,true),
+      ('hundred_points','100 Points','A hundred points earned across the network.','💯',
+       'lifetime','point_threshold',100,true),
+      ('top_three_cycle','Top 3 in Cycle','Finished a cycle in the top three.','🥉',
+       'cycle','cycle_rank',3,true),
+      ('creator_of_cycle','Creator of the Cycle','Recognised as Creator of the Cycle.','👑',
+       'cycle','creator_of_cycle',NULL,true),
+      ('war_zone_winner','War Zone Winner','Won a War Zone competition.','⚔️',
+       'competition','competition_result',1,true)
+    ) AS seed(code, name, description, icon, scope, criteria_type, criteria_value, is_seeded)
+     WHERE NOT EXISTS (SELECT 1 FROM mo_creator_achievements a WHERE a.code = seed.code)`);
+
   /* SECURITY — this row is not optional.
 
      effectiveModules() returns null when a group has no defaults row, and
