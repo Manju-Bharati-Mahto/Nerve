@@ -3000,6 +3000,11 @@ const NAV = [
        like SMC. Gated by the 'creator' module, which the key derives from this
        route; a user without it never sees the group at all, because renderNav()
        drops a group whose items all filter out. */
+    /* NAMING (§54). The sidebar says "Creator Network" and the management page
+       says "Creator Management", deliberately and consistently: the network is
+       the thing, managing it is what an Admin or a Team Lead does there. The
+       nav label has to be the neutral one because a CREATOR sees this same
+       entry, and they manage nothing. */
     {r:'#/media/creator', i:'sparkles', l:'Creator Network', optIn:true}
   ]},
   {group:'System',items:[
@@ -7670,6 +7675,13 @@ const ROLE_META={
   team_lead      :{l:'Team Lead',       p:'Team Leads',       i:'▲', rank:40},
   employee       :{l:'Employee',        p:'Employees',        i:'●', rank:50},
   smc_member     :{l:'SMC Member',      p:'SMC Members',      i:'◈', rank:55},
+  /* Creator Network domain roles. They sit at the end of the hierarchy because
+     they are not a rung on the Media Ops ladder at all — a Creator Team Lead
+     leads a creator team and holds none of a Media Ops Team Lead's authority,
+     which is exactly why they need their own group rather than sharing one. */
+  creator_admin    :{l:'Creator Admin',     p:'Creator Admins',     i:'✦', rank:82},
+  creator_team_lead:{l:'Creator Team Lead', p:'Creator Team Leads', i:'✧', rank:84},
+  creator          :{l:'Creator',           p:'Creators',           i:'◇', rank:86},
   intern         :{l:'Intern',          p:'Interns',          i:'◔', rank:60},
   vendor         :{l:'Vendor',          p:'Vendors',          i:'⛁', rank:70},
   freelancer     :{l:'Freelancer',      p:'Freelancers',      i:'◇', rank:80}
@@ -7683,6 +7695,19 @@ const ASSIGNABLE_ROLES=['employee','team_lead','coordinator','admin'];
    existing member can never be switched into it from the role dropdown, because
    that would move an account between teams behind an admin's back (§9). */
 const ADDABLE_ROLES=[...ASSIGNABLE_ROLES,'smc_member'];
+/* The Creator Network's three domain roles, offered in the SAME dropdown (§4).
+   They are separated visually because they are a different vocabulary: these
+   describe what somebody is on the Creator Network, not where they sit on the
+   Media Ops ladder. One person can hold a role in each. */
+const CREATOR_ADDABLE_ROLES=['creator_admin','creator_team_lead','creator'];
+const isCreatorFormRole=r=>CREATOR_ADDABLE_ROLES.includes(r);
+/* Both families, one <select>, with an <optgroup> apiece so the boundary is
+   unmistakable to the Admin choosing. */
+const ADD_ROLE_OPTIONS=(cur)=>
+  `<optgroup label="Media Ops roles">${ADDABLE_ROLES.map(r=>{const m=roleMeta(r);
+     return `<option value="${r}" ${cur===r?'selected':''}>${m.i} ${esc(m.l)}</option>`;}).join('')}</optgroup>`
+ +`<optgroup label="Creator Network roles">${CREATOR_ADDABLE_ROLES.map(r=>{const m=roleMeta(r);
+     return `<option value="${r}" ${cur===r?'selected':''}>${m.i} ${esc(m.l)}</option>`;}).join('')}</optgroup>`;
 const ROLE_OPTIONS=(cur)=>ASSIGNABLE_ROLES.map(r=>{const m=roleMeta(r);
   return `<option value="${r}" ${cur===r?'selected':''}>${m.i} ${esc(m.l)}</option>`;}).join('');
 function roleMeta(r){
@@ -7899,7 +7924,8 @@ const CN_SUB = {
 const cnSubPill = s=>{const m=CN_SUB[s]; return m?`<span class="status ${m.c}">${esc(m.l)}</span>`:'';};
 
 function creatorReload(what){
-  if(what==='state'){CREATOR_STATE.loaded=false;CREATOR_STATE.data=null;}
+  if(what==='state'){CREATOR_STATE.loaded=false;CREATOR_STATE.data=null;
+                     CN_OV.loaded=false;CN_OV.data=null;CN_OV.err=null;}
   if(what!=='state'){CREATOR_LIST.loaded=false;}
   render();
 }
@@ -7991,12 +8017,63 @@ function creatorProfileCards(st){
    asking for the payout list gets "self" from creatorFinanceScope() and the
    directory is filtered by creatorScopeSql() to their own teams, so hiding a
    tab removes a wrong door, not the lock. */
-const CN_TABS_ADMIN = [['creators','Creators'],['teams','Teams'],['events','Events'],['tasks','Tasks'],
+const CN_TABS_ADMIN = [['overview','Overview'],['creators','Creators'],['teams','Teams'],['events','Events'],['tasks','Tasks'],
   ['review','Review'],['points','Points'],['payouts','Payouts'],['recognition','Recognition'],
   ['analytics','Analytics'],['assistant','Assistant']];
-const CN_TABS_LEAD = [['teams','My Team'],['events','Events'],['tasks','Tasks'],
+const CN_TABS_LEAD = [['overview','Overview'],['teams','My Team'],['events','Events'],['tasks','Tasks'],
   ['review','Review'],['points','Points'],['recognition','Recognition'],
   ['analytics','Analytics'],['assistant','Assistant']];
+
+/* ── Overview: the landing page ───────────────────────────────────────────
+   The state of the network in one screen, so an Admin who opens Creator
+   Management sees what is happening before choosing a tab. Every figure comes
+   from GET /creator/overview, which derives all of them per request from the
+   tables that own them — there is no overview total stored anywhere. */
+const CN_OV = {loaded:false, data:null, err:null};
+function cnOverviewTab(manage){
+  if(!CN_OV.loaded){
+    CN_OV.loaded=true;
+    MO_API.get('/creator/overview')
+      .then(d=>{CN_OV.data=d;CN_OV.err=null;})
+      .catch(e=>{CN_OV.err=e.message;CN_OV.data=null;})
+      .finally(()=>render());
+    return '<div class="card"><div class="empty" style="padding:26px"><p>Loading…</p></div></div>';
+  }
+  if(CN_OV.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_OV.err)}</p></div></div>`;
+  const d=CN_OV.data||{}, pe=d.people||{}, w=d.work||{}, rv=d.review||{}, m=d.money;
+  const cell=(label,val,meta,act)=>`<div class="stat"${act?` class="click"`:''}><span class="stat-main">
+      <span class="stat-label">${esc(label)}</span><span class="stat-val">${val}</span></span>
+      <span class="stat-meta">${meta}</span></div>`;
+  return `
+  <div class="grid g4 sec">
+    ${cell('Active creators', pe.active??0,
+        pe.suspended?`<span class="mut3">${pe.suspended} suspended</span>`:'on the network')}
+    ${cell('Creator teams', d.teams??0, d.scope==='team'?'yours':'active teams')}
+    ${cell('Active assignments', w.active_assignments??0,
+        w.overdue?`<b style="color:var(--danger)">${w.overdue} overdue</b>`:'in flight')}
+    ${cell('Pending review', rv.pending??0,
+        rv.pending?'<span class="mut3">awaiting a verdict</span>':'nothing waiting')}
+  </div>
+  <div class="grid g4 sec">
+    ${cell('Approved content', rv.approved??0, 'all time')}
+    ${cell('Current cycle', d.cycle?esc(d.cycle.label):'—',
+        d.cycle?`<span class="mut3">to ${D.fmt(d.cycle.ends_on)}</span>`:'no active cycle')}
+    ${m?cell('Outstanding', rupees(m.outstanding),
+        `${m.unpaid_payouts} payout${m.unpaid_payouts===1?'':'s'} unpaid`):''}
+    ${cell('Creator of the Cycle', d.creator_of_cycle?esc(d.creator_of_cycle.name):'—',
+        d.creator_of_cycle?`<span class="mut3">${esc(d.creator_of_cycle.cycle||'')} · ${d.creator_of_cycle.points} pts</span>`
+                          :'not yet awarded')}
+  </div>
+  <div class="card"><div class="card-head"><h3>Where to go</h3></div>
+    <div class="card-body pad"><div class="f wrap gap2">
+      ${(manage?[['creators','Creators'],['review','Review'],['payouts','Payouts'],['analytics','Analytics']]
+               :[['teams','My Team'],['review','Review'],['tasks','Tasks'],['analytics','Analytics']])
+        .map(([k,l])=>`<button class="btn xs" data-tab="${k}" data-tabkey="creator">${l}</button>`).join('')}
+    </div>
+    <div class="hint mt3">Every figure here is computed when you open the page, from the ledger, the
+      review queue and the profiles themselves — nothing on this screen is stored or cached.</div>
+    </div></div>`;
+}
 
 function creatorManageView(st){
   const manage=!!st.can_manage_network;
@@ -8008,9 +8085,10 @@ function creatorManageView(st){
   const c=st.counts||{};
   return `
   <div class="page-head">
-    <div><h1 class="page-title">Creator Network</h1>
-      <div class="page-sub">${manage?'Directory, teams and hierarchy for the whole network.'
-        :'Your creator team.'}</div></div>
+    <div><h1 class="page-title">Creator Management</h1>
+      <div class="page-sub">A Media Ops module. ${manage
+        ?'Directory, teams, work, points and money across the whole Creator Network.'
+        :'Your creator team and the work it is doing.'}</div></div>
     ${manage?`<div class="page-actions">
       <button class="btn" data-act="crNewTeam">＋ Team</button>
       <button class="btn" data-act="cnNewEvent">＋ Event</button>
@@ -8025,7 +8103,8 @@ function creatorManageView(st){
     ${tabs.map(([k,l])=>
       `<button class="tab ${tab===k?'on':''}" data-tab="${k}" data-tabkey="creator">${l}</button>`).join('')}
   </div>
-  ${tab==='teams'?creatorTeamsTab(st,manage)
+  ${tab==='overview'?cnOverviewTab(manage)
+   :tab==='teams'?creatorTeamsTab(st,manage)
    :tab==='events'?(CN_EVENT.id?cnEventDetail(manage):cnEventsTab(manage))
    :tab==='tasks'?cnTasksTab(manage,false)
    :tab==='review'?cnReviewTab()
@@ -10080,27 +10159,32 @@ function teamDirectory(){
      — their history still references them and an Admin may want to restore one. */
   /* Team Directory and SMC Management are two views of one population, so the
      directory reads both rosters. DB.users stays crew-only for every picker. */
-  const dirAll=[...DB.users,...(DB.smc_people||[])];
+  /* Three populations, one directory (§7). Creators are appended for the same
+     reason SMC members are — they belong in the personnel view and nowhere
+     near DB.users, which is the crew roster every assignment picker iterates. */
+  const dirAll=[...DB.users,...(DB.smc_people||[]),...(DB.creator_people||[])];
   const removed=dirAll.filter(u=>!u.is_active);
   let people=f.role==='removed'?removed:dirAll.filter(u=>u.is_active);
   /* Quick filters: a role slug, or one of the two presence filters. */
-  if(f.role==='unavailable') people=people.filter(u=>['leave','half_day'].includes(presence(u.id)));
-  else if(f.role==='available') people=people.filter(u=>!['leave','half_day'].includes(presence(u.id)));
+  if(f.role==='unavailable') people=people.filter(u=>!u.is_creator&&['leave','half_day'].includes(presence(u.id)));
+  else if(f.role==='available') people=people.filter(u=>!u.is_creator&&!['leave','half_day'].includes(presence(u.id)));
   else if(f.role!=='all'&&f.role!=='removed') people=people.filter(u=>u.role===f.role);
   if(q) people=people.filter(u=>{
-    const t=u.is_smc?null:teamOf(u.id);
+    const t=(u.is_smc||u.is_creator)?null:teamOf(u.id);
     return (u.full_name+' '+(u.designation||'')+' '+(u.email||'')+' '
-      +(t?t.name:'')+' '+(u.institute||'')+' '+(u.is_smc?'smc member':'')).toLowerCase().includes(q);
+      +(t?t.name:'')+' '+(u.institute||'')+' '+(u.is_smc?'smc member':'')
+      +' '+(u.creator_team||'')+' '+(u.is_creator?'creator network':'')).toLowerCase().includes(q);
   });
   const groups=roleGroups(people);
   const total=people.length;
   /* Filter chips are generated from the roster too, so a new role gets a chip. */
   const dirActive=dirAll.filter(u=>u.is_active);
   const allRoles=roleGroups(dirActive);
+  const crewOnly=u=>!u.is_smc&&!u.is_creator;   // presence is a crew concept
   const chips=[['all','All',dirActive.length],
     ...allRoles.map(g=>[g.role,g.meta.p,g.users.length]),
-    ['available','Available',dirActive.filter(u=>!u.is_smc&&!['leave','half_day'].includes(presence(u.id))).length],
-    ['unavailable','Unavailable',dirActive.filter(u=>!u.is_smc&&['leave','half_day'].includes(presence(u.id))).length],
+    ['available','Available',dirActive.filter(u=>crewOnly(u)&&!['leave','half_day'].includes(presence(u.id))).length],
+    ['unavailable','Unavailable',dirActive.filter(u=>crewOnly(u)&&['leave','half_day'].includes(presence(u.id))).length],
     ...(removed.length?[['removed','Removed',removed.length]]:[])];
 
   return `<div class="dir-bar">
@@ -10198,11 +10282,55 @@ function smcDirCard(u){
     </div></div>`;
 }
 
+/* Same card again, Creator Network facts. A creator carries no crew skills,
+   duties, production team or presence — they are not Media Ops staff — and
+   their work lives in Creator Management, so this branch reuses the shell and
+   swaps only what genuinely differs. The role line always names what they
+   actually are; "User" would be both wrong and useless here (§8). */
+function creatorDirCard(u){
+  const rm=roleMeta(u.role);
+  const q=JSON.stringify(String(u.id));
+  const st=CN_STATUS[u.creator_status]||CN_STATUS.inactive;
+  return `<div class="card" onclick="ACTIONS.cnOpenCreator({id:${esc(q)}})" style="cursor:pointer">
+    <div class="card-body">
+      <div class="f gap3 ac mb3">${avatar(u.id,'xl')}
+        <div style="min-width:0"><b class="trunc" style="display:block;font-size:15px">${esc(u.full_name)}</b>
+          <span class="small mut trunc" style="display:block">${esc(u.designation||rm.l)}</span>
+          <span class="xsmall mut3">${rm.i} ${esc(rm.l)}</span>
+          <span class="dir-team"><span class="mut3">·</span>
+            <span class="mut3">${u.creator_team?esc(u.creator_team):(u.creator_role==='creator_admin'?'Network-wide':'No creator team')}</span>
+            ${u.leads_team?'<span class="tag">Leads</span>':''}</span></div>
+      </div>
+      ${u.creator_status!=='active'?`<div class="note mb2" style="padding:7px 10px;font-size:11.5px">
+        <b>${esc(st.l)}.</b> Their records are unchanged; they cannot enter the network.</div>`:''}
+      <div class="f wrap gap2 mb2">
+        <span class="chip">${esc(u.email||'')}</span>
+        <span class="tag">Creator Network</span>
+      </div>
+      <div class="divider"></div>
+      <div class="between small mut3">
+        <span>${u.joined_on?'Joined '+D.fmt(u.joined_on):'Creator Network'}</span>
+        ${cnStatus(u.creator_status)}</div>
+      ${can('admin.users')?`<div class="mt3" onclick="event.stopPropagation();event.preventDefault()">
+        <div class="f gap2 ac mb2">
+          <select class="inp xs" style="flex:1" title="Creator Network role"
+            onchange="ACTIONS.cnChangeCreatorRole({id:${esc(q)}},this)">
+            ${CREATOR_ADDABLE_ROLES.map(r=>{const m=roleMeta(r);
+              return `<option value="${r}" ${u.role===r?'selected':''}>${m.i} ${esc(m.l)}</option>`;}).join('')}
+          </select>
+          <button class="btn xs" title="Module access" onclick='ACTIONS.editModules({uid:${q}})'>⚿ Modules${Array.isArray(u.allowed_modules)?' ('+u.allowed_modules.length+')':''}</button>
+        </div>
+        <button class="btn xs" style="width:100%" onclick="ACTIONS.cnOpenCreator({id:${esc(q)}})">Open in Creator Management</button>
+        </div>`:''}
+    </div></div>`;
+}
+
 function dirCard(u){
   /* Same card, SMC facts. They carry no crew skills, duties, team or presence,
      and their detail lives in SMC Management — so this branch reuses the shell
      and swaps only what genuinely differs, rather than forking the component. */
   if(u.is_smc) return smcDirCard(u);
+  if(u.is_creator) return creatorDirCard(u);
   const sk=DB.user_skills.filter(s=>s.user_id===u.id);
   const dt=DB.user_duties.filter(d=>d.user_id===u.id);
   const t=teamOf(u.id);
@@ -15085,8 +15213,9 @@ const ACTIONS = {
   deactivateLookup:()=>toast('VR-11: deactivated, not deleted — referential history is preserved','ok'),
   addUser:()=>{
     if(!can('admin.users')){toast('Admins only','bad');return;}
-    modal(`<div class="mo-head"><div><h2>Add crew member</h2>
-        <p>Creates a real Nerve account on the Media team — they sign in with the email + password you set.</p></div>
+    modal(`<div class="mo-head"><div><h2>Add member</h2>
+        <p>Creates a real Nerve account — they sign in with the email + password you set. The role
+          decides what is created: Media Ops crew, an SMC member, or a Creator Network member.</p></div>
         <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
       <div class="mo-body">
         <div class="field"><label class="lbl">Full name <span class="req">*</span></label><input class="inp" id="au-name" placeholder="e.g. Anita Verma"></div>
@@ -15094,8 +15223,14 @@ const ACTIONS = {
         <div class="row">
           <div class="field"><label class="lbl">Temp password <span class="req">*</span></label><input class="inp" id="au-pass" placeholder="min 6 characters"></div>
           <div class="field"><label class="lbl">Role</label><select class="inp" id="au-role" onchange="ACTIONS.auRoleSync()">
-            ${ADDABLE_ROLES.map(r=>{const m=roleMeta(r);
-              return `<option value="${r}" ${r==='employee'?'selected':''}>${m.i} ${esc(m.l)}</option>`;}).join('')}</select></div></div>
+            ${ADD_ROLE_OPTIONS('employee')}</select></div></div>
+        <div class="field" id="au-cn-wrap" style="display:none">
+          <label class="lbl">Creator team</label>
+          <select class="inp" id="au-cn-team"><option value="">— unassigned —</option>
+            ${((CREATOR_STATE.data||{}).teams||[]).filter(t=>t.is_active!==false)
+              .map(t=>`<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select>
+          <div class="hint" id="au-cn-hint">Creator teams are the Creator Network's own teams — not Media Ops
+            production teams. They are managed under Creator Management → Teams.</div></div>
         <div class="field" id="au-smc-wrap" style="display:none">
           <label class="lbl">Institute <span class="req">*</span></label>
           <select class="inp" id="au-institute"><option value="">— choose —</option>
@@ -15134,6 +15269,20 @@ const ACTIONS = {
     const r=($('#au-role')||{}).value||'employee';
     // The institute field only applies to SMC members.
     const sw=$('#au-smc-wrap'); if(sw) sw.style.display=(r==='smc_member'?'':'none');
+    /* A creator is not crew, so the crew-only fields go away rather than sitting
+       there collecting answers nothing will store (§57). A Creator Admin's scope
+       is the whole network, so a team is meaningless for them; a Creator Team
+       Lead or Creator can have one. */
+    const cn=isCreatorFormRole(r);
+    const cw=$('#au-cn-wrap'); if(cw) cw.style.display=(cn&&r!=='creator_admin')?'':'none';
+    for(const [id,hide] of [['au-team',cn],['au-campus',cn]]){
+      const f=$('#'+id); if(f&&f.closest('.field')) f.closest('.field').style.display=hide?'none':'';
+    }
+    const skillsField=$$('.au-skill')[0]; if(skillsField&&skillsField.closest('.field'))
+      skillsField.closest('.field').style.display=cn?'none':'';
+    const modwrapField=$('#au-modwrap'); if(modwrapField&&modwrapField.closest('.field'))
+      modwrapField.closest('.field').style.display=cn?'none':'';
+    if(cn) return;   // the rest re-renders the crew module checklist
     const keep=$$('.au-mod:checked').map(c=>c.value);
     const wrap=$('#au-modwrap'); if(!wrap)return;
     const had=$$('.au-mod').length;
@@ -15163,6 +15312,33 @@ const ACTIONS = {
           academic_unit_id:unit,designation:(($('#au-desig')||{}).value||'').trim()||'SMC Member'})
         .then(()=>smcRefreshBoth()),
         ()=>toast(name+' added to the SMC network','ok'));
+      return;
+    }
+    /* A Creator Network role goes to the same POST /crew endpoint — Add member
+       is one door — but carries only the fields a creator has. The server hands
+       it to the transactional enrolment service, so the Nerve account, the
+       creator profile and the team membership are created together or not at
+       all; there is no half-made person to clean up (§5, §30). */
+    if(isCreatorFormRole(($('#au-role')||{}).value)){
+      const role=$('#au-role').value;
+      const body={full_name:name,email,password:pass,role,
+        designation:(($('#au-desig')||{}).value||'').trim()||null,
+        avatar_url:(($('#au-avatar')||{}).value||'').trim()||null,
+        creator_team_id:role==='creator_admin'?null:((($('#au-cn-team')||{}).value)||null)};
+      closeModal();
+      (async()=>{
+        try{
+          await MO_API.post('/crew',body);
+          creatorReload('state');                 // counts and rosters both move
+          await hydrateFromServer(); render();
+          toast(name+' added to the Creator Network as '+roleMeta(role).l,'ok');
+        }catch(e){
+          const b=e.body||{};
+          if(b.code==='USER_EXISTS'&&b.user)
+            return toast('That email already has a Nerve account — enrol '+b.user.full_name+' from Creator Management instead.','bad');
+          toast('Could not add member: '+e.message,'bad');
+        }
+      })();
       return;
     }
     const payload={full_name:name,email,password:pass,role:$('#au-role').value,designation:$('#au-desig').value.trim(),
@@ -16666,6 +16842,42 @@ const ACTIONS = {
      Every one of these posts to a scoped endpoint that re-checks the caller;
      the buttons are only rendered for a manager as a convenience, never as the
      permission itself. */
+  /* Team Directory → Creator Management, landing on that person.
+     Navigates rather than opening a drawer in place: the creator's full record
+     lives in Creator Management, and sending the Admin there keeps ONE place
+     where a creator is managed instead of two half-copies of the same screen.
+     Searching by email because it is the one field guaranteed unique. */
+  cnOpenCreator:(d)=>{
+    const who=(DB.creator_people||[]).find(x=>String(x.id)===String(d.id));
+    S.tab.creator='creators';
+    CREATOR_LIST.f={...CREATOR_LIST.f, q:(who&&who.email)||'', status:'all', role:'all', team_id:'all'};
+    CREATOR_LIST.offset=0; CREATOR_LIST.loaded=false;
+    location.hash='#/media/creator';
+  },
+  /* Changing what somebody IS, from the directory card. Goes to the same
+     endpoint Creator Management uses, so the same rules apply — including the
+     refusal to demote a Team Lead who still leads a team, which comes back as
+     a message rather than being silently absorbed. The dropdown is reverted on
+     refusal so the card never shows a role the database did not accept (§49). */
+  cnChangeCreatorRole:(d,el)=>{
+    const want=el.value;
+    const who=(DB.creator_people||[]).find(x=>String(x.id)===String(d.id));
+    const was=who?who.role:null;
+    if(want===was) return;
+    const API_ROLE={creator_admin:'creator_admin',creator_team_lead:'team_lead',creator:'creator'};
+    (async()=>{
+      try{
+        await MO_API.patch('/creator/creators/'+encodeURIComponent(String(d.id)),
+          {creator_role:API_ROLE[want]});
+        creatorReload('state');
+        await hydrateFromServer(); render();
+        toast((who?who.full_name:'Role')+' is now '+roleMeta(want).l,'ok');
+      }catch(e){
+        if(was) el.value=was;                    // the database said no
+        toast(e.message,'bad');
+      }
+    })();
+  },
   crFilter:(d,n)=>{
     CREATOR_LIST.f[d.k]=n.value; CREATOR_LIST.offset=0; creatorReload('list');
   },
@@ -16883,6 +17095,10 @@ const ACTIONS = {
           onchange="ACTIONS.emUnrestricted()"> <b>Unrestricted (role based)</b>
           <span class="mut3"> — inherit every module the ${esc((u.role||'employee').replace('_',' '))} role allows; the ticks below are ignored</span></label>
         ${moduleGroupsHtml('em-mod',am,u.role)}
+        <div class="hint mt3"><b>Creator Network</b> controls access to Creator Management inside
+          Media Ops. It does not make somebody a creator and it cannot restore a suspended one —
+          what a person <i>is</i> on the network is their creator role, set on their card or in
+          Creator Management.</div>
       </div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" data-act="saveModules" data-uid="${u.id}">Save access</button></div>`,{size:'wide'});

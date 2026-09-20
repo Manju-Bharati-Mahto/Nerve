@@ -1651,3 +1651,157 @@ fallback was for.
 - `src/test/creator-shell.ui.test.ts` — boots the real `index.html` in jsdom
   and reads the rendered DOM: the shell, the sidebar, the tab list per role,
   and both failure states.
+
+---
+
+## THE CREATOR NETWORK IS A MEDIA OPS MODULE
+
+Not a department, not an application, not a portal, not a second login. One
+Nerve identity, one Team Directory, one module-grant system, one audit trail,
+one scheduler. The domain stays separated internally — its own tables, its own
+service, its own role vocabulary — because that boundary is what stops the two
+hierarchies inheriting each other. What is *not* separate is the product.
+
+```
+NERVE
+└── MEDIA OPS
+    ├── Home · My Day · Projects · … · TV Display Board
+    ├── Team → Directory
+    │     Admins · Operations Coordinators · Team Leads · Employees · SMC Members
+    │     Creator Admins · Creator Team Leads · Creators
+    └── Creator Network  →  Creator Management
+          Overview · Creators · Teams · Events · Tasks · Review
+          Points · Payouts · Recognition · Analytics · Assistant
+```
+
+### Four vocabularies, deliberately distinct
+
+| | Where it lives | What it answers |
+|---|---|---|
+| **Nerve role** | `users.role` | What they are on the platform |
+| **Nerve team** | `users.team` | Which part of Nerve they sit in |
+| **Creator role** | `mo_creator_profiles.creator_role` | What they are on the network |
+| **Module access** | `mo_user_profiles.allowed_modules` | Which product areas they may open |
+
+Nothing infers one from another. `moRoleOf()` cannot see `creator_role`;
+`creatorRoleOf()` cannot see `mo_role`. A creator is `role='user'`,
+`team='creator'` — an ordinary Nerve user whose membership is the profile.
+
+### Media Ops Admin ≠ Creator Admin
+
+Both manage the network; they are not the same thing and neither implies the
+other.
+
+A **Media Ops Admin** (the Master Admin — today Rahul Joshi, resolved through
+the existing admin role and never by name) has authority over Creator
+Management *because Creator Management is a Media Ops module*. `isMoAdmin()`
+returns network scope from `creatorScopeOf()`, so they see every creator, team,
+payout and cycle without holding a creator profile — and they should not have
+to create one for themselves. Their access is inherited from their role, not
+granted by a checkbox: an unticked module cannot lock them out.
+
+A **Creator Admin** is a Creator Network domain role. They manage the network
+and are not a Nerve Admin — they hold no Media Ops authority at all.
+
+The two coexist on one person. Media Ops staff enrolled as a Creator Admin keep
+`role='admin'`, `team='media'`, every Media Ops module, and gain a creator
+profile. Their application stays the full Media Ops app, not the creator shell.
+
+### Role and module are both required
+
+```
+requireCreatorNetwork():
+  Media Ops Admin                         → in   (inherited, §61)
+  module explicitly revoked                → OUT  (§13)
+  active creator profile                   → in
+  on team 'creator', profile not active    → OUT  (§25)
+  holds the 'creator' module               → in   (sees, does not become)
+```
+
+The module check runs **before** the role check. It used to run after, which
+meant unticking Creator Management for a creator did nothing — they sailed past
+on their profile. Revoking now stops the sidebar, the route and the API, with
+no restart, no re-login and no database edit.
+
+It does not work in the other direction. A module grant lets somebody *see* the
+network; it never manufactures a profile, and it can never return a suspended
+creator to active. Status decides membership.
+
+### One canonical module key
+
+`creator`, derived from the route `#/media/creator` by `modKeyOf()`. `MODULES`
+is a projection of `NAV`, so there is exactly one identifier and no
+`creator_network` / `creator_management` / `creators` alternative anywhere.
+
+### Naming
+
+The sidebar says **Creator Network**; the management page says **Creator
+Management**. Deliberately, and consistently: the network is the thing, and
+managing it is what an Admin or a Team Lead does there. The nav label has to be
+the neutral one because a *creator* sees that same entry and manages nothing.
+
+### One door for personnel
+
+Team → Add member creates all of them. The role dropdown carries the Media Ops
+roles and, under their own heading, the three Creator Network roles. Choosing
+a creator role hands the request to `enrolCreator()` — **one transaction**:
+
+```
+BEGIN
+  users            (role 'user', team 'creator', department 'Creator Network')
+  mo_creator_profiles  (creator_role, status 'active')
+  mo_creator_team_members  (if a team was chosen)
+COMMIT
+```
+
+Previously these were three sequential statements on the pool. A failure at
+step two left an account that could sign in and had no membership — which is
+exactly the state that produces a blank page, and exactly the state no screen
+can show or repair. Either the whole person exists or nobody does.
+
+A creator gets **no** `mo_user_profiles` row and no crew module defaults: they
+are not Media Ops staff. Enrolling an existing Nerve user extends that identity
+and leaves their Nerve role and team untouched — never a second account.
+
+### The directory absorbs them
+
+`creator_people` is served on `/state` in the same shape as `smc_people`, and
+for the same reason: it is **not** merged into `users`, because that array is
+the crew roster every assignment picker iterates, and a creator offered as crew
+would be wrong. The directory concatenates the three rosters explicitly.
+
+Groups, chips and counts are generated from the roles present on the roster, so
+registering `creator_admin` / `creator_team_lead` / `creator` in `ROLE_META`
+produced all three sections with no change to the grouping code. The group key
+for a Creator Team Lead is deliberately `creator_team_lead`, never `team_lead`
+— they hold none of a Media Ops Team Lead's authority.
+
+### Scope
+
+| | Directory | Work | Money | Overview |
+|---|---|---|---|---|
+| Media Ops Admin | all | all | all | network |
+| Creator Admin | all | all | all | network |
+| Creator Team Lead | their teams | their teams | own only | team, `money: null` |
+| Creator | self | own | own | refused |
+
+A Team Lead's overview omits the money key entirely rather than sending zero.
+
+### Guards worth knowing
+
+- **Demotion (§32).** Demoting a Team Lead who still leads an active team is
+  refused with `LEADS_A_TEAM` and the team names. Allowing it would leave
+  `lead_user_id` pointing at somebody without the role, and that team would
+  quietly become unreachable to everyone.
+- **Demotion of a Creator Admin (§33)** removes the privilege immediately: the
+  role column *is* the permission, and nothing caches it.
+- **Missing team (§27).** A creator role cannot be pointed at a team that does
+  not exist; the refusal happens before the transaction, so nothing is left.
+
+### The Overview
+
+`GET /creator/overview` composes the landing figures — headcount, teams, work
+in flight, review queue, current cycle, outstanding money, Creator of the Cycle
+— from the tables that own each one, per request. There is no overview table
+and no cached total. Creator of the Cycle is *read* from the awards table, not
+recomputed: a second opinion about who won is exactly the drift Phase 6 forbids.

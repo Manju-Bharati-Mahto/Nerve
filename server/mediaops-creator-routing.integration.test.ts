@@ -149,8 +149,10 @@ async function cleanup() {
 beforeAll(async () => {
   if (!dbUp) return;
   api = await import("./mediaops-api.js");
-  const db = await import("./mediaops-db.js");
-  await db.bootstrapMediaOpsDatabase();
+  /* No bootstrapMediaOpsDatabase() here. Test files run in PARALLEL and the
+     bootstrap does DROP CONSTRAINT / ADD CONSTRAINT pairs, so two files running
+     it at once race and one dies with "constraint already exists". The schema
+     is already there; these tests need fixtures, not a migration. */
   await cleanup(); await seed(); await boot();
 }, 120_000);
 

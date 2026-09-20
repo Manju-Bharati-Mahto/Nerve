@@ -73,8 +73,11 @@ async function boot(opts: { role?: Role; creatorStateStatus?: number; search?: s
    phrase that appears in the page's own code would match a search for rendered
    text. The app container holds what a person actually sees. */
 const text = (dom: JSDOM) => dom.window.document.getElementById("app")?.textContent ?? "";
+/* The tab BAR specifically. Overview's shortcut buttons switch tabs too and
+   carry the same data attribute, which is correct — but they are not the tab
+   list, and this asserts the tab list. */
 const tabs = (dom: JSDOM) =>
-  [...dom.window.document.querySelectorAll('[data-tabkey="creator"]')].map((n) => n.textContent?.trim());
+  [...dom.window.document.querySelectorAll('.tabs [data-tabkey="creator"]')].map((n) => n.textContent?.trim());
 
 describe("the application a Creator Network member lands in", () => {
   let admin: JSDOM, lead: JSDOM, creator: JSDOM;
@@ -113,10 +116,10 @@ describe("the application a Creator Network member lands in", () => {
 describe("each role gets its own panels", () => {
   it("CREATOR ADMIN — the management tabs, money included", async () => {
     const dom = await boot({ role: "creator_admin" });
-    expect(tabs(dom)).toEqual(["Creators", "Teams", "Events", "Tasks", "Review",
+    expect(tabs(dom)).toEqual(["Overview", "Creators", "Teams", "Events", "Tasks", "Review",
       "Points", "Payouts", "Recognition", "Analytics", "Assistant"]);
-    // The management actions are theirs alone.
-    expect(text(dom)).toContain("Creator");
+    // The management actions are theirs alone, and sit in the page header.
+    expect(text(dom)).toContain("Creator Management");
     const acts = [...dom.window.document.querySelectorAll("[data-act]")].map((n) => n.getAttribute("data-act"));
     expect(acts).toContain("crNewCreator");
   });
@@ -124,7 +127,7 @@ describe("each role gets its own panels", () => {
   it("TEAM LEAD — team panels, and NO payouts or network directory", async () => {
     const dom = await boot({ role: "team_lead" });
     const t = tabs(dom);
-    expect(t).toEqual(["My Team", "Events", "Tasks", "Review",
+    expect(t).toEqual(["Overview", "My Team", "Events", "Tasks", "Review",
       "Points", "Recognition", "Analytics", "Assistant"]);
     expect(t).not.toContain("Payouts");     // §12 — no financial management
     expect(t).not.toContain("Creators");    // §12 — no creator management CRUD

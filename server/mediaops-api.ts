@@ -691,6 +691,52 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         is_active: !!r.is_active && String(r.status) !== "removed",
       }));
 
+    /* The Creator Network roster — the SAME population Creator Management
+       lists, so Team Directory and Creator Management can never disagree about
+       who exists or how many there are. Exactly the shape smc_people uses, and
+       for the same reason: NOT merged into `users`, because that array is the
+       Media Crew roster and every assignment picker iterates it — a creator
+       landing there would be offered as crew, which they are not.
+
+       The directory keys its grouping off `role`, so these three values are
+       what give Creator Admins, Creator Team Leads and Creators their own
+       sections with no change to the grouping code (§24). The creator role is
+       read from mo_creator_profiles, which is the only place it lives (§49). */
+    const CREATOR_ROLE_LABEL: Record<string, string> = {
+      creator_admin: "Creator Admin", team_lead: "Creator Team Lead", creator: "Creator",
+    };
+    out.creator_people = (await pool.query(`
+      SELECT u.id, u.full_name, u.email, u.avatar_url, COALESCE(u.status,'active') AS user_status,
+             c.creator_role, c.status, c.creator_type, c.display_name, c.joined_on,
+             t.id AS team_id, t.name AS team_name,
+             (t.lead_user_id = u.id) AS leads_team,
+             p.allowed_modules
+        FROM mo_creator_profiles c
+        JOIN users u ON u.id = c.user_id
+        LEFT JOIN mo_creator_team_members m ON m.user_id = c.user_id AND m.is_primary
+        LEFT JOIN mo_creator_teams t ON t.id = m.team_id
+        LEFT JOIN mo_user_profiles p ON p.user_id = u.id
+       ORDER BY u.full_name`)).rows
+      .map((r) => ({
+        id: r.id, full_name: r.full_name, email: r.email, avatar_url: r.avatar_url,
+        designation: r.creator_type || CREATOR_ROLE_LABEL[String(r.creator_role)] || "Creator",
+        display_name: r.display_name ?? null,
+        creator_role: r.creator_role, creator_status: r.status,
+        creator_team_id: r.team_id ?? null, creator_team: r.team_name ?? null,
+        leads_team: !!r.leads_team, joined_on: r.joined_on ?? null,
+        allowed_modules: Array.isArray(r.allowed_modules) ? r.allowed_modules : null,
+        /* The directory's group key. Distinct from the Media Ops 'team_lead'
+           so a Creator Team Lead never lands in the crew Team Leads group —
+           they are not a Media Ops lead and hold none of that authority. */
+        role: r.creator_role === "creator_admin" ? "creator_admin"
+            : r.creator_role === "team_lead" ? "creator_team_lead" : "creator",
+        team: "creator", is_creator: true,
+        /* Membership is decided by the profile's status, not the Nerve account:
+           a suspended creator keeps their account and leaves the directory's
+           active list, exactly as a deactivated SMC profile does. */
+        is_active: String(r.status) === "active" && String(r.user_status) !== "removed",
+      }));
+
     // Real roster (replaces the prototype's seed users) + the current identity.
     out.users = crew.map((r) => {
       const name = String(r.full_name ?? "User");
@@ -4233,6 +4279,36 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const u = requireMedia(res); if (!u) return;
     if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may add crew members.");
     const b = req.body as Record<string, unknown>;
+
+    /* CREATOR ROLES COME THROUGH THIS SAME DOOR (§4). Team → Add member is the
+       personnel interface for Media Ops, and the Creator Network is a Media Ops
+       module, so its three roles are offered in the same dropdown rather than
+       behind a second hidden user-creation screen.
+
+       What is created differs, because a creator is not crew: no Media Crew
+       department, no mo_user_profiles row, no crew module defaults. So the
+       request is handed to the one transactional enrolment service and returns
+       here — the endpoint is shared, the record is not. */
+    const CREATOR_ROLE_FORM: Record<string, string> = {
+      creator_admin: "creator_admin", creator_team_lead: "team_lead", creator: "creator",
+    };
+    const asCreator = CREATOR_ROLE_FORM[String(b.role)];
+    if (asCreator) {
+      const r = await enrolCreator({
+        actor: u, req, creatorRole: asCreator,
+        newUser: { full_name: String(b.full_name ?? ""), email: String(b.email ?? ""),
+                   password: String(b.password ?? ""), avatar_url: (b.avatar_url as string) || null },
+        teamId: b.creator_team_id ? Number(b.creator_team_id) : null,
+        creatorType: (b.designation as string) || null,
+      });
+      if (!r.ok)
+        return res.status(r.status).json({ code: r.code, message: r.message, ...(r.user ? { user: r.user } : {}) });
+      await audit(u, "creator.created", "creator", null, null,
+        { user_id: r.userId, creator_role: asCreator, team_id: b.creator_team_id ?? null,
+          via: "team_directory" }, req);
+      return res.status(201).json({ ok: true, id: r.userId, creator_role: asCreator });
+    }
+
     const email = String(b.email ?? "").trim().toLowerCase();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendError(res, 400, "A valid email is required.");
     if (String(b.password ?? "").length < 6) return sendError(res, 400, "Password must be at least 6 characters.");
@@ -5238,9 +5314,50 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
      is not Media Ops staff at all gets in). A student creator has no module
      grant worth speaking of and must still reach their own corner; an Admin has
      no creator profile and must still be able to look. */
+  /* TWO INDEPENDENT QUESTIONS, BOTH OF WHICH MUST ANSWER YES (§60).
+
+       ROLE   — what this person IS. An active creator profile, or a Media Ops
+                Admin, for whom the network is a module like any other.
+       MODULE — which product areas they may open. An Admin can revoke Creator
+                Management from any individual, and revoking it means revoking
+                it: the sidebar, the route and this gate all stop.
+
+     ORDER MATTERS, AND IT USED TO BE WRONG. The role check came first and
+     returned early, so an Admin could untick Creator Management for a creator
+     and nothing would happen — the person sailed past on their profile alone.
+     A REVOCATION is therefore checked before the role now.
+
+     A REVOCATION IS AN EXPLICIT PER-USER GRANT THAT OMITS THE MODULE — not a
+     role default that happens not to mention it. The distinction matters: the
+     crew default lists predate the Creator Network and none of them contains
+     'creator', so treating absence as revocation would lock out every Media
+     Ops employee who also holds a creator profile — exactly the coexistence
+     §34 requires. An Admin unticking the box writes an explicit array, and
+     that is refused; inheriting a role's defaults is not a decision about the
+     Creator Network at all.
+
+     What has NOT changed is that the module cannot manufacture membership in
+     the other direction: status still decides who is a member, and a suspended
+     creator is refused below whatever their module grant says (§25). */
   async function requireCreatorNetwork(res: express.Response, u: CurrentUser): Promise<boolean> {
     if (isMoAdmin(u)) return true;
-    if (await creatorRoleOf(u)) return true;
+
+    /* Both facts in ONE statement. This gate runs on every Creator Network
+       request, so it is the wrong place to spend two round trips on two
+       single-column lookups of the same person. */
+    const g = (await pool.query(
+      `SELECT c.creator_role, c.status AS creator_status, p.allowed_modules
+         FROM (SELECT $1::text AS uid) me
+         LEFT JOIN mo_creator_profiles c ON c.user_id = me.uid
+         LEFT JOIN mo_user_profiles    p ON p.user_id = me.uid`, [u.id])).rows[0] ?? {};
+
+    const explicit = g.allowed_modules;
+    if (Array.isArray(explicit) && !explicit.map(String).includes(CREATOR_MODULE)) {
+      sendError(res, 403, "Creator Management has been turned off for your account.");
+      return false;
+    }
+
+    if (g.creator_role && g.creator_status === "active") return true;
 
     /* Someone on the creator TEAM who has no active role is suspended,
        archived, or never onboarded. They must be refused here and not fall
@@ -5253,6 +5370,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       return false;
     }
 
+    // Staff with no creator identity: the module alone decides, as it always did.
+    if (Array.isArray(explicit)) return true;          // checked above; it includes 'creator'
     const eff = await effectiveModules(u);
     if (eff !== null && eff.includes(CREATOR_MODULE)) return true;
     sendError(res, 403, "You do not have access to the Creator Network.");
@@ -5390,15 +5509,20 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   /** The scope clause, as SQL. Every creator read goes through this — it is the
       single place that decides who sees whom. */
-  function creatorScopeSql(scope: Awaited<ReturnType<typeof creatorScopeOf>>, params: unknown[]) {
+  /* `col` is the column holding the PERSON the row belongs to. It defaults to
+     the profile's own, because most callers join mo_creator_profiles — but a
+     query over assignments or submissions scopes by ITS owner, and passing the
+     column keeps one scope rule instead of a second hand-written copy. */
+  function creatorScopeSql(scope: Awaited<ReturnType<typeof creatorScopeOf>>, params: unknown[],
+                           col = "c.user_id") {
     if (scope.level === "all") return "";
     if (scope.level === "team") {
       // A Team Lead sees their teams' members, and themselves.
       params.push(scope.teamIds, scope.userId);
-      return ` AND (m.team_id = ANY($${params.length - 1}::bigint[]) OR c.user_id = $${params.length})`;
+      return ` AND (m.team_id = ANY($${params.length - 1}::bigint[]) OR ${col} = $${params.length})`;
     }
     params.push(scope.userId);
-    return ` AND c.user_id = $${params.length}`;
+    return ` AND ${col} = $${params.length}`;
   }
 
   /* ── The shell payload ──────────────────────────────────────────────────
@@ -5463,6 +5587,110 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       // same type on every creator endpoint and the client can compare it.
       teams: teams.map((t) => ({ ...t, id: Number(t.id) })),
       counts,
+    });
+  }));
+
+  /* ── The management landing page ────────────────────────────────────────
+     The headline of the network in one read: how many people, how much work is
+     moving, what is waiting, what is owed, who is on top.
+
+     IT DERIVES AND STORES NOTHING. Every figure below is a SELECT against the
+     table that already owns it — the point ledger owns points, the financial
+     ledger owns money, the profiles own headcount — computed per request, the
+     same discipline Phase 7 established. There is no overview table, no cached
+     total, and nothing here that could disagree with the tab it summarises.
+
+     Scoped like everything else: a Creator Admin and a Media Ops Admin see the
+     network, a Team Lead sees their teams, and the money line is omitted for
+     anyone who is not entitled to it rather than zeroed. */
+  app.get(`${P}/creator/overview`, asyncHandler(async (_req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    if (!(await requireCreatorNetwork(res, u))) return;
+    const scope = await creatorScopeOf(u);
+    if (scope.level === "self")
+      return sendError(res, 403, "The network overview is for Team Leads and Creator Admins.");
+    const money = isMoAdmin(u) || (await creatorRoleOf(u)) === "creator_admin";
+
+    const p: unknown[] = [];
+    const where = creatorScopeSql(scope, p);
+    const people = (await pool.query(
+      `SELECT COUNT(*) FILTER (WHERE c.status='active')::int    AS active,
+              COUNT(*) FILTER (WHERE c.status='suspended')::int AS suspended,
+              COUNT(*)::int                                     AS total
+         FROM mo_creator_profiles c
+         LEFT JOIN mo_creator_team_members m ON m.user_id = c.user_id AND m.is_primary
+        WHERE true${where}`, p)).rows[0];
+
+    /* Work in flight and work waiting, scoped by the same clause via the
+       assignment's owner. A Team Lead's "pending review" is their team's. */
+    const ap: unknown[] = [];
+    const aWhere = creatorScopeSql(scope, ap, "a.user_id");
+    const work = (await pool.query(
+      `SELECT COUNT(*) FILTER (WHERE a.status IN ('offered','accepted','in_progress'))::int AS active_assignments,
+              COUNT(*) FILTER (WHERE a.status IN ('accepted','in_progress')
+                               AND a.deadline IS NOT NULL
+                               AND a.deadline < (NOW() AT TIME ZONE '${CA.NERVE_TZ}')::date)::int AS overdue
+         FROM mo_creator_assignments a
+         LEFT JOIN mo_creator_team_members m ON m.user_id = a.user_id AND m.is_primary
+        WHERE true${aWhere}`, ap)).rows[0];
+
+    /* A submission belongs to a person through its assignment — there is no
+       user_id on the submission, and inventing one would be a second place for
+       the same fact to live. Scoped on the assignment's owner. */
+    const sp: unknown[] = [];
+    const sWhere = creatorScopeSql(scope, sp, "sa.user_id");
+    const review = (await pool.query(
+      `SELECT COUNT(*) FILTER (WHERE s.status='submitted')::int AS pending_review,
+              COUNT(*) FILTER (WHERE s.status='approved')::int  AS approved
+         FROM mo_creator_submissions s
+         JOIN mo_creator_assignments sa ON sa.id = s.assignment_id
+         LEFT JOIN mo_creator_team_members m ON m.user_id = sa.user_id AND m.is_primary
+        WHERE true${sWhere}`, sp)).rows[0];
+
+    const teams = Number((await pool.query(
+      scope.level === "all"
+        ? `SELECT COUNT(*)::int n FROM mo_creator_teams WHERE is_active AND archived_at IS NULL`
+        : `SELECT COUNT(*)::int n FROM mo_creator_teams
+            WHERE is_active AND archived_at IS NULL AND id = ANY($1::bigint[])`,
+      scope.level === "all" ? [] : [scope.level === "team" ? scope.teamIds : []])).rows[0].n);
+
+    const cycle = (await pool.query(
+      `SELECT id, label, starts_on, ends_on, status FROM mo_creator_cycles
+        WHERE status='active' ORDER BY starts_on DESC LIMIT 1`)).rows[0] ?? null;
+
+    /* Who last held Creator of the Cycle. Read from the awards table, which is
+       where the recognition evaluator put it — never recomputed here, because
+       a second opinion about who won is exactly the kind of drift Phase 6
+       forbids. */
+    const cotc = (await pool.query(
+      `SELECT a.user_id, COALESCE(NULLIF(c.display_name,''), u.full_name) AS name,
+              a.points_at_award, y.label AS cycle
+         FROM mo_creator_cycle_awards a
+         JOIN users u ON u.id = a.user_id
+         LEFT JOIN mo_creator_profiles c ON c.user_id = a.user_id
+         LEFT JOIN mo_creator_cycles y ON y.id = a.cycle_id
+        ORDER BY a.awarded_at DESC LIMIT 1`)).rows[0] ?? null;
+
+    res.json({
+      scope: scope.level,
+      people: { active: Number(people.active), suspended: Number(people.suspended),
+                total: Number(people.total) },
+      teams,
+      work: { active_assignments: Number(work.active_assignments), overdue: Number(work.overdue) },
+      review: { pending: Number(review.pending_review), approved: Number(review.approved) },
+      cycle: cycle ? { id: Number(cycle.id), label: cycle.label,
+                       starts_on: dOnly(cycle.starts_on), ends_on: dOnly(cycle.ends_on) } : null,
+      creator_of_cycle: cotc ? { user_id: cotc.user_id, name: cotc.name,
+                                 points: Number(cotc.points_at_award), cycle: cotc.cycle } : null,
+      // Money is omitted entirely for a Team Lead — not sent as zero (§20).
+      money: money
+        ? {
+            outstanding: String((await pool.query(
+              `SELECT COALESCE(SUM(amount),0)::numeric(12,2) t FROM mo_creator_financial_ledger`)).rows[0].t),
+            unpaid_payouts: Number((await pool.query(
+              `SELECT COUNT(*)::int n FROM mo_creator_payouts WHERE status IN ('calculated','approved')`)).rows[0].n),
+          }
+        : null,
     });
   }));
 
@@ -5541,72 +5769,169 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
      The email path reuses the lifecycle rules the crew directory settled on:
      match on LOWER(email) because UNIQUE(email) is case-sensitive, and answer
      with WHICH conflict it is rather than a flat refusal. */
+  /* ── Bringing somebody onto the network ─────────────────────────────────
+     ONE transactional service, used by every door: the Creator Network's own
+     "＋ Creator", and Media Ops' Team → Add member, which now offers the three
+     creator roles alongside the crew ones.
+
+     IT IS ONE TRANSACTION BECAUSE HALF A PERSON IS WORSE THAN NONE. This used
+     to be three sequential statements on the pool: the Nerve user, then the
+     profile, then the team. A failure at step two left an account that could
+     sign in and had no membership — which is precisely the state that sends
+     somebody to a blank page, and precisely the state an Admin cannot see or
+     repair from any screen. Either the whole person exists or nobody does.
+
+     A NERVE IDENTITY IS NEVER DUPLICATED. One person, one users row, at most
+     one creator profile. Enrolling somebody who already has an account extends
+     that identity rather than creating a second one, and their Nerve role and
+     team are left exactly as they are — Media Ops staff who become a Creator
+     Admin stay Media Ops staff (§34). */
+  const CREATOR_DOMAIN_ROLES = ["creator_admin", "team_lead", "creator"] as const;
+
+  type EnrolResult =
+    | { ok: true; userId: string; created: boolean }
+    | { ok: false; status: number; code: string; message: string; user?: unknown };
+
+  async function enrolCreator(opts: {
+    actor: CurrentUser; req: express.Request; creatorRole: string;
+    userId?: string | null;                       // an existing Nerve identity
+    newUser?: { full_name: string; email: string; password: string; avatar_url?: string | null };
+    teamId?: number | null;
+    displayName?: string | null; creatorType?: string | null; notes?: string;
+  }): Promise<EnrolResult> {
+    const role = (CREATOR_DOMAIN_ROLES as readonly string[]).includes(opts.creatorRole)
+      ? opts.creatorRole : "creator";
+
+    /* A Team Lead leads a team; being asked to lead one that does not exist is
+       a mistake worth refusing rather than absorbing (§27). Checked before the
+       transaction opens so the answer is the same whichever door was used. */
+    if (opts.teamId != null) {
+      const t = (await pool.query(
+        `SELECT id FROM mo_creator_teams WHERE id=$1 AND is_active AND archived_at IS NULL`,
+        [opts.teamId])).rows[0];
+      if (!t) return { ok: false, status: 400, code: "NO_SUCH_TEAM",
+                       message: "That creator team does not exist." };
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      let targetId: string;
+      let created = false;
+
+      if (opts.userId) {
+        targetId = String(opts.userId);
+        const exists = (await client.query(
+          `SELECT id, status FROM users WHERE id=$1 FOR UPDATE`, [targetId])).rows[0];
+        if (!exists) { await client.query("ROLLBACK");
+          return { ok: false, status: 404, code: "NO_SUCH_USER", message: "No such Nerve user." }; }
+        if (exists.status !== "active") { await client.query("ROLLBACK");
+          return { ok: false, status: 400, code: "NOT_ACTIVE", message: "That account is not active." }; }
+      } else {
+        const n = opts.newUser!;
+        const email = String(n.email ?? "").trim().toLowerCase();
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { await client.query("ROLLBACK");
+          return { ok: false, status: 400, code: "BAD_EMAIL", message: "A valid email is required." }; }
+        const name = String(n.full_name ?? "").trim();
+        if (name.length < 2) { await client.query("ROLLBACK");
+          return { ok: false, status: 400, code: "BAD_NAME", message: "A name is required." }; }
+        if (String(n.password ?? "").length < 6) { await client.query("ROLLBACK");
+          return { ok: false, status: 400, code: "BAD_PASSWORD",
+                   message: "Password must be at least 6 characters." }; }
+
+        /* LOWER(email), for the reason POST /crew uses it: UNIQUE(email) is
+           case-sensitive, so a differently-cased duplicate would slip past and
+           become a second identity that login then picks between arbitrarily. */
+        const prior = (await client.query(
+          `SELECT u.id, u.full_name, u.status, c.user_id AS creator
+             FROM users u LEFT JOIN mo_creator_profiles c ON c.user_id = u.id
+            WHERE LOWER(u.email)=$1`, [email])).rows[0];
+        if (prior) {
+          await client.query("ROLLBACK");
+          if (prior.creator)
+            return { ok: false, status: 409, code: "CREATOR_EXISTS",
+                     message: "That person is already on the Creator Network.",
+                     user: { id: prior.id, full_name: prior.full_name } };
+          return { ok: false, status: 409, code: "USER_EXISTS",
+                   message: "A Nerve account with this email already exists — enrol that account instead of creating a second one.",
+                   user: { id: prior.id, full_name: prior.full_name, status: prior.status } };
+        }
+
+        targetId = `u-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        try {
+          await client.query(
+            `INSERT INTO users (id, full_name, email, department, role, team, password_hash,
+                                email_verified, status, avatar_url)
+             VALUES ($1,$2,$3,'Creator Network','user','creator',$4,true,'active',$5)`,
+            [targetId, name, email, await hashPassword(String(n.password)), n.avatar_url || null]);
+        } catch (err) {
+          await client.query("ROLLBACK");
+          if ((err as { code?: string }).code !== "23505") throw err;
+          return { ok: false, status: 409, code: "USER_EXISTS",
+                   message: "A Nerve account with this email already exists." };
+        }
+        created = true;
+      }
+
+      /* One profile per person. The unique constraint is the real guarantee;
+         this turns a race into the same answer the pre-check would have given. */
+      try {
+        await client.query(
+          `INSERT INTO mo_creator_profiles (user_id, creator_role, status, display_name,
+                                            creator_type, notes, created_by)
+           VALUES ($1,$2,'active',$3,$4,$5,$6)`,
+          [targetId, role, opts.displayName || null, opts.creatorType || null,
+           String(opts.notes ?? ""), opts.actor.id]);
+      } catch (err) {
+        await client.query("ROLLBACK");
+        if ((err as { code?: string }).code !== "23505") throw err;
+        return { ok: false, status: 409, code: "CREATOR_EXISTS",
+                 message: "That person is already on the Creator Network." };
+      }
+
+      if (opts.teamId != null) {
+        await client.query(
+          `DELETE FROM mo_creator_team_members WHERE user_id=$1 AND is_primary`, [targetId]);
+        await client.query(
+          `INSERT INTO mo_creator_team_members (team_id, user_id, is_primary, added_by)
+           VALUES ($1,$2,true,$3)`, [opts.teamId, targetId, opts.actor.id]);
+      }
+
+      await client.query("COMMIT");
+      return { ok: true, userId: targetId, created };
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
   app.post(`${P}/creator/creators`, asyncHandler(async (req, res) => {
     const u = res.locals.currentUser as CurrentUser;
     if (!(await requireCreatorNetwork(res, u))) return;
     if (!(await requireCreatorManage(res, u))) return;
     const b = req.body as Record<string, unknown>;
 
-    const role = ["creator_admin", "team_lead", "creator"].includes(String(b.creator_role))
-      ? String(b.creator_role) : "creator";
-    let targetId: string;
+    const r = await enrolCreator({
+      actor: u, req, creatorRole: String(b.creator_role ?? "creator"),
+      userId: b.user_id ? String(b.user_id) : null,
+      newUser: b.user_id ? undefined : {
+        full_name: String(b.full_name ?? ""), email: String(b.email ?? ""),
+        password: String(b.password ?? ""),
+      },
+      teamId: b.team_id ? Number(b.team_id) : null,
+      displayName: (b.display_name as string) || null,
+      creatorType: (b.creator_type as string) || null,
+      notes: String(b.notes ?? ""),
+    });
+    if (!r.ok)
+      return res.status(r.status).json({ code: r.code, message: r.message, ...(r.user ? { user: r.user } : {}) });
 
-    if (b.user_id) {
-      // Enrol an existing Nerve user — Media Ops staff becoming a Creator Admin,
-      // say. Their Nerve role and team are left exactly as they are.
-      targetId = String(b.user_id);
-      const exists = (await pool.query(`SELECT id, status FROM users WHERE id=$1`, [targetId])).rows[0];
-      if (!exists) return sendError(res, 404, "No such Nerve user.");
-      if (exists.status !== "active") return sendError(res, 400, "That account is not active.");
-      const already = (await pool.query(`SELECT 1 FROM mo_creator_profiles WHERE user_id=$1`, [targetId])).rows[0];
-      if (already) return res.status(409).json({ code: "CREATOR_EXISTS", message: "That person is already on the Creator Network." });
-    } else {
-      const email = String(b.email ?? "").trim().toLowerCase();
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendError(res, 400, "A valid email is required.");
-      const name = String(b.full_name ?? "").trim();
-      if (name.length < 2) return sendError(res, 400, "A name is required.");
-      const pw = String(b.password ?? "");
-      if (pw.length < 6) return sendError(res, 400, "Password must be at least 6 characters.");
-
-      const prior = (await pool.query(
-        `SELECT u.id, u.full_name, u.status, c.user_id AS creator
-           FROM users u LEFT JOIN mo_creator_profiles c ON c.user_id = u.id
-          WHERE LOWER(u.email)=$1`, [email])).rows[0];
-      if (prior) {
-        // Never a second row for the same person — say what the situation is
-        // and let the admin enrol or reactivate the identity that exists.
-        if (prior.creator)
-          return res.status(409).json({ code: "CREATOR_EXISTS", message: "That person is already on the Creator Network.",
-            user: { id: prior.id, full_name: prior.full_name } });
-        return res.status(409).json({ code: "USER_EXISTS",
-          message: "A Nerve account with this email already exists — enrol that account instead of creating a second one.",
-          user: { id: prior.id, full_name: prior.full_name, status: prior.status } });
-      }
-
-      targetId = `u-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      try {
-        await pool.query(
-          `INSERT INTO users (id, full_name, email, department, role, team, password_hash, email_verified, status)
-           VALUES ($1,$2,$3,'Creator Network','user','creator',$4,true,'active')`,
-          [targetId, name, email, await hashPassword(pw)]);
-      } catch (err) {
-        // UNIQUE(email) is the real guarantee; two admins racing land here.
-        if ((err as { code?: string }).code !== "23505") throw err;
-        return res.status(409).json({ code: "USER_EXISTS", message: "A Nerve account with this email already exists." });
-      }
-    }
-
-    await pool.query(
-      `INSERT INTO mo_creator_profiles (user_id, creator_role, status, display_name, creator_type, notes, created_by)
-       VALUES ($1,$2,'active',$3,$4,$5,$6)`,
-      [targetId, role, (b.display_name as string) || null, (b.creator_type as string) || null,
-       String(b.notes ?? ""), u.id]);
-
-    if (b.team_id) await setCreatorTeam(u, targetId, Number(b.team_id), req);
-
+    // After COMMIT: an audit row for a rolled-back enrolment would be a lie.
     await audit(u, "creator.created", "creator", null, null,
-      { user_id: targetId, creator_role: role, team_id: b.team_id ?? null }, req);
-    res.status(201).json({ ok: true, user_id: targetId, creator_role: role });
+      { user_id: r.userId, creator_role: b.creator_role ?? "creator", team_id: b.team_id ?? null }, req);
+    res.status(201).json({ ok: true, user_id: r.userId, creator_role: String(b.creator_role ?? "creator") });
   }));
 
   /* Moving a creator between teams. One primary team, as Phase 0 settled —
@@ -5652,6 +5977,25 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       const r = String(b.creator_role);
       if (!["creator_admin", "team_lead", "creator"].includes(r))
         return sendError(res, 400, "Unknown creator role.");
+
+      /* A TEAM IS NOT ORPHANED SILENTLY (§32). Demoting somebody who currently
+         leads an active team would leave that team with no lead — and nothing
+         in the network would say so, because lead_user_id would still point at
+         a person who no longer holds the role. The scope resolver reads the
+         role, so their team would quietly become unreachable to everyone.
+         Refuse, name the teams, and let the Admin reassign first. */
+      if (cur.creator_role === "team_lead" && r !== "team_lead") {
+        const leads = (await pool.query(
+          `SELECT id, name FROM mo_creator_teams
+            WHERE lead_user_id=$1 AND is_active AND archived_at IS NULL ORDER BY name`, [id])).rows;
+        if (leads.length)
+          return res.status(409).json({
+            code: "LEADS_A_TEAM",
+            message: `They still lead ${leads.map((t) => `“${t.name}”`).join(" and ")}. `
+                   + `Give ${leads.length === 1 ? "that team" : "those teams"} another lead first.`,
+            teams: leads.map((t) => ({ id: Number(t.id), name: t.name })),
+          });
+      }
       fields.push(`creator_role=$${i++}`); vals.push(r);
     }
     if ("status" in b) {
