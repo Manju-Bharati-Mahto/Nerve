@@ -139,7 +139,8 @@ async function boot(): Promise<void> {
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/v1/media`;
 }
 
-let calls = 0, failures: string[] = [];
+let calls = 0;
+const failures: string[] = [];
 async function call(as: string, method: string, path: string, body?: unknown) {
   calls++;
   const r = await fetch(base + path, {

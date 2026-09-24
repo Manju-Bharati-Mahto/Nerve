@@ -382,7 +382,11 @@ describe("the sidebar entry, read from the shipped page", () => {
     expect(m![0]).toContain("l:'Creator Network'");
   });
 
-  it("derives the module key the server enforces", async () => {
+  /* The only test in this block that needs the server module: `api` is imported
+     in beforeAll, which returns early without a database, so this ran against
+     `undefined` rather than skipping. Gated on the same dbUp this file already
+     uses for its describes. */
+  (dbUp ? it : it.skip)("derives the module key the server enforces", async () => {
     // modKeyOf() strips '#/media/', so the route IS the key.
     expect("#/media/creator".replace("#/media/", "")).toBe(api.CREATOR_MODULE);
   });

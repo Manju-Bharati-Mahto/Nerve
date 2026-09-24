@@ -199,15 +199,19 @@ describe("21. scoping is enforced in SQL, not in the caller", () => {
 });
 
 /* ── Dates ─────────────────────────────────────────────────────────────── */
+/* These read pure functions and touch no table, but `q` is imported only inside
+   the block that finds a database url — so without one they ran against an
+   undefined module and failed with "Cannot read properties of undefined"
+   instead of skipping. They carry the file's own gate for that reason. */
 describe("6. date semantics match Nerve, not UTC", () => {
-  it("nerveToday() agrees with the application timezone, where toISOString() does not", () => {
+  maybe()("nerveToday() agrees with the application timezone, where toISOString() does not", () => {
     // 2026-08-20T21:30:00Z is already 2026-08-21 in Asia/Kolkata (UTC+5:30).
     const t = new Date("2026-08-20T21:30:00Z");
     expect(q?.nerveToday("Asia/Kolkata", t) ?? "").toBe("2026-08-21");
     expect(t.toISOString().slice(0, 10)).toBe("2026-08-20");   // the bug this avoids
   });
 
-  it("holds at both ends of the day", () => {
+  maybe()("holds at both ends of the day", () => {
     const tz = "Asia/Kolkata";
     // 18:29Z is 23:59 IST — still the same local day.
     expect(q.nerveToday(tz, new Date("2026-08-21T18:29:00Z"))).toBe("2026-08-21");
@@ -220,7 +224,7 @@ describe("6. date semantics match Nerve, not UTC", () => {
     expect(q.nerveToday()).toBe(dbDate);
   });
 
-  it("dateOnly() renders the stored calendar day, not a shifted one", () => {
+  maybe()("dateOnly() renders the stored calendar day, not a shifted one", () => {
     // A DATE arrives from pg as local midnight; toISOString() would move it back.
     const d = new Date(2026, 7, 21);
     expect(q.dateOnly(d)).toBe("2026-08-21");
