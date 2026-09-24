@@ -138,8 +138,9 @@ import {
 } from "./branding-db.js";
 import * as designDb from "./design-db.js";
 import { bootstrapMediaOpsDatabase } from "./mediaops-db.js";
-import { registerMediaOpsApi, runMediaOpsAutomations } from "./mediaops-api.js";
+import { registerMediaOpsApi, runMediaOpsAutomations, creatorStandingOf } from "./mediaops-api.js";
 import { registerOutreachVideoApi, VIDEO_MIME_ALLOWLIST, videoFileName } from "./outreach-video/routes.js";
+import { runCreatorNetworkAutomations } from "./creator-automations.js";
 
 const app = express();
 const PgStore = connectPgSimple(session);
@@ -422,11 +423,22 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "nerve-api" });
 });
 
+/* `creator` is the user's standing on the Creator Network, read from
+   mo_creator_profiles. The client needs it to pick an application: a creator
+   is an ordinary Nerve user whose team happens to be 'creator', so role and
+   team alone cannot distinguish a Creator Admin from somebody with no network
+   membership at all. Status travels with it because a suspended creator must
+   be told they are suspended rather than dropped somewhere generic.
+
+   It is a routing hint and nothing more. Every Creator Network endpoint
+   re-derives the same standing server-side through requireCreatorNetwork()
+   and creatorScopeOf(); nothing here grants access to anything. */
 app.get("/api/auth/me", asyncHandler(async (req, res) => {
   const user = await getSessionUser(req as SessionRequest);
   if (!user) return res.json({ user: null });
   const capabilities = await listUserCapabilities(user.id);
-  res.json({ user: { ...user, password_hash: undefined, capabilities } });
+  const creator = await creatorStandingOf(user.id);
+  res.json({ user: { ...user, password_hash: undefined, capabilities, creator } });
 }));
 
 app.post("/api/auth/login", loginLimiter, asyncHandler(async (req, res) => {
@@ -452,7 +464,10 @@ app.post("/api/auth/login", loginLimiter, asyncHandler(async (req, res) => {
   }
 
   (req as SessionRequest).session.userId = user.id;
-  res.json({ user: { ...user, password_hash: undefined } });
+  // Same standing as /auth/me, so the first navigation after signing in is
+  // decided on the same fact as every navigation after it.
+  const creator = await creatorStandingOf(user.id);
+  res.json({ user: { ...user, password_hash: undefined, creator } });
 }));
 
 app.post("/api/auth/logout", (req, res) => {
@@ -2903,9 +2918,14 @@ bootstrapDatabase()
       runMediaOpsAutomations()
         .then(r => { if (r.autoApproved || r.notified) console.log(`Media Ops automations: ${r.autoApproved} report(s) auto-approved, ${r.notified} notification(s) queued.`); })
         .catch(e => console.error('Media Ops automations failed:', e));
+      // The Creator Network rides the same tick — Nerve has one clock.
+      runCreatorNetworkAutomations()
+        .then(r => { if (r.notified || r.failures.length) console.log(`Creator Network automations: ${r.notified} notification(s) queued${r.failures.length ? `, ${r.failures.length} rule(s) failed` : ''}.`); })
+        .catch(e => console.error('Creator Network automations failed:', e));
     }, 5 * 60 * 1000).unref();
     // Boot run so notifications / auto-approve don't wait for the first 5-min tick.
     setTimeout(() => { runMediaOpsAutomations().catch(e => console.error('Media Ops automations (boot) failed:', e)); }, 8000).unref();
+    setTimeout(() => { runCreatorNetworkAutomations().catch(e => console.error('Creator Network automations (boot) failed:', e)); }, 9000).unref();
 
     app.listen(config.apiPort, () => {
       console.log(`Nerve API listening on ${config.apiPort}`);

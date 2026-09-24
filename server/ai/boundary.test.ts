@@ -68,13 +68,17 @@ describe("19. no database access anywhere in server/ai/", () => {
         if (!target.startsWith(AI_DIR + sep)) escapes.push([rel(file), m[1]]);
       }
     }
-    /* Exactly two seams, both intentional:
-         index.ts       → server/config.ts          (configuration)
-         nerve-tools.ts → server/mediaops-queries.ts (the Nerve service layer)
-       Neither is the database. A new entry here means someone widened the
+    /* Four seams, every one intentional and every one a SERVICE:
+         index.ts         → server/config.ts           (configuration)
+         nerve-tools.ts   → server/mediaops-queries.ts (Media Ops service layer)
+         creator-tools.ts → server/creator-queries.ts  (Creator read service)
+         creator-tools.ts → server/creator-actions.ts  (the one whitelisted write)
+       None of them is the database. A new entry here means someone widened the
        boundary, and that should be a decision, not a diff nobody noticed. */
     expect(escapes.sort()).toEqual([
       ["server/ai/index.ts", "../config.js"],
+      ["server/ai/tools/creator-tools.ts", "../../creator-actions.js"],
+      ["server/ai/tools/creator-tools.ts", "../../creator-queries.js"],
       ["server/ai/tools/nerve-tools.ts", "../../mediaops-queries.js"],
     ]);
   });
@@ -89,19 +93,56 @@ describe("20. no secrets or Nerve data in the AI source", () => {
   });
 });
 
-describe("the shipped tool registry holds only this phase's three tools", () => {
-  it("registers exactly the Phase 3 slice, and nothing beyond it", async () => {
+describe("the shipped tool registry holds exactly what the phases put in it", () => {
+  it("registers the Media Ops slice and the Creator Network set, and nothing else", async () => {
     const { createAiToolRegistry } = await import("./tools/registry.js");
     const names = createAiToolRegistry().listAll().map((t) => t.name).sort();
-    expect(names).toEqual(["get_current_user", "get_my_day", "get_overdue_deliverables"]);
+    expect(names).toEqual([
+      // Phase 3 — Media Ops
+      "get_current_user", "get_my_day", "get_overdue_deliverables",
+      // Phase 8 — Creator Network
+      "creator_get_competition_summary", "creator_get_creator_analytics",
+      "creator_get_creators", "creator_get_discussion", "creator_get_my_analytics",
+      "creator_get_my_content", "creator_get_my_payouts", "creator_get_my_profile",
+      "creator_get_my_standing", "creator_get_my_work", "creator_get_network_summary",
+      "creator_get_operational_signals", "creator_get_opportunity_conversion",
+      "creator_get_payout_summary", "creator_get_recognition_summary",
+      "creator_get_review_backlog", "creator_get_team_analytics",
+      "creator_send_notification",
+    ].sort());
   });
 
-  it("keeps every tool read-only and parameterless in this slice", async () => {
+  it("holds exactly ONE tool that can change anything", async () => {
     const { createAiToolRegistry } = await import("./tools/registry.js");
+    const { CREATOR_AI_ACTIONS } = await import("../creator-actions.js");
+    /* Anchored on whole snake_case tokens, so "payouts" in a read tool's name
+       is not mistaken for the verb "pay". */
+    const writeVerb = /(^|_)(create|update|delete|assign|approve|reject|pay|award|send|set|revoke)(_|$)/;
+    const writers = createAiToolRegistry().listAll()
+      .map((t) => t.name).filter((n) => writeVerb.test(n));
+    expect(writers).toEqual(["creator_send_notification"]);
+    // And it is the whitelist, not a coincidence.
+    expect([...CREATOR_AI_ACTIONS]).toEqual(["creator_send_notification"]);
+  });
+
+  it("gives no tool a free-text argument that could steer a query", async () => {
+    const { createAiToolRegistry } = await import("./tools/registry.js");
+    /* Every argument a model may supply, across the whole registry. A period is
+       a closed enum, an id is an id, and the notification fields are the text
+       being sent. Nothing here is a filter, a column, a sort or a query. */
+    const allowed = new Set(["period", "creator_id", "creator_ids", "kind", "id",
+                             "title", "body", "confirm_token"]);
     for (const t of createAiToolRegistry().listAll()) {
-      // No write verb anywhere in the surface a model can see.
+      const props = (t.parametersJsonSchema as { properties?: Record<string, unknown> }).properties ?? {};
+      for (const key of Object.keys(props))
+        expect(allowed, `${t.name}.${key}`).toContain(key);
+    }
+  });
+
+  it("keeps every Media Ops tool parameterless, as Phase 3 left them", async () => {
+    const { createAiToolRegistry } = await import("./tools/registry.js");
+    for (const t of createAiToolRegistry().listAll().filter((x) => !x.name.startsWith("creator_"))) {
       expect(t.name).not.toMatch(/create|update|delete|assign|approve|send|set_/);
-      // No arguments means no argument through which scope could be influenced.
       expect((t.parametersJsonSchema as { properties?: object }).properties ?? {}).toEqual({});
     }
   });

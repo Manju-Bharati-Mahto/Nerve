@@ -22,6 +22,7 @@
 //   §11.8 immutable audit + version tables; trigger-maintained denormalisations
 // ═══════════════════════════════════════════════════════════════════════════
 import { pool } from "./db.js";
+import { seedCreatorAutomationRules } from "./creator-automations.js";
 
 export async function bootstrapMediaOpsDatabase() {
   // Postgres range-overlap exclusion for equipment bookings (AC-7 / VR-8).
@@ -1552,7 +1553,759 @@ export async function bootstrapMediaOpsDatabase() {
   await pool.query(`ALTER TABLE mo_requests ADD CONSTRAINT mo_requests_status_check
                     CHECK (status IN ('new','under_review','needs_clarification','ready','converted','closed','rejected'))`);
 
+  await bootstrapCreatorNetwork();
   await seedMediaOpsLookups();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CREATOR NETWORK — Phase 0 foundation
+
+   Parul's creator network is an incentive-based content workforce, not Media
+   Crew staff. It is built the way SMC was: the creator is an ordinary NERVE
+   user (one identity, one login, one session) carrying a profile row that says
+   what they are inside this vertical. Nothing here is a second product.
+
+   What is REUSED, not rebuilt:
+     identity + login → users / getSessionUser      module access → mo_module_defaults
+     audit            → mo_audit_logs                notifications → mo_notifications
+     soft delete      → users.status + archived_at   timestamps    → created_at/updated_at
+
+   Only three things are genuinely new: which creators exist, which creator team
+   they belong to, and what they are inside the network. Everything Phases 1–8
+   add (tasks, submissions, points, payouts, competitions) references
+   mo_creator_profiles.user_id — a TEXT user id, exactly as mo_smc_submissions
+   already references users.
+
+   NAMING: Outreach owns `outreach_creators`, which are EXTERNAL influencer
+   accounts it tracks. Unrelated. Everything here is mo_creator_* and touches no
+   Outreach table.
+   ═══════════════════════════════════════════════════════════════════════════ */
+/** Exported so the tests can prove it is idempotent by running it twice. */
+export async function bootstrapCreatorNetwork() {
+  /* The vertical is a built-in team, like SMC. This is what makes the whole
+     thing safe by default: moRoleOf() returns null for any team outside
+     media/smc, so a creator is refused by every pre-existing Media Ops route
+     with no new denial code — the same mechanism that already contains SMC. */
+  await pool.query(`
+    INSERT INTO teams (id, name, color, is_built_in)
+    SELECT 'creator','Creator Network','#0891B2',true
+     WHERE NOT EXISTS (SELECT 1 FROM teams WHERE id='creator')`);
+
+  /* What a person IS inside the network. Keyed by user_id like every other
+     profile table (mo_user_profiles, mo_smc_profiles) so there is exactly one
+     identity per human and no second id to keep in step.
+
+     creator_role is deliberately NOT a Nerve role and not mo_role: nothing in
+     moRoleOf() or effectiveModules() reads this column, so a Creator Admin can
+     never become a Nerve Admin by holding it, and a Media Ops Team Lead never
+     becomes a Creator Team Lead by holding theirs.
+
+     status is the network's own lifecycle, separate from users.status: a
+     creator can be suspended from the network while their Nerve account stays
+     active, and archiving keeps every point, submission and payout attached. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_profiles (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      creator_role TEXT NOT NULL DEFAULT 'creator'
+        CHECK (creator_role IN ('creator_admin','team_lead','creator')),
+      status TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active','inactive','suspended','archived')),
+      display_name TEXT,
+      creator_type TEXT,
+      joined_on DATE NOT NULL DEFAULT CURRENT_DATE,
+      exited_on DATE,
+      notes TEXT NOT NULL DEFAULT '',
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_creator_role ON mo_creator_profiles(creator_role, status)`);
+
+  /* Creator teams are their own structure, NOT mo_teams. mo_teams drives Media
+     Crew project routing, assignableMemberIds() and workload; putting creators
+     in it would surface them in Media Ops pickers and hand Media Team Leads
+     scope over creators. Separate tables keep the two hierarchies from
+     inheriting each other. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_teams (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      lead_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      color TEXT, icon TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      archived_at TIMESTAMPTZ,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_creator_teams_name ON mo_creator_teams(lower(name))`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_creator_teams_lead ON mo_creator_teams(lead_user_id) WHERE archived_at IS NULL`);
+
+  // One primary team per creator, mirroring mo_team_members' own rule.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_team_members (
+      team_id BIGINT NOT NULL REFERENCES mo_creator_teams(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      is_primary BOOLEAN NOT NULL DEFAULT true,
+      added_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (team_id, user_id)
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_creator_primary_team
+                    ON mo_creator_team_members(user_id) WHERE is_primary`);
+
+  /* AUDIT VOCABULARY — a Creator Network member is none of the Media Ops tiers, so every action
+     they took was writing actor_role='user' — which this CHECK rejected, and
+     audit() swallows its own errors, so their trail was silently EMPTY.
+     'creator' is admitted rather than mapping them onto 'employee', because a
+     creator is deliberately not one. Widening a CHECK touches no existing row. */
+  /* One statement, so a second process booting at the same moment cannot land
+     between the drop and the add — and it re-checks whether the widening is
+     already in place, so a rerun is a no-op rather than a churn. */
+  await pool.query(`DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                    WHERE conname='mo_audit_actor_role_chk'
+                      AND pg_get_constraintdef(oid) LIKE '%creator%') THEN
+      ALTER TABLE mo_audit_logs DROP CONSTRAINT IF EXISTS mo_audit_actor_role_chk;
+      ALTER TABLE mo_audit_logs ADD CONSTRAINT mo_audit_actor_role_chk
+        CHECK (actor_role IS NULL OR actor_role IN ('admin','team_lead','employee','system','creator'));
+    END IF;
+  EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
+
+  /* ── Phase 2: events → opportunities → interest → assignment/task ────────
+     WHY THESE ARE NEW TABLES, not the Media Ops ones they resemble:
+
+       mo_projects  feeds the production pipeline, the dashboard and the office
+                    TV board. A creator event put there would appear on all
+                    three — a visible regression, not a tidy reuse.
+       mo_assignments.project_id is NOT NULL against mo_projects, so creator
+                    work could only live there by dropping a constraint on a
+                    live Media Ops table.
+
+     So the boundary is explicit, as Phase 0 made it for identity.
+
+     ASSIGNMENT AND TASK ARE ONE ROW. In this phase they are strictly 1:1 — the
+     same creator, the same opportunity, one shared lifecycle — so a separate
+     task table would repeat every column and add no fact. Selection and
+     assignment, which ARE different events, stay separate: the interest keeps
+     the decision, the assignment is its operational consequence. If a later
+     phase needs several tasks per assignment, a child table can be added
+     without disturbing any of this. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_events (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      academic_unit_id BIGINT REFERENCES mo_academic_units(id),
+      venue TEXT,
+      event_date DATE,
+      start_time TEXT, end_time TEXT,
+      status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft','open','closed','completed','cancelled','archived')),
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_events_status ON mo_creator_events(status, event_date)`);
+
+  /* What the event needs, and how many of them. Kept apart from the event
+     because a future phase attaches points, payout rules and submission rules
+     HERE, not to the event. creator_type is free text from the admin — the
+     network invents roles faster than a CHECK constraint could follow. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_opportunities (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      event_id BIGINT NOT NULL REFERENCES mo_creator_events(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      creator_type TEXT,
+      description TEXT NOT NULL DEFAULT '',
+      required_count INTEGER NOT NULL DEFAULT 1 CHECK (required_count > 0),
+      starts_at_time TEXT, ends_at_time TEXT,
+      venue TEXT,
+      -- The event happens on one day; the work is often due on another (§17).
+      task_deadline DATE,
+      status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft','open','closed','cancelled')),
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_opps_event ON mo_creator_opportunities(event_id, status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_opps_open ON mo_creator_opportunities(status) WHERE status='open'`);
+
+  /* Interest is a claim, not a promise of work. It keeps its own decision
+     history — who asked, when, what was decided and by whom — so "who was
+     considered and passed over" survives even after the assignment exists. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_interests (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      opportunity_id BIGINT NOT NULL REFERENCES mo_creator_opportunities(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'interested'
+        CHECK (status IN ('interested','withdrawn','selected','not_selected')),
+      note TEXT NOT NULL DEFAULT '',
+      decided_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      decided_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  /* One LIVE interest per creator per opportunity, enforced by the database
+     rather than by the form. A withdrawn interest does not block re-applying,
+     and the withdrawn row is kept. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_interest_live
+                    ON mo_creator_interests(opportunity_id, user_id) WHERE status <> 'withdrawn'`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_interest_user ON mo_creator_interests(user_id, status)`);
+
+  /* The assignment IS the task — see the note above. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_assignments (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      opportunity_id BIGINT NOT NULL REFERENCES mo_creator_opportunities(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      -- Resolved from the creator's own membership at assignment time, never
+      -- taken from the request, and kept so history survives a team move.
+      team_id BIGINT REFERENCES mo_creator_teams(id) ON DELETE SET NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      deadline DATE,
+      scheduled_date DATE,
+      status TEXT NOT NULL DEFAULT 'assigned'
+        CHECK (status IN ('assigned','accepted','in_progress','completed','declined','cancelled')),
+      decline_reason TEXT,
+      assigned_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      accepted_at TIMESTAMPTZ, started_at TIMESTAMPTZ,
+      completed_at TIMESTAMPTZ, declined_at TIMESTAMPTZ, cancelled_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  // One LIVE assignment per creator per opportunity; declined and cancelled
+  // rows stay as history and do not block a reassignment.
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_assign_live
+                    ON mo_creator_assignments(opportunity_id, user_id)
+                    WHERE status NOT IN ('declined','cancelled')`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_assign_user ON mo_creator_assignments(user_id, status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_assign_team ON mo_creator_assignments(team_id, status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_assign_deadline ON mo_creator_assignments(deadline)
+                    WHERE status NOT IN ('completed','declined','cancelled')`);
+
+  /* ── Phase 3: content submission and review ─────────────────────────────
+     Modelled on mo_deliverable_versions, which is already how Nerve does a
+     versioned submission with a review verdict on it. Same shape, same words
+     (version_no, submitted_by, reviewed_by, review_comment), so there is one
+     convention in the codebase rather than two.
+
+     COMPLETION IS NOT APPROVAL. The assignment stays 'completed' — that is the
+     creator saying the work is done and ready to look at. The verdict lives
+     here, on the submission, and is management's separate act.
+
+     Versions are immutable. A verdict writes reviewer, timestamp and comment
+     onto the row that was reviewed; it never edits the content, and a
+     resubmission is always a NEW row. V1 stays readable forever. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_submissions (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      assignment_id BIGINT NOT NULL REFERENCES mo_creator_assignments(id) ON DELETE CASCADE,
+      version_no SMALLINT NOT NULL CHECK (version_no > 0),
+      content_url TEXT NOT NULL,
+      submission_type TEXT,
+      note TEXT NOT NULL DEFAULT '',
+      /* Four states, not six. 'submitted' IS under review — a separate
+         UNDER_REVIEW would be a status nothing ever sets, and there is no
+         draft step in this workflow. Both terminal states are kept distinct
+         because "fix it" and "we are not taking this" are different answers. */
+      status TEXT NOT NULL DEFAULT 'submitted'
+        CHECK (status IN ('submitted','changes_requested','approved','rejected')),
+      submitted_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      reviewed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      reviewed_at TIMESTAMPTZ,
+      review_comment TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      /* The version invariant, held by the database. Two simultaneous
+         submissions cannot both become V2: one wins and the other is told to
+         retry, rather than both being written. */
+      UNIQUE (assignment_id, version_no)
+    )`);
+  /* One version awaiting a verdict at a time — a creator cannot stack V2 on
+     top of an unreviewed V1, and a duplicate request from a retried network
+     call cannot open a second review. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_sub_pending
+                    ON mo_creator_submissions(assignment_id) WHERE status='submitted'`);
+  /* Approval is final for the whole assignment: at most one approved version. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_sub_approved
+                    ON mo_creator_submissions(assignment_id) WHERE status='approved'`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_sub_status ON mo_creator_submissions(status, submitted_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_sub_reviewer ON mo_creator_submissions(reviewed_by, reviewed_at DESC)`);
+
+  /* ── Phase 4: point rules, ledger, cycles ───────────────────────────────
+     THE LEDGER IS THE SOURCE OF TRUTH. There is deliberately no
+     creator.total_points column: a balance is SUM(points) over the ledger,
+     filtered by cycle. Nothing increments a stored total, so no total can
+     drift away from the rows that explain it.
+
+     Points are accounting data. Every row says who, how many, why, from what
+     source, who created it, when, and in which cycle — and no row is ever
+     edited or deleted. A mistake is corrected by a compensating row, never by
+     changing history. */
+
+  /* What a thing is worth. Configurable, so nothing hard-codes a number into
+     the approval path — and the amount is COPIED onto the ledger row at award
+     time, so changing a rule tomorrow cannot rewrite what was earned today. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_point_rules (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      points INTEGER NOT NULL,
+      /* Only the two sources Phase 4 actually has. A rule is either what an
+         approved submission earns, or the basis for a manual entry. */
+      source_type TEXT NOT NULL DEFAULT 'approved_submission'
+        CHECK (source_type IN ('approved_submission','manual')),
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_rule_name ON mo_creator_point_rules(lower(name))`);
+
+  /* The scoring period. Named after mo_kra_cycles, which is how Nerve already
+     spells a cycle (label / starts_on / ends_on / status). Explicit business
+     objects — the current calendar month is never assumed. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_cycles (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      label TEXT NOT NULL,
+      starts_on DATE NOT NULL,
+      ends_on DATE NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft','active','closed','archived')),
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT mo_creator_cycle_dates CHECK (ends_on >= starts_on)
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_cycle_label ON mo_creator_cycles(lower(label))`);
+  /* At most one active cycle, held by the database rather than by a check the
+     next writer might skip. A unique index over a constant column value is
+     what makes "only one row may be active" an invariant. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_cycle_one_active
+                    ON mo_creator_cycles((status)) WHERE status='active'`);
+
+  /* The ledger. Append-only by construction: no endpoint updates a row, and
+     corrections are compensating rows carrying reversal_of_id. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_point_ledger (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      /* NULL means "earned, but no cycle was active when it happened". The
+         points are recorded rather than lost or guessed into a month; an Admin
+         assigns them to a cycle explicitly. */
+      cycle_id BIGINT REFERENCES mo_creator_cycles(id) ON DELETE RESTRICT,
+      rule_id BIGINT REFERENCES mo_creator_point_rules(id) ON DELETE RESTRICT,
+      /* The amount as it was awarded. Copied, never looked up again — this is
+         what makes a later rule change unable to rewrite history. */
+      points INTEGER NOT NULL,
+      source_type TEXT NOT NULL
+        CHECK (source_type IN ('approved_submission','manual','reversal')),
+      source_id BIGINT,
+      reason TEXT NOT NULL DEFAULT '',
+      reversal_of_id BIGINT REFERENCES mo_creator_point_ledger(id) ON DELETE RESTRICT,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  /* IDEMPOTENCY. One approved submission earns its rule exactly once, however
+     many times the request arrives — a double click, a retry, a browser
+     refresh, two reviewers racing. The database decides, not an
+     if-not-exists-then-insert the next thread can interleave with. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_ledger_source
+                    ON mo_creator_point_ledger(source_type, source_id, rule_id)
+                    WHERE source_id IS NOT NULL AND source_type='approved_submission'`);
+  // A transaction can be reversed once, and never twice.
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_ledger_reversal
+                    ON mo_creator_point_ledger(reversal_of_id) WHERE reversal_of_id IS NOT NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_ledger_cycle ON mo_creator_point_ledger(cycle_id, user_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_ledger_user ON mo_creator_point_ledger(user_id, created_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_ledger_pending ON mo_creator_point_ledger(created_at) WHERE cycle_id IS NULL`);
+
+  /* Which rule an opportunity earns. Additive and nullable: existing
+     opportunities keep working, and an admin says "this Reel role pays the
+     Approved Reel rule" rather than the code guessing from a free-text type. */
+  await pool.query(`ALTER TABLE mo_creator_opportunities
+                    ADD COLUMN IF NOT EXISTS point_rule_id BIGINT REFERENCES mo_creator_point_rules(id)`);
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     CREATOR NETWORK — Phase 5: payouts, the financial ledger, payment
+
+     TWO LEDGERS, TWO JOBS.
+
+       mo_creator_point_ledger      performance. Points, ranking, cycles.
+       mo_creator_financial_ledger  money. Amounts payable, paid, corrected.
+
+     A payout READS points and never writes them. Nothing in this block
+     references mo_creator_point_ledger except as a source to sum, which is
+     what keeps a financial correction from ever becoming a change to what
+     somebody earned.
+
+     Money is NUMERIC end to end. node-postgres returns NUMERIC as a string, so
+     an amount is never a JavaScript float on either leg of the journey, and
+     every arithmetic operation on money happens in Postgres.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /* The rate. ₹ per point, with an effective window, because a rate that
+     changes in October must not restate September.
+
+     NUMERIC(12,4) rather than the (12,2) Nerve uses for amounts: a rate is not
+     an amount, and ₹7.50 and ₹0.0125 per point are both legitimate. The
+     precedent for a finer NUMERIC is mo_ai_requests.estimated_cost. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_payout_rules (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      rate NUMERIC(12,4) NOT NULL CHECK (rate > 0),
+      currency TEXT NOT NULL DEFAULT 'INR',
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      effective_from DATE NOT NULL,
+      effective_to DATE,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT mo_creator_payout_rule_dates CHECK (effective_to IS NULL OR effective_to >= effective_from)
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_payrule_name
+                    ON mo_creator_payout_rules(lower(name))`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_payrule_window
+                    ON mo_creator_payout_rules(effective_from, effective_to) WHERE is_active`);
+
+  /* The payout: one statement for one creator in one cycle.
+
+     Everything that decided the amount is COPIED here at calculation time —
+     the point total, the rate, the rule it came from and the gross it produced.
+     A later rate change, a later point correction and a later cycle edit all
+     leave this row saying exactly what was calculated and when. Nothing
+     recomputes it for display.
+
+     There is deliberately no net_amount column. Net is gross plus whatever the
+     financial ledger holds against this payout, derived on read, for the same
+     reason Phase 4 has no stored point total: a second number is a number that
+     can disagree. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_payouts (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      cycle_id BIGINT NOT NULL REFERENCES mo_creator_cycles(id) ON DELETE RESTRICT,
+      -- The snapshot.
+      points_basis INTEGER NOT NULL,
+      payout_rule_id BIGINT REFERENCES mo_creator_payout_rules(id) ON DELETE RESTRICT,
+      rate NUMERIC(12,4) NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'INR',
+      gross_amount NUMERIC(12,2) NOT NULL,
+      status TEXT NOT NULL DEFAULT 'calculated'
+        CHECK (status IN ('calculated','approved','paid','rejected','voided')),
+      calculated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      calculated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      approved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      approved_at TIMESTAMPTZ,
+      paid_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      paid_at TIMESTAMPTZ,
+      payment_reference TEXT,
+      decision_reason TEXT,
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  /* IDEMPOTENCY. One live payout per creator per cycle, whatever arrives and
+     however often. Ten simultaneous generate requests produce one row because
+     the index says so, not because a read-then-write got lucky.
+
+     Rejected and voided statements are excluded: those are closed outcomes, and
+     a cycle whose payout was rejected must be able to be calculated again. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_payout_one
+                    ON mo_creator_payouts(user_id, cycle_id)
+                    WHERE status NOT IN ('rejected','voided')`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_payout_cycle ON mo_creator_payouts(cycle_id, status)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_payout_user ON mo_creator_payouts(user_id, calculated_at DESC)`);
+
+  /* THE FINANCIAL LEDGER — the source of truth for money.
+
+     Entries are amounts OWED. A payout recognises the liability (+), an
+     adjustment moves it either way, a reversal cancels one entry exactly, and
+     a payment settles it (−). So the sum over a payout is what is still
+     outstanding, and zero means settled — no status field has to be trusted
+     for that, and "approved but unpaid" is a number rather than an opinion.
+
+     Append-only. No endpoint updates or deletes a row here. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_financial_ledger (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      payout_id BIGINT REFERENCES mo_creator_payouts(id) ON DELETE RESTRICT,
+      cycle_id BIGINT REFERENCES mo_creator_cycles(id) ON DELETE RESTRICT,
+      entry_type TEXT NOT NULL
+        CHECK (entry_type IN ('payout','adjustment','reversal','payment')),
+      amount NUMERIC(12,2) NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'INR',
+      description TEXT NOT NULL,
+      /* A safe payment reference only — a UTR, a voucher number, a bank
+         reference. Never a credential: no password, no UPI PIN, no API key. */
+      reference TEXT,
+      reversal_of_id BIGINT REFERENCES mo_creator_financial_ledger(id) ON DELETE RESTRICT,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  /* One liability entry per payout, and one payment per payout. Approving
+     twice cannot recognise the money twice; paying twice cannot send it twice.
+     Both are held by the database rather than by a status check. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_fin_one_payout
+                    ON mo_creator_financial_ledger(payout_id)
+                    WHERE entry_type='payout' AND payout_id IS NOT NULL`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_fin_one_payment
+                    ON mo_creator_financial_ledger(payout_id)
+                    WHERE entry_type='payment' AND payout_id IS NOT NULL`);
+  // An entry is reversed once and never twice.
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_fin_reversal
+                    ON mo_creator_financial_ledger(reversal_of_id) WHERE reversal_of_id IS NOT NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_fin_user ON mo_creator_financial_ledger(user_id, created_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_fin_payout ON mo_creator_financial_ledger(payout_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_fin_cycle ON mo_creator_financial_ledger(cycle_id, entry_type)`);
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     CREATOR NETWORK — Phase 6: recognition and competition
+
+     PHASE 6 DOES NOT OWN PERFORMANCE ACCOUNTING.
+
+     It consumes it. The point ledger stays the source of truth for points and
+     rank; the financial ledger stays the source of truth for money. Nothing in
+     this block stores a point total, a rank, an achievement score or a
+     competition score inside either of them, and nothing in Phase 6 writes to
+     either at all.
+
+     Four concepts, deliberately four tables, because they are not the same
+     thing: an achievement is not a rank, Creator of the Cycle is not "rank #1
+     renamed", and a War Zone score is not a Creator point.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /* What can be earned. A DEFINITION, not an award.
+
+     Criteria are STRUCTURED DATA — a closed set of types plus a number — never
+     an expression, never a string that becomes code or SQL. Adding a criterion
+     means adding a branch to the evaluator, which is the point: an admin
+     configures what is already possible and cannot invent execution. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_achievements (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      code TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      icon TEXT NOT NULL DEFAULT '★',
+      /* LIFETIME, CYCLE and COMPETITION are not interchangeable: "100 approved
+         contents" is earned once ever, "Top 3" is earned per cycle, and a
+         competition badge belongs to one competition. */
+      scope TEXT NOT NULL DEFAULT 'lifetime'
+        CHECK (scope IN ('lifetime','cycle','competition')),
+      criteria_type TEXT NOT NULL DEFAULT 'manual'
+        CHECK (criteria_type IN ('point_threshold','approved_content_count','cycle_rank',
+                                 'creator_of_cycle','competition_result','manual')),
+      criteria_value INTEGER,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      is_seeded BOOLEAN NOT NULL DEFAULT false,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_ach_code ON mo_creator_achievements(code)`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_ach_name ON mo_creator_achievements(lower(name))`);
+
+  /* What was earned. Recognition is history: an award survives the creator
+     leaving the team, going inactive, being suspended or being archived.
+     A mistake is REVOKED — recorded, with a reason and an actor — never
+     deleted. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_achievement_awards (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      achievement_id BIGINT NOT NULL REFERENCES mo_creator_achievements(id) ON DELETE RESTRICT,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      cycle_id BIGINT REFERENCES mo_creator_cycles(id) ON DELETE RESTRICT,
+      source_type TEXT NOT NULL DEFAULT 'manual'
+        CHECK (source_type IN ('auto','manual')),
+      source_id BIGINT,
+      note TEXT NOT NULL DEFAULT '',
+      awarded_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      awarded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      revoked_at TIMESTAMPTZ,
+      revoked_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      revoke_reason TEXT
+    )`);
+  /* IDEMPOTENCY, across all three scopes at once. A lifetime achievement has
+     no cycle and no source, so both COALESCE to 0 and the key is (creator,
+     achievement) — Postgres treats NULLs as distinct, which would otherwise
+     let a lifetime badge be awarded twice. A cycle achievement keys on the
+     cycle, a competition one on the competition.
+
+     Live awards only: a revoked award stays in history and does not stop the
+     same badge being earned properly later. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_ach_award_once
+                    ON mo_creator_achievement_awards
+                       (user_id, achievement_id, COALESCE(cycle_id, 0), COALESCE(source_id, 0))
+                    WHERE revoked_at IS NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_ach_award_user
+                    ON mo_creator_achievement_awards(user_id, awarded_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_ach_award_cycle
+                    ON mo_creator_achievement_awards(cycle_id)`);
+
+  /* CREATOR OF THE CYCLE — a recognition record in its own right.
+
+     Not "rank #1 with a nicer name". Today the rule is the top of the closed
+     cycle, and the row records the rank and the points that justified it so a
+     later point correction cannot rewrite why somebody was recognised. Keeping
+     it separate is what lets the rule change later without rewriting history.
+
+     UNIQUE (cycle_id, user_id), not (cycle_id): a tie means the cycle has two
+     winners and both are named, which is the honest answer and needs no
+     invented tie-breaker. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_cycle_awards (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      cycle_id BIGINT NOT NULL REFERENCES mo_creator_cycles(id) ON DELETE RESTRICT,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      rank_at_award INTEGER NOT NULL,
+      points_at_award INTEGER NOT NULL,
+      criteria TEXT NOT NULL DEFAULT '',
+      awarded_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      awarded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_cycle_award_once
+                    ON mo_creator_cycle_awards(cycle_id, user_id)`);
+
+  /* ── WAR ZONE ───────────────────────────────────────────────────────────
+     A competition is not the leaderboard and not the point ledger. It has its
+     own window, its own participants and its own score, and winning one does
+     not change what anybody has earned in the network. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_competitions (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      rules TEXT NOT NULL DEFAULT '',
+      /* Recognition only. A prize here is words — money belongs to Phase 5's
+         financial architecture and is never created by winning a competition. */
+      recognition TEXT NOT NULL DEFAULT '',
+      starts_at TIMESTAMPTZ NOT NULL,
+      ends_at TIMESTAMPTZ NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft','open','active','completed','cancelled')),
+      scope TEXT NOT NULL DEFAULT 'network' CHECK (scope IN ('network','team')),
+      team_id BIGINT REFERENCES mo_creator_teams(id) ON DELETE RESTRICT,
+      completed_at TIMESTAMPTZ,
+      decision_reason TEXT,
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT mo_creator_comp_window CHECK (ends_at > starts_at),
+      CONSTRAINT mo_creator_comp_scope CHECK (scope <> 'team' OR team_id IS NOT NULL)
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_comp_name ON mo_creator_competitions(lower(name))`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_comp_status ON mo_creator_competitions(status, starts_at DESC)`);
+
+  /* One row per creator per competition — registering twice is the same
+     registration, held by the index rather than by a check. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_competition_participants (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      competition_id BIGINT NOT NULL REFERENCES mo_creator_competitions(id) ON DELETE RESTRICT,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      status TEXT NOT NULL DEFAULT 'registered'
+        CHECK (status IN ('registered','withdrawn','disqualified')),
+      note TEXT NOT NULL DEFAULT '',
+      joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_comp_part_once
+                    ON mo_creator_competition_participants(competition_id, user_id)`);
+
+  /* THE COMPETITION SCORE, AND IT IS NOT A CREATOR POINT.
+
+     Entries sum to a participant's score, the same shape as the point ledger
+     and for the same reason: no stored total to drift, and a correction is a
+     compensating entry rather than an edit. Writing any of this into
+     mo_creator_point_ledger would make a judged contest change somebody's
+     permanent performance record and, through Phase 5, their pay. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_competition_scores (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      competition_id BIGINT NOT NULL REFERENCES mo_creator_competitions(id) ON DELETE RESTRICT,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      score INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      recorded_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_cr_comp_score
+                    ON mo_creator_competition_scores(competition_id, user_id)`);
+
+  /* The result, snapshotted at finalisation: the place and the score exactly
+     as they stood. A score corrected afterwards does not silently rewrite who
+     won, and the competition stays explainable forever. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_creator_competition_results (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      competition_id BIGINT NOT NULL REFERENCES mo_creator_competitions(id) ON DELETE RESTRICT,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      place INTEGER NOT NULL,
+      score INTEGER NOT NULL,
+      result_type TEXT NOT NULL
+        CHECK (result_type IN ('winner','runner_up','finalist','participant')),
+      finalized_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      finalized_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  // One result per creator per competition: finalising twice changes nothing.
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_cr_comp_result_once
+                    ON mo_creator_competition_results(competition_id, user_id)`);
+
+  /* Starter achievements, so the framework is usable on day one rather than an
+     empty screen. Every one is editable and retirable by a Creator Admin, and
+     seeded only when absent so later edits are never overwritten on boot.
+     Thresholds here are starting points, not business policy. */
+  await pool.query(`
+    INSERT INTO mo_creator_achievements (code, name, description, icon, scope, criteria_type, criteria_value, is_seeded)
+    SELECT * FROM (VALUES
+      ('first_content','First Approved Content','Your first piece of content passed review.','🌱',
+       'lifetime','approved_content_count',1,true),
+      ('ten_contents','10 Approved Contents','Ten pieces of approved content.','🎬',
+       'lifetime','approved_content_count',10,true),
+      ('hundred_points','100 Points','A hundred points earned across the network.','💯',
+       'lifetime','point_threshold',100,true),
+      ('top_three_cycle','Top 3 in Cycle','Finished a cycle in the top three.','🥉',
+       'cycle','cycle_rank',3,true),
+      ('creator_of_cycle','Creator of the Cycle','Recognised as Creator of the Cycle.','👑',
+       'cycle','creator_of_cycle',NULL,true),
+      ('war_zone_winner','War Zone Winner','Won a War Zone competition.','⚔️',
+       'competition','competition_result',1,true)
+    ) AS seed(code, name, description, icon, scope, criteria_type, criteria_value, is_seeded)
+     WHERE NOT EXISTS (SELECT 1 FROM mo_creator_achievements a WHERE a.code = seed.code)`);
+
+  /* Phase 8 — the Creator Network's automation rules, in the table Media Ops
+     already uses and on the same five-minute tick. Seeded only when absent,
+     so an operator's toggle is never overwritten on the next boot. */
+  await seedCreatorAutomationRules();
+
+  /* SECURITY — this row is not optional.
+
+     effectiveModules() returns null when a group has no defaults row, and
+     requireModule() reads null as "unrestricted". Without this, a creator would
+     pass EVERY module gate in Media Ops. Seeding the group closed (no modules
+     beyond the network itself) is what makes the vertical deny-by-default at
+     the module layer as well as the role layer.
+
+     Written only when absent, so an administrator's later edits are never
+     overwritten on the next boot. */
+  await pool.query(`
+    INSERT INTO mo_module_defaults (role, modules)
+    SELECT 'creator', '["creator"]'::jsonb
+     WHERE NOT EXISTS (SELECT 1 FROM mo_module_defaults WHERE role='creator')`);
 }
 
 // ── Lookup / reference seed (idempotent, NFR-10 config-driven) ──────────────

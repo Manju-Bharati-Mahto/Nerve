@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
 import { api } from '@/lib/api'
 import type { AppRole, AppTeam } from '@/lib/constants'
-import type { AppUser } from '@/lib/app-types'
+import type { AppUser, CreatorStanding } from '@/lib/app-types'
+import { isActiveCreator } from '@/lib/creator-access'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -13,6 +14,8 @@ export interface Profile {
   avatar_url?: string | null
   // Per-user capability grants — drives capability-gated routes / sidebar entries.
   capabilities?: string[]
+  // Standing on the Creator Network, or null. Read-only routing information.
+  creator?: CreatorStanding | null
 }
 
 interface AuthContextType {
@@ -44,6 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       department: record.department,
       avatar_url: record.avatar_url,
       capabilities: record.capabilities ?? [],
+      creator: record.creator ?? null,
     })
     setRole(record.role)
     setTeam(record.team)
@@ -96,8 +100,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 export const useAuth = () => useContext(AuthContext)
 
-/** Home route based on role + team */
-export function getRoleDashboard(role: AppRole | null, team: AppTeam | null): string {
+/** Home route based on role + team, and Creator Network standing. */
+export function getRoleDashboard(
+  role: AppRole | null,
+  team: AppTeam | null,
+  creator?: CreatorStanding | null,
+): string {
   if (role === 'super_admin')           return '/super-admin/dashboard'
   if (role === 'outreach_manager')      return '/outreach/dashboard'
   if (role === 'outreach_editor')       return '/outreach/video/my-videos'
@@ -110,6 +118,14 @@ export function getRoleDashboard(role: AppRole | null, team: AppTeam | null): st
   // carry institute coverage, so they land there too rather than falling through
   // to the branding dashboard, which is a different product entirely.
   if (team === 'media' || team === 'smc') return '/media'
+  /* The Creator Network is a vertical inside that same app, like SMC. An active
+     member goes there whatever their Nerve role says, because their Nerve role
+     is 'user' and the branches below would otherwise drop all three creator
+     roles — Creator Admin included — onto the Knowledge Hub, whose own guard
+     then refuses them and bounces them back here. That loop rendered a blank
+     page. Checked after the media/smc line so enrolled staff keep their
+     existing way in, and before the generic role branches so it wins. */
+  if (isActiveCreator(creator)) return '/media'
   // An admin on the outreach team is the video workflow's Admin (PRD §4.1),
   // whose home is the workflow dashboard rather than branding's.
   if (role === 'admin')                 return team === 'content' ? '/content/dashboard'   : team === 'design' ? '/design/dashboard' : team === 'outreach' ? '/outreach/video/dashboard' : '/branding/dashboard'

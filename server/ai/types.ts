@@ -171,6 +171,13 @@ export const AI_CAPABILITIES = [
   "events.read",
   "automation.read",  // alerts and system events the rules engine produced
   "smc.read",
+  /* Creator Network (Phase 8). Three reaches, mirroring the vertical's own
+     scope model exactly — a creator's own record, a lead's team, an admin's
+     network — so a tool can never see further than the Creator Network itself
+     would show the same person. */
+  "creator.self",
+  "creator.team",
+  "creator.network",
 ] as const;
 
 export type AiCapability = (typeof AI_CAPABILITIES)[number];
@@ -194,6 +201,9 @@ export const AI_CAPABILITY_SOURCE: Record<AiCapability, string> = {
   "events.read":     "module:projects (CAPS pipeline.view)",
   "automation.read": "isMoAdmin() (CAPS admin.audit)",
   "smc.read":        "isSmcManager() — duty smc_manager (CAPS smc.manage)",
+  "creator.self":    "creatorRoleOf() !== null (an active Creator Network profile)",
+  "creator.team":    "creatorScopeOf() === 'team' — a Team Lead of an active creator team",
+  "creator.network": "isMoAdmin() || creatorRoleOf() === 'creator_admin'",
 };
 
 /**
@@ -222,6 +232,24 @@ export interface AiUserContext {
    *   "own" → work they own, or on projects they own / are assigned to
    */
   projectScope: "all" | "own";
+  /**
+   * How far this user's CREATOR NETWORK visibility reaches, resolved by Nerve's
+   * own creatorScopeOf() before the context is built.
+   *
+   * Separate from projectScope because they are separate verticals with
+   * separate roles: a Media Ops Admin is not automatically a Creator Admin, and
+   * a Creator Team Lead has no Media Ops standing at all. Resolved rather than
+   * derived for the same reason as projectScope — a tool that inspected a role
+   * to work out its own scope would be making an authorisation decision.
+   *
+   *   "none" → not on the Creator Network
+   *   "self" → their own creator record only
+   *   "team" → the creator teams they lead
+   *   "all"  → the whole network
+   */
+  creatorScope: "none" | "self" | "team" | "all";
+  /** The creator teams this user leads. Empty unless creatorScope is "team". */
+  creatorTeamIds: readonly number[];
 }
 
 /** Per-execution context handed to a tool. No database handle, by design. */

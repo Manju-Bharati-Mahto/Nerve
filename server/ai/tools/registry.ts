@@ -16,6 +16,7 @@
    ═══════════════════════════════════════════════════════════════════════════ */
 
 import { AiProviderError } from "../errors.js";
+import { creatorTools } from "./creator-tools.js";
 import { nerveTools } from "./nerve-tools.js";
 import type { AiTool, AiToolDefinition, AiUserContext } from "../types.js";
 
@@ -94,10 +95,14 @@ export class AiToolRegistry {
 /**
  * The registry the application uses.
  *
- * Phase 3 registers the first three real tools. Every one is read-only, every
- * one declares a capability, and none of them can be reached by a user whose
- * resolved capability set does not contain it.
+ * Phase 3 registered the first three Media Ops tools; Phase 8 adds the Creator
+ * Network set. Every one declares a capability, and none can be reached by a
+ * user whose resolved capability set does not contain it — which is how a
+ * creator and a Creator Admin get different assistants out of one registry.
+ *
+ * All of them are read-only but one: creator_send_notification, the single
+ * whitelisted mutation, which cannot act without a signed confirmation.
  */
 export function createAiToolRegistry(): AiToolRegistry {
-  return new AiToolRegistry().registerAll(nerveTools());
+  return new AiToolRegistry().registerAll(nerveTools()).registerAll(creatorTools());
 }

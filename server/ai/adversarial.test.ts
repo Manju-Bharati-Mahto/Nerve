@@ -87,11 +87,21 @@ describe("17. hostile questions cannot reach data that no tool exposes", () => {
 
   it("there is no tool in the whole registry that could return a credential", () => {
     for (const t of registry.listAll()) {
-      expect(t.name).not.toMatch(/password|credential|token|secret|key|contact|email|phone/i);
-      // Every tool is parameterless, so none can be steered toward another user.
-      expect((t.parametersJsonSchema as { properties?: object }).properties ?? {}).toEqual({});
+      /* No tool is NAMED for a credential, and none describes itself as able to
+         return one. `confirm_token` is the exception the regex would otherwise
+         catch: it is a signature this system issues, never a secret it reads. */
+      expect(t.name).not.toMatch(/password|credential|secret|api_?key|contact|email|phone/i);
+      /* No tool advertises returning a secret. "Confirmation token" is
+         deliberately not caught: that is a signature this system issues to
+         bind an action, never a credential it reads out of Nerve. */
+      expect(t.description)
+        .not.toMatch(/password|credential|api key|secret|auth token|access token|bearer/i);
     }
-    expect(registry.listAll()).toHaveLength(3);
+    /* The Media Ops tools stay parameterless, so none can be steered toward
+       another user. The Creator tools take arguments, and their scope is
+       re-checked server-side instead — asserted in the Creator AI suite. */
+    for (const t of registry.listAll().filter((x) => !x.name.startsWith("creator_")))
+      expect((t.parametersJsonSchema as { properties?: object }).properties ?? {}).toEqual({});
   });
 });
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
+import { isActiveCreator } from '@/lib/creator-access'
 import {
   LayoutDashboard, Search, PlusCircle, Users, Download,
   LogOut, BookOpen, MessageSquare, Newspaper,
@@ -222,6 +223,17 @@ const SIDEBAR: Record<string, RoleConfig> = {
   ]),
 }
 
+/* A Creator Network member belongs in the Media Ops app, and getRoleDashboard()
+   sends them there. This exists for the paths that do not go through it — an
+   AppLayout route with no guard of its own, a bookmark, a stale tab — so they
+   get a way back to their own application rather than the generic fallback,
+   whose single "Browse" link is a dead end for somebody who has no Knowledge
+   Hub content. It grants nothing: /media is guarded, and so is every endpoint
+   behind it. */
+const CREATOR_SIDEBAR: RoleConfig = cfg('Creator Network', Sparkles, 'text-cyan-600', 'bg-cyan-100', [
+  { items: [{ path: '/media', label: 'Creator Network', icon: Sparkles }] },
+])
+
 const FALLBACK: RoleConfig = cfg('User', User, 'text-muted-foreground', 'bg-muted', [
   { items: [{ path: '/browse', label: 'Browse', icon: Search }] },
 ])
@@ -242,7 +254,8 @@ export default function AppSidebar() {
   if (team === 'design' && (role === 'user' || role === 'sub_admin' || role === 'admin' || role === 'design_reports_admin' || role === 'task_owner' || role === 'task_manager')) return null
 
   const key = `${role ?? ''}:${team ?? ''}`
-  const config = SIDEBAR[key] ?? FALLBACK
+  const config = SIDEBAR[key]
+    ?? (isActiveCreator(profile?.creator) ? CREATOR_SIDEBAR : FALLBACK)
   const BadgeIcon = config.icon
 
   return (

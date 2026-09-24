@@ -59,8 +59,20 @@ export interface AppUser {
   // Populated by /api/auth/me and /api/users. Optional so existing call sites that
   // don't need it stay quiet — missing means "treat as empty".
   capabilities?: string[];
+  // Standing on the Creator Network, from mo_creator_profiles — null for the
+  // vast majority of users, who are not on it. Sent by /api/auth/me and
+  // /api/auth/login so the client can pick an application; never a grant.
+  creator?: CreatorStanding | null;
   created_at: string;
   updated_at: string;
+}
+
+/** What a person is INSIDE the Creator Network. Deliberately separate from
+    AppRole and AppTeam: Creator roles are their own vocabulary, and a creator
+    is an ordinary Nerve user in every other respect. */
+export interface CreatorStanding {
+  creator_role: "creator_admin" | "team_lead" | "creator";
+  status: "active" | "inactive" | "suspended" | "archived";
 }
 
 export interface CreateEntryInput {

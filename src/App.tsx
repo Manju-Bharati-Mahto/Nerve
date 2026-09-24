@@ -104,7 +104,7 @@ const App = () => (
 
             {/* ── Media Ops — full-screen self-contained app (own shell, no chrome) ── */}
             <Route path="/media" element={
-              <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']} team={['media', 'smc']}>
+              <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'user']} team={['media', 'smc']} allowActiveCreator>
                 <MediaOps />
               </RoleGuard>
             } />
@@ -494,7 +494,7 @@ const App = () => (
 function RootRoute() {
   const { user, role, team, loading } = useAuth()
   if (loading) return null
-  if (user && role) return <Navigate to={getRoleDashboard(role, team)} replace />
+  if (user && role) return <Navigate to={getRoleDashboard(role, team, user.creator)} replace />
   return <LandingPage />
 }
 
