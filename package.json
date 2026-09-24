@@ -14,10 +14,17 @@
     "build": "npm run build:client && npm run build:server",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
+    "audit:read-models": "node scripts/audit-read-model-aliases.mjs",
+    "audit:test-isolation": "node scripts/audit-test-isolation.mjs",
+    "audit:migration-order": "node scripts/audit-migration-order.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json",
     "preview": "vite preview",
     "start:server": "node dist-server/server/index.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:db:setup": "bash ./scripts/test-db-setup.sh",
+    "test:db:reset": "bash ./scripts/test-db-setup.sh --reset",
+    "test:db:migrate": "tsx scripts/test-db-migrate.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
