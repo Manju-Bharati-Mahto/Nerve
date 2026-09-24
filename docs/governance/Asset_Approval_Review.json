@@ -1,0 +1,667 @@
+{
+  "summary": {
+    "rows": 286,
+    "approved": 179,
+    "approved_by_decision": {
+      "CONFIRM_NEW": 177,
+      "CONFIRM_POOLED": 2
+    },
+    "held_pending": 107,
+    "held_by_state": {
+      "PHYSICAL_VERIFICATION": 21,
+      "IDENTITY_DECISION_REQUIRED": 86
+    },
+    "machine_vs_independent_disagreements": 0,
+    "disagreements": [],
+    "scopes_approved": [
+      "MEDIA_CREW=YES",
+      "PID=YES"
+    ],
+    "codes_changed": 0,
+    "serials_written": 0
+  },
+  "held": [
+    {
+      "row": "4",
+      "name": "SONY S3",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is DUPLICATE_RISK, not NEW; a candidate existing asset is still named; review flag: DUPLICATE RISK"
+    },
+    {
+      "row": "5",
+      "name": "SONY S3",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is DUPLICATE_RISK, not NEW; a candidate existing asset is still named; review flag: DUPLICATE RISK"
+    },
+    {
+      "row": "8",
+      "name": "SONY M4",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; source reference \"TOUR\" is an unresolved identity; no internal asset code; review flag: NON-NUMERIC"
+    },
+    {
+      "row": "13",
+      "name": "SONY 35 MM",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    },
+    {
+      "row": "14",
+      "name": "SONY 35 MM",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    },
+    {
+      "row": "16",
+      "name": "SONY 85",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "reconciliation is REQUIRES_REVIEW, not NEW; tracking model is REQUIRES_REVIEW; category unresolved; no internal asset code; review flag: CATEGORY"
+    },
+    {
+      "row": "17",
+      "name": "SONY 24/70",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    },
+    {
+      "row": "18",
+      "name": "SONY 24/70",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    },
+    {
+      "row": "24",
+      "name": "CANON 24/105",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    },
+    {
+      "row": "25",
+      "name": "CANON 24/105",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    },
+    {
+      "row": "31",
+      "name": "SONY CHARGER",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "32",
+      "name": "SONY CHARGER",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "33",
+      "name": "SONY CHARGER",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "34",
+      "name": "CANON CHARGER",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "35",
+      "name": "LUMIX CHARGER",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "51",
+      "name": "PXW Z190",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: NO SOURCE SEQUENCE"
+    },
+    {
+      "row": "52",
+      "name": "PXW Z190 CHARGER",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "58",
+      "name": "2 LANE CONNECTOR",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; source reference \"MANAV\" is an unresolved identity; no internal asset code; review flag: NON-NUMERIC"
+    },
+    {
+      "row": "59",
+      "name": "2 LANE CONNECTOR",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; source reference \"JOVIAN\" is an unresolved identity; no internal asset code; review flag: NON-NUMERIC"
+    },
+    {
+      "row": "60",
+      "name": "SONY EXTRA BATTRAY",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "61",
+      "name": "SONY EXTRA BATTRAY",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "62",
+      "name": "SONY EXTRA BATTRAY",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "63",
+      "name": "SONY EXTRA BATTRAY",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "64",
+      "name": "SONY EXTRA BATTRAY",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "65",
+      "name": "BATTRAY S3 1",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "66",
+      "name": "BATTRAY S3 2",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "67",
+      "name": "BATTRAY M4 1",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "68",
+      "name": "BATTRAY M4 2",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "69",
+      "name": "BATTRAY M4 3 TOUR",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "70",
+      "name": "BATTRAY M4 3 TOUR",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "71",
+      "name": "BATTRAY C2",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "75",
+      "name": "SONY FX 3",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is DUPLICATE_RISK, not NEW; a candidate existing asset is still named; review flag: DUPLICATE RISK"
+    },
+    {
+      "row": "76",
+      "name": "SONY 16/35",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    },
+    {
+      "row": "77",
+      "name": "SONY 85 G MM",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    },
+    {
+      "row": "78",
+      "name": "SONY 24MM",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    },
+    {
+      "row": "79",
+      "name": "SONY 24/70",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    },
+    {
+      "row": "83",
+      "name": "SONY CHARGER",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "84",
+      "name": "FX BATTRAY",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "85",
+      "name": "FX BATTRAY",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "108",
+      "name": "Godox SL 60 II D",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    },
+    {
+      "row": "118",
+      "name": "magic arm",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "119",
+      "name": "magic arm",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "120",
+      "name": "magic arm",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "121",
+      "name": "XLR to AUX (MX)",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "122",
+      "name": "XLR to AUX (MX)",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "123",
+      "name": "XLR to AUX (MX)",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "124",
+      "name": "panasonic cell charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "125",
+      "name": "panasonic cell charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "126",
+      "name": "panasonic cell charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "127",
+      "name": "panasonic cell charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "129",
+      "name": "Zoom H6",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    },
+    {
+      "row": "130",
+      "name": "Zoom H6",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    },
+    {
+      "row": "139",
+      "name": "snoot",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "169",
+      "name": "G4 + 2 MX XLR to AUX",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "170",
+      "name": "G4 + 2 MX XLR to AUX",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "171",
+      "name": "G4 + 2 MX XLR to AUX",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "172",
+      "name": "G4 + 2 MX XLR to AUX",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "173",
+      "name": "Cloths (2 green,1 black , 2 white)",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "174",
+      "name": "Cloths (2 green,1 black , 2 white)",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "175",
+      "name": "Cloths (2 green,1 black , 2 white)",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "176",
+      "name": "Cloths (2 green,1 black , 2 white)",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "177",
+      "name": "Cloths (2 green,1 black , 2 white)",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "178",
+      "name": "big camera bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "179",
+      "name": "big camera bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "180",
+      "name": "big camera bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "181",
+      "name": "big camera bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "182",
+      "name": "big camera bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "183",
+      "name": "big camera bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "184",
+      "name": "big camera bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "185",
+      "name": "sony alpha camera bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "186",
+      "name": "sony alpha camera bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "187",
+      "name": "sony small bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "188",
+      "name": "sony small bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "189",
+      "name": "sony small bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "190",
+      "name": "sony small bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "191",
+      "name": "canon camera bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "192",
+      "name": "canon camera bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "193",
+      "name": "canon camera bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "194",
+      "name": "canon camera bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "195",
+      "name": "canon camera bag",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "228",
+      "name": "Canon 200d charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "229",
+      "name": "Canon 200d charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "230",
+      "name": "Canon 200d charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "231",
+      "name": "Canon 200d charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "232",
+      "name": "Canon 200d charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "233",
+      "name": "Canon 1500DII charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "234",
+      "name": "Canon 1500DII charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "235",
+      "name": "Canon 1500DII charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "236",
+      "name": "Canon 1500DII charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "237",
+      "name": "Canon 1500DII charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "238",
+      "name": "Canon 700D charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "239",
+      "name": "Canon 700D charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "253",
+      "name": "cell charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "254",
+      "name": "cell charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "255",
+      "name": "cell charger",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "272",
+      "name": "Sony ɑ M3",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is DUPLICATE_RISK, not NEW; a candidate existing asset is still named; review flag: DUPLICATE RISK"
+    },
+    {
+      "row": "274",
+      "name": "Sony battery",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "275",
+      "name": "Sony battery",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "276",
+      "name": "Sony battery",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "277",
+      "name": "Sony battery",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "278",
+      "name": "Sony battery",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "279",
+      "name": "Sony battery",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "280",
+      "name": "Sony battery",
+      "state": "IDENTITY_DECISION_REQUIRED",
+      "why": "tracking model is REQUIRES_REVIEW; no internal asset code; review flag: CONSUMABLE/ACCESSORY FAMILY"
+    },
+    {
+      "row": "281",
+      "name": "Sony lens 70-200 mm",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    },
+    {
+      "row": "286",
+      "name": "Sony 16 - 35 mm",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    },
+    {
+      "row": "287",
+      "name": "Sony 85 mm",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    },
+    {
+      "row": "288",
+      "name": "Sony 24mm",
+      "state": "PHYSICAL_VERIFICATION",
+      "why": "reconciliation is POSSIBLE_MATCH, not NEW; a candidate existing asset is still named; review flag: POSSIBLE MATCH"
+    }
+  ]
+}

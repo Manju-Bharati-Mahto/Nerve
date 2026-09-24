@@ -1,0 +1,287 @@
+﻿Inventory,Source Row,Source Equipment Name,Display Equipment Name,Source Sequence,Source Reference,Tracking Model,Quantity,Normalized Category,Internal Asset Code,Manufacturer Serial,Current Nerve Asset ID,Current Nerve Asset Tag,Current Scope,Proposed Scope,Reconciliation Status,Review Flag,Notes
+MEDIA_CREW,4,SONY S3,SONY S3 1,1,,SERIALIZED,,Camera Body,MC-0001,,1 | 2,EQ-CAM-001 | EQ-CAM-002,LEGACY / UNSCOPED,MEDIA_CREW,DUPLICATE_RISK,DUPLICATE RISK — do not import until the unit is identified,"same category (Camera Body), same brand (sony) and same numbers (3); 2 existing assets fit — which physical unit this row is cannot be told from the source"
+MEDIA_CREW,5,SONY S3,SONY S3 2,2,,SERIALIZED,,Camera Body,MC-0002,,1 | 2,EQ-CAM-001 | EQ-CAM-002,LEGACY / UNSCOPED,MEDIA_CREW,DUPLICATE_RISK,DUPLICATE RISK — do not import until the unit is identified,"same category (Camera Body), same brand (sony) and same numbers (3); 2 existing assets fit — which physical unit this row is cannot be told from the source"
+MEDIA_CREW,6,SONY M4,SONY M4 1,1,,SERIALIZED,,Camera Body,MC-0003,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,7,SONY M4,SONY M4 2,2,,SERIALIZED,,Camera Body,MC-0004,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,8,SONY M4,SONY M4,,TOUR,REQUIRES_REVIEW,,Camera Body,,,,,,MEDIA_CREW,NEW,"NON-NUMERIC SOURCE VALUE (""TOUR"") — preserved as source_reference, NOT a serial",no existing Nerve asset resembles this name
+MEDIA_CREW,9,SONY C2,SONY C2 1,1,,SERIALIZED,,Camera Body,MC-0005,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,10,SONY  ZEV,SONY  ZEV 1,1,,SERIALIZED,,Camera Body,MC-0006,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,11,BLACKMAGIC,BLACKMAGIC 1,1,,SERIALIZED,,Camera Body,MC-0007,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,12,LUMIX,LUMIX 1,1,,SERIALIZED,,Camera Body,MC-0008,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,13,SONY 35 MM,SONY 35 MM 1,1,,SERIALIZED,,Lens,MC-0009,,10,EQ-LEN-003,LEGACY / UNSCOPED,MEDIA_CREW,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"same category (Lens), same brand (sony) and same numbers (35); no manufacturer serial on the source side, so identity is unconfirmed"
+MEDIA_CREW,14,SONY 35 MM,SONY 35 MM 2,2,,SERIALIZED,,Lens,MC-0010,,10,EQ-LEN-003,LEGACY / UNSCOPED,MEDIA_CREW,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"same category (Lens), same brand (sony) and same numbers (35); no manufacturer serial on the source side, so identity is unconfirmed"
+MEDIA_CREW,15,SONY 50 1.8,SONY 50 1.8 1,1,,SERIALIZED,,Lens,MC-0011,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,16,SONY 85,SONY 85 1,1,,REQUIRES_REVIEW,,REVIEW,,,,,,MEDIA_CREW,REQUIRES_REVIEW,CATEGORY NOT CONFIDENTLY RESOLVED | CATEGORY REQUIRES REVIEW,"category unresolved, so no reconciliation was attempted"
+MEDIA_CREW,17,SONY 24/70,SONY 24/70 1,1,,SERIALIZED,,Lens,MC-0012,,8,EQ-LEN-001,LEGACY / UNSCOPED,MEDIA_CREW,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"same category (Lens), same brand (sony) and same numbers (24, 70); no manufacturer serial on the source side, so identity is unconfirmed"
+MEDIA_CREW,18,SONY 24/70,SONY 24/70 2,2,,SERIALIZED,,Lens,MC-0013,,8,EQ-LEN-001,LEGACY / UNSCOPED,MEDIA_CREW,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"same category (Lens), same brand (sony) and same numbers (24, 70); no manufacturer serial on the source side, so identity is unconfirmed"
+MEDIA_CREW,19,SONY 24*105,SONY 24*105 1,1,,SERIALIZED,,Lens,MC-0014,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,20,SAMYANG 18 MM,SAMYANG 18 MM 1,1,,SERIALIZED,,Lens,MC-0015,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,21,SAMYANG 18 MM,SAMYANG 18 MM 2,2,,SERIALIZED,,Lens,MC-0016,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,22,SAMYANG 18 MM,SAMYANG 18 MM 3,3,,SERIALIZED,,Lens,MC-0017,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,23,SAMYANG 50 1.4,SAMYANG 50 1.4 1,1,,SERIALIZED,,Lens,MC-0018,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,24,CANON 24/105,CANON 24/105 1,1,,SERIALIZED,,Lens,MC-0019,,12,EQ-LEN-005,LEGACY / UNSCOPED,MEDIA_CREW,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"same category (Lens), same brand (canon) and same numbers (24, 105); no manufacturer serial on the source side, so identity is unconfirmed"
+MEDIA_CREW,25,CANON 24/105,CANON 24/105 2,2,,SERIALIZED,,Lens,MC-0020,,12,EQ-LEN-005,LEGACY / UNSCOPED,MEDIA_CREW,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"same category (Lens), same brand (canon) and same numbers (24, 105); no manufacturer serial on the source side, so identity is unconfirmed"
+MEDIA_CREW,26,CANON 100/400,CANON 100/400 1,1,,SERIALIZED,,Lens,MC-0021,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,27,CANON 70/200,CANON 70/200 1,1,,SERIALIZED,,Lens,MC-0022,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,28,HOLLYLAND MIC,HOLLYLAND MIC 1,1,,SERIALIZED,,Microphone / Wireless Audio,MC-0023,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,29,HOLLYLAND MIC,HOLLYLAND MIC 2,2,,SERIALIZED,,Microphone / Wireless Audio,MC-0024,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,30,HOLLYLAND MIC,HOLLYLAND MIC 3,3,,SERIALIZED,,Microphone / Wireless Audio,MC-0025,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,31,SONY CHARGER,SONY CHARGER 1,1,,REQUIRES_REVIEW,,Charger,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,32,SONY CHARGER,SONY CHARGER 2,2,,REQUIRES_REVIEW,,Charger,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,33,SONY CHARGER,SONY CHARGER 3,3,,REQUIRES_REVIEW,,Charger,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,34,CANON CHARGER,CANON CHARGER 1,1,,REQUIRES_REVIEW,,Charger,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,35,LUMIX CHARGER,LUMIX CHARGER 1,1,,REQUIRES_REVIEW,,Charger,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,36,TRAYPODE MINI,TRAYPODE MINI 1,1,,SERIALIZED,,Tripod / Support,MC-0026,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,37,TRAYPODE MINI,TRAYPODE MINI 2,2,,SERIALIZED,,Tripod / Support,MC-0027,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,38,TRAYPODE MINI,TRAYPODE MINI 3,3,,SERIALIZED,,Tripod / Support,MC-0028,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,39,GIMBLE,GIMBLE 1,1,,SERIALIZED,,Gimbal,MC-0029,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,40,GIMBLE,GIMBLE 2,2,,SERIALIZED,,Gimbal,MC-0030,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,41,LENS CONVTER,LENS CONVTER 1,1,,SERIALIZED,,Lens Converter,MC-0031,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,42,NINJA SCREEN,NINJA SCREEN 1,1,,SERIALIZED,,Monitor / Recorder,MC-0032,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,43,YOLO LIVE,YOLO LIVE 1,1,,SERIALIZED,,Monitor / Recorder,MC-0033,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,44,WEB CAME OBSBOT,WEB CAME OBSBOT 1,1,,SERIALIZED,,Webcam,MC-0034,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,45,WIRELESS HOLLYLAND,WIRELESS HOLLYLAND 1,1,,SERIALIZED,,Microphone / Wireless Audio,MC-0035,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,46,INSTA 360,INSTA 360 1,1,,SERIALIZED,,360 Camera,MC-0036,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,47,DRONE MAVIC 4PRO,DRONE MAVIC 4PRO 1,1,,SERIALIZED,,Drone,MC-0037,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,48,BOYA MICE,BOYA MICE 1,1,,SERIALIZED,,Microphone / Wireless Audio,MC-0038,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,49,LC LIGHT,LC LIGHT 1,1,,SERIALIZED,,Light,MC-0039,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,50,LC LIGHT,LC LIGHT 2,2,,SERIALIZED,,Light,MC-0040,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,51,PXW Z190,PXW Z190,,,REQUIRES_REVIEW,,Camera Body,,,,,,MEDIA_CREW,NEW,NO SOURCE SEQUENCE — unit identity and count are both unstated,no existing Nerve asset resembles this name
+MEDIA_CREW,52,PXW Z190 CHARGER,PXW Z190 CHARGER 1,1,,REQUIRES_REVIEW,,Charger,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,53,MOBILE  RODE NEW,MOBILE  RODE NEW 1,1,,SERIALIZED,,Microphone / Wireless Audio,MC-0041,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,54,HOLLYLAND MIC MOBILE,HOLLYLAND MIC MOBILE 1,1,,SERIALIZED,,Microphone / Wireless Audio,MC-0042,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,55,HOLLYLAND MIC MOBILE,HOLLYLAND MIC MOBILE 2,2,,SERIALIZED,,Microphone / Wireless Audio,MC-0043,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,56,HOLLYLAND MIC MOBILE,HOLLYLAND MIC MOBILE 3,3,,SERIALIZED,,Microphone / Wireless Audio,MC-0044,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,57,HOLLYLAND MIC MOBILE,HOLLYLAND MIC MOBILE 4,4,,SERIALIZED,,Microphone / Wireless Audio,MC-0045,,,,,MEDIA_CREW,NEW,,no existing Nerve asset resembles this name
+MEDIA_CREW,58,2 LANE CONNECTOR,2 LANE CONNECTOR,,MANAV,REQUIRES_REVIEW,,Cable / Adapter,,,,,,MEDIA_CREW,NEW,"NON-NUMERIC SOURCE VALUE (""MANAV"") — preserved as source_reference, NOT a serial",no existing Nerve asset resembles this name
+MEDIA_CREW,59,2 LANE CONNECTOR,2 LANE CONNECTOR,,JOVIAN,REQUIRES_REVIEW,,Cable / Adapter,,,,,,MEDIA_CREW,NEW,"NON-NUMERIC SOURCE VALUE (""JOVIAN"") — preserved as source_reference, NOT a serial",no existing Nerve asset resembles this name
+MEDIA_CREW,60,SONY EXTRA BATTRAY,SONY EXTRA BATTRAY 1,1,,REQUIRES_REVIEW,,Battery / Cell,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,61,SONY EXTRA BATTRAY,SONY EXTRA BATTRAY 2,2,,REQUIRES_REVIEW,,Battery / Cell,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,62,SONY EXTRA BATTRAY,SONY EXTRA BATTRAY 3,3,,REQUIRES_REVIEW,,Battery / Cell,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,63,SONY EXTRA BATTRAY,SONY EXTRA BATTRAY 4,4,,REQUIRES_REVIEW,,Battery / Cell,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,64,SONY EXTRA BATTRAY,SONY EXTRA BATTRAY 5,5,,REQUIRES_REVIEW,,Battery / Cell,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,65,BATTRAY S3 1,BATTRAY S3 1 1,1,,REQUIRES_REVIEW,,Battery / Cell,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,66,BATTRAY S3 2,BATTRAY S3 2 2,2,,REQUIRES_REVIEW,,Battery / Cell,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,67,BATTRAY M4 1,BATTRAY M4 1 1,1,,REQUIRES_REVIEW,,Battery / Cell,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,68,BATTRAY M4 2,BATTRAY M4 2 2,2,,REQUIRES_REVIEW,,Battery / Cell,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,69,BATTRAY M4 3 TOUR,BATTRAY M4 3 TOUR 3,3,,REQUIRES_REVIEW,,Battery / Cell,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,70,BATTRAY M4 3 TOUR,BATTRAY M4 3 TOUR 4,4,,REQUIRES_REVIEW,,Battery / Cell,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+MEDIA_CREW,71,BATTRAY C2,BATTRAY C2 1,1,,REQUIRES_REVIEW,,Battery / Cell,,,,,,MEDIA_CREW,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,75,SONY FX 3,SONY FX 3 1,1,,SERIALIZED,,Camera Body,PID-0001,,1 | 2,EQ-CAM-001 | EQ-CAM-002,LEGACY / UNSCOPED,PID,DUPLICATE_RISK,DUPLICATE RISK — do not import until the unit is identified,name matches once spacing and punctuation are ignored; 2 existing assets fit — which physical unit this row is cannot be told from the source
+PID,76,SONY 16/35,SONY 16/35 1,1,,SERIALIZED,,Lens,PID-0002,,10,EQ-LEN-003,LEGACY / UNSCOPED,PID,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"same category (Lens), same brand (sony) and same numbers (16, 35); no manufacturer serial on the source side, so identity is unconfirmed"
+PID,77,SONY 85 G MM,SONY 85 G MM 1,1,,SERIALIZED,,Lens,PID-0003,,11,EQ-LEN-004,LEGACY / UNSCOPED,PID,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"same category (Lens), same brand (sony) and same numbers (85); no manufacturer serial on the source side, so identity is unconfirmed"
+PID,78,SONY 24MM,SONY 24MM 1,1,,SERIALIZED,,Lens,PID-0004,,8,EQ-LEN-001,LEGACY / UNSCOPED,PID,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"same category (Lens), same brand (sony) and same numbers (24); no manufacturer serial on the source side, so identity is unconfirmed"
+PID,79,SONY 24/70,SONY 24/70 1,1,,SERIALIZED,,Lens,PID-0005,,8,EQ-LEN-001,LEGACY / UNSCOPED,PID,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"same category (Lens), same brand (sony) and same numbers (24, 70); no manufacturer serial on the source side, so identity is unconfirmed"
+PID,80,SIGMA 50 MM,SIGMA 50 MM 1,1,,SERIALIZED,,Lens,PID-0006,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,81,SIGMA 50 MM,SIGMA 50 MM 2,2,,SERIALIZED,,Lens,PID-0007,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,82,SAMYANG 50 1.4,SAMYANG 50 1.4 1,1,,SERIALIZED,,Lens,PID-0008,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,83,SONY CHARGER,SONY CHARGER 1,1,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,84,FX BATTRAY,FX BATTRAY 1,1,,REQUIRES_REVIEW,,Battery / Cell,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,85,FX BATTRAY,FX BATTRAY 2,2,,REQUIRES_REVIEW,,Battery / Cell,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,86,RS3(JMC),RS3(JMC) 1,1,,SERIALIZED,,Gimbal,PID-0009,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,87,RS4 PRO( FTV),RS4 PRO( FTV) 1,1,,SERIALIZED,,Gimbal,PID-0010,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,88,TRYPODE mini ornge,TRYPODE mini ornge 1,1,,SERIALIZED,,Tripod / Support,PID-0011,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,89,TRYPODE mini ornge,TRYPODE mini ornge 2,2,,SERIALIZED,,Tripod / Support,PID-0012,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,90,TRYPODE mini ornge,TRYPODE mini ornge 3,3,,SERIALIZED,,Tripod / Support,PID-0013,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,91,TRYPODE mini ornge,TRYPODE mini ornge 4,4,,SERIALIZED,,Tripod / Support,PID-0014,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,92,TELEPROMPTER NEW,TELEPROMPTER NEW 1,1,,SERIALIZED,,Teleprompter,PID-0015,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,93,TELEPROMPTER OLD,TELEPROMPTER OLD 2,2,,SERIALIZED,,Teleprompter,PID-0016,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,94,AMRON 300 LIGHT,AMRON 300 LIGHT 1,1,,SERIALIZED,,Light,PID-0017,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,95,AMRON 300 LIGHT,AMRON 300 LIGHT 2,2,,SERIALIZED,,Light,PID-0018,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,96,NOVA PANNEL,NOVA PANNEL 1,1,,SERIALIZED,,Light,PID-0019,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,97,NOVA PANNEL,NOVA PANNEL 2,2,,SERIALIZED,,Light,PID-0020,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,98,BABY LIGHT,BABY LIGHT 1,1,,SERIALIZED,,Light,PID-0021,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,99,BABY LIGHT,BABY LIGHT 2,2,,SERIALIZED,,Light,PID-0022,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,100,BABY LIGHT,BABY LIGHT 3,3,,SERIALIZED,,Light,PID-0023,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,101,BABY LIGHT,BABY LIGHT 4,4,,SERIALIZED,,Light,PID-0024,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,102,Digitek video light,Digitek video light 1,1,,SERIALIZED,,Light,PID-0025,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,103,Digitek video light,Digitek video light 2,2,,SERIALIZED,,Light,PID-0026,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,104,Digitek video light,Digitek video light 3,3,,SERIALIZED,,Light,PID-0027,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,105,Digitek video light,Digitek video light 4,4,,SERIALIZED,,Light,PID-0028,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,106,Digitek video light,Digitek video light 5,5,,SERIALIZED,,Light,PID-0029,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,107,Digitek video light,Digitek video light 6,6,,SERIALIZED,,Light,PID-0030,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,108,Godox SL 60 II D,Godox SL 60 II D 1,1,,SERIALIZED,,Light,PID-0031,,21,EQ-LGT-004,LEGACY / UNSCOPED,PID,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"same category (Light), same brand (godox) and same numbers (60); no manufacturer serial on the source side, so identity is unconfirmed"
+PID,109,Sennhesier ENG set,Sennhesier ENG set 1,1,,SERIALIZED,,Microphone / Wireless Audio,PID-0032,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,110,sennhesier Profile wireless,sennhesier Profile wireless 1,1,,SERIALIZED,,Microphone / Wireless Audio,PID-0033,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,111,Sennhesier MKE 600 shotgun mic,Sennhesier MKE 600 shotgun mic 1,1,,SERIALIZED,,Microphone / Wireless Audio,PID-0034,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,112,Arturia minifuse 2,Arturia minifuse 2 1,1,,SERIALIZED,,Audio Interface,PID-0035,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,113,sony E70-350mm,sony E70-350mm 1,1,,SERIALIZED,,Lens,PID-0036,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,114,sony E70-350mm,sony E70-350mm 2,2,,SERIALIZED,,Lens,PID-0037,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,115,sony EPZ 18-105mm,sony EPZ 18-105mm 1,1,,SERIALIZED,,Lens,PID-0038,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,116,sony EPZ 18-105mm,sony EPZ 18-105mm 2,2,,SERIALIZED,,Lens,PID-0039,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,117,sony EPZ 18-105mm,sony EPZ 18-105mm 3,3,,SERIALIZED,,Lens,PID-0040,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,118,magic arm,magic arm 1,1,,REQUIRES_REVIEW,,Support Accessory,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,119,magic arm,magic arm 2,2,,REQUIRES_REVIEW,,Support Accessory,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,120,magic arm,magic arm 3,3,,REQUIRES_REVIEW,,Support Accessory,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,121,XLR to AUX (MX),XLR to AUX (MX) 1,1,,REQUIRES_REVIEW,,Cable / Adapter,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,122,XLR to AUX (MX),XLR to AUX (MX) 2,2,,REQUIRES_REVIEW,,Cable / Adapter,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,123,XLR to AUX (MX),XLR to AUX (MX) 3,3,,REQUIRES_REVIEW,,Cable / Adapter,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,124,panasonic cell charger,panasonic cell charger 1,1,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,125,panasonic cell charger,panasonic cell charger 2,2,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,126,panasonic cell charger,panasonic cell charger 3,3,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,127,panasonic cell charger,panasonic cell charger 4,4,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,128,panasonic rechargeable cell,panasonic rechargeable cell,,1 to 48,POOLED,48,Battery / Cell,PID-0041,,,,,PID,NEW,QUANTITY RANGE IN SOURCE (1 to 48) — not exploded into individual assets,no existing Nerve asset resembles this name
+PID,129,Zoom H6,Zoom H6 1,1,,SERIALIZED,,Audio Recorder,PID-0042,,25,EQ-AUD-001,LEGACY / UNSCOPED,PID,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"name matches once spacing and punctuation are ignored; no manufacturer serial on the source side, so identity is unconfirmed"
+PID,130,Zoom H6,Zoom H6 2,2,,SERIALIZED,,Audio Recorder,PID-0043,,25,EQ-AUD-001,LEGACY / UNSCOPED,PID,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"name matches once spacing and punctuation are ignored; no manufacturer serial on the source side, so identity is unconfirmed"
+PID,131,Zoom H7,Zoom H7 3,3,,SERIALIZED,,Audio Recorder,PID-0044,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,132,Zoom H8,Zoom H8 4,4,,SERIALIZED,,Audio Recorder,PID-0045,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,133,Zoom H9,Zoom H9 5,5,,SERIALIZED,,Audio Recorder,PID-0046,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,134,AKG P170 Condenser mic,AKG P170 Condenser mic 1,1,,SERIALIZED,,Microphone / Wireless Audio,PID-0047,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,135,AKG P170 Condenser mic,AKG P170 Condenser mic 2,2,,SERIALIZED,,Microphone / Wireless Audio,PID-0048,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,136,Mixpre-6II,Mixpre-6II 1,1,,SERIALIZED,,Audio Recorder,PID-0049,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,137,AHUJA UTP-30 mic,AHUJA UTP-30 mic 1,1,,SERIALIZED,,Microphone / Wireless Audio,PID-0050,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,138,AHUJA UTP-30 mic,AHUJA UTP-30 mic 2,2,,SERIALIZED,,Microphone / Wireless Audio,PID-0051,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,139,snoot,snoot 1,1,,REQUIRES_REVIEW,,Light Modifier,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,140,light meter big,light meter big 1,1,,SERIALIZED,,Light Meter,PID-0052,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,141,light meter small,light meter small 1,1,,SERIALIZED,,Light Meter,PID-0053,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,142,Shure SM57 mic,Shure SM57 mic 1,1,,SERIALIZED,,Microphone / Wireless Audio,PID-0054,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,143,Shure SM57 mic,Shure SM57 mic 2,2,,SERIALIZED,,Microphone / Wireless Audio,PID-0055,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,144,Shure SM58 mic,Shure SM58 mic 1,1,,SERIALIZED,,Microphone / Wireless Audio,PID-0056,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,145,Shure SM58 mic,Shure SM58 mic 2,2,,SERIALIZED,,Microphone / Wireless Audio,PID-0057,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,146,sennhesier XS wireless Digital,sennhesier XS wireless Digital 1,1,,SERIALIZED,,Microphone / Wireless Audio,PID-0058,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,147,sennhesier XS wireless Digital,sennhesier XS wireless Digital 2,2,,SERIALIZED,,Microphone / Wireless Audio,PID-0059,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,148,sennhesier MKH 416 boom mic,sennhesier MKH 416 boom mic 1,1,,SERIALIZED,,Microphone / Wireless Audio,PID-0060,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,149,sennhesier MKH 416 boom mic,sennhesier MKH 416 boom mic 2,2,,SERIALIZED,,Microphone / Wireless Audio,PID-0061,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,150,NTG 4,NTG 4 1,1,,SERIALIZED,,Microphone / Wireless Audio,PID-0062,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,151,NTG 4,NTG 4 2,2,,SERIALIZED,,Microphone / Wireless Audio,PID-0063,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,152,NTG 2,NTG 2 1,1,,SERIALIZED,,Microphone / Wireless Audio,PID-0064,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,153,NTG 2,NTG 2 2,2,,SERIALIZED,,Microphone / Wireless Audio,PID-0065,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,154,Wacom digital display,Wacom digital display 1,1,,SERIALIZED,,Graphics Tablet,PID-0066,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,155,Wacom digital display,Wacom digital display 2,2,,SERIALIZED,,Graphics Tablet,PID-0067,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,156,Wacom digital display,Wacom digital display 3,3,,SERIALIZED,,Graphics Tablet,PID-0068,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,157,Wacom digital display,Wacom digital display 4,4,,SERIALIZED,,Graphics Tablet,PID-0069,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,158,Wacom digital display,Wacom digital display 5,5,,SERIALIZED,,Graphics Tablet,PID-0070,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,159,Wacom Intuos digital pad,Wacom Intuos digital pad 1,1,,SERIALIZED,,Graphics Tablet,PID-0071,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,160,Wacom Intuos digital pad,Wacom Intuos digital pad 2,2,,SERIALIZED,,Graphics Tablet,PID-0072,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,161,Wacom Intuos digital pad,Wacom Intuos digital pad 3,3,,SERIALIZED,,Graphics Tablet,PID-0073,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,162,Wacom Intuos digital pad,Wacom Intuos digital pad 4,4,,SERIALIZED,,Graphics Tablet,PID-0074,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,163,Wacom Intuos digital pad,Wacom Intuos digital pad 5,5,,SERIALIZED,,Graphics Tablet,PID-0075,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,164,Wacom Intuos digital pad,Wacom Intuos digital pad 6,6,,SERIALIZED,,Graphics Tablet,PID-0076,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,165,Wacom Intuos digital pad,Wacom Intuos digital pad 7,7,,SERIALIZED,,Graphics Tablet,PID-0077,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,166,Wacom Intuos digital pad,Wacom Intuos digital pad 8,8,,SERIALIZED,,Graphics Tablet,PID-0078,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,167,Wacom Intuos digital pad,Wacom Intuos digital pad 9,9,,SERIALIZED,,Graphics Tablet,PID-0079,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,168,Wacom Intuos digital pad,Wacom Intuos digital pad 10,10,,SERIALIZED,,Graphics Tablet,PID-0080,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,169,G4 + 2 MX XLR to AUX,G4 + 2 MX XLR to AUX 1,1,,REQUIRES_REVIEW,,Cable / Adapter,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,170,G4 + 2 MX XLR to AUX,G4 + 2 MX XLR to AUX 2,2,,REQUIRES_REVIEW,,Cable / Adapter,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,171,G4 + 2 MX XLR to AUX,G4 + 2 MX XLR to AUX 3,3,,REQUIRES_REVIEW,,Cable / Adapter,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,172,G4 + 2 MX XLR to AUX,G4 + 2 MX XLR to AUX 4,4,,REQUIRES_REVIEW,,Cable / Adapter,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,173,"Cloths (2 green,1 black , 2 white)","Cloths (2 green,1 black , 2 white) 1",1,,REQUIRES_REVIEW,,Cloth / Backdrop,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,174,"Cloths (2 green,1 black , 2 white)","Cloths (2 green,1 black , 2 white) 2",2,,REQUIRES_REVIEW,,Cloth / Backdrop,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,175,"Cloths (2 green,1 black , 2 white)","Cloths (2 green,1 black , 2 white) 3",3,,REQUIRES_REVIEW,,Cloth / Backdrop,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,176,"Cloths (2 green,1 black , 2 white)","Cloths (2 green,1 black , 2 white) 4",4,,REQUIRES_REVIEW,,Cloth / Backdrop,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,177,"Cloths (2 green,1 black , 2 white)","Cloths (2 green,1 black , 2 white) 5",5,,REQUIRES_REVIEW,,Cloth / Backdrop,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,178,big camera bag,big camera bag 1,1,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,179,big camera bag,big camera bag 2,2,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,180,big camera bag,big camera bag 3,3,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,181,big camera bag,big camera bag 4,4,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,182,big camera bag,big camera bag 5,5,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,183,big camera bag,big camera bag 6,6,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,184,big camera bag,big camera bag 7,7,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,185,sony alpha camera bag,sony alpha camera bag 1,1,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,186,sony alpha camera bag,sony alpha camera bag 2,2,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,187,sony small bag,sony small bag 1,1,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,188,sony small bag,sony small bag 2,2,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,189,sony small bag,sony small bag 3,3,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,190,sony small bag,sony small bag 4,4,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,191,canon camera bag,canon camera bag 1,1,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,192,canon camera bag,canon camera bag 2,2,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,193,canon camera bag,canon camera bag 3,3,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,194,canon camera bag,canon camera bag 4,4,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,195,canon camera bag,canon camera bag 5,5,,REQUIRES_REVIEW,,Bag,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,196,Canon 200DII,Canon 200DII 1,1,,SERIALIZED,,Camera Body,PID-0081,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,197,Canon 200DII,Canon 200DII 2,2,,SERIALIZED,,Camera Body,PID-0082,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,198,Canon 200DII,Canon 200DII 3,3,,SERIALIZED,,Camera Body,PID-0083,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,199,Canon 200DII,Canon 200DII 4,4,,SERIALIZED,,Camera Body,PID-0084,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,200,Canon 200DII,Canon 200DII 5,5,,SERIALIZED,,Camera Body,PID-0085,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,201,Canon 1500DII,Canon 1500DII 1,1,,SERIALIZED,,Camera Body,PID-0086,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,202,Canon 1500DII,Canon 1500DII 2,2,,SERIALIZED,,Camera Body,PID-0087,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,203,Canon 1500DII,Canon 1500DII 3,3,,SERIALIZED,,Camera Body,PID-0088,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,204,Canon 1500DII,Canon 1500DII 4,4,,SERIALIZED,,Camera Body,PID-0089,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,205,Canon 700D,Canon 700D 1,1,,SERIALIZED,,Camera Body,PID-0090,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,206,Canon lens 55-250 mm,Canon lens 55-250 mm 1,1,,SERIALIZED,,Lens,PID-0091,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,207,Canon lens 55-250 mm,Canon lens 55-250 mm 2,2,,SERIALIZED,,Lens,PID-0092,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,208,Canon lens 55-250 mm,Canon lens 55-250 mm 3,3,,SERIALIZED,,Lens,PID-0093,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,209,Canon lens 55-250 mm,Canon lens 55-250 mm 4,4,,SERIALIZED,,Lens,PID-0094,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,210,Canon lens 55-250 mm,Canon lens 55-250 mm 5,5,,SERIALIZED,,Lens,PID-0095,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,211,Canon lens 55-250 mm,Canon lens 55-250 mm 6,6,,SERIALIZED,,Lens,PID-0096,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,212,Canon lens 55-250 mm,Canon lens 55-250 mm 7,7,,SERIALIZED,,Lens,PID-0097,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,213,Canon lens macro 35 mm,Canon lens macro 35 mm 1,1,,SERIALIZED,,Lens,PID-0098,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,214,Canon lens macro 10-18 mm,Canon lens macro 10-18 mm 1,1,,SERIALIZED,,Lens,PID-0099,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,215,Canon lens 50 mm,Canon lens 50 mm 1,1,,SERIALIZED,,Lens,PID-0100,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,216,Canon lens macro 100 mm,Canon lens macro 100 mm 1,1,,SERIALIZED,,Lens,PID-0101,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,217,Canon lens 18-55 mm,Canon lens 18-55 mm 1,1,,SERIALIZED,,Lens,PID-0102,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,218,Canon lens 18-55 mm,Canon lens 18-55 mm 2,2,,SERIALIZED,,Lens,PID-0103,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,219,Canon lens 18-55 mm,Canon lens 18-55 mm 3,3,,SERIALIZED,,Lens,PID-0104,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,220,Canon lens 18-55 mm,Canon lens 18-55 mm 4,4,,SERIALIZED,,Lens,PID-0105,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,221,Canon lens 18-55 mm,Canon lens 18-55 mm 5,5,,SERIALIZED,,Lens,PID-0106,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,222,Canon lens 18-55 mm,Canon lens 18-55 mm 6,6,,SERIALIZED,,Lens,PID-0107,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,223,Canon lens 18-55 mm,Canon lens 18-55 mm 7,7,,SERIALIZED,,Lens,PID-0108,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,224,Canon lens 18-55 mm,Canon lens 18-55 mm 8,8,,SERIALIZED,,Lens,PID-0109,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,225,Canon lens 18-55 mm,Canon lens 18-55 mm 9,9,,SERIALIZED,,Lens,PID-0110,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,226,Canon lens 18-55 mm,Canon lens 18-55 mm 10,10,,SERIALIZED,,Lens,PID-0111,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,227,Canon lens 18-55 mm,Canon lens 18-55 mm 11,11,,SERIALIZED,,Lens,PID-0112,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,228,Canon 200d charger,Canon 200d charger 1,1,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,229,Canon 200d charger,Canon 200d charger 2,2,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,230,Canon 200d charger,Canon 200d charger 3,3,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,231,Canon 200d charger,Canon 200d charger 4,4,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,232,Canon 200d charger,Canon 200d charger 5,5,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,233,Canon 1500DII charger,Canon 1500DII charger 1,1,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,234,Canon 1500DII charger,Canon 1500DII charger 2,2,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,235,Canon 1500DII charger,Canon 1500DII charger 3,3,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,236,Canon 1500DII charger,Canon 1500DII charger 4,4,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,237,Canon 1500DII charger,Canon 1500DII charger 5,5,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,238,Canon 700D charger,Canon 700D charger 1,1,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,239,Canon 700D charger,Canon 700D charger 2,2,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,240,boom rod,boom rod 1,1,,SERIALIZED,,Tripod / Support,PID-0113,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,241,boom rod,boom rod 2,2,,SERIALIZED,,Tripod / Support,PID-0114,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,242,boom rod,boom rod 3,3,,SERIALIZED,,Tripod / Support,PID-0115,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,243,boom rod,boom rod 4,4,,SERIALIZED,,Tripod / Support,PID-0116,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,244,boom rod,boom rod 5,5,,SERIALIZED,,Tripod / Support,PID-0117,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,245,digitek tripod small,digitek tripod small 1,1,,SERIALIZED,,Tripod / Support,PID-0118,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,246,digitek tripod small,digitek tripod small 2,2,,SERIALIZED,,Tripod / Support,PID-0119,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,247,e-image tripod,e-image tripod 1,1,,SERIALIZED,,Tripod / Support,PID-0120,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,248,Manfrotto tripod,Manfrotto tripod 1,1,,SERIALIZED,,Tripod / Support,PID-0121,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,249,shoulder rig,shoulder rig 1,1,,SERIALIZED,,Tripod / Support,PID-0122,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,250,camera slider kit big,camera slider kit big 1,1,,SERIALIZED,,Tripod / Support,PID-0123,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,251,camera slider kit small,camera slider kit small 1,1,,SERIALIZED,,Tripod / Support,PID-0124,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,252,Rechargeable cell,Rechargeable cell,,1 to 29,POOLED,29,Battery / Cell,PID-0125,,,,,PID,NEW,QUANTITY RANGE IN SOURCE (1 to 29) — not exploded into individual assets,no existing Nerve asset resembles this name
+PID,253,cell charger,cell charger 1,1,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,254,cell charger,cell charger 2,2,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,255,cell charger,cell charger 3,3,,REQUIRES_REVIEW,,Charger,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,256,sennhesier headphone,sennhesier headphone 1,1,,SERIALIZED,,Headphone,PID-0126,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,257,sennhesier headphone,sennhesier headphone 2,2,,SERIALIZED,,Headphone,PID-0127,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,258,sennhesier headphone,sennhesier headphone 3,3,,SERIALIZED,,Headphone,PID-0128,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,259,sennhesier headphone,sennhesier headphone 4,4,,SERIALIZED,,Headphone,PID-0129,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,260,sennhesier headphone,sennhesier headphone 5,5,,SERIALIZED,,Headphone,PID-0130,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,261,sennhesier headphone,sennhesier headphone 6,6,,SERIALIZED,,Headphone,PID-0131,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,262,sennhesier headphone,sennhesier headphone 7,7,,SERIALIZED,,Headphone,PID-0132,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,263,sennhesier headphone,sennhesier headphone 8,8,,SERIALIZED,,Headphone,PID-0133,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,264,sennhesier headphone,sennhesier headphone 9,9,,SERIALIZED,,Headphone,PID-0134,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,265,sennhesier headphone,sennhesier headphone 10,10,,SERIALIZED,,Headphone,PID-0135,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,266,sennhesier headphone,sennhesier headphone 11,11,,SERIALIZED,,Headphone,PID-0136,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,267,Sony ZV-e10 m2,Sony ZV-e10 m2 1,1,,SERIALIZED,,Camera Body,PID-0137,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,268,Sony ZV-e10 m3,Sony ZV-e10 m3 2,2,,SERIALIZED,,Camera Body,PID-0138,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,269,Sony ZV-e10 m4,Sony ZV-e10 m4 3,3,,SERIALIZED,,Camera Body,PID-0139,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,270,Sony ZV-e10 m5,Sony ZV-e10 m5 4,4,,SERIALIZED,,Camera Body,PID-0140,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,271,Sony ɑ 6400,Sony ɑ 6400 1,1,,SERIALIZED,,Camera Body,PID-0141,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,272,Sony ɑ M3,Sony ɑ M3 1,1,,SERIALIZED,,Camera Body,PID-0142,,1 | 2,EQ-CAM-001 | EQ-CAM-002,LEGACY / UNSCOPED,PID,DUPLICATE_RISK,DUPLICATE RISK — do not import until the unit is identified,"same category (Camera Body), same brand (sony) and same numbers (3); 2 existing assets fit — which physical unit this row is cannot be told from the source"
+PID,273,Sony C2,Sony C2 1,1,,SERIALIZED,,Camera Body,PID-0143,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,274,Sony battery,Sony battery 1,1,,REQUIRES_REVIEW,,Battery / Cell,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,275,Sony battery,Sony battery 2,2,,REQUIRES_REVIEW,,Battery / Cell,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,276,Sony battery,Sony battery 3,3,,REQUIRES_REVIEW,,Battery / Cell,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,277,Sony battery,Sony battery 4,4,,REQUIRES_REVIEW,,Battery / Cell,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,278,Sony battery,Sony battery 5,5,,REQUIRES_REVIEW,,Battery / Cell,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,279,Sony battery,Sony battery 6,6,,REQUIRES_REVIEW,,Battery / Cell,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,280,Sony battery,Sony battery 7,7,,REQUIRES_REVIEW,,Battery / Cell,,,,,,PID,NEW,CONSUMABLE/ACCESSORY FAMILY — serialized or stock is a human decision,no existing Nerve asset resembles this name
+PID,281,Sony lens 70-200 mm,Sony lens 70-200 mm 1,1,,SERIALIZED,,Lens,PID-0144,,9,EQ-LEN-002,LEGACY / UNSCOPED,PID,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"same category (Lens), same brand (sony) and same numbers (70, 200); no manufacturer serial on the source side, so identity is unconfirmed"
+PID,282,Sony 18-105 mm,Sony 18-105 mm 1,1,,SERIALIZED,,Lens,PID-0145,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,283,Sony 50 mm crop senser,Sony 50 mm crop senser 1,1,,SERIALIZED,,Lens,PID-0146,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,284,Sony 28 - 135 mm,Sony 28 - 135 mm 1,1,,SERIALIZED,,Lens,PID-0147,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,285,Sony 50 mm,Sony 50 mm 1,1,,SERIALIZED,,Lens,PID-0148,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,286,Sony 16 - 35 mm,Sony 16 - 35 mm 1,1,,SERIALIZED,,Lens,PID-0149,,10,EQ-LEN-003,LEGACY / UNSCOPED,PID,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"same category (Lens), same brand (sony) and same numbers (16, 35); no manufacturer serial on the source side, so identity is unconfirmed"
+PID,287,Sony 85 mm,Sony 85 mm 1,1,,SERIALIZED,,Lens,PID-0150,,11,EQ-LEN-004,LEGACY / UNSCOPED,PID,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"same category (Lens), same brand (sony) and same numbers (85); no manufacturer serial on the source side, so identity is unconfirmed"
+PID,288,Sony 24mm,Sony 24mm 1,1,,SERIALIZED,,Lens,PID-0151,,8,EQ-LEN-001,LEGACY / UNSCOPED,PID,POSSIBLE_MATCH,POSSIBLE MATCH — confirm before import or a duplicate is created,"same category (Lens), same brand (sony) and same numbers (24); no manufacturer serial on the source side, so identity is unconfirmed"
+PID,289,Sony 55-210 mm,Sony 55-210 mm 1,1,,SERIALIZED,,Lens,PID-0152,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,290,Yamaha speaker,Yamaha speaker 1,1,,SERIALIZED,,Speaker,PID-0153,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,291,Yamaha speaker,Yamaha speaker 2,2,,SERIALIZED,,Speaker,PID-0154,,,,,PID,NEW,,no existing Nerve asset resembles this name
+PID,292,ZOOM H4,ZOOM H4 1,1,,SERIALIZED,,Audio Recorder,PID-0155,,,,,PID,NEW,,no existing Nerve asset resembles this name
