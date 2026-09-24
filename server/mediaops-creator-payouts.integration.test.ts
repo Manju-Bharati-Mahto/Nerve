@@ -22,6 +22,7 @@
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { connectTestDatabase } from "./test-db.js";
 
 const PX = "zfp";
 let dbUp = false;
@@ -43,25 +44,15 @@ const A = {
 } as const;
 type ActorName = keyof typeof A;
 
-async function realDatabaseUrl(): Promise<string | null> {
-  const { readFileSync, existsSync } = await import("node:fs");
-  for (const f of [".env.local", ".env"]) {
-    if (!existsSync(f)) continue;
-    const m = readFileSync(f, "utf8").match(/^DATABASE_URL=(.+)$/m);
-    if (m) return m[1].trim();
-  }
-  return null;
-}
+/* The connection comes from server/test-db.ts, which resolves it from
+   TEST_DATABASE_URL or .env.test and REFUSES any database whose name does not
+   mark it as a test database. This file used to read .env.local itself and
+   assign the DEVELOPMENT url over the top of vitest's — seventeen siblings did
+   the same — which is how the suite came to run against `nerve`. */
 {
-  const url = await realDatabaseUrl();
-  if (url) {
-    process.env.DATABASE_URL = url;
-    process.env.SESSION_SECRET ||= "integration-test-secret";
-    process.env.SUPER_ADMIN_PASSWORD ||= "integration-test-password";
-    const { pool: p } = await import("./db.js");
-    pool = p;
-    try { await pool.query("SELECT 1"); dbUp = true; } catch { dbUp = false; }
-  }
+  const t = await connectTestDatabase();
+  pool = t.pool;
+  dbUp = t.dbUp;
 }
 const maybe = dbUp ? describe : describe.skip;
 
@@ -169,6 +160,25 @@ async function seed() {
 }
 
 async function cleanup() {
+  /* CLOSE THE SOURCE BEFORE DELETING ANYTHING.
+
+     Locking these rows was the wrong answer: FOR UPDATE on the cycle and the
+     rule blocks the row-share lock a CONCURRENT SUITE'S APPLICATION CALL needs
+     for its foreign-key check, and the review endpoint deadlocked into a 500.
+     A teardown must not make production paths fail.
+
+     The race is not a locking problem, it is a reachability problem. While this
+     file's cycle is the one with status='active' and its rule is the one active
+     approved_submission rule, EVERY concurrent suite can attach a ledger row to
+     them — which is exactly what the awarding code is supposed to do. Taking
+     them out of those two lookups removes the race at its source, blocks
+     nothing, and cannot deadlock. */
+  await pool.query(
+    `UPDATE mo_creator_cycles SET status='closed' WHERE label LIKE $1 AND status='active'`,
+    [`${PX} %`]);
+  await pool.query(
+    `UPDATE mo_creator_point_rules SET is_active=false WHERE name LIKE $1 AND is_active`,
+    [`${PX} %`]);
   /* Phase 6 recognition first: an achievement award is RESTRICT-protected on
      purpose — recognition outlives a suspension or an archive — so a fixture
      has to take its own down before its people and its cycles. */
@@ -185,9 +195,23 @@ async function cleanup() {
   await pool.query(`DELETE FROM mo_creator_financial_ledger WHERE ${fin}`, [`${PX}-%`]);
   await pool.query(`DELETE FROM mo_creator_payouts WHERE user_id LIKE $1 OR calculated_by LIKE $1`, [`${PX}-%`]);
   await pool.query(`DELETE FROM mo_creator_payout_rules WHERE name LIKE $1`, [`${PX} %`]);
+  /* A ledger row can hold THIS suite's rule while belonging to another suite's
+     creator. ruleForOpportunity() falls back to whichever approved_submission
+     rule is active, so while this file's rule is the active one, a concurrent
+     suite's approval is awarded under it: the row's user_id and created_by are
+     theirs, its rule_id is ours. Matching only by creator, actor and cycle
+     leaves that row behind, and the rule delete below is RESTRICT — so the
+     teardown fails on a row this fixture caused.
+
+     Hence the rule predicate, the same one mediaops-creator-points already
+     uses. It scopes by prefix exactly as every other line here does, so it
+     removes nothing that is not this fixture's doing. */
   await pool.query(`DELETE FROM mo_creator_point_ledger WHERE reversal_of_id IS NOT NULL
-                      AND (user_id LIKE $1 OR created_by LIKE $1)`, [`${PX}-%`]);
+                      AND (user_id LIKE $1 OR created_by LIKE $1
+                      OR rule_id IN (SELECT id FROM mo_creator_point_rules WHERE name LIKE $2))`,
+    [`${PX}-%`, `${PX} %`]);
   await pool.query(`DELETE FROM mo_creator_point_ledger WHERE user_id LIKE $1 OR created_by LIKE $1
+                      OR rule_id IN (SELECT id FROM mo_creator_point_rules WHERE name LIKE $2)
                       OR cycle_id IN (SELECT id FROM mo_creator_cycles WHERE label LIKE $2)`,
     [`${PX}-%`, `${PX} %`]);
   await pool.query(`DELETE FROM mo_creator_submissions WHERE assignment_id IN
@@ -196,6 +220,10 @@ async function cleanup() {
   await pool.query(`DELETE FROM mo_creator_interests WHERE user_id LIKE $1`, [`${PX}-%`]);
   await pool.query(`DELETE FROM mo_creator_events WHERE title LIKE $1`, [`${PX} %`]);
   await pool.query(`DELETE FROM mo_creator_cycles WHERE label LIKE $1`, [`${PX} %`]);
+  await pool.query(`DELETE FROM mo_creator_point_ledger
+                      WHERE cycle_id IN (SELECT id FROM mo_creator_cycles WHERE label LIKE $1)
+                         OR rule_id  IN (SELECT id FROM mo_creator_point_rules WHERE name LIKE $1)`,
+    [`${PX} %`]);
   await pool.query(`DELETE FROM mo_creator_point_rules WHERE name LIKE $1`, [`${PX} %`]);
   await pool.query(`DELETE FROM mo_creator_team_members WHERE user_id LIKE $1`, [`${PX}-%`]);
   await pool.query(`DELETE FROM mo_creator_teams WHERE name LIKE $1`, [`${PX} %`]);

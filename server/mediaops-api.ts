@@ -14,7 +14,7 @@ import type express from "express";
 import type { RequestHandler } from "express";
 import { pool } from "./db.js";
 import { hashPassword, verifyPassword } from "./password.js";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { sendMail, portalOtpEmail } from "./mailer.js";
 import {
   generateOtp, hashOtp, otpHashMatches, newSessionToken, maskEmail, emailInDomain,
@@ -31,7 +31,20 @@ import * as CQ from "./creator-queries.js";
 import { creatorAutomationState } from "./creator-automations.js";
 import { listCreatorIntegrations } from "./creator-integrations.js";
 import { buildTvBoard, tvBoardAllowed, type TvBoard } from "./mediaops-tv.js";
+/* The equipment rules live in one module so that the endpoints, the tests and
+   (via GET /equipment/rules) the browser all read the same policy. */
+import {
+  canBook, canCheckIn, canCheckOut, canRetire, canTransition, escalationFor, overdueRecipients,
+  isCondition, isConditionDrop, overdueConfig, overdueDays,
+  CONDITIONS, MAX_BOOKING_DAYS, UNSERVICEABLE,
+  type Condition, type ItemStatus, type OverdueConfig,
+} from "./equipment-rules.js";
+import { qrSvg } from "./qr.js";
 import { config } from "./config.js";
+/* Phase 17L — parsing, normalisation, classification and matching live in
+   their own module so the rules can be tested without a database or HTTP. */
+import { normalizeRow, rowsFromRecords, type AssetRef, type CategoryRef,
+         type ScopeRef, type SourceRow } from "./asset-import.js";
 import type { AiCapability, AiUserContext } from "./ai/types.js";
 
 type Handlers = {
@@ -43,6 +56,17 @@ type Handlers = {
   // endpoints are protected by, rather than declaring their own budget.
   otpSendLimiter: RequestHandler;
   otpVerifyLimiter: RequestHandler;
+  /* The equipment kiosk's PIN pad sits on an unattended tablet, so it gets a
+     budget of its own rather than living inside the 300/min media allowance.
+     Optional: the server always supplies one, and the integration suites mount
+     this API without any limiter at all. A missing limiter must therefore
+     degrade to a pass-through rather than crashing route registration. */
+  kioskPinLimiter?: RequestHandler;
+  /* Phase 17L — the multer middleware that receives an inventory spreadsheet.
+     Supplied by the server so the parsing rules live in one place and the
+     integration suites can mount the API without any upload machinery at all;
+     a missing one degrades to a pass-through, exactly as the limiters do. */
+  assetImportUpload?: RequestHandler;
 };
 
 export interface CurrentUser { id: string; role: string; team: string | null; full_name?: string; email?: string; }
@@ -67,6 +91,186 @@ export function moRoleOf(u: CurrentUser): MoRole {
   return "employee";                                  // 'user'
 }
 export const isMoAdmin = (u: CurrentUser) => moRoleOf(u) === "admin";
+
+/* ═══════════════════════════════════════════════════════════════════════
+   INVENTORY SCOPE AUTHORIZATION (Phase 13B; hoisted to module scope in Phase 16)
+
+   MODULE ACCESS + INVENTORY SCOPE + DOMAIN DUTY = AUTHORIZED ASSET ACCESS.
+
+   The three stay separate. requireEquipment() says you may use the Equipment
+   module at all. canManageEquipment() says you may act ON the estate rather
+   than merely borrow from it. What follows says WHICH ASSETS either of those
+   answers is about. None of the three can stand in for another, and no new
+   Nerve role was created to express any of them.
+
+   THE RULE, in one line: an asset that belongs to a scope is reachable only
+   by someone authorised over that scope.
+
+   THE MIGRATION PROPERTY, which is why this could be turned on at all: an
+   asset with scope_id IS NULL is the legacy estate, which predates scope and
+   has never been anybody's in particular. It stays reachable exactly as it is
+   today. So this phase only ever ADDS a restriction to assets somebody has
+   deliberately scoped; it removes no access anyone currently has, and the
+   estate does not go dark the moment the code ships.
+
+   That is a deliberate reading of "fail closed", and it is worth being exact
+   about which way it closes. A caller with no scope authorization gets NO
+   SCOPED ASSET — not "everything", and not "nothing at all". Null on the
+   ASSET means "not yet governed"; null on the CALLER means "governs nothing".
+   Those are different nulls and the asymmetry is the whole design.
+
+   WHY THIS SITS AT MODULE SCOPE. It was defined inside registerMediaOpsApi(),
+   where runMediaOpsAutomations() — which is module-level — could not see it.
+   The nightly overdue sweep therefore had no way to ask "may this person be
+   told about this asset" without a second copy of the rule, and a second copy
+   is how two answers to one question come to disagree. Hoisting keeps exactly
+   one implementation for the API and the automations alike. It depends only on
+   `pool` and `isMoAdmin`, both of which are already module-level.
+
+   Filters narrow. Authorization decides. A caller-supplied scope_id,
+   department_id or campus_id is a filter and can only ever shrink what the
+   scope clause already allowed — which is why the scope predicate is pushed
+   into the same WHERE array as the filters and never replaces one.
+   ═══════════════════════════════════════════════════════════════════════ */
+type InventoryScope =
+  | { level: "all" }                              // the whole estate
+  | { level: "scoped"; scopeIds: number[] }       // these scopes, plus the unscoped estate
+  | { level: "none" };                            // the unscoped estate only
+
+/* Deliberately mirrors creatorScopeOf(): resolve the caller's standing once,
+   then let a SQL fragment apply it, so there is ONE place that decides who
+   sees what. Re-read on every request — never cached — so revoking an
+   assignment takes effect on the next call rather than the next login. */
+async function inventoryScopeOf(u: CurrentUser): Promise<InventoryScope> {
+  /* An Admin sees the estate for the same reason they see every module. This
+     is the EXISTING role check, not a new "Inventory Admin" — deriving it
+     from isMoAdmin() is what keeps the Media Ops master admin working without
+     anybody's identity being written down. */
+  if (isMoAdmin(u)) return { level: "all" };
+  /* An archived or deactivated scope authorises nobody, so the join filters
+     on the scope's own lifecycle as well as on the assignment's existence. */
+  const { rows } = await pool.query(
+    `SELECT s.id FROM mo_user_inventory_scopes us
+       JOIN mo_inventory_scopes s ON s.id = us.scope_id
+      WHERE us.user_id = $1
+        AND us.removed_at IS NULL
+        AND s.is_active AND s.archived_at IS NULL`, [u.id]);
+  if (rows.length) return { level: "scoped", scopeIds: rows.map((r) => Number(r.id)) };
+  return { level: "none" };
+}
+
+/** Does this caller's scope reach an asset whose scope_id is `assetScopeId`? */
+function scopeAllows(scope: InventoryScope, assetScopeId: number | null): boolean {
+  if (scope.level === "all") return true;
+  if (assetScopeId == null) return true;             // the unscoped estate
+  return scope.level === "scoped" && scope.scopeIds.includes(Number(assetScopeId));
+}
+
+/* The scope clause, as SQL. Every scoped equipment read goes through this —
+   it is the single place that decides which assets a caller may reach.
+
+   `col` is the column holding the asset's scope. It defaults to the item
+   alias every equipment query already uses, but the history reads join items
+   under the same alias, so one rule covers all of them instead of six
+   hand-written copies that could drift apart. */
+function inventoryScopeSql(scope: InventoryScope, params: unknown[], col = "i.scope_id"): string {
+  if (scope.level === "all") return "";
+  if (scope.level === "scoped") {
+    params.push(scope.scopeIds);
+    return `(${col} IS NULL OR ${col} = ANY($${params.length}::bigint[]))`;
+  }
+  return `${col} IS NULL`;
+}
+
+/* Every equipment read builds a `where: string[]` joined with AND, so the
+   scope predicate goes in as one more entry — beside the caller's filters,
+   never instead of one. An unrestricted caller adds nothing at all, which is
+   what keeps the Admin's query plan identical to the one it was before. */
+/* ── Phase 17J: telling the right custodians, once ──────────────────────────
+   ONE INSERT, AND IT IS ITS OWN DEDUPLICATION. The condition below is the same
+   one runMediaOpsAutomations() has always used: an UNREAD notification with the
+   same (user, kind, entity) suppresses a second. That is what makes an
+   automation safe to run every few minutes — nothing accumulates while the
+   reader has not looked, and a fresh notice arrives once they have.
+
+   Shared so the request handlers and the automation runner cannot drift into
+   two notions of "already told them". */
+async function notifyOnce(userId: string, kind: string, title: string, body: string,
+                          entityType: string, entityId: number | null): Promise<number> {
+  try {
+    const r = await pool.query(
+      `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+       SELECT $1,$2,$3,$4,$5,$6
+        WHERE NOT EXISTS (SELECT 1 FROM mo_notifications n
+                          WHERE n.user_id=$1 AND n.kind=$2 AND n.entity_type=$5
+                            AND COALESCE(n.entity_id,-1)=COALESCE($6::bigint,-1) AND n.is_read=false)`,
+      [userId, kind, title, body, entityType, entityId]);
+    return r.rowCount ?? 0;
+  } catch { return 0; }   /* notifications must never break the flow */
+}
+
+/* WHO RUNS THE CUPBOARD THIS ASSET LIVES IN. Equipment custodians and media
+   leadership, filtered through the SAME scopeAllows() every read uses — a
+   maintenance notice carries an asset tag, and an asset tag is exactly what
+   Phase 13B stops leaking across inventories. An unscoped asset reaches
+   everybody, which is how the legacy estate has always behaved. */
+async function maintenanceRecipients(scopeId: number | null): Promise<string[]> {
+  const rows = (await pool.query(
+    `SELECT u.id, u.role, u.team FROM mo_user_duties d
+       JOIN mo_duty_flags f ON f.id = d.duty_flag_id
+       JOIN users u ON u.id = d.user_id
+      WHERE f.code='equipment_custodian' AND (u.status IS NULL OR u.status='active')
+     UNION
+     SELECT u.id, u.role, u.team FROM users u
+      WHERE u.team='media' AND u.role IN ('admin','super_admin')
+        AND (u.status IS NULL OR u.status='active')`)).rows;
+  const out: string[] = [];
+  for (const r of rows) {
+    const scope = await inventoryScopeOf({ id: String(r.id), role: String(r.role),
+                                           team: (r.team as string) ?? null } as CurrentUser);
+    if (scopeAllows(scope, scopeId)) out.push(String(r.id));
+  }
+  return out;
+}
+
+/** The inventory an asset belongs to, or null for the legacy estate. */
+async function scopeIdOf(assetId: number): Promise<number | null> {
+  const r = (await pool.query(
+    `SELECT scope_id FROM mo_equipment_items WHERE id=$1`, [assetId])).rows[0];
+  return r?.scope_id == null ? null : Number(r.scope_id);
+}
+
+/** Tell them a repair has been opened. Never called while a client is held. */
+async function notifyMaintenanceOpened(
+  assetId: number, recordId: number, assetTag: string, kind: string, scopeId: number | null,
+): Promise<void> {
+  const what = kind === "damage_report" ? "Damage reported" : "Maintenance opened";
+  for (const uid of await maintenanceRecipients(scopeId))
+    await notifyOnce(uid, "maintenance", `${what} — ${assetTag}`,
+      `${assetTag} has an open ${kind.replace(/_/g, " ")} and is out of service until it is resolved and inspected.`,
+      "maintenance", recordId);
+}
+
+function pushInventoryScope(where: string[], scope: InventoryScope,
+                            params: unknown[], col = "i.scope_id") {
+  const p = inventoryScopeSql(scope, params, col);
+  if (p) where.push(p);
+}
+
+/* One asset, by id, for the single-record paths (detail, resolve, and every
+   write that names an asset).
+
+   Returns the asset's scope when the caller may reach it, and null when they
+   may not OR the asset does not exist — the caller cannot tell those apart,
+   which is the point. A 403 on an out-of-scope asset would confirm that the
+   id, tag or QR token names something real; a 404 says only "not yours to
+   see", which is the same answer an invented id gets. */
+async function assetScopeOk(scope: InventoryScope, assetId: number | string): Promise<boolean> {
+  const r = await pool.query(
+    `SELECT scope_id FROM mo_equipment_items WHERE id = $1`, [assetId]);
+  if (!r.rows[0]) return false;
+  return scopeAllows(scope, r.rows[0].scope_id);
+}
 const isMoTL = (u: CurrentUser) => moRoleOf(u) === "team_lead";
 /* The Media Operations Coordinator is a MEDIA-department role stored on
    mo_user_profiles.mo_role, so Nerve-wide three-role parity is untouched: at the
@@ -92,29 +296,48 @@ async function isCoordinator(u: CurrentUser): Promise<boolean> {
    ever subtract, so ticking a box for a module the role did not already imply
    changed nothing — the sidebar stayed hidden and the API kept answering 403. */
 async function hasModuleGrant(u: CurrentUser, key: string): Promise<boolean> {
-  const eff = await effectiveModules(u);
-  return eff !== null && eff.includes(key);
+  return (await effectiveModules(u)).includes(key);
 }
 
 /* The module list actually in force for this user:
 
      explicit member override (allowed_modules is an array)  → that list
      otherwise, a configured default for their group          → that list
-     otherwise                                                → null (unrestricted)
+     otherwise                                                → [] (nothing)
 
-   Returning null rather than an empty list matters: a group nobody has
-   configured behaves exactly as it did before this table existed, so adding
-   group defaults cannot silently revoke access from anyone. */
-export async function effectiveModules(u: CurrentUser): Promise<string[] | null> {
+   IT USED TO RETURN null FOR THAT LAST CASE, and every gate read null as
+   "unrestricted". The reasoning was compatibility: a group nobody had
+   configured would behave as it had before the table existed, so introducing
+   group defaults could not silently revoke anyone's access.
+
+   That is a reasonable migration stance and a dangerous steady state. Only the
+   'creator' row was ever seeded, so on a FRESH installation five of the six
+   groups had no row — and an ordinary employee passed every module gate in the
+   product, Settings and Users & Roles included. The configuration whose absence
+   granted everything was configuration an administrator had to know to go and
+   create.
+
+   Missing configuration is now a denial. The compatibility concern is met by
+   seeding instead: bootstrapMediaOpsDatabase() writes a row for every group
+   (MODULE_DEFAULT_SEED in mediaops-db.ts) using the sets the application
+   already derived for an unconfigured group, so nothing an existing
+   installation could do changes, and ON CONFLICT DO NOTHING means no
+   administrator's choice is touched.
+
+   An empty array and a missing row are therefore both "no modules". They are
+   deliberately indistinguishable to callers: an administrator who saves an
+   empty list means it, and a row that has gone missing must not be treated
+   more generously than one that says nothing. */
+export async function effectiveModules(u: CurrentUser): Promise<string[]> {
   const row = (await pool.query(
     `SELECT allowed_modules FROM mo_user_profiles WHERE user_id=$1`, [u.id])).rows[0];
   const am = row?.allowed_modules;
   if (Array.isArray(am)) return am.map(String);          // explicit override wins
   const group = await moduleGroupOf(u);
-  if (!group) return null;
+  if (!group) return [];                                 // no recognised group → nothing
   const def = (await pool.query(
     `SELECT modules FROM mo_module_defaults WHERE role=$1`, [group])).rows[0]?.modules;
-  return Array.isArray(def) ? def.map(String) : null;
+  return Array.isArray(def) ? def.map(String) : [];
 }
 
 /* Which defaults row applies to this user. Mirrors how the directory groups
@@ -267,8 +490,8 @@ export async function canUseCreatorAi(u: CurrentUser): Promise<boolean> {
   if (isMoAdmin(u)) return true;
   if (!(await creatorRoleOf(u))) return false;    // no active creator identity
   // The module is how an Admin revokes this per person, with no new machinery.
-  const eff = await effectiveModules(u);
-  return eff === null || eff.includes(CREATOR_MODULE);
+  // Fail closed: an account with no module configuration holds no module.
+  return (await effectiveModules(u)).includes(CREATOR_MODULE);
 }
 
 export async function buildAiUserContext(u: CurrentUser): Promise<AiUserContext> {
@@ -342,12 +565,15 @@ export async function buildAiUserContext(u: CurrentUser): Promise<AiUserContext>
    is the request-time gate; this is the same rule without the 403. */
 async function allowsModule(u: CurrentUser, key: string): Promise<boolean> {
   if (isMoAdmin(u)) return true;
-  const eff = await effectiveModules(u);
-  return eff === null || eff.includes(key);
+  return (await effectiveModules(u)).includes(key);
 }
 
 export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   const { asyncHandler, sendError, getSingleParam } = h;
+  /* See the note on Handlers.kioskPinLimiter: absent means "no extra budget",
+     never "no route". */
+  const kioskPinLimiter: RequestHandler =
+    h.kioskPinLimiter ?? ((_req, _res, next) => next());
   const P = "/api/v1/media";
   /* A question, not a document. Long enough for a real operational question and
      short enough that a pasted spreadsheet cannot become an expensive prompt. */
@@ -421,9 +647,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // Per-user module access (allowed_modules). Admins bypass; NULL = unrestricted
   // (role-based). Backend defense-in-depth behind the client's nav/route gating.
   async function requireModule(res: express.Response, u: CurrentUser, key: string): Promise<boolean> {
+    /* The Admin bypass is deliberate and predates this: an administrator is how
+       a misconfigured install gets repaired, so they must never be locked out
+       of Settings by the very configuration they need to fix. */
     if (isMoAdmin(u)) return true;
-    const eff = await effectiveModules(u);   // override, else group default, else unrestricted
-    if (eff === null || eff.includes(key)) return true;
+    // override, else group default, else NOTHING — never "unrestricted".
+    if ((await effectiveModules(u)).includes(key)) return true;
     sendError(res, 403, `Your account has no access to the "${key}" module.`);
     return false;
   }
@@ -439,12 +668,19 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   };
 
   // Append-only audit (FR-13). Never throws into the request path.
+  /* `entityUid` is for entities whose key is TEXT rather than BIGINT — a user,
+     above all. entity_id is BIGINT, so every event about a PERSON used to
+     write NULL there and hide the subject in the JSON payload, which made "what
+     was done to this person" unqueryable. Passing the id here records it in a
+     column instead. Optional and trailing, so all ~200 existing call sites are
+     unchanged and keep writing NULL. */
   async function audit(actor: CurrentUser, action: string, entityType: string, entityId: number | null,
-                       before: unknown, after: unknown, req: express.Request) {
+                       before: unknown, after: unknown, req: express.Request,
+                       entityUid: string | null = null) {
     try {
       await pool.query(
-        `INSERT INTO mo_audit_logs (actor_id, actor_role, action, entity_type, entity_id, before, after, ip, user_agent)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        `INSERT INTO mo_audit_logs (actor_id, actor_role, action, entity_type, entity_id, before, after, ip, user_agent, entity_uid)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
         /* D4: one role vocabulary in the trail. A Creator Network member has no
            Media Ops tier, so they are recorded as 'creator' rather than as the
            raw platform role — which the CHECK rejects, silently costing us
@@ -452,7 +688,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
            an unknown role can never make the insert fail again. */
         [actor.id, moRoleOf(actor) ?? (actor.team === "creator" ? "creator" : null), action, entityType, entityId,
          before ? JSON.stringify(before) : null, after ? JSON.stringify(after) : null,
-         req.ip ?? null, (req.headers["user-agent"] as string) ?? null],
+         req.ip ?? null, (req.headers["user-agent"] as string) ?? null, entityUid],
       );
     } catch { /* audit must never break the request */ }
   }
@@ -499,12 +735,29 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // Phase 2 — equipment, shoots, leave
     ["vendors", "mo_vendors", "archived_at IS NULL", []],
     ["equipment_categories", "mo_equipment_categories", "archived_at IS NULL", []],
-    ["equipment_items", "mo_equipment_items", "deleted_at IS NULL", []],
+    /* equipment_items left the boot payload too. Every live reader now goes
+       through the client asset cache, which fills from GET /equipment,
+       GET /equipment/:id and GET /equipment/resolve/:identifier — see
+       docs/ASSET_INVENTORY_CLIENT_ASSET_CACHE.md. equipment_kits and kit_items
+       stay: they are small lookups, not history, and the cache resolves the
+       assets a kit points at. */
     ["equipment_kits", "mo_equipment_kits", null, []],
     ["kit_items", "mo_kit_items", null, []],
-    ["equipment_bookings", "mo_equipment_bookings", null, ["user_id", "created_by"]],
-    ["equipment_transactions", "mo_equipment_transactions", null, ["holder_id", "recorded_by"]],
-    ["maintenance_records", "mo_maintenance_records", null, ["reported_by"]],
+    /* ── EQUIPMENT HISTORY NO LONGER SHIPS AT BOOT ────────────────────────
+       equipment_bookings, equipment_transactions and maintenance_records used
+       to be here. Every screen that read them now has its own read model:
+
+         bookings      → GET /equipment/bookings   (and ?shoot_id= for Shoots)
+         transactions  → GET /equipment/transactions
+         maintenance   → GET /equipment/maintenance
+         who holds what→ GET /equipment/custody
+         effective state→ the `state` block on GET /equipment and /equipment/:id
+         analytics     → GET /equipment/analytics
+
+       They are not paginated versions of what was here; they answer questions,
+       and they answer them over ALL of history rather than the capped windows
+       this payload could afford. equipment_items stays for now — see
+       docs/ASSET_INVENTORY_STATE_CONSOLIDATION.md for what still reads it. */
     ["shoots", "mo_shoots", "deleted_at IS NULL", ["created_by"]],
     ["shoot_crew", "mo_shoot_crew", null, ["user_id", "replaced_user_id"]],
     ["leave_types", "mo_leave_types", "archived_at IS NULL", []],
@@ -784,6 +1037,16 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       const visKras = new Set(arr("kras").map((r) => Number(r.id)));
       out.kra_reviews = arr("kra_reviews").filter((r) => visKras.has(Number(r.kra_id)));
       out.performance_snapshots = arr("performance_snapshots").filter((r) => vis.has(Number(r.user_id)));
+      /* A SAVED VIEW IS ONE PERSON'S FILTER SET, and it was shipping to everyone.
+         It is not HR data, so it does not belong in the set above, and it is not
+         departmental either: `is_shared` exists precisely because the default is
+         private. Own, or explicitly shared — never a colleague's private view.
+         Scoped on the caller's own id rather than on `vis`, because sharing a
+         view with a team is something a person does, not something their lead
+         inherits. */
+      const meInt = idMap.get(u.id);
+      out.saved_views = arr("saved_views")
+        .filter((r) => Number(r.user_id) === meInt || r.is_shared === true);
     }
     // D1 — real "fires / 30d" counters per automation rule, from execution records.
     const fireRows = await pool.query(`
@@ -1649,11 +1912,21 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       const shoot = ins.rows[0];
       for (const uid of crew)
         await pool.query(`INSERT INTO mo_shoot_crew (shoot_id, user_id, capacity_role_id) VALUES ($1,$2,2) ON CONFLICT DO NOTHING`, [shoot.id, uid]);
-      for (const raw of (Array.isArray(b.equipment) ? b.equipment : []))
+      /* Phase 13B — booking equipment is an equipment WRITE, even when it
+         arrives through the Projects surface. Without this, a shoot form was a
+         way to reserve an asset belonging to a scope the caller cannot see or
+         name. Out-of-scope ids are dropped rather than refused, which is the
+         behaviour this loop already has for a booking clash on the line below;
+         changing that into an error would be a business-rule change this phase
+         has no mandate for. */
+      const workScope = await inventoryScopeOf(u);
+      for (const raw of (Array.isArray(b.equipment) ? b.equipment : [])) {
+        if (!(await assetScopeOk(workScope, Number(raw)))) continue;
         await pool.query(
           `INSERT INTO mo_equipment_bookings (equipment_item_id, user_id, shoot_id, project_id, starts_at, ends_at, status, created_by)
            VALUES ($1,$2,$3,$4,$5,$5,'reserved',$2)`,
           [Number(raw), u.id, shoot.id, pid, b.shoot_date]).catch(() => {/* clashes surface via AC-7 */});
+      }
       await audit(u, "work.assigned", "shoot", shoot.id, null,
         { work_type: wt.name, form_template: wt.form_template, title: shoot.title, date: shoot.shoot_date }, req);
       return res.status(201).json({ kind: "shoot", work_type: wt, shoot });
@@ -1718,93 +1991,5369 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ shoot: rows[0] });
   }));
 
+  /* ═══ EQUIPMENT ═══════════════════════════════════════════════════════════
+     Every endpoint below was previously guarded by requireMedia() alone — "are
+     you Media Crew?" and nothing else. That left five of the six callable by
+     someone whose Equipment module had been revoked, let any caller cancel
+     anybody's booking, and let any caller name any `holder_id` they liked.
+
+     The gate is now: media role → Equipment module → the capability the action
+     needs. Module access is the EXISTING infrastructure (requireModule, the
+     same call the sidebar's module keys resolve through); the custodian
+     capability is the EXISTING duty flag. Nothing new was invented.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /** Media role + the Equipment module. The floor for every equipment call. */
+  async function requireEquipment(res: express.Response): Promise<CurrentUser | null> {
+    const u = requireMedia(res); if (!u) return null;
+    if (!(await requireModule(res, u, "equipment"))) return null;
+    return u;
+  }
+
+  /* Who may act ON the estate rather than merely borrow from it: edit an
+     asset, retire one, report damage, check an item in on somebody else's
+     behalf, cancel another person's booking, hand equipment to a named
+     colleague.
+
+     This is 'equipment.manage' from the browser's CAPS table, which reads
+     {employee:'CUSTODIAN', team_lead:'-', admin:'A'} — so: an Admin, or the
+     holder of the equipment_custodian duty. Nobody else, a Team Lead included.
+
+     NOTE the deliberate difference from canManageCasting(), which also accepts
+     an explicit module grant. Casting has TWO module keys — 'casting' to look
+     and 'casting-admin' to run it — so a grant of the second means authority.
+     Equipment has one key, 'equipment', and it is the key that lets you BORROW
+     a camera. Accepting it here would have made every borrower a custodian,
+     which is precisely what the first version of this function did. */
+  async function canManageEquipment(u: CurrentUser): Promise<boolean> {
+    if (isMoAdmin(u)) return true;
+    const r = await pool.query(
+      `SELECT 1 FROM mo_user_duties d JOIN mo_duty_flags f ON f.id=d.duty_flag_id
+        WHERE d.user_id=$1 AND f.code='equipment_custodian'`, [u.id]);
+    return !!r.rows[0];
+  }
+
+  /* ── Internal asset codes (Phase 17A) ───────────────────────────────────────
+   MC-0045. What a person says out loud, writes on a label and reads back over
+   a phone — and the ONLY identifier in this module that is inventory-derived.
+   It is not the asset tag (category-derived, EQ-CAM-001), not the QR token
+   (opaque), and not the manufacturer serial (the maker's, not ours).
+
+   SERVER-GENERATED, ALWAYS. The code is never read from a request body: a
+   client that could choose its own code could collide with, or impersonate,
+   an existing label.
+
+   The prefix comes from the scope row, so adding a third inventory is a row
+   rather than a branch here.
+
+   CONCURRENCY. Mirrors the asset-tag allocator exactly, and for the same
+   reason: COUNT(*)+1 is not a counter — two simultaneous registrations compute
+   the same number, and a deleted row makes the count go backwards onto a live
+   code. A transaction-scoped advisory lock serialises allocation PER SCOPE,
+   and the number comes from the highest code actually in use. The partial
+   unique index is the final authority if anything ever slips past. */
+async function allocateInternalCode(
+  client: { query: (q: string, p?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> },
+  scopeId: number,
+): Promise<string | null> {
+  const sc = (await client.query(
+    `SELECT code_prefix FROM mo_inventory_scopes WHERE id=$1`, [scopeId])).rows[0];
+  const prefix = sc?.code_prefix as string | undefined;
+  /* No prefix means this inventory cannot mint codes yet. Returning null is
+     better than inventing one: a draft asset with no code is a known state,
+     a guessed code is a wrong label on a real camera. */
+  if (!prefix) return null;
+  await client.query(`SELECT pg_advisory_xact_lock($1, $2)`, [8422, scopeId]);
+  const peak = (await client.query(
+    `SELECT COALESCE(MAX(NULLIF(regexp_replace(internal_code, '^' || $2 || '-', ''), '')::int), 0) AS n
+       FROM mo_equipment_items
+      WHERE scope_id = $1 AND internal_code ~ ('^' || $2 || '-[0-9]+$')`, [scopeId, prefix])).rows[0];
+  return `${prefix}-${String(Number(peak.n) + 1).padStart(4, "0")}`;
+}
+
+/** The 404 an out-of-scope asset gets, worded so it reveals nothing. */
+  const scopeDenied = (res: express.Response) =>
+    sendError(res, 404, "Asset not found.");
+
+  /** AUTO-3's tunables, read from the rule row an Admin can already edit. */
+  async function equipmentOverdueConfig(): Promise<OverdueConfig> {
+    const r = await pool.query(`SELECT config FROM mo_automation_rules WHERE rule_key='AUTO-3'`);
+    return overdueConfig(r.rows[0]?.config);
+  }
+
+  /* ═══ CREATING AN ASSET — ONE IMPLEMENTATION, TWO CALLERS ═══════════════════
+     Extracted in Phase 17L so the importer can create an asset INSIDE its own
+     transaction. It could not call POST /equipment: the approval of an import row
+     has to be atomic across the asset, its identifiers, the row's state and the
+     batch's counters, and an HTTP request cannot join a transaction. The
+     alternative was a second copy of these rules in the importer, which is how
+     two creation paths come to disagree about what an asset is.
+
+     Everything that made the endpoint correct lives here and is therefore shared:
+     the per-category advisory lock, the tag derived from the highest tag in use
+     rather than a row count, the internal code minted only for a scoped asset,
+     and the three identifier rows. The CALLER owns the transaction and the audit;
+     this owns what an asset is made of.
+
+     It does no authorization. Its callers do, before they open a transaction. */
+  interface NewEquipmentSpec {
+    categoryId: number; categoryName: string;
+    make: string; model: string; serialNo: string | null;
+    purchaseCost: number | null; condition: string;
+    scopeId: number | null; trackingMode: string | null; poolQuantity: number | null;
+    verificationState: string;
+    departmentId?: number | null; campusId?: number | null;
+  }
+  async function createEquipmentOn(
+    client: { query: (q: string, p?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> },
+    actorId: string, spec: NewEquipmentSpec,
+  ): Promise<{ item: Record<string, unknown>; itemId: number; tag: string; token: string }> {
+    /* THE ASSET TAG. It used to be COUNT(*) + 1, which is not a counter: two
+       simultaneous registrations in one category computed the same number and one
+       died on the UNIQUE index, and a soft-deleted row made the count go backwards
+       so the next tag collided with a live one.
+
+       A transaction-scoped advisory lock serialises registration per category, and
+       the number comes from the highest tag actually in use. */
+    await client.query(`SELECT pg_advisory_xact_lock($1, $2)`, [8421, spec.categoryId]);
+    const prefix = spec.categoryName.replace(/[^A-Za-z]/g, "").slice(0, 3).toUpperCase() || "GEN";
+    const peak = (await client.query(
+      `SELECT COALESCE(MAX(NULLIF(regexp_replace(asset_tag, '^EQ-' || $2 || '-', ''), '')::int), 0) AS n
+         FROM mo_equipment_items
+        WHERE category_id=$1 AND asset_tag ~ ('^EQ-' || $2 || '-[0-9]+$')`,
+      [spec.categoryId, prefix])).rows[0];
+    const tag = `EQ-${prefix}-${String(Number(peak.n) + 1).padStart(3, "0")}`;
+
+    /* Department defaults to the category's, as it has since the audit found
+       department and campus hardcoded to (1,1) for every asset ever created. */
+    const deptId = spec.departmentId !== undefined ? spec.departmentId
+      : (await client.query(
+          `SELECT department_id FROM mo_equipment_categories WHERE id=$1`,
+          [spec.categoryId])).rows[0]?.department_id ?? null;
+
+    /* The internal code is minted only for an asset that HAS an inventory. An
+       unscoped asset has no inventory to derive a prefix from, and a code
+       invented without one would be a label nobody could place. */
+    const internalCode = spec.scopeId != null ? await allocateInternalCode(client, spec.scopeId) : null;
+
+    const ins = await client.query(
+      `INSERT INTO mo_equipment_items (department_id, campus_id, category_id, asset_tag, make, model, serial_no,
+                                       purchase_cost, condition, status, scope_id, internal_code,
+                                       tracking_mode, pool_quantity, verification_state)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'available',$10,$11,$12,$13,$14) RETURNING *`,
+      [deptId, spec.campusId ?? null, spec.categoryId, tag, spec.make, spec.model, spec.serialNo,
+       spec.purchaseCost, spec.condition, spec.scopeId, internalCode,
+       spec.trackingMode, spec.poolQuantity, spec.verificationState]);
+    const itemId = Number(ins.rows[0].id);
+
+    /* Identifiers are rows from the moment the asset exists: the human tag, an
+       OPAQUE primary QR token, and the manufacturer serial when given. The token
+       is random rather than 'QR-' || tag, so it carries no category, no sequence
+       and nothing that can later be contradicted. */
+    const token = `AT-${randomUUID().replace(/-/g, "").toUpperCase()}`;
+    await client.query(
+      `INSERT INTO mo_asset_identifiers (asset_id, kind, value, is_primary, created_by)
+       VALUES ($1,'asset_tag',$2,true,$4), ($1,'qr',$3,true,$4)`, [itemId, tag, token, actorId]);
+    if (ins.rows[0].serial_no)
+      await client.query(
+        `INSERT INTO mo_asset_identifiers (asset_id, kind, value, is_primary, created_by)
+         VALUES ($1,'serial',$2,true,$3) ON CONFLICT (value) DO NOTHING`,
+        [itemId, ins.rows[0].serial_no, actorId]);
+    return { item: ins.rows[0], itemId, tag, token };
+  }
+
+  /** The live checkout for an item, or null when it is not out. */
+  /* A pg DATE arrives as a JS Date at LOCAL midnight, so its local Y-M-D is the
+     day it means — reading it in UTC is what moved it backwards. Used where a
+     date reaches the client from a row that was selected for its own sake. */
+  const dayOf = (v: unknown): string | null => {
+    if (v == null) return null;
+    if (typeof v === "string") return v.slice(0, 10);
+    const d = v as Date;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+
+  async function liveCheckout(itemId: number) {
+    const r = await pool.query(
+      `SELECT * FROM mo_equipment_transactions
+        WHERE equipment_item_id=$1 ORDER BY occurred_at DESC, id DESC LIMIT 1`, [itemId]);
+    const last = r.rows[0];
+    return last && last.action === "check_out" ? last : null;
+  }
+
+  /** The worst overdue loan this borrower is currently sitting on, in days. */
+  async function worstOverdueDays(userId: string): Promise<number> {
+    const r = await pool.query(
+      `SELECT t.expected_return_at
+         FROM mo_equipment_transactions t
+         JOIN mo_equipment_items e ON e.id = t.equipment_item_id
+        WHERE t.holder_id = $1 AND e.status = 'checked_out'
+          AND t.expected_return_at IS NOT NULL
+          AND t.id = (SELECT id FROM mo_equipment_transactions x
+                       WHERE x.equipment_item_id = t.equipment_item_id
+                       ORDER BY x.occurred_at DESC, x.id DESC LIMIT 1)`, [userId]);
+    const now = new Date();
+    return r.rows.reduce((worst, row) => Math.max(worst, overdueDays(row.expected_return_at, now)), 0);
+  }
+
+  /**
+   * WHOSE NAME GOES ON THE TRANSACTION.
+   *
+   * The old line was `const holder = toUid(b.holder_id) ?? u.id` — the browser
+   * said who was borrowing and the server believed it, so any Media Ops user
+   * could put a colleague's name on a camera they had taken themselves.
+   *
+   * Custody identity is now established here, from three sources in order of
+   * authority, and a client-supplied id is only ever a REQUEST:
+   *   1. a verified kiosk session   — the person who entered their own PIN;
+   *   2. the authenticated caller   — the default, and the only option for
+   *                                   somebody without custodial authority;
+   *   3. a named borrower           — allowed only to a custodian or Admin,
+   *                                   and only for an active media crew member.
+   */
+  /** May this person be recorded as holding an asset in THIS inventory?
+   *
+   *  TWO POPULATIONS, AND THE SECOND IS NARROWER THAN THE FIRST.
+   *
+   *    media crew   — any inventory, exactly as before this existed.
+   *    student      — an SMC member, and ONLY in an inventory whose
+   *                   lends_to_students flag is set, which today is PID.
+   *
+   *  The team restriction was not removed; a second, scope-conditional branch
+   *  was added beside it. A Media Crew asset therefore answers precisely as it
+   *  always has, including its refusal message, and no inventory lends to a
+   *  student until somebody sets the flag on it.
+   */
+  async function borrowerEligibility(
+    holderId: string, assetScopeId: number | null,
+  ): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
+    const t = (await pool.query(
+      `SELECT u.id, u.status, u.team,
+              /* The asset's inventory decides whether the second population
+                 applies at all, so it is read here rather than trusted from
+                 the request. A legacy asset has no inventory and therefore
+                 lends to nobody outside the crew. */
+              (SELECT s.lends_to_students FROM mo_inventory_scopes s WHERE s.id = $2) AS lends
+         FROM users u WHERE u.id = $1`, [holderId, assetScopeId])).rows[0];
+
+    /* Unchanged for the crew, down to the wording: a caller who was getting
+       this message before must still get this message. */
+    if (!t || (t.team !== "media" && t.team !== "smc"))
+      return { ok: false, status: 400, message: "That borrower is not an active member of the media crew." };
+    if (t.status && t.status !== "active")
+      return { ok: false, status: 400, message: "That borrower's account is not active." };
+    if (t.team === "media") return { ok: true };
+
+    /* An SMC member is an institute student. They hold equipment only from an
+       inventory that lends to students, and the refusal names the inventory
+       rather than the person — the account is fine, the cupboard is not open
+       to it. */
+    if (t.lends !== true)
+      return { ok: false, status: 400,
+               message: "This inventory does not lend to students. "
+                      + "Only an inventory marked as lending to students may be issued to one." };
+    return { ok: true };
+  }
+
+  async function resolveHolder(
+    res: express.Response, u: CurrentUser, body: Record<string, unknown>,
+    kioskUserId: string | null, assetScopeId: number | null,
+  ): Promise<string | null> {
+    if (kioskUserId) return kioskUserId;
+
+    const asked = body.holder_id == null ? null : String(toUid(body.holder_id));
+    if (!asked || asked === u.id) {
+      /* SELF-SERVICE IS THE CREW'S, NOT A STUDENT'S.
+         A student may reserve, and a custodian hands the equipment over at the
+         counter; a student may not take it off the shelf themselves. That is
+         the approved split, and it is enforced here rather than by hiding a
+         button — the caller's own id is still a holder_id, and the check
+         belongs wherever custody is decided. */
+      if (u.team === "smc" && !(await canManageEquipment(u))) {
+        sendError(res, 403,
+          "Students reserve equipment; a custodian hands it over. "
+          + "Create a reservation and collect it from the PID counter.");
+        return null;
+      }
+      return u.id;
+    }
+
+    if (!(await canManageEquipment(u))) {
+      sendError(res, 403,
+        "Only an Equipment Custodian or an Admin may check equipment out to somebody else.");
+      return null;
+    }
+    const verdict = await borrowerEligibility(asked, assetScopeId);
+    if (!verdict.ok) { sendError(res, verdict.status, verdict.message); return null; }
+    return asked;
+  }
+
+  /* ═══ THE KIOSK ═══════════════════════════════════════════════════════════
+     What it used to be: `if (S.kiosk.pin.length >= 4) { step = 2 }`. Any four
+     digits opened it, nothing was sent anywhere, and the transaction was then
+     written against whichever account the tablet was signed in as. The cupboard
+     tablet was, in effect, an open terminal that put other people's names on
+     nothing and its own name on everything.
+
+     What it is now. The PIN belongs to a PERSON and is stored only as a scrypt
+     hash (server/password.ts — the same helper Nerve authenticates with, not a
+     second scheme). Verifying it opens a short-lived kiosk SESSION naming that
+     one borrower; the session token is what the checkout endpoints accept, and
+     the holder comes from the session rather than from the request body. A
+     kiosk therefore cannot check equipment out to an arbitrary identity — it
+     can only check it out to whoever just proved who they were.
+
+     Failed attempts are counted on the profile and lock it, on top of the
+     express-rate-limit budget applied at the route. The correct PIN never
+     leaves the server in any form. ═════════════════════════════════════════ */
+
+  const KIOSK_SESSION_MINUTES = 10;
+  const KIOSK_MAX_ATTEMPTS = 5;
+  const KIOSK_LOCK_MINUTES = 15;
+  const kioskHash = (token: string) => createHash("sha256").update(token).digest("hex");
+
+  /**
+   * Resolve a request's kiosk session to the borrower it names.
+   * Returns a user id, `null` when the request carries no kiosk token, and
+   * `false` when it carries one that is not valid — in which case a response
+   * has already been sent and the caller must stop.
+   */
+  async function kioskHolderFor(
+    res: express.Response, body: Record<string, unknown>,
+  ): Promise<string | null | false> {
+    const token = typeof body.kiosk_token === "string" ? body.kiosk_token : null;
+    if (!token) return null;
+    const row = (await pool.query(
+      `SELECT user_id FROM mo_kiosk_sessions
+        WHERE token_hash=$1 AND ended_at IS NULL AND expires_at > NOW()`, [kioskHash(token)])).rows[0];
+    if (!row) { sendError(res, 401, "This kiosk session has expired. Please enter your PIN again."); return false; }
+    return String(row.user_id);
+  }
+
+  /* Set or clear your own kiosk PIN. An Admin may set one for a crew member —
+     somebody has to be able to issue the first one — but nobody, Admin
+     included, can read one back: the column holds a hash. */
+  app.post(`${P}/equipment/kiosk/pin`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const b = req.body as Record<string, unknown>;
+    const target = b.user_id ? String(toUid(b.user_id)) : u.id;
+    if (target !== u.id && !(await canManageEquipment(u)))
+      return sendError(res, 403, "Only a Custodian or an Admin may set somebody else's kiosk PIN.");
+
+    if (b.pin === null) {
+      await pool.query(
+        `UPDATE mo_user_profiles SET kiosk_pin_hash=NULL, kiosk_pin_set_at=NULL,
+                kiosk_failed_attempts=0, kiosk_locked_until=NULL WHERE user_id=$1`, [target]);
+      await audit(u, "equipment.kiosk_pin_cleared", "user", null, null, { user_id: target }, req);
+      return res.json({ ok: true, has_pin: false });
+    }
+
+    const pin = String(b.pin ?? "");
+    if (!/^\d{4,8}$/.test(pin))
+      return sendError(res, 400, "A kiosk PIN must be 4 to 8 digits.");
+    /* A PIN with no variety at all is the one everybody guesses first. */
+    if (/^(\d)\1+$/.test(pin) || "0123456789".includes(pin) || "9876543210".includes(pin))
+      return sendError(res, 400, "Choose a less predictable PIN.");
+
+    const exists = (await pool.query(`SELECT 1 FROM mo_user_profiles WHERE user_id=$1`, [target])).rows[0];
+    if (!exists) return sendError(res, 404, "That crew member has no Media Ops profile.");
+
+    await pool.query(
+      `UPDATE mo_user_profiles SET kiosk_pin_hash=$2, kiosk_pin_set_at=NOW(),
+              kiosk_failed_attempts=0, kiosk_locked_until=NULL WHERE user_id=$1`,
+      [target, await hashPassword(pin)]);
+    /* The PIN itself is never written to the trail, only the fact of it. */
+    await audit(u, "equipment.kiosk_pin_set", "user", null, null, { user_id: target }, req);
+    res.json({ ok: true, has_pin: true });
+  }));
+
+  /* Open a kiosk session. The caller names WHO is standing at the tablet and
+     that person proves it with their own PIN; the session that comes back is
+     what the following checkout is attributed to. */
+  app.post(`${P}/equipment/kiosk/session`, kioskPinLimiter, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const b = req.body as Record<string, unknown>;
+    const target = String(toUid(b.user_id ?? ""));
+    const pin = String(b.pin ?? "");
+    /* One message for every failure below: a kiosk must not tell a stranger
+       which crew members exist, which of them have a PIN set, or whether the
+       digits were close. */
+    const refuse = () => sendError(res, 401, "That PIN was not recognised.");
+    if (!target || !/^\d{4,8}$/.test(pin)) return refuse();
+
+    const p = (await pool.query(
+      `SELECT p.user_id, p.kiosk_pin_hash, p.kiosk_failed_attempts, p.kiosk_locked_until, u.status
+         FROM mo_user_profiles p JOIN users u ON u.id=p.user_id
+        WHERE p.user_id=$1 AND u.team='media'`, [target])).rows[0];
+    if (!p || !p.kiosk_pin_hash) return refuse();
+    if (p.status && p.status !== "active") return refuse();
+    if (p.kiosk_locked_until && new Date(p.kiosk_locked_until) > new Date())
+      return sendError(res, 429, "Too many incorrect attempts. This PIN is locked for a few minutes.");
+
+    if (!(await verifyPassword(pin, String(p.kiosk_pin_hash)))) {
+      const attempts = Number(p.kiosk_failed_attempts ?? 0) + 1;
+      const lock = attempts >= KIOSK_MAX_ATTEMPTS;
+      await pool.query(
+        `UPDATE mo_user_profiles
+            SET kiosk_failed_attempts=$2,
+                kiosk_locked_until = CASE WHEN $3 THEN NOW() + ($4 || ' minutes')::interval ELSE kiosk_locked_until END
+          WHERE user_id=$1`, [target, lock ? 0 : attempts, lock, String(KIOSK_LOCK_MINUTES)]);
+      await audit(u, "equipment.kiosk_pin_failed", "user", null, null,
+        { user_id: target, attempts, locked: lock }, req);
+      return lock
+        ? sendError(res, 429, "Too many incorrect attempts. This PIN is locked for a few minutes.")
+        : refuse();
+    }
+
+    const token = newSessionToken();
+    const ins = await pool.query(
+      `INSERT INTO mo_kiosk_sessions (token_hash, user_id, opened_by, expires_at, ip)
+       VALUES ($1,$2,$3, NOW() + ($4 || ' minutes')::interval, $5) RETURNING id, expires_at`,
+      [kioskHash(token), target, u.id, String(KIOSK_SESSION_MINUTES), req.ip ?? null]);
+    await pool.query(
+      `UPDATE mo_user_profiles SET kiosk_failed_attempts=0, kiosk_locked_until=NULL WHERE user_id=$1`, [target]);
+    const who = (await pool.query(`SELECT full_name FROM users WHERE id=$1`, [target])).rows[0];
+    await audit(u, "equipment.kiosk_session_opened", "user", null, null, { user_id: target }, req);
+    res.status(201).json({
+      kiosk_token: token, expires_at: ins.rows[0].expires_at,
+      holder: { id: target, full_name: who?.full_name ?? null },
+    });
+  }));
+
+  /* Close a session explicitly — the tablet does this when the flow finishes,
+     so a token cannot be reused by whoever walks up next. */
+  app.post(`${P}/equipment/kiosk/session/end`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const token = String((req.body as Record<string, unknown>).kiosk_token ?? "");
+    if (token)
+      await pool.query(
+        `UPDATE mo_kiosk_sessions SET ended_at=NOW() WHERE token_hash=$1 AND ended_at IS NULL`, [kioskHash(token)]);
+    res.json({ ok: true });
+  }));
+
   // ── Equipment bookings — AC-7: no double-booking (DB EXCLUDE constraint) ───
+  /* Phase 17D — A RECORD NOBODY HAS VERIFIED IS NOT INVENTORY YET, so it may
+     not enter circulation. Applied to the two doors IN — booking and checkout —
+     and deliberately not to the ways out: an asset that somehow got issued must
+     always be returnable, and check-in, damage and maintenance stay open at
+     every verification state. Every asset that existed before this phase is
+     'active', so nothing in the current estate changes behaviour. */
+  const notCirculatable = (state: unknown) =>
+    state && state !== "active"
+      ? `This record is ${String(state).replace(/_/g, " ")} and is not part of the inventory yet.`
+      : null;
+
+  /* ── Phase 17G: WHAT MAY BE RESERVED ─────────────────────────────────────
+     RESERVATION IS NOT CUSTODY, so its eligibility rules are not checkout's.
+     A camera that is in for repair today can perfectly well be spoken for at
+     the end of the month — refusing that would make the calendar less useful
+     than the whiteboard it replaced. What cannot be reserved is an asset that
+     will never come back (retired, lost), one whose record nobody has accepted
+     yet (draft, pending, rejected), and a pool, which has no single unit to
+     reserve (D-7).
+
+     ONE DEFINITION, TWO CALLERS. The booking endpoint decides with it and the
+     availability grid reports with it. They used to disagree: the grid applied
+     BR-7's unserviceable list and no verification check at all, so a draft
+     asset was drawn as bookable and then refused at the POST. A grid that
+     offers what the endpoint rejects is worse than no grid. */
+  const NOT_RESERVABLE_LIFECYCLE = ["retired", "lost"];
+  /** The SQL half, for the availability grid. `i` is mo_equipment_items. */
+  const RESERVABLE_SQL = `
+    i.status <> ALL('{retired,lost}'::text[])
+    AND COALESCE(i.verification_state, 'active') = 'active'
+    AND COALESCE(i.tracking_mode, c.tracking_mode) IS DISTINCT FROM 'pooled'`;
+  /** The handler half. Returns the refusal, or null when the asset may be booked. */
+  const notReservable = (it: { status?: unknown; verification_state?: unknown; tracking_mode?: unknown }) => {
+    if (String(it.tracking_mode) === "pooled")
+      return "This is pooled inventory, which cannot be reserved yet. "
+           + "Pooled reservation is a separate piece of work; reserve a serialized asset.";
+    const v = notCirculatable(it.verification_state);
+    if (v) return v;
+    if (NOT_RESERVABLE_LIFECYCLE.includes(String(it.status)))
+      return `This item is ${String(it.status)} and cannot be booked.`;
+    return null;
+  };
+
   app.post(`${P}/equipment/bookings`, asyncHandler(async (req, res) => {
-    const u = requireMedia(res); if (!u) return;
+    const u = await requireEquipment(res); if (!u) return;
     const b = req.body as Record<string, unknown>;
     const itemId = Number(b.equipment_item_id);
     if (!itemId) return sendError(res, 400, "equipment_item_id is required.");
-    const s = b.starts_at as string, e = b.ends_at as string;
-    if (!s || !e) return sendError(res, 400, "Booking start and end are required.");
-    if (e < s) return sendError(res, 400, "Booking end must be on or after the start.");
-    // VR-8: bookings are capped at 30 days.
-    if ((new Date(e).getTime() - new Date(s).getTime()) / 86400000 > 30)
-      return sendError(res, 400, "VR-8: a booking cannot exceed 30 days.");
+
+    /* The item has to exist and be reservable. The old handler checked neither
+       and let the foreign key answer, which meant a booking could be made
+       against a retired asset. */
+    const item = (await pool.query(
+      `SELECT i.id, i.status, i.asset_tag, i.verification_state,
+              COALESCE(i.tracking_mode, c.tracking_mode) AS tracking_mode
+         FROM mo_equipment_items i
+         LEFT JOIN mo_equipment_categories c ON c.id = i.category_id
+        WHERE i.id=$1 AND i.deleted_at IS NULL`, [itemId])).rows[0];
+    if (!item) return sendError(res, 404, "Item not found.");
+    /* Phase 13B — the same 404, deliberately. An asset in another scope must
+       answer exactly as a non-existent one does, or the id becomes an oracle. */
+    if (!(await assetScopeOk(await inventoryScopeOf(u), itemId))) return sendError(res, 404, "Item not found.");
+    const refusal = notReservable(item);
+    if (refusal) return sendError(res, 409, refusal);
+
+    const s = String(b.starts_at ?? ""), e = String(b.ends_at ?? "");
+    const verdict = canBook(s, e);
+    if (!verdict.ok) return sendError(res, 400, verdict.message);
+
+    /* Phase 17H — A PROJECT LINK HAS TO POINT AT A PROJECT. The id was taken
+       from the request and written straight through, so the only thing stopping
+       a booking being attached to a deleted project was the foreign key, which
+       does not know about deleted_at. Gear filed against a project nobody can
+       open is gear nobody will find again.
+
+       This is integrity, not authorization: every media member may already open
+       every project, so there is nothing here to leak. What the caller may
+       RESERVE is decided by inventory scope, above, and is unchanged. */
+    const projectId = b.project_id == null || b.project_id === "" ? null : Number(b.project_id);
+    if (projectId !== null) {
+      if (!Number.isFinite(projectId)) return sendError(res, 400, "project_id must be a number.");
+      const pr = (await pool.query(
+        `SELECT id FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [projectId])).rows[0];
+      if (!pr) return sendError(res, 400, "That project does not exist.");
+    }
+
     try {
       const ins = await pool.query(
+        /* created_at is the column's DEFAULT and is never taken from the
+           request: when a reservation was made is a fact about the server, and
+           a client that could set it could backdate demand. */
         `INSERT INTO mo_equipment_bookings (equipment_item_id, user_id, shoot_id, project_id, starts_at, ends_at, status, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,'reserved',$2) RETURNING *`,
-        [itemId, u.id, b.shoot_id ? Number(b.shoot_id) : null, b.project_id ? Number(b.project_id) : null, s, e]);
+         VALUES ($1,$2,$3,$4,$5,$6,'reserved',$2)
+         RETURNING id, equipment_item_id, user_id, shoot_id, project_id, status, created_by, created_at,
+                   to_char(starts_at,'YYYY-MM-DD') AS starts_at, to_char(ends_at,'YYYY-MM-DD') AS ends_at`,
+        [itemId, u.id, b.shoot_id ? Number(b.shoot_id) : null, projectId, s, e]);
       await audit(u, "equipment.booked", "equipment_booking", ins.rows[0].id, null, { item: itemId, s, e }, req);
       res.status(201).json({ booking: ins.rows[0] });
     } catch (err) {
-      if ((err as { code?: string }).code === "23P01")
+      const code = (err as { code?: string }).code;
+      /* 23P01 — the exclusion constraint refused an overlap. The ordinary case.
+
+         40P01 — THE SAME REFUSAL, ARRIVING AS A DEADLOCK. When two overlapping
+         bookings of one asset are inserted at the same instant, each transaction
+         writes its index entry and must then wait on the other to commit before
+         it can decide the conflict. That is a wait cycle, and Postgres breaks it
+         by killing one of them. The survivor commits; the victim's booking did
+         not happen, for exactly the reason 23P01 exists to report.
+
+         Catching only 23P01 meant the victim got a 500 with an HTML body
+         instead of AC-7 — the one case the constraint is there to handle
+         gracefully. Reproduced at roughly one concurrent pair in seven through
+         the real handler; the raw two-statement race does not show it, because
+         the handler's own latency is what aligns the two waits.
+
+         This is not a retry: the request is answered, once, with what actually
+         happened. The caller may book again, and the next attempt meets a
+         committed row and gets the ordinary 23P01. */
+      if (code === "23P01" || code === "40P01")
         return sendError(res, 409, "AC-7: this item is already booked for overlapping dates.");
       throw err;
     }
   }));
 
+  /* Every booking read returns the same shape, with DAYS as days. Phase 17G:
+     the cancel endpoint had two exits — one through this projection and one
+     that echoed a raw `SELECT *` row when the booking was already cancelled, so
+     the same endpoint answered with two different date formats depending on
+     state, and the audit trail stored UTC instants for a pair of DATE columns. */
+  const BOOKING_COLUMNS = `id, equipment_item_id, user_id, shoot_id, project_id, status, created_by,
+     to_char(starts_at,'YYYY-MM-DD') AS starts_at, to_char(ends_at,'YYYY-MM-DD') AS ends_at`;
+  /* Reads through the POOL, always. It is never called under a held client —
+     db-pool-safety.test.ts enforces that — so it needs no client parameter, and
+     not having one is what keeps it un-callable in the dangerous position. */
+  const bookingRow = async (id: number) =>
+    (await pool.query(`SELECT ${BOOKING_COLUMNS} FROM mo_equipment_bookings WHERE id=$1`, [id]))
+      .rows[0] as Record<string, unknown> | undefined;
+
   app.post(`${P}/equipment/bookings/:id/cancel`, asyncHandler(async (req, res) => {
-    const u = requireMedia(res); if (!u) return;
+    const u = await requireEquipment(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
+    /* Previously: an unconditional UPDATE and {ok:true}, for any id, from any
+       caller — so anybody could cancel tomorrow's shoot booking, and a
+       nonexistent id reported success. */
+    const bk = await bookingRow(id);
+    if (!bk) return sendError(res, 404, "Booking not found.");
+    /* Phase 13B — a BOOKING id is a handle on an ASSET, so it is a way round
+       the asset check unless the booking is scoped by the asset it is for.
+       Note this sits before the already-cancelled early return, which would
+       otherwise confirm the booking exists and echo its row back. */
+    if (!(await assetScopeOk(await inventoryScopeOf(u), Number(bk.equipment_item_id))))
+      return sendError(res, 404, "Booking not found.");
+    if (bk.status === "cancelled") return res.json({ ok: true, booking: bk });
+    if (bk.user_id !== u.id && !(await canManageEquipment(u)))
+      return sendError(res, 403, "You may only cancel your own booking.");
+
     await pool.query(`UPDATE mo_equipment_bookings SET status='cancelled' WHERE id=$1`, [id]);
-    await audit(u, "equipment.booking_cancelled", "equipment_booking", id, null, null, req);
-    res.json({ ok: true });
+    const after = await bookingRow(id);
+    await audit(u, "equipment.booking_cancelled", "equipment_booking", id, bk, after ?? null, req);
+    res.json({ ok: true, booking: after });
+  }));
+
+  /* ═══ MODIFY A BOOKING (Phase 17G, D-8) ═══════════════════════════════════
+     THE BOOKING KEEPS ITS IDENTITY. Cancel-and-recreate would have been easier
+     and is what the UI would otherwise have to do, but it loses the thing a
+     reservation is: a promise with a history. A shoot whose dates moved twice
+     should read as one booking that moved twice, not three bookings of which
+     two are cancelled, and anything referencing the booking id — a checkout
+     made against it, an audit entry — would be pointing at a corpse.
+
+     THE CONSTRAINT IS STILL THE AUTHORITY. The new window is not checked in
+     JavaScript and then written; it is written, and the exclusion constraint
+     decides. A competing booking committed a microsecond earlier therefore wins
+     on the same terms as it would against an INSERT, and the loser's row is
+     left exactly as it was by the ROLLBACK. 23P01 and 40P01 are both that
+     refusal — the deadlock form arrives when two overlapping writes wait on
+     each other's index entry, which the create path documents at length. */
+  app.patch(`${P}/equipment/bookings/:id`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+
+    const bk = await bookingRow(id);
+    if (!bk) return sendError(res, 404, "Booking not found.");
+    if (!(await assetScopeOk(await inventoryScopeOf(u), Number(bk.equipment_item_id))))
+      return sendError(res, 404, "Booking not found.");
+    if (bk.user_id !== u.id && !(await canManageEquipment(u)))
+      return sendError(res, 403, "You may only change your own booking.");
+    /* A finished booking is history. Moving one would rewrite what happened. */
+    if (bk.status !== "reserved")
+      return sendError(res, 409, `This booking is ${String(bk.status)} and can no longer be changed.`);
+
+    const s = b.starts_at == null ? String(bk.starts_at) : String(b.starts_at);
+    const e = b.ends_at == null ? String(bk.ends_at) : String(b.ends_at);
+    const verdict = canBook(s, e);
+    if (!verdict.ok) return sendError(res, 400, verdict.message);
+    if (s === bk.starts_at && e === bk.ends_at) return res.json({ booking: bk, changed: false });
+
+    const client = await pool.connect();
+    let after: Record<string, unknown> | undefined;
+    let conflict: { status: number; message: string } | null = null;
+    try {
+      await client.query("BEGIN");
+      /* Locked so a concurrent cancel or checkout cannot change what is being
+         moved between the read above and the write below. */
+      const live = (await client.query(
+        `SELECT status FROM mo_equipment_bookings WHERE id=$1 FOR UPDATE`, [id])).rows[0];
+      if (!live) conflict = { status: 404, message: "Booking not found." };
+      else if (live.status !== "reserved")
+        conflict = { status: 409, message: `This booking is ${String(live.status)} and can no longer be changed.` };
+      if (!conflict) {
+        /* RETURNING the columns by name, on the held client. Two reasons, and
+           the first is not style: db-pool-safety.test.ts forbids awaiting a
+           helper under a held client, because a helper that defaults to the
+           pool is one missing argument away from the deadlock that test exists
+           to prevent — and bookingRow() does default to the pool. The second is
+           that the row this writes is the row to report; re-reading after the
+           commit would show whatever the world did next. */
+        after = (await client.query(
+          `UPDATE mo_equipment_bookings SET starts_at=$2::date, ends_at=$3::date WHERE id=$1
+            RETURNING ${BOOKING_COLUMNS}`, [id, s, e])).rows[0];
+      }
+      if (conflict) await client.query("ROLLBACK"); else await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      const code = (err as { code?: string }).code;
+      /* The exclusion constraint refusing an overlap, in its two forms. Anything
+         else is a real error and is rethrown. */
+      if (code !== "23P01" && code !== "40P01") { client.release(); throw err; }
+      conflict = { status: 409, message: "AC-7: this item is already booked for overlapping dates." };
+      client.release();
+      return sendError(res, conflict.status, conflict.message);
+    }
+    /* Released before audit(): this codebase forbids auditing under a held
+       client, after a real pool deadlock. */
+    client.release();
+    if (conflict) return sendError(res, conflict.status, conflict.message);
+
+    await audit(u, "equipment.booking_changed", "equipment_booking", id, bk, after ?? null, req);
+    res.json({ booking: after, changed: true });
   }));
 
   // ── Checkout / check-in — immutable transaction ledger (§7.6) ─────────────
+  /* ── Phase 17F: how long a loan may run ─────────────────────────────────
+     The initial product policy, named rather than inlined so it can become a
+     configurable rule later without touching custody. */
+  const CHECKOUT_MAX_DAYS = 30;
+
+  /* ═══ CHECKOUT ════════════════════════════════════════════════════════════
+     ONE ASSET, ONE HOLDER — ENFORCED BY A ROW LOCK, NOT BY HOPE.
+
+     What this used to do: read the item, read the ledger, decide in JavaScript,
+     then INSERT — three autocommit statements with nothing between them. Two
+     simultaneous requests both read "available", both decided yes, and both
+     wrote. A probe reproduced it four times out of four: two 201s and two
+     check_out rows for one serialized camera.
+
+     The fix is the smallest one that is actually sufficient. Everything that
+     cannot change under a race is checked BEFORE a client is taken — existence,
+     scope, tracking mode, verification, the due date, who the holder is. Then
+     one transaction locks the ASSET ROW, re-reads the things a competitor could
+     have changed underneath (its status, its live custody, its bookings), and
+     writes. The loser blocks on the lock, wakes to find the asset checked out,
+     and is told so.
+
+     WHY THE ASSET ROW IS THE RIGHT LOCK. Custody is derived per asset, and every
+     path that can create or end it — this handler, check-in, the kiosk — must
+     touch mo_equipment_items to record the resulting status. Locking that row
+     therefore serialises every writer of that asset's custody. It is mutual
+     exclusion on the thing being contended, which is why no ledger constraint
+     is needed to make the invariant hold.
+
+     The pooled question is refused outright rather than approximated: see D-1. */
   app.post(`${P}/equipment/:id/checkout`, asyncHandler(async (req, res) => {
-    const u = requireMedia(res); if (!u) return;
+    const u = await requireEquipment(res); if (!u) return;
     const itemId = parseInt(getSingleParam(req.params.id), 10);
     const b = req.body as Record<string, unknown>;
-    const item = await pool.query(`SELECT status FROM mo_equipment_items WHERE id=$1 AND deleted_at IS NULL`, [itemId]);
-    if (!item.rows[0]) return sendError(res, 404, "Item not found.");
-    if (item.rows[0].status === "checked_out") return sendError(res, 409, "Item is already checked out.");
-    const holder = toUid(b.holder_id) ?? u.id;
+
+    const item = (await pool.query(
+      `SELECT i.id, i.status, i.condition, i.asset_tag, i.verification_state, i.scope_id,
+              COALESCE(i.tracking_mode, c.tracking_mode) AS tracking_mode
+         FROM mo_equipment_items i
+         LEFT JOIN mo_equipment_categories c ON c.id = i.category_id
+        WHERE i.id=$1 AND i.deleted_at IS NULL`, [itemId])).rows[0];
+    if (!item) return sendError(res, 404, "Item not found.");
+    /* Phase 13B — the same 404, deliberately. An asset in another scope must
+       answer exactly as a non-existent one does, or the id becomes an oracle. */
+    if (!(await assetScopeOk(await inventoryScopeOf(u), itemId))) return sendError(res, 404, "Item not found.");
+    const unverifiedC = notCirculatable(item.verification_state);
+    if (unverifiedC) return sendError(res, 409, unverifiedC);
+
+    /* D-1 — SERIALIZED ONLY. A pool is one record with a quantity; lending
+       five of forty-eight is a custody model this system does not have yet, and
+       a checkout that silently took the whole pool — or pretended to take one —
+       would be worse than refusing. Refused in words a person can act on. */
+    if (String(item.tracking_mode) === "pooled")
+      return sendError(res, 409,
+        "This is pooled inventory, which cannot be checked out yet. "
+        + "Pooled custody is a separate piece of work; record the issue against a serialized asset.");
+
+    /* D-3 — A LOAN HAS AN END DATE. Required, a real date, in the future, and
+       inside the policy window. A missing one used to be accepted and produced
+       a loan nobody could chase; a past one produced a loan that was overdue
+       the moment it was made, which then blocked the borrower from every
+       further checkout. */
+    const dueRaw = typeof b.expected_return_at === "string" ? b.expected_return_at.trim() : "";
+    if (!dueRaw)
+      return sendError(res, 400, "An expected return date is required.");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dueRaw) || Number.isNaN(Date.parse(dueRaw)))
+      return sendError(res, 400, "The expected return date must be a date, as YYYY-MM-DD.");
+    /* Judged by the SERVER's calendar, never the browser's. */
+    const when = (await pool.query(
+      `SELECT $1::date > CURRENT_DATE AS future,
+              $1::date <= CURRENT_DATE + $2::int AS within`, [dueRaw, CHECKOUT_MAX_DAYS])).rows[0];
+    if (!when.future)
+      return sendError(res, 400, "The expected return date must be in the future.");
+    if (!when.within)
+      return sendError(res, 400, `A checkout may run for at most ${CHECKOUT_MAX_DAYS} days.`);
+
+    const kioskUserId = await kioskHolderFor(res, b); if (kioskUserId === false) return;
+    /* The asset's inventory is what decides whether a student may hold it, so
+       it travels with the decision instead of being looked up twice. */
+    const holder = await resolveHolder(res, u, b, kioskUserId,
+                                       item.scope_id == null ? null : Number(item.scope_id));
+    if (!holder) return;
+    /* Read before the client is taken: neither depends on this asset's row. */
+    const worstOverdue = await worstOverdueDays(holder);
+    const overdueCfg = await equipmentOverdueConfig();
     const via = ["desktop", "mobile", "kiosk"].includes(String(b.recorded_via)) ? String(b.recorded_via) : "desktop";
-    const tx = await pool.query(
-      `INSERT INTO mo_equipment_transactions (equipment_item_id, booking_id, holder_id, action, quantity, condition_noted, expected_return_at, occurred_at, recorded_via, recorded_by)
-       VALUES ($1,$2,$3,'check_out',1,$4,$5,NOW(),$6,$7) RETURNING *`,
-      [itemId, b.booking_id ? Number(b.booking_id) : null, holder, (b.condition_noted as string) || "good",
-       (b.expected_return_at as string) || null, via, u.id]);
-    await pool.query(`UPDATE mo_equipment_items SET status='checked_out' WHERE id=$1`, [itemId]);
-    if (b.booking_id) await pool.query(`UPDATE mo_equipment_bookings SET status='active' WHERE id=$1`, [Number(b.booking_id)]);
-    await audit(u, "equipment.checked_out", "equipment_item", itemId, null, { holder }, req);
-    res.status(201).json({ transaction: tx.rows[0] });
+    const bookingId = b.booking_id ? Number(b.booking_id) : null;
+
+    const client = await pool.connect();
+    let created: Record<string, unknown> | null = null;
+    let conflict: { status: number; message: string } | null = null;
+    try {
+      await client.query("BEGIN");
+      /* THE LOCK. Everything below re-reads state a competitor could have
+         changed, and holds the asset until COMMIT. */
+      const live = (await client.query(
+        `SELECT status, condition FROM mo_equipment_items WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`,
+        [itemId])).rows[0];
+      if (!live) conflict = { status: 404, message: "Item not found." };
+
+      /* The ledger, read under the lock — this is what "already out" means. */
+      const last = conflict ? null : (await client.query(
+        `SELECT action FROM mo_equipment_transactions
+          WHERE equipment_item_id=$1 ORDER BY occurred_at DESC, id DESC LIMIT 1`, [itemId])).rows[0];
+      const alreadyOut = !!last && last.action === "check_out";
+
+      /* D-2 — A CHECKOUT MUST NOT EAT SOMEBODY ELSE'S RESERVATION. The loan runs
+         from today to the date just validated, so the test is whether THAT
+         window overlaps a live booking held by anyone else — the same inclusive
+         daterange overlap the booking exclusion constraint itself uses, so
+         "conflicts" means the same thing in both places. A booking that starts
+         the day after this loan ends does not conflict; one that starts inside
+         it does, however far away it is. No warning window, no override. */
+      const clash = conflict ? null : (await client.query(
+        `SELECT b.id, b.user_id, to_char(b.starts_at,'YYYY-MM-DD') AS starts_at,
+                to_char(b.ends_at,'YYYY-MM-DD') AS ends_at
+           FROM mo_equipment_bookings b
+          WHERE b.equipment_item_id=$1 AND b.status IN ('reserved','active')
+            AND b.user_id <> $2
+            /* THE RESERVATION BEING FULFILLED IS NOT A CONFLICT WITH ITSELF.
+               Phase 17H found this: a project booking is made by whoever plans
+               the shoot, and the gear is then handed to whoever is carrying it.
+               Checking out against that booking — booking_id names it — was
+               refused by the booking itself, because the holder was not the
+               person who reserved it. Collecting what was booked is the happy
+               path; every OTHER live reservation still blocks. */
+            AND ($4::bigint IS NULL OR b.id <> $4)
+            AND daterange(b.starts_at, b.ends_at, '[]')
+                && daterange(CURRENT_DATE, $3::date, '[]')
+          ORDER BY b.starts_at LIMIT 1`, [itemId, holder, dueRaw, bookingId])).rows[0];
+
+      if (!conflict) {
+        const verdict = canCheckOut({
+          itemStatus: live.status, alreadyOut,
+          borrowerWorstOverdueDays: worstOverdue,
+          conflictingBookingHolder: clash ? String(clash.user_id) : null,
+          borrowerId: holder, config: overdueCfg,
+        });
+        if (!verdict.ok)
+          conflict = { status: 409, message: clash
+            ? `This item is reserved by somebody else from ${clash.starts_at} to ${clash.ends_at}. `
+              + "Choose an earlier return date, or ask the holder of that reservation."
+            : verdict.message };
+      }
+
+      if (!conflict) {
+        /* The condition AT CHECKOUT is what BR-8 compares the return against, so
+           it is recorded from the item rather than taken from the request. */
+        const tx = await client.query(
+          `INSERT INTO mo_equipment_transactions (equipment_item_id, booking_id, holder_id, action, quantity,
+                                                  condition_noted, expected_return_at, occurred_at, recorded_via, recorded_by)
+           VALUES ($1,$2,$3,'check_out',1,$4,$5::date,NOW(),$6,$7)
+           /* A DATE IS A DAY, NOT AN INSTANT. RETURNING * hands the due date
+              back as a JS Date, which res.json() renders in UTC — so east of
+              Greenwich the loan came back due the day before it is. Every
+              column is named rather than starred, both to serialise that one
+              and because RETURNING * plus a to_char alias would emit two
+              columns of the same name and rely on which one wins, which is the
+              defect Phase 17E.1 went looking for. */
+           RETURNING id, equipment_item_id, booking_id, holder_id, action, quantity,
+                     condition_noted, occurred_at, recorded_via, recorded_by,
+                     to_char(expected_return_at, 'YYYY-MM-DD') AS expected_return_at`,
+          [itemId, bookingId, holder, live.condition, dueRaw, via, u.id]);
+        await client.query(
+          `UPDATE mo_equipment_items SET status='checked_out', updated_at=NOW() WHERE id=$1`, [itemId]);
+        if (bookingId)
+          await client.query(`UPDATE mo_equipment_bookings SET status='active' WHERE id=$1`, [bookingId]);
+        created = tx.rows[0];
+      }
+      if (conflict) await client.query("ROLLBACK"); else await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      /* Released before audit(): this codebase forbids auditing under a held
+         client, after a real pool deadlock. */
+      client.release();
+    }
+    /* A refusal writes nothing and says nothing to the trail — an audit event
+       for a checkout that did not happen is worse than none. */
+    if (conflict) return sendError(res, conflict.status, conflict.message);
+
+    await audit(u, "equipment.checked_out", "equipment_item", itemId,
+      { status: item.status }, { status: "checked_out", holder, via, expected_return_at: dueRaw }, req);
+    res.status(201).json({ transaction: created });
   }));
 
   app.post(`${P}/equipment/:id/checkin`, asyncHandler(async (req, res) => {
-    const u = requireMedia(res); if (!u) return;
+    const u = await requireEquipment(res); if (!u) return;
     const itemId = parseInt(getSingleParam(req.params.id), 10);
     const b = req.body as Record<string, unknown>;
+
+    const item = (await pool.query(
+      `SELECT id, status, condition, asset_tag FROM mo_equipment_items WHERE id=$1 AND deleted_at IS NULL`,
+      [itemId])).rows[0];
+    if (!item) return sendError(res, 404, "Item not found.");
+    /* Phase 13B — the same 404, deliberately. An asset in another scope must
+       answer exactly as a non-existent one does, or the id becomes an oracle. */
+    if (!(await assetScopeOk(await inventoryScopeOf(u), itemId))) return sendError(res, 404, "Item not found.");
+
+    /* WHO IS RETURNING IT — read before the lock, because the ANSWER decides
+       whether this caller is allowed to act at all, and an unauthorised caller
+       should never reach the point of holding a row lock.
+
+       The old handler wrote `holder_id: u.id` — the person pressing the button
+       — so a custodian receiving gear back from a colleague made the ledger say
+       the custodian had held it. The check-in row names the person the checkout
+       named. */
+    const peek = await liveCheckout(itemId);
+    const holderPeek = peek ? String(peek.holder_id) : u.id;
+    const kioskUserId = await kioskHolderFor(res, b); if (kioskUserId === false) return;
+    if (holderPeek !== u.id && !kioskUserId && !(await canManageEquipment(u)))
+      return sendError(res, 403, "Only the holder, a Custodian or an Admin may check this item in.");
+
     const via = ["desktop", "mobile", "kiosk"].includes(String(b.recorded_via)) ? String(b.recorded_via) : "desktop";
-    const cond = (b.condition_noted as string) || "good";
-    const tx = await pool.query(
-      `INSERT INTO mo_equipment_transactions (equipment_item_id, holder_id, action, quantity, condition_noted, occurred_at, recorded_via, recorded_by)
-       VALUES ($1,$2,'check_in',1,$3,NOW(),$4,$5) RETURNING *`,
-      [itemId, u.id, cond, via, u.id]);
-    const damaged = ["poor", "fair"].includes(cond) || b.damaged === true;
-    await pool.query(`UPDATE mo_equipment_items SET status=$2, condition=COALESCE($3,condition) WHERE id=$1`,
-      [itemId, damaged ? "maintenance" : "available", cond || null]);
-    await pool.query(`UPDATE mo_equipment_bookings SET status='completed' WHERE equipment_item_id=$1 AND status='active'`, [itemId]);
-    if (damaged) await pool.query(
-      `INSERT INTO mo_maintenance_records (equipment_item_id, kind, description, reported_by, started_at)
-       VALUES ($1,'damage_report',$2,$3,CURRENT_DATE)`, [itemId, `Flagged on check-in (condition: ${cond}).`, u.id]);
-    await audit(u, "equipment.checked_in", "equipment_item", itemId, null, { condition: cond, damaged }, req);
-    res.status(201).json({ transaction: tx.rows[0] });
+    const askedCond = isCondition(b.condition_noted) ? String(b.condition_noted) : null;
+
+    /* The same lock discipline as checkout, for the same reason: two people
+       pressing Check in at once used to produce two 201s and two check_in rows
+       against one loan. The loser now blocks, wakes to a ledger that already
+       says the item came back, and is told so. */
+    const client = await pool.connect();
+    let created: Record<string, unknown> | null = null;
+    let damaged = false;
+    let damagedRecordId = 0;
+    let holder = holderPeek;
+    let conflict: { status: number; message: string } | null = null;
+    try {
+      await client.query("BEGIN");
+      const live = (await client.query(
+        `SELECT status, condition FROM mo_equipment_items WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`,
+        [itemId])).rows[0];
+      if (!live) conflict = { status: 404, message: "Item not found." };
+
+      const last = conflict ? null : (await client.query(
+        `SELECT * FROM mo_equipment_transactions
+          WHERE equipment_item_id=$1 ORDER BY occurred_at DESC, id DESC LIMIT 1`, [itemId])).rows[0];
+      const out = last && last.action === "check_out" ? last : null;
+      if (!conflict) {
+        const pre = canCheckIn(live.status, !!out);
+        if (!pre.ok) conflict = { status: 409, message: pre.message };
+      }
+
+      if (!conflict) {
+        /* Re-resolved under the lock: the loan that is actually open now is the
+           one being closed, not the one that was open when we looked. */
+        holder = out ? String(out.holder_id) : u.id;
+        const cond = askedCond ?? live.condition;
+        /* BR-8, once. Compared against the condition recorded at CHECKOUT, not
+           the item's current column — which this very statement rewrites. */
+        damaged = isConditionDrop(out?.condition_noted ?? live.condition, cond);
+        /* D-4 / D-21 — the OTHER route to 'available'. An asset can be checked
+           out with a repair still open against it (17F blocks a NEW checkout,
+           but the record may be opened while it is already in somebody's
+           hands), and returning it undamaged would then have put it back on the
+           shelf with open work on it. Counted under the lock that writes the
+           status. */
+        const openWork = damaged ? 1 : await openMaintenance(client as unknown as Queryable, itemId);
+
+        const tx = await client.query(
+          `INSERT INTO mo_equipment_transactions (equipment_item_id, booking_id, holder_id, action, quantity,
+                                                  condition_noted, occurred_at, recorded_via, recorded_by)
+           VALUES ($1,$2,$3,'check_in',1,$4,NOW(),$5,$6)
+           RETURNING id, equipment_item_id, booking_id, holder_id, action, quantity,
+                     condition_noted, occurred_at, recorded_via, recorded_by,
+                     to_char(expected_return_at, 'YYYY-MM-DD') AS expected_return_at`,
+          [itemId, out?.booking_id ?? null, holder, cond, via, u.id]);
+        await client.query(
+          `UPDATE mo_equipment_items SET status=$2, condition=$3, updated_at=NOW() WHERE id=$1`,
+          [itemId, openWork > 0 ? "maintenance" : "available", cond]);
+        /* Complete only the booking this loan was made under, rather than every
+           active booking the item has. */
+        if (out?.booking_id)
+          await client.query(`UPDATE mo_equipment_bookings SET status='completed' WHERE id=$1`, [out.booking_id]);
+        else
+          await client.query(
+            `UPDATE mo_equipment_bookings SET status='completed'
+              WHERE equipment_item_id=$1 AND status='active' AND user_id=$2`, [itemId, holder]);
+        if (damaged)
+          damagedRecordId = Number((await client.query(
+            `INSERT INTO mo_maintenance_records (equipment_item_id, kind, description, reported_by, started_at)
+             VALUES ($1,'damage_report',$2,$3,CURRENT_DATE) RETURNING id`,
+            [itemId, `BR-8: returned ${cond}, checked out ${out?.condition_noted ?? live.condition}.`, u.id]))
+            .rows[0].id);
+        created = tx.rows[0];
+      }
+      if (conflict) await client.query("ROLLBACK"); else await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+    if (conflict) return sendError(res, conflict.status, conflict.message);
+
+    await audit(u, "equipment.checked_in", "equipment_item", itemId,
+      { status: item.status, condition: item.condition },
+      { condition: created!.condition_noted, damaged, holder }, req);
+    /* After the client is released, like audit(): a notification under a held
+       connection is the pool deadlock this codebase already paid for once. */
+    if (damagedRecordId)
+      await notifyMaintenanceOpened(itemId, damagedRecordId, String(item.asset_tag),
+                                    "damage_report", await scopeIdOf(itemId));
+    res.status(201).json({ transaction: created, damaged });
   }));
 
   app.post(`${P}/equipment/:id/damage`, asyncHandler(async (req, res) => {
-    const u = requireMedia(res); if (!u) return;
+    const u = await requireEquipment(res); if (!u) return;
     const itemId = parseInt(getSingleParam(req.params.id), 10);
     const b = req.body as Record<string, unknown>;
+    const item = (await pool.query(
+      `SELECT id, status FROM mo_equipment_items WHERE id=$1 AND deleted_at IS NULL`, [itemId])).rows[0];
+    if (!item) return sendError(res, 404, "Item not found.");
+    /* Phase 13B — the same 404, deliberately. An asset in another scope must
+       answer exactly as a non-existent one does, or the id becomes an oracle. */
+    if (!(await assetScopeOk(await inventoryScopeOf(u), itemId))) return sendError(res, 404, "Item not found.");
+    /* Forcing an asset out of service is a custodial act, not something any
+       signed-in colleague can do to any camera in the cupboard. */
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may report damage.");
+    if (item.status === "retired")
+      return sendError(res, 409, "A retired asset has no maintenance workflow.");
+
     const kind = ["maintenance", "repair", "damage_report"].includes(String(b.kind)) ? String(b.kind) : "damage_report";
     const ins = await pool.query(
       `INSERT INTO mo_maintenance_records (equipment_item_id, kind, description, reported_by, started_at)
-       VALUES ($1,$2,$3,$4,CURRENT_DATE) RETURNING *`, [itemId, kind, String(b.description ?? ""), u.id]);
-    await pool.query(`UPDATE mo_equipment_items SET status='maintenance' WHERE id=$1`, [itemId]);
-    await audit(u, "equipment.damage_reported", "equipment_item", itemId, null, { kind }, req);
+       VALUES ($1,$2,$3,$4,CURRENT_DATE)
+       /* A DATE IS A DAY. RETURNING * handed started_at back as a JS Date,
+          which res.json() renders in UTC — so east of Greenwich a report filed
+          today came back dated yesterday. Same defect Phase 17F fixed in the
+          transaction handlers; the columns are named rather than starred. */
+       RETURNING id, equipment_item_id, kind, description, cost, vendor_id, reported_by,
+                 to_char(started_at,  'YYYY-MM-DD') AS started_at,
+                 to_char(resolved_at, 'YYYY-MM-DD') AS resolved_at,
+                 to_char(next_due_at, 'YYYY-MM-DD') AS next_due_at`,
+      [itemId, kind, String(b.description ?? ""), u.id]);
+    /* An item in somebody's hands stays checked out: its custody is a fact,
+       and overwriting it would lose who has to bring it back. */
+    if (item.status !== "checked_out")
+      await pool.query(`UPDATE mo_equipment_items SET status='maintenance', updated_at=NOW() WHERE id=$1`, [itemId]);
+    await audit(u, "equipment.damage_reported", "equipment_item", itemId, { status: item.status }, { kind }, req);
+    /* J-D7 — opening a repair silently takes a camera out of service. The
+       people who run that inventory hear about it; nobody else does. */
+    await notifyMaintenanceOpened(itemId, Number(ins.rows[0].id), String(item.asset_tag),
+                                  kind, await scopeIdOf(itemId));
     res.status(201).json({ record: ins.rows[0] });
+  }));
+
+  /* ═══ MAINTENANCE CLOSURE AND INSPECTION (Phase 17I) ══════════════════════
+
+     THE INVARIANT THIS SECTION EXISTS TO CREATE:
+
+       an open maintenance record  →  the asset cannot leave 'maintenance'
+       resolving the last record   →  does NOT make it available
+       an inspection that passes   →  may release it
+       an inspection that fails    →  opens work and it stays put
+
+     Resolving repair work and returning a camera to the shelf are two
+     decisions, and collapsing them is how gear goes back out because somebody
+     ticked "repair done". They are two endpoints here for that reason. */
+
+  /** How many open maintenance records an asset has, on a given connection.
+      Takes the connection so the release path can count under the SAME lock it
+      is about to write with — counting through the pool would read a snapshot
+      the lock does not cover. */
+  type Queryable = { query: (q: string, p?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> };
+  const openMaintenance = async (on: Queryable, assetId: number) => Number((await on.query(
+    `SELECT COUNT(*)::int c FROM mo_maintenance_records
+      WHERE equipment_item_id=$1 AND resolved_at IS NULL`, [assetId])).rows[0].c);
+
+  const MAINT_COLUMNS = `id, equipment_item_id, kind, description, cost, vendor_id, reported_by,
+     resolved_by, resolution_note,
+     to_char(started_at,  'YYYY-MM-DD') AS started_at,
+     to_char(resolved_at, 'YYYY-MM-DD') AS resolved_at,
+     to_char(next_due_at, 'YYYY-MM-DD') AS next_due_at`;
+
+  /* ── Update an OPEN maintenance record (Phase 17J) ──────────────────────
+     Three columns have existed since the schema was written, are returned by
+     the API and drawn in the UI, and no code path could ever write them: cost,
+     vendor_id and next_due_at. A custodian could not record what a repair cost,
+     who did it, or when the next service falls due.
+
+     WHAT MAY CHANGE, AND WHAT MAY NOT. The operational facts a repair acquires
+     while it is open — what is wrong, who is doing it, what it cost, when it is
+     next due. Not the record's identity, not the asset it belongs to, and not
+     its history: equipment_item_id, kind, reported_by, started_at, resolved_at
+     and resolved_by are all refused, because moving a repair to another camera
+     or back-dating it is rewriting what happened rather than recording it.
+
+     AND ONLY WHILE IT IS OPEN. A resolved record is history. If a correction to
+     a closed record is ever genuinely needed, that is a decision to take
+     deliberately — not something a generic PATCH should quietly permit. */
+  const MAINT_UPDATABLE = ["description", "vendor_id", "cost", "next_due_at"] as const;
+  app.patch(`${P}/equipment/maintenance/:id`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    if (!id) return sendError(res, 400, "A maintenance record id is required.");
+    const b = req.body as Record<string, unknown>;
+
+    const rec = (await pool.query(
+      `SELECT id, equipment_item_id, resolved_at FROM mo_maintenance_records WHERE id=$1`, [id])).rows[0];
+    if (!rec) return sendError(res, 404, "Maintenance record not found.");
+    /* A maintenance id is a handle on an ASSET. The same 404 an invented id
+       gets, so it cannot be used to confirm an asset in another inventory. */
+    if (!(await assetScopeOk(await inventoryScopeOf(u), Number(rec.equipment_item_id))))
+      return sendError(res, 404, "Maintenance record not found.");
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may update maintenance.");
+
+    /* Refused by name rather than ignored: a field silently dropped is a screen
+       that believes it saved something. */
+    const forbidden = ["equipment_item_id", "kind", "reported_by", "started_at",
+                       "resolved_at", "resolved_by", "id"].filter((k) => k in b);
+    if (forbidden.length)
+      return sendError(res, 400,
+        `${forbidden.join(", ")} cannot be changed. A maintenance record belongs to one asset and one episode.`);
+
+    const fields: string[] = [], vals: unknown[] = [];
+    for (const k of MAINT_UPDATABLE) {
+      if (!(k in b)) continue;
+      let v = b[k];
+      if (k === "cost") {
+        /* NUMERIC(12,2) in the database, so the money never becomes a float.
+           Parsed and bounded here; Postgres does the arithmetic, not JS. */
+        if (v == null || v === "") v = null;
+        else {
+          const n = Number(v);
+          if (!Number.isFinite(n) || n < 0) return sendError(res, 400, "cost must be a positive amount.");
+          if (n > 99_999_999.99) return sendError(res, 400, "cost is larger than this field can hold.");
+          v = n.toFixed(2);
+        }
+      }
+      if (k === "vendor_id") {
+        if (v == null || v === "") v = null;                 // internal repair
+        else {
+          const n = Number(v);
+          if (!Number.isFinite(n)) return sendError(res, 400, "vendor_id must be a number.");
+          const ok = (await pool.query(`SELECT id FROM mo_vendors WHERE id=$1`, [n])).rows[0];
+          if (!ok) return sendError(res, 400, "That vendor does not exist.");
+          v = n;
+        }
+      }
+      if (k === "next_due_at") {
+        if (v == null || v === "") v = null;
+        else if (!/^\d{4}-\d{2}-\d{2}$/.test(String(v)) || Number.isNaN(Date.parse(String(v))))
+          return sendError(res, 400, "next_due_at must be a date, as YYYY-MM-DD.");
+      }
+      if (k === "description") v = typeof v === "string" ? v.trim() : "";
+      fields.push(`${k}=$${vals.length + 2}${k === "next_due_at" ? "::date" : ""}`);
+      vals.push(v);
+    }
+    if (!fields.length) return sendError(res, 400, "Nothing to update.");
+
+    const client = await pool.connect();
+    let after: Record<string, unknown> | undefined;
+    let conflict: { status: number; message: string } | null = null;
+    try {
+      await client.query("BEGIN");
+      /* Locked against the resolve path: an update must not land on a record
+         that was closed a microsecond ago and turn history back into work. */
+      const live = (await client.query(
+        `SELECT resolved_at FROM mo_maintenance_records WHERE id=$1 FOR UPDATE`, [id])).rows[0];
+      if (!live) conflict = { status: 404, message: "Maintenance record not found." };
+      else if (live.resolved_at)
+        conflict = { status: 409, message: "That maintenance record is resolved and is now history." };
+      if (!conflict)
+        after = (await client.query(
+          `UPDATE mo_maintenance_records SET ${fields.join(", ")} WHERE id=$1
+            RETURNING ${MAINT_COLUMNS}`, [id, ...vals])).rows[0];
+      if (conflict) await client.query("ROLLBACK"); else await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+      throw e;
+    }
+    client.release();
+    if (conflict) return sendError(res, conflict.status, conflict.message);
+
+    await audit(u, "equipment.maintenance_updated", "equipment_item", Number(rec.equipment_item_id),
+                { maintenance_id: id }, { maintenance_id: id, ...Object.fromEntries(
+                  MAINT_UPDATABLE.filter((k) => k in b).map((k) => [k, after?.[k] ?? null])) }, req);
+    res.json({ record: after });
+  }));
+
+  /* ── Resolve a maintenance record ────────────────────────────────────────
+     D-1: the custodian of the asset's inventory, or an Admin. Reporting a fault
+     does not qualify anyone to sign it off — the holder who broke it is exactly
+     the person who should not be closing the record. */
+  app.post(`${P}/equipment/maintenance/:id/resolve`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    if (!id) return sendError(res, 400, "A maintenance record id is required.");
+    const b = req.body as Record<string, unknown>;
+
+    const rec = (await pool.query(
+      `SELECT id, equipment_item_id, resolved_at FROM mo_maintenance_records WHERE id=$1`, [id])).rows[0];
+    if (!rec) return sendError(res, 404, "Maintenance record not found.");
+    /* A maintenance id is a handle on an ASSET, so it is a way round the asset
+       check unless it is scoped by the asset it belongs to. The same 404. */
+    if (!(await assetScopeOk(await inventoryScopeOf(u), Number(rec.equipment_item_id))))
+      return sendError(res, 404, "Maintenance record not found.");
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may resolve maintenance.");
+
+    const note = typeof b.resolution_note === "string" ? b.resolution_note.trim() : "";
+    const client = await pool.connect();
+    let resolved: Record<string, unknown> | undefined;
+    let conflict: { status: number; message: string } | null = null;
+    try {
+      await client.query("BEGIN");
+      /* Locked: two custodians pressing Resolve at the same instant must
+         produce one resolution, not two, and the loser must be told. */
+      const live = (await client.query(
+        `SELECT resolved_at FROM mo_maintenance_records WHERE id=$1 FOR UPDATE`, [id])).rows[0];
+      if (!live) conflict = { status: 404, message: "Maintenance record not found." };
+      else if (live.resolved_at) conflict = { status: 409, message: "That maintenance record is already resolved." };
+      if (!conflict) {
+        resolved = (await client.query(
+          `UPDATE mo_maintenance_records
+              SET resolved_at = CURRENT_DATE, resolved_by = $2, resolution_note = $3
+            WHERE id = $1 AND resolved_at IS NULL
+            RETURNING ${MAINT_COLUMNS}`, [id, u.id, note || null])).rows[0];
+        if (!resolved) conflict = { status: 409, message: "That maintenance record is already resolved." };
+      }
+      if (conflict) await client.query("ROLLBACK"); else await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+      throw e;
+    }
+    /* Released before audit(): this codebase forbids auditing under a held
+       client, after a real pool deadlock. */
+    client.release();
+    if (conflict) return sendError(res, conflict.status, conflict.message);
+
+    /* D-2 — RESOLVING IS NOT RELEASING. The asset stays exactly where it is;
+       what changes is that it becomes eligible for an inspection that could
+       release it. Reported so the screen can say so without asking again. */
+    const stillOpen = await openMaintenance(pool as unknown as Queryable, Number(rec.equipment_item_id));
+    await audit(u, "equipment.maintenance_resolved", "equipment_item", Number(rec.equipment_item_id),
+                { maintenance_id: id, resolved_at: null },
+                { maintenance_id: id, resolved_at: resolved!.resolved_at, note: note || null }, req);
+    res.json({ record: resolved, open_maintenance: stillOpen,
+               awaiting_inspection: stillOpen === 0 });
+  }));
+
+  /* ── Inspect an asset ────────────────────────────────────────────────────
+     An inspection is a historical fact: somebody looked at this camera on this
+     day and formed a view. It is APPEND-ONLY — there is no PATCH, and a
+     mistaken inspection is corrected by inspecting again, which is what the
+     record of a judgement looks like when the judgement changes.
+
+     It carries the observed condition onto the asset, because that observation
+     is the most recent thing anybody actually knows about it. It does NOT
+     rewrite the ledger: what the asset was like at checkout and at check-in
+     stays exactly as recorded. */
+  app.post(`${P}/equipment/:id/inspections`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const assetId = parseInt(getSingleParam(req.params.id), 10);
+    if (!assetId) return sendError(res, 400, "An asset id is required.");
+    const b = req.body as Record<string, unknown>;
+
+    const item = (await pool.query(
+      `SELECT id, status, condition, asset_tag FROM mo_equipment_items
+        WHERE id=$1 AND deleted_at IS NULL`, [assetId])).rows[0];
+    if (!item) return sendError(res, 404, "Asset not found.");
+    if (!(await assetScopeOk(await inventoryScopeOf(u), assetId)))
+      return sendError(res, 404, "Asset not found.");
+    /* D-24 — inspecting is an equipment-management act. Being able to hand a
+       camera back does not make somebody an inspector. */
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may inspect an asset.");
+
+    if (!isCondition(b.observed_condition))
+      return sendError(res, 400, `observed_condition must be one of ${CONDITIONS.join(", ")}.`);
+    const outcome = String(b.outcome ?? "");
+    if (!["passed", "maintenance_required"].includes(outcome))
+      return sendError(res, 400, "outcome must be 'passed' or 'maintenance_required'.");
+    const observed = String(b.observed_condition);
+    const notes = typeof b.notes === "string" ? b.notes.trim() : "";
+    if (outcome === "maintenance_required" && !notes)
+      return sendError(res, 400, "An inspection that requires maintenance must say what is wrong.");
+    const wantRelease = b.release === true || b.release === "true";
+
+    const client = await pool.connect();
+    let created: Record<string, unknown> | undefined;
+    let released = false;
+    let opened: Record<string, unknown> | undefined;
+    let conflict: { status: number; message: string } | null = null;
+    try {
+      await client.query("BEGIN");
+      const live = (await client.query(
+        `SELECT status, condition FROM mo_equipment_items WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`,
+        [assetId])).rows[0];
+      if (!live) conflict = { status: 404, message: "Asset not found." };
+      if (!conflict && live.status === "retired")
+        conflict = { status: 409, message: "A retired asset has no inspection workflow." };
+
+      if (!conflict) {
+        created = (await client.query(
+          `INSERT INTO mo_asset_inspections (equipment_item_id, inspector_id, observed_condition, outcome, notes)
+           VALUES ($1,$2,$3,$4,$5)
+           RETURNING id, equipment_item_id, inspector_id, observed_condition, outcome, notes,
+                     inspected_at, created_at`,
+          [assetId, u.id, observed, outcome, notes || null])).rows[0];
+        /* The condition the asset carries is the latest observation of it. */
+        await client.query(
+          `UPDATE mo_equipment_items SET condition=$2, updated_at=NOW() WHERE id=$1`, [assetId, observed]);
+
+        if (outcome === "maintenance_required") {
+          /* D-10 — a failed inspection opens the work it found, and the asset
+             goes to (or stays in) maintenance. Custody is untouched: an item in
+             somebody's hands stays checked out, because that is a fact. */
+          opened = (await client.query(
+            `INSERT INTO mo_maintenance_records (equipment_item_id, kind, description, reported_by, started_at)
+             VALUES ($1,'repair',$2,$3,CURRENT_DATE) RETURNING ${MAINT_COLUMNS}`,
+            [assetId, notes, u.id])).rows[0];
+          if (live.status !== "checked_out")
+            await client.query(
+              `UPDATE mo_equipment_items SET status='maintenance', updated_at=NOW() WHERE id=$1`, [assetId]);
+        } else if (wantRelease) {
+          /* D-10 / D-21 — RELEASE IS EARNED, NOT ASSERTED. Read under the same
+             lock that will write the status, so a damage report filed a
+             microsecond ago cannot be released past. */
+          const stillOpen = await openMaintenance(client as unknown as Queryable, assetId);
+          if (stillOpen > 0)
+            conflict = { status: 409,
+              message: `This asset still has ${stillOpen} open maintenance record${stillOpen === 1 ? "" : "s"}. `
+                     + "Resolve them before releasing it back into service." };
+          else if (live.status !== "maintenance")
+            conflict = { status: 409,
+              message: `This asset is ${String(live.status)}, not in maintenance, so there is nothing to release.` };
+          else {
+            await client.query(
+              `UPDATE mo_equipment_items SET status='available', updated_at=NOW() WHERE id=$1`, [assetId]);
+            released = true;
+          }
+        }
+      }
+      if (conflict) await client.query("ROLLBACK"); else await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+      throw e;
+    }
+    client.release();
+    if (conflict) return sendError(res, conflict.status, conflict.message);
+
+    await audit(u, "equipment.inspected", "equipment_item", assetId,
+                { condition: item.condition, status: item.status },
+                { condition: observed, outcome, released,
+                  ...(opened ? { maintenance_id: opened.id } : {}) }, req);
+    if (released)
+      await audit(u, "equipment.status_changed", "equipment_item", assetId,
+                  { status: "maintenance" }, { status: "available", via: "inspection" }, req);
+    if (opened)
+      await notifyMaintenanceOpened(assetId, Number(opened.id), String(item.asset_tag ?? assetId),
+                                    "repair", await scopeIdOf(assetId));
+    res.status(201).json({ inspection: created, released,
+                           ...(opened ? { maintenance: opened } : {}) });
+  }));
+
+  /* The asset's inspection history, newest first. Paginated, because this grows
+     for the life of the camera. */
+  app.get(`${P}/equipment/:id/inspections`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const assetId = parseInt(getSingleParam(req.params.id), 10);
+    if (!assetId) return sendError(res, 400, "An asset id is required.");
+    if (!(await assetScopeOk(await inventoryScopeOf(u), assetId)))
+      return sendError(res, 404, "Asset not found.");
+    const { limit, offset } = pageOf(req.query as Record<string, string | undefined>);
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_asset_inspections WHERE equipment_item_id=$1`, [assetId])).rows[0].c);
+    const items = (await pool.query(
+      `SELECT i.id, i.equipment_item_id, i.inspector_id, i.observed_condition, i.outcome, i.notes,
+              i.inspected_at, us.full_name AS inspector_name
+         FROM mo_asset_inspections i
+         LEFT JOIN users us ON us.id = i.inspector_id
+        WHERE i.equipment_item_id=$1
+        ORDER BY i.inspected_at DESC, i.id DESC
+        LIMIT ${limit} OFFSET ${offset}`, [assetId])).rows;
+    res.json({ items, total, limit, offset });
+  }));
+
+  /* ═══ ASSET LIFECYCLE ═════════════════════════════════════════════════════
+     The module had exactly one read path — the 60-table /state dump — and no
+     way at all to edit an asset or take one out of service. 'retired' and
+     'lost' were declared in the CHECK constraint and unreachable through the
+     API. These endpoints close that, and they are the paginated read the
+     Equipment screen can move onto.
+
+     RETIREMENT IS NOT DELETION. An asset with history is never removed: it is
+     marked retired, keeps every transaction, and still resolves from its QR.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /** The shape every asset read returns, so list and detail cannot drift. */
+  /* ══ EFFECTIVE STATE, DERIVED ONCE ═══════════════════════════════════════
+
+     THE PROBLEM THIS SOLVES. Five things were being called "status" and worked
+     out in five places: the persisted column, the browser's trgEquipStatus(),
+     the registry summary, the availability grid and the custody endpoint. They
+     could disagree, and two of them did — `summary.booked` counted a value the
+     server never writes (so it was always 0), and the summary's overdue count
+     used CURRENT_DATE while custody used IST.
+
+     WHAT IS KEPT SEPARATE, because these are not the same question:
+
+       lifecycle     what the asset IS            persisted, mo_equipment_items.status
+       custody       who has it right now         derived, the transaction ledger
+       maintenance   is a repair open             derived, resolved_at IS NULL
+       reservation   is a live booking coming     derived, mo_equipment_bookings
+       overdue       is the loan late             derived, custody + the server's date
+       availability  free for a GIVEN RANGE       NOT here — it is a question, and
+                                                  GET /equipment/availability answers it
+
+     Nothing is flattened into one word, and a contradiction the data permits
+     is REPORTED rather than rewritten (see `conflicts`). */
+
+  /** The server's today, in the zone the rest of Media Ops reports in. */
+  const TODAY_IST = "(NOW() AT TIME ZONE 'Asia/Kolkata')::date";
+
+  /* The joins every state-bearing read shares. `i` is the asset. Each is one
+     LATERAL, evaluated per row of the page — never a scan of the whole ledger.
+
+     CUSTODY IS PHASE 4'S RULE, VERBATIM: the latest transaction by
+     (occurred_at DESC, id DESC), and it is custody only if that row is a
+     check_out. The action comes back with it so the projection can say so
+     rather than a second query deciding it.
+
+     RESERVATION is the soonest booking that is still live AND has not ended.
+     A cancelled, completed or past booking is history and says nothing about
+     now — an asset is not "booked" because it was booked last March. */
+  const STATE_JOINS = `
+    LEFT JOIN LATERAL (
+      SELECT t.id, t.action, t.holder_id, t.occurred_at, t.expected_return_at,
+             t.recorded_via, t.booking_id
+        FROM mo_equipment_transactions t
+       WHERE t.equipment_item_id = i.id
+       ORDER BY t.occurred_at DESC, t.id DESC
+       LIMIT 1
+    ) lastx ON TRUE
+    LEFT JOIN users cu ON cu.id = lastx.holder_id
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*)::int AS open_count
+        FROM mo_maintenance_records m
+       WHERE m.equipment_item_id = i.id AND m.resolved_at IS NULL
+    ) mt ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT b.id, b.status, b.starts_at, b.ends_at, b.user_id, b.project_id
+        FROM mo_equipment_bookings b
+       WHERE b.equipment_item_id = i.id
+         AND b.status IN ('reserved','active')
+         AND b.ends_at >= ${TODAY_IST}
+       ORDER BY b.starts_at, b.id
+       LIMIT 1
+    ) res ON TRUE`;
+
+  /** The columns those joins contribute. Dates as days; instants as instants. */
+  const STATE_SELECT = `
+    (lastx.action = 'check_out')                       AS held,
+    CASE WHEN lastx.action = 'check_out' THEN lastx.holder_id END        AS st_holder_id,
+    CASE WHEN lastx.action = 'check_out' THEN cu.full_name END           AS st_holder_name,
+    CASE WHEN lastx.action = 'check_out' THEN lastx.occurred_at END      AS st_checked_out_at,
+    CASE WHEN lastx.action = 'check_out' THEN lastx.id END               AS st_transaction_id,
+    CASE WHEN lastx.action = 'check_out' THEN lastx.recorded_via END     AS st_recorded_via,
+    CASE WHEN lastx.action = 'check_out'
+         THEN to_char(lastx.expected_return_at, 'YYYY-MM-DD') END        AS st_due_at,
+    (lastx.action = 'check_out' AND lastx.expected_return_at IS NOT NULL
+       AND lastx.expected_return_at < ${TODAY_IST})                      AS st_overdue,
+    CASE WHEN lastx.action = 'check_out'
+         THEN GREATEST(0, COALESCE(${TODAY_IST} - lastx.expected_return_at, 0))
+         ELSE 0 END::int                                                 AS st_overdue_days,
+    mt.open_count                                                        AS st_maint_open,
+    res.id                                                               AS st_booking_id,
+    res.status                                                           AS st_booking_status,
+    to_char(res.starts_at, 'YYYY-MM-DD')                                 AS st_booking_starts_at,
+    to_char(res.ends_at,   'YYYY-MM-DD')                                 AS st_booking_ends_at,
+    res.user_id                                                          AS st_booking_user_id,
+    res.project_id                                                       AS st_booking_project_id`;
+
+  /**
+   * The five answers, assembled from one row. Persisted and derived are
+   * labelled as such so a caller never has to guess which is which.
+   *
+   * CONTRADICTIONS ARE REPORTED, NOT RESOLVED. The data permits an asset to be
+   * in maintenance while somebody still holds it, and permits a retired asset
+   * to have a live booking. There is no rule in the schema, the handlers or the
+   * tests that says which of those should win, so nothing here decides: both
+   * facts are returned and named in `conflicts` for a human to settle.
+   */
+  function assetState(r: Record<string, unknown>) {
+    const lifecycle = String(r.status ?? "");
+    const held = r.held === true;
+    const maintOpen = Number(r.st_maint_open ?? 0);
+    const reserved = r.st_booking_id != null;
+    const conflicts: string[] = [];
+    /* The persisted column says nobody has it, the ledger says somebody does —
+       or the reverse. Written by the same handler, so this means something
+       wrote one without the other. */
+    if (held && lifecycle !== "checked_out") conflicts.push("held_but_lifecycle_" + lifecycle);
+    if (!held && lifecycle === "checked_out") conflicts.push("lifecycle_checked_out_but_not_held");
+    if (maintOpen > 0 && lifecycle !== "maintenance") conflicts.push("open_maintenance_but_lifecycle_" + lifecycle);
+    if (lifecycle === "retired" && reserved) conflicts.push("retired_with_live_booking");
+    if (lifecycle === "retired" && held) conflicts.push("retired_while_held");
+    return {
+      lifecycle: { status: lifecycle, persisted: true,
+                   unserviceable: UNSERVICEABLE.includes(lifecycle as never) },
+      custody: held
+        ? { status: "checked_out", holder_id: r.st_holder_id, holder_name: r.st_holder_name,
+            transaction_id: r.st_transaction_id, checked_out_at: r.st_checked_out_at,
+            due_at: r.st_due_at, recorded_via: r.st_recorded_via }
+        : { status: "not_held", holder_id: null, holder_name: null,
+            transaction_id: null, checked_out_at: null, due_at: null, recorded_via: null },
+      maintenance: { active: maintOpen > 0, open_count: maintOpen },
+      /* Phase 17E — the fifth dimension, named beside the other four rather
+         than left as a loose column for each screen to interpret. It is a
+         PROJECTION, not a second copy: mo_equipment_items.verification_state is
+         the source of truth and is still on the row. What this adds is the
+         guarantee that "is this record believed?" reads the same way as "where
+         is it?" and "who has it?" — five independent answers, none of them
+         collapsed into a single availability word. */
+      verification: { state: String(r.verification_state ?? "active"),
+                      note: (r.verification_note as string | null) ?? null,
+                      persisted: true,
+                      in_inventory: String(r.verification_state ?? "active") === "active" },
+      reservation: reserved
+        ? { status: r.st_booking_status, booking_id: r.st_booking_id,
+            starts_at: r.st_booking_starts_at, ends_at: r.st_booking_ends_at,
+            user_id: r.st_booking_user_id, project_id: r.st_booking_project_id }
+        : null,
+      derived: { overdue: r.st_overdue === true, overdue_days: Number(r.st_overdue_days ?? 0) },
+      conflicts,
+    };
+  }
+
+  /** The state columns are internal plumbing; they do not belong on the row. */
+  function stripState<T extends Record<string, unknown>>(r: T): T {
+    const out = { ...r } as Record<string, unknown>;
+    delete out.held;
+    for (const k of Object.keys(out)) if (k.startsWith("st_")) delete out[k];
+    return out as T;
+  }
+
+  const ASSET_SELECT = `
+    SELECT i.id, i.asset_tag, i.qr_uid, i.barcode, i.make, i.model, i.serial_no,
+           /* Phase 17A. The internal code is the identifier a PERSON uses, so
+              it travels with the row. scope_id deliberately does NOT: Phase 13B
+              keeps the authorization key out of the read models, and nothing
+              in the UI needs it to render. */
+           i.internal_code, i.verification_state, i.verification_note,
+           inv.name AS inventory_name, inv.code AS inventory_code,
+           COALESCE(i.tracking_mode, c.tracking_mode) AS tracking_mode,
+           i.pool_quantity,
+           i.category_id, i.department_id, i.campus_id, i.vendor_id,
+           /* A DATE IS A DAY, NOT AN INSTANT. node-postgres turns a date column
+              into a JS Date at LOCAL midnight, and res.json() then renders it
+              in UTC — so east of Greenwich every one of these came back as the
+              day before. /state never had the bug because it ships rows through
+              to_jsonb(), which Postgres renders as 'YYYY-MM-DD'. Every date
+              column in the equipment read models is therefore serialised here,
+              in SQL, as the day it actually is. */
+           to_char(i.purchase_date,   'YYYY-MM-DD') AS purchase_date,
+           i.purchase_cost,
+           to_char(i.warranty_until,  'YYYY-MM-DD') AS warranty_until,
+           i.insurance_policy_no,
+           to_char(i.insurance_until, 'YYYY-MM-DD') AS insurance_until,
+           i.condition, i.status, i.photo_url, i.notes,
+           i.created_at, i.updated_at, i.retired_at, i.retired_by, i.retired_reason,
+           /* PHASE 17E FIX. This used to be a bare c.tracking_mode, five lines
+              below COALESCE(i.tracking_mode, c.tracking_mode) AS tracking_mode
+              — two result columns of the SAME NAME, so node-postgres built the
+              row with the second one winning and the item-level override was
+              silently discarded on every read. A pooled item in a serialized
+              category reported itself as serialized, which is the one thing
+              tracking_mode exists to prevent. It went unnoticed because the
+              tests that exercised pooling put the pooled item in a pooled
+              category, where both answers agree.
+
+              Aliased, so the COALESCE above is what tracking_mode means and the
+              category's own default is still available under its own name. */
+           c.name AS category_name, c.tracking_mode AS category_tracking_mode,
+           (SELECT a.value FROM mo_asset_identifiers a
+             WHERE a.asset_id=i.id AND a.kind='qr' AND a.is_primary AND a.retired_at IS NULL
+             LIMIT 1) AS asset_uid,
+           /* WHO HAS IT, on the row itself — FROM THE LEDGER.
+
+              These three used to be gated on i.status = 'checked_out' as well
+              as the ledger, so an asset moved to maintenance while somebody
+              still held it showed no holder here while GET /equipment/custody,
+              correctly, still named one. That was the disagreement Phase 4
+              recorded as a known limitation; they now come from the same
+              latest-transaction resolution everything else uses, so there is
+              one answer to "who has it" rather than two.
+
+              This is a FIELD, not a history: no transaction list is attached to
+              a list row. */
+           CASE WHEN lastx.action = 'check_out' THEN lastx.holder_id END  AS holder_id,
+           CASE WHEN lastx.action = 'check_out'
+                THEN to_char(lastx.expected_return_at, 'YYYY-MM-DD') END   AS holder_due_at,
+           CASE WHEN lastx.action = 'check_out' THEN cu.full_name END      AS holder_name,
+           ${STATE_SELECT}
+      FROM mo_equipment_items i
+      LEFT JOIN mo_equipment_categories c ON c.id = i.category_id
+      /* Phase 17B — the inventory's NAME, for the screen to print. The name is
+         a label, not a permission: scope_id stays out of the read models
+         (Phase 13B), and a row the caller may not reach never gets this far. */
+      LEFT JOIN mo_inventory_scopes inv ON inv.id = i.scope_id
+      ${STATE_JOINS}`;
+
+  /* A paginated, filtered list. The Equipment catalog can read this instead of
+     holding every row the /state dump shipped it. */
+  app.get(`${P}/equipment`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const q = req.query as Record<string, string | undefined>;
+    const where: string[] = ["i.deleted_at IS NULL"];
+    const params: unknown[] = [];
+    /** Bind one value and get its placeholder back, so the two can never drift. */
+    const bind = (v: unknown) => { params.push(v); return `$${params.length}`; };
+    /* Phase 13B — which assets this caller may reach. Pushed in beside the
+       filters, so a filter can only narrow what scope already allowed. */
+    pushInventoryScope(where, await inventoryScopeOf(u), params);
+
+    /* Phase 17A — a record nobody has verified is not inventory yet. Drafts
+       are invisible here by default, so a future importer can stage rows
+       without them appearing on the catalog as real gear. `verification` opens
+       the door deliberately, for the screen that reviews them. */
+    if (q.verification && q.verification !== "all")
+      where.push(`i.verification_state = ${bind(q.verification)}`);
+    else if (!q.verification)
+      where.push("i.verification_state = 'active'");
+
+    if (q.q?.trim()) {
+      const p = bind(`%${q.q.trim()}%`);
+      /* internal_code joins the search because it is the identifier a person
+         actually reads off a label and types in. */
+      where.push(`(i.asset_tag ILIKE ${p} OR i.internal_code ILIKE ${p} OR i.make ILIKE ${p}`
+               + ` OR i.model ILIKE ${p} OR i.serial_no ILIKE ${p})`);
+    }
+    if (q.status && q.status !== "all") where.push(`i.status = ${bind(q.status)}`);
+    if (q.category_id && q.category_id !== "all") where.push(`i.category_id = ${bind(Number(q.category_id))}`);
+    if (q.department_id && q.department_id !== "all") where.push(`i.department_id = ${bind(Number(q.department_id))}`);
+    /* Phase 17A — filter by inventory, by id or by its stable code. A FILTER
+       NARROWS; it never widens. The scope clause above has already decided
+       what this caller may reach, so asking for an inventory they have no
+       authority over returns nothing rather than everything. */
+    if (q.inventory && q.inventory !== "all") {
+      const inv = String(q.inventory).trim();
+      where.push(/^\d+$/.test(inv)
+        ? `i.scope_id = ${bind(Number(inv))}`
+        : inv.toLowerCase() === "legacy"
+          ? "i.scope_id IS NULL"
+          : `i.scope_id = (SELECT id FROM mo_inventory_scopes WHERE code = ${bind(inv.toLowerCase())})`);
+    }
+    /* Retired assets are excluded by default — they are history, not stock —
+       but stay reachable, because an audit has to be able to see them. */
+    if (q.include_retired !== "1") where.push("i.retired_at IS NULL");
+
+    const limit = Math.min(Math.max(parseInt(String(q.limit ?? "50"), 10) || 50, 1), 200);
+    const offset = Math.max(parseInt(String(q.offset ?? "0"), 10) || 0, 0);
+    const clause = where.join(" AND ");
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_equipment_items i WHERE ${clause}`, params)).rows[0].c);
+    const rows = (await pool.query(
+      `${ASSET_SELECT} WHERE ${clause} ORDER BY i.asset_tag LIMIT ${limit} OFFSET ${offset}`, params))
+      .rows.map((r) => ({ ...stripState(r), state: assetState(r) }));
+
+    /* ?summary=1 — the four figures the catalog header shows, as integers.
+
+       The header used to compute them by reducing over every asset the /state
+       dump had shipped, which is exactly the dependency this migration removes.
+       They are counts, not datasets: asking for them adds one aggregate query
+       and a handful of numbers to the response, and nothing is attached to the
+       rows themselves.
+
+       They honour THE SAME filters as the list, so the header describes what
+       the page is showing rather than something else. With no filters applied —
+       the default view — they are the same numbers the header showed before. */
+    let summary: Record<string, number> | undefined;
+    if (q.summary === "1") {
+      const r = (await pool.query(
+        `SELECT COUNT(*)::int                                              AS total,
+                COUNT(*) FILTER (WHERE i.status='available')::int           AS available,
+                COUNT(*) FILTER (WHERE i.status='checked_out')::int         AS checked_out,
+                /* BOOKED IS A RESERVATION, NOT A LIFECYCLE VALUE.
+
+                   This counted i.status='booked' — a value the CHECK constraint
+                   allows and the server has never once written. Only the
+                   browser's trgEquipStatus() produced it, in its own copy of
+                   the data, so from the moment the header started reading this
+                   summary the figure was structurally zero.
+
+                   It is now what the word means: assets with a live booking
+                   that has not ended. */
+                COUNT(*) FILTER (
+                  WHERE EXISTS (SELECT 1 FROM mo_equipment_bookings b
+                                 WHERE b.equipment_item_id = i.id
+                                   AND b.status IN ('reserved','active')
+                                   AND b.ends_at >= ${TODAY_IST}))::int        AS booked,
+                COUNT(*) FILTER (WHERE i.status='maintenance')::int         AS maintenance,
+                COALESCE(SUM(i.purchase_cost), 0)::float                    AS book_value
+           FROM mo_equipment_items i WHERE ${clause}`, params)).rows[0];
+      const overdue = Number((await pool.query(
+        `SELECT COUNT(*)::int c FROM mo_equipment_items i
+          WHERE ${clause} AND i.status='checked_out'
+            AND (SELECT x.expected_return_at FROM mo_equipment_transactions x
+                  WHERE x.equipment_item_id = i.id
+                  ORDER BY x.occurred_at DESC, x.id DESC LIMIT 1) < ${TODAY_IST}`, params)).rows[0].c);
+      summary = {
+        total: Number(r.total), available: Number(r.available),
+        checked_out: Number(r.checked_out), booked: Number(r.booked),
+        maintenance: Number(r.maintenance), book_value: Number(r.book_value),
+        overdue,
+      };
+    }
+
+    res.json({ items: rows, total, limit, offset, ...(summary ? { summary } : {}) });
+  }));
+
+  /* ═══ DEPARTMENT-WIDE HISTORY ══════════════════════════════════════════════
+     Two paginated read models, for the two Equipment tabs that were reading
+     unbounded arrays out of /state.
+
+     REGISTERED BEFORE `/equipment/:id`, deliberately. That route accepts an
+     asset tag as well as an id, so `/equipment/transactions` would otherwise be
+     read as a request for an asset tagged "transactions".
+
+     Both follow the registry's conventions exactly — the same `bind` helper,
+     the same {items, total, limit, offset} envelope, the same 1..200 clamp, the
+     same `summary=1` opt-in — because a third convention would be a third thing
+     to remember. Neither returns the whole table under any argument.
+     ═══════════════════════════════════════════════════════════════════════ */
+
+  /** Clamp a page the way the registry does: never trust, never unbounded. */
+  const pageOf = (q: Record<string, string | undefined>) => ({
+    limit: Math.min(Math.max(parseInt(String(q.limit ?? "50"), 10) || 50, 1), 200),
+    offset: Math.max(parseInt(String(q.offset ?? "0"), 10) || 0, 0),
+  });
+
+  /* ── Transactions ────────────────────────────────────────────────────────
+     The ledger, newest first. Every filter below is a column the schema
+     already has: the asset, the holder, the action, the day, the department the
+     asset belongs to, and the project — which reaches the ledger only through
+     the booking a checkout was made under, because that is the one place the
+     schema records it. Nothing here is invented. */
+  app.get(`${P}/equipment/transactions`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const q = req.query as Record<string, string | undefined>;
+    const where: string[] = ["i.deleted_at IS NULL"];
+    const params: unknown[] = [];
+    const bind = (v: unknown) => { params.push(v); return `$${params.length}`; };
+    /* Phase 13B — which assets this caller may reach. Pushed in beside the
+       filters, so a filter can only narrow what scope already allowed. */
+    pushInventoryScope(where, await inventoryScopeOf(u), params);
+
+    if (q.asset_id) where.push(`t.equipment_item_id = ${bind(Number(q.asset_id))}`);
+    if (q.holder_id) where.push(`t.holder_id = ${bind(String(toUid(q.holder_id)))}`);
+    if (q.action && q.action !== "all") where.push(`t.action = ${bind(q.action)}`);
+    if (q.recorded_via && q.recorded_via !== "all") where.push(`t.recorded_via = ${bind(q.recorded_via)}`);
+    if (q.department_id && q.department_id !== "all") where.push(`i.department_id = ${bind(Number(q.department_id))}`);
+    if (q.project_id && q.project_id !== "all") where.push(`b.project_id = ${bind(Number(q.project_id))}`);
+    /* A day, not a timestamp: the filter a person types is a date, and the
+       ledger's occurred_at is compared in the same zone the rest of Media Ops
+       reports in. */
+    if (q.from) where.push(`(t.occurred_at AT TIME ZONE 'Asia/Kolkata')::date >= ${bind(q.from)}::date`);
+    if (q.to) where.push(`(t.occurred_at AT TIME ZONE 'Asia/Kolkata')::date <= ${bind(q.to)}::date`);
+
+    const clause = where.join(" AND ");
+    const FROM = `FROM mo_equipment_transactions t
+       JOIN mo_equipment_items i ON i.id = t.equipment_item_id
+       LEFT JOIN mo_equipment_bookings b ON b.id = t.booking_id`;
+    const { limit, offset } = pageOf(q);
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c ${FROM} WHERE ${clause}`, params)).rows[0].c);
+    /* Only the columns the Transactions table draws. No asset record, no
+       booking, no maintenance — a history row is a history row. */
+    const items = (await pool.query(
+      `SELECT t.id, t.equipment_item_id, t.occurred_at, t.action, t.holder_id,
+              t.condition_noted, t.recorded_via, t.recorded_by,
+              to_char(t.expected_return_at, 'YYYY-MM-DD') AS expected_return_at,
+              i.asset_tag, i.make, i.model,
+              hu.full_name AS holder_name, ru.full_name AS recorded_by_name,
+              b.project_id
+         ${FROM}
+         LEFT JOIN users hu ON hu.id = t.holder_id
+         LEFT JOIN users ru ON ru.id = t.recorded_by
+        WHERE ${clause}
+        ORDER BY t.occurred_at DESC, t.id DESC
+        LIMIT ${limit} OFFSET ${offset}`, params)).rows;
+    res.json({ items, total, limit, offset });
+  }));
+
+  /* ── Maintenance ─────────────────────────────────────────────────────────
+     STATUS IS DERIVED, NOT STORED. The table has no status column; a record is
+     open until resolved_at is set, which is exactly what the tab has always
+     displayed. Exposing that as ?status=open|resolved reads the existing shape
+     rather than inventing a workflow — state transitions are a later phase. */
+  app.get(`${P}/equipment/maintenance`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const q = req.query as Record<string, string | undefined>;
+    const where: string[] = ["i.deleted_at IS NULL"];
+    const params: unknown[] = [];
+    const bind = (v: unknown) => { params.push(v); return `$${params.length}`; };
+    /* Phase 13B — which assets this caller may reach. Pushed in beside the
+       filters, so a filter can only narrow what scope already allowed. */
+    pushInventoryScope(where, await inventoryScopeOf(u), params);
+
+    if (q.asset_id) where.push(`m.equipment_item_id = ${bind(Number(q.asset_id))}`);
+    if (q.status === "open") where.push("m.resolved_at IS NULL");
+    if (q.status === "resolved") where.push("m.resolved_at IS NOT NULL");
+    /* Phase 17E — A LIST, like bookings' ?status=. The Asset 360 page draws
+       "Maintenance" and "Damage & Inspection" from this one table split by
+       kind, and 'maintenance,repair' is one request rather than two merged in
+       the browser. A single value still means what it always did; unknown
+       words are dropped rather than passed through. */
+    /* Phase 17J — vendor became a writable field, so it became worth filtering
+       on: "what did this supplier work on" is the question a custodian asks. */
+    if (q.vendor_id && q.vendor_id !== "all") {
+      const v = String(q.vendor_id);
+      where.push(v === "none" ? "m.vendor_id IS NULL" : `m.vendor_id = ${bind(Number(v))}`);
+    }
+    if (q.kind && q.kind !== "all") {
+      const kinds = String(q.kind).split(",").map((x) => x.trim())
+        .filter((x) => ["maintenance", "repair", "damage_report"].includes(x));
+      where.push(kinds.length ? `m.kind = ANY(${bind(kinds)}::text[])` : "FALSE");
+    }
+    if (q.department_id && q.department_id !== "all") where.push(`i.department_id = ${bind(Number(q.department_id))}`);
+    if (q.from) where.push(`m.started_at >= ${bind(q.from)}::date`);
+    if (q.to) where.push(`m.started_at <= ${bind(q.to)}::date`);
+
+    const clause = where.join(" AND ");
+    const FROM = `FROM mo_maintenance_records m
+       JOIN mo_equipment_items i ON i.id = m.equipment_item_id`;
+    const { limit, offset } = pageOf(q);
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c ${FROM} WHERE ${clause}`, params)).rows[0].c);
+    const items = (await pool.query(
+      `SELECT m.id, m.equipment_item_id, m.kind, m.description, m.cost, m.vendor_id,
+              m.reported_by,
+              to_char(m.started_at,  'YYYY-MM-DD') AS started_at,
+              to_char(m.resolved_at, 'YYYY-MM-DD') AS resolved_at,
+              to_char(m.next_due_at, 'YYYY-MM-DD') AS next_due_at,
+              /* Phase 17J — who closed it and what they said. The columns
+                 existed after 17I; the list did not return them, so the history
+                 could show that a repair ended but not how. */
+              m.resolved_by, m.resolution_note, rb.full_name AS resolved_by_name,
+              i.asset_tag, i.make, i.model, v.name AS vendor_name
+         ${FROM}
+         LEFT JOIN mo_vendors v ON v.id = m.vendor_id
+         LEFT JOIN users rb ON rb.id = m.resolved_by
+        WHERE ${clause}
+        ORDER BY m.started_at DESC NULLS LAST, m.id DESC
+        LIMIT ${limit} OFFSET ${offset}`, params)).rows;
+
+    /* The tab's own footer and the header's "N open records" — counts and one
+       sum, over the same filters, only when asked. */
+    let summary: Record<string, number> | undefined;
+    if (q.summary === "1") {
+      const r = (await pool.query(
+        `SELECT COUNT(*)::int                                        AS total,
+                COUNT(*) FILTER (WHERE m.resolved_at IS NULL)::int   AS open,
+                COUNT(*) FILTER (WHERE m.resolved_at IS NOT NULL)::int AS resolved,
+                COALESCE(SUM(m.cost), 0)::float                      AS cost
+           ${FROM} WHERE ${clause}`, params)).rows[0];
+      summary = { total: Number(r.total), open: Number(r.open),
+                  resolved: Number(r.resolved), cost: Number(r.cost) };
+    }
+    res.json({ items, total, limit, offset, ...(summary ? { summary } : {}) });
+  }));
+
+  /* ── Booking status vocabulary ───────────────────────────────────────────
+     The four values the CHECK constraint allows, and nothing else. A caller
+     asks for a subset by naming it — `status=reserved,active` — so no screen
+     needs a word the schema does not already have. 'all' drops the filter.
+
+     `LIVE` is the set the exclusion constraint itself is scoped to
+     (`WHERE status IN ('reserved','active')`), so "a booking that can conflict"
+     means the same thing in the constraint, the availability query and the
+     calendar. */
+  const BOOKING_STATUSES = ["reserved", "active", "completed", "cancelled"] as const;
+  const LIVE = "('reserved','active')";
+  /** The named subset, or null for "no status filter". Unknown words are dropped. */
+  const statusList = (v: string | undefined): string[] | null => {
+    if (!v || v === "all") return null;
+    const want = v.split(",").map((x) => x.trim())
+      .filter((x) => (BOOKING_STATUSES as readonly string[]).includes(x));
+    return want.length ? want : null;
+  };
+
+  /* ── Availability ────────────────────────────────────────────────────────
+     "Which of these assets is free for the whole of this window?"
+
+     THE DATABASE DECIDES. The overlap test below is character for character the
+     one in the exclusion constraint on mo_equipment_bookings —
+
+         daterange(starts_at, ends_at, '[]') && daterange($from, $to, '[]')
+
+     — so what this endpoint calls free is exactly what an INSERT would accept,
+     and what it calls taken is exactly what the constraint would refuse. The
+     `'[]'` is the whole of the semantics: both ends are INCLUSIVE, so a booking
+     ending on the 3rd and one starting on the 3rd DO conflict, and the first
+     window that does not is the 4th.
+
+     Availability is not a promise. It is what the ledger says at the moment of
+     asking; the constraint is still the only thing that decides a booking, and
+     two callers who both read "free" still resolve at the INSERT (§7). */
+  app.get(`${P}/equipment/availability`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const q = req.query as Record<string, string | undefined>;
+    const from = String(q.from ?? ""), to = String(q.to ?? "");
+    /* The same rule the booking endpoint applies, from the same module: asking
+       "is it free?" about a window that could never be booked is a mistake
+       worth reporting, not a query worth running. */
+    const verdict = canBook(from, to);
+    if (!verdict.ok) return sendError(res, 400, verdict.message);
+
+    /* The filters bind from $1. The window and the unserviceable list are
+       appended only to the query that uses them — the COUNT does not, and
+       handing it parameters it never mentions is an error at bind time. */
+    const where: string[] = ["i.deleted_at IS NULL"];
+    const params: unknown[] = [];
+    const bind = (v: unknown) => { params.push(v); return `$${params.length}`; };
+    /* Phase 13B — which assets this caller may reach. Pushed in beside the
+       filters, so a filter can only narrow what scope already allowed. */
+    pushInventoryScope(where, await inventoryScopeOf(u), params);
+    if (q.asset_id) where.push(`i.id = ${bind(Number(q.asset_id))}`);
+    if (q.category_id && q.category_id !== "all") where.push(`i.category_id = ${bind(Number(q.category_id))}`);
+    if (q.department_id && q.department_id !== "all") where.push(`i.department_id = ${bind(Number(q.department_id))}`);
+    if (q.status && q.status !== "all") where.push(`i.status = ${bind(q.status)}`);
+    if (q.q) { const t = bind(`%${q.q}%`);
+      where.push(`(i.asset_tag ILIKE ${t} OR i.make ILIKE ${t} OR i.model ILIKE ${t} OR i.serial_no ILIKE ${t})`); }
+    /* The availability grid has always shown individually-tracked assets only —
+       a pooled quantity has no per-unit window to draw. The booking picker has
+       always shown everything, so this is a parameter rather than a rule. */
+    if (q.individual_only === "1") where.push("i.pool_quantity IS NULL");
+    if (q.include_retired !== "1") where.push("i.status <> 'retired'");
+
+    const clause = where.join(" AND ");
+    const FROM = "FROM mo_equipment_items i LEFT JOIN mo_equipment_categories c ON c.id = i.category_id";
+    const { limit, offset } = pageOf(q);
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c ${FROM} WHERE ${clause}`, params)).rows[0].c);
+
+    const [pFrom, pTo] = [params.length + 1, params.length + 2];
+    const items = (await pool.query(
+      `SELECT i.id, i.asset_tag, i.make, i.model, i.serial_no, i.category_id,
+              i.department_id, i.status, i.condition, i.pool_quantity,
+              c.name AS category_name,
+              /* RESERVABLE, by the same definition POST /equipment/bookings
+                 uses — see RESERVABLE_SQL. A checked-out asset is NOT excluded:
+                 it can be booked for a window after it comes back, which is what
+                 the picker has always allowed. Nor is one in maintenance, which
+                 D-5 made reservable for a future period. */
+              (${RESERVABLE_SQL}) AND NOT EXISTS (
+                SELECT 1 FROM mo_equipment_bookings b
+                 WHERE b.equipment_item_id = i.id AND b.status IN ${LIVE}
+                   AND daterange(b.starts_at, b.ends_at, '[]') && daterange($${pFrom}::date, $${pTo}::date, '[]')
+              ) AS available
+         ${FROM}
+        WHERE ${clause}
+        ORDER BY i.asset_tag
+        LIMIT ${limit} OFFSET ${offset}`, [...params, from, to])).rows;
+
+    /* The windows behind the verdict, for the assets on THIS page only. The
+       grid paints these; it does not decide anything from them. */
+    const ids = items.map((r) => Number(r.id));
+    const conflicts = ids.length ? (await pool.query(
+      `SELECT b.id, b.equipment_item_id, b.status, b.user_id, b.shoot_id, b.project_id,
+              to_char(b.starts_at, 'YYYY-MM-DD') AS starts_at,
+              to_char(b.ends_at,   'YYYY-MM-DD') AS ends_at,
+              us.full_name AS user_name
+         FROM mo_equipment_bookings b
+         LEFT JOIN users us ON us.id = b.user_id
+        WHERE b.equipment_item_id = ANY($1::bigint[]) AND b.status IN ${LIVE}
+          AND daterange(b.starts_at, b.ends_at, '[]') && daterange($2::date, $3::date, '[]')
+        ORDER BY b.starts_at, b.id`, [ids, from, to])).rows : [];
+    const byItem = new Map<number, Record<string, unknown>[]>();
+    for (const b of conflicts) {
+      const k = Number(b.equipment_item_id);
+      (byItem.get(k) ?? byItem.set(k, []).get(k)!).push(b);
+    }
+
+    res.json({
+      from, to, limit, offset, total,
+      items: items.map((r) => {
+        const bookings = byItem.get(Number(r.id)) ?? [];
+        return { ...r, bookings,
+          /* WHY it is not available, in the grid's own vocabulary. Phase 17G:
+             this used BR-7's unserviceable list, which includes maintenance —
+             now reservable for a future period (D-5) — so it disagreed with the
+             `available` flag beside it. Both answer from the same rule. */
+          blocked_by: r.available === false
+            ? (bookings.length ? "booking" : "status")
+            : null };
+      }),
+    });
+  }));
+
+  /* ── Bookings ────────────────────────────────────────────────────────────
+     The department's booking schedule, a page at a time. `from`/`to` ask for
+     the bookings that OVERLAP that window — the same inclusive test as above,
+     so a booking shows on a calendar for every day it covers, including its
+     last one.
+
+     Ordered by start date ascending: this is a schedule before it is a history,
+     and it is what the Bookings tab has always shown. */
+  app.get(`${P}/equipment/bookings`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const q = req.query as Record<string, string | undefined>;
+    const where: string[] = ["i.deleted_at IS NULL"];
+    const params: unknown[] = [];
+    const bind = (v: unknown) => { params.push(v); return `$${params.length}`; };
+    /* Phase 13B — which assets this caller may reach. Pushed in beside the
+       filters, so a filter can only narrow what scope already allowed. */
+    pushInventoryScope(where, await inventoryScopeOf(u), params);
+
+    if (q.asset_id) where.push(`b.equipment_item_id = ${bind(Number(q.asset_id))}`);
+    if (q.user_id) where.push(`b.user_id = ${bind(String(toUid(q.user_id)))}`);
+    if (q.category_id && q.category_id !== "all") where.push(`i.category_id = ${bind(Number(q.category_id))}`);
+    if (q.department_id && q.department_id !== "all") where.push(`i.department_id = ${bind(Number(q.department_id))}`);
+    if (q.project_id && q.project_id !== "all") where.push(`b.project_id = ${bind(Number(q.project_id))}`);
+    /* A LIST, because the shoots table asks about every shoot on the page at
+       once. One request for the visible shoots instead of one per row is the
+       difference between this endpoint replacing the /state array and it
+       becoming an N+1. Ids only, so nothing but integers reaches the query. */
+    if (q.shoot_id && q.shoot_id !== "all") {
+      const ids = String(q.shoot_id).split(",").map((x) => Number(x.trim()))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      where.push(ids.length ? `b.shoot_id = ANY(${bind(ids)}::bigint[])` : "FALSE");
+    }
+    const want = statusList(q.status);
+    if (want) where.push(`b.status = ANY(${bind(want)}::text[])`);
+    /* D-11 — EXPIRY IS DERIVED, NOT STORED. A reservation whose last day has
+       passed is over, whatever its status column still says; nothing sweeps the
+       table and no scheduler exists to. `live=1` is the filter that means "not
+       over", and it is what the screens asking for current and upcoming
+       reservations use. The status vocabulary is unchanged: adding 'expired'
+       would need a writer, and a status nobody writes is a status that lies.
+
+       The places that already had this right keep it: assetState's reservation
+       join floors at today, and checkout compares against [today, due], which a
+       past window cannot overlap. This closes the one that did not. */
+    const LIVE_NOW = `(b.status IN ('reserved','active') AND b.ends_at >= ${TODAY_IST})`;
+    if (q.live === "1") where.push(LIVE_NOW);
+    if (q.live === "0") where.push(`NOT ${LIVE_NOW}`);
+    /* Overlap, not containment: a booking that started before this window and
+       ends inside it is part of the window. */
+    if (q.from && q.to)
+      where.push(`daterange(b.starts_at, b.ends_at, '[]') && daterange(${bind(q.from)}::date, ${bind(q.to)}::date, '[]')`);
+    else if (q.from) where.push(`b.ends_at >= ${bind(q.from)}::date`);
+    else if (q.to) where.push(`b.starts_at <= ${bind(q.to)}::date`);
+
+    const clause = where.join(" AND ");
+    const FROM = `FROM mo_equipment_bookings b
+       JOIN mo_equipment_items i ON i.id = b.equipment_item_id`;
+    const { limit, offset } = pageOf(q);
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c ${FROM} WHERE ${clause}`, params)).rows[0].c);
+    const items = (await pool.query(
+      `SELECT b.id, b.equipment_item_id, b.user_id, b.shoot_id, b.project_id, b.status, b.created_by,
+              to_char(b.starts_at, 'YYYY-MM-DD') AS starts_at,
+              to_char(b.ends_at,   'YYYY-MM-DD') AS ends_at,
+              i.asset_tag, i.make, i.model, i.category_id,
+              us.full_name AS user_name, sh.title AS shoot_title, pr.name AS project_name
+         ${FROM}
+         LEFT JOIN users us ON us.id = b.user_id
+         LEFT JOIN mo_shoots sh ON sh.id = b.shoot_id
+         LEFT JOIN mo_projects pr ON pr.id = b.project_id
+        WHERE ${clause}
+        ORDER BY b.starts_at, b.id
+        LIMIT ${limit} OFFSET ${offset}`, params)).rows;
+
+    /* The tab's own count, over the same filters, only when asked. */
+    let summary: Record<string, number> | undefined;
+    if (q.summary === "1") {
+      const r = (await pool.query(
+        `SELECT COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE b.status='reserved')::int  AS reserved,
+                COUNT(*) FILTER (WHERE b.status='active')::int    AS active,
+                COUNT(*) FILTER (WHERE b.status='cancelled')::int AS cancelled,
+                COUNT(*) FILTER (WHERE b.status='completed')::int AS completed
+           ${FROM} WHERE ${clause}`, params)).rows[0];
+      summary = { total: Number(r.total), reserved: Number(r.reserved), active: Number(r.active),
+                  cancelled: Number(r.cancelled), completed: Number(r.completed) };
+    }
+    res.json({ items, total, limit, offset, ...(summary ? { summary } : {}) });
+  }));
+
+  /* ═══ A PROJECT'S EQUIPMENT (Phase 17H) ═══════════════════════════════════
+     A THIN PROJECT-FACING VIEW OVER WHAT ALREADY EXISTS. No table was added and
+     no status is persisted: a project's equipment IS its bookings, and every
+     column below is read from the row that owns it —
+
+       the asset          mo_equipment_items
+       the reservation    mo_equipment_bookings
+       the custody        mo_equipment_transactions, latest row per asset
+       the inventory      mo_inventory_scopes
+
+     WHICH BOOKINGS BELONG TO A PROJECT. `project_id` is the link and is set on
+     every booking in the estate. A booking may also carry a `shoot_id`, and a
+     shoot belongs to a project, so the shoot's project is used as a fallback —
+     COALESCE(b.project_id, sh.project_id). Nothing writes that shape today (of
+     29 bookings, 0 are shoot-only) but the write path accepts the two fields
+     independently, so a read that only looked at project_id would silently
+     lose gear the moment anything did.
+
+     TWO AUTHORIZATIONS, BOTH REQUIRED. Any media member may open any project —
+     GET /projects/:id asks only requireMedia — so project visibility must not
+     become equipment visibility. The equipment side is scoped exactly as the
+     catalogue is, through pushInventoryScope, which means a colleague with no
+     inventory sees this project's legacy-estate bookings and nothing else. That
+     is Phase 13B's rule applied here, not a new one.
+
+     ONE QUERY. The alternative — list the bookings, then ask about each asset's
+     custody — is an N+1 that grows with the project. The custody comes from a
+     LATERAL over the ledger, in the same statement. */
+  app.get(`${P}/projects/:id/equipment`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const projectId = parseInt(getSingleParam(req.params.id), 10);
+    if (!projectId) return sendError(res, 400, "A project id is required.");
+    const project = (await pool.query(
+      /* The project's OWN dates, as days. They are reported so the screen can
+         offer them as a default when somebody reserves gear — they are NOT the
+         reservation's dates and nothing here derives one from the other. A
+         project may run 20–25 September while the camera is needed 22–23, and
+         a project with no dates at all is normal. */
+      `SELECT id, code, name, status, archived_at IS NOT NULL AS archived,
+              to_char(start_date,'YYYY-MM-DD') AS start_date,
+              to_char(end_date,  'YYYY-MM-DD') AS end_date
+         FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [projectId])).rows[0];
+    if (!project) return sendError(res, 404, "Project not found.");
+
+    const q = req.query as Record<string, string | undefined>;
+    const { limit, offset } = pageOf(q);
+    const params: unknown[] = [projectId];
+    const where = ["i.deleted_at IS NULL", "COALESCE(b.project_id, sh.project_id) = $1"];
+    pushInventoryScope(where, await inventoryScopeOf(u), params);
+    const clause = where.join(" AND ");
+
+    /* LIVE is 17G's definition, unchanged: reserved or active, and not yet
+       over. A reservation whose last day has passed is history however its
+       status column reads. */
+    const FROM = `
+      FROM mo_equipment_bookings b
+      JOIN mo_equipment_items i ON i.id = b.equipment_item_id
+      LEFT JOIN mo_shoots sh ON sh.id = b.shoot_id`;
+    const SELECT = `
+      SELECT b.id, b.equipment_item_id, b.status, b.user_id, b.shoot_id,
+             to_char(b.starts_at,'YYYY-MM-DD') AS starts_at,
+             to_char(b.ends_at,  'YYYY-MM-DD') AS ends_at,
+             (b.status IN ('reserved','active') AND b.ends_at >= ${TODAY_IST}) AS live,
+             (b.starts_at <= ${TODAY_IST})                                     AS started,
+             i.asset_tag, i.internal_code, i.make, i.model, i.status AS asset_status,
+             i.verification_state, i.category_id,
+             COALESCE(i.tracking_mode, c.tracking_mode) AS tracking_mode,
+             c.name AS category_name,
+             inv.name AS inventory_name, inv.code AS inventory_code,
+             us.full_name AS booked_by_name, sh.title AS shoot_title,
+             /* CUSTODY IS THE ASSET'S, not the booking's: the question a project
+                manager is asking is "where is my camera", and the ledger answers
+                it for the asset. Only a check_out names a holder. */
+             CASE WHEN lx.action = 'check_out' THEN lx.holder_id END        AS holder_id,
+             CASE WHEN lx.action = 'check_out' THEN hu.full_name END        AS holder_name,
+             CASE WHEN lx.action = 'check_out' THEN lx.occurred_at END      AS checked_out_at,
+             CASE WHEN lx.action = 'check_out'
+                  THEN to_char(lx.expected_return_at,'YYYY-MM-DD') END      AS due_at,
+             (lx.action = 'check_out' AND lx.expected_return_at IS NOT NULL
+                AND lx.expected_return_at < ${TODAY_IST})                   AS overdue
+        ${FROM}
+        LEFT JOIN mo_equipment_categories c ON c.id = i.category_id
+        LEFT JOIN mo_inventory_scopes inv ON inv.id = i.scope_id
+        LEFT JOIN users us ON us.id = b.user_id
+        LEFT JOIN LATERAL (
+          SELECT t.action, t.holder_id, t.occurred_at, t.expected_return_at
+            FROM mo_equipment_transactions t
+           WHERE t.equipment_item_id = i.id
+           ORDER BY t.occurred_at DESC, t.id DESC LIMIT 1
+        ) lx ON TRUE
+        LEFT JOIN users hu ON hu.id = lx.holder_id`;
+
+    /* Current and upcoming are bounded by what a project can plausibly hold and
+       are returned whole; history is the unbounded one, so it pages. */
+    const live = (await pool.query(
+      `${SELECT} WHERE ${clause}
+         AND b.status IN ('reserved','active') AND b.ends_at >= ${TODAY_IST}
+       ORDER BY b.starts_at, b.id LIMIT 200`, params)).rows;
+    const histTotal = Number((await pool.query(
+      `SELECT COUNT(*)::int c ${FROM} WHERE ${clause}
+         AND NOT (b.status IN ('reserved','active') AND b.ends_at >= ${TODAY_IST})`,
+      params)).rows[0].c);
+    const history = (await pool.query(
+      `${SELECT} WHERE ${clause}
+         AND NOT (b.status IN ('reserved','active') AND b.ends_at >= ${TODAY_IST})
+       ORDER BY b.ends_at DESC, b.id DESC LIMIT ${limit} OFFSET ${offset}`, params)).rows;
+
+    res.json({
+      project,
+      /* Split on the server so the browser is not deriving "is this now?" from
+         dates it was handed — the same reason `live` is not a client concern. */
+      current: live.filter((r) => r.started === true),
+      upcoming: live.filter((r) => r.started !== true),
+      history: { items: history, total: histTotal, limit, offset },
+    });
+  }));
+
+  /* ── Current custody ─────────────────────────────────────────────────────
+     WHO HAS WHAT, RIGHT NOW — derived, never stored.
+
+     There is no custody table and this endpoint does not create one. The
+     ledger is the source of truth: an asset is in someone's hands when its
+     LATEST transaction is a check_out that no check_in has followed. Check-in
+     appends a row rather than editing one, so "latest" is the whole of the
+     definition and the ledger stays append-only.
+
+     The action vocabulary is the schema's own — the CHECK constraint allows
+     exactly 'check_out' and 'check_in', and nothing here invents a third.
+
+     ORDERING IS DETERMINISTIC. `occurred_at DESC, id DESC` — the same rule
+     liveCheckout() already applies for one asset. The id tie-break matters:
+     a kiosk return recorded in the same second as the checkout it cancels
+     would otherwise resolve differently on different runs.
+
+     CUSTODY IS NOT ASSET STATUS. The registry's holder column gates on
+     `i.status = 'checked_out'` as well as the ledger, so an asset flipped to
+     maintenance while someone still holds it drops out of it. This endpoint
+     asks the ledger alone, which is what "who has it" actually means — see
+     the limitation recorded in the phase document. Nothing about status is
+     changed here; that is a later phase's work. */
+  app.get(`${P}/equipment/custody`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const q = req.query as Record<string, string | undefined>;
+
+    /* "Today" is the server's, in the zone the rest of Media Ops reports in —
+       never the browser's. expected_return_at is a DATE, so the comparison is
+       a date comparison and the granularity of the existing rule is kept: the
+       first day a loan is late is the day after it was due. */
+    const TODAY_IST = "(NOW() AT TIME ZONE 'Asia/Kolkata')::date";
+
+    const where: string[] = ["i.deleted_at IS NULL", "t.action = 'check_out'"];
+    const params: unknown[] = [];
+    const bind = (v: unknown) => { params.push(v); return `$${params.length}`; };
+    /* Phase 13B — which assets this caller may reach. Pushed in beside the
+       filters, so a filter can only narrow what scope already allowed. */
+    pushInventoryScope(where, await inventoryScopeOf(u), params);
+
+    if (q.asset_id) where.push(`i.id = ${bind(Number(q.asset_id))}`);
+    if (q.holder_id) where.push(`t.holder_id = ${bind(String(toUid(q.holder_id)))}`);
+    if (q.category_id && q.category_id !== "all") where.push(`i.category_id = ${bind(Number(q.category_id))}`);
+    if (q.department_id && q.department_id !== "all") where.push(`i.department_id = ${bind(Number(q.department_id))}`);
+    /* A loan's project reaches it through the booking it was made under, which
+       is the only place the schema records one. A checkout made without a
+       booking has no project, and filtering by project correctly omits it
+       rather than guessing from the asset or the holder. */
+    if (q.project_id && q.project_id !== "all") where.push(`bk.project_id = ${bind(Number(q.project_id))}`);
+    if (q.recorded_via && q.recorded_via !== "all") where.push(`t.recorded_via = ${bind(q.recorded_via)}`);
+    if (q.overdue === "1") where.push(`t.expected_return_at < ${TODAY_IST}`);
+    if (q.overdue === "0") where.push(`(t.expected_return_at IS NULL OR t.expected_return_at >= ${TODAY_IST})`);
+    /* Due today counts as due, but not as late — the dashboard widget has
+       always drawn that line and this keeps it drawable. */
+    if (q.due_on_or_before) where.push(`t.expected_return_at <= ${bind(q.due_on_or_before)}::date`);
+    /* A retired asset somebody is still holding is exactly what a custody list
+       is for, so retired rows are included unless asked otherwise. */
+    if (q.include_retired === "0") where.push("i.status <> 'retired'");
+    if (q.q) { const v = bind(`%${q.q}%`);
+      where.push(`(i.asset_tag ILIKE ${v} OR i.make ILIKE ${v} OR i.model ILIKE ${v}
+                   OR i.serial_no ILIKE ${v} OR hu.full_name ILIKE ${v})`); }
+
+    const clause = where.join(" AND ");
+    /* Latest row per asset, once, driven from the items side so the asset
+       filters prune before the lateral runs. The subquery uses
+       idx_mo_txn_item (equipment_item_id, occurred_at DESC) — the index the
+       registry's holder column already relies on. No per-asset round trip and
+       no transaction ever reaches JavaScript to be reduced there. */
+    const FROM = `FROM mo_equipment_items i
+       JOIN LATERAL (
+         SELECT x.* FROM mo_equipment_transactions x
+          WHERE x.equipment_item_id = i.id
+          ORDER BY x.occurred_at DESC, x.id DESC
+          LIMIT 1
+       ) t ON TRUE
+       LEFT JOIN users hu ON hu.id = t.holder_id
+       LEFT JOIN mo_equipment_bookings bk ON bk.id = t.booking_id`;
+
+    const { limit, offset } = pageOf(q);
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c ${FROM} WHERE ${clause}`, params)).rows[0].c);
+
+    const rows = (await pool.query(
+      `SELECT i.id AS asset_id, i.asset_tag, i.make, i.model, i.serial_no,
+              i.category_id, i.status AS asset_status, i.condition,
+              c.name AS category_name,
+              i.department_id, d.name AS department_name,
+              t.id AS transaction_id, t.holder_id, hu.full_name AS holder_name,
+              t.occurred_at AS checked_out_at, t.recorded_via, t.recorded_by,
+              ru.full_name AS recorded_by_name, t.booking_id, t.condition_noted,
+              /* A DATE, serialised as the day it is. Selecting it plainly hands
+                 back a local-midnight JS Date that res.json() renders in UTC —
+                 the day-before bug Phase 3 found and fixed everywhere else. */
+              to_char(t.expected_return_at, 'YYYY-MM-DD') AS due_at,
+              bk.project_id, pr.name AS project_name,
+              (t.expected_return_at IS NOT NULL AND t.expected_return_at < ${TODAY_IST}) AS overdue,
+              GREATEST(0, COALESCE(${TODAY_IST} - t.expected_return_at, 0))::int AS overdue_days
+         ${FROM}
+         LEFT JOIN mo_equipment_categories c ON c.id = i.category_id
+         LEFT JOIN mo_departments d ON d.id = i.department_id
+         LEFT JOIN mo_projects pr ON pr.id = bk.project_id
+         LEFT JOIN users ru ON ru.id = t.recorded_by
+        WHERE ${clause}
+        ORDER BY t.expected_return_at ASC NULLS LAST, i.asset_tag
+        LIMIT ${limit} OFFSET ${offset}`, params)).rows;
+
+    /* Grouped the way a custody row is read: an asset, who has it, and what it
+       is against. Nothing is invented — a field the schema cannot answer comes
+       back null rather than guessed. */
+    const items = rows.map((r) => ({
+      asset: { id: r.asset_id, asset_tag: r.asset_tag, make: r.make, model: r.model,
+               serial_no: r.serial_no, category_id: r.category_id,
+               category_name: r.category_name, status: r.asset_status, condition: r.condition },
+      custody: { holder_id: r.holder_id, holder_name: r.holder_name,
+                 transaction_id: r.transaction_id, checked_out_at: r.checked_out_at,
+                 due_at: r.due_at, overdue: r.overdue, overdue_days: r.overdue_days,
+                 recorded_via: r.recorded_via, recorded_by: r.recorded_by,
+                 recorded_by_name: r.recorded_by_name, condition_noted: r.condition_noted,
+                 booking_id: r.booking_id },
+      project: r.project_id == null ? null : { id: r.project_id, name: r.project_name },
+      department: r.department_id == null ? null : { id: r.department_id, name: r.department_name },
+    }));
+
+    let summary: Record<string, number> | undefined;
+    if (q.summary === "1") {
+      const r = (await pool.query(
+        `SELECT COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE t.expected_return_at < ${TODAY_IST})::int  AS overdue,
+                COUNT(*) FILTER (WHERE t.expected_return_at = ${TODAY_IST})::int  AS due_today,
+                COUNT(DISTINCT t.holder_id)::int                                  AS holders
+           ${FROM} WHERE ${clause}`, params)).rows[0];
+      summary = { total: Number(r.total), overdue: Number(r.overdue),
+                  due_today: Number(r.due_today), holders: Number(r.holders) };
+    }
+    res.json({ items, total, limit, offset, ...(summary ? { summary } : {}) });
+  }));
+
+  /* ── Analytics ───────────────────────────────────────────────────────────
+     THE PROBLEM. eqAnalytics() reduced the arrays /state ships. Two of them are
+     capped — transactions at "latest per item plus the most recent 500",
+     bookings at "live, or ended within 90 days" — so every figure it drew was
+     computed over a window nobody chose and silently under-reported the older
+     the department got. A per-item checkout count of 3 could mean three
+     checkouts or three hundred.
+
+     This computes the same three things in Postgres, over all of history.
+     Nothing is sent to the browser to be reduced there.
+
+     WHAT IS NOT HERE, deliberately:
+
+       · No current-state summary. eqAnalytics() shows none, and
+         GET /equipment?summary=1 already answers total/available/checked_out/
+         booked/maintenance/overdue. A second place to compute those is exactly
+         what Phase 5 spent its effort removing.
+       · No contradiction counts. Phase 5's five conflict types are reported
+         per asset on the state block; no analytics screen asks for totals of
+         them, and inventing the aggregate would be inventing the requirement.
+
+     CURRENT vs HISTORICAL. Everything below is HISTORICAL — counts of things
+     that happened. `checkouts` is the number of check_out transactions, never
+     the number of assets currently out; that question belongs to custody and
+     is answered there. */
+  app.get(`${P}/equipment/analytics`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const q = req.query as Record<string, string | undefined>;
+
+    /* Filters with an existing meaning, and no others. A range is INCLUSIVE at
+       both ends, and is compared as a DAY — for transactions that means the IST
+       day the ledger's timestamp falls on, which is the same conversion
+       GET /equipment/transactions already applies. Omitting the range means
+       all of history, which is what eqAnalytics() has always shown. */
+    const from = q.from || null, to = q.to || null;
+    const assetWhere: string[] = ["i.deleted_at IS NULL"];
+    const aParams: unknown[] = [];
+    const aBind = (v: unknown) => { aParams.push(v); return `$${aParams.length}`; };
+    /* Phase 13B — scope first, so every figure below is computed over the
+       assets this caller may reach. `A` is spliced into each of the analytics
+       queries, so restricting it here restricts all of them at once, and the
+       date placeholders that follow are numbered from aParams.length AFTER
+       this push. ERROR IS NOT ZERO and neither is DENIED: a scope a caller
+       cannot see contributes nothing rather than a zero row. */
+    pushInventoryScope(assetWhere, await inventoryScopeOf(u), aParams);
+    if (q.department_id && q.department_id !== "all") assetWhere.push(`i.department_id = ${aBind(Number(q.department_id))}`);
+    if (q.category_id && q.category_id !== "all") assetWhere.push(`i.category_id = ${aBind(Number(q.category_id))}`);
+    const A = assetWhere.join(" AND ");
+
+    /* The date predicates, each against the column that dates that record. The
+       parameters are appended per query rather than shared, because a query
+       that does not mention them must not be handed them. */
+    const txDate = (n: number) =>
+      [from ? `(t.occurred_at AT TIME ZONE 'Asia/Kolkata')::date >= $${n}::date` : null,
+       to ? `(t.occurred_at AT TIME ZONE 'Asia/Kolkata')::date <= $${from ? n + 1 : n}::date` : null]
+        .filter(Boolean).join(" AND ");
+    const dateArgs = [from, to].filter((x) => x !== null);
+    const and = (x: string) => (x ? ` AND ${x}` : "");
+
+    /* 1 — CHECKOUTS BY CATEGORY. One GROUP BY, not a query per category.
+           Categories with no assets still appear with zero; the chart drops
+           empties itself, exactly as it did. */
+    const byCategory = (await pool.query(
+      `SELECT c.id AS category_id, c.name AS category_name,
+              COUNT(DISTINCT i.id)::int AS items,
+              COUNT(t.id)::int          AS checkouts
+         FROM mo_equipment_categories c
+         LEFT JOIN mo_equipment_items i ON i.category_id = c.id AND ${A}
+         LEFT JOIN mo_equipment_transactions t
+                ON t.equipment_item_id = i.id AND t.action = 'check_out'${and(txDate(aParams.length + 1))}
+        GROUP BY c.id, c.name
+        ORDER BY c.sort_order, c.name`, [...aParams, ...dateArgs])).rows;
+
+    /* 2 — DEMAND BY WEEKDAY. EXTRACT(DOW) is 0=Sunday, which is what the
+           browser's D.dow() returns, so the seven buckets line up without a
+           translation table. Every booking counts, whatever its status — that
+           is what the heatmap has always shown, and it is a demand signal
+           rather than a utilisation one: a cancelled booking is still someone
+           having wanted the gear that day. */
+    const bookedWhere = [A,
+      from ? `b.starts_at >= $${aParams.length + 1}::date` : null,
+      to ? `b.starts_at <= $${aParams.length + (from ? 2 : 1)}::date` : null]
+      .filter(Boolean).join(" AND ");
+    const dowRows = (await pool.query(
+      `SELECT EXTRACT(DOW FROM b.starts_at)::int AS dow, COUNT(*)::int AS bookings
+         FROM mo_equipment_bookings b
+         JOIN mo_equipment_items i ON i.id = b.equipment_item_id
+        WHERE ${bookedWhere}
+        GROUP BY 1 ORDER BY 1`, [...aParams, ...dateArgs])).rows;
+    const byWeekday = Array.from({ length: 7 }, (_, d) => ({
+      dow: d, bookings: Number(dowRows.find((r) => Number(r.dow) === d)?.bookings ?? 0),
+    }));
+
+    /* 3 — PER-ITEM UTILISATION. Two correlated aggregates per asset, both
+           indexed, computed for the page only. The table has always excluded
+           pooled assets: a quantity has no per-unit checkout history. */
+    const itemWhere = [A, "i.pool_quantity IS NULL"].join(" AND ");
+    const { limit, offset } = pageOf(q);
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_equipment_items i WHERE ${itemWhere}`, aParams)).rows[0].c);
+    const nA = aParams.length;
+    const items = (await pool.query(
+      `SELECT i.id, i.asset_tag, i.make, i.model, i.category_id, i.condition,
+              i.purchase_cost, c.name AS category_name,
+              COALESCE(tx.checkouts, 0)::int        AS checkouts,
+              COALESCE(mx.maintenance_cost, 0)::float AS maintenance_cost
+         FROM mo_equipment_items i
+         LEFT JOIN mo_equipment_categories c ON c.id = i.category_id
+         LEFT JOIN LATERAL (
+           SELECT COUNT(*)::int AS checkouts FROM mo_equipment_transactions t
+            WHERE t.equipment_item_id = i.id AND t.action = 'check_out'${and(txDate(nA + 1))}
+         ) tx ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT SUM(m.cost)::float AS maintenance_cost FROM mo_maintenance_records m
+            WHERE m.equipment_item_id = i.id
+              ${from ? `AND m.started_at >= $${nA + dateArgs.length + 1}::date` : ""}
+              ${to ? `AND m.started_at <= $${nA + dateArgs.length + (from ? 2 : 1)}::date` : ""}
+         ) mx ON TRUE
+        WHERE ${itemWhere}
+        ORDER BY COALESCE(tx.checkouts, 0) DESC, i.asset_tag
+        LIMIT ${limit} OFFSET ${offset}`,
+      [...aParams, ...dateArgs, ...dateArgs])).rows;
+
+    res.json({
+      from, to,
+      by_category: byCategory.map((r) => ({
+        category_id: r.category_id, category_name: r.category_name,
+        items: Number(r.items), checkouts: Number(r.checkouts),
+      })),
+      by_weekday: byWeekday,
+      items: items.map((r) => ({
+        ...r, checkouts: Number(r.checkouts),
+        purchase_cost: r.purchase_cost == null ? null : Number(r.purchase_cost),
+        maintenance_cost: Number(r.maintenance_cost),
+      })),
+      total, limit, offset,
+    });
+  }));
+
+  /* The policy the browser displays. It exists so the UI can STATE the rules
+     without re-deriving them: the numbers on screen and the numbers that
+     decide are then the same numbers, read from the same row. */
+  app.get(`${P}/equipment/rules`, asyncHandler(async (_req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const cfg = await equipmentOverdueConfig();
+    res.json({
+      overdue: cfg,
+      max_booking_days: MAX_BOOKING_DAYS,
+      conditions: CONDITIONS,
+      unserviceable: UNSERVICEABLE,
+      can_manage: await canManageEquipment(u),
+    });
+  }));
+
+  /* ═══════════════════════════════════════════════════════════════════════
+     CUSTODIANS OF A SCOPE (Phase 15)
+
+     A physical custodian is not an entity and not a role. It is the
+     INTERSECTION of two things that already exist:
+
+         equipment_custodian duty      → may act on equipment at all
+         active scope assignment       → on which inventory
+
+     Neither alone is custodianship, and this phase adds no third thing. What
+     it adds is the ability to record, revoke and remember the second one.
+
+     AUTHORIZATION IS NOT RE-IMPLEMENTED HERE. The actual gate on an asset is
+     still requireEquipment() + canManageEquipment() + assetScopeOk(), exactly
+     as Phase 13B composed it. These endpoints only administer the assignment
+     that assetScopeOk() reads, and they are ADMIN-ONLY — appointing a
+     custodian is a governance act, so holding the custodian duty must not let
+     you appoint another custodian, or yourself.
+
+     No transaction is opened. Every write below is a single statement whose
+     uniqueness is guaranteed by idx_mo_uis_active, so there is no pooled
+     client held across the audit() call — which is the shape that deadlocked
+     production once already (docs/DB_POOL_CONCURRENCY_AUDIT.md F1). */
+  const SCOPE_CUSTODIANS = `
+    SELECT a.id, a.user_id, a.role, a.granted_at, a.granted_by, a.removed_at, a.removed_by,
+           u.full_name, u.status AS user_status,
+           gb.full_name AS granted_by_name, rb.full_name AS removed_by_name,
+           EXISTS (SELECT 1 FROM mo_user_duties d
+                     JOIN mo_duty_flags f ON f.id = d.duty_flag_id
+                    WHERE d.user_id = a.user_id AND f.code = 'equipment_custodian') AS has_duty
+      FROM mo_user_inventory_scopes a
+      JOIN users u  ON u.id  = a.user_id
+      LEFT JOIN users gb ON gb.id = a.granted_by
+      LEFT JOIN users rb ON rb.id = a.removed_by
+     WHERE a.scope_id = $1`;
+
+  /** The scope, its live custodians and the whole assignment history. */
+  app.get(`${P}/equipment/scopes/:scopeId/custodians`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may view scope custodians.");
+    const scopeId = parseInt(getSingleParam(req.params.scopeId), 10);
+    if (!scopeId) return sendError(res, 400, "A scope id is required.");
+    const scope = (await pool.query(
+      `SELECT id, name, code, is_active, archived_at FROM mo_inventory_scopes WHERE id=$1`, [scopeId])).rows[0];
+    if (!scope) return sendError(res, 404, "Inventory scope not found.");
+
+    /* ONE query for both lists — the active custodians are the subset of the
+       history with removed_at IS NULL. A query per custodian, or per
+       assignment, is the N+1 this avoids. */
+    const rows = (await pool.query(
+      `${SCOPE_CUSTODIANS} ORDER BY a.removed_at NULLS FIRST, a.granted_at DESC, a.id DESC`, [scopeId])).rows;
+    const active = rows.filter((r) => r.removed_at == null);
+    res.json({
+      scope,
+      active,
+      history: rows.filter((r) => r.removed_at != null),
+      /* Derived, never stored: a scope with no live assignment is simply a
+         scope nobody is responsible for. §9 — that is a legitimate state. */
+      no_custodian: active.length === 0,
+      active_count: active.length,
+    });
+  }));
+
+  /** Appoint a custodian. Admin only. */
+  app.post(`${P}/equipment/scopes/:scopeId/custodians`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may appoint a custodian.");
+    const scopeId = parseInt(getSingleParam(req.params.scopeId), 10);
+    const userId = String((req.body as Record<string, unknown>).user_id ?? "").trim();
+    if (!scopeId || !userId) return sendError(res, 400, "A scope id and a user_id are required.");
+
+    const scope = (await pool.query(
+      `SELECT id, name, archived_at FROM mo_inventory_scopes WHERE id=$1`, [scopeId])).rows[0];
+    if (!scope) return sendError(res, 404, "Inventory scope not found.");
+    /* An archived scope authorises nobody — inventoryScopeOf() filters it out —
+       so an assignment to one would be silently inert. Refusing an operation
+       that provably cannot take effect is not a product rule. */
+    if (scope.archived_at) return sendError(res, 409, "An archived scope cannot take a custodian. Restore it first.");
+
+    const target = (await pool.query(`SELECT id, full_name, status FROM users WHERE id=$1`, [userId])).rows[0];
+    if (!target) return sendError(res, 404, "User not found.");
+    if (target.status !== "active") return sendError(res, 409, "That account is not active.");
+    /* No self-appointment, even for an Admin. An Admin who needs a scope has
+       another Admin grant it — the same separation that makes self-approval a
+       question worth asking at all. */
+    if (userId === u.id) return sendError(res, 403, "A custodian cannot be appointed by themselves.");
+
+    /* idx_mo_uis_active — UNIQUE (user_id, scope_id) WHERE removed_at IS NULL —
+       is the authority on duplicates, so two admins racing produce one row and
+       one 409 rather than two assignments. A prior REVOKED row does not
+       collide: this inserts a NEW record and the old one stays readable, which
+       is the whole reason the primary key moved off the pair. */
+    let row;
+    try {
+      row = (await pool.query(
+        `INSERT INTO mo_user_inventory_scopes (user_id, scope_id, role, granted_by)
+         VALUES ($1,$2,'custodian',$3) RETURNING id, user_id, scope_id, role, granted_at`,
+        [userId, scopeId, u.id])).rows[0];
+    } catch (e) {
+      if ((e as { code?: string }).code === "23505")
+        return sendError(res, 409, `${target.full_name} is already a custodian of this scope.`);
+      throw e;
+    }
+
+    /* entity_type is the CRUD module key on purpose: the scope's existing
+       Audit History tab already reads (entity_type, entity_id), so custodian
+       changes appear there without a second query or a second screen. The
+       affected person travels in entity_uid (§8). */
+    await audit(u, "inventory_scope.custodian_assigned", "inventory_scopes", scopeId,
+                null, { user_id: userId, role: "custodian" }, req, userId);
+
+    const hasDuty = (await pool.query(
+      `SELECT 1 FROM mo_user_duties d JOIN mo_duty_flags f ON f.id=d.duty_flag_id
+        WHERE d.user_id=$1 AND f.code='equipment_custodian'`, [userId])).rows.length > 0;
+    res.status(201).json({
+      assignment: row,
+      /* Reported, not refused. An assignment without the duty is a scoped
+         VIEWER — real, useful, and probably not what the Admin meant, so the
+         UI says so rather than the API guessing. */
+      has_duty: hasDuty,
+      warning: hasDuty ? null
+        : `${target.full_name} does not hold the Equipment Custodian duty, so they can see this inventory but not act on it.`,
+    });
+  }));
+
+  /** Revoke a custodian. Soft — the record survives. Admin only. */
+  app.delete(`${P}/equipment/scopes/:scopeId/custodians/:userId`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may revoke a custodian.");
+    const scopeId = parseInt(getSingleParam(req.params.scopeId), 10);
+    const userId = getSingleParam(req.params.userId);
+    if (!scopeId || !userId) return sendError(res, 400, "A scope id and a user id are required.");
+
+    /* UPDATE … WHERE removed_at IS NULL is itself the guard: a second, racing
+       revoke matches nothing and reports 404 rather than overwriting who
+       removed them and when. */
+    const gone = (await pool.query(
+      `UPDATE mo_user_inventory_scopes SET removed_at = NOW(), removed_by = $3
+        WHERE scope_id = $1 AND user_id = $2 AND removed_at IS NULL
+        RETURNING id, user_id, scope_id, granted_at, removed_at`, [scopeId, userId, u.id])).rows[0];
+    if (!gone) return sendError(res, 404, "No active assignment for that user on this scope.");
+
+    await audit(u, "inventory_scope.custodian_removed", "inventory_scopes", scopeId,
+                { user_id: userId }, { removed_at: gone.removed_at }, req, userId);
+
+    /* Removing the LAST custodian is allowed. Blocking it would make
+         offboarding impossible, and appointing a replacement automatically
+         would invent an accountability nobody agreed to. The count is returned
+         so the caller can say what happened. */
+    const remaining = Number((await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_user_inventory_scopes
+        WHERE scope_id=$1 AND removed_at IS NULL`, [scopeId])).rows[0].c);
+    res.json({ revoked: gone, remaining_active: remaining, no_custodian: remaining === 0 });
+  }));
+
+  /* ── Verification (Phase 17D) ───────────────────────────────────────────
+     Whether an asset RECORD has been reviewed and accepted. It answers nothing
+     about where the asset is: a camera can be pending verification and checked
+     out at the same time, and both statements are true. Operational status,
+     custody, reservation and maintenance each keep their own field and none of
+     them is consulted here.
+
+       draft ──submit──> pending_verification ──approve──> active
+                                │
+                                └──reject──> rejected ──return──> draft
+
+     FOUR STATES, NO FIFTH. 'approved' is not persisted: approval is the act
+     that produces 'active'. The button may say Approve; the column says active.
+
+     WHAT IS NOT REACHABLE FROM HERE, deliberately: nothing transitions OUT of
+     'active'. Every asset in the existing estate is active, so an endpoint that
+     could pull one back into draft would be a way to make a working camera
+     vanish from the catalogue. Verification is a door into operation, not a
+     lever over it. */
+  const VERIFY_TRANSITIONS: Record<string, { from: string; to: string; action: string; needsReason?: boolean }> = {
+    submit:          { from: "draft",                to: "pending_verification", action: "verification_submitted" },
+    approve:         { from: "pending_verification", to: "active",               action: "verification_approved" },
+    reject:          { from: "pending_verification", to: "rejected",             action: "verification_rejected", needsReason: true },
+    return_to_draft: { from: "rejected",             to: "draft",                action: "verification_resubmitted" },
+  };
+
+  app.post(`${P}/equipment/:id/verification`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may review an asset.");
+
+    const assetId = parseInt(getSingleParam(req.params.id), 10);
+    if (!assetId) return sendError(res, 400, "An asset id is required.");
+    const body = req.body as Record<string, unknown>;
+    const step = VERIFY_TRANSITIONS[String(body.action ?? "")];
+    if (!step)
+      return sendError(res, 400,
+        `action must be one of ${Object.keys(VERIFY_TRANSITIONS).join(", ")}.`);
+
+    /* A rejection nobody can explain is not a rejection. */
+    const reason = String(body.reason ?? "").trim();
+    if (step.needsReason && !reason)
+      return sendError(res, 400, "A rejection needs a reason.");
+
+    /* The asset must already be one this caller may reach — the queue and the
+       transition share exactly the same boundary as every other read. */
+    if (!(await assetScopeOk(await inventoryScopeOf(u), assetId)))
+      return sendError(res, 404, "Asset not found.");
+
+    const client = await pool.connect();
+    let conflict: { status: number; message: string } | null = null;
+    try {
+      await client.query("BEGIN");
+      const cur = (await client.query(
+        `SELECT id, verification_state, deleted_at FROM mo_equipment_items WHERE id=$1 FOR UPDATE`,
+        [assetId])).rows[0];
+      if (!cur || cur.deleted_at) conflict = { status: 404, message: "Asset not found." };
+      else if (cur.verification_state !== step.from)
+        conflict = { status: 409,
+          message: `That asset is ${String(cur.verification_state).replace(/_/g, " ")}, `
+                 + `so it cannot be ${step.to === "pending_verification" ? "submitted" : step.action.split("_")[1]} from here.` };
+
+      if (!conflict) {
+        const upd = await client.query(
+          `UPDATE mo_equipment_items
+              SET verification_state=$2,
+                  verification_note=$3,
+                  updated_at=NOW()
+            WHERE id=$1 AND verification_state=$4
+            RETURNING id`,
+          /* The note is the rejection's reason and is cleared by any other
+             move, so a stale explanation cannot outlive the rejection. */
+          [assetId, step.to, step.to === "rejected" ? reason : null, step.from]);
+        /* The guard on verification_state is what makes two reviewers racing
+           safe: the loser updates no row, and says so rather than auditing a
+           move it did not make. The full row is re-read below, through the same
+           ASSET_SELECT every other asset read uses. */
+        if (!upd.rows[0]) conflict = { status: 409, message: "That asset was moved by somebody else a moment ago." };
+      }
+      if (conflict) await client.query("ROLLBACK"); else await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      /* Released before audit(): this codebase forbids auditing under a held
+         client, after a real pool deadlock. */
+      client.release();
+    }
+    if (conflict) return sendError(res, conflict.status, conflict.message);
+
+    await audit(u, `equipment.${step.action}`, "equipment_item", assetId,
+                { verification_state: step.from },
+                { verification_state: step.to, ...(step.needsReason ? { reason } : {}) }, req);
+
+    const fresh = (await pool.query(`${ASSET_SELECT} WHERE i.id=$1`, [assetId])).rows[0];
+    res.json({ item: { ...stripState(fresh), state: assetState(fresh) } });
+  }));
+
+  /* The review queue. Scoped exactly like the catalogue, paginated, and it
+     counts as well as lists so the nav badge costs no second request. */
+  app.get(`${P}/equipment/verification-queue`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const q = req.query as Record<string, string | undefined>;
+    const state = ["draft", "pending_verification", "rejected"].includes(String(q.state))
+      ? String(q.state) : "pending_verification";
+
+    const params: unknown[] = [];
+    const where = ["i.deleted_at IS NULL"];
+    pushInventoryScope(where, await inventoryScopeOf(u), params);
+    params.push(state); where.push(`i.verification_state = $${params.length}`);
+
+    const { limit, offset } = pageOf(q);
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_equipment_items i WHERE ${where.join(" AND ")}`, params)).rows[0].c);
+    /* Who submitted it comes from the trail rather than a denormalised column —
+       one LATERAL, not a query per row. */
+    const rows = (await pool.query(
+      `SELECT i.id, i.asset_tag, i.internal_code, i.make, i.model, i.verification_state,
+              i.verification_note, i.pool_quantity,
+              COALESCE(i.tracking_mode, c.tracking_mode) AS tracking_mode,
+              c.name AS category_name, inv.name AS inventory_name, inv.code AS inventory_code,
+              to_char(i.created_at AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD') AS created_on,
+              sub.full_name AS submitted_by,
+              to_char(sub.occurred_at AT TIME ZONE 'Asia/Kolkata','YYYY-MM-DD') AS submitted_on
+         FROM mo_equipment_items i
+         LEFT JOIN mo_equipment_categories c ON c.id = i.category_id
+         LEFT JOIN mo_inventory_scopes inv ON inv.id = i.scope_id
+         LEFT JOIN LATERAL (
+           SELECT a.occurred_at, us.full_name FROM mo_audit_logs a
+             LEFT JOIN users us ON us.id = a.actor_id
+            WHERE a.entity_type='equipment_item' AND a.entity_id = i.id
+              AND a.action = 'equipment.verification_submitted'
+            ORDER BY a.occurred_at DESC LIMIT 1) sub ON true
+        WHERE ${where.join(" AND ")}
+        ORDER BY i.created_at, i.id LIMIT ${limit} OFFSET ${offset}`, params)).rows;
+
+    res.json({ items: rows, total, limit, offset, state });
+  }));
+
+  /* ── Backfilling internal codes (Phase 17B) ─────────────────────────────
+     An asset that was given an inventory before internal codes existed — or
+     assigned one by any future path that does not mint a code — has a scope
+     but no label. This closes that gap and nothing else.
+
+     ELIGIBILITY IS DELIBERATELY NARROW: scope_id IS NOT NULL AND
+     internal_code IS NULL. An UNSCOPED asset is never given a code, because
+     the code's prefix comes from the inventory and there is no inventory to
+     take it from. Those assets stay explicitly unresolved rather than being
+     guessed into one — no department, campus, category, vendor, holder or
+     name is consulted, because Phase 16 established that none of them
+     identifies an owner.
+
+     IT REUSES THE PHASE 17A ALLOCATOR. There is no second numbering scheme
+     and no MAX()+1 anywhere: the same advisory lock serialises a backfill
+     against a concurrent registration, so the two cannot mint the same code.
+
+     BATCHED. One transaction per inventory, capped, so a large estate does
+     not hold a lock while thousands of rows are rewritten. The response says
+     what remains, and calling again continues — running it twice is safe and
+     the second run finds nothing, because a coded asset is no longer
+     eligible. */
+  const BACKFILL_MAX = 200;
+
+  /* ── Governance entry: UNSCOPED → GOVERNED (Phase 17C) ──────────────────
+     The one path that moves an existing asset out of the legacy estate and
+     into an inventory. Scope and internal code are set together, in a single
+     UPDATE inside one transaction, so there is no instant at which an asset
+     has an inventory but no label or a label but no inventory.
+
+     ASSIGNMENT IS NOT APPROVAL, and verification_state is deliberately NOT
+     touched. Two reasons, and the second is the one that matters:
+
+       1. Giving an asset a home says nothing about whether its record has been
+          checked. Those are different questions and the schema keeps them apart.
+       2. The registry shows only verification_state='active'. Moving a live
+          asset to 'pending_verification' here would make a camera that is out
+          on loan DISAPPEAR from the catalog the moment somebody filed it.
+          Assignment must never cost anyone sight of their own equipment.
+
+     THIS IS NOT TRANSFER. It refuses an asset that already has an inventory
+     rather than moving it: transfer needs its own custody rules, its own code
+     semantics and its own audit, and none of those exist yet.
+
+     ON THE AUDIT. It is written after COMMIT, not inside the transaction,
+     because this codebase forbids audit() under a held client — a rule added
+     after a real pool deadlock, and enforced by db-pool-safety.test.ts. The
+     property that actually matters is preserved: the transaction is the state
+     change, so a failure anywhere in it leaves NO scope, NO code and NO audit.
+     What is not preserved is the reverse — a crash between COMMIT and the
+     audit write would leave an assignment unaudited. That is true of every
+     mutation in this module, and fixing it here alone would mean nesting a
+     connection inside a transaction, which is what caused the outage. */
+  app.post(`${P}/equipment/:id/assign-inventory`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may assign an inventory.");
+
+    const assetId = parseInt(getSingleParam(req.params.id), 10);
+    if (!assetId) return sendError(res, 400, "An asset id is required.");
+    const body = req.body as Record<string, unknown>;
+    const targetScope = Number(body.scope_id);
+    if (!body.scope_id || !Number.isFinite(targetScope))
+      return sendError(res, 400, "scope_id is required.");
+
+    const callerScope = await inventoryScopeOf(u);
+    /* The asset must be one this caller can already reach — an unscoped asset
+       is reachable by everyone, a governed one only by its own people. Answered
+       as a 404 so the id cannot be used to discover what exists. */
+    if (!(await assetScopeOk(callerScope, assetId)))
+      return sendError(res, 404, "Asset not found.");
+    /* And the TARGET inventory must be one they hold. A Media Crew custodian
+       cannot file an asset into PID. */
+    if (!scopeAllows(callerScope, targetScope))
+      return sendError(res, 404, "Unknown inventory.");
+
+    const scopeRow = (await pool.query(
+      `SELECT id, name, code, code_prefix, is_active, archived_at
+         FROM mo_inventory_scopes WHERE id=$1`, [targetScope])).rows[0];
+    if (!scopeRow) return sendError(res, 404, "Unknown inventory.");
+    if (!scopeRow.is_active || scopeRow.archived_at)
+      return sendError(res, 409, "That inventory is not active.");
+    if (!scopeRow.code_prefix)
+      return sendError(res, 409, "That inventory has no code prefix, so it cannot issue internal codes.");
+
+    const client = await pool.connect();
+    let assigned: Record<string, unknown> | null = null;
+    let conflict: { status: number; code: string; message: string } | null = null;
+    try {
+      await client.query("BEGIN");
+      /* FOR UPDATE is what makes two simultaneous administrators safe: the
+         second waits here, then sees the scope the first set. */
+      const cur = (await client.query(
+        `SELECT id, scope_id, internal_code, retired_at, deleted_at, verification_state
+           FROM mo_equipment_items WHERE id=$1 FOR UPDATE`, [assetId])).rows[0];
+
+      if (!cur || cur.deleted_at) conflict = { status: 404, code: "ASSET_NOT_FOUND", message: "Asset not found." };
+      else if (cur.scope_id != null)
+        conflict = { status: 409, code: "ASSET_ALREADY_ASSIGNED",
+                     message: "That asset already belongs to an inventory. Moving it between inventories is a transfer, which is not available yet." };
+      else if (cur.internal_code != null)
+        /* A code without an inventory is a state this system cannot produce.
+           Guessing which inventory the code belongs to would invent ownership,
+           so it stops and asks for a person. */
+        conflict = { status: 409, code: "ASSET_INTEGRITY_CODE_WITHOUT_INVENTORY",
+                     message: "That asset already has an internal code but no inventory. This needs administrative remediation before it can be assigned." };
+      else if (cur.retired_at)
+        conflict = { status: 409, code: "ASSET_RETIRED",
+                     message: "A retired asset cannot be assigned to an inventory." };
+
+      if (!conflict) {
+        const code = await allocateInternalCode(client, targetScope);
+        if (!code) {
+          conflict = { status: 409, code: "CODE_ALLOCATION_FAILED",
+                       message: "That inventory cannot issue an internal code." };
+        } else {
+          /* The guard in the WHERE is the last line of defence: if anything
+             changed since the lock, zero rows update and nothing is committed. */
+          const upd = await client.query(
+            `UPDATE mo_equipment_items
+                SET scope_id=$2, internal_code=$3, updated_at=NOW()
+              WHERE id=$1 AND scope_id IS NULL AND internal_code IS NULL
+              RETURNING id, scope_id, internal_code, verification_state`,
+            [assetId, targetScope, code]);
+          if (!upd.rows[0])
+            conflict = { status: 409, code: "ASSET_ALREADY_ASSIGNED",
+                         message: "That asset was assigned by somebody else a moment ago." };
+          else assigned = upd.rows[0];
+        }
+      }
+
+      if (conflict) await client.query("ROLLBACK");
+      else await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    if (conflict) return sendError(res, conflict.status, conflict.message);
+
+    await audit(u, "equipment.inventory_assigned", "equipment_item", assetId,
+                { scope_id: null, internal_code: null },
+                { scope_id: targetScope, inventory_code: scopeRow.code, inventory_name: scopeRow.name,
+                  internal_code: assigned!.internal_code,
+                  verification_state: assigned!.verification_state }, req);
+
+    /* The server's own read is the answer, not the browser's guess. */
+    const fresh = (await pool.query(`${ASSET_SELECT} WHERE i.id=$1`, [assetId])).rows[0];
+    res.json({ item: { ...stripState(fresh), state: assetState(fresh) } });
+  }));
+
+  app.post(`${P}/equipment/backfill-codes`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    /* Acting ON the estate, not borrowing from it — the existing capability,
+       not a new "Asset Admin" role. */
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may assign internal codes.");
+
+    const scope = await inventoryScopeOf(u);
+    const body = req.body as Record<string, unknown>;
+    let onlyScope: number | null = null;
+    if (body.scope_id != null && String(body.scope_id) !== "") {
+      onlyScope = Number(body.scope_id);
+      if (!Number.isFinite(onlyScope)) return sendError(res, 400, "scope_id must be a number.");
+      /* Authorised, never trusted: an inventory the caller has no authority
+         over answers as an invented one does. */
+      if (!scopeAllows(scope, onlyScope)) return sendError(res, 404, "Unknown inventory.");
+    }
+
+    /* Which inventories have work, within what this caller may reach. */
+    const params: unknown[] = [];
+    const where = ["i.deleted_at IS NULL", "i.scope_id IS NOT NULL", "i.internal_code IS NULL"];
+    pushInventoryScope(where, scope, params);
+    if (onlyScope != null) { params.push(onlyScope); where.push(`i.scope_id = $${params.length}`); }
+    const pending = (await pool.query(
+      `SELECT i.scope_id, COUNT(*)::int AS n FROM mo_equipment_items i
+        WHERE ${where.join(" AND ")} GROUP BY i.scope_id ORDER BY i.scope_id`, params)).rows;
+
+    const done: { scope_id: number; coded: number; first: string | null; last: string | null }[] = [];
+    let total = 0;
+    const trail: { scopeId: number; assets: { asset_id: number; internal_code: string }[] }[] = [];
+
+    for (const p of pending) {
+      const scopeId = Number(p.scope_id);
+      if (total >= BACKFILL_MAX) break;
+      const room = BACKFILL_MAX - total;
+
+      const client = await pool.connect();
+      const assigned: { asset_id: number; internal_code: string }[] = [];
+      try {
+        await client.query("BEGIN");
+        /* FOR UPDATE, so two backfills cannot select the same rows and race
+           each other into the unique index. The allocator's advisory lock
+           then serialises the numbering itself. */
+        const rows = (await client.query(
+          `SELECT id FROM mo_equipment_items
+            WHERE scope_id=$1 AND internal_code IS NULL AND deleted_at IS NULL
+            ORDER BY id LIMIT $2 FOR UPDATE`, [scopeId, room])).rows;
+        for (const r of rows) {
+          const code = await allocateInternalCode(client, scopeId);
+          /* An inventory with no prefix cannot mint codes. Stop rather than
+             invent one. */
+          if (!code) break;
+          await client.query(
+            `UPDATE mo_equipment_items SET internal_code=$2, updated_at=NOW()
+              WHERE id=$1 AND internal_code IS NULL`, [r.id, code]);
+          assigned.push({ asset_id: Number(r.id), internal_code: code });
+        }
+        await client.query("COMMIT");
+      } catch (e) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw e;
+      } finally {
+        /* Released BEFORE audit(), which takes its own connection — the shape
+           that deadlocked production once (DB_POOL_CONCURRENCY_AUDIT F1). */
+        client.release();
+      }
+
+      if (assigned.length) {
+        total += assigned.length;
+        done.push({ scope_id: scopeId, coded: assigned.length,
+                    first: assigned[0].internal_code,
+                    last: assigned[assigned.length - 1].internal_code });
+        trail.push({ scopeId, assets: assigned });
+      }
+    }
+
+    /* One event per inventory, carrying every asset and the code it received,
+       so the old value (null) and the new one are both recoverable without a
+       row per asset. */
+    for (const t of trail)
+      await audit(u, "equipment.internal_codes_backfilled", "inventory_scopes", t.scopeId,
+                  { internal_code: null },
+                  { source: "phase_17b_backfill", count: t.assets.length, assets: t.assets }, req);
+
+    /* What is left, and why — an unscoped asset is not a failure, it is an
+       unanswered question. */
+    const remainingParams: unknown[] = [];
+    const remainingWhere = ["i.deleted_at IS NULL", "i.scope_id IS NOT NULL", "i.internal_code IS NULL"];
+    pushInventoryScope(remainingWhere, scope, remainingParams);
+    const remaining = Number((await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_equipment_items i WHERE ${remainingWhere.join(" AND ")}`,
+      remainingParams)).rows[0].c);
+    const unscopedParams: unknown[] = [];
+    const unscopedWhere = ["i.deleted_at IS NULL", "i.scope_id IS NULL", "i.internal_code IS NULL"];
+    pushInventoryScope(unscopedWhere, scope, unscopedParams);
+    const unscoped = Number((await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_equipment_items i WHERE ${unscopedWhere.join(" AND ")}`,
+      unscopedParams)).rows[0].c);
+
+    res.json({ coded: total, by_inventory: done, remaining_eligible: remaining,
+               unscoped_code_pending: unscoped, batch_limit: BACKFILL_MAX });
+  }));
+
+  /* ── The inventories this caller may reach (Phase 17A) ──────────────────
+     What the Asset & Inventory screen builds its inventory switcher from.
+
+     It reports what the SERVER would allow, not what the UI would like to
+     draw: an inventory the caller has no authority over is absent, not
+     greyed out, so the list cannot be used to enumerate inventories that
+     exist. Counts are computed through the same scope clause as every other
+     read, in ONE query — no per-inventory round trip.
+
+     "Legacy" is reported as a pseudo-inventory rather than hidden. Every
+     asset that predates scope lives there, it is reachable by everyone, and
+     pretending otherwise would make 32 assets look missing. */
+  app.get(`${P}/equipment/inventories`, asyncHandler(async (_req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const scope = await inventoryScopeOf(u);
+    const params: unknown[] = [];
+    const where = ["i.deleted_at IS NULL", "i.retired_at IS NULL", "i.verification_state = 'active'"];
+    pushInventoryScope(where, scope, params);
+
+    const rows = (await pool.query(
+      `SELECT s.id, s.code, s.name, s.code_prefix, s.lends_to_students,
+              COUNT(i.id)::int AS assets
+         FROM mo_inventory_scopes s
+         LEFT JOIN mo_equipment_items i ON i.scope_id = s.id AND ${where.join(" AND ")}
+        WHERE s.is_active AND s.archived_at IS NULL
+        GROUP BY s.id, s.code, s.name, s.code_prefix, s.lends_to_students
+        ORDER BY s.name`, params)).rows;
+
+    /* An Admin sees every inventory; anybody else sees only those they hold. */
+    const mine = scope.level === "all" ? rows
+      : rows.filter((r) => scope.level === "scoped" && scope.scopeIds.includes(Number(r.id)));
+
+    const legacy = Number((await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_equipment_items i
+        WHERE i.scope_id IS NULL AND ${where.join(" AND ")}`, params)).rows[0].c);
+
+    res.json({
+      inventories: mine.map((r) => ({
+        id: Number(r.id), code: r.code, name: r.name, code_prefix: r.code_prefix,
+        assets: Number(r.assets),
+      })),
+      /* Not a scope row and deliberately not pretending to be one. */
+      /* Phase 17C — the same words the asset detail uses, so one estate is not
+         called two things on two screens. */
+      legacy: { code: "legacy", name: "Not Assigned", assets: legacy },
+      scope_level: scope.level,
+    });
+  }));
+
+  /* Resolve any identifier — a scanned QR token, an asset tag, a barcode, a
+     serial, and one day an RFID EPC — to the asset it names. This is what a
+     printed label points at, and the reason the label can stay on the case
+     while the asset's holder, location, status and project all change. */
+  /* ═══ ASSET IMPORT & RECONCILIATION (Phase 17L) ═══════════════════════════
+     A GOVERNED QUEUE, NOT A BULK CREATE. A spreadsheet arrives, every row is
+     interpreted into proposals, and nothing becomes an asset until a person who
+     holds the inventory says so. The importer never merges an identity, never
+     invents a category or a serial, and never writes to mo_equipment_items
+     except through the same creation path the Add-item screen uses.
+
+     The batch is governance state. Cancelling one changes no asset. */
+
+  const batchRow = async (id: number) => (await pool.query(
+    `SELECT b.id, b.file_name, b.uploaded_by, b.uploaded_at, b.rows_total, b.status,
+            b.completed_at, b.completed_by, us.full_name AS uploaded_by_name
+       FROM mo_asset_import_batches b LEFT JOIN users us ON us.id = b.uploaded_by
+      WHERE b.id=$1`, [id])).rows[0];
+
+  /* Counters are COUNTED, never stored: a cached tally is a second answer that
+     goes stale the moment somebody reviews a row in another tab. */
+  /* PHASE 17M. Serials are read off engraved plates, curled stickers and
+     screens, by different people, into different boxes. "SN: x-123" and
+     "x123" are the same number written by two people, and treating them as a
+     conflict would train verifiers to click through the warning that exists to
+     stop them. Case and punctuation are noise; the characters are the serial. */
+  const sameSerial = (a: string, b: string) =>
+    a.replace(/[^a-z0-9]/gi, "").toLowerCase() === b.replace(/[^a-z0-9]/gi, "").toLowerCase();
+
+  const batchCounts = async (id: number) => (await pool.query(
+    `SELECT COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE state='pending_review')::int                AS pending,
+            COUNT(*) FILTER (WHERE state='identity_decision_required')::int    AS identity,
+            COUNT(*) FILTER (WHERE state='physical_verification')::int         AS physical,
+            COUNT(*) FILTER (WHERE state='pooled_review')::int                 AS pooled,
+            COUNT(*) FILTER (WHERE state='scope_decision_required')::int       AS scope_needed,
+            COUNT(*) FILTER (WHERE state='category_review_required')::int      AS category_needed,
+            COUNT(*) FILTER (WHERE state='imported')::int                      AS imported,
+            COUNT(*) FILTER (WHERE state='matched_existing')::int              AS matched,
+            COUNT(*) FILTER (WHERE state='rejected')::int                      AS rejected
+       FROM mo_asset_import_rows WHERE batch_id=$1`, [id])).rows[0];
+
+  /* ── Upload ──────────────────────────────────────────────────────────────
+     The file is parsed, interpreted and stored as ROWS. The file itself is not
+     kept: everything a reviewer needs is in the row, and keeping the original
+     would mean holding a copy of the department's inventory in a second place. */
+  app.post(`${P}/equipment/imports`, h.assetImportUpload ?? ((_q, _s, n) => n()),
+    asyncHandler(async (req, res) => {
+      const u = await requireEquipment(res); if (!u) return;
+      if (!(await canManageEquipment(u)))
+        return sendError(res, 403, "Only an Equipment Custodian or an Admin may import inventory.");
+
+      const file = (req as unknown as { file?: { originalname?: string; buffer?: Buffer; size?: number } }).file;
+      if (!file?.buffer?.length) return sendError(res, 400, "A spreadsheet file is required.");
+      const name = String(file.originalname ?? "upload");
+      /* THE EXTENSION IS CHECKED AND THE CONTENT IS PARSED. Neither the
+         filename nor the MIME type is evidence; the parse below is what
+         actually decides whether this is a spreadsheet. */
+      if (!/\.(csv|xlsx|xls)$/i.test(name))
+        return sendError(res, 400, "The file must be a .csv or .xlsx spreadsheet.");
+
+      let records: Record<string, unknown>[] = [];
+      try {
+        const XLSX = await import("xlsx");
+        /* cellFormula:false — a cell is DATA. Nothing is evaluated, and a value
+           beginning with = arrives as the string a reviewer will see. */
+        const wb = XLSX.read(file.buffer, { type: "buffer", cellFormula: false, cellHTML: false });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        if (!sheet) return sendError(res, 400, "That workbook has no sheets.");
+        records = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "" });
+      } catch {
+        return sendError(res, 400, "That file could not be read as a spreadsheet.");
+      }
+      if (records.length > 5000)
+        return sendError(res, 400, "That file has more rows than one import may carry (5000).");
+
+      const parsed = rowsFromRecords(records);
+      if (parsed.error) return sendError(res, 400, parsed.error);
+
+      /* The three registries the interpretation is measured against, read once
+         rather than once per row. */
+      const categories = (await pool.query(
+        `SELECT id, name FROM mo_equipment_categories ORDER BY id`)).rows as unknown as CategoryRef[];
+      const scopes = (await pool.query(
+        `SELECT id, code, name FROM mo_inventory_scopes WHERE is_active AND archived_at IS NULL`))
+        .rows as unknown as ScopeRef[];
+      const assets = (await pool.query(
+        `SELECT id, asset_tag, internal_code, make, model, serial_no, category_id, scope_id
+           FROM mo_equipment_items WHERE deleted_at IS NULL`)).rows as unknown as AssetRef[];
+
+      const normalized = parsed.rows.map((r: SourceRow) => normalizeRow(r, categories, scopes, assets));
+
+      const client = await pool.connect();
+      let batchId = 0;
+      try {
+        await client.query("BEGIN");
+        batchId = Number((await client.query(
+          `INSERT INTO mo_asset_import_batches (file_name, uploaded_by, rows_total)
+           VALUES ($1,$2,$3) RETURNING id`, [name, u.id, normalized.length])).rows[0].id);
+        for (const n of normalized)
+          await client.query(
+            `INSERT INTO mo_asset_import_rows
+               (batch_id, source_row, source_name, source_inventory, source_sr_no,
+                normalized_name, proposed_category_id, proposed_scope_id, proposed_tracking_mode,
+                proposed_quantity, proposed_serial_no, warnings, candidates, state)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14)`,
+            [batchId, n.source.row, n.source.name, n.source.inventory, n.source.srNo,
+             n.normalizedName, n.categoryId, n.scopeId, n.trackingMode, n.quantity,
+             n.serialNo, JSON.stringify(n.warnings), JSON.stringify(n.candidates), n.state]);
+        await client.query("COMMIT");
+      } catch (e) {
+        await client.query("ROLLBACK").catch(() => {});
+        client.release();
+        throw e;
+      }
+      client.release();
+
+      await audit(u, "asset_import.created", "asset_import_batch", batchId, null,
+                  { file_name: name, rows: normalized.length }, req);
+      res.status(201).json({ batch: await batchRow(batchId), counts: await batchCounts(batchId) });
+    }));
+
+  /* ── The batches, and one batch's rows ───────────────────────────────────
+     Rows a reviewer has no authority over are ABSENT, not greyed out — the same
+     rule the catalogue follows. A row whose inventory is still undecided has no
+     scope to check, so it is visible to any importer: somebody has to be able
+     to answer the question. */
+  app.get(`${P}/equipment/imports`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may review imports.");
+    const { limit, offset } = pageOf(req.query as Record<string, string | undefined>);
+    /* A BATCH HAS NO INVENTORY OF ITS OWN — ITS ROWS DO.
+
+       mo_asset_import_batches carries a file name and an uploader, and the
+       inventory lives on each row's proposed_scope_id. So a batch is visible
+       when any row of it is visible, using the same predicate the batch detail
+       and the 17M worklist already apply — including the rule that a row with
+       no proposed inventory is visible to everybody, because deciding its
+       inventory is the point of reviewing it.
+
+       This list was the one reporting surface that did not do this: every
+       custodian could read every batch's file name, uploader and row counts,
+       whatever inventory those rows belonged to. The rows themselves were
+       always scoped; only the index over them was not.
+
+       A batch with NO rows at all stays visible: there is no inventory in it
+       to protect, and hiding an empty upload from the person who made it would
+       be a puzzle rather than a safeguard. */
+    const scopeParams: unknown[] = [];
+    const rowScope = inventoryScopeSql(await inventoryScopeOf(u), scopeParams, "r.proposed_scope_id");
+    const visible = rowScope
+      ? `(NOT EXISTS (SELECT 1 FROM mo_asset_import_rows r WHERE r.batch_id = b.id)
+          OR EXISTS (SELECT 1 FROM mo_asset_import_rows r WHERE r.batch_id = b.id AND ${rowScope}))`
+      : "TRUE";
+
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_asset_import_batches b WHERE ${visible}`,
+      scopeParams)).rows[0].c);
+    const items = (await pool.query(
+      `SELECT b.id, b.file_name, b.uploaded_at, b.rows_total, b.status,
+              us.full_name AS uploaded_by_name,
+              (SELECT COUNT(*)::int FROM mo_asset_import_rows r
+                WHERE r.batch_id=b.id AND r.state IN ('imported','matched_existing','rejected')) AS resolved
+         FROM mo_asset_import_batches b LEFT JOIN users us ON us.id = b.uploaded_by
+        WHERE ${visible}
+        ORDER BY b.uploaded_at DESC, b.id DESC LIMIT ${limit} OFFSET ${offset}`, scopeParams)).rows;
+    res.json({ items, total, limit, offset });
+  }));
+
+  app.get(`${P}/equipment/imports/:id`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may review imports.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const batch = await batchRow(id);
+    if (!batch) return sendError(res, 404, "Import batch not found.");
+
+    const q = req.query as Record<string, string | undefined>;
+    const { limit, offset } = pageOf(q);
+    const params: unknown[] = [id];
+    const where = ["r.batch_id = $1"];
+    if (q.state && q.state !== "all") { params.push(q.state); where.push(`r.state = $${params.length}`); }
+    if (q.q?.trim()) { params.push(`%${q.q.trim()}%`); where.push(`r.normalized_name ILIKE $${params.length}`); }
+    /* SCOPE, applied to the row's PROPOSED inventory. A row with none is
+       visible: deciding its inventory is the point of reviewing it. */
+    const scope = await inventoryScopeOf(u);
+    if (scope.level === "none") where.push("r.proposed_scope_id IS NULL");
+    else if (scope.level === "scoped") {
+      params.push(scope.scopeIds);
+      where.push(`(r.proposed_scope_id IS NULL OR r.proposed_scope_id = ANY($${params.length}::bigint[]))`);
+    }
+    const clause = where.join(" AND ");
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_asset_import_rows r WHERE ${clause}`, params)).rows[0].c);
+    const rows = (await pool.query(
+      `SELECT r.*, c.name AS proposed_category_name, inv.name AS proposed_inventory_name,
+              rb.full_name AS reviewed_by_name,
+              ci.asset_tag AS created_asset_tag, mi.asset_tag AS matched_asset_tag
+         FROM mo_asset_import_rows r
+         LEFT JOIN mo_equipment_categories c ON c.id = r.proposed_category_id
+         LEFT JOIN mo_inventory_scopes inv ON inv.id = r.proposed_scope_id
+         LEFT JOIN users rb ON rb.id = r.reviewed_by
+         LEFT JOIN mo_equipment_items ci ON ci.id = r.created_asset_id
+         LEFT JOIN mo_equipment_items mi ON mi.id = r.matched_asset_id
+        WHERE ${clause} ORDER BY r.source_row LIMIT ${limit} OFFSET ${offset}`, params)).rows;
+    res.json({ batch, counts: await batchCounts(id), rows: { items: rows, total, limit, offset } });
+  }));
+
+  /* ── The decision ────────────────────────────────────────────────────────
+     ONE ROW, ONE DECISION, ATOMICALLY. Approving a new asset creates it,
+     records the provenance and marks the row imported inside a single
+     transaction: there is no state in which an asset exists and the row still
+     says pending, or the row says imported and no asset was made. */
+  app.post(`${P}/equipment/imports/:id/rows/:rowId/decision`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may decide an import row.");
+    const batchId = parseInt(getSingleParam(req.params.id), 10);
+    const rowId = parseInt(getSingleParam(req.params.rowId), 10);
+    const b = req.body as Record<string, unknown>;
+    const decision = String(b.decision ?? "");
+    const DECISIONS = ["new", "match_existing", "duplicate", "physical_verification", "pooled", "reject"];
+    if (!DECISIONS.includes(decision))
+      return sendError(res, 400, `decision must be one of ${DECISIONS.join(", ")}.`);
+    const note = typeof b.note === "string" ? b.note.trim() : "";
+
+    /* PHASE 17M — WHAT THE VERIFIER PHYSICALLY SAW, travelling with the
+       decision it justifies. These are not stored on the reconciliation row:
+       an observation is not a property of what the spreadsheet claimed. They
+       are compared against the candidate below, recorded in the audit payload,
+       and — only where the decision explicitly authorizes it — written into an
+       asset this decision creates. Nothing here ever edits an existing asset. */
+    const str = (v: unknown) => typeof v === "string" ? v.trim() : "";
+    const obs = {
+      serial: str(b.observed_serial_no), make: str(b.observed_make),
+      model: str(b.observed_model), code: str(b.observed_internal_code),
+    };
+    const observedAny = Object.values(obs).some(Boolean);
+    const ackConflict = b.confirm_identity_conflict === true || b.confirm_identity_conflict === "true";
+
+    const row = (await pool.query(
+      `SELECT * FROM mo_asset_import_rows WHERE id=$1 AND batch_id=$2`, [rowId, batchId])).rows[0];
+    if (!row) return sendError(res, 404, "Import row not found.");
+    const batch = await batchRow(batchId);
+    if (batch?.status !== "review")
+      return sendError(res, 409, `This import is ${String(batch?.status)} and can no longer be decided.`);
+
+    /* The row's inventory decides who may act on it. A caller may also supply
+       one for a row that has none — that is the scope decision — and must hold
+       THAT inventory too. */
+    const askedScope = b.scope_id == null || b.scope_id === "" ? null : Number(b.scope_id);
+    const effectiveScope = askedScope ?? (row.proposed_scope_id == null ? null : Number(row.proposed_scope_id));
+    /* THE CALLER'S SCOPE, RESOLVED ONCE AND BEFORE ANY CLIENT IS HELD.
+       inventoryScopeOf() queries the pool, so calling it inside the transaction
+       below would acquire a second connection while holding one — the pool
+       deadlock db-pool-safety.test.ts exists to prevent, and which it caught
+       here. scopeAllows() is pure and is what the transaction uses. */
+    const myScope = await inventoryScopeOf(u);
+    if (row.proposed_scope_id != null && !scopeAllows(myScope, Number(row.proposed_scope_id)))
+      return sendError(res, 404, "Import row not found.");
+    if (askedScope != null && !scopeAllows(myScope, askedScope))
+      return sendError(res, 404, "Import row not found.");
+
+    /* A decision that creates something needs a complete row. */
+    const creating = decision === "new" || decision === "pooled";
+    const categoryId = b.category_id != null && b.category_id !== ""
+      ? Number(b.category_id) : (row.proposed_category_id == null ? null : Number(row.proposed_category_id));
+    if (creating) {
+      if (effectiveScope == null) return sendError(res, 400, "An inventory is required before this row can be approved.");
+      if (categoryId == null) return sendError(res, 400, "A category is required before this row can be approved.");
+    }
+    if (decision === "match_existing" && b.matched_asset_id == null)
+      return sendError(res, 400, "Matching an existing asset requires which asset it is.");
+    if ((decision === "duplicate" || decision === "reject") && !note)
+      return sendError(res, 400, "Say why: a duplicate or a rejection needs a reason.");
+
+    const client = await pool.connect();
+    let result: Record<string, unknown> = {};
+    let conflict: { status: number; message: string } | null = null;
+    let createdId = 0;
+    /* Set when a verifier matched two different serials on purpose. Audited as
+       its own event, because "we knowingly disagreed with the record" is a
+       different fact from "we matched a row" and the next person needs it. */
+    let overrode: { observed: string; recorded: string; asset_tag: string } | null = null;
+    try {
+      await client.query("BEGIN");
+      /* Locked, so two reviewers deciding the same row produce one decision. */
+      const live = (await client.query(
+        `SELECT state FROM mo_asset_import_rows WHERE id=$1 FOR UPDATE`, [rowId])).rows[0];
+      if (!live) conflict = { status: 404, message: "Import row not found." };
+      else if (["imported", "matched_existing", "rejected"].includes(String(live.state)))
+        conflict = { status: 409, message: `That row is already ${String(live.state).replace(/_/g, " ")}.` };
+
+      if (!conflict && creating) {
+        const cat = (await client.query(
+          `SELECT name FROM mo_equipment_categories WHERE id=$1`, [categoryId])).rows[0];
+        if (!cat) conflict = { status: 400, message: "That category does not exist." };
+        else {
+          const pooled = decision === "pooled";
+          const qty = pooled
+            ? (b.quantity != null && b.quantity !== "" ? Number(b.quantity)
+               : row.proposed_quantity == null ? null : Number(row.proposed_quantity))
+            : null;
+          if (pooled && (!Number.isFinite(qty) || (qty as number) <= 0))
+            conflict = { status: 400, message: "A pooled row needs a quantity greater than zero." };
+          else {
+            /* THE CANONICAL CREATION PATH, on this transaction's client — the
+               same function POST /equipment uses, so the tag, the internal code
+               and the identifier rows are made exactly as they always are.
+               Created as DRAFT: a spreadsheet is not verification. */
+            const made = await createEquipmentOn(client, u.id, {
+              categoryId: categoryId as number, categoryName: String(cat.name),
+              make: String(row.normalized_name).split(/\s+/)[0] || String(row.normalized_name),
+              model: String(row.normalized_name),
+              /* 17M — the verifier standing in front of the equipment outranks
+                 the spreadsheet. The sheet's value is kept in the audit payload
+                 either way, so the substitution is visible afterwards. */
+              serialNo: obs.serial || ((row.proposed_serial_no as string | null) ?? null),
+              purchaseCost: null, condition: "good",
+              scopeId: effectiveScope, trackingMode: pooled ? "pooled" : "individual",
+              poolQuantity: pooled ? (qty as number) : null,
+              verificationState: "draft",
+            });
+            createdId = made.itemId;
+            result = { asset: made.item, asset_tag: made.tag };
+            await client.query(
+              `UPDATE mo_asset_import_rows
+                  SET state='imported', decision=$2, decision_note=$3, created_asset_id=$4,
+                      proposed_scope_id=$5, proposed_category_id=$6,
+                      reviewed_by=$7, reviewed_at=NOW()
+                WHERE id=$1`,
+              [rowId, decision, note || null, made.itemId, effectiveScope, categoryId, u.id]);
+          }
+        }
+      }
+
+      if (!conflict && decision === "match_existing") {
+        const target = Number(b.matched_asset_id);
+        const asset = (await client.query(
+          `SELECT id, asset_tag, scope_id, serial_no FROM mo_equipment_items
+            WHERE id=$1 AND deleted_at IS NULL`, [target])).rows[0];
+        /* The reviewer must be able to reach the asset they are pointing at —
+           and the answer to "no" is the 404 an invented id gets. */
+        if (!asset || !scopeAllows(myScope, asset.scope_id == null ? null : Number(asset.scope_id)))
+          conflict = { status: 404, message: "That asset was not found." };
+        /* PHASE 17M — AN IDENTITY CONFLICT IS NOT RESOLVED HERE, IT IS RAISED.
+           The thing on the shelf carries one serial and the asset Nerve thinks
+           it is carries another. Exactly one of those is wrong and this
+           endpoint cannot know which, so it refuses and says so. It does not
+           overwrite the asset's serial with what was observed — that would
+           silently rewrite identity on the strength of one person's typing —
+           and it does not quietly match anyway. Confirming means a human
+           looked at both numbers and said match them regardless, which is
+           recorded as its own audit event. */
+        else if (obs.serial && asset.serial_no && !sameSerial(obs.serial, String(asset.serial_no)) && !ackConflict)
+          conflict = { status: 409,
+            message: `Identity conflict: you observed serial ${obs.serial}, but ${String(asset.asset_tag)} `
+                   + `is recorded as ${String(asset.serial_no)}. Confirm explicitly to match them anyway, `
+                   + `or record this row as a new asset.` };
+        else {
+          if (obs.serial && asset.serial_no && !sameSerial(obs.serial, String(asset.serial_no)))
+            overrode = { observed: obs.serial, recorded: String(asset.serial_no),
+                         asset_tag: String(asset.asset_tag) };
+          /* THE EXISTING ASSET IS NOT TOUCHED. Recording that a sheet row
+             refers to it changes nothing about it — including its serial, which
+             stays exactly as recorded even when a verifier has just said they
+             read a different one off the equipment. */
+          await client.query(
+            `UPDATE mo_asset_import_rows
+                SET state='matched_existing', decision=$2, decision_note=$3,
+                    matched_asset_id=$4, reviewed_by=$5, reviewed_at=NOW()
+              WHERE id=$1`, [rowId, decision, note || null, target, u.id]);
+          result = { matched_asset_id: target, asset_tag: asset.asset_tag };
+        }
+      }
+
+      if (!conflict && (decision === "duplicate" || decision === "reject")) {
+        await client.query(
+          `UPDATE mo_asset_import_rows SET state='rejected', decision=$2, decision_note=$3,
+                  reviewed_by=$4, reviewed_at=NOW() WHERE id=$1`, [rowId, decision, note, u.id]);
+      }
+      if (!conflict && decision === "physical_verification") {
+        /* NOT a decision, a deferral: the row stays open until somebody has
+           looked at the shelf. No asset is created, provisional or otherwise. */
+        await client.query(
+          `UPDATE mo_asset_import_rows SET state='physical_verification', decision=$2,
+                  decision_note=$3, reviewed_by=$4, reviewed_at=NOW() WHERE id=$1`,
+          [rowId, decision, note || null, u.id]);
+      }
+
+      if (conflict) await client.query("ROLLBACK"); else await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+      const code = (e as { code?: string }).code;
+      if (code === "23505")
+        return sendError(res, 409, "An asset with that serial number or identifier already exists.");
+      throw e;
+    }
+    /* Released before audit(): this codebase forbids auditing under a held
+       client, after a real pool deadlock. */
+    client.release();
+    if (conflict) return sendError(res, conflict.status, conflict.message);
+
+    /* PROVENANCE. The chain asset → audit → batch → source row lives here
+       rather than in a column on mo_equipment_items. */
+    const action = decision === "new" ? "asset_import.new_asset_approved"
+      : decision === "pooled" ? "asset_import.pooled_approved"
+      : decision === "match_existing" ? "asset_import.identity_matched"
+      : decision === "physical_verification" ? "asset_import.physical_verification_requested"
+      : "asset_import.row_rejected";
+    /* 17M — WHAT WAS SEEN, kept with the decision it justifies. The sheet's
+       own serial is recorded alongside it whenever the observation replaced it,
+       so a later reader can tell which number came from where. */
+    const observed = observedAny
+      ? { observed: { ...(obs.serial ? { serial_no: obs.serial } : {}),
+                      ...(obs.make ? { make: obs.make } : {}),
+                      ...(obs.model ? { model: obs.model } : {}),
+                      ...(obs.code ? { internal_code: obs.code } : {}),
+                      ...(obs.serial && row.proposed_serial_no
+                            && !sameSerial(obs.serial, String(row.proposed_serial_no))
+                          ? { source_claimed_serial_no: row.proposed_serial_no } : {}) } }
+      : {};
+    /* Raised BEFORE the decision it qualifies, so the trail reads in the order
+       it happened: we saw a disagreement, then we matched anyway. */
+    if (overrode)
+      await audit(u, "asset_import.identity_conflict", "asset_import_batch", batchId,
+                  { recorded_serial_no: overrode.recorded, asset_tag: overrode.asset_tag },
+                  { observed_serial_no: overrode.observed, import_row_id: rowId,
+                    source_row: Number(row.source_row), resolution: "matched_anyway" }, req);
+    if (createdId)
+      await audit(u, action, "equipment_item", createdId, null,
+                  { batch_id: batchId, import_row_id: rowId, source_row: Number(row.source_row),
+                    source_name: row.source_name, decision, ...observed }, req);
+    else
+      await audit(u, action, "asset_import_batch", batchId, { state: row.state },
+                  { import_row_id: rowId, source_row: Number(row.source_row), decision,
+                    ...(result.matched_asset_id ? { matched_asset_id: result.matched_asset_id } : {}),
+                    ...observed }, req);
+
+    res.json({ row: (await pool.query(
+      `SELECT * FROM mo_asset_import_rows WHERE id=$1`, [rowId])).rows[0],
+      counts: await batchCounts(batchId), ...result });
+  }));
+
+  /* ── Completing or abandoning a batch ────────────────────────────────────
+     Neither touches an asset. Completion is a statement that nobody intends to
+     review the rest, not a bulk approval. */
+  app.post(`${P}/equipment/imports/:id/close`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may close an import.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const to = String((req.body as Record<string, unknown>).status ?? "completed");
+    if (!["completed", "cancelled"].includes(to))
+      return sendError(res, 400, "status must be 'completed' or 'cancelled'.");
+    const batch = await batchRow(id);
+    if (!batch) return sendError(res, 404, "Import batch not found.");
+    if (batch.status !== "review")
+      return sendError(res, 409, `This import is already ${String(batch.status)}.`);
+    await pool.query(
+      `UPDATE mo_asset_import_batches SET status=$2, completed_at=NOW(), completed_by=$3
+        WHERE id=$1 AND status='review'`, [id, to, u.id]);
+    await audit(u, "asset_import.completed", "asset_import_batch", id,
+                { status: "review" }, { status: to }, req);
+    res.json({ batch: await batchRow(id), counts: await batchCounts(id) });
+  }));
+
+  /* ═══ PHYSICAL VERIFICATION WORKLIST (Phase 17M) ═══════════════════════════
+     A READ MODEL OVER RECONCILIATION ROWS. No queue table, no second state
+     machine, no new verification record. A row is on this list because 17L put
+     it in `physical_verification`, and it leaves the list when 17L's decision
+     endpoint moves it somewhere terminal. Nothing here owns state.
+
+     THREE THINGS STAY APART, and the whole phase depends on it:
+
+       RECONCILIATION   what the source inventory CLAIMS   mo_asset_import_rows
+       INSPECTION       what somebody physically SAW       mo_asset_inspections
+       VERIFICATION     is this asset cleared to CIRCULATE mo_equipment_items
+
+     An inspection is evidence. A reconciliation decision is identity. Asset
+     verification is operational authorization. 17M joins them and collapses
+     none of them.
+
+     WHY NO `inspection_id` COLUMN ON THE ROW. It was the obvious thing to add
+     and it would have been a second answer to a question the data already
+     answers. "Has somebody looked at this yet" is: does an inspection exist on
+     one of this row's candidates, recorded since the row entered the queue.
+     That is derivable, it cannot go stale, and it stays true if the inspection
+     is later corrected. A stored pointer would have to be maintained by every
+     path that inspects an asset, including the ones that know nothing about
+     imports.
+
+     WHY NO OBSERVED-IDENTITY COLUMNS. What the verifier saw is not a property
+     of the reconciliation row; it is the content of the decision they are
+     about to make. It travels with the decision, is compared against the
+     candidate, and is recorded in the audit payload — which is where 17L
+     already keeps provenance. Persisting it on the row would create a third
+     place that claims to know an asset's serial. */
+
+  /** When a row entered the queue: when a reviewer deferred it, or failing
+      that when the sheet was uploaded. Age is measured from this. */
+  const QUEUED_AT = `COALESCE(r.reviewed_at, b.uploaded_at)`;
+
+  /* HAS SOMEBODY LOOKED AT IT. Bounded by construction: a row carries at most
+     eight candidates (17L caps them), and mo_asset_inspections is indexed on
+     (equipment_item_id, inspected_at DESC), so this is eight index probes on a
+     page of rows — not a scan, and not a query per row of the page. */
+  const INSPECTED = `EXISTS (
+    SELECT 1 FROM jsonb_array_elements(r.candidates) ce
+      JOIN mo_asset_inspections s
+        ON s.equipment_item_id = (ce->>'asset_id')::bigint
+     WHERE s.inspected_at >= ${QUEUED_AT})`;
+
+  /** The worklist's scope predicate, identical to the batch detail's: a row
+      with no proposed inventory is visible to everybody, because deciding its
+      inventory is the point of reviewing it. */
+  const pushRowScope = (where: string[], scope: InventoryScope, params: unknown[]) => {
+    if (scope.level === "none") where.push("r.proposed_scope_id IS NULL");
+    else if (scope.level === "scoped") {
+      params.push(scope.scopeIds);
+      where.push(`(r.proposed_scope_id IS NULL OR r.proposed_scope_id = ANY($${params.length}::bigint[]))`);
+    }
+  };
+
+  app.get(`${P}/equipment/verification-worklist`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may verify inventory.");
+    const q = req.query as Record<string, string | undefined>;
+    const scope = await inventoryScopeOf(u);
+
+    const params: unknown[] = [];
+    const bind = (v: unknown) => { params.push(v); return `$${params.length}`; };
+    /* THE ONE STATE THAT PUTS A ROW HERE. Not a filter a caller can widen:
+       this endpoint is the physical-verification queue and nothing else. */
+    const where: string[] = ["r.state = 'physical_verification'"];
+    pushRowScope(where, scope, params);
+
+    if (q.batch_id && q.batch_id !== "all") where.push(`r.batch_id = ${bind(Number(q.batch_id))}`);
+    if (q.inventory && q.inventory !== "all") {
+      const inv = String(q.inventory).trim();
+      where.push(/^\d+$/.test(inv) ? `r.proposed_scope_id = ${bind(Number(inv))}`
+        : inv.toLowerCase() === "none" ? "r.proposed_scope_id IS NULL"
+        : `r.proposed_scope_id = (SELECT id FROM mo_inventory_scopes WHERE code = ${bind(inv.toLowerCase())})`);
+    }
+    if (q.category_id && q.category_id !== "all") where.push(`r.proposed_category_id = ${bind(Number(q.category_id))}`);
+    if (q.tracking_mode && q.tracking_mode !== "all")
+      where.push(`r.proposed_tracking_mode = ${bind(q.tracking_mode)}`);
+    if (q.q?.trim()) { const t = bind(`%${q.q.trim()}%`);
+      where.push(`(r.normalized_name ILIKE ${t} OR r.source_name ILIKE ${t})`); }
+    /* Candidates, as the data already holds them — jsonb_array_length, not a
+       join, because the question is about the row and not about the assets. */
+    if (q.candidate === "any")  where.push("jsonb_array_length(r.candidates) > 0");
+    if (q.candidate === "none") where.push("jsonb_array_length(r.candidates) = 0");
+    if (q.confidence && q.confidence !== "all")
+      where.push(`r.candidates @> ${bind(JSON.stringify([{ confidence: q.confidence }]))}::jsonb`);
+    /* Age in whole days, from an objective timestamp. There is no priority
+       score and no severity: older is older. */
+    if (q.age_days && /^\d+$/.test(q.age_days))
+      where.push(`${QUEUED_AT} <= NOW() - ${bind(`${Number(q.age_days)} days`)}::interval`);
+    /* OPEN and IN PROGRESS are presentation over the same reconciliation
+       state — 17L's `physical_verification`, unchanged. Nothing persists them. */
+    if (q.status === "open")        where.push(`NOT ${INSPECTED}`);
+    if (q.status === "in_progress") where.push(INSPECTED);
+
+    const clause = where.join(" AND ");
+    const FROM = `FROM mo_asset_import_rows r
+                  JOIN mo_asset_import_batches b ON b.id = r.batch_id`;
+    const { limit, offset } = pageOf(q);
+    const order = q.sort === "newest" ? "DESC" : "ASC";   /* oldest first by default */
+
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c ${FROM} WHERE ${clause}`, params)).rows[0].c);
+
+    const items = (await pool.query(
+      `SELECT r.id, r.batch_id, r.source_row, r.source_name, r.source_inventory, r.source_sr_no,
+              r.normalized_name, r.proposed_tracking_mode, r.proposed_quantity, r.warnings,
+              b.file_name AS batch_file_name, b.status AS batch_status,
+              c.name   AS proposed_category_name,
+              inv.name AS proposed_inventory_name,
+              jsonb_array_length(r.candidates)          AS candidate_count,
+              r.candidates->0->>'asset_tag'             AS top_candidate_tag,
+              r.candidates->0->>'confidence'            AS top_candidate_confidence,
+              ${QUEUED_AT}                              AS queued_at,
+              (NOW()::date - ${QUEUED_AT}::date)::int   AS age_days,
+              ${INSPECTED}                              AS inspected
+         ${FROM}
+         LEFT JOIN mo_equipment_categories c ON c.id = r.proposed_category_id
+         LEFT JOIN mo_inventory_scopes inv  ON inv.id = r.proposed_scope_id
+        WHERE ${clause}
+        ORDER BY ${QUEUED_AT} ${order}, r.id ${order}
+        LIMIT ${limit} OFFSET ${offset}`, params)).rows;
+
+    res.json({ items, total, limit, offset,
+               scope: { level: scope.level, selected: q.inventory ?? "all" } });
+  }));
+
+  /* ── One row, with its candidates as they are NOW ────────────────────────
+     The list shows what the sheet said. This shows that beside what Nerve
+     currently holds, which is the comparison the verifier is actually making.
+     Candidates are read live rather than from the JSONB snapshot: an asset may
+     have been retired, repaired or moved since the file was uploaded, and
+     deciding against a stale copy is the mistake this screen exists to stop. */
+  app.get(`${P}/equipment/verification-worklist/:rowId`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may verify inventory.");
+    const rowId = parseInt(getSingleParam(req.params.rowId), 10);
+    const scope = await inventoryScopeOf(u);
+
+    const params: unknown[] = [rowId];
+    const where = ["r.id = $1"];
+    pushRowScope(where, scope, params);
+    const row = (await pool.query(
+      `SELECT r.*, b.file_name AS batch_file_name, b.status AS batch_status,
+              b.uploaded_at AS batch_uploaded_at,
+              c.name   AS proposed_category_name,
+              inv.name AS proposed_inventory_name,
+              ${QUEUED_AT}                            AS queued_at,
+              (NOW()::date - ${QUEUED_AT}::date)::int AS age_days,
+              ${INSPECTED}                            AS inspected
+         FROM mo_asset_import_rows r
+         JOIN mo_asset_import_batches b ON b.id = r.batch_id
+         LEFT JOIN mo_equipment_categories c ON c.id = r.proposed_category_id
+         LEFT JOIN mo_inventory_scopes inv  ON inv.id = r.proposed_scope_id
+        WHERE ${where.join(" AND ")}`, params)).rows[0];
+    /* Out of scope reads as absent, like everywhere else in this module. */
+    if (!row) return sendError(res, 404, "Verification row not found.");
+
+    /* THE CANDIDATES, LIVE AND SCOPED. A candidate the caller may not see is
+       not listed and cannot be chosen — the decision endpoint 404s it too, so
+       the list and the action agree about what exists. Bounded at eight by
+       17L, so this is one query with a small ANY(), never a query per row. */
+    const ids = ((row.candidates ?? []) as { asset_id: number }[])
+      .map((x) => Number(x.asset_id)).filter((n) => Number.isFinite(n) && n > 0).slice(0, 8);
+    const confidenceOf = new Map(((row.candidates ?? []) as { asset_id: number; confidence: string; why: string }[])
+      .map((x) => [Number(x.asset_id), { confidence: x.confidence, why: x.why }]));
+
+    const live = ids.length ? (await pool.query(
+      `SELECT i.id, i.asset_tag, i.internal_code, i.serial_no, i.make, i.model,
+              i.status, i.condition, i.verification_state, i.scope_id,
+              cat.name AS category_name, inv.name AS inventory_name,
+              (lastx.action = 'check_out')                                   AS held,
+              CASE WHEN lastx.action = 'check_out' THEN hu.full_name END     AS holder_name,
+              (SELECT COUNT(*)::int FROM mo_asset_inspections s
+                WHERE s.equipment_item_id = i.id AND s.inspected_at >= $2)   AS inspections_since_queued,
+              (SELECT to_char(MAX(s.inspected_at),'YYYY-MM-DD"T"HH24:MI:SSOF')
+                 FROM mo_asset_inspections s WHERE s.equipment_item_id = i.id) AS last_inspected_at
+         FROM mo_equipment_items i
+         LEFT JOIN mo_equipment_categories cat ON cat.id = i.category_id
+         LEFT JOIN mo_inventory_scopes inv ON inv.id = i.scope_id
+         LEFT JOIN LATERAL (
+           SELECT t.action, t.holder_id FROM mo_equipment_transactions t
+            WHERE t.equipment_item_id = i.id
+            ORDER BY t.occurred_at DESC, t.id DESC LIMIT 1) lastx ON TRUE
+         LEFT JOIN users hu ON hu.id = lastx.holder_id
+        WHERE i.id = ANY($1::bigint[]) AND i.deleted_at IS NULL`,
+      [ids, row.queued_at])).rows : [];
+
+    const candidates = live
+      .filter((a) => scopeAllows(scope, a.scope_id == null ? null : Number(a.scope_id)))
+      .map((a) => ({ ...a, ...(confidenceOf.get(Number(a.id)) ?? { confidence: "NONE", why: "" }) }));
+
+    res.json({ row, candidates, counts: await batchCounts(Number(row.batch_id)) });
+  }));
+
+  /* ═══ INSPECTION POLICY ADMINISTRATION (Phase 17O) ═════════════════════════
+     CONFIGURATION, NOT CUSTODY. Writing policy is isMoAdmin and deliberately
+     not canManageEquipment: an equipment custodian's authority is to go and
+     look at the equipment, which is the thing the policy governs. Letting the
+     governed set their own cadence is not a permission model.
+
+     Reads are open to any equipment user, because a category-only policy is
+     global by construction — there is no inventory dimension to scope, and a
+     custodian who can see an asset is already told its due date on the
+     assurance page. Hiding the interval that produced it would be theatre. */
+
+  const POLICY_MAX_DAYS = 3650;   /* ten years — the CHECK on the table, named */
+
+  /* NAMED, NOT p.* — the star already carries effective_from and effective_to
+     as DATE values, and the to_char versions beside it would be two result
+     columns with one name. node-postgres keeps the last and says nothing, so
+     the row would have silently depended on the order they were written in.
+     That is the shadowing bug Phase 17E spent a week on; the scanner caught
+     this one the same day it was written. */
+  const policyRow = async (id: number) => (await pool.query(
+    `SELECT p.id, p.category_id, p.interval_days, p.is_active, p.note,
+            p.created_by, p.updated_by, p.created_at, p.updated_at,
+            c.name AS category_name,
+            to_char(p.effective_from,'YYYY-MM-DD') AS effective_from,
+            to_char(p.effective_to,'YYYY-MM-DD')   AS effective_to,
+            cu.full_name AS created_by_name, uu.full_name AS updated_by_name
+       FROM mo_inspection_policies p
+       JOIN mo_equipment_categories c ON c.id = p.category_id
+       LEFT JOIN users cu ON cu.id = p.created_by
+       LEFT JOIN users uu ON uu.id = p.updated_by
+      WHERE p.id=$1`, [id])).rows[0];
+
+  /** A DATE IS A DAY. Never RETURNING * on these — to_char, every time. */
+  const POLICY_COLUMNS = `id, category_id, interval_days, is_active, note,
+    to_char(effective_from,'YYYY-MM-DD') AS effective_from,
+    to_char(effective_to,'YYYY-MM-DD')   AS effective_to,
+    created_by, updated_by, created_at, updated_at`;
+
+  /* A REAL DAY, not merely something shaped like one.
+
+     The pattern alone accepts 2026-13-40 and 2026-02-30. Those reach Postgres
+     as a cast and come back as a 500 — a validation bug wearing the costume of
+     a server error. The checkout path has always paired the shape with
+     Date.parse for exactly this reason; every date filter added since 17O
+     should have done the same, and now does. */
+  const isDay = (v: unknown): v is string => {
+    if (typeof v !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+    const d = new Date(`${v}T00:00:00Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+  };
+
+  app.get(`${P}/equipment/inspection-policies`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const q = req.query as Record<string, string | undefined>;
+    const where: string[] = []; const params: unknown[] = [];
+    if (q.category_id && q.category_id !== "all") {
+      params.push(Number(q.category_id)); where.push(`p.category_id = $${params.length}`);
+    }
+    if (q.active === "1") where.push("p.is_active");
+    if (q.active === "0") where.push("NOT p.is_active");
+    const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const { limit, offset } = pageOf(q);
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_inspection_policies p ${clause}`, params)).rows[0].c);
+    const items = (await pool.query(
+      `SELECT p.id, p.category_id, p.interval_days, p.is_active, p.note,
+              to_char(p.effective_from,'YYYY-MM-DD') AS effective_from,
+              to_char(p.effective_to,'YYYY-MM-DD')   AS effective_to,
+              p.created_at, p.updated_at,
+              c.name AS category_name,
+              cu.full_name AS created_by_name, uu.full_name AS updated_by_name,
+              /* Whether this row is the one governing today, computed here so
+                 the screen does not have to re-derive the resolver's answer. */
+              (p.is_active AND p.effective_from <= ${TODAY_IST}
+                AND COALESCE(p.effective_to,'infinity'::date) >= ${TODAY_IST}) AS in_effect,
+              (SELECT COUNT(*)::int FROM mo_equipment_items i
+                WHERE i.category_id = p.category_id AND i.deleted_at IS NULL) AS assets_in_category
+         FROM mo_inspection_policies p
+         JOIN mo_equipment_categories c ON c.id = p.category_id
+         LEFT JOIN users cu ON cu.id = p.created_by
+         LEFT JOIN users uu ON uu.id = p.updated_by
+         ${clause}
+        ORDER BY c.name, p.effective_from DESC, p.id DESC
+        LIMIT ${limit} OFFSET ${offset}`, params)).rows;
+    res.json({ items, total, limit, offset, max_interval_days: POLICY_MAX_DAYS });
+  }));
+
+  app.get(`${P}/equipment/inspection-policies/:id`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const row = await policyRow(parseInt(getSingleParam(req.params.id), 10));
+    if (!row) return sendError(res, 404, "Inspection policy not found.");
+    res.json({ policy: row });
+  }));
+
+  /** Shared by POST and PATCH: the interval and the window, checked once. */
+  const readPolicyBody = (b: Record<string, unknown>, cur?: Record<string, unknown>) => {
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(b, k);
+    const interval = has("interval_days") ? Number(b.interval_days)
+                   : cur ? Number(cur.interval_days) : NaN;
+    if (!Number.isInteger(interval))
+      return { error: "interval_days must be a whole number of days." };
+    if (interval <= 0 || interval > POLICY_MAX_DAYS)
+      return { error: `interval_days must be between 1 and ${POLICY_MAX_DAYS}.` };
+    const from = has("effective_from") ? String(b.effective_from ?? "")
+               : cur ? String(cur.effective_from) : "";
+    if (!isDay(from)) return { error: "An effective-from date is required (YYYY-MM-DD)." };
+    const toRaw = has("effective_to") ? b.effective_to : (cur ? cur.effective_to : null);
+    const to = toRaw === null || toRaw === "" || toRaw === undefined ? null : String(toRaw);
+    if (to !== null && !isDay(to))
+      return { error: "The effective-to date must be a date (YYYY-MM-DD) or empty." };
+    if (to !== null && to < from)
+      return { error: "The effective-to date must be on or after the effective-from date." };
+    const active = has("is_active") ? (b.is_active === true || b.is_active === "true")
+                 : cur ? !!cur.is_active : true;
+    const note = has("note") ? String(b.note ?? "").trim() : (cur ? String(cur.note ?? "") : "");
+    return { interval, from, to, active, note };
+  };
+
+  /* TWO ACTIVE POLICIES COVERING ONE CATEGORY ON ONE DAY would make an asset's
+     due date ambiguous, so the overlap is refused at write time rather than
+     discovered by a resolver that has to pick. Inactive rows are ignored: they
+     are history, and history is allowed to overlap.
+
+     Runs on the CALLER'S CLIENT inside the mutation's transaction — checking
+     through the pool and then inserting would leave exactly the gap the check
+     exists to close. */
+  const policyClash = async (on: { query: (q: string, p?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }> },
+                             categoryId: number, from: string, to: string | null, excludeId = 0) =>
+    (await on.query(
+      `SELECT p.id, to_char(p.effective_from,'YYYY-MM-DD') AS f,
+              to_char(p.effective_to,'YYYY-MM-DD') AS t
+         FROM mo_inspection_policies p
+        WHERE p.category_id = $1 AND p.is_active AND p.id <> $4
+          AND p.effective_from <= COALESCE($3::date, 'infinity'::date)
+          AND COALESCE(p.effective_to, 'infinity'::date) >= $2::date
+        LIMIT 1`, [categoryId, from, to, excludeId])).rows[0];
+
+  app.post(`${P}/equipment/inspection-policies`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    if (!isMoAdmin(u))
+      return sendError(res, 403, "Only a Media Ops Admin may set inspection policy.");
+    const b = req.body as Record<string, unknown>;
+    const categoryId = Number(b.category_id);
+    if (!Number.isInteger(categoryId) || categoryId <= 0)
+      return sendError(res, 400, "A category is required.");
+    const v = readPolicyBody(b);
+    if ("error" in v) return sendError(res, 400, v.error as string);
+
+    const client = await pool.connect();
+    let created = 0;
+    let conflict: { status: number; message: string } | null = null;
+    try {
+      await client.query("BEGIN");
+      const cat = (await client.query(
+        `SELECT name FROM mo_equipment_categories WHERE id=$1`, [categoryId])).rows[0];
+      if (!cat) conflict = { status: 400, message: "That category does not exist." };
+      if (!conflict && v.active) {
+        const clash = await policyClash(client, categoryId, v.from!, v.to!);
+        if (clash) conflict = { status: 409,
+          message: `Those dates overlap an active policy for ${String(cat!.name)} `
+                 + `(${String(clash.f)} to ${clash.t ? String(clash.t) : "open-ended"}). `
+                 + "End that one first — a category cannot have two intervals on one day." };
+      }
+      if (!conflict)
+        created = Number((await client.query(
+          `INSERT INTO mo_inspection_policies
+             (category_id, interval_days, is_active, effective_from, effective_to, note, created_by, updated_by)
+           VALUES ($1,$2,$3,$4::date,$5::date,$6,$7,$7) RETURNING id`,
+          [categoryId, v.interval, v.active, v.from, v.to, v.note, u.id])).rows[0].id);
+      if (conflict) await client.query("ROLLBACK"); else await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release(); throw e;
+    }
+    client.release();
+    if (conflict) return sendError(res, conflict.status, conflict.message);
+
+    await audit(u, "inspection_policy.created", "inspection_policy", created, null,
+                { category_id: categoryId, interval_days: v.interval, is_active: v.active,
+                  effective_from: v.from, effective_to: v.to }, req);
+    res.status(201).json({ policy: await policyRow(created) });
+  }));
+
+  /* PATCH carries activation too, per the API this codebase already uses for
+     payout rates: an is_active flip is an update, not a verb of its own. */
+  app.patch(`${P}/equipment/inspection-policies/:id`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    if (!isMoAdmin(u))
+      return sendError(res, 403, "Only a Media Ops Admin may change inspection policy.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    if (b.category_id !== undefined)
+      return sendError(res, 400, "A policy cannot be moved to another category. End it and write a new one.");
+
+    const client = await pool.connect();
+    let before: Record<string, unknown> | undefined;
+    let conflict: { status: number; message: string } | null = null;
+    let v: ReturnType<typeof readPolicyBody> | null = null;
+    try {
+      await client.query("BEGIN");
+      /* Locked, so two admins editing one policy cannot both pass the overlap
+         check against a row the other is about to change. */
+      before = (await client.query(
+        `SELECT ${POLICY_COLUMNS} FROM mo_inspection_policies WHERE id=$1 FOR UPDATE`, [id])).rows[0];
+      if (!before) conflict = { status: 404, message: "Inspection policy not found." };
+      if (!conflict) {
+        v = readPolicyBody(b, before);
+        if ("error" in v) conflict = { status: 400, message: v.error as string };
+      }
+      if (!conflict && v!.active) {
+        const clash = await policyClash(client, Number(before!.category_id), v!.from!, v!.to!, id);
+        if (clash) conflict = { status: 409,
+          message: `Those dates overlap another active policy for this category `
+                 + `(${String(clash.f)} to ${clash.t ? String(clash.t) : "open-ended"}). `
+                 + "End that one first — a category cannot have two intervals on one day." };
+      }
+      if (!conflict)
+        await client.query(
+          `UPDATE mo_inspection_policies
+              SET interval_days=$2, is_active=$3, effective_from=$4::date, effective_to=$5::date,
+                  note=$6, updated_by=$7, updated_at=NOW()
+            WHERE id=$1`, [id, v!.interval, v!.active, v!.from, v!.to, v!.note, u.id]);
+      if (conflict) await client.query("ROLLBACK"); else await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release(); throw e;
+    }
+    client.release();
+    if (conflict) return sendError(res, conflict.status, conflict.message);
+
+    /* One event, carrying what changed. An activation flip is visible in the
+       before/after pair rather than needing an event name of its own. */
+    const after = { interval_days: v!.interval, is_active: v!.active,
+                    effective_from: v!.from, effective_to: v!.to, note: v!.note };
+    await audit(u, "inspection_policy.updated", "inspection_policy", id,
+                { interval_days: Number(before!.interval_days), is_active: !!before!.is_active,
+                  effective_from: before!.effective_from, effective_to: before!.effective_to,
+                  note: before!.note }, after, req);
+    res.json({ policy: await policyRow(id) });
+  }));
+
+  /* ═══ THE INSPECTION POLICY RESOLVER (Phase 17O) ═══════════════════════════
+     ONE DERIVATION, SPLICED INTO EVERY READER.
+
+     Physical assurance and the inventory dashboard both have to answer "is
+     this asset due?", and the one thing that must never happen is that they
+     answer it differently. So the answer is written once, here, as SQL
+     fragments that both queries include — not as a function each endpoint
+     calls with its own idea of the arguments, and emphatically not twice.
+
+     IT IS SET-BASED BECAUSE IT HAS TO BE. Both laterals below are one index
+     probe per row of the page: mo_asset_inspections is covered by 17I's
+     (equipment_item_id, inspected_at DESC), and the policy lookup by 17O's
+     partial (category_id, effective_from, effective_to) WHERE is_active.
+     Nothing here runs a query per asset.
+
+     THE CURRENT POLICY GOVERNS THE CURRENT STATE — the approved decision. An
+     asset inspected on 1 January under a 90-day policy is overdue on 2 March
+     if the policy became 30 days on 1 March, because the question "is this
+     due?" is asked of today's rule and not of the rule that happened to be in
+     force the last time somebody looked at it. Shortening an interval is
+     nearly always a judgement that the old one was unsafe; under the other
+     reading that judgement would not reach a single existing asset until each
+     was next inspected, which is exactly backwards. History is not lost: the
+     old policy row keeps its effective window and its audit trail. */
+
+  /** The latest inspection of an asset, deterministically. */
+  const LATEST_INSPECTION = `
+    LEFT JOIN LATERAL (
+      SELECT s.id, s.inspected_at, s.inspector_id, s.observed_condition, s.outcome
+        FROM mo_asset_inspections s
+       WHERE s.equipment_item_id = i.id
+       ORDER BY s.inspected_at DESC, s.id DESC
+       LIMIT 1) li ON TRUE`;
+
+  /** The one active policy covering this asset's category TODAY.
+
+      ORDER BY ... LIMIT 1 despite the overlap check in the write path: a
+      resolver that would return two rows if the data were ever wrong is a
+      resolver that fails as a cartesian product across the whole page. It
+      picks the latest-starting window, so the answer stays single and
+      explainable even against data this code did not write. */
+  const POLICY_JOIN = `
+    LEFT JOIN LATERAL (
+      SELECT p.id, p.interval_days
+        FROM mo_inspection_policies p
+       WHERE p.category_id = i.category_id
+         AND p.is_active
+         AND p.effective_from <= ${TODAY_IST}
+         AND COALESCE(p.effective_to, 'infinity'::date) >= ${TODAY_IST}
+       ORDER BY p.effective_from DESC, p.id DESC
+       LIMIT 1) pol ON TRUE`;
+
+  /* The day an asset falls due: the DAY it was last seen plus the interval.
+     IST throughout, matching days_since_inspection, so the two figures on one
+     row can never disagree about which day it is. */
+  const DUE_AT = `CASE WHEN pol.id IS NULL OR li.inspected_at IS NULL THEN NULL
+                       ELSE (li.inspected_at AT TIME ZONE 'Asia/Kolkata')::date
+                            + pol.interval_days END`;
+
+  /* THE FIVE STATES, AND THEIR ORDER IS THE DESIGN.
+
+     never_inspected is tested FIRST, ahead of the policy. An asset nobody has
+     ever looked at is never "overdue" — 17N separated those two ideas on
+     purpose and a policy arriving does not merge them. Testing it first also
+     keeps the summary honest: the count of assets in this state is exactly
+     17N's never_inspected figure, unchanged, rather than a number that shrinks
+     whenever a category loses its policy.
+
+     no_policy is a CONFIGURATION gap and is shown as one rather than hidden
+     behind a cheerful "not due". An uncovered category is something an admin
+     has to fix, and a dashboard that quietly reported those assets as fine
+     would be concealing the one thing it could usefully say about them.
+
+     The five partition the estate: every asset is in exactly one, and they sum
+     to the total. */
+  const INSPECTION_STATE = `CASE
+      WHEN li.inspected_at IS NULL      THEN 'never_inspected'
+      WHEN pol.id IS NULL               THEN 'no_policy'
+      WHEN (${DUE_AT}) < ${TODAY_IST}   THEN 'overdue'
+      WHEN (${DUE_AT}) = ${TODAY_IST}   THEN 'due'
+      ELSE                                   'not_due' END`;
+  const STATES = ["never_inspected", "no_policy", "not_due", "due", "overdue"] as const;
+
+  /* ═══ PHYSICAL ASSURANCE (Phase 17N) ═══════════════════════════════════════
+     HOW RECENTLY HAS EACH ASSET ACTUALLY BEEN SEEN?
+
+     Everything below is derived from mo_asset_inspections at read time. No
+     last_inspected_at on the asset, no cached inspector, no stored age — those
+     would be a second copy of an answer the inspection table already gives,
+     and it would be wrong the moment an inspection is recorded, corrected or
+     removed anywhere else in the system.
+
+     NO POLICY IS INVENTED HERE, and that is the phase's main constraint. The
+     repository has no stocktake interval: the original inventory audit records
+     row T as "Inventory Audit — MISSING — no stocktake concept", the only
+     cycle tables belong to Creator and KRA (people, not assets), and the one
+     due date on the asset side is mo_maintenance_records.next_due_at, which is
+     per-record service recurrence. So this endpoint reports FACTS — last seen,
+     never seen, how many days — and calls nothing "overdue". An asset last
+     inspected 143 days ago is reported as 143 days; whether that is late is a
+     decision nobody has made yet, and inventing a threshold here would quietly
+     make it on their behalf.
+
+     WHY THIS IS ITS OWN ENDPOINT. Both candidates were checked first:
+       · GET /equipment/analytics is HISTORICAL by design and says so — "no
+         current-state summary… a second place to compute those is exactly what
+         Phase 5 spent its effort removing". "When was this last seen" is a
+         current-state question.
+       · GET /equipment/dashboard (17K) is current state, but it is a bounded
+         WINDOW: top-eight lists over five operational dimensions, read in one
+         snapshot. Assurance needs a paginated, sortable table over the whole
+         estate, which is the one thing that dashboard is built not to carry.
+     The dashboard does gain two figures from this domain — inspected and never
+     inspected — because they are two FILTER counts over the assets it is
+     already counting, and a card there is how anybody finds this page. */
+
+  app.get(`${P}/equipment/physical-assurance`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const q = req.query as Record<string, string | undefined>;
+    const scope = await inventoryScopeOf(u);
+
+    const where: string[] = ["i.deleted_at IS NULL"];
+    const params: unknown[] = [];
+    const bind = (v: unknown) => { params.push(v); return `$${params.length}`; };
+    /* Scope is authorization and goes on first. The inventory filter below
+       NARROWS what that already allowed — asking for an inventory the caller
+       has no authority over yields nothing, never everything. */
+    pushInventoryScope(where, scope, params);
+    if (q.inventory && q.inventory !== "all") {
+      const inv = String(q.inventory).trim();
+      where.push(/^\d+$/.test(inv) ? `i.scope_id = ${bind(Number(inv))}`
+        : inv.toLowerCase() === "legacy" ? "i.scope_id IS NULL"
+        : `i.scope_id = (SELECT id FROM mo_inventory_scopes WHERE code = ${bind(inv.toLowerCase())})`);
+    }
+    if (q.category_id && q.category_id !== "all") where.push(`i.category_id = ${bind(Number(q.category_id))}`);
+    if (q.lifecycle && q.lifecycle !== "all") where.push(`i.status = ${bind(q.lifecycle)}`);
+    if (q.verification && q.verification !== "all")
+      where.push(`i.verification_state = ${bind(q.verification)}`);
+
+    /* EVER SEEN, AT ALL. An EXISTS rather than a join: the question is whether
+       a row exists, and the (equipment_item_id, inspected_at DESC) index 17I
+       created answers it without reading one. */
+    const EVER = `EXISTS (SELECT 1 FROM mo_asset_inspections s WHERE s.equipment_item_id = i.id)`;
+    if (q.inspection === "never")    where.push(`NOT ${EVER}`);
+    if (q.inspection === "inspected") where.push(EVER);
+    /* PHASE 17O — one of the five canonical states, or nothing. An unknown word
+       is refused rather than ignored: a filter that quietly matches everything
+       is how a screen comes to show the wrong set while looking like it works. */
+    const wantState = q.inspection_status && q.inspection_status !== "all"
+      ? String(q.inspection_status) : null;
+    if (wantState && !(STATES as readonly string[]).includes(wantState))
+      return sendError(res, 400, `inspection_status must be one of all, ${STATES.join(", ")}.`);
+
+    const clause = where.join(" AND ");
+    const FROM = `FROM mo_equipment_items i`;
+
+    /* THE LATEST INSPECTION, ONE PER ASSET, SET-BASED. A LATERAL over the same
+       index: for each row of the page Postgres walks one index entry and
+       stops. Not a query per asset, and not every inspection pulled into
+       JavaScript to be grouped there.
+
+       THE TIE-BREAK IS NOT DECORATION. Two inspections can share a timestamp —
+       inspected_at defaults to NOW() and two writes inside the same
+       transaction-visible instant are possible — and without `id DESC` the
+       "latest" would be whichever the planner happened to return, so the same
+       asset could report two different inspectors on two identical reads. */
+    const LATEST = `LEFT JOIN LATERAL (
+      SELECT s.id, s.inspected_at, s.inspector_id, s.observed_condition, s.outcome
+        FROM mo_asset_inspections s
+       WHERE s.equipment_item_id = i.id
+       ORDER BY s.inspected_at DESC, s.id DESC
+       LIMIT 1) li ON TRUE`;
+    /* Age in whole IST days, computed by the database. The browser's clock is
+       not authoritative and is frequently in another timezone entirely. */
+    const AGE = `((NOW() AT TIME ZONE 'Asia/Kolkata')::date - (li.inspected_at AT TIME ZONE 'Asia/Kolkata')::date)`;
+
+    /* ONE PROBE PER ASSET, NOT THREE. Written first as two EXISTS plus a
+       correlated MAX, which asked the same index the same question three times
+       — three subplans, 4,000 index scans each, 19ms and 32k buffers over a
+       4,000-asset estate. One LATERAL answers all of it: MAX() without a GROUP
+       BY always returns its single row, so the join yields NULL exactly for the
+       assets nobody has ever looked at, and every figure below reads off that. */
+    /* 17N's figures and 17O's states from ONE pass over the same two laterals.
+       The state counts are FILTERs on the shared derivation, so a bucket here
+       cannot mean something different from the same word on a row below. */
+    const summary = (await pool.query(
+      `SELECT COUNT(*)::int                                          AS total,
+              COUNT(li.inspected_at)::int                            AS inspected,
+              COUNT(*) FILTER (WHERE li.inspected_at IS NULL)::int    AS never_inspected,
+              /* DESCRIPTIVE COVERAGE, not a score and not a grade: the share of
+                 assets that have been physically looked at even once. Rounded
+                 here so the page cannot round it differently. */
+              CASE WHEN COUNT(*) = 0 THEN NULL
+                   ELSE ROUND(100.0 * COUNT(li.inspected_at) / COUNT(*), 1)
+              END                                                    AS coverage_pct,
+              /* The single oldest last-inspection in view. A fact, stated
+                 without judgement — it is not compared to any threshold. */
+              MAX((NOW() AT TIME ZONE 'Asia/Kolkata')::date
+                  - (li.inspected_at AT TIME ZONE 'Asia/Kolkata')::date)::int AS oldest_days,
+              ${STATES.map((k) => `COUNT(*) FILTER (WHERE (${INSPECTION_STATE}) = '${k}')::int AS ${k}`).join(",\n              ")}
+         ${FROM} ${LATEST_INSPECTION} ${POLICY_JOIN}
+        WHERE ${clause}`, params)).rows[0];
+
+    const { limit, offset } = pageOf(q);
+    /* Three orderings, all by date. NULLS placement is what separates them:
+       never-inspected assets have no date, so they sort last when you are
+       asking "what was seen longest ago" and first when you are asking "what
+       has never been seen". No priority score, no severity, no ranking. */
+    /* Five orderings, every one of them a date. NULLS placement separates the
+       first three: a never-inspected asset has no date, so it sorts last when
+       you ask "what was seen longest ago" and first when you ask "what has
+       never been seen".
+
+       There is no separate "oldest overdue": the oldest overdue asset is the
+       one with the earliest due date, which is what due_soon already is. It is
+       that ordering with the overdue filter applied, and a second sort key
+       computing the same thing would be a second thing to keep correct. */
+    const order = q.sort === "newest"      ? "li.inspected_at DESC NULLS LAST"
+                : q.sort === "never_first" ? "li.inspected_at ASC NULLS FIRST"
+                : q.sort === "due_soon"    ? `(${DUE_AT}) ASC NULLS LAST`
+                : q.sort === "due_late"    ? `(${DUE_AT}) DESC NULLS LAST`
+                :                            "li.inspected_at ASC NULLS LAST";
+
+    /* The state predicate lives on the derivation, so it needs the laterals —
+       the summary above counts every state, this list shows one of them. */
+    const stateWhere = wantState
+      ? `${clause} AND (${INSPECTION_STATE}) = ${bind(wantState)}` : clause;
+    const stateFrom = `${FROM} ${LATEST_INSPECTION} ${POLICY_JOIN}`;
+
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c ${stateFrom} WHERE ${stateWhere}`, params)).rows[0].c);
+
+    const items = (await pool.query(
+      `SELECT i.id, i.asset_tag, i.internal_code, i.make, i.model,
+              i.status AS lifecycle, i.verification_state, i.condition,
+              cat.name AS category_name, inv.name AS inventory_name, i.scope_id,
+              COALESCE(i.tracking_mode, cat.tracking_mode) AS tracking_mode,
+              li.id                                        AS last_inspection_id,
+              li.inspected_at                              AS last_inspected_at,
+              li.observed_condition                        AS last_observed_condition,
+              li.outcome                                   AS last_outcome,
+              iu.full_name                                 AS last_inspector_name,
+              li.inspector_id                              AS last_inspector_id,
+              CASE WHEN li.id IS NULL THEN NULL ELSE ${AGE}::int END AS days_since_inspection,
+              /* PHASE 17O. The policy is reported even when the asset has never
+                 been inspected — the category still has a cadence, and hiding
+                 it would make a never-seen asset look ungoverned as well. */
+              pol.id                                       AS policy_id,
+              pol.interval_days                            AS policy_interval_days,
+              to_char(${DUE_AT}, 'YYYY-MM-DD')             AS due_at,
+              (${INSPECTION_STATE})                        AS inspection_state,
+              ((${DUE_AT}) - ${TODAY_IST})::int            AS days_until_due
+         ${FROM}
+         LEFT JOIN mo_equipment_categories cat ON cat.id = i.category_id
+         LEFT JOIN mo_inventory_scopes inv ON inv.id = i.scope_id
+         ${LATEST_INSPECTION} ${POLICY_JOIN}
+         LEFT JOIN users iu ON iu.id = li.inspector_id
+        WHERE ${stateWhere}
+        ORDER BY ${order}, i.asset_tag
+        LIMIT ${limit} OFFSET ${offset}`, params)).rows;
+
+    res.json({
+      scope: { level: scope.level, selected: q.inventory ?? "all" },
+      summary: Object.fromEntries(Object.entries(summary).map(([k, v]) =>
+        [k, v === null ? null : Number(v)])),
+      assets: { items, total, limit, offset },
+    });
+  }));
+
+  /* ═══ DERIVED ANALYTICS & COVERAGE (Phase 17N) ════════════════════════════
+     FOUR FIGURES THE LEDGER CAN ACTUALLY SUPPORT, and four hygiene counts.
+
+     Every one of these is derivable from what the operational tables already
+     record. Nothing here defines a metric: there is no utilisation percentage,
+     no health score, no repeat-offender threshold, no risk rating. Where a
+     number needs a judgement to interpret, this returns the raw count and
+     leaves the judgement to whoever is reading it. */
+  app.get(`${P}/equipment/insights`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const q = req.query as Record<string, string | undefined>;
+    const scope = await inventoryScopeOf(u);
+
+    const where: string[] = ["i.deleted_at IS NULL"];
+    const params: unknown[] = [];
+    const bind = (v: unknown) => { params.push(v); return `$${params.length}`; };
+    pushInventoryScope(where, scope, params);
+    if (q.inventory && q.inventory !== "all") {
+      const inv = String(q.inventory).trim();
+      where.push(/^\d+$/.test(inv) ? `i.scope_id = ${bind(Number(inv))}`
+        : inv.toLowerCase() === "legacy" ? "i.scope_id IS NULL"
+        : `i.scope_id = (SELECT id FROM mo_inventory_scopes WHERE code = ${bind(inv.toLowerCase())})`);
+    }
+    if (q.category_id && q.category_id !== "all") where.push(`i.category_id = ${bind(Number(q.category_id))}`);
+
+    const day = (v: unknown) => isDay(v) ? v : null;
+    const from = day(q.from), to = day(q.to);
+    if (q.from && !from) return sendError(res, 400, "from must be a date, as YYYY-MM-DD.");
+    if (q.to && !to) return sendError(res, 400, "to must be a date, as YYYY-MM-DD.");
+    if (from && to && to < from) return sendError(res, 400, "to must be on or after from.");
+    const clause = where.join(" AND ");
+    const pFrom = from ? bind(from) : null, pTo = to ? bind(to) : null;
+
+    /* ── 1. AVERAGE LOAN DURATION ────────────────────────────────────────
+       A loan is a check_out and the NEXT check_in on the same asset. The
+       pairing is done with a window function over the ledger in order, so an
+       asset that has circulated forty times yields forty loans rather than one
+       long one.
+
+       AN ASSET STILL OUT HAS NO DURATION AND IS NOT COUNTED. Treating "no
+       check-in yet" as a loan ending today would make the average grow every
+       time somebody looked at it, and would make a long current loan
+       indistinguishable from a long finished one — so open loans are counted
+       separately and excluded from the average.
+
+       A check_out followed by another check_out (a malformed sequence the
+       ledger permits but the endpoints refuse) yields no pair: LEAD only
+       matches the next row when that row is a check_in.
+
+       The period filter anchors on the CHECK-OUT, so a loan belongs to the
+       month it started in. */
+    const loans = (await pool.query(
+      `WITH seq AS (
+         SELECT t.equipment_item_id, t.action, t.occurred_at,
+                LEAD(t.action)      OVER w AS next_action,
+                LEAD(t.occurred_at) OVER w AS next_at
+           FROM mo_equipment_transactions t
+           JOIN mo_equipment_items i ON i.id = t.equipment_item_id
+          WHERE ${clause}
+         WINDOW w AS (PARTITION BY t.equipment_item_id ORDER BY t.occurred_at, t.id)
+       )
+       SELECT COUNT(*) FILTER (WHERE action='check_out' AND next_action='check_in')::int AS closed_loans,
+              COUNT(*) FILTER (WHERE action='check_out' AND next_action IS NULL)::int    AS still_out,
+              ROUND(AVG(EXTRACT(EPOCH FROM (next_at - occurred_at)) / 86400.0)
+                    FILTER (WHERE action='check_out' AND next_action='check_in')::numeric, 2) AS avg_days,
+              ROUND(MAX(EXTRACT(EPOCH FROM (next_at - occurred_at)) / 86400.0)
+                    FILTER (WHERE action='check_out' AND next_action='check_in')::numeric, 2) AS longest_days
+         FROM seq
+        WHERE action='check_out'
+          ${pFrom ? `AND (occurred_at AT TIME ZONE 'Asia/Kolkata')::date >= ${pFrom}::date` : ""}
+          ${pTo ? `AND (occurred_at AT TIME ZONE 'Asia/Kolkata')::date <= ${pTo}::date` : ""}`,
+      params)).rows[0];
+
+    /* ── 2. MAINTENANCE RESOLUTION TIME ──────────────────────────────────
+       started_at and resolved_at are DATE columns, so this is whole days and
+       says so. A repair opened and closed the same day is 0 days, not "a few
+       hours" — the database never knew the hours and this does not invent
+       them. Open records have no resolution time and are counted, not averaged. */
+    const maint = (await pool.query(
+      `SELECT COUNT(*)::int                                            AS records,
+              COUNT(*) FILTER (WHERE m.resolved_at IS NULL)::int        AS open,
+              COUNT(*) FILTER (WHERE m.resolved_at IS NOT NULL)::int    AS resolved,
+              ROUND(AVG(m.resolved_at - m.started_at)
+                    FILTER (WHERE m.resolved_at IS NOT NULL)::numeric, 1) AS avg_days_to_resolve,
+              MAX(m.resolved_at - m.started_at)
+                  FILTER (WHERE m.resolved_at IS NOT NULL)::int          AS longest_days_to_resolve,
+              SUM(m.cost)::numeric                                      AS total_cost
+         FROM mo_maintenance_records m
+         JOIN mo_equipment_items i ON i.id = m.equipment_item_id
+        WHERE ${clause}
+          ${pFrom ? `AND m.started_at >= ${pFrom}::date` : ""}
+          ${pTo ? `AND m.started_at <= ${pTo}::date` : ""}`, params)).rows[0];
+
+    /* ── 3. ASSETS BY MAINTENANCE COUNT ──────────────────────────────────
+       The COUNT, and no threshold. "Repeat offender" is a judgement about how
+       many is too many, which depends on the kind of equipment and on what the
+       department can afford — so this returns the tally and lets the reader
+       decide where the line is. */
+    const repeats = (await pool.query(
+      `SELECT i.id, i.asset_tag, i.internal_code, i.make, i.model,
+              cat.name AS category_name, inv.name AS inventory_name,
+              COUNT(m.id)::int AS maintenance_count,
+              SUM(m.cost)::numeric AS maintenance_cost
+         FROM mo_equipment_items i
+         JOIN mo_maintenance_records m ON m.equipment_item_id = i.id
+           ${pFrom ? `AND m.started_at >= ${pFrom}::date` : ""}
+           ${pTo ? `AND m.started_at <= ${pTo}::date` : ""}
+         LEFT JOIN mo_equipment_categories cat ON cat.id = i.category_id
+         LEFT JOIN mo_inventory_scopes inv ON inv.id = i.scope_id
+        WHERE ${clause}
+        GROUP BY i.id, i.asset_tag, i.internal_code, i.make, i.model, cat.name, inv.name
+        HAVING COUNT(m.id) > 1
+        ORDER BY COUNT(m.id) DESC, i.asset_tag
+        LIMIT 20`, params)).rows;
+
+    /* ── 4. RESERVATION → CHECKOUT CONVERSION ────────────────────────────
+       A booking counts as converted only when a transaction EXPLICITLY
+       references it through booking_id. Nothing is inferred from a matching
+       user, a matching asset or an overlapping date: a checkout that happens
+       to fall inside a booking window is not evidence that the booking caused
+       it, and guessing would turn a hard number into a plausible one.
+
+       Anchored on booking.created_at — when the reservation was MADE, which is
+       the question — and that column exists from Phase 17N.
+
+       ONE CAVEAT, STATED IN THE RESPONSE RATHER THAN DETECTED. Bookings that
+       predate the column all carry the migration's timestamp, because the real
+       creation time was never recorded and cannot be recovered. A range
+       reaching back before the migration therefore counts them all on one day.
+       No flag distinguishes them: adding one would be building machinery to
+       describe a gap that closes by itself as real bookings accumulate. The
+       `basis` field says so, so a reader is told rather than left to notice. */
+    const conv = (await pool.query(
+      `SELECT COUNT(*)::int AS bookings,
+              COUNT(*) FILTER (WHERE EXISTS (
+                SELECT 1 FROM mo_equipment_transactions t
+                 WHERE t.booking_id = b.id AND t.action='check_out'))::int AS converted,
+              COUNT(*) FILTER (WHERE b.status='cancelled')::int            AS cancelled
+         FROM mo_equipment_bookings b
+         JOIN mo_equipment_items i ON i.id = b.equipment_item_id
+        WHERE ${clause}
+          ${pFrom ? `AND (b.created_at AT TIME ZONE 'Asia/Kolkata')::date >= ${pFrom}::date` : ""}
+          ${pTo ? `AND (b.created_at AT TIME ZONE 'Asia/Kolkata')::date <= ${pTo}::date` : ""}`,
+      params)).rows[0];
+
+    /* ── 5. COVERAGE ─────────────────────────────────────────────────────
+       Hygiene, not judgement: how much of the estate carries the identifiers
+       and the governance the rest of the system depends on. Reporting only —
+       nothing here mints a code, creates an identifier or changes a state.
+
+       An UNSCOPED asset is deliberately excluded from the internal-code figure:
+       17A does not issue a code until an asset has an inventory, so counting
+       those as "missing" would report a gap that is not one. */
+    const cover = (await pool.query(
+      `SELECT COUNT(*)::int                                                     AS total,
+              COUNT(*) FILTER (WHERE i.scope_id IS NOT NULL)::int                AS in_an_inventory,
+              COUNT(*) FILTER (WHERE i.scope_id IS NOT NULL
+                                 AND i.internal_code IS NULL)::int               AS without_internal_code,
+              COUNT(*) FILTER (WHERE NOT EXISTS (
+                SELECT 1 FROM mo_asset_identifiers a
+                 WHERE a.asset_id = i.id AND a.kind='qr'
+                   AND a.is_active AND a.retired_at IS NULL))::int               AS without_qr,
+              COUNT(*) FILTER (WHERE i.verification_state='active')::int         AS verified,
+              COUNT(*) FILTER (WHERE i.verification_state <> 'active')::int      AS unverified,
+              COUNT(*) FILTER (WHERE EXISTS (
+                SELECT 1 FROM mo_asset_inspections s WHERE s.equipment_item_id = i.id))::int
+                                                                                AS ever_inspected
+         FROM mo_equipment_items i WHERE ${clause}`, params)).rows[0];
+
+    const num = (v: unknown) => v == null ? null : Number(v);
+    res.json({
+      scope: { level: scope.level, selected: q.inventory ?? "all" },
+      period: { from, to },
+      loans: {
+        closed: num(loans.closed_loans), still_out: num(loans.still_out),
+        avg_days: num(loans.avg_days), longest_days: num(loans.longest_days),
+        /* Stated, not implied: the average describes finished loans only. */
+        basis: "closed loans only; an asset still out has no duration",
+      },
+      maintenance: {
+        records: num(maint.records), open: num(maint.open), resolved: num(maint.resolved),
+        avg_days_to_resolve: num(maint.avg_days_to_resolve),
+        longest_days_to_resolve: num(maint.longest_days_to_resolve),
+        total_cost: num(maint.total_cost),
+        basis: "whole days; started_at and resolved_at are dates, not instants",
+      },
+      most_maintained: repeats.map((r) => ({
+        ...r, maintenance_count: num(r.maintenance_count), maintenance_cost: num(r.maintenance_cost),
+      })),
+      reservations: {
+        bookings: num(conv.bookings), converted: num(conv.converted), cancelled: num(conv.cancelled),
+        basis: "converted means a transaction references the booking id; "
+             + "bookings predating the created_at column all carry the migration timestamp",
+      },
+      coverage: {
+        total: num(cover.total), in_an_inventory: num(cover.in_an_inventory),
+        without_internal_code: num(cover.without_internal_code),
+        without_qr: num(cover.without_qr),
+        verified: num(cover.verified), unverified: num(cover.unverified),
+        ever_inspected: num(cover.ever_inspected),
+      },
+    });
+  }));
+
+  /* ═══ EQUIPMENT EXPORT (Phase 17N) ════════════════════════════════════════
+     THE SAME READ, RENDERED AS A FILE.
+
+     An export is a different rendering of an authorised read, never a way
+     around one: the same module gate, the same inventory scope, the same
+     predicates as the screen it mirrors. A custodian's file can only ever hold
+     their own inventories, and an admin's holds the estate.
+
+     FOUR DATASETS, chosen because they are the four a manager actually takes
+     out of the room: who has what, what happened, what has been looked at, and
+     what is broken. No PDF and no XLSX — CSV is what a spreadsheet opens and
+     what the creator export already established.
+
+     BOUNDED BY THE SAME CEILING AS THE SCREENS. An export is not a licence to
+     stream the whole estate: the row cap is stated in the response headers so
+     a truncated file is never mistaken for a complete one.
+
+     THE EXPORT IS AUDITED, and that is the documented exception to "reads are
+     not audited" — data that leaves the system is a different kind of event
+     from data that is looked at. The creator export set that precedent. */
+  const EXPORT_MAX = 5000;
+
+  app.get(`${P}/equipment/export`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const q = req.query as Record<string, string | undefined>;
+    const dataset = String(q.dataset ?? "");
+    const DATASETS = ["custody", "transactions", "assurance", "maintenance"];
+    if (!DATASETS.includes(dataset))
+      return sendError(res, 400, `dataset must be one of ${DATASETS.join(", ")}.`);
+
+    const scope = await inventoryScopeOf(u);
+    const where: string[] = ["i.deleted_at IS NULL"];
+    const params: unknown[] = [];
+    const bind = (v: unknown) => { params.push(v); return `$${params.length}`; };
+    pushInventoryScope(where, scope, params);
+    /* The same narrowing filters the screens offer, by the same names. */
+    if (q.inventory && q.inventory !== "all") {
+      const inv = String(q.inventory).trim();
+      where.push(/^\d+$/.test(inv) ? `i.scope_id = ${bind(Number(inv))}`
+        : inv.toLowerCase() === "legacy" ? "i.scope_id IS NULL"
+        : `i.scope_id = (SELECT id FROM mo_inventory_scopes WHERE code = ${bind(inv.toLowerCase())})`);
+    }
+    if (q.category_id && q.category_id !== "all") where.push(`i.category_id = ${bind(Number(q.category_id))}`);
+
+    /* A date range, where the dataset has a date to range over. Inclusive at
+       both ends and read as IST days, like every other range in this module. */
+    const day = (v: unknown) => isDay(v) ? v : null;
+    const from = day(q.from), to = day(q.to);
+    if (q.from && !from) return sendError(res, 400, "from must be a date, as YYYY-MM-DD.");
+    if (q.to && !to) return sendError(res, 400, "to must be a date, as YYYY-MM-DD.");
+    if (from && to && to < from) return sendError(res, 400, "to must be on or after from.");
+
+    const clause = where.join(" AND ");
+    const ASSET = `i.asset_tag, i.internal_code, i.make, i.model,
+                   cat.name AS category_name, inv.name AS inventory_name`;
+    const JOINS = `LEFT JOIN mo_equipment_categories cat ON cat.id = i.category_id
+                   LEFT JOIN mo_inventory_scopes inv ON inv.id = i.scope_id`;
+
+    let headers: string[] = [];
+    let rows: Array<Array<string | number | null>> = [];
+
+    if (dataset === "custody") {
+      /* The custody read's own definition: the latest transaction, and it is
+         custody only when that row is a check_out. */
+      const r = (await pool.query(
+        `SELECT ${ASSET}, i.status AS lifecycle,
+                hu.full_name AS holder_name, lx.holder_id,
+                to_char(lx.occurred_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI') AS checked_out_at,
+                to_char(lx.expected_return_at, 'YYYY-MM-DD') AS due_at,
+                (lx.expected_return_at IS NOT NULL AND lx.expected_return_at < ${TODAY_IST}) AS overdue,
+                GREATEST(0, COALESCE(${TODAY_IST} - lx.expected_return_at, 0))::int AS overdue_days,
+                lx.recorded_via, ru.full_name AS recorded_by_name, pr.name AS project_name
+           FROM mo_equipment_items i ${JOINS}
+           LEFT JOIN LATERAL (
+             SELECT t.action, t.holder_id, t.occurred_at, t.expected_return_at, t.recorded_via,
+                    t.recorded_by, t.booking_id
+               FROM mo_equipment_transactions t WHERE t.equipment_item_id = i.id
+              ORDER BY t.occurred_at DESC, t.id DESC LIMIT 1) lx ON TRUE
+           LEFT JOIN users hu ON hu.id = lx.holder_id
+           LEFT JOIN users ru ON ru.id = lx.recorded_by
+           LEFT JOIN mo_equipment_bookings bk ON bk.id = lx.booking_id
+           LEFT JOIN mo_projects pr ON pr.id = bk.project_id
+          WHERE ${clause} AND i.status='checked_out' AND lx.action='check_out'
+          ORDER BY lx.expected_return_at NULLS LAST, i.asset_tag
+          LIMIT ${EXPORT_MAX}`, params)).rows;
+      headers = ["asset_tag", "internal_code", "make", "model", "category", "inventory",
+                 "holder", "holder_id", "checked_out_at", "due_at", "overdue", "overdue_days",
+                 "recorded_via", "recorded_by", "project"];
+      rows = r.map((x) => [x.asset_tag, x.internal_code, x.make, x.model, x.category_name,
+        x.inventory_name, x.holder_name, x.holder_id, x.checked_out_at, x.due_at,
+        x.overdue ? "yes" : "no", x.overdue_days, x.recorded_via, x.recorded_by_name, x.project_name]);
+    }
+
+    if (dataset === "transactions") {
+      const r = (await pool.query(
+        `SELECT ${ASSET},
+                to_char(t.occurred_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD HH24:MI') AS occurred_at,
+                t.action, hu.full_name AS holder_name, ru.full_name AS recorded_by_name,
+                to_char(t.expected_return_at, 'YYYY-MM-DD') AS expected_return_at,
+                t.condition_noted, t.recorded_via, t.booking_id
+           FROM mo_equipment_transactions t
+           JOIN mo_equipment_items i ON i.id = t.equipment_item_id ${JOINS}
+           LEFT JOIN users hu ON hu.id = t.holder_id
+           LEFT JOIN users ru ON ru.id = t.recorded_by
+          WHERE ${clause}
+            ${from ? `AND (t.occurred_at AT TIME ZONE 'Asia/Kolkata')::date >= ${bind(from)}::date` : ""}
+            ${to ? `AND (t.occurred_at AT TIME ZONE 'Asia/Kolkata')::date <= ${bind(to)}::date` : ""}
+          ORDER BY t.occurred_at DESC, t.id DESC
+          LIMIT ${EXPORT_MAX}`, params)).rows;
+      headers = ["occurred_at", "action", "asset_tag", "internal_code", "make", "model",
+                 "category", "inventory", "holder", "recorded_by", "expected_return_at",
+                 "condition_noted", "recorded_via", "booking_id"];
+      rows = r.map((x) => [x.occurred_at, x.action, x.asset_tag, x.internal_code, x.make, x.model,
+        x.category_name, x.inventory_name, x.holder_name, x.recorded_by_name,
+        x.expected_return_at, x.condition_noted, x.recorded_via, x.booking_id]);
+    }
+
+    if (dataset === "assurance") {
+      /* THE SHARED DERIVATION, not a copy of it. LATEST_INSPECTION, POLICY_JOIN
+         and INSPECTION_STATE are the same fragments the assurance page and the
+         dashboard splice in, so a file and a screen cannot disagree about
+         whether an asset is overdue. */
+      const r = (await pool.query(
+        `SELECT ${ASSET}, i.status AS lifecycle, i.verification_state, i.condition,
+                to_char(li.inspected_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') AS last_inspected_at,
+                iu.full_name AS last_inspector, li.observed_condition, li.outcome,
+                CASE WHEN li.id IS NULL THEN NULL
+                     ELSE ((NOW() AT TIME ZONE 'Asia/Kolkata')::date
+                           - (li.inspected_at AT TIME ZONE 'Asia/Kolkata')::date) END::int AS days_since,
+                pol.interval_days, to_char(${DUE_AT}, 'YYYY-MM-DD') AS due_at,
+                (${INSPECTION_STATE}) AS inspection_state
+           FROM mo_equipment_items i ${JOINS}
+           ${LATEST_INSPECTION} ${POLICY_JOIN}
+           LEFT JOIN users iu ON iu.id = li.inspector_id
+          WHERE ${clause}
+          ORDER BY li.inspected_at ASC NULLS FIRST, i.asset_tag
+          LIMIT ${EXPORT_MAX}`, params)).rows;
+      headers = ["asset_tag", "internal_code", "make", "model", "category", "inventory",
+                 "lifecycle", "verification_state", "condition", "last_inspected_at",
+                 "last_inspector", "observed_condition", "outcome", "days_since_inspection",
+                 "policy_interval_days", "due_at", "inspection_state"];
+      rows = r.map((x) => [x.asset_tag, x.internal_code, x.make, x.model, x.category_name,
+        x.inventory_name, x.lifecycle, x.verification_state, x.condition, x.last_inspected_at,
+        x.last_inspector, x.observed_condition, x.outcome, x.days_since,
+        x.interval_days, x.due_at, x.inspection_state]);
+    }
+
+    if (dataset === "maintenance") {
+      /* started_at, resolved_at and next_due_at are DATE columns. They are
+         exported as the days they are; nothing here invents a time of day. */
+      const r = (await pool.query(
+        `SELECT ${ASSET}, m.kind, m.description, v.name AS vendor_name, m.cost,
+                to_char(m.started_at,'YYYY-MM-DD')  AS started_at,
+                to_char(m.resolved_at,'YYYY-MM-DD') AS resolved_at,
+                to_char(m.next_due_at,'YYYY-MM-DD') AS next_due_at,
+                (m.resolved_at - m.started_at)::int AS days_to_resolve,
+                rb.full_name AS reported_by_name, rv.full_name AS resolved_by_name,
+                m.resolution_note
+           FROM mo_maintenance_records m
+           JOIN mo_equipment_items i ON i.id = m.equipment_item_id ${JOINS}
+           LEFT JOIN mo_vendors v ON v.id = m.vendor_id
+           LEFT JOIN users rb ON rb.id = m.reported_by
+           LEFT JOIN users rv ON rv.id = m.resolved_by
+          WHERE ${clause}
+            ${from ? `AND m.started_at >= ${bind(from)}::date` : ""}
+            ${to ? `AND m.started_at <= ${bind(to)}::date` : ""}
+          ORDER BY m.started_at DESC NULLS LAST, m.id DESC
+          LIMIT ${EXPORT_MAX}`, params)).rows;
+      headers = ["asset_tag", "internal_code", "make", "model", "category", "inventory",
+                 "kind", "description", "vendor", "cost", "started_at", "resolved_at",
+                 "days_to_resolve", "next_due_at", "open", "reported_by", "resolved_by",
+                 "resolution_note"];
+      rows = r.map((x) => [x.asset_tag, x.internal_code, x.make, x.model, x.category_name,
+        x.inventory_name, x.kind, x.description, x.vendor_name, x.cost, x.started_at,
+        x.resolved_at, x.days_to_resolve, x.next_due_at, x.resolved_at ? "no" : "yes",
+        x.reported_by_name, x.resolved_by_name, x.resolution_note]);
+    }
+
+    /* An empty dataset is a file with a header row, not a 404 and not an empty
+       body: "nobody holds anything" is an answer, and a spreadsheet that opens
+       to the right columns says so more clearly than a blank file. */
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.set("Content-Type", "text/csv; charset=utf-8");
+    res.set("Content-Disposition", `attachment; filename="nerve-equipment-${dataset}-${stamp}.csv"`);
+    res.set("X-Row-Count", String(rows.length));
+    res.set("X-Row-Limit", String(EXPORT_MAX));
+    await audit(u, "equipment.exported", "equipment_export", null, null,
+                { dataset, rows: rows.length, scope: scope.level,
+                  inventory: q.inventory ?? "all", from, to }, req);
+    res.send(CA.toCsv(headers, rows));
+  }));
+
+  /* ═══ THE INVENTORY DASHBOARD (Phase 17K) ═════════════════════════════════
+     ONE READ MODEL, ONE ROUND TRIP, NO NEW STATE.
+
+     Every figure below is computed in Postgres from the tables that already own
+     it. Nothing is persisted, nothing is cached, and no dashboard-shaped copy
+     of custody, reservation, maintenance or verification exists — the whole
+     point of the phase is a window, not a warehouse.
+
+     WHY THIS IS NOT AN EXTENSION OF SOMETHING EXISTING. Two endpoints look like
+     candidates and neither is:
+
+       · GET /equipment/analytics is HISTORICAL by design, and says so in its own
+         comment — "no current-state summary… a second place to compute those is
+         exactly what Phase 5 spent its effort removing".
+       · GET /equipment?summary=1 is bound to the CATALOGUE'S FILTERS, so "the
+         header describes what the page is showing". A dashboard asks about the
+         whole inventory, which is a different question with a different answer.
+
+     Composing the dashboard from six existing endpoints in the browser was the
+     other option, and it is the /state mistake wearing a different hat: six
+     round trips, six scope evaluations, and the totals reconciled by whoever
+     wrote the page.
+
+     BOUNDED BY CONSTRUCTION. The operational lists return the first few rows
+     and a true total; the full lists live on the screens that already own them
+     and every row links there. Only the activity feed pages, because only it is
+     unbounded by nature. */
+  app.get(`${P}/equipment/dashboard`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const q = req.query as Record<string, string | undefined>;
+    const scope = await inventoryScopeOf(u);
+
+    /* The filters are the catalogue's, by the same names, so a drill-through
+       carries straight over. `inventory` NARROWS what scope already allowed —
+       asking for an inventory the caller has no authority over yields nothing,
+       never everything. */
+    const where: string[] = ["i.deleted_at IS NULL"];
+    const params: unknown[] = [];
+    const bind = (v: unknown) => { params.push(v); return `$${params.length}`; };
+    pushInventoryScope(where, scope, params);
+    if (q.inventory && q.inventory !== "all") {
+      const inv = String(q.inventory).trim();
+      where.push(/^\d+$/.test(inv) ? `i.scope_id = ${bind(Number(inv))}`
+        : inv.toLowerCase() === "legacy" ? "i.scope_id IS NULL"
+        : `i.scope_id = (SELECT id FROM mo_inventory_scopes WHERE code = ${bind(inv.toLowerCase())})`);
+    }
+    if (q.category_id && q.category_id !== "all") where.push(`i.category_id = ${bind(Number(q.category_id))}`);
+    if (q.tracking_mode && q.tracking_mode !== "all")
+      where.push(`COALESCE(i.tracking_mode, c.tracking_mode) = ${bind(q.tracking_mode)}`);
+    if (q.lifecycle && q.lifecycle !== "all") where.push(`i.status = ${bind(q.lifecycle)}`);
+    if (q.condition && q.condition !== "all") where.push(`i.condition = ${bind(q.condition)}`);
+    const clause = where.join(" AND ");
+    const FROM = `FROM mo_equipment_items i
+                  LEFT JOIN mo_equipment_categories c ON c.id = i.category_id`;
+
+    /* The predicates, named once and reused, so a figure on the dashboard and
+       the list it drills into cannot disagree about what the word means. */
+    const LIVE_BOOKING = `EXISTS (SELECT 1 FROM mo_equipment_bookings b
+                                   WHERE b.equipment_item_id = i.id
+                                     AND b.status IN ('reserved','active')
+                                     AND b.ends_at >= ${TODAY_IST})`;
+    const OPEN_MAINT = `EXISTS (SELECT 1 FROM mo_maintenance_records m
+                                 WHERE m.equipment_item_id = i.id AND m.resolved_at IS NULL)`;
+    const IS_OVERDUE = `i.status='checked_out' AND (
+      SELECT x.expected_return_at FROM mo_equipment_transactions x
+       WHERE x.equipment_item_id = i.id ORDER BY x.occurred_at DESC, x.id DESC LIMIT 1) < ${TODAY_IST}`;
+    /* AVAILABLE IS NOT "total minus checked out". An asset sitting on the shelf
+       whose record nobody has accepted cannot be issued — Phase 17D refuses it
+       — so it is not available, it is pending. The open-maintenance clause is
+       belt and braces: Phase 17I makes that state unreachable, and a figure
+       that quietly depended on an invariant holding would be a bad figure. */
+    const IS_AVAILABLE = `i.status='available' AND i.verification_state='active' AND NOT (${OPEN_MAINT})`;
+    const PENDING_VERIFY = `i.verification_state IN ('draft','pending_verification')`;
+
+    const { limit, offset } = pageOf(q);
+    const TOP = 8;   /* enough to act on; the full list is one click away */
+
+    /* ONE SNAPSHOT FOR THE WHOLE PAGE.
+
+       Every figure below used to be its own pool.query, which means its own
+       connection and its own instant. On an inventory anybody else is writing
+       to, the summary was counted at one moment and the breakdown that is
+       supposed to decompose it at another, so the parts did not add up to the
+       whole: a test asking only that the lifecycle breakdown sum to
+       summary.total caught it at 2 against 1. The activity feed had the same
+       fault in a worse form — COUNT(*) and the page of rows came from different
+       instants, so a row inserted between them could shift the window and drop
+       a record off the end of page one that never appeared on page two.
+
+       A REPEATABLE READ transaction fixes it at the source: every statement in
+       it reads the snapshot taken by the first one, so the page is a picture of
+       the inventory at a single moment rather than a collage of ten. READ ONLY
+       says what it is and lets Postgres skip the rest. It takes no locks, so
+       nothing waits on the dashboard and the dashboard waits on nothing. */
+    const snap = await pool.connect();
+    let payload: Record<string, unknown> | undefined;
+    try {
+      await snap.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      const summary = (await snap.query(
+        `SELECT COUNT(*)::int                                                     AS total,
+                COUNT(*) FILTER (WHERE ${IS_AVAILABLE})::int                      AS available,
+                COUNT(*) FILTER (WHERE i.status='checked_out')::int               AS checked_out,
+                COUNT(*) FILTER (WHERE ${LIVE_BOOKING})::int                      AS reserved,
+                COUNT(*) FILTER (WHERE ${OPEN_MAINT})::int                        AS maintenance,
+                COUNT(*) FILTER (WHERE ${IS_OVERDUE})::int                        AS overdue,
+                COUNT(*) FILTER (WHERE ${PENDING_VERIFY})::int                    AS pending_verification,
+                COUNT(*) FILTER (WHERE i.verification_state='rejected')::int      AS rejected,
+                COUNT(*) FILTER (WHERE i.status='lost')::int                      AS lost,
+                COUNT(*) FILTER (WHERE i.status='retired')::int                   AS retired,
+                COUNT(*) FILTER (WHERE COALESCE(i.tracking_mode,c.tracking_mode)='pooled')::int  AS pooled,
+                COUNT(*) FILTER (WHERE COALESCE(i.tracking_mode,c.tracking_mode)<>'pooled')::int AS serialized,
+                /* PHASE 17N/17O — physical assurance.
+
+                   These are NOT verification: the pending_verification figure
+                   above asks whether a RECORD has been accepted, this asks
+                   whether the THING has ever been looked at, and an asset can
+                   be active and never seen.
+
+                   17O adds the verdict, and it is the SAME verdict the
+                   assurance page gives — INSPECTION_STATE is one definition
+                   spliced into both queries, so a count here and a row there
+                   cannot disagree about what "overdue" means. The five states
+                   partition the estate and sum to total. */
+                COUNT(li.inspected_at)::int                          AS inspected,
+                COUNT(*) FILTER (WHERE li.inspected_at IS NULL)::int AS never_inspected,
+                ${STATES.map((k) => `COUNT(*) FILTER (WHERE (${INSPECTION_STATE}) = '${k}')::int AS insp_${k}`).join(",\n                ")},
+                /* ATTENTION IS A COUNT OF ASSETS, NOT OF PROBLEMS. An asset that
+                   is overdue AND under repair is one thing to deal with, and
+                   counting it twice would make the number bigger and less useful.
+                   The queue below lists the reasons; this counts the assets. */
+                COUNT(*) FILTER (WHERE ${IS_OVERDUE} OR ${OPEN_MAINT}
+                                    OR ${PENDING_VERIFY} OR i.status='lost')::int AS attention
+           ${FROM} ${LATEST_INSPECTION} ${POLICY_JOIN} WHERE ${clause}`, params)).rows[0];
+
+      /* Breakdowns: four GROUP BYs over the same scoped set. Actual values, not
+         normalised ones — a category spelled two ways is a data question, and
+         hiding it on the dashboard would be the dashboard lying about it. */
+      const grouped = async (expr: string, label: string) => (await snap.query(
+        `SELECT ${expr} AS key, COUNT(*)::int AS n ${FROM} WHERE ${clause}
+          GROUP BY 1 ORDER BY 2 DESC, 1`, params)).rows.map((r) => ({ [label]: r.key, count: Number(r.n) }));
+
+
+      /* Sequential rather than Promise.all: they share one connection now, so
+         queueing them behind each other is what happens either way. */
+      const byCategory  = await grouped("COALESCE(c.name,'Uncategorised')", "category");
+      const byTracking  = await grouped("COALESCE(i.tracking_mode, c.tracking_mode, 'individual')", "tracking_mode");
+      const byLifecycle = await grouped("i.status", "lifecycle");
+      const byCondition = await grouped("i.condition", "condition");
+
+      /* WHO HAS WHAT, from the ledger — the same latest-transaction resolution
+         every other custody answer uses. */
+      const custody = (await snap.query(
+        `SELECT i.id, i.asset_tag, i.internal_code, i.make, i.model,
+                inv.name AS inventory_name, lx.holder_id, hu.full_name AS holder_name,
+                to_char(lx.expected_return_at,'YYYY-MM-DD') AS due_at,
+                (lx.expected_return_at IS NOT NULL AND lx.expected_return_at < ${TODAY_IST}) AS overdue,
+                pr.name AS project_name
+           ${FROM}
+           LEFT JOIN mo_inventory_scopes inv ON inv.id = i.scope_id
+           LEFT JOIN LATERAL (
+             SELECT t.action, t.holder_id, t.expected_return_at, t.booking_id
+               FROM mo_equipment_transactions t WHERE t.equipment_item_id = i.id
+              ORDER BY t.occurred_at DESC, t.id DESC LIMIT 1) lx ON TRUE
+           LEFT JOIN users hu ON hu.id = lx.holder_id
+           LEFT JOIN mo_equipment_bookings bk ON bk.id = lx.booking_id
+           LEFT JOIN mo_projects pr ON pr.id = bk.project_id
+          WHERE ${clause} AND i.status='checked_out' AND lx.action='check_out'
+          ORDER BY (lx.expected_return_at IS NULL), lx.expected_return_at, i.asset_tag
+          LIMIT ${TOP}`, params)).rows;
+
+      /* Reservations that have not ended, soonest first — 17G's live definition. */
+      const reservations = (await snap.query(
+        `SELECT b.id, i.id AS equipment_item_id, i.asset_tag, i.internal_code, i.make, i.model,
+                b.user_id, us.full_name AS reserved_by, b.status,
+                to_char(b.starts_at,'YYYY-MM-DD') AS starts_at,
+                to_char(b.ends_at,'YYYY-MM-DD') AS ends_at,
+                inv.name AS inventory_name, pr.name AS project_name
+           ${FROM}
+           JOIN mo_equipment_bookings b ON b.equipment_item_id = i.id
+           LEFT JOIN mo_inventory_scopes inv ON inv.id = i.scope_id
+           LEFT JOIN users us ON us.id = b.user_id
+           LEFT JOIN mo_projects pr ON pr.id = b.project_id
+          WHERE ${clause} AND b.status IN ('reserved','active') AND b.ends_at >= ${TODAY_IST}
+          ORDER BY b.starts_at, b.id LIMIT ${TOP}`, params)).rows;
+
+      /* Open work, and service falling due — the two things a custodian chases. */
+      const maintenance = (await snap.query(
+        `SELECT m.id, i.id AS equipment_item_id, i.asset_tag, i.internal_code, i.make, i.model,
+                m.kind, m.description, m.cost, v.name AS vendor_name,
+                to_char(m.started_at,'YYYY-MM-DD') AS started_at,
+                to_char(m.next_due_at,'YYYY-MM-DD') AS next_due_at,
+                inv.name AS inventory_name
+           ${FROM}
+           JOIN mo_maintenance_records m ON m.equipment_item_id = i.id
+           LEFT JOIN mo_vendors v ON v.id = m.vendor_id
+           LEFT JOIN mo_inventory_scopes inv ON inv.id = i.scope_id
+          WHERE ${clause} AND m.resolved_at IS NULL
+          ORDER BY m.started_at DESC NULLS LAST, m.id DESC LIMIT ${TOP}`, params)).rows;
+
+      const verification = (await snap.query(
+        `SELECT i.id, i.asset_tag, i.internal_code, i.make, i.model, i.verification_state,
+                inv.name AS inventory_name
+           ${FROM}
+           LEFT JOIN mo_inventory_scopes inv ON inv.id = i.scope_id
+          WHERE ${clause} AND ${PENDING_VERIFY}
+          ORDER BY i.asset_tag LIMIT ${TOP}`, params)).rows;
+
+      /* THE ATTENTION QUEUE — one row per asset per REASON, because an asset can
+         need attention for two unrelated things and hiding one behind the other
+         helps nobody. `severity` is presentation: it orders the list and colours
+         a pill, and is not persisted or used in any decision. */
+      const attention = (await snap.query(
+        `SELECT * FROM (
+           SELECT i.id, i.asset_tag, i.internal_code, i.make, i.model,
+                  inv.name AS inventory_name, 'overdue'::text AS reason, 1 AS severity,
+                  to_char((SELECT x.expected_return_at FROM mo_equipment_transactions x
+                            WHERE x.equipment_item_id=i.id ORDER BY x.occurred_at DESC, x.id DESC LIMIT 1),
+                          'YYYY-MM-DD') AS on_date,
+                  (SELECT hu.full_name FROM mo_equipment_transactions x
+                     LEFT JOIN users hu ON hu.id = x.holder_id
+                    WHERE x.equipment_item_id=i.id ORDER BY x.occurred_at DESC, x.id DESC LIMIT 1) AS holder_name
+             ${FROM} LEFT JOIN mo_inventory_scopes inv ON inv.id = i.scope_id
+            WHERE ${clause} AND ${IS_OVERDUE}
+           UNION ALL
+           SELECT i.id, i.asset_tag, i.internal_code, i.make, i.model, inv.name, 'lost', 1,
+                  NULL, NULL
+             ${FROM} LEFT JOIN mo_inventory_scopes inv ON inv.id = i.scope_id
+            WHERE ${clause} AND i.status='lost'
+           UNION ALL
+           SELECT i.id, i.asset_tag, i.internal_code, i.make, i.model, inv.name, 'maintenance', 2,
+                  to_char(MIN(m.started_at),'YYYY-MM-DD'), NULL
+             ${FROM}
+             JOIN mo_maintenance_records m ON m.equipment_item_id = i.id AND m.resolved_at IS NULL
+             LEFT JOIN mo_inventory_scopes inv ON inv.id = i.scope_id
+            WHERE ${clause}
+            GROUP BY i.id, i.asset_tag, i.internal_code, i.make, i.model, inv.name
+           UNION ALL
+           SELECT i.id, i.asset_tag, i.internal_code, i.make, i.model, inv.name, 'maintenance_due', 3,
+                  to_char(MIN(m.next_due_at),'YYYY-MM-DD'), NULL
+             ${FROM}
+             JOIN mo_maintenance_records m ON m.equipment_item_id = i.id
+              AND m.next_due_at IS NOT NULL AND m.next_due_at <= ${TODAY_IST} + 7
+             LEFT JOIN mo_inventory_scopes inv ON inv.id = i.scope_id
+            WHERE ${clause}
+            GROUP BY i.id, i.asset_tag, i.internal_code, i.make, i.model, inv.name
+           UNION ALL
+           SELECT i.id, i.asset_tag, i.internal_code, i.make, i.model, inv.name, 'verification', 4,
+                  NULL, NULL
+             ${FROM} LEFT JOIN mo_inventory_scopes inv ON inv.id = i.scope_id
+            WHERE ${clause} AND ${PENDING_VERIFY}
+         ) q ORDER BY q.severity, q.on_date NULLS LAST, q.asset_tag LIMIT 25`, params)).rows;
+
+      /* WHAT HAPPENED, from the four tables that record it. Paginated, because
+         this is the only unbounded thing on the page. */
+      const ACTIVITY = `
+        SELECT 'custody'::text AS source, t.id, t.occurred_at AS at, t.action AS event,
+               i.id AS equipment_item_id, i.asset_tag, i.internal_code,
+               au.full_name AS actor_name, t.condition_noted AS detail
+          FROM mo_equipment_transactions t JOIN mo_equipment_items i ON i.id = t.equipment_item_id
+          LEFT JOIN mo_equipment_categories c ON c.id = i.category_id
+          LEFT JOIN users au ON au.id = t.holder_id
+         WHERE ${clause}
+        /* BOOKINGS ARE ABSENT, AND THE REASON IS THE SCHEMA. mo_equipment_bookings
+           records the window a booking covers and who made it, but not WHEN it
+           was made — there is no created_at. An event with no timestamp cannot be
+           placed on a chronological feed, and inventing one from starts_at would
+           put "booked" on the day the shoot happens rather than the day somebody
+           booked it. Adding the column is a migration for a nice-to-have, which
+           Phase 17K is not the place for; reservations are on the dashboard as
+           CURRENT STATE, which is what they are useful for. */
+        UNION ALL
+        SELECT 'maintenance', m.id, m.started_at::timestamptz, m.kind, i.id, i.asset_tag, i.internal_code,
+               ru.full_name, m.description
+          FROM mo_maintenance_records m JOIN mo_equipment_items i ON i.id = m.equipment_item_id
+          LEFT JOIN mo_equipment_categories c ON c.id = i.category_id
+          LEFT JOIN users ru ON ru.id = m.reported_by
+         WHERE ${clause}
+        UNION ALL
+        SELECT 'inspection', s.id, s.inspected_at, s.outcome, i.id, i.asset_tag, i.internal_code,
+               iu.full_name, s.notes
+          FROM mo_asset_inspections s JOIN mo_equipment_items i ON i.id = s.equipment_item_id
+          LEFT JOIN mo_equipment_categories c ON c.id = i.category_id
+          LEFT JOIN users iu ON iu.id = s.inspector_id
+         WHERE ${clause}`;
+      const activityTotal = Number((await snap.query(
+        `SELECT COUNT(*)::int c FROM (${ACTIVITY}) a`, params)).rows[0].c);
+      const activity = (await snap.query(
+        `SELECT * FROM (${ACTIVITY}) a ORDER BY a.at DESC, a.id DESC LIMIT ${limit} OFFSET ${offset}`,
+        params)).rows;
+
+
+      payload = {
+        /* What this caller may switch between — the SAME list the switcher has
+           drawn since 17A. "All" is a view over it, never a wider authority. */
+        scope: { level: scope.level, selected: q.inventory ?? "all" },
+        summary: Object.fromEntries(Object.entries(summary).map(([k, v]) => [k, Number(v)])),
+        breakdowns: { category: byCategory, tracking: byTracking,
+                      lifecycle: byLifecycle, condition: byCondition },
+        custody, reservations, maintenance, verification, attention,
+        activity: { items: activity, total: activityTotal, limit, offset },
+      };
+      await snap.query("COMMIT");
+    } catch (err) {
+      await snap.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      snap.release();
+    }
+
+    res.json(payload);
+  }));
+
+  app.get(`${P}/equipment/resolve/:identifier`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const raw = getSingleParam(req.params.identifier).trim();
+    if (!raw) return sendError(res, 400, "An identifier is required.");
+    const hit = (await pool.query(
+      `SELECT asset_id, kind, is_active, retired_at FROM mo_asset_identifiers WHERE value=$1`, [raw])).rows[0];
+    /* Fall back to the asset tag column itself, so an asset registered before
+       the identifier table existed still resolves even if its backfill row was
+       removed by hand. */
+    const assetId = hit?.asset_id ?? (await pool.query(
+      `SELECT id AS asset_id FROM mo_equipment_items
+        WHERE asset_tag=$1 OR qr_uid=$1 OR internal_code=$1`, [raw])).rows[0]?.asset_id;
+    if (!assetId) return sendError(res, 404, "No asset carries that identifier.");
+    /* Phase 13B — scope is checked HERE, before the retirement answer below.
+
+       This is the identifier path: a QR token, a barcode, a serial, an asset
+       tag. It is the most direct way to ask "does this thing exist?" about an
+       asset whose id you were never given, so it is the one that most needs to
+       answer identically whatever the truth is. Checking after the 410 would
+       have let a scanned label distinguish "retired identifier in someone
+       else's scope" from "no such identifier", which is exactly the
+       confirmation the scan was fishing for. */
+    if (!(await assetScopeOk(await inventoryScopeOf(u), assetId)))
+      return sendError(res, 404, "No asset carries that identifier.");
+    if (hit && (hit.retired_at || !hit.is_active))
+      return sendError(res, 410, "That identifier has been retired. The label should be replaced.");
+
+    const raw0 = (await pool.query(`${ASSET_SELECT} WHERE i.id=$1 AND i.deleted_at IS NULL`, [assetId])).rows[0];
+    if (!raw0) return sendError(res, 404, "No asset carries that identifier.");
+    const item = { ...stripState(raw0), state: assetState(raw0) };
+    await audit(u, "equipment.resolved", "equipment_item", Number(assetId), null, { via: hit?.kind ?? "column" }, req);
+    res.json({ item, matched: { kind: hit?.kind ?? "asset_tag", value: raw } });
+  }));
+
+  app.get(`${P}/equipment/:id`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    /* ACCEPTS AN ID OR AN ASSET TAG.
+
+       The catalog has always linked to #/media/equipment/EQ-CAM-001 — the tag
+       is what a person reads off the case and what the route carries. Before
+       this migration the page found the row by scanning the /state array; now
+       it asks the server, and asking by tag keeps that URL working in ONE
+       request instead of a resolve-then-fetch round trip.
+
+       The tag is matched, not interpreted: same column, same uniqueness. */
+    const raw = getSingleParam(req.params.id).trim();
+    const byId = /^\d+$/.test(raw);
+    /* Phase 13B — scope is part of the lookup rather than a check after it.
+       An asset outside the caller's scope is simply not found, so it answers
+       exactly as an invented id does: a tag or an id cannot be used to confirm
+       that something exists in a scope the caller has no business seeing. */
+    const dParams: unknown[] = [byId ? Number(raw) : raw];
+    const dScope = inventoryScopeSql(await inventoryScopeOf(u), dParams);
+    const dAnd = dScope ? ` AND ${dScope}` : "";
+    const rawItem = (await pool.query(
+      byId ? `${ASSET_SELECT} WHERE i.id=$1 AND i.deleted_at IS NULL${dAnd}`
+           /* Phase 17A — the internal code opens the same door as the asset
+              tag. Both are things a person reads off the case; which one is
+              printed on a given label is not the caller's problem. */
+           : `${ASSET_SELECT} WHERE (i.asset_tag=$1 OR i.internal_code=$1) AND i.deleted_at IS NULL${dAnd}`,
+      dParams)).rows[0];
+    if (!rawItem) return sendError(res, 404, "Asset not found.");
+    const item = { ...stripState(rawItem), state: assetState(rawItem) };
+    const id = Number(item.id);
+
+    const identifiers = (await pool.query(
+      `SELECT id, kind, value, is_primary, is_active, created_at, retired_at
+         FROM mo_asset_identifiers WHERE asset_id=$1 ORDER BY kind, is_primary DESC, id`, [id])).rows;
+    const out = await liveCheckout(id);
+    /* to_jsonb() carries every column without listing them, and the || overrides
+       only the DATE ones — which node-postgres would otherwise hand back as a
+       local-midnight JS Date and res.json() would render as the previous day.
+       This is the same shape /state has always used, for the same reason. */
+    const transactions = (await pool.query(
+      `SELECT to_jsonb(t) || jsonb_build_object(
+                'expected_return_at', to_char(t.expected_return_at, 'YYYY-MM-DD'),
+                'holder_name', u2.full_name) AS row
+         FROM mo_equipment_transactions t
+         LEFT JOIN users u2 ON u2.id = t.holder_id
+        WHERE t.equipment_item_id=$1 ORDER BY t.occurred_at DESC, t.id DESC LIMIT 50`, [id]))
+      .rows.map((r) => r.row);
+    const maintenance = (await pool.query(
+      `SELECT to_jsonb(m) || jsonb_build_object(
+                'started_at',  to_char(m.started_at,  'YYYY-MM-DD'),
+                'resolved_at', to_char(m.resolved_at, 'YYYY-MM-DD'),
+                'next_due_at', to_char(m.next_due_at, 'YYYY-MM-DD')) AS row
+         FROM mo_maintenance_records m WHERE m.equipment_item_id=$1
+        ORDER BY m.started_at DESC NULLS LAST, m.id DESC LIMIT 50`, [id]))
+      .rows.map((r) => r.row);
+    const bookings = (await pool.query(
+      `SELECT to_jsonb(b) || jsonb_build_object(
+                'starts_at', to_char(b.starts_at, 'YYYY-MM-DD'),
+                'ends_at',   to_char(b.ends_at,   'YYYY-MM-DD')) AS row
+         FROM mo_equipment_bookings b
+        WHERE b.equipment_item_id=$1 AND b.status IN ('reserved','active')
+        ORDER BY b.starts_at`, [id])).rows.map((r) => r.row);
+
+    const cfg = await equipmentOverdueConfig();
+    res.json({
+      item, identifiers, transactions, maintenance, bookings,
+      holder: out ? { id: out.holder_id, expected_return_at: dayOf(out.expected_return_at),
+                      overdue_days: overdueDays(out.expected_return_at, new Date()) } : null,
+      escalation: out ? escalationFor(overdueDays(out.expected_return_at, new Date()), cfg) : null,
+    });
+  }));
+
+  /* ── Phase 17E: ONE ASSET'S HISTORY, AS ONE SEQUENCE ────────────────────
+     Two tables record what has happened to an asset, and they are separate for
+     good reasons: mo_equipment_transactions is the immutable custody ledger,
+     mo_maintenance_records is what was wrong with it and what was done. Neither
+     is the whole story, and a person reading the page wants the story.
+
+     UNION ALL, NOT A NEW TABLE. Nothing is copied, nothing is denormalised and
+     no third history is created — the two sources are read in one query, given
+     a common shape, and ordered by when they happened. Paginating the union in
+     SQL is the point: merging two separately-paginated lists in the browser
+     produces a timeline with holes in it, which is worse than no timeline.
+
+     The scope clause is the catalogue's, so an asset outside the caller's
+     inventory has no history to read for the same reason it has no detail page. */
+  app.get(`${P}/equipment/:id/timeline`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const assetId = parseInt(getSingleParam(req.params.id), 10);
+    if (!assetId) return sendError(res, 400, "An asset id is required.");
+    /* The same 404 an invented id gets. An asset id must not become an oracle. */
+    if (!(await assetScopeOk(await inventoryScopeOf(u), assetId)))
+      return sendError(res, 404, "Asset not found.");
+
+    const q = req.query as Record<string, string | undefined>;
+    const { limit, offset } = pageOf(q);
+    /* A filter narrows one source or the other; 'all' reads both. */
+    const want = ["custody", "maintenance"].includes(String(q.kind)) ? String(q.kind) : null;
+
+    /* started_at is a DATE, so a maintenance row lands at local midnight of the
+       day it began — which is the day the record actually claims, and the only
+       instant the schema knows. It is not pretended to be more precise. */
+    const UNION = `
+      SELECT 'custody'::text AS source, t.id, t.occurred_at,
+             t.action AS event, t.holder_id AS actor_id,
+             hu.full_name AS actor_name, t.condition_noted AS detail,
+             t.recorded_via, NULL::text AS kind, NULL::boolean AS resolved,
+             to_char(t.expected_return_at, 'YYYY-MM-DD') AS due_at
+        FROM mo_equipment_transactions t
+        LEFT JOIN users hu ON hu.id = t.holder_id
+       WHERE t.equipment_item_id = $1 AND ($2::text IS NULL OR $2 = 'custody')
+      UNION ALL
+      SELECT 'maintenance'::text, m.id, m.started_at::timestamptz,
+             m.kind, m.reported_by, ru.full_name, m.description,
+             NULL::text, m.kind, (m.resolved_at IS NOT NULL),
+             to_char(m.resolved_at, 'YYYY-MM-DD')
+        FROM mo_maintenance_records m
+        LEFT JOIN users ru ON ru.id = m.reported_by
+       WHERE m.equipment_item_id = $1 AND ($2::text IS NULL OR $2 = 'maintenance')`;
+
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c FROM (${UNION}) e`, [assetId, want])).rows[0].c);
+    const items = (await pool.query(
+      `SELECT * FROM (${UNION}) e
+        ORDER BY e.occurred_at DESC, e.source, e.id DESC
+        LIMIT ${limit} OFFSET ${offset}`, [assetId, want])).rows;
+    res.json({ items, total, limit, offset });
+  }));
+
+  /* ── Phase 17E: what was DONE to the record, as opposed to the asset ─────
+     mo_audit_logs already holds it — created, inventory assigned, verification
+     submitted, approved, rejected, edited, retired. No asset audit table is
+     created and none is needed; this is a scoped, paginated read of the events
+     whose entity IS this asset, and nothing else. `entity_type` is pinned in
+     the query rather than taken from the caller, so the endpoint cannot be
+     turned into a general audit browser by a query string.
+
+     The global GET /audit stays Admin-only and untouched. This one is open to
+     the custodian of the inventory the asset belongs to, because reading your
+     own inventory's trail is part of custody. */
+  app.get(`${P}/equipment/:id/audit`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may read an asset's audit trail.");
+    const assetId = parseInt(getSingleParam(req.params.id), 10);
+    if (!assetId) return sendError(res, 400, "An asset id is required.");
+    if (!(await assetScopeOk(await inventoryScopeOf(u), assetId)))
+      return sendError(res, 404, "Asset not found.");
+
+    const q = req.query as Record<string, string | undefined>;
+    const { limit, offset } = pageOf(q);
+    /* One narrowing filter, so the Verification tab can ask for its own slice
+       of the trail rather than paging the whole of it and discarding rows —
+       which is how a paginated list quietly starts lying. The prefix is bound,
+       and entity_type stays pinned above it. */
+    const prefix = String(q.action_prefix ?? "").trim();
+    const params: unknown[] = [assetId];
+    let WHERE = `a.entity_type = 'equipment_item' AND a.entity_id = $1`;
+    if (prefix) { params.push(prefix + "%"); WHERE += ` AND a.action LIKE $${params.length}`; }
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_audit_logs a WHERE ${WHERE}`, params)).rows[0].c);
+    const items = (await pool.query(
+      `SELECT a.id, a.action, a.actor_id, a.actor_role, a.before, a.after, a.occurred_at,
+              au.full_name AS actor_name
+         FROM mo_audit_logs a
+         LEFT JOIN users au ON au.id = a.actor_id
+        WHERE ${WHERE}
+        ORDER BY a.occurred_at DESC, a.id DESC
+        LIMIT ${limit} OFFSET ${offset}`, params)).rows;
+    /* ip and user_agent are deliberately absent: the question this tab answers
+       is what happened and who did it, not where they were sitting. */
+    res.json({ items, total, limit, offset });
+  }));
+
+  /* Metadata only. Status is a lifecycle move with its own endpoint and its own
+     rules, so it is deliberately not settable here — a PATCH that could write
+     `status:'available'` on an item somebody is holding would lose the loan. */
+  /* Metadata only. Phase 17I removed `condition` from this list: a generic
+     PATCH could set an asset to 'excellent' with no record of who decided that
+     or why, which is exactly the judgement BR-8 compares a return against.
+     Condition now changes only where somebody observes it — a check-in, or an
+     inspection — and both leave a row behind. */
+  const ASSET_EDITABLE = ["make", "model", "serial_no", "barcode", "notes", "photo_url",
+    "purchase_date", "purchase_cost", "warranty_until", "insurance_policy_no", "insurance_until",
+    "category_id", "department_id", "campus_id", "vendor_id"] as const;
+
+  app.patch(`${P}/equipment/:id`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may edit an asset.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const before = (await pool.query(
+      `SELECT * FROM mo_equipment_items WHERE id=$1 AND deleted_at IS NULL`, [id])).rows[0];
+    if (!before) return sendError(res, 404, "Asset not found.");
+    /* Phase 13B — the same 404, deliberately. An asset in another scope must
+       answer exactly as a non-existent one does, or the id becomes an oracle. */
+    if (!(await assetScopeOk(await inventoryScopeOf(u), id))) return sendError(res, 404, "Asset not found.");
+    if (before.retired_at) return sendError(res, 409, "A retired asset cannot be edited.");
+
+    const b = req.body as Record<string, unknown>;
+    /* Phase 17I — condition is no longer editable here, and a caller that sends
+       it is told so rather than having it quietly ignored. Silently dropping a
+       field is how a screen comes to believe it saved something. */
+    if ("condition" in b)
+      return sendError(res, 400,
+        "Condition is recorded by a check-in or an inspection, not by editing the asset.");
+    const fields: string[] = [], vals: unknown[] = [];
+    for (const k of ASSET_EDITABLE) {
+      if (!(k in b)) continue;
+      let v = b[k];
+      if (["category_id", "department_id", "campus_id", "vendor_id"].includes(k))
+        v = v == null || v === "" ? null : Number(v);
+      if (k === "purchase_cost") v = v == null || v === "" ? null : Number(v);
+      if (typeof v === "string" && v.trim() === "" && k !== "notes") v = null;
+      fields.push(`${k}=$${vals.length + 1}`); vals.push(v);
+    }
+    if (!fields.length) return res.json({ item: before });
+    if (b.category_id != null) {
+      const cat = await pool.query(`SELECT 1 FROM mo_equipment_categories WHERE id=$1`, [Number(b.category_id)]);
+      if (!cat.rows[0]) return sendError(res, 400, "Invalid category.");
+    }
+    vals.push(id);
+    const upd = await pool.query(
+      `UPDATE mo_equipment_items SET ${fields.join(",")}, updated_at=NOW() WHERE id=$${vals.length} RETURNING *`, vals);
+    /* A serial is an identifier too: keep the table in step when it changes. */
+    if ("serial_no" in b && upd.rows[0].serial_no)
+      await pool.query(
+        `INSERT INTO mo_asset_identifiers (asset_id, kind, value, is_primary, created_by)
+         VALUES ($1,'serial',$2,true,$3) ON CONFLICT (value) DO NOTHING`, [id, upd.rows[0].serial_no, u.id]);
+    await audit(u, "equipment.updated", "equipment_item", id, before, upd.rows[0], req);
+    res.json({ item: upd.rows[0] });
+  }));
+
+  /* A manual status move — taking something out of service, marking it lost,
+     bringing it back. Movements that belong to a loan (checked_out, and the
+     return to available) are made by checkout/check-in, not here. */
+  app.post(`${P}/equipment/:id/status`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may change an asset's status.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const to = String((req.body as Record<string, unknown>).status ?? "") as ItemStatus;
+    const item = (await pool.query(
+      `SELECT id, status, retired_at FROM mo_equipment_items WHERE id=$1 AND deleted_at IS NULL`, [id])).rows[0];
+    if (!item) return sendError(res, 404, "Asset not found.");
+    /* Phase 13B — the same 404, deliberately. An asset in another scope must
+       answer exactly as a non-existent one does, or the id becomes an oracle. */
+    if (!(await assetScopeOk(await inventoryScopeOf(u), id))) return sendError(res, 404, "Asset not found.");
+    const verdict = canTransition(item.status as ItemStatus, to);
+    if (!verdict.ok) return sendError(res, 409, verdict.message);
+
+    /* D-4 / D-21 — AN ASSET WITH OPEN WORK ON IT DOES NOT LEAVE MAINTENANCE.
+       This transition was the shortest route to the contradiction the read model
+       has always reported and nothing prevented: lifecycle 'available' beside an
+       open maintenance record, permanent because nothing could close one. The
+       conflict detector stays as a diagnostic; this is what stops the state
+       being reachable. */
+    if (item.status === "maintenance" && to !== "maintenance" && to !== "retired") {
+      const open = await openMaintenance(pool as unknown as Queryable, id);
+      if (open > 0)
+        return sendError(res, 409,
+          `This asset has ${open} open maintenance record${open === 1 ? "" : "s"}. `
+          + "Resolve them before taking it out of maintenance.");
+    }
+
+    const upd = await pool.query(
+      `UPDATE mo_equipment_items SET status=$2, updated_at=NOW() WHERE id=$1 RETURNING *`, [id, to]);
+    await audit(u, "equipment.status_changed", "equipment_item", id, { status: item.status }, { status: to }, req);
+    res.json({ item: upd.rows[0] });
+  }));
+
+  /* Retire an asset. Its transactions, bookings and maintenance records all
+     stay exactly where they are — this is the reason there is no DELETE. */
+  app.post(`${P}/equipment/:id/retire`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may retire an asset.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const item = (await pool.query(
+      `SELECT id, status, asset_tag, retired_at FROM mo_equipment_items WHERE id=$1 AND deleted_at IS NULL`,
+      [id])).rows[0];
+    if (!item) return sendError(res, 404, "Asset not found.");
+    /* Phase 13B — the same 404, deliberately. An asset in another scope must
+       answer exactly as a non-existent one does, or the id becomes an oracle. */
+    if (!(await assetScopeOk(await inventoryScopeOf(u), id))) return sendError(res, 404, "Asset not found.");
+    const out = await liveCheckout(id);
+    const verdict = canRetire(item.retired_at ? "retired" : (item.status as ItemStatus), !!out);
+    if (!verdict.ok) return sendError(res, 409, verdict.message);
+
+    const reason = String((req.body as Record<string, unknown>).reason ?? "").trim() || null;
+    const upd = await pool.query(
+      `UPDATE mo_equipment_items
+          SET status='retired', retired_at=NOW(), retired_by=$2, retired_reason=$3, updated_at=NOW()
+        WHERE id=$1 RETURNING *`, [id, u.id, reason]);
+    /* Future reservations are released; history is untouched. */
+    await pool.query(
+      `UPDATE mo_equipment_bookings SET status='cancelled'
+        WHERE equipment_item_id=$1 AND status IN ('reserved','active')`, [id]);
+    await audit(u, "equipment.retired", "equipment_item", id, { status: item.status }, { reason }, req);
+    res.json({ item: upd.rows[0] });
+  }));
+
+  /* ── Identifiers ────────────────────────────────────────────────────────
+     Adding one is how an RFID tag will arrive: a row, not a migration. */
+  app.post(`${P}/equipment/:id/identifiers`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may add an identifier.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    const kind = String(b.kind ?? "");
+    const value = String(b.value ?? "").trim();
+    if (!["qr", "barcode", "serial", "rfid", "internal"].includes(kind))
+      return sendError(res, 400, "kind must be one of qr, barcode, serial, rfid, internal.");
+    if (!value) return sendError(res, 400, "value is required.");
+    const item = (await pool.query(
+      `SELECT id FROM mo_equipment_items WHERE id=$1 AND deleted_at IS NULL`, [id])).rows[0];
+    if (!item) return sendError(res, 404, "Asset not found.");
+    /* Phase 13B — the same 404, deliberately. An asset in another scope must
+       answer exactly as a non-existent one does, or the id becomes an oracle. */
+    if (!(await assetScopeOk(await inventoryScopeOf(u), id))) return sendError(res, 404, "Asset not found.");
+
+    const primary = b.is_primary === true;
+    if (primary)
+      await pool.query(
+        `UPDATE mo_asset_identifiers SET is_primary=false WHERE asset_id=$1 AND kind=$2 AND retired_at IS NULL`,
+        [id, kind]);
+    try {
+      const ins = await pool.query(
+        `INSERT INTO mo_asset_identifiers (asset_id, kind, value, is_primary, created_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`, [id, kind, value, primary, u.id]);
+      await audit(u, "equipment.identifier_added", "equipment_item", id, null, { kind, value }, req);
+      res.status(201).json({ identifier: ins.rows[0] });
+    } catch (err) {
+      if ((err as { code?: string }).code === "23505")
+        return sendError(res, 409, "Another asset already carries that identifier.");
+      throw err;
+    }
+  }));
+
+  /* The printable label. A REAL QR code (server/qr.ts), encoding the asset's
+     opaque token and nothing else — no holder, no status, no project, no
+     location — so the label outlives every one of those changing. */
+  app.get(`${P}/equipment/:id/qr`, asyncHandler(async (req, res) => {
+    const u = await requireEquipment(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const row = (await pool.query(
+      `SELECT i.asset_tag,
+              (SELECT a.value FROM mo_asset_identifiers a
+                WHERE a.asset_id=i.id AND a.kind='qr' AND a.is_primary AND a.retired_at IS NULL LIMIT 1) AS token
+         FROM mo_equipment_items i WHERE i.id=$1 AND i.deleted_at IS NULL`, [id])).rows[0];
+    if (!row) return sendError(res, 404, "Asset not found.");
+    /* Phase 13B — before the 409 below, which would otherwise reveal that the
+       asset exists and merely lacks a label. Handing out a QR token for
+       another scope's asset would also hand over the thing that resolves it. */
+    if (!(await assetScopeOk(await inventoryScopeOf(u), id)))
+      return sendError(res, 404, "Asset not found.");
+    if (!row.token) return sendError(res, 409, "This asset has no QR identifier yet.");
+
+    const svg = qrSvg(String(row.token), { scale: 6, quiet: 4, title: `Asset ${row.asset_tag}` });
+    if (String((req.query as Record<string, string>).format) === "svg") {
+      res.type("image/svg+xml").send(svg);
+      return;
+    }
+    res.json({ asset_tag: row.asset_tag, token: row.token, svg });
   }));
 
   // ── Leave (§7.8) ─────────────────────────────────────────────────────────
@@ -4162,7 +9711,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
                         ON CONFLICT (user_id, duty_flag_id) DO NOTHING`, [memberId, fid, u.id]);
     else
       await pool.query(`DELETE FROM mo_user_duties WHERE user_id=$1 AND duty_flag_id=$2`, [memberId, fid]);
-    await audit(u, b.grant ? "user.duty_granted" : "user.duty_revoked", "user", null, null, { member: memberId, duty: fid }, req);
+    /* The affected user now travels in entity_uid as well as in the payload, so
+       "every duty change for this person" is a query rather than a JSON scan.
+       The action names and entity_type are untouched: existing consumers read
+       the same rows they always did. */
+    await audit(u, b.grant ? "user.duty_granted" : "user.duty_revoked", "user", null, null,
+                { member: memberId, duty: fid }, req, memberId);
     res.json({ ok: true });
   }));
 
@@ -4455,27 +10009,374 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ ok: true });
   }));
 
+  /* ═══ ONE PERSON'S EQUIPMENT ACCESS ═══════════════════════════════════════
+     THE THREE LAYERS, READ AND WRITTEN FROM THE PERSON'S SIDE.
+
+     Everything these two endpoints touch already existed, and none of it was
+     reachable from a screen about a PERSON:
+
+       module access    mo_user_profiles.allowed_modules   POST /crew/:id/modules
+       inventory scope  mo_user_inventory_scopes           POST/DELETE /equipment/scopes/:id/custodians
+       custodian duty   mo_user_duties                     POST /crew/:id/duties
+
+     The scope endpoints are organised by SCOPE — "who looks after PID" — which
+     is the right shape for governing an inventory and the wrong one for
+     answering "what can this employee do". There was no way to read one
+     person's inventories at all without a request per inventory, and no way to
+     change all three together.
+
+     NO NEW ROLE, NO NEW TABLE, NO NEW VOCABULARY. There is no PID Custodian and
+     no Media Crew Custodian: there is an employee who reaches the Equipment
+     module, holds one or more inventories, and may or may not carry the one
+     equipment_custodian duty. These endpoints administer exactly that, and the
+     gate on an actual asset remains requireEquipment() + canManageEquipment() +
+     assetScopeOk() — untouched.
+
+     ADMIN ONLY, on the server. Granting somebody an inventory is a governance
+     act, so holding the custodian duty must not let you grant it. */
+  const EQUIP_MODULE = "equipment";
+
+  /** The duty row this panel administers. Looked up, never hard-coded by id. */
+  const custodianDuty = async () => (await pool.query(
+    `SELECT id, code, name, description FROM mo_duty_flags WHERE code='equipment_custodian'`)).rows[0];
+
+  /* One read model for the panel, used by GET and returned again by PATCH so
+     the screen always renders what the database now says rather than what the
+     browser hoped it would say. */
+  async function equipmentAccessOf(target: { id: string; full_name: string; email: string;
+                                             role: string; team: string | null; status: string }) {
+    const asUser = { id: target.id, role: target.role, team: target.team } as CurrentUser;
+    const prof = (await pool.query(
+      `SELECT allowed_modules, mo_role FROM mo_user_profiles WHERE user_id=$1`, [target.id])).rows[0];
+    const effective = await effectiveModules(asUser);
+    const duty = await custodianDuty();
+
+    /* Every LIVE inventory, each marked with whether this person holds it —
+       so a new inventory appears here the day it is created, with no code
+       change and nothing hard-coded about Media Crew or PID. */
+    const inventories = (await pool.query(
+      `SELECT s.id, s.code, s.name, s.code_prefix,
+              a.id AS assignment_id, a.granted_at, a.granted_by, gb.full_name AS granted_by_name
+         FROM mo_inventory_scopes s
+         LEFT JOIN mo_user_inventory_scopes a
+                ON a.scope_id = s.id AND a.user_id = $1 AND a.removed_at IS NULL
+         LEFT JOIN users gb ON gb.id = a.granted_by
+        WHERE s.is_active AND s.archived_at IS NULL
+        ORDER BY s.name`, [target.id])).rows;
+
+    /* What was taken away, and by whom. mo_user_inventory_scopes is
+       soft-removed on purpose (§8) and this is the only screen that can show
+       it from the person's side. Bounded, because it grows for the life of the
+       account. */
+    const history = (await pool.query(
+      `SELECT a.id, s.name AS scope_name, s.code AS scope_code,
+              a.granted_at, a.removed_at, gb.full_name AS granted_by_name, rb.full_name AS removed_by_name
+         FROM mo_user_inventory_scopes a
+         JOIN mo_inventory_scopes s ON s.id = a.scope_id
+         LEFT JOIN users gb ON gb.id = a.granted_by
+         LEFT JOIN users rb ON rb.id = a.removed_by
+        WHERE a.user_id = $1 AND a.removed_at IS NOT NULL
+        ORDER BY a.removed_at DESC LIMIT 20`, [target.id])).rows;
+
+    const held = (await pool.query(
+      `SELECT 1 FROM mo_user_duties d WHERE d.user_id=$1 AND d.duty_flag_id=$2`,
+      [target.id, duty.id])).rows.length > 0;
+
+    return {
+      user: { id: target.id, full_name: target.full_name, email: target.email,
+              role: target.role, team: target.team, status: target.status,
+              mo_role: prof?.mo_role ?? null },
+      module: {
+        key: EQUIP_MODULE,
+        /* What the gate will actually answer. */
+        enabled: effective.includes(EQUIP_MODULE),
+        /* NULL allowed_modules means "whatever this person's group grants".
+           Saying so matters: turning Equipment OFF for such an account has to
+           write an explicit list, which changes them from role-based to
+           custom, and an administrator should be told that before it happens. */
+        unrestricted: prof ? prof.allowed_modules == null : true,
+        /* An Admin passes every module gate by role (allowsModule), so the
+           checkbox below cannot take Equipment away from them. Stated rather
+           than hidden, because a panel that silently lies is worse than one
+           that explains. */
+        bypassed_by_role: isMoAdmin(asUser),
+        effective_modules: effective,
+      },
+      inventories: inventories.map((r) => ({
+        id: Number(r.id), code: r.code, name: r.name, code_prefix: r.code_prefix,
+        assigned: r.assignment_id != null,
+        granted_at: r.granted_at ?? null, granted_by_name: r.granted_by_name ?? null,
+      })),
+      custodian: { duty_flag_id: Number(duty.id), code: duty.code, name: duty.name,
+                   description: duty.description, granted: held },
+      history,
+    };
+  }
+
+  /** What one person can do with equipment. Admin only. */
+  app.get(`${P}/crew/:id/equipment-access`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    /* §10 — the server decides, not a hidden button. One person's access
+       configuration is not something a colleague may read. */
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may view equipment access.");
+    const id = getSingleParam(req.params.id);
+    const target = (await pool.query(
+      `SELECT id, full_name, email, role, team, status FROM users WHERE id=$1`, [id])).rows[0];
+    if (!target) return sendError(res, 404, "That member does not exist.");
+    res.json(await equipmentAccessOf(target));
+  }));
+
+  /** Change it — all three layers, or none of them. Admin only. */
+  app.patch(`${P}/crew/:id/equipment-access`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may change equipment access.");
+    const id = getSingleParam(req.params.id);
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const target = (await pool.query(
+      `SELECT id, full_name, email, role, team, status FROM users WHERE id=$1`, [id])).rows[0];
+    if (!target) return sendError(res, 404, "That member does not exist.");
+
+    const before = await equipmentAccessOf(target);
+    const wantModule = typeof b.module_enabled === "boolean" ? b.module_enabled : null;
+    const wantDuty = typeof b.equipment_custodian === "boolean" ? b.equipment_custodian : null;
+    const wantScopes = Array.isArray(b.inventory_scope_ids)
+      ? [...new Set((b.inventory_scope_ids as unknown[]).map((x) => Number(x)))].filter((n) => Number.isFinite(n) && n > 0)
+      : null;
+    if (wantModule === null && wantDuty === null && wantScopes === null)
+      return sendError(res, 400, "Nothing to change.");
+
+    /* ── REFUSALS, DECIDED BEFORE THE TRANSACTION OPENS ────────────────────
+       Every check here is a read, so it runs on the pool and not on a held
+       client. What the transaction below does is write. */
+
+    const live = (await pool.query(
+      `SELECT id, name, code FROM mo_inventory_scopes
+        WHERE is_active AND archived_at IS NULL`)).rows;
+    const liveIds = new Set(live.map((r) => Number(r.id)));
+    const currentIds = before.inventories.filter((i) => i.assigned).map((i) => i.id);
+    const adding = wantScopes ? wantScopes.filter((n) => !currentIds.includes(n)) : [];
+    const dropping = wantScopes ? currentIds.filter((n) => !wantScopes.includes(n)) : [];
+
+    for (const n of wantScopes ?? []) {
+      if (!liveIds.has(n)) {
+        /* An archived or deactivated scope authorises nobody — inventoryScopeOf()
+           filters it out — so an assignment to one would be silently inert.
+           Same refusal the per-scope endpoint already gives. */
+        const exists = (await pool.query(
+          `SELECT 1 FROM mo_inventory_scopes WHERE id=$1`, [n])).rows.length > 0;
+        return exists
+          ? sendError(res, 409, "An archived or inactive inventory cannot be assigned. Restore it first.")
+          : sendError(res, 404, "Inventory not found.");
+      }
+    }
+    /* THE EXISTING SEPARATION, KEPT. POST /equipment/scopes/:id/custodians has
+       always refused self-appointment: an Admin who needs an inventory has
+       another Admin grant it. This panel must not become the way around that. */
+    if (adding.length && target.id === u.id)
+      return sendError(res, 403, "An inventory cannot be granted to yourself. Ask another Admin.");
+    /* Granting access to a removed account would be access nobody can use.
+       Revoking from one is offboarding and stays allowed. */
+    if (target.status !== "active" && (adding.length || wantModule === true || wantDuty === true))
+      return sendError(res, 409, "That account is not active, so access cannot be granted to it.");
+
+    /* The module list to write, if any. An explicit array is only written when
+       the ANSWER has to change: enabling a module the group already grants
+       leaves a role-based account role-based. */
+    let modulesToWrite: string[] | null = null;
+    if (wantModule !== null && wantModule !== before.module.enabled)
+      modulesToWrite = wantModule
+        ? [...before.module.effective_modules, EQUIP_MODULE]
+        : before.module.effective_modules.filter((m) => m !== EQUIP_MODULE);
+
+    const dutyId = before.custodian.duty_flag_id;
+    const dutyChanges = wantDuty !== null && wantDuty !== before.custodian.granted;
+
+    /* ── ONE TRANSACTION (§7) ──────────────────────────────────────────────
+       Module, inventories and duty commit together or not at all. A half-saved
+       state here is an employee who can reach Equipment and see no inventory,
+       or holds an inventory they cannot enter — configurations that look like
+       product bugs and are actually a failed save.
+
+       Every statement is on `client`; audit() runs after release, because
+       audit() writes through the pool and holding a connection while asking
+       for another is what deadlocked production once already. */
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (modulesToWrite)
+        await client.query(
+          `INSERT INTO mo_user_profiles (user_id, allowed_modules) VALUES ($1,$2::jsonb)
+           ON CONFLICT (user_id) DO UPDATE SET allowed_modules=EXCLUDED.allowed_modules`,
+          [target.id, JSON.stringify(modulesToWrite)]);
+
+      for (const scopeId of adding)
+        /* A prior REVOKED row does not collide — idx_mo_uis_active is partial —
+           so this inserts a NEW record and the old one stays readable. That is
+           the whole reason the primary key is an id and not the pair. */
+        await client.query(
+          `INSERT INTO mo_user_inventory_scopes (user_id, scope_id, role, granted_by)
+           VALUES ($1,$2,'custodian',$3)
+           ON CONFLICT (user_id, scope_id) WHERE removed_at IS NULL DO NOTHING`,
+          [target.id, scopeId, u.id]);
+      for (const scopeId of dropping)
+        /* SOFT. The record survives with who removed it and when (§8). */
+        await client.query(
+          `UPDATE mo_user_inventory_scopes SET removed_at=NOW(), removed_by=$3
+            WHERE user_id=$1 AND scope_id=$2 AND removed_at IS NULL`,
+          [target.id, scopeId, u.id]);
+
+      if (dutyChanges) {
+        if (wantDuty)
+          await client.query(
+            `INSERT INTO mo_user_duties (user_id, duty_flag_id, granted_by, granted_at)
+             VALUES ($1,$2,$3,CURRENT_DATE) ON CONFLICT (user_id, duty_flag_id) DO NOTHING`,
+            [target.id, dutyId, u.id]);
+        else
+          await client.query(
+            `DELETE FROM mo_user_duties WHERE user_id=$1 AND duty_flag_id=$2`, [target.id, dutyId]);
+      }
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+      throw e;
+    }
+    client.release();
+
+    const after = await equipmentAccessOf(target);
+    /* ONE COHERENT ACCESS-CHANGE EVENT (§15), not three. An administrator
+       changed somebody's equipment access; before and after say what it was and
+       what it became, and entity_uid carries the affected person so "every
+       access change for them" is a query rather than a JSON scan. */
+    const shape = (a: typeof after) => ({
+      module_enabled: a.module.enabled,
+      inventories: a.inventories.filter((i) => i.assigned).map((i) => i.code),
+      equipment_custodian: a.custodian.granted,
+    });
+    await audit(u, "crew.equipment_access_changed", "user", null,
+                shape(before), shape(after), req, target.id);
+    res.json(after);
+  }));
+
   // Add an equipment item (auto asset tag EQ-<CAT>-NNN). Team Lead / Admin.
   app.post(`${P}/equipment`, asyncHandler(async (req, res) => {
-    const u = requireMedia(res); if (!u) return;
-    if (!(await requireModule(res, u, "equipment"))) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Team Lead or Admin only.");
+    const u = await requireEquipment(res); if (!u) return;
+    /* Registering an asset is a custodial act. The old check was
+       `isMoAdmin || isMoTL`, which contradicted the browser's own CAPS table
+       (equipment.manage is '-' for a Team Lead and CUSTODIAN for an employee)
+       — so a Team Lead was refused by the UI and accepted by the API, and a
+       custodian was the other way round. One rule now, and it is this one. */
+    if (!(await canManageEquipment(u)))
+      return sendError(res, 403, "Only an Equipment Custodian or an Admin may register an asset.");
     const b = req.body as Record<string, unknown>;
     const catId = Number(b.category_id);
     if (!catId || !String(b.make ?? "").trim()) return sendError(res, 400, "Category and make are required.");
     const cat = await pool.query(`SELECT name FROM mo_equipment_categories WHERE id=$1`, [catId]);
     if (!cat.rows[0]) return sendError(res, 400, "Invalid category.");
-    const prefix = String(cat.rows[0].name).replace(/[^A-Za-z]/g, "").slice(0, 3).toUpperCase() || "GEN";
-    const n = (await pool.query(`SELECT COUNT(*)::int c FROM mo_equipment_items WHERE category_id=$1`, [catId])).rows[0].c + 1;
-    const tag = `EQ-${prefix}-${String(n).padStart(3, "0")}`;
-    const cond = ["excellent", "good", "fair", "poor"].includes(String(b.condition)) ? String(b.condition) : "good";
-    const ins = await pool.query(
-      `INSERT INTO mo_equipment_items (department_id, campus_id, category_id, asset_tag, qr_uid, make, model, serial_no, purchase_cost, condition, status)
-       VALUES (1,1,$1,$2,$3,$4,$5,$6,$7,$8,'available') RETURNING *`,
-      [catId, tag, `QR-${tag}`, String(b.make).trim(), String(b.model ?? "").trim(),
-       (b.serial_no as string)?.trim() || null, b.purchase_cost ? Number(b.purchase_cost) : null, cond]);
-    await audit(u, "equipment.added", "equipment_item", ins.rows[0].id, null, { tag }, req);
-    res.status(201).json({ item: ins.rows[0], asset_tag: tag });
+    const cond = isCondition(b.condition) ? b.condition : "good";
+
+    /* ── Phase 17A: which inventory is this asset being registered into? ──
+       Optional. Omitted, the asset is created UNSCOPED, exactly as every
+       asset before it — the legacy estate is not disturbed by this phase.
+
+       Supplied, it is AUTHORISED, not trusted: scopeAllows() is the same
+       check every read and write already goes through, so a custodian can
+       register into their own inventory and nobody can register into one
+       they have no authority over. An Admin resolves to `all`. */
+    let scopeId: number | null = null;
+    if (b.scope_id != null && String(b.scope_id) !== "") {
+      scopeId = Number(b.scope_id);
+      if (!Number.isFinite(scopeId)) return sendError(res, 400, "scope_id must be a number.");
+      const sc = (await pool.query(
+        `SELECT id, is_active, archived_at FROM mo_inventory_scopes WHERE id=$1`, [scopeId])).rows[0];
+      if (!sc) return sendError(res, 400, "Unknown inventory.");
+      if (!sc.is_active || sc.archived_at)
+        return sendError(res, 409, "That inventory is not active.");
+      if (!scopeAllows(await inventoryScopeOf(u), scopeId))
+        /* 404-shaped on purpose: the same answer an invented id gets, so the
+           create endpoint cannot be used to enumerate inventories. */
+        return sendError(res, 404, "Unknown inventory.");
+    }
+
+    /* Tracking mode is per ITEM here, overriding the category default only
+       when the caller says so. A pooled row carries a count; a serialized one
+       must not. */
+    const trackRaw = b.tracking_mode == null || b.tracking_mode === "" ? null : String(b.tracking_mode);
+    if (trackRaw !== null && !["individual", "pooled"].includes(trackRaw))
+      return sendError(res, 400, "tracking_mode must be 'individual' or 'pooled'.");
+    let poolQty: number | null = null;
+    if (b.pool_quantity != null && String(b.pool_quantity) !== "") {
+      poolQty = Number(b.pool_quantity);
+      if (!Number.isFinite(poolQty) || poolQty <= 0)
+        return sendError(res, 400, "pool_quantity must be a positive number.");
+    }
+    if (poolQty != null && trackRaw === "individual")
+      return sendError(res, 400, "A serialized asset cannot carry a pool quantity.");
+
+    /* Phase 17D — REGISTRATION MAY STAGE, BUT MAY NOT APPROVE.
+
+       The default is unchanged and stays unchanged: an asset registered through
+       the existing Add-item flow is 'active', exactly as every asset created
+       before this phase was, and appears in the catalogue immediately. Nothing
+       about that screen behaves differently.
+
+       'draft' is the one other value a caller may ask for, and it is the only
+       one that could ever be safe to accept: it makes a record LESS trusted,
+       not more. An importer needs it to stage rows that must not read as real
+       gear until somebody has looked at them. 'active', 'pending_verification'
+       and 'rejected' are refused outright — a client saying "this is verified"
+       is exactly the claim only a reviewer may make, and it is made through
+       POST /equipment/:id/verification or not at all. */
+    const askedState = b.verification_state == null || b.verification_state === ""
+      ? null : String(b.verification_state);
+    if (askedState !== null && askedState !== "draft")
+      return sendError(res, 400,
+        "verification_state may only be omitted or 'draft'. A record is verified by review, not by declaration.");
+    const verifyState = askedState ?? "active";
+
+    const client = await pool.connect();
+    let created: { item: Record<string, unknown>; itemId: number; tag: string; token: string };
+    try {
+      await client.query("BEGIN");
+      created = await createEquipmentOn(client, u.id, {
+        categoryId: catId, categoryName: String(cat.rows[0].name),
+        make: String(b.make).trim(), model: String(b.model ?? "").trim(),
+        serialNo: (b.serial_no as string)?.trim() || null,
+        purchaseCost: b.purchase_cost ? Number(b.purchase_cost) : null,
+        condition: String(cond), scopeId, trackingMode: trackRaw, poolQuantity: poolQty,
+        verificationState: verifyState,
+        departmentId: b.department_id != null ? Number(b.department_id) : undefined,
+        campusId: b.campus_id != null ? Number(b.campus_id) : null,
+      });
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      /* A MANUFACTURER serial names one physical unit worldwide, and the
+         partial unique index says so. Registering a second asset with a
+         serial that is already on the shelf is a real conflict a person must
+         resolve — not a 500. */
+      if ((err as { code?: string }).code === "23505")
+        return sendError(res, 409, "An asset with that serial number or identifier already exists.");
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    /* AUDIT AFTER THE CONNECTION IS BACK IN THE POOL.
+
+       audit() writes through the shared pool, and this used to run while the
+       transaction's client was still checked out — so every in-flight
+       registration held one connection and then asked for a second. Once as
+       many registrations were in flight as the pool has connections, each was
+       holding the only connection another needed to finish: a textbook pool
+       deadlock, which surfaced as requests hanging until they timed out.
+
+       The equipment suite's concurrency test is what walked into it, but
+       nothing about this is test-only — the default pool is ten, and ten
+       simultaneous registrations would do exactly the same in production. */
+    await audit(u, "equipment.added", "equipment_item", created.itemId, null,
+      { tag: created.tag, token: created.token }, req);
+    res.status(201).json({ item: created.item, asset_tag: created.tag, asset_uid: created.token });
   }));
 
   // Attach a validated Drive link to a project/deliverable (FR-4.3).
@@ -4626,13 +10527,45 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (q.entity_type) { conds.push(`a.entity_type=$${i++}`); vals.push(String(q.entity_type)); }
     if (q.action) { conds.push(`a.action ILIKE $${i++}`); vals.push("%" + String(q.action) + "%"); }
     if (q.actor) { conds.push(`us.full_name ILIKE $${i++}`); vals.push("%" + String(q.actor) + "%"); }
+    /* PHASE 17N — A DATE RANGE, AND A WAY PAST THE FIRST PAGE.
+
+       This was ORDER BY occurred_at DESC LIMIT 300 with no offset and no date
+       filter, which meant the audit log held everything and could show only
+       the most recent three hundred events. "What happened in March" was
+       unanswerable through the API the moment the estate produced more than
+       that, which it does in a week.
+
+       The range is INCLUSIVE at both ends and is taken as IST DAYS, matching
+       every other date filter in this module — an administrator asking for the
+       3rd means the whole of the 3rd as it was lived, not a UTC window that
+       starts at half past five the previous morning. */
+    const day = (v: unknown) => isDay(v) ? v : null;
+    const from = day(q.date_from), to = day(q.date_to);
+    if (q.date_from && !from) return sendError(res, 400, "date_from must be a date, as YYYY-MM-DD.");
+    if (q.date_to && !to) return sendError(res, 400, "date_to must be a date, as YYYY-MM-DD.");
+    if (from && to && to < from)
+      return sendError(res, 400, "date_to must be on or after date_from.");
+    if (from) { conds.push(`(a.occurred_at AT TIME ZONE 'Asia/Kolkata')::date >= $${i++}::date`); vals.push(from); }
+    if (to) { conds.push(`(a.occurred_at AT TIME ZONE 'Asia/Kolkata')::date <= $${i++}::date`); vals.push(to); }
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
+
+    /* The same {items, total, limit, offset} envelope and the same 1..200
+       clamp every other paged read in this module uses, so the browser's
+       existing pager works without being taught a second shape. */
+    const { limit, offset } = pageOf(q as Record<string, string | undefined>);
+    const total = Number((await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id ${where}`,
+      vals)).rows[0].c);
     const { rows } = await pool.query(
       `SELECT a.id, a.actor_id, us.full_name AS actor_name, a.actor_role, a.action, a.entity_type, a.entity_id,
               a.before, a.after, a.occurred_at, a.ip, a.user_agent
        FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id ${where}
-       ORDER BY a.occurred_at DESC LIMIT 300`, vals);
-    res.json({ audit: rows });
+       /* id DESC breaks the tie: two events in the same millisecond must not
+          swap places between page one and page two, which is how a paged read
+          silently drops a row. */
+       ORDER BY a.occurred_at DESC, a.id DESC LIMIT ${limit} OFFSET ${offset}`, vals);
+    /* `audit` is kept for the existing admin screen, which reads it. */
+    res.json({ audit: rows, items: rows, total, limit, offset });
   }));
 
   // Notifications (§18) — the feed is written by the automation engine.
@@ -4784,6 +10717,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     cols: string[];                                     // listing display columns
     deps: { table: string; fk: string; label: string }[];
     activeCol?: string;                                 // default is_active
+    /* Per-module escalation. Omitted — as it is for twenty of the twenty-one
+       modules — the engine's own crudCan() applies unchanged. Set to "admin"
+       and every WRITE on that module requires isMoAdmin(), because the module
+       is not reference data but a governance boundary. Reads are unaffected:
+       the scope list is a lookup that pickers and filters need. */
+    manage?: "admin";
   };
   const CRUD: Record<string, CrudModule> = {
     project_types: { key: "project_types", label: "Project Types", table: "mo_project_types",
@@ -4937,6 +10876,35 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       deps: [{ table: "mo_holidays", fk: "campus_id", label: "Holidays" },
              { table: "mo_equipment_items", fk: "campus_id", label: "Equipment items" },
              { table: "mo_user_profiles", fk: "campus_id", label: "User profiles" }] },
+    /* An inventory scope is whose stock an asset belongs to — the owner a
+       custodian is custodian OF. It is registered here, beside Campuses,
+       because it is the same kind of object: a small reference table an admin
+       maintains, which mo_equipment_items carries a nullable FK to. Registering
+       it buys list, create, edit, enable/disable, archive, dependency-checked
+       delete, audit history and permissions with no new endpoint and no new
+       screen — the engine's whole point.
+
+       The dependency below is what stops a scope that owns assets from being
+       deleted: the engine refuses (409) and offers archive instead, so an
+       asset can never be orphaned by a config edit.
+
+       SCOPE IS NOT YET AN AUTHORIZATION BOUNDARY. Creating a row here does not
+       restrict who may see or borrow anything, and mo_equipment_items.scope_id
+       is still nullable. When a later phase makes scope decide access, WHO MAY
+       EDIT THIS TABLE BECOMES A SECURITY QUESTION — and crudCan() currently
+       admits a Team Lead, which is right for a lookup table and may not be
+       right for a permission boundary. That decision belongs to the phase that
+       enforces scope, not to this one. */
+    inventory_scopes: { key: "inventory_scopes", label: "Inventory Scopes", table: "mo_inventory_scopes",
+      /* Phase 15. A scope is an authorization boundary, not reference data:
+         deactivating one withdraws every custodian's access to it. Writes are
+         therefore Admin-only, the same bar as appointing a custodian. */
+      manage: "admin",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "code", label: "Code", type: "slug", required: true }],
+      cols: ["name", "code"],
+      deps: [{ table: "mo_equipment_items", fk: "scope_id", label: "Equipment items" }] },
     holidays: { key: "holidays", label: "Holidays", table: "mo_holidays",
       fields: [
         { name: "date", label: "Date", type: "date", required: true },
@@ -4954,10 +10922,21 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   // Permission engine: Admin = everything · Team Lead = view/edit/enable-disable ·
   // Employee = read-only. Archive + delete are Admin-only (VR-11 spirit).
-  function crudCan(u: CurrentUser) {
+  function crudCan(u: CurrentUser, m?: CrudModule | null) {
     const r = moRoleOf(u);
-    return { read: true, create: r === "admin" || r === "team_lead", update: r === "admin" || r === "team_lead",
-             state: r === "admin" || r === "team_lead", archive: r === "admin", delete: r === "admin" };
+    const write = r === "admin" || r === "team_lead";
+    /* A module marked manage:"admin" narrows every write to an Admin. Phase
+       13A registered inventory_scopes here as ordinary reference data, which
+       was true then; Phase 13B made a scope an authorization boundary, and
+       deactivating one now withdraws every custodian's access to it. So the
+       bar for editing that list is the bar for appointing a custodian —
+       isMoAdmin(), the same check POST /crew/:id/duties already uses.
+
+       No new role: this is the existing admin check, applied per module. */
+    const adminOnly = m?.manage === "admin";
+    const mayWrite = adminOnly ? r === "admin" : write;
+    return { read: true, create: mayWrite, update: mayWrite, state: mayWrite,
+             archive: r === "admin", delete: r === "admin" };
   }
   const crudMod = (res: express.Response, key: string): CrudModule | null => {
     const m = CRUD[key]; if (!m) sendError(res, 400, "Unknown config module."); return m ?? null;
@@ -5008,7 +10987,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         }
         fields.push(ff);
       }
-      out.push({ key: m.key, label: m.label, cols: m.cols, fields, activeCol: m.activeCol ?? "is_active", deps: m.deps.map((d) => d.label) });
+      out.push({ key: m.key, label: m.label, cols: m.cols, fields, activeCol: m.activeCol ?? "is_active",
+                 deps: m.deps.map((d) => d.label),
+                 /* Per-module write permission, resolved for THIS caller. The
+                    global `can` below still describes the engine's default; a
+                    module with manage:"admin" reports its own answer here so
+                    the UI hides what the API would refuse. */
+                 can: { create: crudCan(u, m).create, update: crudCan(u, m).update, state: crudCan(u, m).state },
+                 manage: m.manage ?? null });
     }
     // Force Delete is reserved for the platform Super Admin (raw role, not the
     // media-ops role mapping — a media 'admin' does NOT qualify).
@@ -5063,7 +11049,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // Create.
   app.post(`${P}/crud/:module`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!crudCan(u).create) return sendError(res, 403, "You don't have permission to create records.");
+    if (!crudCan(u, CRUD[getSingleParam(req.params.module)] ?? null).create) return sendError(res, 403, "You don't have permission to create records.");
     const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
     const v = crudValidate(m, req.body as Record<string, unknown>, false);
     if (!v.ok) return sendError(res, 400, v.msg);
@@ -5084,7 +11070,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // Update (every editable field).
   app.patch(`${P}/crud/:module/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!crudCan(u).update) return sendError(res, 403, "You don't have permission to edit records.");
+    if (!crudCan(u, CRUD[getSingleParam(req.params.module)] ?? null).update) return sendError(res, 403, "You don't have permission to edit records.");
     const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
     const cur = (await pool.query(`SELECT * FROM ${m.table} WHERE id=$1`, [id])).rows[0];
@@ -5108,7 +11094,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // Duplicate — clone all editable fields, auto "(Copy)".
   app.post(`${P}/crud/:module/:id/duplicate`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!crudCan(u).create) return sendError(res, 403, "You don't have permission to duplicate records.");
+    if (!crudCan(u, CRUD[getSingleParam(req.params.module)] ?? null).create) return sendError(res, 403, "You don't have permission to duplicate records.");
     const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
     const cur = (await pool.query(`SELECT * FROM ${m.table} WHERE id=$1`, [id])).rows[0];
@@ -5136,7 +11122,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
     const action = String((req.body as Record<string, unknown>).action);
-    const can = crudCan(u);
+    const can = crudCan(u, m);
     if (["enable", "disable"].includes(action) && !can.state) return sendError(res, 403, "No permission.");
     if (["archive", "restore"].includes(action) && !can.archive) return sendError(res, 403, "Archive is Admin-only.");
     const ac = m.activeCol ?? "is_active";
@@ -5215,7 +11201,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const b = req.body as Record<string, unknown>;
     const ids = (Array.isArray(b.ids) ? b.ids : []).map(Number).filter(Boolean);
     const action = String(b.action);
-    const can = crudCan(u);
+    const can = crudCan(u, m);
     if (["enable", "disable"].includes(action) && !can.state) return sendError(res, 403, "No permission.");
     if (action === "archive" && !can.archive) return sendError(res, 403, "Archive is Admin-only.");
     if (action === "delete" && !can.delete) return sendError(res, 403, "Delete is Admin-only.");
@@ -5372,8 +11358,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
     // Staff with no creator identity: the module alone decides, as it always did.
     if (Array.isArray(explicit)) return true;          // checked above; it includes 'creator'
-    const eff = await effectiveModules(u);
-    if (eff !== null && eff.includes(CREATOR_MODULE)) return true;
+    if ((await effectiveModules(u)).includes(CREATOR_MODULE)) return true;
     sendError(res, 403, "You do not have access to the Creator Network.");
     return false;
   }
@@ -10808,7 +16793,8 @@ function addDays(iso: string, n: number): string {
 // server-persisted notification feed (AUTO-1/2/3 + review-pending). Idempotent —
 // notifications dedupe on (user, kind, entity) while unread, so re-runs never spam.
 // ═══════════════════════════════════════════════════════════════════════════
-export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; notified: number }> {
+export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; notified: number;
+                                                          undeliverable: number }> {
   let notified = 0;
   // Admin-configurable rules (NFR-10): each block below is gated on its rule's
   // is_enabled toggle — editing a rule in Settings changes behaviour immediately.
@@ -10828,15 +16814,34 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
        VALUES (NULL,'system','report.auto_approved','daily_report',$1,$2)`,
       [r.id, JSON.stringify({ status: "auto_approved", rule: "BR-4 (48h, unflagged)" })]).catch(() => {});
 
+  /* ONE UNDELIVERABLE NOTIFICATION MUST NOT STOP THE PASS.
+
+     This is a sweep over the whole estate: overdue equipment, then reports,
+     then maintenance falling due, each notifying a recipient list read at the
+     top. A recipient can stop existing between that read and this insert — an
+     account deleted while the pass runs — and the insert then fails the
+     foreign key. Unguarded, that one row threw out of the loop and took the
+     REST OF THE RUN with it: every overdue notice after it, and every
+     maintenance-due notice in the rule below, silently never sent. The failure
+     surfaced as five unrelated AUTO-8 assertions going red at once, which is
+     exactly how much this obscured what had actually gone wrong.
+
+     notifyOnce() — the 17J helper — already settled the policy for this
+     codebase: "notifications must never break the flow". This is the same
+     insert, and it now follows the same rule. A recipient who cannot be
+     written to is not notified and is not counted; everybody else still is. */
+  let undeliverable = 0;
   const notify = async (userId: string, kind: string, title: string, body: string, et: string, eid: number | null) => {
-    const r = await pool.query(
-      `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
-       SELECT $1,$2,$3,$4,$5,$6
-        WHERE NOT EXISTS (SELECT 1 FROM mo_notifications n
-                          WHERE n.user_id=$1 AND n.kind=$2 AND n.entity_type=$5
-                            AND COALESCE(n.entity_id,-1)=COALESCE($6::bigint,-1) AND n.is_read=false)`,
-      [userId, kind, title, body, et, eid]);
-    notified += r.rowCount ?? 0;
+    try {
+      const r = await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         SELECT $1,$2,$3,$4,$5,$6
+          WHERE NOT EXISTS (SELECT 1 FROM mo_notifications n
+                            WHERE n.user_id=$1 AND n.kind=$2 AND n.entity_type=$5
+                              AND COALESCE(n.entity_id,-1)=COALESCE($6::bigint,-1) AND n.is_read=false)`,
+        [userId, kind, title, body, et, eid]);
+      notified += r.rowCount ?? 0;
+    } catch { undeliverable++; }
   };
 
   /* AUTO-2 — overdue deliverables → owner; escalation: +PM at 3 days, +Admins at 7 (§17).
@@ -10862,14 +16867,164 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
       WHERE d.status='in_review'`)).rows)
     await notify(d.pm, "approval", "Awaiting your review", `“${d.title}” has a version pending`, "deliverable", d.id);
 
-  // AUTO-3 — overdue equipment → current holder.
-  if (ruleOn("AUTO-3")) for (const t of (await pool.query(
-    `SELECT DISTINCT ON (t.equipment_item_id) t.equipment_item_id AS id, t.holder_id, t.expected_return_at, e.asset_tag
-       FROM mo_equipment_transactions t JOIN mo_equipment_items e ON e.id=t.equipment_item_id
-      WHERE e.status='checked_out'
-      ORDER BY t.equipment_item_id, t.occurred_at DESC`)).rows)
-    if (t.expected_return_at && new Date(t.expected_return_at) < new Date())
-      await notify(t.holder_id, "overdue", "Equipment overdue", `${t.asset_tag} is past its return date`, "equipment", t.id);
+  /* AUTO-3 — overdue equipment. The seeded rule reads "Holder → +custodian on
+     overdue → +TL/Admin at 3d", and the Equipment screen has been promising
+     exactly that escalation to users for as long as it has existed. Only the
+     first word of it was implemented: the holder was told, and nobody else
+     ever was. Each tier is ADDITIVE, and the thresholds come from the rule's
+     own config rather than from constants here. */
+  if (ruleOn("AUTO-3")) {
+    const cfgRow = ruleRows.rows.find((x) => x.rule_key === "AUTO-3") as { config?: unknown } | undefined;
+    const cfg = overdueConfig(
+      cfgRow?.config ?? (await pool.query(`SELECT config FROM mo_automation_rules WHERE rule_key='AUTO-3'`)).rows[0]?.config);
+    const now = new Date();
+
+    /* ── Phase 16 repair: this fan-out is scope-aware ────────────────────
+       An overdue notice carries an ASSET TAG and the NAME OF WHOEVER HOLDS
+       IT. Until this repair it went to every holder of the equipment_custodian
+       duty and to every media admin/sub_admin, with no reference to which
+       inventory the asset belonged to — so once scopes are populated, a
+       custodian of one inventory would be told the tag and holder of an asset
+       in another, which the API itself refuses to show them. A Team Lead
+       (sub_admin) is in the leadership list and is NOT an admin in the scope
+       model, so the same leak reached them.
+
+       No new rule is introduced: the existing scopeAllows() decides, exactly
+       as it does for every read. An UNSCOPED asset allows everyone, so the
+       legacy estate notifies precisely as it does today and nothing goes
+       quiet on deploy — the same additive property Phase 13B established.
+
+       Scope is resolved ONCE PER RECIPIENT, before the asset loop, rather
+       than per asset per recipient: the lists are small and bounded, and the
+       alternative is an N+1 inside a nightly sweep. */
+    const custodianRows = (await pool.query(
+      `SELECT u.id, u.role, u.team FROM mo_user_duties d
+         JOIN mo_duty_flags f ON f.id=d.duty_flag_id
+         JOIN users u ON u.id = d.user_id
+        WHERE f.code='equipment_custodian'`)).rows;
+    const custodians = custodianRows.map((r) => String(r.id));
+    const leadershipRows = (await pool.query(
+      `SELECT u.id, u.role, u.team FROM users u WHERE u.team='media' AND u.role IN ('admin','super_admin','sub_admin')
+         AND (u.status IS NULL OR u.status='active')`)).rows;
+    const leadership = leadershipRows.map((r) => String(r.id));
+
+    const scopeOfRecipient = new Map<string, InventoryScope>();
+    for (const r of [...custodianRows, ...leadershipRows]) {
+      const id = String(r.id);
+      if (!scopeOfRecipient.has(id))
+        scopeOfRecipient.set(id, await inventoryScopeOf(
+          { id, role: r.role, team: r.team } as CurrentUser));
+    }
+    /** May this recipient be told about an asset in this scope? */
+    const mayHear = (uid: string, scopeId: number | null) =>
+      scopeAllows(scopeOfRecipient.get(uid) ?? { level: "none" }, scopeId);
+
+    for (const t of (await pool.query(
+      `SELECT DISTINCT ON (t.equipment_item_id) t.equipment_item_id AS id, t.holder_id, t.expected_return_at,
+              e.asset_tag, e.scope_id, h.full_name AS holder_name
+         FROM mo_equipment_transactions t
+         JOIN mo_equipment_items e ON e.id=t.equipment_item_id
+         LEFT JOIN users h ON h.id = t.holder_id
+        WHERE e.status='checked_out'
+        ORDER BY t.equipment_item_id, t.occurred_at DESC, t.id DESC`)).rows) {
+      const days = overdueDays(t.expected_return_at, now);
+      if (days <= 0) continue;
+      const who = escalationFor(days, cfg);
+      const late = `${days} day${days === 1 ? "" : "s"}`;
+
+      if (who.holder)
+        await notify(t.holder_id, "overdue", "Equipment overdue",
+          `${t.asset_tag} is ${late} past its return date. New checkouts are blocked at ${cfg.block_after_days} days (BR-7).`,
+          "equipment", t.id);
+
+      /* The custodian runs the cupboard, so they hear about it as soon as it
+         is late — never about their own loan twice, and never about an
+         inventory they have no authority over. One pure function decides the
+         recipients (equipment-rules.ts) so the fan-out is testable without
+         running the automation, which would auto-approve leave and write
+         notifications against every unrelated fixture in a shared database. */
+      const to = overdueRecipients(who, String(t.holder_id), custodians, leadership,
+                                   (uid) => mayHear(uid, t.scope_id));
+
+      for (const c of to.custodians)
+        await notify(c, "overdue", "Equipment overdue",
+          `${t.asset_tag} is ${late} overdue with ${t.holder_name ?? "a crew member"}.`, "equipment", t.id);
+
+      for (const l of to.leadership)
+        await notify(l, "overdue", "Equipment overdue — escalated",
+          `${t.asset_tag} is ${late} overdue with ${t.holder_name ?? "a crew member"} `
+          + `(escalated at ${cfg.esc_tl_days} days).`, "equipment", t.id);
+    }
+  }
+
+  /* AUTO-8 — "Maintenance due / damage opened".
+
+     THE RULE EXISTED, ENABLED, AND DID NOTHING. Its row has been in
+     mo_automation_rules since the schema was seeded, it appears in Settings
+     with a lead_days knob an Admin can turn, and no line of this function ever
+     referenced it. An operator reading that screen would reasonably believe
+     scheduled-maintenance alerting was on.
+
+     Both halves of the declared trigger, and nothing more:
+
+       · a repair is OPEN            → the people who run that inventory hear
+       · next_due_at is approaching  → the same people hear, lead_days ahead
+
+     IT CREATES NO MAINTENANCE. 17J has no recurrence model, and a rule that
+     invented work orders from a date field would be building one by accident.
+     It notifies; the record stays whatever a human made it.
+
+     Idempotent by construction: notifyOnce() will not add a second unread
+     notice for the same person, kind and record, so running this every few
+     minutes tells nobody anything twice.
+
+     Set-based: two queries, and the recipient list is resolved ONCE PER
+     INVENTORY rather than once per record. */
+  if (ruleOn("AUTO-8")) {
+    const a8 = ruleRows.rows.find((x) => x.rule_key === "AUTO-8") as { config?: unknown } | undefined;
+    const rawLead = (a8?.config as { lead_days?: unknown } | null)?.lead_days;
+    const leadDays = Number.isFinite(Number(rawLead)) ? Math.max(0, Math.min(365, Number(rawLead))) : 7;
+
+    const byScope = new Map<string, string[]>();
+    const recipientsFor = async (scopeId: number | null) => {
+      const key = scopeId == null ? "legacy" : String(scopeId);
+      if (!byScope.has(key)) byScope.set(key, await maintenanceRecipients(scopeId));
+      return byScope.get(key)!;
+    };
+
+    /* Open work, on assets that still exist. */
+    for (const m of (await pool.query(
+      `SELECT m.id, m.kind, e.id AS asset_id, e.asset_tag, e.scope_id
+         FROM mo_maintenance_records m
+         JOIN mo_equipment_items e ON e.id = m.equipment_item_id
+        WHERE m.resolved_at IS NULL AND e.deleted_at IS NULL AND e.retired_at IS NULL
+        ORDER BY m.id`)).rows) {
+      const what = m.kind === "damage_report" ? "Damage reported" : "Maintenance open";
+      for (const uid of await recipientsFor(m.scope_id == null ? null : Number(m.scope_id)))
+        notified += await notifyOnce(uid, "maintenance", `${what} — ${m.asset_tag}`,
+          `${m.asset_tag} has an open ${String(m.kind).replace(/_/g, " ")} and is out of service `
+          + "until it is resolved and inspected.", "maintenance", Number(m.id));
+    }
+
+    /* Service falling due. A separate `kind` so it does not deduplicate against
+       the open-work notice above — they are two different things to know. */
+    for (const m of (await pool.query(
+      `SELECT m.id, e.asset_tag, e.scope_id, to_char(m.next_due_at,'YYYY-MM-DD') AS due,
+              (m.next_due_at < CURRENT_DATE) AS overdue
+         FROM mo_maintenance_records m
+         JOIN mo_equipment_items e ON e.id = m.equipment_item_id
+        WHERE m.next_due_at IS NOT NULL
+          AND m.next_due_at <= CURRENT_DATE + $1::int
+          AND e.deleted_at IS NULL AND e.retired_at IS NULL
+        ORDER BY m.id`, [leadDays])).rows) {
+      for (const uid of await recipientsFor(m.scope_id == null ? null : Number(m.scope_id)))
+        notified += await notifyOnce(uid, "maintenance_due",
+          `Service ${m.overdue ? "overdue" : "due"} — ${m.asset_tag}`,
+          `${m.asset_tag} is due for service on ${m.due}.`
+          + (m.overdue ? " That date has passed." : ` Notified ${leadDays} days ahead.`),
+          "maintenance", Number(m.id));
+    }
+  }
 
   // AUTO-10 — shoot within 24h → remind each crew member (call time + location).
   if (ruleOn("AUTO-10"))
@@ -10891,5 +17046,7 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
           AND NOT EXISTS (SELECT 1 FROM mo_leave_requests l WHERE l.user_id=u.id AND l.status='approved' AND CURRENT_DATE BETWEEN l.starts_on AND l.ends_on)`)).rows)
       await notify(p.id, "reminder", "Daily report not submitted", "Log your tasks and submit today’s report (AUTO-1).", "report", null);
 
-  return { autoApproved: aa.rowCount ?? 0, notified };
+  /* `undeliverable` is reported rather than swallowed: a pass that could not
+     reach somebody is a fact the caller should be able to see and log. */
+  return { autoApproved: aa.rowCount ?? 0, notified, undeliverable };
 }

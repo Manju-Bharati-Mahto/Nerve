@@ -20,6 +20,7 @@
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { connectTestDatabase } from "./test-db.js";
 
 const PX = "zcd";
 let dbUp = false;
@@ -43,25 +44,15 @@ const A = {
 } as const;
 type ActorName = keyof typeof A;
 
-async function realDatabaseUrl(): Promise<string | null> {
-  const { readFileSync, existsSync } = await import("node:fs");
-  for (const f of [".env.local", ".env"]) {
-    if (!existsSync(f)) continue;
-    const m = readFileSync(f, "utf8").match(/^DATABASE_URL=(.+)$/m);
-    if (m) return m[1].trim();
-  }
-  return null;
-}
+/* The connection comes from server/test-db.ts, which resolves it from
+   TEST_DATABASE_URL or .env.test and REFUSES any database whose name does not
+   mark it as a test database. This file used to read .env.local itself and
+   assign the DEVELOPMENT url over the top of vitest's — seventeen siblings did
+   the same — which is how the suite came to run against `nerve`. */
 {
-  const url = await realDatabaseUrl();
-  if (url) {
-    process.env.DATABASE_URL = url;
-    process.env.SESSION_SECRET ||= "integration-test-secret";
-    process.env.SUPER_ADMIN_PASSWORD ||= "integration-test-password";
-    const { pool: p } = await import("./db.js");
-    pool = p;
-    try { await pool.query("SELECT 1"); dbUp = true; } catch { dbUp = false; }
-  }
+  const t = await connectTestDatabase();
+  pool = t.pool;
+  dbUp = t.dbUp;
 }
 const maybe = dbUp ? describe : describe.skip;
 
@@ -543,13 +534,21 @@ maybe("regression — the rest of Nerve", () => {
   });
 
   it("no creator endpoint writes to a Media Ops table", async () => {
-    const before = (await pool.query(
-      `SELECT (SELECT count(*)::int FROM mo_projects) p, (SELECT count(*)::int FROM mo_teams) t,
-              (SELECT count(*)::int FROM mo_team_members) m`)).rows[0];
+    /* These counts used to be taken over the WHOLE table. That measures every
+       sibling suite as well as this one: a file that legitimately creates six
+       Media Ops teams and then cleans them up made this assertion fail, and the
+       failure said "a creator endpoint wrote to mo_teams" — which was never
+       true. The question being asked is whether creating a CREATOR team leaves
+       a trace in the Media Ops tables, so the counts are restricted to rows
+       this suite could plausibly have caused. */
+    const snap = async () => (await pool.query(
+      `SELECT (SELECT count(*)::int FROM mo_projects WHERE name LIKE $1) p,
+              (SELECT count(*)::int FROM mo_teams    WHERE name LIKE $1) t,
+              (SELECT count(*)::int FROM mo_team_members
+                WHERE team_id IN (SELECT id FROM mo_teams WHERE name LIKE $1)) m`,
+      [`${PX}%`])).rows[0];
+    const before = await snap();
     await as("creatorAdmin", "POST", "/creator/teams", { name: `${PX} Throwaway` });
-    const after = (await pool.query(
-      `SELECT (SELECT count(*)::int FROM mo_projects) p, (SELECT count(*)::int FROM mo_teams) t,
-              (SELECT count(*)::int FROM mo_team_members) m`)).rows[0];
-    expect(after).toEqual(before);
+    expect(await snap()).toEqual(before);
   });
 });

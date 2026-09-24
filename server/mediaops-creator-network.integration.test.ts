@@ -21,6 +21,7 @@ import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { resolveTestDatabaseUrl, withGlobalLock, GLOBAL_LOCK } from "./test-db.js";
 
 const PX = "zcn";
 let dbUp = false;
@@ -49,15 +50,12 @@ const A = {
 } as const;
 type ActorName = keyof typeof A;
 
-async function realDatabaseUrl(): Promise<string | null> {
-  const { readFileSync, existsSync } = await import("node:fs");
-  for (const f of [".env.local", ".env"]) {
-    if (!existsSync(f)) continue;
-    const m = readFileSync(f, "utf8").match(/^DATABASE_URL=(.+)$/m);
-    if (m) return m[1].trim();
-  }
-  return null;
-}
+/* The test database url, resolved and safety-checked by server/test-db.ts.
+   This function used to open .env.local and return the DEVELOPMENT url, which
+   the block below then assigned over the one vitest had already set — so the
+   whole suite ran against `nerve`. It now resolves from TEST_DATABASE_URL or
+   .env.test, and throws rather than handing back a non-test database. */
+const realDatabaseUrl = async (): Promise<string> => resolveTestDatabaseUrl();
 
 {
   const url = await realDatabaseUrl();
@@ -421,8 +419,34 @@ maybe("TEST 12/13/14 — the rest of Nerve is unchanged", () => {
 
   it("SMC still resolves to the employee tier and its own module group", async () => {
     expect(api.moRoleOf(user("smcMember"))).toBe("employee");
-    const eff = await api.effectiveModules(user("smcMember"));
-    expect(eff).not.toContain(api.CREATOR_MODULE);
+
+    /* This assertion needs the smc_member defaults row to EXIST. The bootstrap
+       seeds only the 'creator' row; the others are created by an administrator
+       through Settings, so they were present on the developer's database and
+       absent on a freshly created one — and this test was quietly reading that
+       ambient state. effectiveModules() returns null for a group with no row,
+       and requireModule() reads null as "unrestricted", so the assertion below
+       was comparing against null rather than against a module list.
+
+       The row is created here as a fixture and removed afterwards, which makes
+       the test say what it means on any database. (That a fresh install has no
+       defaults row for smc_member/employee/team_lead is a real finding in its
+       own right — see the stabilisation note — but it is a production seeding
+       decision, not something to change from inside a test.) */
+    await withGlobalLock(pool, GLOBAL_LOCK.moduleDefaults, async () => {
+      const had = (await pool.query(
+        `SELECT modules FROM mo_module_defaults WHERE role='smc_member'`)).rows[0];
+      if (!had)
+        await pool.query(
+          `INSERT INTO mo_module_defaults (role, modules) VALUES ('smc_member','["home","my-day","smc"]'::jsonb)`);
+      try {
+        const eff = await api.effectiveModules(user("smcMember"));
+        expect(eff, "an SMC member must have an explicit module list, not 'unrestricted'").not.toBeNull();
+        expect(eff).not.toContain(api.CREATOR_MODULE);
+      } finally {
+        if (!had) await pool.query(`DELETE FROM mo_module_defaults WHERE role='smc_member'`);
+      }
+    });
   });
 
   it("TEST 16 — existing Media Ops routes still answer for staff", async () => {
@@ -445,11 +469,23 @@ maybe("TEST 12/13/14 — the rest of Nerve is unchanged", () => {
   });
 
   it("does not overwrite a defaults row an administrator has edited", async () => {
+    /* One module-defaults row per role, shared by the whole database. Restore
+       in a finally so a failure here cannot hand the next suite a creator
+       default of ["creator","home"]. */
+    /* mo_module_defaults is shared across every suite: the module-defaults
+       file snapshots the whole table to prove a second bootstrap changes no
+       row, and caught this toggle mid-flight. Held under the lock so the two
+       cannot overlap. */
+    await withGlobalLock(pool, GLOBAL_LOCK.moduleDefaults, async () => {
     await pool.query(`UPDATE mo_module_defaults SET modules='["creator","home"]'::jsonb WHERE role='creator'`);
-    await db.bootstrapCreatorNetwork();
-    const r = await pool.query(`SELECT modules FROM mo_module_defaults WHERE role='creator'`);
-    expect(r.rows[0].modules).toEqual(["creator", "home"]);
-    await pool.query(`UPDATE mo_module_defaults SET modules='["creator"]'::jsonb WHERE role='creator'`);
+    try {
+      await db.bootstrapCreatorNetwork();
+      const r = await pool.query(`SELECT modules FROM mo_module_defaults WHERE role='creator'`);
+      expect(r.rows[0].modules).toEqual(["creator", "home"]);
+    } finally {
+      await pool.query(`UPDATE mo_module_defaults SET modules='["creator"]'::jsonb WHERE role='creator'`);
+    }
+    });
   });
 
   it("touches no Outreach table — outreach_creators are a different thing entirely", async () => {

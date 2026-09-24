@@ -187,8 +187,19 @@ interface BrandingRowRecord {
   updated_at: string;
 }
 
+/* PG_POOL_MAX exists for the test runner and nothing else.
+
+   node-postgres defaults to 10 connections per pool, and each vitest worker
+   imports this module and gets its own. With ~20 integration suites across a
+   machine's worth of workers that is up to 200 sockets against a server whose
+   max_connections is 100 — so a suite would intermittently fail to connect,
+   report dbUp=false and SKIP its tests. A green run and a run with sixty
+   silently skipped tests looked much the same from the summary line.
+
+   Unset in development and production, where the default is right. */
 export const pool = new Pool({
   connectionString: config.databaseUrl,
+  ...(process.env.PG_POOL_MAX ? { max: Number(process.env.PG_POOL_MAX) } : {}),
 });
 
 function generateId(prefix: string) {

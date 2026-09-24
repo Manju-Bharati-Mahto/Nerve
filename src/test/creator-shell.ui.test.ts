@@ -73,11 +73,13 @@ async function boot(opts: { role?: Role; creatorStateStatus?: number; search?: s
    phrase that appears in the page's own code would match a search for rendered
    text. The app container holds what a person actually sees. */
 const text = (dom: JSDOM) => dom.window.document.getElementById("app")?.textContent ?? "";
-/* The tab BAR specifically. Overview's shortcut buttons switch tabs too and
-   carry the same data attribute, which is correct — but they are not the tab
-   list, and this asserts the tab list. */
-const tabs = (dom: JSDOM) =>
-  [...dom.window.document.querySelectorAll('.tabs [data-tabkey="creator"]')].map((n) => n.textContent?.trim());
+/* The Creator Network's own navigation, as rendered into the Media Ops
+   sidebar. This replaced a horizontal tab bar: the assertions below are the
+   same assertions, asked of the surface that now carries the navigation. */
+const cnNav = (dom: JSDOM) =>
+  [...dom.window.document.querySelectorAll("#nav .nav-item")].map((n) => n.textContent?.trim());
+/* Nothing should render a tab bar inside the Creator Network any more. */
+const tabBars = (dom: JSDOM) => dom.window.document.querySelectorAll(".tabs .tab").length;
 
 describe("the application a Creator Network member lands in", () => {
   let admin: JSDOM, lead: JSDOM, creator: JSDOM;
@@ -104,19 +106,20 @@ describe("the application a Creator Network member lands in", () => {
     }
   });
 
-  it("shows the Creator Network as the only module in the sidebar", () => {
+  it("shows the Creator Network and no other Media Ops module in the sidebar", () => {
     for (const dom of [admin, lead, creator]) {
       const nav = dom.window.document.getElementById("nav")?.textContent ?? "";
-      expect(nav).toContain("Creator Network");
+      // Their own Creator pages, and the group that names the module.
+      expect(nav).toContain("Assistant");
       for (const other of ["Equipment", "Leave", "KRA", "Projects"]) expect(nav).not.toContain(other);
     }
   });
 });
 
-describe("each role gets its own panels", () => {
-  it("CREATOR ADMIN — the management tabs, money included", async () => {
+describe("each role gets its own navigation", () => {
+  it("CREATOR ADMIN — the management pages, money included", async () => {
     const dom = await boot({ role: "creator_admin" });
-    expect(tabs(dom)).toEqual(["Overview", "Creators", "Teams", "Events", "Tasks", "Review",
+    expect(cnNav(dom)).toEqual(["Overview", "Creators", "Teams", "Events", "Tasks", "Review",
       "Points", "Payouts", "Recognition", "Analytics", "Assistant"]);
     // The management actions are theirs alone, and sit in the page header.
     expect(text(dom)).toContain("Creator Management");
@@ -124,13 +127,14 @@ describe("each role gets its own panels", () => {
     expect(acts).toContain("crNewCreator");
   });
 
-  it("TEAM LEAD — team panels, and NO payouts or network directory", async () => {
+  it("TEAM LEAD — team pages, and NO payouts or network directory", async () => {
     const dom = await boot({ role: "team_lead" });
-    const t = tabs(dom);
-    expect(t).toEqual(["Overview", "My Team", "Events", "Tasks", "Review",
-      "Points", "Recognition", "Analytics", "Assistant"]);
-    expect(t).not.toContain("Payouts");     // §12 — no financial management
-    expect(t).not.toContain("Creators");    // §12 — no creator management CRUD
+    const t = cnNav(dom);
+    expect(t).toEqual(["Assistant", "My Team", "Opportunities", "My Tasks", "Review",
+      "Leaderboard", "War Zone", "Achievements", "Team Analytics", "My Analytics",
+      "My Points", "My Profile"]);
+    expect(t).not.toContain("Payouts");     // §6 — no financial management
+    expect(t).not.toContain("Creators");    // §6 — no creator management CRUD
     const acts = [...dom.window.document.querySelectorAll("[data-act]")].map((n) => n.getAttribute("data-act"));
     expect(acts).not.toContain("crNewCreator");   // no creator CRUD
     expect(acts).not.toContain("crNewTeam");      // no team creation
@@ -138,7 +142,7 @@ describe("each role gets its own panels", () => {
 
   it("CREATOR — their own work, and nothing about anybody else", async () => {
     const dom = await boot({ role: "creator" });
-    const t = tabs(dom);
+    const t = cnNav(dom);
     expect(t).toEqual(["Assistant", "Opportunities", "My Tasks", "Leaderboard", "War Zone",
       "Achievements", "My Analytics", "My Points", "My Payouts", "My Profile"]);
     expect(t).not.toContain("Creators");
@@ -146,6 +150,13 @@ describe("each role gets its own panels", () => {
     expect(t).not.toContain("Review");
     const acts = [...dom.window.document.querySelectorAll("[data-act]")].map((n) => n.getAttribute("data-act"));
     expect(acts).not.toContain("crNewCreator");
+  });
+
+  /* The horizontal tab bar this navigation replaced was removed, not hidden —
+     the renderers that produced it are gone from the page (§12). */
+  it("renders no horizontal tab bar for anybody", async () => {
+    for (const role of ["creator", "team_lead", "creator_admin"] as const)
+      expect(tabBars(await boot({ role }))).toBe(0);
   });
 });
 

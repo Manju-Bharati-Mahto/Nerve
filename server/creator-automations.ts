@@ -55,8 +55,16 @@ export const CREATOR_AUTOMATION_RULES: Array<[string, string, string, string]> =
 export async function seedCreatorAutomationRules(): Promise<void> {
   for (const [key, name, trigger, action] of CREATOR_AUTOMATION_RULES)
     await pool.query(
+      /* department_id was the literal 1. This seed runs during
+         bootstrapCreatorNetwork(), which is BEFORE seedMediaOpsLookups()
+         creates the departments — invisible on a database that already had
+         them, and a foreign-key violation on a fresh one, which is why the
+         schema could never be built from scratch. Taking the first department
+         that exists resolves to the same row on every existing database, and
+         to NULL (which the column permits) on an empty one. No rule, trigger
+         or behaviour changes. */
       `INSERT INTO mo_automation_rules (department_id, rule_key, name, trigger, action, is_enabled, config)
-       SELECT 1,$1,$2,$3,$4,true,'{}'::jsonb
+       SELECT (SELECT id FROM mo_departments ORDER BY id LIMIT 1),$1,$2,$3,$4,true,'{}'::jsonb
         WHERE NOT EXISTS (SELECT 1 FROM mo_automation_rules WHERE rule_key=$1)`,
       [key, name, trigger, action]);
 }

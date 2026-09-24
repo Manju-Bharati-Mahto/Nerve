@@ -236,12 +236,30 @@ describe("module defaults — opt-in, not automatic", () => {
     expect(H.defaultModulesFor("employee")).toContain("projects");
   });
 
-  it("treats an unrestricted installation the same as the sidebar does", () => {
-    // effectiveModules() === null means "no restrictions configured anywhere".
-    // The sidebar shows every module then, so the board must open then too, or
-    // a nav item would link to a page that refuses it.
+  /* THIS ASSERTION USED TO BE THE OPPOSITE, and the reasoning was sound at the
+     time: effectiveModules() answered null for "no restrictions configured
+     anywhere", the sidebar showed every module in that state, so refusing here
+     would have left a nav entry linking to a page that denied it. Client and
+     server agreed by both failing open.
+
+     They now agree by being CONFIGURED. bootstrapMediaOpsDatabase() seeds a
+     defaults row for every group, so the sidebar and this predicate read the
+     same explicit list, and an absent list no longer means "nothing has been
+     set up" — it means configuration has gone missing. On a wall display, often
+     in a public corridor, that is not a state to open on.
+
+     effectiveModules() no longer returns null at all; this pins the predicate's
+     own contract for the one caller that may still hand it one. */
+  it("refuses the board when no module list is resolvable at all", () => {
+    expect(tvBoardAllowed(false, null)).toBe(false);
+    expect(tvBoardAllowed(false, [])).toBe(false);
+    // The Admin bypass is untouched — an admin repairs a broken install.
+    expect(tvBoardAllowed(true, null)).toBe(true);
+  });
+
+  it("still opts in explicitly, and the sidebar still offers it where granted", () => {
     expect(labels(UNRESTRICTED)).toContain("TV Display Board");
-    expect(tvBoardAllowed(false, null)).toBe(true);
+    expect(tvBoardAllowed(false, ["tv"])).toBe(true);
   });
 });
 

@@ -610,9 +610,40 @@ const aiAskLimiter = rateLimit({
 });
 app.use("/api/v1/media/ai/ask", aiAskLimiter);
 
+/* The equipment kiosk's PIN pad is the one media surface that sits unattended
+   in a corridor, so a wrong guess there is cheap to repeat and worth its own
+   budget — the 300/min media allowance would let a bored passer-by work
+   through a four-digit space in an afternoon. Per IP, because a kiosk's
+   signed-in session is shared by everyone who walks up to it. */
+const kioskPinLimiter = rateLimit({
+  windowMs: 15 * 60_000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip || "anon",
+  message: { message: "Too many PIN attempts at this kiosk. Please wait a few minutes." },
+});
+
 // The portals' email-verification endpoints reuse the same limiters that guard
 // the employee password-OTP endpoints, rather than declaring a second budget.
-registerMediaOpsApi(app, { asyncHandler, sendError, getSingleParam, otpSendLimiter, otpVerifyLimiter });
+/* Phase 17L — the inventory spreadsheet arrives in MEMORY and is parsed there.
+   Deliberately not one of the image uploaders above: those write to disk, and a
+   source spreadsheet has no business being persisted — everything a reviewer
+   needs is extracted into import rows, and keeping the file would mean holding a
+   second copy of the department's inventory. The extension check here is a
+   cheap first pass; the parse inside the endpoint is what actually decides
+   whether this is a spreadsheet, because a filename is not evidence. */
+const assetImportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (/\.(csv|xlsx|xls)$/i.test(file.originalname)) return cb(null, true);
+    cb(null, false);
+  },
+}).single("file");
+
+registerMediaOpsApi(app, { asyncHandler, sendError, getSingleParam, otpSendLimiter, otpVerifyLimiter,
+                           kioskPinLimiter, assetImportUpload });
 
 // ── App settings (super admin) ─────────────────────────────────────────────
 
@@ -2876,7 +2907,7 @@ bootstrapDatabase()
         .then(n => { if (n > 0) console.log(`Auto-paused ${n} overdue running stopwatch(es).`); })
         .catch(e => console.error('Periodic auto-pause failed:', e));
       runMediaOpsAutomations()
-        .then(r => { if (r.autoApproved || r.notified) console.log(`Media Ops automations: ${r.autoApproved} report(s) auto-approved, ${r.notified} notification(s) queued.`); })
+        .then(r => { if (r.autoApproved || r.notified || r.undeliverable) console.log(`Media Ops automations: ${r.autoApproved} report(s) auto-approved, ${r.notified} notification(s) queued${r.undeliverable ? `, ${r.undeliverable} undeliverable` : ''}.`); })
         .catch(e => console.error('Media Ops automations failed:', e));
       // The Creator Network rides the same tick — Nerve has one clock.
       runCreatorNetworkAutomations()

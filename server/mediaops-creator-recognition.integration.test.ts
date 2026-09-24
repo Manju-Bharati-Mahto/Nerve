@@ -23,6 +23,7 @@
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { connectTestDatabase, withGlobalLock, GLOBAL_LOCK } from "./test-db.js";
 
 const PX = "zrg";
 let dbUp = false;
@@ -44,25 +45,15 @@ const A = {
 } as const;
 type ActorName = keyof typeof A;
 
-async function realDatabaseUrl(): Promise<string | null> {
-  const { readFileSync, existsSync } = await import("node:fs");
-  for (const f of [".env.local", ".env"]) {
-    if (!existsSync(f)) continue;
-    const m = readFileSync(f, "utf8").match(/^DATABASE_URL=(.+)$/m);
-    if (m) return m[1].trim();
-  }
-  return null;
-}
+/* The connection comes from server/test-db.ts, which resolves it from
+   TEST_DATABASE_URL or .env.test and REFUSES any database whose name does not
+   mark it as a test database. This file used to read .env.local itself and
+   assign the DEVELOPMENT url over the top of vitest's — seventeen siblings did
+   the same — which is how the suite came to run against `nerve`. */
 {
-  const url = await realDatabaseUrl();
-  if (url) {
-    process.env.DATABASE_URL = url;
-    process.env.SESSION_SECRET ||= "integration-test-secret";
-    process.env.SUPER_ADMIN_PASSWORD ||= "integration-test-password";
-    const { pool: p } = await import("./db.js");
-    pool = p;
-    try { await pool.query("SELECT 1"); dbUp = true; } catch { dbUp = false; }
-  }
+  const t = await connectTestDatabase();
+  pool = t.pool;
+  dbUp = t.dbUp;
 }
 const maybe = dbUp ? describe : describe.skip;
 
@@ -907,14 +898,52 @@ maybe("Phase 6 consumes; it does not account", () => {
     expect(mine.some((n) => n.kind === "achievement")).toBe(true);
     expect(mine.some((n) => String(n.title).includes("Creator of the Cycle"))).toBe(true);
     expect(mine.some((n) => n.kind === "competition")).toBe(true);
-    // A leaderboard read tells nobody anything.
-    const before = Number((await pool.query(
-      `SELECT COUNT(*)::int c FROM mo_notifications WHERE user_id LIKE $1`, [`${PX}-%`])).rows[0].c);
-    await as("creatorAdmin", "GET", "/creator/leaderboard");
-    await as("c1", "GET", "/creator/achievements");
-    expect(Number((await pool.query(
-      `SELECT COUNT(*)::int c FROM mo_notifications WHERE user_id LIKE $1`, [`${PX}-%`])).rows[0].c))
-      .toBe(before);
+    /* A leaderboard read tells nobody anything.
+
+       Held under the creator-automations lock. The count below is already
+       scoped to this suite's own fixtures, but scoping is not enough here:
+       runCreatorNetworkAutomations() walks every active creator in the
+       database and notifies the ones it finds, so a pass running in another
+       file legitimately adds rows to THESE users between the two reads. The
+       lock is what makes "nothing happened in between" true. */
+    await withGlobalLock(pool, GLOBAL_LOCK.creatorAutomations, async () => {
+      /* DIAGNOSED, AND IT WAS NEVER THE CREATOR AUTOMATION PASS.
+
+         This failed roughly one full-suite run in three across three phases as
+         "expected 87 to be 86" — a number with no provenance. Printing the ROWS
+         instead of the count named the writer on the next failure:
+
+           kind=maintenance  entity_type=maintenance  user_id=zrg-nadmin
+           title="Maintenance open — EQ-ZEQ-164"
+
+         The EQUIPMENT suite opened maintenance on its own asset, and 17J's
+         maintenanceRecipients() notifies every active media admin the scope
+         allows — which for an unscoped asset is deliberately everybody,
+         including the admin THIS file creates. Correct product behaviour, and
+         entirely outside this test's subject, which is whether reading a
+         leaderboard writes anything. That is why the creator automation lock
+         never helped: the lock excludes creator passes, and no creator pass
+         was ever involved.
+
+         So the count is scoped to this suite's DOMAIN as well as its users.
+         The row detail stays: if a third domain ever fans out to these admins,
+         the failure will name that one too. docs/TEST_STABILITY.md entry 19. */
+      const noteIds = async () => (await pool.query(
+        `SELECT id, kind, entity_type, entity_id, user_id, title
+           FROM mo_notifications WHERE user_id LIKE $1
+            AND entity_type NOT IN ('equipment','maintenance','equipment_item')
+          ORDER BY id`, [`${PX}-%`])).rows;
+      const before = await noteIds();
+      await as("creatorAdmin", "GET", "/creator/leaderboard");
+      await as("c1", "GET", "/creator/achievements");
+      const after = await noteIds();
+      const seenBefore = new Set(before.map((r) => Number(r.id)));
+      const added = after.filter((r) => !seenBefore.has(Number(r.id)));
+      expect(added, `a read added notifications: ${JSON.stringify(added)}`).toEqual([]);
+      /* And nothing was removed either, which the old count could not tell
+         apart from nothing being added. */
+      expect(after.length).toBe(before.length);
+    });
   });
 
   it("the leaderboard pages and searches without changing anybody's rank", async () => {

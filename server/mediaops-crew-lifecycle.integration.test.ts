@@ -28,6 +28,7 @@
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { resolveTestDatabaseUrl } from "./test-db.js";
 
 const DOMAIN = "lifecycle.invalid";
 let dbUp = false;
@@ -38,15 +39,12 @@ let base = "";
 /** The signed-in Admin every request in this file acts as. */
 const ADMIN = { id: "zlc-admin", role: "admin", team: "media" };
 
-async function realDatabaseUrl(): Promise<string | null> {
-  const { readFileSync, existsSync } = await import("node:fs");
-  for (const f of [".env.local", ".env"]) {
-    if (!existsSync(f)) continue;
-    const m = readFileSync(f, "utf8").match(/^DATABASE_URL=(.+)$/m);
-    if (m) return m[1].trim();
-  }
-  return null;
-}
+/* The test database url, resolved and safety-checked by server/test-db.ts.
+   This function used to open .env.local and return the DEVELOPMENT url, which
+   the block below then assigned over the one vitest had already set — so the
+   whole suite ran against `nerve`. It now resolves from TEST_DATABASE_URL or
+   .env.test, and throws rather than handing back a non-test database. */
+const realDatabaseUrl = async (): Promise<string> => resolveTestDatabaseUrl();
 
 {
   const url = await realDatabaseUrl();
@@ -108,18 +106,62 @@ async function history(userId: string) {
   };
 }
 
+/* This suite's OWN project and equipment item.
+
+   These rows used to be borrowed: `SELECT id FROM mo_projects ... ORDER BY id
+   LIMIT 1` attached the fixture to whatever project happened to exist. Against
+   the developer's database that was stable seed data and it never showed. On a
+   clean test database the first project is a SIBLING SUITE's fixture, and when
+   that suite cleaned up, this one's assignment count silently dropped to zero.
+   That was the last cross-suite flake. */
+let fixtureProjectId = 0;
+let fixtureEquipmentId = 0;
+
+async function seedOwnRows() {
+  if (!fixtureProjectId) {
+    const t = (await pool.query(
+      `SELECT id FROM mo_project_types ORDER BY id LIMIT 1`)).rows[0];
+    /* OWNED BY THIS SUITE'S OWN PREFIXED ADMIN, never by the member under test.
+
+       Members here are created through POST /crew, which mints real Nerve ids
+       of the form `u-<ts>-<rand>`. A project created_by one of those is
+       indistinguishable from genuine data — and the project-hierarchy suite
+       asserts that every project belonging to a REAL account
+       (`created_by LIKE 'u-%' OR 'mo-%'`) still exists at the end of its run.
+       This fixture appearing in that snapshot and then being cleaned up is
+       what made it report "projects disappeared".
+
+       'zlc-admin' carries this file's prefix, so the convention every other
+       suite follows — fixtures are recognisable by their prefix — holds for
+       this row too. */
+    fixtureProjectId = Number((await pool.query(
+      `INSERT INTO mo_projects (name, code, project_type_id, status, source, owner_id, created_by)
+       VALUES ($1,$2,$3,'in_production','app',$4,$4) RETURNING id`,
+      ["zlc lifecycle probe", "ZLC-001", t?.id ?? null, ADMIN.id])).rows[0].id);
+  }
+  if (!fixtureEquipmentId) {
+    const c = (await pool.query(
+      `INSERT INTO mo_equipment_categories (name, tracking_mode, sort_order)
+       VALUES ('zlc Probe','individual',9997) RETURNING id`)).rows[0];
+    fixtureEquipmentId = Number((await pool.query(
+      `INSERT INTO mo_equipment_items (category_id, asset_tag, make, model, condition, status)
+       VALUES ($1,'zlc-EQ-001','ZLC','Probe','good','available') RETURNING id`,
+      [c.id])).rows[0].id);
+  }
+}
+
 /** Give a member one row in each history table, so preservation is observable. */
 async function seedHistory(userId: string) {
+  await seedOwnRows();
   await pool.query(`INSERT INTO mo_daily_reports (user_id, report_date, status, total_minutes)
                     VALUES ($1, CURRENT_DATE - 5, 'approved', 300)
                     ON CONFLICT (user_id, report_date) DO NOTHING`, [userId]);
   await pool.query(`INSERT INTO mo_report_tasks (daily_report_id, description, minutes)
                     SELECT id, 'lifecycle probe', 300 FROM mo_daily_reports WHERE user_id=$1 LIMIT 1`, [userId]);
   await pool.query(`INSERT INTO mo_project_assignments (project_id, user_id, assigned_by)
-                    SELECT id, $1, $1 FROM mo_projects WHERE deleted_at IS NULL ORDER BY id LIMIT 1`, [userId]);
+                    VALUES ($2, $1, $1)`, [userId, fixtureProjectId]);
   await pool.query(`INSERT INTO mo_equipment_transactions (equipment_item_id, holder_id, action, occurred_at)
-                    SELECT id, $1, 'check_out', NOW() - interval '20 days'
-                      FROM mo_equipment_items WHERE deleted_at IS NULL ORDER BY id LIMIT 1`, [userId]);
+                    VALUES ($2, $1, 'check_out', NOW() - interval '20 days')`, [userId, fixtureEquipmentId]);
   await pool.query(`INSERT INTO mo_leave_requests (user_id, leave_type_id, starts_on, ends_on, status)
                     SELECT $1, id, CURRENT_DATE - 40, CURRENT_DATE - 39, 'approved'
                       FROM mo_leave_types ORDER BY id LIMIT 1`, [userId]);
@@ -130,6 +172,19 @@ async function seedHistory(userId: string) {
 }
 
 async function cleanup() {
+  /* This suite's own project and equipment rows go FIRST: the project carries
+     owner_id/created_by pointing at the very users deleted below, so removing
+     them in the other order trips the foreign key. */
+  await pool.query(`DELETE FROM mo_project_assignments WHERE project_id IN
+                      (SELECT id FROM mo_projects WHERE code LIKE 'ZLC-%')`);
+  await pool.query(`DELETE FROM mo_projects WHERE code LIKE 'ZLC-%'`);
+  await pool.query(`DELETE FROM mo_equipment_transactions WHERE equipment_item_id IN
+                      (SELECT id FROM mo_equipment_items WHERE asset_tag LIKE 'zlc-%')`);
+  await pool.query(`DELETE FROM mo_equipment_items WHERE asset_tag LIKE 'zlc-%'`);
+  await pool.query(`DELETE FROM mo_equipment_categories WHERE name LIKE 'zlc %'`);
+  fixtureProjectId = 0;
+  fixtureEquipmentId = 0;
+
   const ids = (await pool.query(
     `SELECT id FROM users WHERE email LIKE $1 OR id = $2`, [`%@${DOMAIN}`, ADMIN.id])).rows.map((r) => String(r.id));
   for (const id of ids) {

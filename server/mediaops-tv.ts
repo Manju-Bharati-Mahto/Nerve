@@ -32,7 +32,19 @@ import { NERVE_TIME_ZONE, nerveToday, dateOnly } from "./mediaops-queries.js";
 export const TV_MODULE_KEY = "tv";
 
 export function tvBoardAllowed(isAdmin: boolean, effective: readonly string[] | null): boolean {
-  return isAdmin || effective === null || effective.includes(TV_MODULE_KEY);
+  /* `null` used to mean "no restrictions configured anywhere", and the board
+     opened — the reasoning being that the sidebar shows every module in that
+     state, so refusing here would leave a nav item linking to a page that
+     denies it.
+
+     That agreement is now kept by CONFIGURATION rather than by both sides
+     failing open: bootstrapMediaOpsDatabase() seeds a defaults row for every
+     group, so the sidebar and this predicate read the same explicit list. With
+     that in place, an absent list is no longer "nothing has been configured" —
+     it is configuration that has gone missing, and the board is exactly the
+     kind of surface (a wall display, often in a public corridor) that should
+     not open on it. The Admin bypass is untouched. */
+  return isAdmin || (effective?.includes(TV_MODULE_KEY) ?? false);
 }
 
 /* ── Shapes the display renders ─────────────────────────────────────────── */

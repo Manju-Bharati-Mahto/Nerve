@@ -21,6 +21,7 @@
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { connectTestDatabase } from "./test-db.js";
 
 const PX = "zcp";
 let dbUp = false;
@@ -43,25 +44,15 @@ const A = {
 } as const;
 type ActorName = keyof typeof A;
 
-async function realDatabaseUrl(): Promise<string | null> {
-  const { readFileSync, existsSync } = await import("node:fs");
-  for (const f of [".env.local", ".env"]) {
-    if (!existsSync(f)) continue;
-    const m = readFileSync(f, "utf8").match(/^DATABASE_URL=(.+)$/m);
-    if (m) return m[1].trim();
-  }
-  return null;
-}
+/* The connection comes from server/test-db.ts, which resolves it from
+   TEST_DATABASE_URL or .env.test and REFUSES any database whose name does not
+   mark it as a test database. This file used to read .env.local itself and
+   assign the DEVELOPMENT url over the top of vitest's — seventeen siblings did
+   the same — which is how the suite came to run against `nerve`. */
 {
-  const url = await realDatabaseUrl();
-  if (url) {
-    process.env.DATABASE_URL = url;
-    process.env.SESSION_SECRET ||= "integration-test-secret";
-    process.env.SUPER_ADMIN_PASSWORD ||= "integration-test-password";
-    const { pool: p } = await import("./db.js");
-    pool = p;
-    try { await pool.query("SELECT 1"); dbUp = true; } catch { dbUp = false; }
-  }
+  const t = await connectTestDatabase();
+  pool = t.pool;
+  dbUp = t.dbUp;
 }
 const maybe = dbUp ? describe : describe.skip;
 
@@ -178,6 +169,25 @@ async function seed() {
 }
 
 async function cleanup() {
+  /* CLOSE THE SOURCE BEFORE DELETING ANYTHING.
+
+     Locking these rows was the wrong answer: FOR UPDATE on the cycle and the
+     rule blocks the row-share lock a CONCURRENT SUITE'S APPLICATION CALL needs
+     for its foreign-key check, and the review endpoint deadlocked into a 500.
+     A teardown must not make production paths fail.
+
+     The race is not a locking problem, it is a reachability problem. While this
+     file's cycle is the one with status='active' and its rule is the one active
+     approved_submission rule, EVERY concurrent suite can attach a ledger row to
+     them — which is exactly what the awarding code is supposed to do. Taking
+     them out of those two lookups removes the race at its source, blocks
+     nothing, and cannot deadlock. */
+  await pool.query(
+    `UPDATE mo_creator_cycles SET status='closed' WHERE label LIKE $1 AND status='active'`,
+    [`${PX} %`]);
+  await pool.query(
+    `UPDATE mo_creator_point_rules SET is_active=false WHERE name LIKE $1 AND is_active`,
+    [`${PX} %`]);
   /* Phase 6 recognition first: an achievement award is RESTRICT-protected on
      purpose — recognition outlives a suspension or an archive — so a fixture
      has to take its own down before its people and its cycles. */
@@ -542,10 +552,35 @@ maybe("rank is derived, and ties are decided", () => {
   });
 
   it("with no cycle at all there is still a board, and it is empty", async () => {
-    await pool.query(`UPDATE mo_creator_cycles SET status='closed' WHERE status='active'`);
-    const r = await as("creatorAdmin", "GET", "/creator/leaderboard");
-    expect(r.status).toBe(200);
-    expect(r.body).toMatchObject({ cycle: null, rows: [] });
+    /* "The active cycle" is a GLOBAL singleton: idx_mo_cr_cycle_one_active
+       permits exactly one row with status='active' in the entire database, and
+       the leaderboard reads it without any scope. A test asserting "there is no
+       active cycle" therefore cannot narrow itself to its own fixtures and
+       still be testing anything.
+
+       What it CAN do is put back precisely what it moved. The statement here
+       used to be a bare `UPDATE mo_creator_cycles SET status='closed' WHERE
+       status='active'` — it closed whichever cycle a sibling suite was in the
+       middle of using, and never restored it. That is how this file made the
+       payouts and analytics suites fail, and (while the suite still ran against
+       the development database) how it closed the demo seed's October cycle. */
+    const wasActive = (await pool.query(
+      `SELECT id FROM mo_creator_cycles WHERE status='active'`)).rows.map((r) => Number(r.id));
+    await pool.query(
+      `UPDATE mo_creator_cycles SET status='closed' WHERE id = ANY($1::bigint[])`, [wasActive]);
+    try {
+      const r = await as("creatorAdmin", "GET", "/creator/leaderboard");
+      expect(r.status).toBe(200);
+      expect(r.body).toMatchObject({ cycle: null, rows: [] });
+    } finally {
+      /* Restore, one at a time, and only while the slot is still free — if
+         another suite has legitimately opened a cycle since, its claim wins
+         and we must not violate the unique index trying to undo ours. */
+      for (const id of wasActive)
+        await pool.query(
+          `UPDATE mo_creator_cycles SET status='active'
+            WHERE id=$1 AND NOT EXISTS (SELECT 1 FROM mo_creator_cycles WHERE status='active')`, [id]);
+    }
   });
 });
 

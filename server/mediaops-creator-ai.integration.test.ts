@@ -30,6 +30,7 @@
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { connectTestDatabase, withGlobalLock, GLOBAL_LOCK } from "./test-db.js";
 import type { AiTool, AiToolContext, AiUserContext } from "./ai/types.js";
 
 const PX = "zai";
@@ -55,27 +56,35 @@ const A = {
 } as const;
 type ActorName = keyof typeof A;
 
-async function realDatabaseUrl(): Promise<string | null> {
-  const { readFileSync, existsSync } = await import("node:fs");
-  for (const f of [".env.local", ".env"]) {
-    if (!existsSync(f)) continue;
-    const m = readFileSync(f, "utf8").match(/^DATABASE_URL=(.+)$/m);
-    if (m) return m[1].trim();
-  }
-  return null;
-}
+/* The connection comes from server/test-db.ts, which resolves it from
+   TEST_DATABASE_URL or .env.test and REFUSES any database whose name does not
+   mark it as a test database. This file used to read .env.local itself and
+   assign the DEVELOPMENT url over the top of vitest's — seventeen siblings did
+   the same — which is how the suite came to run against `nerve`. */
 {
-  const url = await realDatabaseUrl();
-  if (url) {
-    process.env.DATABASE_URL = url;
-    process.env.SESSION_SECRET ||= "integration-test-secret";
-    process.env.SUPER_ADMIN_PASSWORD ||= "integration-test-password";
-    const { pool: p } = await import("./db.js");
-    pool = p;
-    try { await pool.query("SELECT 1"); dbUp = true; } catch { dbUp = false; }
-  }
+  const t = await connectTestDatabase();
+  pool = t.pool;
+  dbUp = t.dbUp;
 }
 const maybe = dbUp ? describe : describe.skip;
+
+/* runCreatorNetworkAutomations() walks EVERY active creator in the database and
+   writes notifications to the ones it finds — including other suites' fixtures.
+   The recognition suite asserts that reading a leaderboard notifies nobody, and
+   watched its own count move because this file was running a pass at that
+   moment. The pass is right to be global; it just must not overlap with the
+   assertions about its effects.
+
+   THE LOCK GOES ROUND THE TEST, NOT ROUND THE CALL. Wrapping each call was the
+   first attempt and it was wrong twice over: the five-simultaneous-passes test
+   exists precisely to exercise overlapping ticks, and serialising them tested
+   nothing — while five callers each waiting on the same exclusive lock, each
+   holding a pool connection, starved the pool and timed the test out. `runPass`
+   stays raw; `serialised` wraps a whole test body so other FILES are excluded
+   and this file's own concurrency is untouched. */
+const runPass = () => automations.runCreatorNetworkAutomations();
+const serialised = <T>(fn: () => Promise<T>) =>
+  withGlobalLock(pool, GLOBAL_LOCK.creatorAutomations, fn);
 
 async function boot() {
   const express = (await import("express")).default;
@@ -506,8 +515,15 @@ maybe("a mutation needs a confirmation that is a signature", () => {
   });
 
   it("§55 — the first call changes nothing and returns a preview", async () => {
-    const before = Number((await pool.query(
-      `SELECT COUNT(*)::int c FROM mo_notifications WHERE user_id LIKE $1`, [`${PX}-%`])).rows[0].c);
+    /* Counts what THIS TOOL writes — kind='creator_message' — rather than every
+       notification these fixtures hold. The total moves for reasons that have
+       nothing to do with the tool: other tests in this file, and the product's
+       own notifications, land on the same creators. The claim being made is
+       "the preview wrote nothing", and this is that claim exactly. */
+    const messages = async () => Number((await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_notifications
+        WHERE user_id LIKE $1 AND kind='creator_message'`, [`${PX}-%`])).rows[0].c);
+    const before = await messages();
     const r = await runTool("creatorAdmin", "creator_send_notification",
       { creator_ids: [A.c1.id, A.c2.id], title: "Deadline reminder",
         body: "Two assignments are due this week." });
@@ -520,9 +536,7 @@ maybe("a mutation needs a confirmation that is a signature", () => {
     expect(String(preview.effect)).toContain("2 creator");
     expect(typeof r.data!.confirm_token).toBe("string");
     // Nothing was written.
-    expect(Number((await pool.query(
-      `SELECT COUNT(*)::int c FROM mo_notifications WHERE user_id LIKE $1`, [`${PX}-%`])).rows[0].c))
-      .toBe(before);
+    expect(await messages()).toBe(before);
   });
 
   it("§55 — confirming sends exactly what was previewed", async () => {
@@ -650,42 +664,57 @@ maybe("automations notice conditions and tell somebody, once", () => {
     [`${PX}-%`, kind])).rows[0].c);
 
   it("a pass notices the seeded conditions", async () => {
-    const run = await automations.runCreatorNetworkAutomations();
-    expect(run.failures).toEqual([]);
-    expect(run.ranRules.length).toBeGreaterThan(0);
-    // The overdue assignment and the completed-but-unsubmitted one are both real.
-    expect(await mineNotified("creator_overdue")).toBeGreaterThanOrEqual(1);
-    expect(await mineNotified("creator_reminder")).toBeGreaterThanOrEqual(1);
-    const late = (await pool.query(
-      `SELECT n.entity_id FROM mo_notifications n
-        WHERE n.user_id=$1 AND n.kind='creator_overdue'`, [A.c1.id])).rows;
-    expect(late.length).toBe(1);
+    await serialised(async () => {
+      const run = await runPass();
+      expect(run.failures).toEqual([]);
+      expect(run.ranRules.length).toBeGreaterThan(0);
+      // The overdue assignment and the completed-but-unsubmitted one are both real.
+      expect(await mineNotified("creator_overdue")).toBeGreaterThanOrEqual(1);
+      expect(await mineNotified("creator_reminder")).toBeGreaterThanOrEqual(1);
+      const late = (await pool.query(
+        `SELECT n.entity_id FROM mo_notifications n
+          WHERE n.user_id=$1 AND n.kind='creator_overdue'`, [A.c1.id])).rows;
+      expect(late.length).toBe(1);
+    });
   });
 
   it("TESTS 23, 34, 97 — running it again sends nothing new", async () => {
-    const before = await mineNotified("creator_overdue");
-    const remindersBefore = await mineNotified("creator_reminder");
-    await automations.runCreatorNetworkAutomations();
-    await automations.runCreatorNetworkAutomations();
-    // Five simultaneous passes, as overlapping ticks would produce.
-    await Promise.all(Array.from({ length: 5 }, () => automations.runCreatorNetworkAutomations()));
-    expect(await mineNotified("creator_overdue")).toBe(before);
-    expect(await mineNotified("creator_reminder")).toBe(remindersBefore);
+    await serialised(async () => {
+      const before = await mineNotified("creator_overdue");
+      const remindersBefore = await mineNotified("creator_reminder");
+      await runPass();
+      await runPass();
+      // Five simultaneous passes, as overlapping ticks would produce.
+      await Promise.all(Array.from({ length: 5 }, () => runPass()));
+      expect(await mineNotified("creator_overdue")).toBe(before);
+      expect(await mineNotified("creator_reminder")).toBe(remindersBefore);
+    });
   });
 
   it("a disabled rule does not run", async () => {
-    await pool.query(`UPDATE mo_automation_rules SET is_enabled=false WHERE rule_key='CN-2'`);
-    const run = await automations.runCreatorNetworkAutomations();
-    expect(run.ranRules).not.toContain("CN-2");
-    expect(run.ranRules).toContain("CN-3");
-    await pool.query(`UPDATE mo_automation_rules SET is_enabled=true WHERE rule_key='CN-2'`);
+    await serialised(async () => {
+      /* mo_automation_rules is shared, global configuration — there is one CN-2
+         row for the whole database, so this cannot be scoped to a fixture. The
+         restore is therefore in a finally: a failing assertion between the two
+         statements used to leave CN-2 disabled for every suite that ran after. */
+      await pool.query(`UPDATE mo_automation_rules SET is_enabled=false WHERE rule_key='CN-2'`);
+      try {
+        const run = await runPass();
+        expect(run.ranRules).not.toContain("CN-2");
+        expect(run.ranRules).toContain("CN-3");
+      } finally {
+        await pool.query(`UPDATE mo_automation_rules SET is_enabled=true WHERE rule_key='CN-2'`);
+      }
+    });
   });
 
   it("TEST 82 — the last run is reported honestly, failures and all", async () => {
-    const run = await automations.runCreatorNetworkAutomations();
-    expect(automations.creatorAutomationState()).toMatchObject({ at: run.at, notified: run.notified });
-    expect(Array.isArray(run.failures)).toBe(true);
-    expect(typeof run.durationMs).toBe("number");
+    await serialised(async () => {
+      const run = await runPass();
+      expect(automations.creatorAutomationState()).toMatchObject({ at: run.at, notified: run.notified });
+      expect(Array.isArray(run.failures)).toBe(true);
+      expect(typeof run.durationMs).toBe("number");
+    });
   });
 
   it("no automation calls a model, and none writes to a ledger", async () => {
@@ -813,27 +842,29 @@ maybe("the endpoints enforce the same rules as the tools", () => {
 
 maybe("points, money and verdicts are untouched by any of it", () => {
   it("TESTS 21, 22 — every tool, action and automation leaves the ledgers identical", async () => {
-    const before = await fingerprint();
-    for (const [who, name, args] of [
-      ["c1", "creator_get_my_standing", {}], ["c1", "creator_get_my_payouts", {}],
-      ["c1", "creator_get_my_analytics", { period: "30d" }],
-      ["creatorAdmin", "creator_get_network_summary", { period: "30d" }],
-      ["creatorAdmin", "creator_get_payout_summary", { period: "30d" }],
-      ["creatorAdmin", "creator_get_operational_signals", {}],
-      ["creatorAdmin", "creator_get_recognition_summary", { period: "30d" }],
-      ["creatorAdmin", "creator_get_competition_summary", {}],
-    ] as const) await runTool(who, name, args);
+    await serialised(async () => {
+      const before = await fingerprint();
+      for (const [who, name, args] of [
+        ["c1", "creator_get_my_standing", {}], ["c1", "creator_get_my_payouts", {}],
+        ["c1", "creator_get_my_analytics", { period: "30d" }],
+        ["creatorAdmin", "creator_get_network_summary", { period: "30d" }],
+        ["creatorAdmin", "creator_get_payout_summary", { period: "30d" }],
+        ["creatorAdmin", "creator_get_operational_signals", {}],
+        ["creatorAdmin", "creator_get_recognition_summary", { period: "30d" }],
+        ["creatorAdmin", "creator_get_competition_summary", {}],
+      ] as const) await runTool(who, name, args);
 
-    const proposal = await runTool("creatorAdmin", "creator_send_notification",
-      { creator_ids: [A.c1.id], title: "Ledger check", body: "This must move no money." });
-    await runTool("creatorAdmin", "creator_send_notification",
-      { creator_ids: [A.c1.id], title: "Ledger check", body: "This must move no money.",
-        confirm_token: String(proposal.data!.confirm_token) });
-    await automations.runCreatorNetworkAutomations();
-    await as("creatorAdmin", "GET", "/creator/ai/management-brief");
-    await as("c1", "GET", "/creator/ai/brief");
+      const proposal = await runTool("creatorAdmin", "creator_send_notification",
+        { creator_ids: [A.c1.id], title: "Ledger check", body: "This must move no money." });
+      await runTool("creatorAdmin", "creator_send_notification",
+        { creator_ids: [A.c1.id], title: "Ledger check", body: "This must move no money.",
+          confirm_token: String(proposal.data!.confirm_token) });
+      await runPass();
+      await as("creatorAdmin", "GET", "/creator/ai/management-brief");
+      await as("c1", "GET", "/creator/ai/brief");
 
-    expect(await fingerprint()).toEqual(before);
+      expect(await fingerprint()).toEqual(before);
+    });
   });
 
   it("TESTS 75, 76 — no Phase 8 file writes to a ledger or a payout", async () => {

@@ -23,6 +23,7 @@
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { connectTestDatabase } from "./test-db.js";
 
 const PX = "zce";
 let dbUp = false;
@@ -46,25 +47,15 @@ const A = {
 } as const;
 type ActorName = keyof typeof A;
 
-async function realDatabaseUrl(): Promise<string | null> {
-  const { readFileSync, existsSync } = await import("node:fs");
-  for (const f of [".env.local", ".env"]) {
-    if (!existsSync(f)) continue;
-    const m = readFileSync(f, "utf8").match(/^DATABASE_URL=(.+)$/m);
-    if (m) return m[1].trim();
-  }
-  return null;
-}
+/* The connection comes from server/test-db.ts, which resolves it from
+   TEST_DATABASE_URL or .env.test and REFUSES any database whose name does not
+   mark it as a test database. This file used to read .env.local itself and
+   assign the DEVELOPMENT url over the top of vitest's — seventeen siblings did
+   the same — which is how the suite came to run against `nerve`. */
 {
-  const url = await realDatabaseUrl();
-  if (url) {
-    process.env.DATABASE_URL = url;
-    process.env.SESSION_SECRET ||= "integration-test-secret";
-    process.env.SUPER_ADMIN_PASSWORD ||= "integration-test-password";
-    const { pool: p } = await import("./db.js");
-    pool = p;
-    try { await pool.query("SELECT 1"); dbUp = true; } catch { dbUp = false; }
-  }
+  const t = await connectTestDatabase();
+  pool = t.pool;
+  dbUp = t.dbUp;
 }
 const maybe = dbUp ? describe : describe.skip;
 
@@ -209,7 +200,14 @@ maybe("the full flow: event → interest → selection → assignment → comple
       .opportunities as Array<{ id: number; title: string }>;
     oppId = opps.find((o) => o.title === "Reel Creator")!.id;
     await as("creatorAdmin", "PATCH", `/creator/opportunities/${oppId}`, { status: "open" });
-    const seen = await as("c1", "GET", "/creator/opportunities");
+    /* Scoped to THIS suite's event. The noticeboard is capped at 50 rows, and
+       sibling suites open opportunities of their own — so an unscoped read
+       could push this one off the end and report that opening it had not put
+       it on the board. The endpoint's existing event_id filter asks the same
+       question of a population this file owns. Nothing about the endpoint or
+       the assertion's meaning changes: a creator still has to be able to see
+       an opportunity that was just opened. */
+    const seen = await as("c1", "GET", `/creator/opportunities?event_id=${eventId}`);
     expect((seen.body.opportunities as Array<{ id: number }>).map((o) => o.id)).toContain(oppId);
   });
 
