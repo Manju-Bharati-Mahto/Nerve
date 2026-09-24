@@ -1,0 +1,834 @@
+{
+  "verdict": "BLOCKED",
+  "workbook": "docs/governance/Asset_Reconciliation_Workbook_APPROVAL_REVIEW.xlsx",
+  "checked_at": "2026-09-22T16:01:57.071Z",
+  "rows_in_manifest": 286,
+  "approved_inventories": [
+    "MEDIA_CREW",
+    "PID"
+  ],
+  "decisions": {
+    "CONFIRM_NEW": 177,
+    "CONFIRM_POOLED": 2
+  },
+  "rows_without_a_decision": 107,
+  "block_count": 132,
+  "blocks": [
+    {
+      "row": "4",
+      "item": "SONY S3",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "5",
+      "item": "SONY S3",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "8",
+      "item": "SONY M4",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "13",
+      "item": "SONY 35 MM",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "14",
+      "item": "SONY 35 MM",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "16",
+      "item": "SONY 85",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "17",
+      "item": "SONY 24/70",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "18",
+      "item": "SONY 24/70",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "24",
+      "item": "CANON 24/105",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "25",
+      "item": "CANON 24/105",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "31",
+      "item": "SONY CHARGER",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "32",
+      "item": "SONY CHARGER",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "33",
+      "item": "SONY CHARGER",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "34",
+      "item": "CANON CHARGER",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "35",
+      "item": "LUMIX CHARGER",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "51",
+      "item": "PXW Z190",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "52",
+      "item": "PXW Z190 CHARGER",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "58",
+      "item": "2 LANE CONNECTOR",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "59",
+      "item": "2 LANE CONNECTOR",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "60",
+      "item": "SONY EXTRA BATTRAY",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "61",
+      "item": "SONY EXTRA BATTRAY",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "62",
+      "item": "SONY EXTRA BATTRAY",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "63",
+      "item": "SONY EXTRA BATTRAY",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "64",
+      "item": "SONY EXTRA BATTRAY",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "65",
+      "item": "BATTRAY S3 1",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "66",
+      "item": "BATTRAY S3 2",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "67",
+      "item": "BATTRAY M4 1",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "68",
+      "item": "BATTRAY M4 2",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "69",
+      "item": "BATTRAY M4 3 TOUR",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "70",
+      "item": "BATTRAY M4 3 TOUR",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "71",
+      "item": "BATTRAY C2",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "75",
+      "item": "SONY FX 3",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "76",
+      "item": "SONY 16/35",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "77",
+      "item": "SONY 85 G MM",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "78",
+      "item": "SONY 24MM",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "79",
+      "item": "SONY 24/70",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "83",
+      "item": "SONY CHARGER",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "84",
+      "item": "FX BATTRAY",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "85",
+      "item": "FX BATTRAY",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "108",
+      "item": "Godox SL 60 II D",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "118",
+      "item": "magic arm",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "119",
+      "item": "magic arm",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "120",
+      "item": "magic arm",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "121",
+      "item": "XLR to AUX (MX)",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "122",
+      "item": "XLR to AUX (MX)",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "123",
+      "item": "XLR to AUX (MX)",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "124",
+      "item": "panasonic cell charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "125",
+      "item": "panasonic cell charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "126",
+      "item": "panasonic cell charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "127",
+      "item": "panasonic cell charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "129",
+      "item": "Zoom H6",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "130",
+      "item": "Zoom H6",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "139",
+      "item": "snoot",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "169",
+      "item": "G4 + 2 MX XLR to AUX",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "170",
+      "item": "G4 + 2 MX XLR to AUX",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "171",
+      "item": "G4 + 2 MX XLR to AUX",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "172",
+      "item": "G4 + 2 MX XLR to AUX",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "173",
+      "item": "Cloths (2 green,1 black , 2 white)",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "174",
+      "item": "Cloths (2 green,1 black , 2 white)",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "175",
+      "item": "Cloths (2 green,1 black , 2 white)",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "176",
+      "item": "Cloths (2 green,1 black , 2 white)",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "177",
+      "item": "Cloths (2 green,1 black , 2 white)",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "178",
+      "item": "big camera bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "179",
+      "item": "big camera bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "180",
+      "item": "big camera bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "181",
+      "item": "big camera bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "182",
+      "item": "big camera bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "183",
+      "item": "big camera bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "184",
+      "item": "big camera bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "185",
+      "item": "sony alpha camera bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "186",
+      "item": "sony alpha camera bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "187",
+      "item": "sony small bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "188",
+      "item": "sony small bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "189",
+      "item": "sony small bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "190",
+      "item": "sony small bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "191",
+      "item": "canon camera bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "192",
+      "item": "canon camera bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "193",
+      "item": "canon camera bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "194",
+      "item": "canon camera bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "195",
+      "item": "canon camera bag",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "228",
+      "item": "Canon 200d charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "229",
+      "item": "Canon 200d charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "230",
+      "item": "Canon 200d charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "231",
+      "item": "Canon 200d charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "232",
+      "item": "Canon 200d charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "233",
+      "item": "Canon 1500DII charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "234",
+      "item": "Canon 1500DII charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "235",
+      "item": "Canon 1500DII charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "236",
+      "item": "Canon 1500DII charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "237",
+      "item": "Canon 1500DII charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "238",
+      "item": "Canon 700D charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "239",
+      "item": "Canon 700D charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "253",
+      "item": "cell charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "254",
+      "item": "cell charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "255",
+      "item": "cell charger",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "272",
+      "item": "Sony ɑ M3",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "274",
+      "item": "Sony battery",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "275",
+      "item": "Sony battery",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "276",
+      "item": "Sony battery",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "277",
+      "item": "Sony battery",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "278",
+      "item": "Sony battery",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "279",
+      "item": "Sony battery",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "280",
+      "item": "Sony battery",
+      "reason": "no human decision recorded (machine proposal was IDENTITY_DECISION_REQUIRED)",
+      "action": "settle identity on sheet 04/05, then write a decision in Decision"
+    },
+    {
+      "row": "281",
+      "item": "Sony lens 70-200 mm",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "286",
+      "item": "Sony 16 - 35 mm",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "287",
+      "item": "Sony 85 mm",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "288",
+      "item": "Sony 24mm",
+      "reason": "no human decision recorded (machine proposal was PHYSICAL_VERIFICATION)",
+      "action": "verify the physical item on sheet 02/03, then write CONFIRM_EXISTING or CONFIRM_NEW in Decision"
+    },
+    {
+      "row": "4",
+      "item": "SONY S3",
+      "reason": "duplicate identity unresolved against EQ-CAM-001",
+      "action": "physical verification against EQ-CAM-001 (checked_out (out, due 2026-07-30))"
+    },
+    {
+      "row": "4",
+      "item": "SONY S3",
+      "reason": "duplicate identity unresolved against EQ-CAM-002",
+      "action": "physical verification against EQ-CAM-002 (checked_out (out, due 2026-07-28))"
+    },
+    {
+      "row": "5",
+      "item": "SONY S3",
+      "reason": "duplicate identity unresolved against EQ-CAM-001",
+      "action": "physical verification against EQ-CAM-001 (checked_out (out, due 2026-07-30))"
+    },
+    {
+      "row": "5",
+      "item": "SONY S3",
+      "reason": "duplicate identity unresolved against EQ-CAM-002",
+      "action": "physical verification against EQ-CAM-002 (checked_out (out, due 2026-07-28))"
+    },
+    {
+      "row": "75",
+      "item": "SONY FX 3",
+      "reason": "duplicate identity unresolved against EQ-CAM-001",
+      "action": "physical verification against EQ-CAM-001 (checked_out (out, due 2026-07-30))"
+    },
+    {
+      "row": "75",
+      "item": "SONY FX 3",
+      "reason": "duplicate identity unresolved against EQ-CAM-002",
+      "action": "physical verification against EQ-CAM-002 (checked_out (out, due 2026-07-28))"
+    },
+    {
+      "row": "272",
+      "item": "Sony ɑ M3",
+      "reason": "duplicate identity unresolved against EQ-CAM-001",
+      "action": "physical verification against EQ-CAM-001 (checked_out (out, due 2026-07-30))"
+    },
+    {
+      "row": "272",
+      "item": "Sony ɑ M3",
+      "reason": "duplicate identity unresolved against EQ-CAM-002",
+      "action": "physical verification against EQ-CAM-002 (checked_out (out, due 2026-07-28))"
+    },
+    {
+      "row": "13",
+      "item": "SONY 35 MM",
+      "reason": "possible match unresolved against EQ-LEN-003",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    },
+    {
+      "row": "14",
+      "item": "SONY 35 MM",
+      "reason": "possible match unresolved against EQ-LEN-003",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    },
+    {
+      "row": "17",
+      "item": "SONY 24/70",
+      "reason": "possible match unresolved against EQ-LEN-001",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    },
+    {
+      "row": "18",
+      "item": "SONY 24/70",
+      "reason": "possible match unresolved against EQ-LEN-001",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    },
+    {
+      "row": "24",
+      "item": "CANON 24/105",
+      "reason": "possible match unresolved against EQ-LEN-005",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    },
+    {
+      "row": "25",
+      "item": "CANON 24/105",
+      "reason": "possible match unresolved against EQ-LEN-005",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    },
+    {
+      "row": "76",
+      "item": "SONY 16/35",
+      "reason": "possible match unresolved against EQ-LEN-003",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    },
+    {
+      "row": "77",
+      "item": "SONY 85 G MM",
+      "reason": "possible match unresolved against EQ-LEN-004",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    },
+    {
+      "row": "78",
+      "item": "SONY 24MM",
+      "reason": "possible match unresolved against EQ-LEN-001",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    },
+    {
+      "row": "79",
+      "item": "SONY 24/70",
+      "reason": "possible match unresolved against EQ-LEN-001",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    },
+    {
+      "row": "108",
+      "item": "Godox SL 60 II D",
+      "reason": "possible match unresolved against EQ-LGT-004",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    },
+    {
+      "row": "129",
+      "item": "Zoom H6",
+      "reason": "possible match unresolved against EQ-AUD-001",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    },
+    {
+      "row": "130",
+      "item": "Zoom H6",
+      "reason": "possible match unresolved against EQ-AUD-001",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    },
+    {
+      "row": "281",
+      "item": "Sony lens 70-200 mm",
+      "reason": "possible match unresolved against EQ-LEN-002",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    },
+    {
+      "row": "286",
+      "item": "Sony 16 - 35 mm",
+      "reason": "possible match unresolved against EQ-LEN-003",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    },
+    {
+      "row": "287",
+      "item": "Sony 85 mm",
+      "reason": "possible match unresolved against EQ-LEN-004",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    },
+    {
+      "row": "288",
+      "item": "Sony 24mm",
+      "reason": "possible match unresolved against EQ-LEN-001",
+      "action": "confirm EXISTING ASSET or NEW PHYSICAL ASSET on sheet 03"
+    }
+  ],
+  "database_mutations": 0,
+  "counts_before": {
+    "a": 32,
+    "t": 20,
+    "b": 29,
+    "m": 5,
+    "s": 0,
+    "u": 0,
+    "l": 684
+  },
+  "counts_after": {
+    "a": 32,
+    "t": 20,
+    "b": 29,
+    "m": 5,
+    "s": 0,
+    "u": 0,
+    "l": 684
+  },
+  "pooled_categories_available": [
+    "Memory Card",
+    "Battery",
+    "Accessory"
+  ]
+}

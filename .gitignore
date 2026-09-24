@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 !.env.local.example
+!.env.test.example
 
 # Credentials, API keys, cert material
 *.pem

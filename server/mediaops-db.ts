@@ -24,7 +24,34 @@
 import { pool } from "./db.js";
 import { seedCreatorAutomationRules } from "./creator-automations.js";
 
+/* ONE BOOTSTRAP AT A TIME.
+
+   The schema bootstrap is DDL, and nine of its migrations are a DROP CONSTRAINT
+   IF EXISTS followed by an ADD CONSTRAINT. Two callers running that pair at the
+   same moment both drop, both add, and the second one dies with
+   `constraint "…" already exists`.
+
+   Nothing made that likely until several integration suites began calling the
+   bootstrap in their beforeAll against one database — but it was always true of
+   two application instances starting together, which is an ordinary deploy.
+
+   A session-level advisory lock serialises the whole thing. The key is
+   arbitrary and constant; the second caller waits, then finds every IF NOT
+   EXISTS already satisfied and finishes quickly. */
+const MO_BOOTSTRAP_LOCK = 0x4d454431;          // 'MED1'
+
 export async function bootstrapMediaOpsDatabase() {
+  const lock = await pool.connect();
+  try {
+    await lock.query(`SELECT pg_advisory_lock($1)`, [MO_BOOTSTRAP_LOCK]);
+    await bootstrapMediaOpsDatabaseUnlocked();
+  } finally {
+    await lock.query(`SELECT pg_advisory_unlock($1)`, [MO_BOOTSTRAP_LOCK]).catch(() => {});
+    lock.release();
+  }
+}
+
+async function bootstrapMediaOpsDatabaseUnlocked() {
   // Postgres range-overlap exclusion for equipment bookings (AC-7 / VR-8).
   // btree_gist backs the AC-7 no-double-booking EXCLUDE constraint on
   // mo_equipment_bookings. If the app DB role can't create extensions, a superuser
@@ -84,11 +111,11 @@ export async function bootstrapMediaOpsDatabase() {
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_primary_team ON mo_team_members(user_id) WHERE is_primary`);
   // Organization Management: teams are Admin-managed master data, not fixtures.
   // Presentation lives on the row so every consumer renders a team identically.
-  // A project converted from an intake request is a third provenance, alongside
-  // hand-created and Excel-imported.
-  await pool.query(`ALTER TABLE mo_projects DROP CONSTRAINT IF EXISTS mo_projects_source_check`);
-  await pool.query(`ALTER TABLE mo_projects ADD CONSTRAINT mo_projects_source_check
-                    CHECK (source IN ('app','excel_import','request'))`);
+  /* NOTE: the mo_projects source-constraint migration used to sit here, in
+     §11.1, and mo_projects is not created until §11.2 below. On an existing
+     database that was invisible — the table was already there from an earlier
+     deploy — but on a FRESH one the bootstrap died at this line. It has moved
+     to just after the table is created; the end state is identical. */
   await pool.query(`ALTER TABLE mo_teams ADD COLUMN IF NOT EXISTS description TEXT`);
   await pool.query(`ALTER TABLE mo_teams ADD COLUMN IF NOT EXISTS color TEXT`);
   await pool.query(`ALTER TABLE mo_teams ADD COLUMN IF NOT EXISTS icon TEXT`);
@@ -139,10 +166,32 @@ export async function bootstrapMediaOpsDatabase() {
     )`);
   // Existing DBs: add the column if it predates the module-access feature.
   await pool.query(`ALTER TABLE mo_user_profiles ADD COLUMN IF NOT EXISTS allowed_modules JSONB`);
-  // Module keys now mirror the sidebar one-for-one (key = route minus '#/media/'),
-  // replacing the old coarse grouping. Expand any legacy key into the sidebar
-  // entries it used to cover so nobody silently loses access. Idempotent: the new
-  // keys contain no legacy names, so a second run matches nothing.
+  /* Module keys now mirror the sidebar one-for-one (key = route minus
+     '#/media/'), replacing the old coarse grouping. Expand any legacy key into
+     the sidebar entries it used to cover so nobody silently loses access.
+
+     THIS RAN ON EVERY BOOT AND WIDENED ACCESS EVERY TIME. The claim above used
+     to be "idempotent: the new keys contain no legacy names, so a second run
+     matches nothing", and it was wrong about exactly two of them. 'projects'
+     and 'performance' are keys in BOTH vocabularies — they are coarse legacy
+     groups AND sidebar entries — so a profile an Admin had deliberately
+     narrowed to ["home","projects"] matched the trigger, was expanded to
+     ["boards","calendar","home","pipeline","projects"], and matched again on
+     the next restart. Ticking Projects for an employee silently also gave them
+     Pipeline, Boards and Calendar, and a restart re-granted 'boards' to
+     somebody POST /crew/:id/role had just stripped it from on demotion.
+
+     A row is in the OLD vocabulary only if it carries a key that exists nowhere
+     in the new one, so that — and not "any legacy key" — is the trigger. The
+     two ambiguous keys are still EXPANDED when such a row is found, because a
+     genuinely legacy row means them in the old sense; they just no longer
+     nominate a row for expansion by themselves. A pre-key-change profile that
+     contained nothing but 'projects' is indistinguishable from a modern
+     deliberate grant of Projects, and the narrow reading is the safe one: an
+     Admin can widen, silence cannot. Nothing is ever removed here.
+
+     After one pass no row can contain a legacy-only key, so the second run
+     really does match nothing. */
   await pool.query(`
     WITH legacy(old, new) AS (VALUES
       ('dashboard',   ARRAY['home']),
@@ -153,6 +202,8 @@ export async function bootstrapMediaOpsDatabase() {
       ('settings',    ARRAY['admin/settings'])
       -- 'library', 'ai', 'equipment' and 'leave' keep their keys unchanged
     ),
+    -- The keys that can only ever have been written by the old vocabulary.
+    legacy_only AS (SELECT old FROM legacy WHERE old NOT IN ('projects','performance')),
     expanded AS (
       SELECT p.user_id,
              jsonb_agg(DISTINCT k) AS mods
@@ -162,7 +213,7 @@ export async function bootstrapMediaOpsDatabase() {
                                            ARRAY[m.key])) AS k
        WHERE p.allowed_modules IS NOT NULL
          AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(p.allowed_modules) x(k)
-                      WHERE x.k IN (SELECT old FROM legacy))
+                      WHERE x.k IN (SELECT old FROM legacy_only))
        GROUP BY p.user_id
     )
     UPDATE mo_user_profiles p SET allowed_modules = e.mods
@@ -209,6 +260,11 @@ export async function bootstrapMediaOpsDatabase() {
   // Idempotent and lossless: every distinct legacy value becomes a unit, every
   // project is re-pointed at it, and only then is the old column dropped.
   await pool.query(`ALTER TABLE mo_projects ADD COLUMN IF NOT EXISTS academic_unit_id BIGINT REFERENCES mo_academic_units(id)`);
+  // A project converted from an intake request is a third provenance, alongside
+  // hand-created and Excel-imported. (Moved here from §11.1 — see the note there.)
+  await pool.query(`ALTER TABLE mo_projects DROP CONSTRAINT IF EXISTS mo_projects_source_check`);
+  await pool.query(`ALTER TABLE mo_projects ADD CONSTRAINT mo_projects_source_check
+                    CHECK (source IN ('app','excel_import','request'))`);
   await pool.query(`DO $$ BEGIN
     IF EXISTS (SELECT 1 FROM information_schema.columns
                 WHERE table_name='mo_projects' AND column_name='faculty_served') THEN
@@ -576,6 +632,198 @@ export async function bootstrapMediaOpsDatabase() {
 
   // ── §11.5 Equipment ──────────────────────────────────────────────────────
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_inventory_scopes (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      name TEXT NOT NULL, code TEXT UNIQUE NOT NULL,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      archived_at TIMESTAMPTZ,
+      created_by TEXT REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  /* ── Inventory scope ──────────────────────────────────────────────────────
+     WHOSE STOCK AN ASSET BELONGS TO. Media Ops has run one estate, filtered by
+     department and campus; those are attributes of an asset, not owners of it,
+     and neither can answer "who is accountable for this cupboard". An academic
+     inventory needs an owner that a custodian can be custodian OF and that an
+     authorization check can resolve to — which is what this row is.
+
+     SHAPED LIKE mo_campuses, which is the closest existing lookup: identity
+     column, a stable `code`, a display `name`, is_active. `code` is UNIQUE and
+     is the machine identifier; `name` is for humans and may change.
+
+     The five lifecycle columns — is_active, archived_at, created_by,
+     created_at, updated_at — are not a preference. They are the contract the
+     generic CRUD engine requires of every Admin-configurable table (see the
+     loop further down this file), and this table is registered with it as
+     `inventory_scopes`. That registration is why this phase adds NO scope
+     endpoints and NO scope screen: list, create, edit, enable/disable,
+     archive, dependency-checked delete, audit history and permissions already
+     exist, generically, and are already tested. mo_equipment_items.campus_id
+     already points at a table managed exactly this way.
+
+     DELIBERATELY ABSENT, and each for a reason:
+       · parent_scope_id — nothing needs a hierarchy. PID and 24 Frames are
+         siblings, not parent and child.
+       · metadata JSON — where undesigned fields go to hide.
+       · type — the Phase 12 design proposed one (production/academic) so a
+         future inventory needs a row rather than a migration. NOTHING IN THIS
+         PHASE BRANCHES ON IT: the only behaviour that would (does a loan need
+         approval?) belongs to a later phase. Adding a column now to serve code
+         that does not exist is the speculation this series has avoided
+         throughout, and it is additive whenever that code arrives.
+       · department_id / campus_id / academic_unit_id — context links the Phase
+         12 design lists. No screen or query in this phase reads them.
+
+     CREATING THE ROW IS NOT SECURING THE ASSET. Scoped authorization is Phase
+     13B; today this table records ownership and nothing enforces it. */
+  /* ── Phase 17A: the inventory's own identifier prefix ────────────────────
+     Internal asset codes are inventory-aware — MC-0001 in Media Crew, PID-0001
+     in PID. The prefix is DATA, not a branch in the allocator: a third
+     inventory is a row, not a deploy. Nullable, because a scope without a
+     prefix simply cannot mint codes yet, which is a better failure than a
+     guessed prefix. */
+
+  await pool.query(`ALTER TABLE mo_inventory_scopes ADD COLUMN IF NOT EXISTS code_prefix TEXT`);
+  /* ── WHICH INVENTORIES LEND TO STUDENTS ──────────────────────────────────
+     PID lends its equipment to institute students; Media Crew lends to the
+     crew. That is a product decision about an inventory, so it is a column on
+     the inventory rather than a constant in the checkout path — the same
+     reasoning Phase 17O applied to inspection intervals. When 24 Frames opens
+     its cupboard to students it is a row edit, not a deploy.
+
+     DEFAULT FALSE, and that is the safety property: every existing inventory,
+     and every one created after this, lends to nobody outside the crew until
+     somebody says otherwise. The eligibility this unlocks is additive — it
+     never widens who may borrow a Media Crew asset. */
+  /* SEEDED EXACTLY ONCE, AT INTRODUCTION. The default for the column is false,
+     so PID needs one UPDATE to start lending — but running that UPDATE on every
+     boot would undo an administrator who later closed the cupboard. Doing it
+     only in the branch that creates the column is what makes it a default
+     rather than a policy the process re-asserts every restart. */
+  const hadLends = (await pool.query(
+    `SELECT 1 FROM information_schema.columns
+      WHERE table_name='mo_inventory_scopes' AND column_name='lends_to_students'`)).rows[0];
+  await pool.query(`ALTER TABLE mo_inventory_scopes
+                    ADD COLUMN IF NOT EXISTS lends_to_students BOOLEAN NOT NULL DEFAULT false`);
+  if (!hadLends)
+    await pool.query(`UPDATE mo_inventory_scopes SET lends_to_students = true WHERE code = 'pid'`);
+  await pool.query(`ALTER TABLE mo_inventory_scopes DROP CONSTRAINT IF EXISTS mo_inventory_scopes_prefix_check`);
+  await pool.query(`ALTER TABLE mo_inventory_scopes ADD CONSTRAINT mo_inventory_scopes_prefix_check
+                    CHECK (code_prefix IS NULL OR code_prefix ~ '^[A-Z][A-Z0-9]{1,7}$')`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_mo_scope_prefix
+                    ON mo_inventory_scopes(code_prefix) WHERE code_prefix IS NOT NULL`);
+
+  /* ── The two operational inventories ─────────────────────────────────────
+     Phase 13A refused to seed a scope, and was right to: the names were a
+     product decision nobody had taken, and a migration is no place to take
+     one. That decision (P-1) was taken on 2026-09-22 — Media Crew and PID
+     were approved by name — so this seeds APPROVED data rather than inventing
+     it.
+
+     Keyed on `code`, so a database that already has them keeps its own rows
+     and ids. No id is hardcoded anywhere; callers resolve by code. */
+  await pool.query(`
+    INSERT INTO mo_inventory_scopes (name, code, code_prefix)
+    VALUES ('Media Crew', 'media_crew', 'MC'), ('PID', 'pid', 'PID')
+    ON CONFLICT (code) DO NOTHING`);
+  /* An existing row from a hand-made scope keeps its name but gains the prefix
+     it needs to mint codes. */
+  await pool.query(`UPDATE mo_inventory_scopes SET code_prefix='MC'
+                     WHERE code='media_crew' AND code_prefix IS NULL`);
+  await pool.query(`UPDATE mo_inventory_scopes SET code_prefix='PID'
+                     WHERE code='pid' AND code_prefix IS NULL`);
+
+  /* ── Who is authorised over which inventory scope ────────────────────────
+     PROVISIONAL ATTACHMENT POINT — read this before building on it.
+
+     Phase 13A created the scope object and recorded, in its own document, that
+     the next dependency is "attach custodians to scopes". Phase 13B needs
+     somewhere to read an assignment FROM, because authorization with nothing to
+     authorize against cannot be written or tested. This is that somewhere, and
+     it is deliberately the smallest thing that works.
+
+     WHAT THIS IS NOT. It is not the custodian model. There is no duty, no
+     borrower, no eligibility, no request or approval, no grant/revoke endpoint
+     and no screen — a row is written by an Admin or by a test, directly. The
+     production model for custodianship (who may appoint one, what a custodian
+     may do that a viewer may not, whether custodianship is per scope or per
+     category) is a later phase's design, and it will either grow this table or
+     replace it.
+
+     Shaped like mo_user_duties, which is the existing convention for "this user
+     has been granted this thing": composite primary key, granted_by, granted_at.
+     A user may hold several scopes, which is why the scope is part of the key
+     rather than a column on the duty row — mo_user_duties is keyed
+     (user_id, duty_flag_id) and could therefore hold only one.
+
+     ON DELETE CASCADE on both sides is what makes revocation immediate: delete
+     the assignment, or delete the scope, and the authorization is gone on the
+     next request because inventoryScopeOf() re-reads it every time. Nothing is
+     cached. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_user_inventory_scopes (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      scope_id BIGINT NOT NULL REFERENCES mo_inventory_scopes(id) ON DELETE CASCADE,
+      granted_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, scope_id)
+    )`);
+
+  /* ── Phase 15: the assignment becomes a ledger ────────────────────────────
+     Phase 13B created the table above with PRIMARY KEY (user_id, scope_id),
+     which permits exactly one row per pair and therefore cannot remember that
+     somebody was a custodian and no longer is. Accountability needs that: a
+     loan outlives a custodian's tenure, and an inspection in March must be
+     attributable to whoever held the scope in March.
+
+     The shape is mo_project_assignments', which is this codebase's answer to
+     the same problem — a surrogate key, a nullable removed_at, and a PARTIAL
+     UNIQUE INDEX that allows many historical rows while allowing only one
+     live one:
+
+       id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY
+       … assigned_by, assigned_at, removed_at TIMESTAMPTZ
+       UNIQUE (project_id, user_id) WHERE removed_at IS NULL
+
+     `role` exists so that a later phase can distinguish kinds of
+     responsibility without a migration. It has exactly ONE legal value today
+     and the CHECK says so, because a column that accepts anything is how a
+     role taxonomy nobody designed gets into the data. */
+  await pool.query(`ALTER TABLE mo_user_inventory_scopes ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'custodian'`);
+  await pool.query(`ALTER TABLE mo_user_inventory_scopes DROP CONSTRAINT IF EXISTS mo_user_inventory_scopes_role_check`);
+  await pool.query(`ALTER TABLE mo_user_inventory_scopes ADD CONSTRAINT mo_user_inventory_scopes_role_check
+                    CHECK (role IN ('custodian'))`);
+  await pool.query(`ALTER TABLE mo_user_inventory_scopes ADD COLUMN IF NOT EXISTS removed_by TEXT REFERENCES users(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE mo_user_inventory_scopes ADD COLUMN IF NOT EXISTS removed_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE mo_user_inventory_scopes ADD COLUMN IF NOT EXISTS id BIGINT GENERATED ALWAYS AS IDENTITY`);
+  /* The primary key moves off the pair and onto the surrogate — but only once.
+     Checked rather than blindly dropped and re-added: a DROP/ADD every boot
+     would rewrite the constraint on a table that authorization reads on every
+     request, and §G.9's advisory lock exists because that pattern already bit
+     us once. */
+  {
+    const pk = await pool.query(
+      `SELECT a.attname FROM pg_index i
+         JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+        WHERE i.indrelid = 'mo_user_inventory_scopes'::regclass AND i.indisprimary`);
+    if (pk.rows.some((r: { attname: string }) => r.attname === "user_id")) {
+      await pool.query(`ALTER TABLE mo_user_inventory_scopes DROP CONSTRAINT mo_user_inventory_scopes_pkey`);
+      await pool.query(`ALTER TABLE mo_user_inventory_scopes ADD PRIMARY KEY (id)`);
+    }
+  }
+  /* One LIVE assignment per (user, scope); any number of dead ones. This is
+     also the concurrency answer: two admins assigning the same person at the
+     same instant contend here, and the database decides — not the browser. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mo_uis_active
+                    ON mo_user_inventory_scopes(user_id, scope_id) WHERE removed_at IS NULL`);
+  /* "Who are this scope's custodians" is the one query the new endpoints run
+     on every scope view, and it filters scope_id + removed_at. The unique
+     index above leads with user_id, so it cannot serve this one. */
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_uis_scope_active
+                    ON mo_user_inventory_scopes(scope_id) WHERE removed_at IS NULL`);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_equipment_categories (
       id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
       department_id BIGINT REFERENCES mo_departments(id), name TEXT NOT NULL,
@@ -634,7 +882,20 @@ export async function bootstrapMediaOpsDatabase() {
       recorded_via TEXT NOT NULL DEFAULT 'desktop' CHECK (recorded_via IN ('desktop','mobile','kiosk')),
       recorded_by TEXT REFERENCES users(id)
     )`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_txn_item ON mo_equipment_transactions(equipment_item_id, occurred_at DESC)`);
+
+  /* mo_maintenance_records IS DECLARED HERE, ABOVE THE INDEXES THAT DESCRIBE
+     IT, and that is the whole reason it moved. Two of its indexes were created
+     further down but BEFORE the table itself, which every existing database
+     survived — the table was already there, so CREATE INDEX IF NOT EXISTS
+     found it. A database being created for the first time did not:
+
+         error: relation "mo_maintenance_records" does not exist
+
+     and the Media Ops bootstrap stopped there, which is a first deployment
+     that cannot start. Found by 17P building a database from nothing, which
+     is the one thing the test suite never does: its database is created once
+     and kept. The index commentary below is untouched and still sits with the
+     statements it explains. */
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_maintenance_records (
       id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -643,6 +904,224 @@ export async function bootstrapMediaOpsDatabase() {
       cost NUMERIC(12,2), vendor_id BIGINT REFERENCES mo_vendors(id), reported_by TEXT REFERENCES users(id),
       started_at DATE, resolved_at DATE, next_due_at DATE
     )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_txn_item ON mo_equipment_transactions(equipment_item_id, occurred_at DESC)`);
+  /* Both of these were added on the evidence of a query plan, not on the look
+     of them. Deriving an asset's effective state asks two more questions per
+     row — "is a repair open?" and "is a booking coming?" — and EXPLAIN ANALYZE
+     over 420 assets, 1,260 maintenance records and 2,100 bookings showed the
+     first doing a Seq Scan per row (420 loops, 5,460 buffers, ~28ms of a 38ms
+     page) because mo_maintenance_records had no index on equipment_item_id at
+     all. The booking lookup could not use the exclusion constraint's GiST
+     index either: that index is on a daterange, and this asks for the earliest
+     start.
+
+     Both are partial, so they cover only the rows the question is about —
+     open repairs and live bookings — and stay small as history grows. */
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_maint_open
+    ON mo_maintenance_records(equipment_item_id) WHERE resolved_at IS NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_booking_item_live
+    ON mo_equipment_bookings(equipment_item_id, starts_at) WHERE status IN ('reserved','active')`);
+  /* Analytics sums a maintenance cost per asset, over ALL of its records —
+     which the partial index above cannot serve, because it covers only the
+     open ones. Measured, not assumed: on 420 assets and 1,260 records the
+     per-item page ran 15.02ms with 12,258 buffers without this and 1.70ms with
+     3,438 with it.
+
+     A candidate index on mo_equipment_transactions(equipment_item_id, action)
+     was measured at the same time and REJECTED: 15.18ms to 15.02ms, six
+     buffers' difference. idx_mo_txn_item already covers that count, and an
+     index that buys nothing still costs every write. */
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_maint_item
+    ON mo_maintenance_records(equipment_item_id)`);
+
+  /* ── Phase 17I: CLOSING A MAINTENANCE RECORD ────────────────────────────
+     The table could be opened and never closed. `resolved_at` was read in nine
+     places and written in none — the only UPDATE in the repository was a test
+     fixture setting it in raw SQL, because no endpoint could. So an asset that
+     went in for repair carried an open record for ever, `state.maintenance`
+     stayed true, and returning it to service produced a permanent contradiction
+     between the lifecycle column and the ledger.
+
+     Closing needs to say WHO closed it and WHY, or the record answers "is it
+     fixed?" and nothing else. Two additive columns; `resolved_at` keeps its
+     DATE type, which is what every existing read expects. */
+  await pool.query(`ALTER TABLE mo_maintenance_records
+                    ADD COLUMN IF NOT EXISTS resolved_by TEXT REFERENCES users(id)`);
+  await pool.query(`ALTER TABLE mo_maintenance_records
+                    ADD COLUMN IF NOT EXISTS resolution_note TEXT`);
+
+  /* ── Phase 17I: INSPECTION ──────────────────────────────────────────────
+     A SEPARATE TABLE, AND THE TWO ALTERNATIVES BOTH BREAK SOMETHING.
+
+     Putting inspections in mo_maintenance_records: "open" there means
+     `resolved_at IS NULL`, so every inspection would read as an open repair —
+     and since Phase 17I also forbids leaving 'maintenance' while a record is
+     open, inspecting an asset would permanently trap it.
+
+     Putting them in mo_equipment_transactions: liveCheckout() reads the LATEST
+     row for an asset and treats anything that is not a check_out as "returned".
+     An inspection logged while somebody held the camera would make the ledger
+     say they had given it back.
+
+     So: its own table, minimal, and APPEND-ONLY. An inspection is what somebody
+     saw on a particular day; if it was wrong, the correction is another
+     inspection, not an edit. No booking, project or transaction reference —
+     an inspection is about the ASSET, and custody context is derivable from the
+     ledger by timestamp if it is ever wanted. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_asset_inspections (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      equipment_item_id BIGINT NOT NULL REFERENCES mo_equipment_items(id) ON DELETE CASCADE,
+      inspector_id TEXT NOT NULL REFERENCES users(id),
+      /* THE SAME FOUR WORDS the asset and the ledger use. A second condition
+         vocabulary would be a second thing to reconcile. */
+      observed_condition TEXT NOT NULL
+        CHECK (observed_condition IN ('excellent','good','fair','poor')),
+      /* The smallest vocabulary that carries a decision: it is fit to go out,
+         or it is not. Anything finer belongs in the notes until somebody can
+         say what they would do differently with it. */
+      outcome TEXT NOT NULL CHECK (outcome IN ('passed','maintenance_required')),
+      notes TEXT,
+      inspected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_inspection_item
+                    ON mo_asset_inspections(equipment_item_id, inspected_at DESC)`);
+
+  /* ── Phase 17L: ASSET IMPORT & RECONCILIATION ───────────────────────────
+     GOVERNANCE STATE, NOT INVENTORY TRUTH. These two tables hold what a
+     spreadsheet claimed and what a human decided about it. The asset estate
+     remains mo_equipment_items; nothing here is read to answer "what do we
+     own", and a batch can be cancelled without touching a single asset.
+
+     DELIBERATELY NOT mo_import_batches. That table exists, is empty, has no
+     server code, and belongs to the prototype's projects/events spreadsheet
+     screen — its shape is sheets and cell-level issues, with no notion of a
+     reconciliation decision, a candidate match or a created asset. Bending it
+     into this would break the screen that reads it and merge two unrelated
+     domains into one polymorphic table. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_asset_import_batches (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      file_name TEXT NOT NULL,
+      uploaded_by TEXT NOT NULL REFERENCES users(id),
+      uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      rows_total INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'review'
+        CHECK (status IN ('review','completed','cancelled')),
+      completed_at TIMESTAMPTZ,
+      completed_by TEXT REFERENCES users(id)
+    )`);
+  /* Counters are DERIVED from the rows, never stored: a cached count is a
+     second answer to a question the rows already answer, and it goes stale the
+     first time anything is reviewed in another tab. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_asset_import_rows (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      batch_id BIGINT NOT NULL REFERENCES mo_asset_import_batches(id) ON DELETE CASCADE,
+      /* WHERE IT CAME FROM — kept verbatim, so a decision can always be
+         checked against what the sheet actually said. */
+      source_row INTEGER NOT NULL,
+      source_name TEXT NOT NULL,
+      source_inventory TEXT,
+      /* THE SPREADSHEET'S OWN SEQUENCE COLUMN. It is a row counter for repeated
+         equipment, NOT a manufacturer serial, and the identity contract forbids
+         it ever reaching mo_equipment_items.serial_no. It is stored here, under
+         its own name, precisely so nobody has to guess later. */
+      source_sr_no TEXT,
+      /* WHAT THE IMPORTER PROPOSES — a suggestion until somebody agrees. */
+      normalized_name TEXT NOT NULL,
+      proposed_category_id BIGINT REFERENCES mo_equipment_categories(id),
+      proposed_scope_id BIGINT REFERENCES mo_inventory_scopes(id),
+      proposed_tracking_mode TEXT CHECK (proposed_tracking_mode IN ('individual','pooled')),
+      proposed_quantity INTEGER,
+      /* Only ever set when the SOURCE carried a real manufacturer serial. */
+      proposed_serial_no TEXT,
+      warnings JSONB NOT NULL DEFAULT '[]'::jsonb,
+      candidates JSONB NOT NULL DEFAULT '[]'::jsonb,
+      state TEXT NOT NULL DEFAULT 'pending_review'
+        CHECK (state IN ('pending_review','identity_decision_required','physical_verification',
+                         'pooled_review','scope_decision_required','category_review_required',
+                         'approved_new','matched_existing','rejected','imported')),
+      /* THE DECISION, and who owns it. */
+      decision TEXT CHECK (decision IN ('new','match_existing','duplicate',
+                                        'physical_verification','pooled','reject')),
+      decision_note TEXT,
+      matched_asset_id BIGINT REFERENCES mo_equipment_items(id),
+      created_asset_id BIGINT REFERENCES mo_equipment_items(id),
+      reviewed_by TEXT REFERENCES users(id),
+      reviewed_at TIMESTAMPTZ,
+      UNIQUE (batch_id, source_row)
+    )`);
+  /* ── Phase 17O: INSPECTION POLICY ───────────────────────────────────────
+     HOW OFTEN A KIND OF EQUIPMENT SHOULD BE PHYSICALLY LOOKED AT.
+
+     Phase 17N reported facts and refused to judge them, because no interval
+     existed to judge them against. This table is that interval, as governed
+     data rather than a constant somebody chose in a code review.
+
+     CATEGORY ONLY, and the reason is the schema rather than a preference.
+     mo_equipment_categories has no scope_id, so a category is one global row;
+     mo_equipment_items is the only table in the database carrying both a
+     category and an inventory; and no rule table in Nerve has ever resolved
+     "the specific one beats the general one". An inventory dimension would
+     have invented a precedence order this codebase does not have, to serve a
+     distinction nobody has yet asked for. Adding scope_id later is a column
+     and one tie-break — by then there would be evidence for it.
+
+     STRUCTURED AFTER mo_creator_payout_rules, deliberately: a rate that
+     changes in October must not restate September, and an interval that
+     changes in October must not rewrite what October was told in September.
+     Same effective window, same is_active flag, same open-ended NULL, same
+     dates CHECK. Overlap is refused in the write path, as it is there.
+
+     THE MAXIMUM IS 3650 DAYS — ten years. Not a policy statement, a data
+     integrity bound: it admits every plausible cadence including biennial,
+     and rejects the typo that would otherwise park an asset past the heat
+     death of the department. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_inspection_policies (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      category_id BIGINT NOT NULL REFERENCES mo_equipment_categories(id) ON DELETE CASCADE,
+      interval_days INTEGER NOT NULL
+        CHECK (interval_days > 0 AND interval_days <= 3650),
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      effective_from DATE NOT NULL,
+      effective_to DATE,
+      note TEXT NOT NULL DEFAULT '',
+      created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT mo_inspection_policy_dates
+        CHECK (effective_to IS NULL OR effective_to >= effective_from)
+    )`);
+  /* The resolver asks one question — which active policy covers this category
+     on this date — so the index leads with the category and carries the window.
+     Partial on is_active because an ended policy is history and is never
+     resolved against. */
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_inspection_policy_lookup
+                    ON mo_inspection_policies (category_id, effective_from, effective_to)
+                 WHERE is_active`);
+
+  /* PHASE 17M — THE WORKLIST'S INDEX, and it is partial on purpose.
+
+     idx_mo_air_batch_state above leads with batch_id, which serves the batch
+     detail screen and cannot serve the cross-batch worklist: that query's one
+     mandatory predicate is the STATE, with no batch at all.
+
+     Partial rather than a plain (state, ...) index because of how these two
+     sets grow. Import history is append-only and permanent — every row ever
+     reviewed stays, forever. The physical-verification QUEUE is small and
+     drains. A partial index is sized by the queue instead of the history, so
+     it stays a few pages while the table grows without limit. Measured at
+     5,000 rows / 714 queued: 16 kB against a 544 kB table, seq scan replaced
+     by a bitmap index scan. */
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_air_physical_queue
+                    ON mo_asset_import_rows (proposed_scope_id, batch_id)
+                 WHERE state = 'physical_verification'`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_air_batch_state
+                    ON mo_asset_import_rows(batch_id, state)`);
 
   // ── §11.6 Kanban, calendar, HR-adjacent ──────────────────────────────────
   await pool.query(`
@@ -807,7 +1286,7 @@ export async function bootstrapMediaOpsDatabase() {
   for (const t of ["mo_project_types", "mo_deliverable_types", "mo_task_categories", "mo_equipment_categories",
                    "mo_leave_types", "mo_skills", "mo_capacity_roles", "mo_vendors", "mo_tags", "mo_duty_flags",
                    "mo_academic_years", "mo_academic_units", "mo_work_types", "mo_campuses", "mo_holidays", "mo_project_templates",
-                   "mo_template_deliverables", "mo_automation_rules"]) {
+                   "mo_template_deliverables", "mo_automation_rules", "mo_inventory_scopes"]) {
     await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true`);
     await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS created_by TEXT`);
@@ -822,6 +1301,18 @@ export async function bootstrapMediaOpsDatabase() {
       entity_type TEXT, entity_id BIGINT, before JSONB, after JSONB, ip TEXT, user_agent TEXT,
       occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
+  /* ── Phase 15: entities whose key is not a number ─────────────────────────
+     entity_id is BIGINT and users.id is TEXT, so every audit event about a
+     PERSON has always written entity_id = NULL — duty granted, duty revoked,
+     avatar updated, password changed. The affected user was only ever inside
+     the JSONB payload, so "what was done to this person" could not be queried.
+
+     Widening entity_id to TEXT would touch every reader and every numeric
+     entity in the table. This is the additive half of that fix: a nullable
+     companion column for text-keyed entities. entity_type keeps its existing
+     vocabulary ('user' stays 'user'), no event was renamed, and every existing
+     reader names its columns explicitly, so nothing sees this unless it asks. */
+  await pool.query(`ALTER TABLE mo_audit_logs ADD COLUMN IF NOT EXISTS entity_uid TEXT`);
   // D4 / §11.1 — ONE role vocabulary in the audit trail: migrate historical rows
   // written with the platform's raw roles, then constrain so a 4th value can
   // never be written. (users.role stays platform-wide — it is shared with the
@@ -838,6 +1329,109 @@ export async function bootstrapMediaOpsDatabase() {
   END $$`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_audit_entity ON mo_audit_logs(entity_type, entity_id, occurred_at DESC)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_audit_actor ON mo_audit_logs(actor_id, occurred_at DESC)`);
+
+  /* ── REPORTING INDEXES AND THE BOOKING TIMESTAMP (Phase 17N) ─────────────
+     PLACED HERE BECAUSE OF WHAT THEY TOUCH, NOT WHERE THEY WERE WRITTEN.
+
+     17N added this block up beside the inventory-scope columns, which is
+     where the phase happened to be working. Every table it indexes —
+     mo_equipment_items, mo_equipment_transactions, mo_maintenance_records,
+     mo_equipment_bookings, mo_audit_logs — is created several hundred lines
+     BELOW that point. On the development and test databases the tables were
+     already there, so CREATE INDEX IF NOT EXISTS found them and nothing ever
+     complained. On a database being built for the first time the bootstrap
+     stopped dead at the first of them:
+
+         error: relation "mo_equipment_transactions" does not exist
+
+     — which is a server that cannot start on a fresh deployment, found by
+     17P doing the one thing no test does: building a database from nothing.
+
+     So the block sits after the last table it names. 'IF NOT EXISTS' makes a
+     statement safe to REPEAT; it does not make it safe to run EARLY.
+
+     Five, each tied to a query shape that exists in this file's siblings, and
+     each one measured rather than guessed. The dev estate is 32 assets, where
+     none of these matter; they exist for the imported estate, where the same
+     queries run over hundreds of thousands of rows.
+
+     1. THE ANALYTICS DATE FILTER, and this one is the reason the set exists.
+        GET /equipment/analytics filters
+          (t.occurred_at AT TIME ZONE 'Asia/Kolkata')::date BETWEEN ...
+        which is an EXPRESSION on the column, so a plain index on occurred_at
+        cannot serve it — the planner has no choice but to read every row.
+        Measured on a 100,000-row ledger with 3,004 rows in a 23-day window:
+        seq scan 23.0 ms, and with this index a bitmap index scan at 0.79 ms.
+        Re-measured on 200,000 rows over three years, last 30 days: a parallel
+        seq scan discarding 194,308 rows at 2,667 buffers, against 1,643.
+        The expression is repeated here exactly; any difference and the index
+        is silently unused. */
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_txn_ist_day
+                    ON mo_equipment_transactions (((occurred_at AT TIME ZONE 'Asia/Kolkata')::date))`);
+  /*  2. MAINTENANCE BY START DATE — the analytics cost filter and the 17N
+        export both range over started_at. Measured on 60,000 records, a
+        30-day window: 551 buffers and 58,295 rows discarded by a seq scan,
+        against 144 buffers through this index. */
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_maint_started
+                    ON mo_maintenance_records (started_at DESC)`);
+  /*  3. SERVICE FALLING DUE — AUTO-8 sweeps next_due_at every five minutes,
+        forever, across the whole estate. Partial, because a record with no
+        next date is never in that sweep and does not belong in its index.
+        Same 60,000 records, the next 30 days: 551 buffers → 73. The sweep is
+        the highest-frequency reader in the module and it was reading the whole
+        maintenance table every five minutes. */
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_maint_next_due
+                    ON mo_maintenance_records (next_due_at) WHERE next_due_at IS NOT NULL`);
+  /*  4. THE SCOPE PREDICATE is not here: mo_equipment_items.scope_id is added
+        by a later ALTER, so the index that needs it is created beside that
+        ALTER instead. Its reasoning and its measurement travelled with it. */
+  /*  5. THE ESTATE-WIDE AUDIT LOG, IN THE ORDER IT IS READ IN.
+
+        This was argued away first and then measured, and the measurement won.
+        The argument was that /audit also filters `action ILIKE '%...%'`, which
+        no btree serves, and that the table already carries
+        (entity_type, entity_id, occurred_at DESC) and (actor_id, occurred_at DESC)
+        — so a third index looked like speculation.
+
+        But the ILIKE is OPTIONAL and the ordering is not. Every call to /audit
+        ends `ORDER BY occurred_at DESC, id DESC LIMIT n OFFSET m`, and neither
+        existing index leads with occurred_at, so neither can supply it. On a
+        200,000-row log, the administrator merely OPENING the screen:
+
+          without           parallel seq scan of all 200,000 rows
+                            + top-N heapsort            2,825 buffers
+          with              index scan, 50 rows read       53 buffers
+
+        and a paged month went 2,825 → 153. The whole table was being read to
+        show fifty lines, and it is the pagination this phase added that made
+        that the ordinary case rather than a rarity.
+
+        The tie-break is IN the index because it is in the ORDER BY: without
+        `id DESC` the planner can use the index for occurred_at and must still
+        sort within each timestamp group. */
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_audit_occurred
+                    ON mo_audit_logs (occurred_at DESC, id DESC)`);
+
+  /* ── WHEN A RESERVATION WAS MADE (Phase 17N) ─────────────────────────────
+     mo_equipment_bookings has always recorded the window a booking COVERS —
+     starts_at and ends_at — and never when somebody made it. Those are
+     different facts and only one of them was kept, so "how many reservations
+     were made in March", lead time, and any cancellation trend were not
+     answerable and never would be: creation time cannot be reconstructed
+     after the fact.
+
+     LEGACY ROWS GET THE MIGRATION'S TIMESTAMP, and that is a synthetic value.
+     No column on the row carries the real one — starts_at is the covered day,
+     not the booking day — and inferring it would be inventing precision the
+     database never had. Every pre-existing booking therefore shares one
+     created_at, which reads as obviously artificial rather than plausibly
+     wrong. Analytics anchored on this column should treat rows at or before
+     the migration instant as "unknown, before this date". */
+  await pool.query(`ALTER TABLE mo_equipment_bookings
+                    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()`);
+  /* Reservation activity is read by period, so the period is the index. */
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_booking_created
+                    ON mo_equipment_bookings(created_at DESC)`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_saved_views (
       id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -1553,8 +2147,351 @@ export async function bootstrapMediaOpsDatabase() {
   await pool.query(`ALTER TABLE mo_requests ADD CONSTRAINT mo_requests_status_check
                     CHECK (status IN ('new','under_review','needs_clarification','ready','converted','closed','rejected'))`);
 
+  await bootstrapAssetFoundation();
   await bootstrapCreatorNetwork();
   await seedMediaOpsLookups();
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ASSET FOUNDATION — stabilisation of the existing Equipment module.
+
+   Additive only. Every statement below is IF NOT EXISTS or a backfill that is
+   safe to run twice, because this function runs on every boot against
+   databases that already hold live equipment. No existing column is dropped,
+   narrowed or renamed, and no equipment row is deleted.
+
+   THE ONE STRUCTURAL IDEA. Identifiers move OFF the item and into a table of
+   their own. `asset_tag`, `qr_uid` and `barcode` stay exactly where they are —
+   nothing that reads them breaks — but from here on an asset may carry any
+   number of identifiers, of any kind, and a future RFID tag is a row rather
+   than a migration. That is the whole of the RFID readiness this phase claims.
+   ═══════════════════════════════════════════════════════════════════════════ */
+export async function bootstrapAssetFoundation() {
+  /* ── An asset row needs to know when it appeared and when it last moved ──
+     Neither column existed, so "when was this registered?" had no answer. */
+  await pool.query(`ALTER TABLE mo_equipment_items ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+  await pool.query(`ALTER TABLE mo_equipment_items ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+  /* Retirement is a lifecycle state, not a deletion: an asset with history is
+     archived and keeps every transaction. deleted_at already exists and stays
+     reserved for a genuine mistake-row; retired_at is the operational end. */
+  await pool.query(`ALTER TABLE mo_equipment_items ADD COLUMN IF NOT EXISTS retired_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE mo_equipment_items ADD COLUMN IF NOT EXISTS retired_by TEXT REFERENCES users(id)`);
+  await pool.query(`ALTER TABLE mo_equipment_items ADD COLUMN IF NOT EXISTS retired_reason TEXT`);
+
+  /* ── Which inventory an asset belongs to ────────────────────────────────
+     NULLABLE, AND IT STAYS NULLABLE IN THIS PHASE. Every asset that exists
+     today was registered before inventories did, and NOTHING here assigns one:
+     a backfill would be inventing ownership the business has not decided
+     (docs/ASSET_INVENTORY_ACADEMIC_DOMAIN_MODEL.md §21). Existing equipment
+     keeps working exactly as before because nothing reads this column yet.
+
+     NULL means "not yet scoped" — never "belongs to everyone". When the gate
+     arrives in Phase 13B it must fail closed on a null, the way module access
+     already does. */
+  await pool.query(
+    `ALTER TABLE mo_equipment_items ADD COLUMN IF NOT EXISTS scope_id BIGINT
+       REFERENCES mo_inventory_scopes(id)`);
+
+  /* THE INDEX FOR THAT COLUMN, HERE BECAUSE THE COLUMN IS HERE (Phase 17P).
+     17N grouped the reporting indexes together and put the group above this
+     ALTER, so on a database being created for the first time the bootstrap
+     reached this index before scope_id existed and stopped:
+
+         error: column "scope_id" does not exist
+
+     Existing databases had the column already and never showed it. */
+  /*  4. THE SCOPE PREDICATE — every scoped read filters i.scope_id, which is
+        every equipment read there is. Partial: an unscoped asset is reached by
+        `scope_id IS NULL`, which an index on the column cannot help, and
+        leaving those rows out keeps this index the size of the governed
+        estate rather than the whole of it.
+
+        THE WEAKEST OF THE FIVE, AND SAID SO PLAINLY. On 12,000 assets with one
+        inventory holding a quarter of them it is 247 buffers → 192, because a
+        quarter of a table is not a selective predicate. It earns its place on
+        the shape of the estate rather than on that number: inventories are
+        rows, a department that adds a third and a fourth makes each one a
+        smaller fraction, and this is the predicate every single equipment read
+        carries. It is the one to drop first if the write cost ever shows. */
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_equip_scope
+                    ON mo_equipment_items (scope_id) WHERE scope_id IS NOT NULL`);
+
+  /* ── Phase 17A: the asset identity model, in separate columns ───────────
+     Six things that are NOT the same and have been conflated before:
+
+       id              the database key
+       internal_code   MC-0045 — what a person says aloud and prints on a label
+       qr_uid          the scanned token
+       serial_no       the MANUFACTURER's serial
+       asset_tag       the category-derived tag this module has always had
+       (source Sr. No) a spreadsheet row counter — it belongs to the import
+                       layer and never reaches an asset record
+
+     `internal_code` is a new column rather than an overload of `asset_tag`:
+     the tag is CATEGORY-derived (EQ-CAM-001) and every existing link, label
+     and test depends on it, while the internal code is INVENTORY-derived.
+     They answer different questions; one column cannot do both. */
+  await pool.query(`ALTER TABLE mo_equipment_items ADD COLUMN IF NOT EXISTS internal_code TEXT`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_mo_equip_internal_code
+                    ON mo_equipment_items(internal_code) WHERE internal_code IS NOT NULL`);
+
+  /* A MANUFACTURER serial identifies one physical unit worldwide, so two
+     assets must not share one. Partial, because most of this estate has no
+     serial recorded and inventing one to satisfy a constraint is precisely
+     what this series has refused throughout.
+
+     TWO LESSONS ARE BAKED IN HERE, both learned the hard way on a real
+     database rather than in a test.
+
+     ONE — A DASH IS NOT A SERIAL. Three pooled rows in the development
+     database carry serial_no = '—', a placeholder somebody typed into a UI.
+     Treating it as an identifier made three assets "share a serial" that none
+     of them has. The predicate therefore excludes the handful of strings that
+     plainly mean "none". No data is rewritten: the rows keep whatever they
+     hold, the index simply declines to treat a dash as an identity.
+
+     TWO — A MIGRATION MUST NOT BE ABLE TO ABORT THE BOOTSTRAP. Adding a
+     UNIQUE index to a table that already violates it fails, and every
+     statement after it never runs. That is exactly what happened: the
+     development database ended up with internal_code but WITHOUT
+     tracking_mode or verification_state, and start-up was broken until this
+     was found. There is no NOT VALID for an index, so the duplicates are
+     counted FIRST and the index is created only when it can succeed.
+     Otherwise the bootstrap says so, loudly, and carries on — a missing
+     constraint reported at start-up is recoverable; a half-applied schema is
+     not. */
+  const SERIAL_IS_REAL = `serial_no IS NOT NULL
+      AND btrim(serial_no) <> ''
+      AND upper(btrim(serial_no)) NOT IN ('—', '-', '--', 'N/A', 'NA', 'NONE', 'NIL')`;
+  {
+    /* CREATE INDEX IF NOT EXISTS will not REPLACE an index whose definition
+       has changed — it sees the name and stops. The first version of this
+       predicate treated '—' as a serial, so any database that took it would
+       keep that meaning forever. The definition is therefore compared, and a
+       stale one is dropped so the corrected predicate can apply. */
+    const existing = (await pool.query(
+      `SELECT indexdef FROM pg_indexes WHERE indexname='uq_mo_equip_serial'`)).rows[0]?.indexdef as string | undefined;
+    if (existing && !existing.includes("NIL"))
+      await pool.query(`DROP INDEX IF EXISTS uq_mo_equip_serial`);
+
+    const dupes = (await pool.query(
+      `SELECT serial_no, COUNT(*)::int n FROM mo_equipment_items
+        WHERE ${SERIAL_IS_REAL} GROUP BY serial_no HAVING COUNT(*) > 1`)).rows;
+    if (dupes.length === 0) {
+      await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_mo_equip_serial
+                        ON mo_equipment_items(serial_no) WHERE ${SERIAL_IS_REAL}`);
+    } else {
+      console.warn(
+        `[mediaops] uq_mo_equip_serial NOT created: ${dupes.length} manufacturer serial(s) `
+        + `are shared by more than one asset (${dupes.map((d) => d.serial_no).slice(0, 5).join(", ")}`
+        + `${dupes.length > 5 ? ", …" : ""}). Two assets cannot be the same physical unit — `
+        + "resolve the duplicates and restart, and the constraint will apply itself.");
+    }
+  }
+
+  /* ── Tracking mode, per ITEM ────────────────────────────────────────────
+     mo_equipment_categories.tracking_mode already exists and stays: it is the
+     DEFAULT for its category. But a category is not a promise — the same
+     "Accessory" category can hold one tracked gimbal plate and a bag of forty
+     cable ties, and import/verification has to be able to say which. NULL
+     means "whatever the category says", so nothing changes for the existing
+     estate. */
+  await pool.query(`ALTER TABLE mo_equipment_items ADD COLUMN IF NOT EXISTS tracking_mode TEXT`);
+
+  /* ADD A CHECK ONLY IF IT IS NOT ALREADY THERE IN THE WANTED SHAPE.
+
+     Every constraint below replaces an earlier definition, and the obvious way
+     to write that — DROP CONSTRAINT IF EXISTS followed by ADD CONSTRAINT — takes
+     an ACCESS EXCLUSIVE lock on mo_equipment_items on EVERY bootstrap, for a
+     definition that was already correct. Fifty test suites bootstrap this schema
+     at once; that is a contention source, not a migration. `marker` is the token
+     that distinguishes the wanted definition from whatever came before, compared
+     against what Postgres actually stored. Same lesson as uq_mo_equip_serial in
+     Phase 17B: look before you act.
+
+     The same shape still exists on users, mo_requests and mo_casting_requests.
+     Those tables are outside this phase and are left alone deliberately. */
+  const ensureCheck = async (name: string, marker: string, expr: string) => {
+    const have = (await pool.query(
+      `SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint
+        WHERE conname=$1 AND conrelid='mo_equipment_items'::regclass`,
+      [name])).rows[0]?.d as string | undefined;
+    if (have?.includes(marker)) return;
+    await pool.query(`ALTER TABLE mo_equipment_items DROP CONSTRAINT IF EXISTS ${name}`);
+    await pool.query(`ALTER TABLE mo_equipment_items ADD CONSTRAINT ${name} CHECK (${expr})`);
+  };
+  await ensureCheck("mo_equipment_items_tracking_check", "tracking_mode",
+    `tracking_mode IS NULL OR tracking_mode IN ('individual','pooled')`);
+  await ensureCheck("mo_equipment_items_pool_qty_check", "pool_quantity",
+    `pool_quantity IS NULL OR pool_quantity > 0`);
+
+  /* ── Verification state ─────────────────────────────────────────────────
+     SEPARATE from `status`, deliberately. `status` says where the asset IS
+     (available / checked out / maintenance); this says whether the RECORD is
+     believed. A future importer writes `draft` rows that must not appear as
+     real inventory until a person has verified them, and the read models
+     filter on it.
+
+     Everything that exists today defaults to 'active', so no current row
+     changes meaning and no screen changes behaviour. */
+  await pool.query(`ALTER TABLE mo_equipment_items ADD COLUMN IF NOT EXISTS verification_state TEXT NOT NULL DEFAULT 'active'`);
+  /* ── Phase 17D: 'rejected' joins the vocabulary ──────────────────────────
+     Four states, and no fifth. 'approved' is deliberately NOT one of them:
+     approval is the ACT that produces 'active', and persisting both would
+     leave two columns' worth of meaning in one, with nothing to say which was
+     authoritative. The UI may say "Approve"; the database says 'active'.
+
+     A rejection has to say why, so the reason lives beside the state. It is a
+     column rather than a table because it is one sentence about one asset, and
+     the full history is already in mo_audit_logs. */
+  await pool.query(`ALTER TABLE mo_equipment_items ADD COLUMN IF NOT EXISTS verification_note TEXT`);
+  /* A rejected asset must carry its reason, and the vocabulary must admit
+     'rejected' at all. Both REPLACE an earlier definition, so both go through
+     ensureCheck rather than a bare DROP + ADD. */
+  await ensureCheck("mo_equipment_items_verification_check", "'rejected'",
+    `verification_state IN ('draft','pending_verification','active','rejected')`);
+  await ensureCheck("mo_equipment_items_reject_reason_check", "verification_note",
+    `verification_state <> 'rejected'
+     OR (verification_note IS NOT NULL AND btrim(verification_note) <> '')`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_equip_unverified
+                    ON mo_equipment_items(verification_state) WHERE verification_state <> 'active'`);
+
+  /* ── Identifiers ────────────────────────────────────────────────────────
+     kind: what sort of identifier this is. 'asset_tag' is the human label on
+     the side of the case, 'qr' the opaque token a printed code resolves,
+     'barcode' a shop-bought label, 'serial' the manufacturer's, and 'rfid' is
+     listed now so that adding one later is an INSERT and not a schema change.
+
+     `value` is unique across the whole table, not per kind: a scanner hands us
+     a string with no idea what kind it is, and the resolver must be able to
+     answer without guessing. Partial-unique on (asset_id, kind) WHERE
+     is_primary keeps exactly one primary of each kind per asset. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_asset_identifiers (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      asset_id BIGINT NOT NULL REFERENCES mo_equipment_items(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (kind IN ('asset_tag','qr','barcode','serial','rfid','internal')),
+      value TEXT NOT NULL,
+      is_primary BOOLEAN NOT NULL DEFAULT false,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_by TEXT REFERENCES users(id),
+      retired_at TIMESTAMPTZ
+    )`);
+  /* An identifier is retired, never reused: a value that once meant one camera
+     must not later resolve to another. The unique index therefore covers every
+     row, retired ones included. */
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_mo_asset_ident_value ON mo_asset_identifiers(value)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_asset_ident_asset ON mo_asset_identifiers(asset_id, kind)`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_mo_asset_ident_primary
+                    ON mo_asset_identifiers(asset_id, kind) WHERE is_primary AND retired_at IS NULL`);
+
+  /* ── Backfill: every existing asset keeps every identifier it already had ──
+     Existing asset_tag / qr_uid / barcode / serial values are copied in as-is,
+     so anything already written down anywhere still resolves. ON CONFLICT DO
+     NOTHING makes this safe on every subsequent boot.
+
+     FOR SHARE is not decoration. Under READ COMMITTED the SELECT reads parent
+     rows from its own snapshot, but the FOREIGN KEY is checked against the
+     table as it stands when the child row is written — so an asset deleted in
+     between leaves the INSERT pointing at nothing, and the whole bootstrap
+     dies with 23503. ON CONFLICT DO NOTHING does not help: that is a missing
+     parent, not a duplicate.
+
+     It is a real if narrow production race (two instances starting while
+     assets are being deleted) and a frequent test one, where it took down a
+     sibling suite's beforeAll and SILENTLY SKIPPED all 48 of its tests — a
+     skip reads as a pass in the summary line. FOR SHARE holds each parent row
+     for the duration of the statement, so the concurrent delete waits instead
+     of winning. Recorded as docs/TEST_STABILITY.md entry 12. */
+  await pool.query(`
+    WITH src AS (
+      SELECT i.id, i.asset_tag AS v, i.created_at
+        FROM mo_equipment_items i
+       WHERE i.asset_tag IS NOT NULL
+       FOR SHARE
+    )
+    INSERT INTO mo_asset_identifiers (asset_id, kind, value, is_primary, created_at)
+    SELECT src.id, 'asset_tag', src.v, true, COALESCE(src.created_at, NOW()) FROM src
+    ON CONFLICT (value) DO NOTHING`);
+  await pool.query(`
+    WITH src AS (
+      SELECT i.id, i.qr_uid AS v, i.created_at
+        FROM mo_equipment_items i
+       WHERE i.qr_uid IS NOT NULL
+       FOR SHARE
+    )
+    INSERT INTO mo_asset_identifiers (asset_id, kind, value, is_primary, created_at)
+    SELECT src.id, 'qr', src.v, false, COALESCE(src.created_at, NOW()) FROM src
+    ON CONFLICT (value) DO NOTHING`);
+  await pool.query(`
+    WITH src AS (
+      SELECT i.id, i.barcode AS v, i.created_at
+        FROM mo_equipment_items i
+       WHERE i.barcode IS NOT NULL AND btrim(i.barcode) <> ''
+       FOR SHARE
+    )
+    INSERT INTO mo_asset_identifiers (asset_id, kind, value, is_primary, created_at)
+    SELECT src.id, 'barcode', src.v, true, COALESCE(src.created_at, NOW()) FROM src
+    ON CONFLICT (value) DO NOTHING`);
+  await pool.query(`
+    WITH src AS (
+      SELECT i.id, i.serial_no AS v, i.created_at
+        FROM mo_equipment_items i
+       WHERE i.serial_no IS NOT NULL AND btrim(i.serial_no) <> ''
+       FOR SHARE
+    )
+    INSERT INTO mo_asset_identifiers (asset_id, kind, value, is_primary, created_at)
+    SELECT src.id, 'serial', src.v, true, COALESCE(src.created_at, NOW()) FROM src
+    ON CONFLICT (value) DO NOTHING`);
+
+  /* ── The primary QR token ────────────────────────────────────────────────
+     The old qr_uid was 'QR-' || asset_tag: derived, guessable, and carrying a
+     category prefix that a re-categorised asset would contradict. The primary
+     QR token is opaque and random instead, so it says nothing about the asset
+     and cannot go stale when the asset changes. Legacy qr_uid rows above stay
+     ACTIVE, so a label printed before this change still resolves to the same
+     asset — they are simply no longer primary.
+
+     gen_random_uuid() is available without an extension from PostgreSQL 13. */
+  await pool.query(`
+    WITH src AS (
+      SELECT i.id FROM mo_equipment_items i
+       WHERE NOT EXISTS (
+         SELECT 1 FROM mo_asset_identifiers a
+          WHERE a.asset_id = i.id AND a.kind='qr' AND a.is_primary AND a.retired_at IS NULL)
+       FOR SHARE
+    )
+    INSERT INTO mo_asset_identifiers (asset_id, kind, value, is_primary)
+    SELECT src.id, 'qr', 'AT-' || UPPER(REPLACE(gen_random_uuid()::text, '-', '')), true FROM src
+    ON CONFLICT DO NOTHING`);
+
+  /* ── Kiosk credentials ──────────────────────────────────────────────────
+     The kiosk pad accepted any four digits and then checked equipment out to
+     whichever account the tablet happened to be signed in as. A PIN now
+     belongs to a PERSON, is stored only as a scrypt hash (server/password.ts —
+     the same helper the rest of Nerve authenticates with), and is what decides
+     whose name goes on the transaction. */
+  await pool.query(`ALTER TABLE mo_user_profiles ADD COLUMN IF NOT EXISTS kiosk_pin_hash TEXT`);
+  await pool.query(`ALTER TABLE mo_user_profiles ADD COLUMN IF NOT EXISTS kiosk_pin_set_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE mo_user_profiles ADD COLUMN IF NOT EXISTS kiosk_failed_attempts INTEGER NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE mo_user_profiles ADD COLUMN IF NOT EXISTS kiosk_locked_until TIMESTAMPTZ`);
+
+  /* A kiosk session is a short-lived bearer token that names ONE borrower. The
+     token is stored hashed, so a database reader cannot replay it, and it is
+     single-purpose: nothing outside the equipment kiosk endpoints accepts it. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_kiosk_sessions (
+      id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      token_hash TEXT UNIQUE NOT NULL,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      opened_by TEXT REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ NOT NULL,
+      ended_at TIMESTAMPTZ,
+      ip TEXT
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_kiosk_sessions_user ON mo_kiosk_sessions(user_id, created_at DESC)`);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -2292,20 +3229,109 @@ export async function bootstrapCreatorNetwork() {
      so an operator's toggle is never overwritten on the next boot. */
   await seedCreatorAutomationRules();
 
-  /* SECURITY — this row is not optional.
+  await seedModuleDefaults();
+}
 
-     effectiveModules() returns null when a group has no defaults row, and
-     requireModule() reads null as "unrestricted". Without this, a creator would
-     pass EVERY module gate in Media Ops. Seeding the group closed (no modules
-     beyond the network itself) is what makes the vertical deny-by-default at
-     the module layer as well as the role layer.
+/* ═══════════════════════════════════════════════════════════════════════════
+   MODULE DEFAULTS — the security configuration a fresh install must not lack.
 
-     Written only when absent, so an administrator's later edits are never
-     overwritten on the next boot. */
-  await pool.query(`
-    INSERT INTO mo_module_defaults (role, modules)
-    SELECT 'creator', '["creator"]'::jsonb
-     WHERE NOT EXISTS (SELECT 1 FROM mo_module_defaults WHERE role='creator')`);
+   THE HOLE THIS CLOSES. effectiveModules() answers with a group's defaults row;
+   a group with NO row answered null, and every module gate read null as
+   "unrestricted". Only the 'creator' row was ever seeded, so a brand-new
+   installation gave an ordinary employee — and an SMC member, and a
+   coordinator — a pass on every module gate in Media Ops, Settings and Users &
+   Roles included. It never showed on a database that had been through Settings
+   once, which is why it survived: the developer's database had all six rows,
+   written by an administrator.
+
+   WHERE THESE VALUES COME FROM. Not from anybody's judgement, and not from the
+   developer's database (whose rows are that organisation's own narrowing —
+   their team_lead list is half the size of the one below). They are the exact
+   sets the application ALREADY derives for an unconfigured group, in
+   public/media-ops/index.html:
+
+       function defaultModulesFor(r){
+         const d=(DB.module_defaults||{})[r];
+         if(Array.isArray(d)) return d.slice();
+         return MODULES.filter(m=>moduleRoleOk(m,r)&&!m.optIn).map(m=>m.key);
+       }
+
+   — every module the role can reach, minus the opt-in ones. Writing that set
+   down changes no behaviour for anybody; it makes explicit what was implicit,
+   which is the precondition for being able to deny when a row is missing.
+
+   It is also strictly NARROWER than what a fresh install did before. "No row"
+   meant everything, tv/creator/admin included; these lists exclude the opt-in
+   modules and everything the role cannot reach.
+
+   ONE CORRECTION TO THE DERIVATION, and it matters. defaultModulesFor() asks
+   navShow(m, r) with an EXPLICIT role, which answers "could this role ever hold
+   this module?" — the question the Module Access dialog asks. For the signed-in
+   user the same function asks can(cap) instead, which resolves the
+   duty-conditional verdicts ('SMC', 'CASTING', 'CUSTODIAN') through hasDuty().
+
+   Two modules are gated on such a verdict, and both CONFER AUTHORITY when
+   granted: 'smc' makes isSmcManager() true and 'casting-admin' makes
+   canManageCasting() true, each by explicit grant alone. Seeding them into a
+   role's baseline would have made every media employee an SMC manager — which
+   is exactly what the ai-user-context suite caught on the first attempt at
+   this table. A duty is granted per PERSON; it is never what a role implies, so
+   a module gated on one belongs in nobody's default. They stay for 'admin',
+   whose verdict on both is 'A' — an authority the role does carry.
+
+   That distinction is also, independently, the one the development
+   organisation drew by hand: their employee, team_lead and coordinator rows
+   have 'casting' and lack 'smc' and 'casting-admin'. The rule below reproduces
+   it from the capability table rather than copying their rows.
+
+   KEEPING IT HONEST. mediaops-module-defaults.test.ts asserts every key below
+   is one the sidebar actually defines, so a renamed route cannot leave a stale
+   key here granting nothing, or worse, leave a real module unlisted.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** The groups moduleGroupOf() can return. Adding one here is what makes it
+    seeded; MODULE_DEFAULT_ROLES in mediaops-api.ts is the admin-editable
+    subset of the same list ('creator' is system-managed, see below). */
+export const MODULE_DEFAULT_SEED: Record<string, string[]> = {
+  admin: ["home", "my-day", "smc", "requests", "dispatch", "followups", "projects", "pipeline",
+    "reports", "boards", "casting", "casting-admin", "library", "equipment", "calendar", "team",
+    "leave", "analytics", "kra", "performance", "ai", "admin/settings", "admin/automations",
+    "admin/audit", "admin/users", "spec", "kiosk"],
+  team_lead: ["home", "my-day", "requests", "dispatch", "followups", "projects", "pipeline",
+    "reports", "boards", "casting", "library", "equipment", "calendar", "team",
+    "leave", "analytics", "kra", "performance", "ai", "kiosk"],
+  coordinator: ["home", "my-day", "requests", "dispatch", "followups", "projects", "pipeline",
+    "reports", "casting", "library", "equipment", "calendar", "leave",
+    "analytics", "kra", "performance", "ai", "kiosk"],
+  employee: ["home", "my-day", "requests", "dispatch", "followups", "projects", "pipeline",
+    "reports", "casting", "library", "equipment", "calendar", "leave",
+    "kra", "performance", "ai", "kiosk"],
+  smc_member: ["home", "my-day", "requests", "dispatch", "followups", "projects", "pipeline",
+    "reports", "library", "equipment", "calendar", "leave", "kra", "performance", "ai", "kiosk"],
+  /* CREATOR IS DELIBERATELY NOT ITS DERIVATION. The derived set for a creator
+     is the same sixteen modules an SMC member gets, which would hand the
+     Creator Network's members the whole of Media Ops. This row is seeded
+     CLOSED — the network and nothing else — and that is what makes the vertical
+     deny-by-default at the module layer as well as the role layer. It is also
+     the one group absent from MODULE_DEFAULT_ROLES, so Settings cannot widen
+     it by accident. */
+  creator: ["creator"],
+};
+
+/**
+ * Write a defaults row for every group that has none.
+ *
+ * Idempotent and non-destructive: ON CONFLICT DO NOTHING means an existing
+ * installation keeps every value its administrator chose, including a
+ * deliberately empty list. Only a group with no row at all is written, and only
+ * once.
+ */
+export async function seedModuleDefaults(): Promise<void> {
+  for (const [role, modules] of Object.entries(MODULE_DEFAULT_SEED))
+    await pool.query(
+      `INSERT INTO mo_module_defaults (role, modules) VALUES ($1, $2::jsonb)
+       ON CONFLICT (role) DO NOTHING`,
+      [role, JSON.stringify(modules)]);
 }
 
 // ── Lookup / reference seed (idempotent, NFR-10 config-driven) ──────────────

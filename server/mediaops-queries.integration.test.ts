@@ -13,23 +13,19 @@
    without one.
    ═══════════════════════════════════════════════════════════════════════════ */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { resolveTestDatabaseUrl } from "./test-db.js";
 
 const PREFIX = "ai3t";
 let dbUp = false;
 let pool: import("pg").Pool;
 let q: typeof import("./mediaops-queries.js");
 
-/* The dev connection string lives in .env.local; vitest.config.ts sets a dummy
-   DATABASE_URL for unit tests, so read the real one explicitly here. */
-async function realDatabaseUrl(): Promise<string | null> {
-  const { readFileSync, existsSync } = await import("node:fs");
-  for (const f of [".env.local", ".env"]) {
-    if (!existsSync(f)) continue;
-    const m = readFileSync(f, "utf8").match(/^DATABASE_URL=(.+)$/m);
-    if (m) return m[1].trim();
-  }
-  return null;
-}
+/* The test database url, resolved and safety-checked by server/test-db.ts.
+   This function used to open .env.local and return the DEVELOPMENT url, which
+   the block below then assigned over the one vitest had already set — so the
+   whole suite ran against `nerve`. It now resolves from TEST_DATABASE_URL or
+   .env.test, and throws rather than handing back a non-test database. */
+const realDatabaseUrl = async (): Promise<string> => resolveTestDatabaseUrl();
 
 /* Probed at MODULE level, not in beforeAll: `maybe()` below is evaluated while
    vitest collects the describe blocks, which happens before any hook runs. A

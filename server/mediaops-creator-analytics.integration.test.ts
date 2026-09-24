@@ -22,6 +22,7 @@
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { connectTestDatabase } from "./test-db.js";
 
 const PX = "zan";
 let dbUp = false;
@@ -44,25 +45,15 @@ const A = {
 } as const;
 type ActorName = keyof typeof A;
 
-async function realDatabaseUrl(): Promise<string | null> {
-  const { readFileSync, existsSync } = await import("node:fs");
-  for (const f of [".env.local", ".env"]) {
-    if (!existsSync(f)) continue;
-    const m = readFileSync(f, "utf8").match(/^DATABASE_URL=(.+)$/m);
-    if (m) return m[1].trim();
-  }
-  return null;
-}
+/* The connection comes from server/test-db.ts, which resolves it from
+   TEST_DATABASE_URL or .env.test and REFUSES any database whose name does not
+   mark it as a test database. This file used to read .env.local itself and
+   assign the DEVELOPMENT url over the top of vitest's — seventeen siblings did
+   the same — which is how the suite came to run against `nerve`. */
 {
-  const url = await realDatabaseUrl();
-  if (url) {
-    process.env.DATABASE_URL = url;
-    process.env.SESSION_SECRET ||= "integration-test-secret";
-    process.env.SUPER_ADMIN_PASSWORD ||= "integration-test-password";
-    const { pool: p } = await import("./db.js");
-    pool = p;
-    try { await pool.query("SELECT 1"); dbUp = true; } catch { dbUp = false; }
-  }
+  const t = await connectTestDatabase();
+  pool = t.pool;
+  dbUp = t.dbUp;
 }
 const maybe = dbUp ? describe : describe.skip;
 
@@ -311,17 +302,39 @@ const W = "range=30d";
 
 maybe("every figure reconciles with its source", () => {
   it("approved content equals the submission table", async () => {
-    const r = await as("creatorAdmin", "GET", `/creator/analytics/summary?${W}`);
-    expect(r.status).toBe(200);
-    const dash = (r.body!.production as Record<string, number>).approved;
-    const sql = Number((await pool.query(
+    /* THE FIGURE IS GLOBAL, AND SO IS THE DATABASE IT IS COUNTED FROM.
+
+       This reconciles the dashboard's "approved" against a COUNT(*) over the
+       submission table. Neither side is scoped to this file's fixtures, and
+       eleven Creator suites write to that table concurrently — so comparing
+       ONE endpoint call against ONE later count compared two different
+       instants and failed roughly once in eight full-suite runs, for reasons
+       that had nothing to do with the dashboard being wrong
+       (docs/TEST_STABILITY.md entry 11).
+
+       The property is preserved exactly rather than loosened. The source is
+       counted on BOTH sides of the endpoint call, and the dashboard's answer
+       must be consistent with some instant during its own execution — which is
+       the strongest statement that is true under concurrency. A figure outside
+       that window is a real defect and still fails; only the race is gone.
+       Since submissions are approved and never un-approved by the siblings,
+       the window is [before, after]. */
+    const sourceCount = async () => Number((await pool.query(
       `SELECT COUNT(*)::int c FROM mo_creator_submissions s
          JOIN mo_creator_assignments a ON a.id = s.assignment_id
         WHERE s.status='approved' AND s.reviewed_at IS NOT NULL
           AND (s.reviewed_at AT TIME ZONE 'Asia/Kolkata')::date
               BETWEEN (NOW() AT TIME ZONE 'Asia/Kolkata')::date - 29
                   AND (NOW() AT TIME ZONE 'Asia/Kolkata')::date`)).rows[0].c);
-    expect(dash).toBe(sql);
+
+    const before = await sourceCount();
+    const r = await as("creatorAdmin", "GET", `/creator/analytics/summary?${W}`);
+    expect(r.status).toBe(200);
+    const dash = (r.body!.production as Record<string, number>).approved;
+    const after = await sourceCount();
+
+    expect(dash, `dashboard ${dash} outside [${before}, ${after}]`).toBeGreaterThanOrEqual(before);
+    expect(dash, `dashboard ${dash} outside [${before}, ${after}]`).toBeLessThanOrEqual(after);
     const mine = Number((await pool.query(
       `SELECT COUNT(*)::int c FROM mo_creator_submissions s
          JOIN mo_creator_assignments a ON a.id = s.assignment_id
@@ -539,17 +552,28 @@ maybe("windows are the server's, in IST", () => {
   });
 
   it("a cycle window is the cycle's own dates, not date arithmetic", async () => {
+    /* WHICH cycle the server picks is a global question — it takes the latest
+       row in the whole table — and sibling suites create cycles of their own,
+       so re-running that "latest" query a moment later can name a different
+       one. (Observed: the server answered `zfp Precision 2027` and the second
+       read had become `zrg Threshold 2027`.)
+
+       The property under test is not WHICH cycle is current; it is that the
+       window equals THAT cycle's stored dates rather than a span of days
+       counted backwards. So the cycle is looked up by the label the server
+       just gave, which is race-free and asserts exactly that. */
     const r = await as("creatorAdmin", "GET", "/creator/analytics/summary?range=cycle");
     const p = r.body!.period as Record<string, string | number>;
     const c = (await pool.query(
-      `SELECT label, starts_on, ends_on FROM mo_creator_cycles
-        WHERE status IN ('active','closed') ORDER BY starts_on DESC, id DESC LIMIT 1`)).rows[0];
+      `SELECT label, starts_on, ends_on FROM mo_creator_cycles WHERE label=$1`, [p.label])).rows[0];
+    expect(c, `the server named a cycle that does not exist: ${p.label}`).toBeTruthy();
     const day = (v: unknown) => v instanceof Date
       ? `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`
       : String(v).slice(0, 10);
     expect(p.from).toBe(day(c.starts_on));
     expect(p.to).toBe(day(c.ends_on));
-    expect(p.label).toBe(c.label);
+    /* And it is a real cycle window, not a rolling N days. */
+    expect(day(c.starts_on)).not.toBe(day(c.ends_on));
   });
 
   it("a custom range is validated, and bounded", async () => {
@@ -690,20 +714,32 @@ maybe("signals describe conditions, never people", () => {
   it("a creator with no work assigned is not called unproductive", async () => {
     /* leadB has an active profile and no assignments at all. §44: absence of
        work is not evidence of a problem, so they are not in the count. */
-    const r = await as("creatorAdmin", "GET", `/creator/analytics/summary?${W}`);
+    /* RECONCILED IN A SCOPE THIS SUITE OWNS.
+
+       Asked as the network-wide Creator Admin, `low_activity` counts every
+       active creator in the database — and the re-derivation below ran a moment
+       later, by which time sibling suites had created or removed profiles of
+       their own. (Observed: the server said 1 and this query said 3.)
+
+       The signal is scope-filtered by the caller, so asking as leadA restricts
+       it to teamA — whose members are exactly this file's c1, c2 and leadA, a
+       population nothing else touches. The rule under test is unchanged; only
+       the population it is reconciled over is now one the suite controls. */
+    const r = await as("leadA", "GET", `/creator/analytics/summary?${W}`);
     const sig = (r.body!.signals as Array<Record<string, number>>)
       .find((s) => String(s.type) === "low_activity");
     const eligible = Number((await pool.query(
       `SELECT COUNT(*)::int c FROM mo_creator_profiles c
         WHERE c.status='active'
+          AND c.user_id IN (SELECT user_id FROM mo_creator_team_members WHERE team_id=$1)
           AND EXISTS (SELECT 1 FROM mo_creator_assignments a WHERE a.user_id=c.user_id
                         AND a.created_at >= NOW() - INTERVAL '30 days')
           AND NOT EXISTS (SELECT 1 FROM mo_creator_assignments a WHERE a.user_id=c.user_id
                             AND a.completed_at >= NOW() - INTERVAL '30 days')
           AND NOT EXISTS (SELECT 1 FROM mo_creator_submissions s
                             JOIN mo_creator_assignments a ON a.id=s.assignment_id
-                           WHERE a.user_id=c.user_id AND s.submitted_at >= NOW() - INTERVAL '30 days')`
-    )).rows[0].c);
+                           WHERE a.user_id=c.user_id AND s.submitted_at >= NOW() - INTERVAL '30 days')`,
+      [teamA])).rows[0].c);
     if (sig) expect(sig.count).toBe(eligible);
     const named = (await pool.query(
       `SELECT 1 FROM mo_creator_assignments WHERE user_id=$1`, [A.leadB.id])).rows;

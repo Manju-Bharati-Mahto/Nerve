@@ -18,6 +18,7 @@
    without one.
    ═══════════════════════════════════════════════════════════════════════════ */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { resolveTestDatabaseUrl } from "./test-db.js";
 
 const PREFIX = "ztvit";
 let dbUp = false;
@@ -25,15 +26,12 @@ let pool: import("pg").Pool;
 let api: typeof import("./mediaops-api.js");
 let tv: typeof import("./mediaops-tv.js");
 
-async function realDatabaseUrl(): Promise<string | null> {
-  const { readFileSync, existsSync } = await import("node:fs");
-  for (const f of [".env.local", ".env"]) {
-    if (!existsSync(f)) continue;
-    const m = readFileSync(f, "utf8").match(/^DATABASE_URL=(.+)$/m);
-    if (m) return m[1].trim();
-  }
-  return null;
-}
+/* The test database url, resolved and safety-checked by server/test-db.ts.
+   This function used to open .env.local and return the DEVELOPMENT url, which
+   the block below then assigned over the one vitest had already set — so the
+   whole suite ran against `nerve`. It now resolves from TEST_DATABASE_URL or
+   .env.test, and throws rather than handing back a non-test database. */
+const realDatabaseUrl = async (): Promise<string> => resolveTestDatabaseUrl();
 
 /* Probed at MODULE level: maybe() below is evaluated while vitest collects the
    describe blocks, before any hook runs. */
@@ -95,12 +93,36 @@ const setModules = (id: string, mods: string[] | null) => pool.query(
    ON CONFLICT (user_id) DO UPDATE SET allowed_modules=EXCLUDED.allowed_modules`,
   [id, mods === null ? null : JSON.stringify(mods)]);
 
+/* The board's equipment panel groups items by category. The assertion that the
+   payload is NOT empty therefore needs at least one item to exist — it used to
+   get one from whatever the developer's database happened to contain, which is
+   exactly the ambient dependency this work is removing. One prefixed category
+   and one prefixed item, created and removed here. */
+let fixtureCategoryId = 0;
+async function seedBoardFixture() {
+  fixtureCategoryId = Number((await pool.query(
+    `INSERT INTO mo_equipment_categories (name, tracking_mode, sort_order)
+     VALUES ($1,'individual',9998) RETURNING id`, [`${PREFIX} Camera`])).rows[0].id);
+  await pool.query(
+    `INSERT INTO mo_equipment_items (category_id, asset_tag, make, model, condition, status)
+     VALUES ($1,$2,'ZTVIT','Board Fixture','good','available')`,
+    [fixtureCategoryId, `${PREFIX}-EQ-001`]);
+}
+
 async function cleanup() {
   await pool.query(`DELETE FROM mo_user_profiles WHERE user_id LIKE $1`, [`${PREFIX}-%`]);
   await pool.query(`DELETE FROM users WHERE id LIKE $1`, [`${PREFIX}-%`]);
+  // The board fixture, by its own prefix — never a blanket delete.
+  await pool.query(`DELETE FROM mo_equipment_items WHERE asset_tag LIKE $1`, [`${PREFIX}-%`]);
+  await pool.query(`DELETE FROM mo_equipment_categories WHERE name LIKE $1`, [`${PREFIX} %`]);
 }
 
-beforeAll(async () => { if (dbUp) { await cleanup(); for (const f of Object.values(F)) await seed(f); } });
+beforeAll(async () => {
+  if (!dbUp) return;
+  await cleanup();
+  for (const f of Object.values(F)) await seed(f);
+  await seedBoardFixture();
+});
 afterAll(async () => { if (dbUp) await cleanup(); });
 
 maybe("TV board grants resolve through the real permission helpers", () => {

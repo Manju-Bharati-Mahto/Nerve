@@ -28,6 +28,7 @@
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { resolveTestDatabaseUrl } from "./test-db.js";
 
 const PX = "zph";
 let dbUp = false;
@@ -51,15 +52,12 @@ type ActorName = keyof typeof ACTORS;
 let teamA = 0, teamB = 0, teamNoLead = 0, teamArchived = 0, teamDeadLead = 0;
 let projectTypeId = 0, deliverableTypeId = 0;
 
-async function realDatabaseUrl(): Promise<string | null> {
-  const { readFileSync, existsSync } = await import("node:fs");
-  for (const f of [".env.local", ".env"]) {
-    if (!existsSync(f)) continue;
-    const m = readFileSync(f, "utf8").match(/^DATABASE_URL=(.+)$/m);
-    if (m) return m[1].trim();
-  }
-  return null;
-}
+/* The test database url, resolved and safety-checked by server/test-db.ts.
+   This function used to open .env.local and return the DEVELOPMENT url, which
+   the block below then assigned over the one vitest had already set — so the
+   whole suite ran against `nerve`. It now resolves from TEST_DATABASE_URL or
+   .env.test, and throws rather than handing back a non-test database. */
+const realDatabaseUrl = async (): Promise<string> => resolveTestDatabaseUrl();
 
 {
   const url = await realDatabaseUrl();
