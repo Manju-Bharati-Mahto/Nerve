@@ -1,4 +1,6 @@
-export type SeedRole = "super_admin" | "admin" | "sub_admin" | "user" | "outreach_manager" | "branding_reports_admin" | "design_reports_admin" | "task_owner" | "task_manager";
+// outreach_editor / outreach_publisher are the video-workflow roles (PRD §3);
+// its Manager and Admin map onto outreach_manager and super_admin/admin.
+export type SeedRole = "super_admin" | "admin" | "sub_admin" | "user" | "outreach_manager" | "outreach_editor" | "outreach_publisher" | "branding_reports_admin" | "design_reports_admin" | "task_owner" | "task_manager";
 
 export interface SeedTeam {
   id: string;

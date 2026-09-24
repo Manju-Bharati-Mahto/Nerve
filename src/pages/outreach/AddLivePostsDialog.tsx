@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { X, Plus, Trash2, Loader2, Link as LinkIcon, ExternalLink, AlertCircle, CheckCircle2 } from 'lucide-react'
 import {
   addLivePostsByUrl, refreshOutreach, useOutreachStore,
-  type Campaign, type Post,
+  type Campaign, type Post, type Platform,
 } from '@/lib/outreach-data'
 
 /**
@@ -50,16 +50,17 @@ function CampaignMode({ campaign, onClose }: { campaign: Campaign; onClose: () =
 
   // Assignees this campaign can attribute posts to. We list both kinds and
   // disambiguate with a discriminator so the picker can address either.
-  type Assignee = { kind: 'page' | 'creator'; id: string; handle: string; sub: string }
+  type Assignee = { kind: 'page' | 'creator'; id: string; handle: string; sub: string; platform: Platform }
   const assignees = useMemo<Assignee[]>(() => {
     const out: Assignee[] = []
     for (const id of campaign.assignedPageIds) {
       const p = pages.find(x => x.id === id)
-      if (p) out.push({ kind: 'page', id: p.id, handle: p.handle, sub: `${p.geography} · ${p.type}` })
+      if (p) out.push({ kind: 'page', id: p.id, handle: p.handle, sub: `${p.geography} · ${p.type}`, platform: p.platform })
     }
     for (const id of campaign.assignedCreatorIds) {
       const c = creators.find(x => x.id === id)
-      if (c) out.push({ kind: 'creator', id: c.id, handle: c.handle, sub: `${c.geography} · ${c.type}` })
+      // Creators are Instagram-only today.
+      if (c) out.push({ kind: 'creator', id: c.id, handle: c.handle, sub: `${c.geography} · ${c.type}`, platform: 'instagram' })
     }
     return out
   }, [pages, creators, campaign.assignedPageIds, campaign.assignedCreatorIds])
@@ -101,7 +102,7 @@ function CampaignMode({ campaign, onClose }: { campaign: Campaign; onClose: () =
           <select className="hub-input" value={assigneeKey} onChange={e => setAssigneeKey(e.target.value)}>
             {assignees.map(a => (
               <option key={`${a.kind}:${a.id}`} value={`${a.kind}:${a.id}`}>
-                {a.kind === 'creator' ? 'Creator: ' : 'Page: '}@{a.handle} · {a.sub}
+                {a.kind === 'creator' ? 'Creator: ' : a.platform === 'facebook' ? 'FB Page: ' : 'IG Page: '}@{a.handle} · {a.sub}
               </option>
             ))}
           </select>
@@ -126,6 +127,7 @@ function CampaignMode({ campaign, onClose }: { campaign: Campaign; onClose: () =
           )}
         </>
       }
+      platform={selected?.platform ?? 'instagram'}
       submit={(urls) => addLivePostsByUrl({
         urls,
         campaignId: campaign.id,
@@ -172,6 +174,7 @@ function PageMode({ pageId, onClose }: { pageId: string; onClose: () => void }) 
           URLs you paste below must belong to @{page.handle}. These posts feed only this page’s analytics + inventory — they’re not attached to any campaign.
         </p>
       }
+      platform={page.platform}
       submit={(urls) => addLivePostsByUrl({ urls, pageId: page.id })}
       canSubmit
     />
@@ -242,7 +245,7 @@ function CreatorMode({ creatorId, onClose }: { creatorId: string; onClose: () =>
 // ── Shared shell ───────────────────────────────────────────────────────────
 
 function DialogShell({
-  title, subtitle, onClose, empty, selectorLabel, selector, submit, canSubmit,
+  title, subtitle, onClose, empty, selectorLabel, selector, submit, canSubmit, platform = 'instagram',
 }: {
   title: string
   subtitle: React.ReactNode
@@ -253,6 +256,8 @@ function DialogShell({
   selector: React.ReactNode
   submit: (urls: string[]) => Promise<{ ok: true; posts: Post[]; skipped: { url: string; reason: string }[] }>
   canSubmit: boolean
+  /** Platform of the selected assignee — drives labels + URL placeholders. */
+  platform?: Platform
 }) {
   const [urls, setUrls] = useState<string[]>([''])
   const [loading, setLoading] = useState(false)
@@ -318,7 +323,7 @@ function DialogShell({
 
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="hub-label mb-0">Instagram post / reel URLs</label>
+                  <label className="hub-label mb-0">{platform === 'facebook' ? 'Facebook post / reel URLs' : 'Instagram post / reel URLs'}</label>
                   <button
                     type="button"
                     onClick={addUrlRow}
@@ -334,7 +339,9 @@ function DialogShell({
                       <LinkIcon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                       <input
                         className="hub-input py-1.5 text-xs flex-1"
-                        placeholder="https://www.instagram.com/p/SHORTCODE/ or /reel/SHORTCODE/"
+                        placeholder={platform === 'facebook'
+                          ? 'https://www.facebook.com/PAGE/posts/… or /reel/… or /videos/…'
+                          : 'https://www.instagram.com/p/SHORTCODE/ or /reel/SHORTCODE/'}
                         value={u}
                         onChange={e => updateUrl(i, e.target.value)}
                       />
@@ -351,7 +358,9 @@ function DialogShell({
                   ))}
                 </div>
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  Up to 20 URLs per request. Each one is scraped via Apify and saved as a published post.
+                  {platform === 'facebook'
+                    ? 'Up to 20 URLs per request. Each one is scraped and saved as a published post, same as Instagram.'
+                    : 'Up to 20 URLs per request. Each one is scraped via Apify and saved as a published post.'}
                 </p>
               </div>
             </>

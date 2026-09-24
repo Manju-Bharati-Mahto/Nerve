@@ -108,6 +108,8 @@ export function getRoleDashboard(
 ): string {
   if (role === 'super_admin')           return '/super-admin/dashboard'
   if (role === 'outreach_manager')      return '/outreach/dashboard'
+  if (role === 'outreach_editor')       return '/outreach/video/my-videos'
+  if (role === 'outreach_publisher')    return '/outreach/video/queue'
   if (role === 'branding_reports_admin') return '/branding/dashboard'
   if (role === 'design_reports_admin')  return '/design/dashboard'
   // Media Crew uses the self-contained Media Ops app, which adapts its own UI
@@ -124,7 +126,9 @@ export function getRoleDashboard(
      page. Checked after the media/smc line so enrolled staff keep their
      existing way in, and before the generic role branches so it wins. */
   if (isActiveCreator(creator)) return '/media'
-  if (role === 'admin')                 return team === 'content' ? '/content/dashboard'   : team === 'design' ? '/design/dashboard' : '/branding/dashboard'
+  // An admin on the outreach team is the video workflow's Admin (PRD §4.1),
+  // whose home is the workflow dashboard rather than branding's.
+  if (role === 'admin')                 return team === 'content' ? '/content/dashboard'   : team === 'design' ? '/design/dashboard' : team === 'outreach' ? '/outreach/video/dashboard' : '/branding/dashboard'
   if (role === 'sub_admin')             return team === 'content' ? '/content/sub-admin'   : team === 'design' ? '/design/sub-admin' : '/branding/sub-admin'
   // Task Owner: a branding/design lead variant with project-assign rights. Lands
   // on the shared team dashboard (projects / reports / team / assign).

@@ -76,11 +76,13 @@ export default function ImportPagesDialog({ onClose }: { onClose: () => void }) 
       try {
         await addPage({
           handle,
+          platform: 'instagram',   // Excel import is the legacy IG sheet — FB pages are added via the FB tab
           geography: r.geography.trim(),
           state: r.state.trim(),
           type: r.type,
           followerTier: r.followerTier,
           contentTypes: [],
+          contentPreferences: [],
           followers: 0,
           inventoryPosts: r.inventoryPosts,
           inventoryStories: r.inventoryStories,

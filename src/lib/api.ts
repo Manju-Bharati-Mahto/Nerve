@@ -229,6 +229,14 @@ export const api = {
       body: JSON.stringify(handles ? { handles } : {}),
     }),
 
+  // Outreach — per-campaign sync: re-scrape only the live posts (Instagram AND
+  // Facebook) attributed to one campaign.
+  syncOutreachCampaign: (campaignId: string) =>
+    request<{ ok: true; refreshed: number; failed: number }>(
+      `/outreach/campaigns/${campaignId}/sync`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+
   // Outreach — re-scrape every tracked live post's metrics (reach/views) across
   // all pages. On-demand; does not run the profile scrape.
   refreshOutreachReach: () =>
@@ -261,11 +269,13 @@ export const api = {
 export interface ServerOutreachPage {
   id: string;
   handle: string;
+  platform: "instagram" | "facebook";
   geography: string;
   state: string;
   type: "state" | "pu";
   follower_tier: "1" | "2" | "3" | "4" | "5";
   content_types: ("static" | "reel" | "carousel")[];
+  content_preferences: string[];
   followers: number;
   inventory_posts: number;
   inventory_stories: number;
@@ -314,6 +324,7 @@ export interface ServerOutreachCampaign {
 export interface ServerOutreachPost {
   id: string;
   instagram_id: string | null;
+  platform: "instagram" | "facebook";
   // A post belongs to exactly one of page_id or creator_id — never both.
   page_id: string | null;
   creator_id: string | null;

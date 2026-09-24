@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Send, Calendar, Heart, Eye, FileText, Pause, Play, CheckCircle,
-  Link as LinkIcon, Trash2, Users, Download, Pencil, X,
+  Link as LinkIcon, Trash2, Users, Download, Pencil, X, Sparkles, RefreshCw, Loader2,
 } from 'lucide-react'
 import AddLivePostsDialog from './AddLivePostsDialog'
 import { buildCampaignReport, exportCampaignReportPdf, exportCampaignReportDocx } from '@/lib/outreach-export'
@@ -10,8 +10,10 @@ import {
   BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
 import {
-  useOutreachData, updateCampaign, removeCampaign, campaignMetrics,
-  type Campaign, type CampaignStatus, type OutreachPage,
+  useOutreachData, updateCampaign, removeCampaign, campaignMetrics, recommendPages,
+  syncCampaignNow,
+  PAGE_CONTENT_PREFERENCES,
+  type Campaign, type CampaignStatus, type OutreachPage, type OutreachCreator, type Post, type Platform,
 } from '@/lib/outreach-data'
 
 const STATUS_CFG: Record<CampaignStatus, { label: string; cls: string }> = {
@@ -30,6 +32,30 @@ export default function OutreachCampaignDetail() {
   const [livePostsOpen, setLivePostsOpen] = useState(false)
   const [editing, setEditing] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  // Account filter: All / Instagram / Facebook. Scopes every number and table
+  // on this screen to posts (and pages) of the chosen platform.
+  const [platformFilter, setPlatformFilter] = useState<'all' | Platform>('all')
+  const [syncing, setSyncing] = useState(false)
+  const [syncMsg, setSyncMsg] = useState<string | null>(null)
+  const [syncErr, setSyncErr] = useState<string | null>(null)
+
+  // Sync just this campaign's live posts (paid Apify calls, tightly scoped).
+  async function handleCampaignSync() {
+    if (!campaign || syncing) return
+    setSyncing(true)
+    setSyncMsg(null)
+    setSyncErr(null)
+    try {
+      const r = await syncCampaignNow(campaign.id)
+      const parts = [`${r.refreshed} post${r.refreshed === 1 ? '' : 's'} updated`]
+      if (r.failed > 0) parts.push(`${r.failed} failed`)
+      setSyncMsg(parts.join(' · '))
+    } catch (err) {
+      setSyncErr(err instanceof Error ? err.message : 'Campaign sync failed.')
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   async function handleDelete() {
     if (!campaign) return
@@ -48,16 +74,28 @@ export default function OutreachCampaignDetail() {
     }
   }
 
-  const m = useMemo(() => campaign ? campaignMetrics(campaign, posts) : null, [campaign, posts])
+  // Posts scoped to the account filter — every widget below derives from this.
+  const scopedPosts = useMemo(
+    () => platformFilter === 'all' ? posts : posts.filter(p => p.platform === platformFilter),
+    [posts, platformFilter],
+  )
+
+  const m = useMemo(() => campaign ? campaignMetrics(campaign, scopedPosts) : null, [campaign, scopedPosts])
 
   const perPage = useMemo(() => {
     if (!campaign) return []
-    return campaign.assignedPageIds.map(pid => {
+    return campaign.assignedPageIds
+      .filter(pid => {
+        if (platformFilter === 'all') return true
+        const page = pages.find(p => p.id === pid)
+        return page?.platform === platformFilter
+      })
+      .map(pid => {
       const page = pages.find(p => p.id === pid)
       // Only count posts explicitly added via Add Live Posts — Apify-synced
       // backlog posts (the page's lifetime Instagram feed) get attributed by
       // accident otherwise and inflate every campaign's "delivered" count.
-      const pp = posts.filter(p => p.pageId === pid && p.campaignId === campaign.id && p.addedAsLive)
+      const pp = scopedPosts.filter(p => p.pageId === pid && p.campaignId === campaign.id && p.addedAsLive)
       return {
         page,
         delivered: pp.length,
@@ -67,19 +105,19 @@ export default function OutreachCampaignDetail() {
         engagement: pp.reduce((s, p) => s + p.likes + p.comments + p.saves + p.shares, 0),
       }
     }).filter(x => x.page).sort((a, b) => b.engagement - a.engagement)
-  }, [campaign, posts, pages])
+  }, [campaign, scopedPosts, pages, platformFilter])
 
   const variantStats = useMemo(() => {
     if (!campaign) return []
     return campaign.creativeVariants.map(v => {
-      const vp = posts.filter(p => p.campaignId === campaign.id && p.creativeVariant === v && p.addedAsLive)
+      const vp = scopedPosts.filter(p => p.campaignId === campaign.id && p.creativeVariant === v && p.addedAsLive)
       return {
         variant: v,
         posts: vp.length,
         avgEng: vp.length ? Math.round(vp.reduce((s, p) => s + p.likes + p.comments + p.saves + p.shares, 0) / vp.length) : 0,
       }
     })
-  }, [campaign, posts])
+  }, [campaign, scopedPosts])
 
   if (!campaign || !m) {
     return (
@@ -140,6 +178,15 @@ export default function OutreachCampaignDetail() {
               <LinkIcon className="w-3 h-3" /> Add live posts
             </button>
             <button
+              onClick={handleCampaignSync}
+              disabled={syncing}
+              title="Re-scrape only this campaign's posts and reels and update their stats"
+              className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50"
+            >
+              {syncing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+              {syncing ? 'Syncing…' : 'Sync'}
+            </button>
+            <button
               onClick={() => exportCampaignReportPdf(buildCampaignReport(campaign, pages, creators, posts))}
               className="text-xs px-2.5 py-1.5 rounded-lg bg-blue-100 text-blue-700 hover:opacity-80 inline-flex items-center gap-1"
             >
@@ -177,6 +224,36 @@ export default function OutreachCampaignDetail() {
               <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
             </button>
           </div>
+        </div>
+
+        {/* Campaign sync result */}
+        {(syncMsg || syncErr) && (
+          <p className={`mt-2 text-xs ${syncErr ? 'text-rose-600' : 'text-emerald-700'}`}>
+            {syncErr ?? `Campaign synced — ${syncMsg}`}
+          </p>
+        )}
+
+        {/* Account filter — Instagram / Facebook. Scopes the KPIs, per-page
+            delivery and variant charts to posts of that platform only. */}
+        <div className="mt-4 flex items-center gap-2 flex-wrap">
+          <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Account</span>
+          {([['all', 'All'], ['instagram', 'Instagram'], ['facebook', 'Facebook']] as const).map(([val, label]) => (
+            <button key={val} type="button" onClick={() => setPlatformFilter(val)}
+              className={`text-[11px] px-2.5 py-1 rounded-lg border transition-colors ${
+                platformFilter === val
+                  ? val === 'facebook' ? 'bg-blue-100 border-blue-300 text-blue-700 font-medium'
+                    : val === 'instagram' ? 'bg-orange-100 border-orange-300 text-orange-700 font-medium'
+                    : 'bg-foreground/10 border-foreground/20 text-foreground font-medium'
+                  : 'bg-card border-border text-muted-foreground hover:bg-accent'
+              }`}>
+              {label}
+            </button>
+          ))}
+          {platformFilter !== 'all' && (
+            <span className="text-[11px] text-muted-foreground">
+              Showing only {platformFilter === 'facebook' ? 'Facebook' : 'Instagram'} pages and their posts / reels.
+            </span>
+          )}
         </div>
 
         {/* Progress */}
@@ -344,7 +421,7 @@ export default function OutreachCampaignDetail() {
         <AddLivePostsDialog campaign={campaign} onClose={() => setLivePostsOpen(false)} />
       )}
       {editing && (
-        <EditCampaignModal campaign={campaign} pages={pages} onClose={() => setEditing(false)} />
+        <EditCampaignModal campaign={campaign} pages={pages} creators={creators} posts={posts} onClose={() => setEditing(false)} />
       )}
 
     </div>
@@ -356,9 +433,11 @@ export default function OutreachCampaignDetail() {
 // Post-creation editing the wizard doesn't cover: assign more pages (or
 // unassign), retune the posts/stories/reels budget, and adjust the creative
 // variant list. Saves via a single updateCampaign patch.
-function EditCampaignModal({ campaign, pages, onClose }: {
+function EditCampaignModal({ campaign, pages, creators, posts, onClose }: {
   campaign: Campaign
   pages: OutreachPage[]
+  creators: OutreachCreator[]
+  posts: Post[]
   onClose: () => void
 }) {
   const [budgetPosts, setBudgetPosts] = useState(campaign.budgetPosts)
@@ -366,7 +445,11 @@ function EditCampaignModal({ campaign, pages, onClose }: {
   const [budgetReels, setBudgetReels] = useState(campaign.budgetReels)
   const [variantsRaw, setVariantsRaw] = useState(campaign.creativeVariants.join(', '))
   const [pageIds, setPageIds] = useState<string[]>(campaign.assignedPageIds)
+  const [creatorIds, setCreatorIds] = useState<string[]>(campaign.assignedCreatorIds)
   const [query, setQuery] = useState('')
+  const [creatorQuery, setCreatorQuery] = useState('')
+  // Optional content-preference target for the recommendation engine (PRD 6.4).
+  const [recPref, setRecPref] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -378,8 +461,30 @@ function EditCampaignModal({ campaign, pages, onClose }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally NOT resorting on pageIds so rows don't jump while ticking
   }, [pages, query])
 
+  const filteredCreators = useMemo(() => {
+    const q = creatorQuery.trim().toLowerCase()
+    const list = creators.filter(c => !q || c.handle.toLowerCase().includes(q) || c.geography.toLowerCase().includes(q))
+    return [...list].sort((a, b) => Number(creatorIds.includes(b.id)) - Number(creatorIds.includes(a.id)) || a.handle.localeCompare(b.handle))
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keep rows stable while ticking
+  }, [creators, creatorQuery])
+
+  // Recommended pages: ranked by state/preference match + historical reach,
+  // excluding pages already ticked. Recomputes as the user assigns/unassigns.
+  const recommendations = useMemo(
+    () => recommendPages(pages, posts, {
+      campaignState: campaign.state,
+      preference: recPref || undefined,
+      excludeIds: new Set(pageIds),
+      limit: 5,
+    }),
+    [pages, posts, campaign.state, recPref, pageIds],
+  )
+
   function toggle(id: string) {
     setPageIds(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id])
+  }
+  function toggleCreator(id: string) {
+    setCreatorIds(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id])
   }
 
   async function save() {
@@ -391,6 +496,7 @@ function EditCampaignModal({ campaign, pages, onClose }: {
         budgetPosts, budgetStories, budgetReels,
         creativeVariants: variantsRaw.split(',').map(s => s.trim()).filter(Boolean),
         assignedPageIds: pageIds,
+        assignedCreatorIds: creatorIds,
       })
       onClose()
     } catch (err) {
@@ -405,7 +511,7 @@ function EditCampaignModal({ campaign, pages, onClose }: {
         <div className="flex items-center justify-between p-4 border-b border-border">
           <div>
             <h2 className="text-base font-serif text-foreground">Edit “{campaign.name}”</h2>
-            <p className="text-xs text-muted-foreground">Pages, post/story/reel budgets and creative variants.</p>
+            <p className="text-xs text-muted-foreground">Pages, creators, post/story/reel budgets and creative variants.</p>
           </div>
           <button onClick={onClose} disabled={saving} className="p-2 rounded-lg hover:bg-accent text-muted-foreground disabled:opacity-40"><X className="w-4 h-4" /></button>
         </div>
@@ -449,6 +555,47 @@ function EditCampaignModal({ campaign, pages, onClose }: {
               </p>
               <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Filter pages…" className="hub-input py-1 text-xs w-48" />
             </div>
+
+            {/* Recommended pages (PRD 6.4) — ranked by state/preference match +
+                historical reach. Suggestions only; the full list stays below. */}
+            <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50/60 p-2.5">
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-amber-700 flex items-center gap-1">
+                  <Sparkles className="w-3 h-3" /> Recommended pages
+                </p>
+                <select value={recPref} onChange={e => setRecPref(e.target.value)}
+                  title="Match recommendations to a content preference"
+                  className="hub-input py-1 text-[11px] w-40">
+                  <option value="">Any content</option>
+                  {PAGE_CONTENT_PREFERENCES.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+              {recommendations.length === 0 ? (
+                <p className="text-[11px] text-muted-foreground">
+                  No recommendations yet — set the campaign's state, add pages with post history, or pick a content preference.
+                </p>
+              ) : (
+                <div className="space-y-1">
+                  {recommendations.map(r => (
+                    <div key={r.page.id} className="flex items-center gap-2 text-xs">
+                      <button type="button" onClick={() => toggle(r.page.id)}
+                        className="px-1.5 py-0.5 rounded border border-amber-300 bg-white text-amber-700 hover:bg-amber-100 text-[11px] font-medium shrink-0">
+                        + Add
+                      </button>
+                      <span className="font-medium text-foreground shrink-0">@{r.page.handle}</span>
+                      <span className="text-muted-foreground truncate">
+                        {r.stateMatch && <span className="text-emerald-600">{campaign.state}</span>}
+                        {r.prefMatch && <span>{r.stateMatch ? ' · ' : ''}{recPref}</span>}
+                        {(r.stateMatch || r.prefMatch) && ' · '}
+                        avg reach {r.avgReach.toLocaleString('en-IN')}
+                        {r.postsConsidered > 0 ? ` (${r.postsConsidered} post${r.postsConsidered === 1 ? '' : 's'})` : ' (no history)'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="border border-border rounded-lg max-h-56 overflow-y-auto divide-y divide-border">
               {filtered.length === 0 ? (
                 <p className="px-3 py-6 text-xs text-muted-foreground text-center">No pages match.</p>
@@ -463,6 +610,32 @@ function EditCampaignModal({ campaign, pages, onClose }: {
               ))}
             </div>
             <p className="text-[11px] text-muted-foreground mt-1">Unassigning a page keeps its posts attributed to the campaign; it just leaves the delivery table.</p>
+          </div>
+
+          {/* Creators (PRD 6.1) — link existing creator profiles to this campaign. */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                Creators <span className="font-normal normal-case tracking-normal">— {creatorIds.length} assigned</span>
+              </p>
+              <input value={creatorQuery} onChange={e => setCreatorQuery(e.target.value)} placeholder="Filter creators…" className="hub-input py-1 text-xs w-48" />
+            </div>
+            <div className="border border-border rounded-lg max-h-56 overflow-y-auto divide-y divide-border">
+              {filteredCreators.length === 0 ? (
+                <p className="px-3 py-6 text-xs text-muted-foreground text-center">
+                  {creators.length === 0 ? 'No creators yet — add them in the Creators panel first.' : 'No creators match.'}
+                </p>
+              ) : filteredCreators.map(c => (
+                <label key={c.id} className="flex items-center gap-3 px-3 py-2 hover:bg-accent cursor-pointer">
+                  <input type="checkbox" checked={creatorIds.includes(c.id)} onChange={() => toggleCreator(c.id)} />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium text-foreground truncate">@{c.handle}</p>
+                    <p className="text-[11px] text-muted-foreground truncate">{c.geography} · {c.type} · Tier {c.followerTier}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-1">Linked creators show on the campaign and in its exported report. Attribute a creator's post to the campaign via “Add live posts”.</p>
           </div>
         </div>
 
