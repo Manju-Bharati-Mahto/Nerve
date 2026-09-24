@@ -1,15 +1,16 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, Fragment } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Users, Calendar, TrendingUp, FileText, Heart, Eye, MessageSquare, Bookmark, Share2,
-  ExternalLink, Trash2, Link as LinkIcon,
+  ExternalLink, Trash2, Link as LinkIcon, Pencil, AlertTriangle,
 } from 'lucide-react'
 import {
   LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
-import { useOutreachData, pageMetrics, removePage, instagramUrlForHandle, isValidInstagramHandle, formatLocalDate, refreshOutreach } from '@/lib/outreach-data'
+import { useOutreachData, pageMetrics, removePage, instagramUrlForHandle, isValidInstagramHandle, formatLocalDate, refreshOutreach, analyzePostPerformance } from '@/lib/outreach-data'
 import { api } from '@/lib/api'
 import AddLivePostsDialog from './AddLivePostsDialog'
+import { EditPageModal } from './OutreachAnalytics'
 
 export default function OutreachPageDetail() {
   const { pageId } = useParams<{ pageId: string }>()
@@ -18,9 +19,12 @@ export default function OutreachPageDetail() {
   const page = pages.find(p => p.id === pageId)
   const [deleting, setDeleting] = useState(false)
   const [addingLivePosts, setAddingLivePosts] = useState(false)
+  const [editing, setEditing] = useState(false)
   // Tracks which post row is currently being removed so we can disable its
   // button + show feedback without blocking the rest of the table.
   const [deletingPostId, setDeletingPostId] = useState<string | null>(null)
+  // Which post row currently has its "underperforming — why?" panel expanded.
+  const [openReasonId, setOpenReasonId] = useState<string | null>(null)
 
   async function handleDeletePost(postId: string) {
     if (!confirm('Remove this live post? This will reduce the page\'s analytics by its metrics.')) return
@@ -137,6 +141,12 @@ export default function OutreachPageDetail() {
               <p className="text-sm text-muted-foreground">
                 {page.geography} · {page.state} · <span className="uppercase">{page.type}</span> · Tier {page.followerTier}
               </p>
+              <p className="text-xs mt-1">
+                <span className="text-muted-foreground">Content preference: </span>
+                {page.contentPreferences.length > 0
+                  ? <span className="text-foreground font-medium">{page.contentPreferences.join(' · ')}</span>
+                  : <span className="italic text-muted-foreground opacity-70">Not set</span>}
+              </p>
               {page.notes && <p className="text-xs text-muted-foreground mt-1">{page.notes}</p>}
             </div>
           </div>
@@ -148,6 +158,11 @@ export default function OutreachPageDetail() {
               className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1">
               <LinkIcon className="w-3 h-3" /> Add live posts
             </button>
+            <button onClick={() => setEditing(true)}
+              title="Edit content preference & inventory"
+              className="text-xs px-2.5 py-1.5 rounded-lg border border-border text-muted-foreground hover:bg-accent inline-flex items-center gap-1">
+              <Pencil className="w-3 h-3" /> Edit
+            </button>
             <button onClick={handleDelete} disabled={deleting}
               title="Delete page"
               className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
@@ -156,6 +171,8 @@ export default function OutreachPageDetail() {
           </div>
         </div>
       </div>
+
+      {editing && <EditPageModal page={page} onClose={() => setEditing(false)} />}
 
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
@@ -210,8 +227,11 @@ export default function OutreachPageDetail() {
                 ) : pagePosts.slice(0, 50).map(p => {
                   const c = campaigns.find(c => c.id === p.campaignId)
                   const isRowDeleting = deletingPostId === p.id
+                  const perf = analyzePostPerformance(page, p, pagePosts)
+                  const open = openReasonId === p.id
                   return (
-                    <tr key={p.id} className="border-b border-border last:border-0 hover:bg-accent/40">
+                    <Fragment key={p.id}>
+                    <tr className="border-b border-border last:border-0 hover:bg-accent/40">
                       <td className="px-3 py-2 text-xs text-foreground">
                         {p.permalink ? (
                           <a href={p.permalink} target="_blank" rel="noreferrer"
@@ -228,8 +248,20 @@ export default function OutreachPageDetail() {
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.likes)}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.comments)}</td>
                       {/* Views: show the exact total (not abbreviated) so the real
-                          per-post reach is auditable. */}
-                      <td className="px-3 py-2 text-right text-xs font-mono tabular-nums" title={`${p.views.toLocaleString('en-US')} views`}>{p.views.toLocaleString('en-US')}</td>
+                          per-post reach is auditable. An "Underperforming" chip (PRD
+                          6.6) appears when reach is below the page's own average. */}
+                      <td className="px-3 py-2 text-right text-xs font-mono tabular-nums" title={`${p.views.toLocaleString('en-US')} views`}>
+                        <div className="inline-flex items-center gap-1 justify-end">
+                          {perf.underperforming && (
+                            <button type="button" onClick={() => setOpenReasonId(open ? null : p.id)}
+                              title="Underperforming — click for the likely reason"
+                              className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-rose-100 text-rose-700 text-[9px] font-semibold hover:bg-rose-200">
+                              <AlertTriangle className="w-2.5 h-2.5" /> Low
+                            </button>
+                          )}
+                          <span>{p.views.toLocaleString('en-US')}</span>
+                        </div>
+                      </td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.saves)}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.shares)}</td>
                       <td className="px-3 py-2 text-right">
@@ -245,6 +277,25 @@ export default function OutreachPageDetail() {
                         </button>
                       </td>
                     </tr>
+                    {open && perf.underperforming && (
+                      <tr className="bg-rose-50/60 border-b border-border">
+                        <td colSpan={10} className="px-4 py-2.5">
+                          <p className="text-[11px] font-semibold text-rose-700 mb-1">Likely cause — based on this page's own history:</p>
+                          <ul className="text-[11px] text-foreground list-disc pl-4 space-y-0.5">
+                            {perf.reasons.map((r, i) => <li key={i}>{r}</li>)}
+                          </ul>
+                          {perf.alternate && (
+                            <p className="text-[11px] text-emerald-700 mt-1.5">
+                              Suggestion: try a <span className="font-semibold capitalize">{perf.alternate}</span> next — it has the highest average reach on this page.
+                            </p>
+                          )}
+                          <p className="text-[10px] text-muted-foreground mt-1">
+                            Reach {p.views.toLocaleString('en-US')} vs this page's average {perf.pageAvgReach.toLocaleString('en-US')}. A likely cause, not a certainty.
+                          </p>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   )
                 })}
               </tbody>

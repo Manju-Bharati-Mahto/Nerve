@@ -53,10 +53,48 @@ export const config = {
        figures from their own billing page. See server/ai/pricing.ts. */
     pricing: process.env.AI_PRICING?.trim() || "",
   },
+  /* Google Drive — the storage AND live data source for the Outreach video
+     workflow (PRD §6, §23, §28: "no external database may be introduced").
+     Entirely optional and never read through requireEnv(): with nothing set the
+     video workflow reports itself unconfigured and the rest of Nerve boots
+     exactly as before.
+
+     Two auth shapes are supported; whichever is configured wins:
+       1. Service account (preferred) — set GOOGLE_SA_CLIENT_EMAIL and
+          GOOGLE_SA_PRIVATE_KEY. A service account has no Drive storage quota of
+          its own, so GOOGLE_DRIVE_ROOT_FOLDER_ID must live in a Shared Drive the
+          account has Content-manager access to.
+       2. OAuth refresh token — set GOOGLE_OAUTH_CLIENT_ID, _CLIENT_SECRET and
+          _REFRESH_TOKEN to act as one agency Google account. Works with an
+          ordinary My Drive folder.
+
+     GOOGLE_DRIVE_ROOT_FOLDER_ID is the "Agency Video Workflow/" folder; the
+     store creates the documented sub-structure beneath it on first use.
+
+     With DRIVE_LOCAL_ROOT set instead, a filesystem adapter with identical
+     semantics is used — same JSON layout, same revision guards — so the module
+     is fully runnable in dev and tests without Google credentials. */
+  drive: {
+    rootFolderId: process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID?.trim() || "",
+    serviceAccountEmail: process.env.GOOGLE_SA_CLIENT_EMAIL?.trim() || "",
+    // Stored with literal "\n" escapes in .env; unescape to a real PEM.
+    serviceAccountKey: (process.env.GOOGLE_SA_PRIVATE_KEY || "").replace(/\\n/g, "\n").trim(),
+    oauthClientId: process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() || "",
+    oauthClientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim() || "",
+    oauthRefreshToken: process.env.GOOGLE_OAUTH_REFRESH_TOKEN?.trim() || "",
+    /* Dev/test filesystem adapter. Ignored whenever real Google credentials are
+       present, so it can never silently shadow production Drive. */
+    localRoot: process.env.DRIVE_LOCAL_ROOT?.trim() || "",
+  },
   apify: {
     token: process.env.APIFY_TOKEN?.trim() || "",
     profileActor: process.env.APIFY_PROFILE_ACTOR?.trim() || "apify~instagram-profile-scraper",
     postActor: process.env.APIFY_POST_ACTOR?.trim() || "apify~instagram-post-scraper",
+    // Facebook Posts Scraper — used both for page-level batch sync (startUrls =
+    // page URLs, returns recent posts) and specific-URL metric refresh
+    // (startUrls = post/reel URLs). One actor, two call shapes, same as how
+    // apify/instagram-post-scraper is reused for both modes on the IG side.
+    facebookPostActor: process.env.APIFY_FACEBOOK_ACTOR?.trim() || "apify~facebook-posts-scraper",
     // Optional Instagram session cookie. When set, we forward it to Apify so
     // the scraper runs as a logged-in user, which returns live counts instead
     // of the stale logged-out snapshots Instagram serves to bots.

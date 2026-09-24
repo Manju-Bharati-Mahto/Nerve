@@ -170,7 +170,9 @@ describe("11–12. the daily counter", () => {
     expect(r.d).toBe(q.nerveToday());
   });
 
-  it("12b. the local-day boundary is computed in Nerve's timezone", () => {
+  /* Pure function, but the module holding it is imported only when a database
+     url is found, so without one this ran against `undefined`. */
+  maybe()("12b. the local-day boundary is computed in Nerve's timezone", () => {
     // 18:29Z is still 21 Aug in IST; 18:30Z is already the 22nd.
     expect(q?.nerveToday("Asia/Kolkata", new Date("2026-08-21T18:29:59Z"))).toBe("2026-08-21");
     expect(q?.nerveToday("Asia/Kolkata", new Date("2026-08-21T18:30:00Z"))).toBe("2026-08-22");

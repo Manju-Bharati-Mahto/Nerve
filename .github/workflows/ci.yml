@@ -1,0 +1,49 @@
+# Basic verification for every pull request and for main.
+#
+# Deliberately small: install, lint, typecheck both projects, build, test. No
+# database is provisioned and none is needed. At this point in the history the
+# integration suites resolve their connection by reading .env.local or .env,
+# both of which are gitignored and therefore absent from a fresh checkout — so
+# those suites skip themselves and the database-independent ones run. Test
+# infrastructure that can safely give them a real throwaway database arrives
+# with the Asset & Inventory work; adding it here would mean two testing
+# architectures at once.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The repository declares no Node version (no .nvmrc, no engines field);
+      # 24 is what the project is developed and verified against, and what its
+      # Vite 8 / Vitest 3 toolchain requires.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # Separate steps, so a failure names itself in the checks list.
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck (client)
+        run: npx tsc --noEmit -p tsconfig.json
+
+      - name: Typecheck (server)
+        run: npx tsc --noEmit -p tsconfig.server.json
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test

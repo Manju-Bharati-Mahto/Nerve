@@ -3,15 +3,15 @@ import { Link, useSearchParams } from 'react-router-dom'
 import {
   FileText, Search, Filter as FilterIcon, Download, Plus,
   ArrowUpDown, ArrowUp, ArrowDown, Sparkles, ExternalLink, Trash2, LinkIcon,
-  Upload,
+  Upload, Pencil,
 } from 'lucide-react'
 import {
   useOutreachData, pageMetrics, suggestedMonthlyUsage, removePage,
-  instagramUrlForHandle, isValidInstagramHandle, assignedPageIdSet,
-  PAGE_CONTENT_TYPES, FOLLOWER_TIERS, type FollowerTier, type PageContentType, type OutreachPage,
+  profileUrlForPage, isValidInstagramHandle, assignedPageIdSet,
+  PAGE_CONTENT_TYPES, FOLLOWER_TIERS, type FollowerTier, type PageContentType, type OutreachPage, type Platform,
 } from '@/lib/outreach-data'
 import ImportPagesDialog from './ImportPagesDialog'
-import { AddPageModal } from './OutreachAnalytics'
+import { AddPageModal, EditPageModal } from './OutreachAnalytics'
 import AddLivePostsDialog from './AddLivePostsDialog'
 
 type SortKey = 'handle' | 'tier' | 'geography' | 'total' | 'consumed' | 'suggested' | 'status'
@@ -28,6 +28,11 @@ export default function OutreachAllPages() {
     return new Set(raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [])
   }, [searchParams])
 
+  // Platform sub-tab: Instagram (default) or Facebook. Each shows the full
+  // inventory ledger for pages on that platform only.
+  const [platform, setPlatform] = useState<Platform>(
+    searchParams.get('platform') === 'facebook' ? 'facebook' : 'instagram',
+  )
   const [search, setSearch] = useState('')
   const [tier, setTier] = useState<FollowerTier | ''>('')
   const [contentTypeFilter, setContentTypeFilter] = useState<Set<PageContentType>>(new Set())
@@ -42,6 +47,8 @@ export default function OutreachAllPages() {
   const [importing, setImporting] = useState(false)
   // Which page is currently the target of the "Add live posts" dialog (null = closed).
   const [livePostsPageId, setLivePostsPageId] = useState<string | null>(null)
+  // Page currently open in the edit modal (content preference + inventory totals).
+  const [editingPage, setEditingPage] = useState<OutreachPage | null>(null)
 
   const geographies = useMemo(() => Array.from(new Set(pages.map(p => p.geography))).sort(), [pages])
 
@@ -62,6 +69,7 @@ export default function OutreachAllPages() {
       return { page: p, m, total, consumed, suggested: suggestedMonthlyUsage(p, posts) }
     })
     const filtered = enriched.filter(({ page, m }) => {
+      if (page.platform !== platform) return false
       if (q && !`${page.handle} ${page.geography}`.toLowerCase().includes(q)) return false
       if (tier && page.followerTier !== tier) return false
       if (geography && page.geography !== geography) return false
@@ -93,7 +101,7 @@ export default function OutreachAllPages() {
       return ((av as number) - (bv as number)) * dir
     })
     return filtered
-  }, [pages, posts, search, tier, contentTypeFilter, geography, invStatus, sort])
+  }, [pages, posts, platform, search, tier, contentTypeFilter, geography, invStatus, sort])
 
   async function confirmDelete(page: OutreachPage) {
     const linked = posts.filter(p => p.pageId === page.id).length
@@ -110,9 +118,9 @@ export default function OutreachAllPages() {
   }
 
   function exportCSV() {
-    const header = ['handle', 'tier', 'geography', 'state', 'total_inventory', 'consumed_inventory', 'suggested_per_month', 'status', 'inventory_status']
+    const header = ['handle', 'platform', 'tier', 'geography', 'state', 'total_inventory', 'consumed_inventory', 'suggested_per_month', 'status', 'inventory_status']
     const lines = rows.map(({ page, total, consumed, suggested, m }) => [
-      page.handle, page.followerTier, page.geography, page.state, total, consumed, suggested, m.status,
+      page.handle, page.platform, page.followerTier, page.geography, page.state, total, consumed, suggested, m.status,
       assigned.has(page.id) ? 'assigned' : 'available',
     ].join(','))
     const csv = [header.join(','), ...lines].join('\n')
@@ -149,6 +157,31 @@ export default function OutreachAllPages() {
             <Download className="w-4 h-4" /> Export CSV
           </button>
         </div>
+      </div>
+
+      {/* Platform sub-tabs — Insta / FB. Each shows that platform's full
+          inventory ledger; counts update live as pages are added. */}
+      <div className="flex items-center gap-1 border-b border-border">
+        {(['instagram', 'facebook'] as const).map(pl => {
+          const count = pages.filter(p => p.platform === pl).length
+          const active = platform === pl
+          return (
+            <button key={pl} onClick={() => setPlatform(pl)}
+              className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                active
+                  ? pl === 'facebook' ? 'border-blue-600 text-blue-700' : 'border-orange-600 text-orange-700'
+                  : 'border-transparent text-muted-foreground hover:text-foreground'
+              }`}>
+              {pl === 'facebook' ? 'Facebook' : 'Instagram'}
+              <span className="ml-1.5 text-xs text-muted-foreground">({count})</span>
+            </button>
+          )
+        })}
+        {platform === 'facebook' && (
+          <span className="ml-auto text-[11px] text-muted-foreground pb-1.5">
+            Facebook pages sync the same way Instagram pages do — use Sync now or Add live posts to pull real metrics.
+          </span>
+        )}
       </div>
 
       {/* Filters */}
@@ -238,13 +271,18 @@ export default function OutreachAllPages() {
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-1.5">
                     <Link to={`/outreach/pages/${page.id}`} className="text-xs font-medium text-foreground hover:underline">@{page.handle}</Link>
-                    {isValidInstagramHandle(page.handle) && (
-                      <a href={instagramUrlForHandle(page.handle)} target="_blank" rel="noreferrer"
-                        title={`Open @${page.handle} on Instagram`}
+                    {(page.platform === 'facebook' || isValidInstagramHandle(page.handle)) && (
+                      <a href={profileUrlForPage(page)} target="_blank" rel="noreferrer"
+                        title={`Open @${page.handle} on ${page.platform === 'facebook' ? 'Facebook' : 'Instagram'}`}
                         className="text-muted-foreground hover:text-orange-600">
                         <ExternalLink className="w-3 h-3" />
                       </a>
                     )}
+                  </div>
+                  <div className="mt-0.5 text-[10px] text-muted-foreground">
+                    {page.contentPreferences.length > 0
+                      ? page.contentPreferences.join(' · ')
+                      : <span className="italic opacity-70">Content pref: Not set</span>}
                   </div>
                 </td>
                 <td className="px-3 py-2.5">
@@ -264,6 +302,11 @@ export default function OutreachAllPages() {
                       className="p-1 rounded-md text-muted-foreground hover:bg-orange-50 hover:text-orange-600">
                       <LinkIcon className="w-3.5 h-3.5" />
                     </button>
+                    <button onClick={() => setEditingPage(page)}
+                      title="Edit content preference & inventory"
+                      className="p-1 rounded-md text-muted-foreground hover:bg-orange-50 hover:text-orange-600">
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
                     <button onClick={() => confirmDelete(page)}
                       title="Delete page"
                       className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
@@ -277,7 +320,8 @@ export default function OutreachAllPages() {
         </table>
       </div>
 
-      {creating && <AddPageModal onClose={() => setCreating(false)} />}
+      {creating && <AddPageModal defaultPlatform={platform} onClose={() => setCreating(false)} />}
+      {editingPage && <EditPageModal page={editingPage} onClose={() => setEditingPage(null)} />}
       {importing && <ImportPagesDialog onClose={() => setImporting(false)} />}
       {livePostsPageId && (
         <AddLivePostsDialog
