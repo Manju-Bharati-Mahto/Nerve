@@ -8,6 +8,68 @@
 <link rel="apple-touch-icon" href="icon.svg">
 <link rel="icon" type="image/svg+xml" href="icon.svg">
 <title>Nerve Media Ops — Media Crew, Parul University</title>
+<script>
+/* ═══ LAYOUT SWITCH ═══════════════════════════════════════════════════════════
+   One application, two presentations. This sets <html data-layout="mobile|desktop">
+   before anything is painted, so the phone layer never flashes in over the
+   desktop or the other way round. Every phone-only style is scoped to the
+   attribute; every phone-only behaviour asks isMobileLayout().
+
+   AUTO IS TOUCH-AWARE. Only a touch device (no hover, coarse pointer) at phone
+   width, or a phone in landscape, gets the phone layout. A mouse or trackpad
+   window stays desktop at any width or zoom, so resizing, split screen, docked
+   DevTools or 200% zoom never changes what a desktop user sees.
+
+   A PREFERENCE BEATS AUTO. localStorage 'mo_layout' holds 'desktop' or 'mobile'
+   per device (absent means auto). ?layout= overrides it for one page load and
+   is never saved. Desktop chosen on a phone rewrites the viewport to 1280px,
+   which is the only way to show the real desktop there rather than a squeezed
+   one; that needs a reload, and only ever happens on a narrow touch device.
+
+   NEVER UNDER AN OPEN OVERLAY. A live change (an iPad rotating) is postponed
+   while a modal, drawer, menu or palette is open, and applied when it closes or
+   the route changes — so a half-filled form is never torn down by a rotation.
+
+   Nothing is written to storage here; only moLayout.set() writes.
+   ════════════════════════════════════════════════════════════════════════════ */
+(function(){
+  var KEY='mo_layout', d=document.documentElement,
+      vp=document.querySelector('meta[name=viewport]'), VP0=vp&&vp.getAttribute('content'),
+      MM=typeof window.matchMedia==='function'?function(q){return window.matchMedia(q);}:null,
+      mq=MM?MM('(max-width: 820px) and (hover: none) and (pointer: coarse), (hover: none) and (pointer: coarse) and (max-height: 500px)'):null,
+      touch=!!(MM&&MM('(hover: none) and (pointer: coarse)').matches),
+      narrow0=touch&&window.innerWidth<=820,     /* against the ORIGINAL viewport */
+      pending=false;
+  function pref(){
+    var q=/[?&]layout=(auto|desktop|mobile)\b/.exec(location.search); if(q) return q[1];
+    try{ var p=localStorage.getItem(KEY); return p==='desktop'||p==='mobile'?p:'auto'; }catch(_){ return 'auto'; }
+  }
+  function apply(){
+    var p=pref(), l=p==='auto'?(mq&&mq.matches?'mobile':'desktop'):p, was=d.getAttribute('data-layout');
+    if(was&&was!==l){
+      if(typeof window.moCanFlip==='function'&&!window.moCanFlip()){ pending=true; return; }
+      window.dispatchEvent(new Event('mo:layout-before'));   /* old layout still set */
+    }
+    pending=false;
+    if(vp) vp.setAttribute('content',(p==='desktop'&&narrow0)?'width=1280, viewport-fit=cover':VP0);
+    d.setAttribute('data-layout',l); d.setAttribute('data-layout-pref',p);
+    if(was&&was!==l) window.dispatchEvent(new Event('mo:layout'));
+  }
+  apply();
+  if(mq){ var h=function(){ if(pref()==='auto') apply(); };
+    if(mq.addEventListener) mq.addEventListener('change',h); else if(mq.addListener) mq.addListener(h); }
+  window.moLayout={
+    get pref(){ return pref(); },
+    get layout(){ return d.getAttribute('data-layout'); },
+    flushPending:function(){ if(pending) apply(); },
+    set:function(v){
+      try{ if(v==='auto') localStorage.removeItem(KEY); else localStorage.setItem(KEY,v); }catch(_){}
+      var before=vp&&vp.getAttribute('content'); apply();
+      if(vp&&vp.getAttribute('content')!==before) location.reload();
+    }
+  };
+})();
+</script>
 <style>
 /* ============================================================================
    NERVE MEDIA OPS — DESIGN TOKENS  (PRD §9.1 Design language, §9.4 Dark mode)
@@ -1025,6 +1087,14 @@ html[data-theme=dark] .cal-ev{color:var(--text-inv)}
   #content{overflow:visible} body{overflow:visible} .print-only{display:block}
   .card{break-inside:avoid;box-shadow:none}
 }
+/* ==== PHONE LAYER ====
+   Every rule between these markers is for the phone presentation and nothing
+   else. Each selector starts with html[data-layout="mobile"] (the one exception:
+   html:not([data-layout="mobile"]) .m-only, which hides phone-only markup on
+   desktop). No @media inside: the layout attribute is the only switch, so a
+   forced Mobile on a wide screen and a phone in landscape get the same rules.
+   src/test/phone-layer-scope.test.ts fails the build on anything else. */
+/* ==== END PHONE LAYER ==== */
 </style>
 </head>
 <body>
@@ -3165,6 +3235,21 @@ trgEquipStatus();
    ========================================================================== */
 const $  = s=>document.querySelector(s);
 const $$ = s=>Array.from(document.querySelectorAll(s));
+/* ── Layout (see the LAYOUT SWITCH in <head>) ───────────────────────────── */
+const isMobileLayout = ()=>document.documentElement.getAttribute('data-layout')==='mobile';
+/* Launched from the home screen rather than a browser tab. */
+function isStandalone(){
+  try{ return !!((window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches)
+    ||window.navigator.standalone===true); }catch(_){ return false; }
+}
+/* A layout change is postponed while any of these is open, so a rotation or
+   resize can never tear down something a person is in the middle of. */
+function moOverlayOpen(){
+  return !!($('#modal-layer.on')||$('#drawer.on')||$('#palette.on')||$('.menu')||$('#kiosk.on'));
+}
+window.moCanFlip = ()=>!moOverlayOpen();
+/* Called when an overlay closes or the route changes: apply a postponed flip. */
+const moFlushLayout = ()=>{ if(window.moLayout) window.moLayout.flushPending(); };
 const esc = s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const el = (h)=>{const t=document.createElement('template');t.innerHTML=h.trim();return t.content.firstElementChild;};
 
@@ -3360,11 +3445,11 @@ function modal(html,opts={}){
   const f=layer.querySelector('input,select,textarea,button.primary');if(f)setTimeout(()=>f.focus(),60);
   return layer.querySelector('.modal');
 }
-function closeModal(){$('#modal-layer').classList.remove('on');$('#modal-layer').innerHTML='';}
+function closeModal(){$('#modal-layer').classList.remove('on');$('#modal-layer').innerHTML='';moFlushLayout();}
 function openDrawer(html){
   $('#drawer').innerHTML=html;$('#drawer').classList.add('on');$('#scrim').classList.add('on');
 }
-function closeDrawer(){$('#drawer').classList.remove('on');$('#scrim').classList.remove('on');}
+function closeDrawer(){$('#drawer').classList.remove('on');$('#scrim').classList.remove('on');moFlushLayout();}
 function menu(anchor,items){
   closeMenu();
   const r=anchor.getBoundingClientRect();
@@ -3380,7 +3465,7 @@ function menu(anchor,items){
   m.querySelectorAll('.menu-item').forEach(b=>b.onclick=()=>{const it=items[+b.dataset.i];closeMenu();if(it.fn)it.fn();});
   setTimeout(()=>document.addEventListener('click',closeMenu,{once:true}),10);
 }
-function closeMenu(){$$('.menu').forEach(m=>m.remove());}
+function closeMenu(){$$('.menu').forEach(m=>m.remove());moFlushLayout();}
 
 /* ---------- SVG charts (no CDN) ---------- */
 function chartBar(data,opts={}){
@@ -3814,6 +3899,12 @@ function render(){
   assetFlushWanted();
 }
 addEventListener('hashchange',render);
+addEventListener('hashchange',moFlushLayout);
+/* Runs while the OLD layout is still set. Flips never happen under an open
+   overlay, so there is nothing to close — only the off-canvas nav to put away. */
+addEventListener('mo:layout-before',()=>{document.body.classList.remove('nav-open');});
+/* render() redraws the page, the sidebar and the bottom bar for the new layout. */
+addEventListener('mo:layout',()=>render());
 
 /* generic page wiring — delegated handlers declared by data-attributes */
 function wirePage(){
@@ -4026,7 +4117,7 @@ function openPalette(pre){
   const inp=$('#pal-input');inp.value=pre||'';S.palIndex=0;
   drawPalette();inp.focus();inp.select();
 }
-function closePalette(){$('#palette').classList.remove('on');}
+function closePalette(){$('#palette').classList.remove('on');moFlushLayout();}
 function drawPalette(){
   const items=paletteItems($('#pal-input').value);S._pal=items;
   if(S.palIndex>=items.length)S.palIndex=0;
@@ -21736,7 +21827,12 @@ const MO_API = {
    destroyed session) triggers the same wipe + a redirect to /login with notice. */
 let _loggingOut=false;
 async function clearClientAuth(){
+  /* How this DEVICE shows Nerve is not session data: signing out or expiring
+     must not quietly switch a phone back to Auto. Kept only if it was set,
+     restored before the first await so nothing can read the gap. */
+  let layoutPref=null; try{ layoutPref=localStorage.getItem('mo_layout'); }catch(_){}
   try{ localStorage.clear(); sessionStorage.clear(); }catch(_){}
+  try{ if(layoutPref!==null) localStorage.setItem('mo_layout',layoutPref); }catch(_){}
   try{ if(window.caches){ const ks=await caches.keys(); await Promise.all(ks.map(k=>caches.delete(k))); } }catch(_){}
   try{ if(navigator.serviceWorker){ const rs=await navigator.serviceWorker.getRegistrations(); await Promise.all(rs.map(r=>r.unregister())); } }catch(_){}
 }
