@@ -92,12 +92,13 @@ export async function bootStaff(page: Page, role: Staff, hash = "#/media/home") 
   await page.goto(`${ORIGIN}/api/media-ops/index.html${hash}`);
   await ready(page);
   const s = SEED[role];
-  if (s.id !== 1 || s.relabel) {
-    await page.evaluate(`(()=>{const u=DB.users.find(x=>x.id===${s.id});
-      if(!u) throw new Error('no seed user ${s.id}');
-      ${s.relabel ? `u.role='${s.relabel}';` : ""}
-      S.me=${s.id}; render();})()`);
-  }
+  /* Always set S.me, even for the admin at id 1: a prior in-page role switch in
+     the same worker can survive a same-URL reload, so relying on the seed
+     default is not safe. */
+  await page.evaluate(`(()=>{const u=DB.users.find(x=>x.id===${s.id});
+    if(!u) throw new Error('no seed user ${s.id}');
+    ${s.relabel ? `u.role='${s.relabel}';` : ""}
+    S.me=${s.id}; render();})()`);
   const actual = await page.evaluate("role()");
   if (actual !== role) throw new Error(`booted as ${actual}, wanted ${role}`);
 }

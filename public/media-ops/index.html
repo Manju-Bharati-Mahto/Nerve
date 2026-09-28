@@ -1164,12 +1164,55 @@ html[data-layout="mobile"] #mobilebar .mi{font-size:20px;line-height:1;display:g
 html[data-layout="mobile"] #mobilebar .mi svg{width:22px;height:22px}
 html[data-layout="mobile"] #mobilebar button.fab .mi{width:44px;height:44px;margin-top:-14px;box-shadow:0 4px 14px rgba(37,99,235,.40)}
 html[data-layout="mobile"] #content{padding-bottom:calc(var(--mbar-h) + var(--safe-b));
-  padding-left:var(--safe-l);padding-right:var(--safe-r)}
+  padding-left:var(--safe-l);padding-right:var(--safe-r);
+  scroll-behavior:auto;overscroll-behavior-y:contain}
 
 /* Toasts sit above the bar instead of on it, full width so a long message wraps
    rather than running off a 320px screen. */
 html[data-layout="mobile"] #toasts{left:12px;right:12px;transform:none;width:auto;max-width:none;
   bottom:calc(var(--mbar-h) + var(--safe-b) + 8px)}
+
+/* ── P3 nav: bar badges, and the More sheet ───────────────────────────────── */
+/* On a phone the sidebar is reached through the More sheet, not the burger. */
+html[data-layout="mobile"] #btn-burger{display:none}
+html[data-layout="mobile"] #mobilebar .mi{position:relative}
+html[data-layout="mobile"] .mb-badge{position:absolute;top:-6px;left:50%;transform:translateX(6px);min-width:15px;height:15px;
+  padding:0 4px;border-radius:8px;background:var(--danger);color:#fff;font-size:9.5px;font-weight:700;
+  line-height:15px;text-align:center;font-variant-numeric:tabular-nums}
+html[data-layout="mobile"] .mb-dot{position:absolute;top:-3px;left:50%;transform:translateX(8px);width:8px;height:8px;
+  border-radius:50%;background:var(--danger)}
+html[data-layout="mobile"] #mobilebar .mb-it.on{color:var(--primary-text)}
+html[data-layout="mobile"] #mobilebar .mb-it.fab.on{color:var(--primary-contrast)}
+
+html[data-layout="mobile"] #m-sheet-scrim{position:fixed;inset:0;background:var(--overlay);opacity:0;pointer-events:none;
+  transition:opacity var(--dur) var(--ease);z-index:74;backdrop-filter:blur(1.5px)}
+html[data-layout="mobile"] #m-sheet-scrim.on{opacity:1;pointer-events:auto}
+html[data-layout="mobile"] #m-sheet{position:fixed;left:0;right:0;bottom:0;z-index:75;background:var(--surface);
+  border-radius:var(--r-xl) var(--r-xl) 0 0;box-shadow:0 -8px 30px rgba(0,0,0,.28);
+  transform:translateY(101%);transition:transform 220ms var(--ease);
+  max-height:calc(100dvh - var(--safe-t) - 24px);display:flex;flex-direction:column;overflow:hidden}
+html[data-layout="mobile"] #m-sheet.on{transform:none}
+html[data-layout="mobile"] .m-sheet-head{display:flex;align-items:center;gap:var(--s3);flex:0 0 auto;
+  padding:calc(12px + var(--safe-t)) 12px 8px 20px;border-bottom:1px solid var(--border)}
+html[data-layout="mobile"] .m-sheet-head h2{flex:1;font-size:17px;font-weight:650;margin:0}
+html[data-layout="mobile"] .m-sheet-head .icon-btn{width:44px;height:44px}
+html[data-layout="mobile"] .m-sheet-body{flex:1;overflow-y:auto;overscroll-behavior:contain;
+  padding:8px 12px calc(16px + var(--safe-b))}
+html[data-layout="mobile"] .m-sheet-group{margin-top:10px}
+html[data-layout="mobile"] .m-sheet-label{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--text-3);padding:8px 8px 4px}
+html[data-layout="mobile"] .m-sheet-row{display:flex;align-items:center;gap:14px;width:100%;min-height:48px;
+  padding:8px 8px;border-radius:var(--r);text-align:left;color:var(--text);font-size:15px}
+html[data-layout="mobile"] .m-sheet-row:active{background:var(--surface-2)}
+html[data-layout="mobile"] .m-sheet-row.danger{color:var(--danger)}
+html[data-layout="mobile"] .msr-ico{display:grid;place-items:center;width:24px;color:var(--text-2)}
+html[data-layout="mobile"] .m-sheet-row.danger .msr-ico{color:var(--danger)}
+html[data-layout="mobile"] .msr-ico svg{width:20px;height:20px}
+html[data-layout="mobile"] .msr-l{flex:1;min-width:0}
+html[data-layout="mobile"] .msr-badge{min-width:20px;height:20px;padding:0 6px;border-radius:10px;background:var(--danger);
+  color:#fff;font-size:11px;font-weight:700;line-height:20px;text-align:center;font-variant-numeric:tabular-nums}
+html[data-layout="mobile"] .msr-ext{display:grid;place-items:center;color:var(--text-3)}
+html[data-layout="mobile"] .msr-ext svg{width:15px;height:15px}
 /* ==== END PHONE LAYER ==== */
 </style>
 </head>
@@ -1248,13 +1291,9 @@ html[data-layout="mobile"] #toasts{left:12px;right:12px;transform:none;width:aut
 <div id="toasts" aria-live="polite"></div>
 
 <!-- Mobile bottom tab bar -->
-<nav id="mobilebar" aria-label="Mobile navigation"><div class="mb-in">
-  <button data-mb="#/media/my-day"><span class="mi">◉</span>My Day</button>
-  <button data-mb="#/media/projects"><span class="mi">▤</span>Projects</button>
-  <button class="fab" data-mb="log"><span class="mi">＋</span>Log</button>
-  <button data-mb="#/media/equipment"><span class="mi">▣</span>Gear</button>
-  <button data-mb="#/media/notifications"><span class="mi">◔</span>Alerts</button>
-</div></nav>
+<nav id="mobilebar" aria-label="Mobile navigation"><div class="mb-in"></div></nav>
+<div id="m-sheet-scrim" class="m-only"></div>
+<div id="m-sheet" class="m-only" role="dialog" aria-modal="true" aria-labelledby="m-sheet-h"></div>
 
 <!-- Equipment kiosk -->
 <div id="kiosk"></div>
@@ -3324,7 +3363,7 @@ function isStandalone(){
 /* A layout change is postponed while any of these is open, so a rotation or
    resize can never tear down something a person is in the middle of. */
 function moOverlayOpen(){
-  return !!($('#modal-layer.on')||$('#drawer.on')||$('#palette.on')||$('.menu')||$('#kiosk.on'));
+  return !!($('#modal-layer.on')||$('#drawer.on')||$('#palette.on')||$('.menu')||$('#kiosk.on')||$('#m-sheet.on'));
 }
 window.moCanFlip = ()=>!moOverlayOpen();
 /* Called when an overlay closes or the route changes: apply a postponed flip. */
@@ -3369,6 +3408,35 @@ function ring(pct, o){
    ICON SET — inline SVG, stroke-based, 24×24. No icon font, no CDN.
    ========================================================================== */
 const ICONS={
+ /* ── Tier A (mobile chrome + nav). Portions © Lucide Contributors (ISC);
+    see node_modules/lucide-react/LICENSE. Element markup only. */
+ apps:'<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>',
+ back:'<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+ up:'<path d="m18 15-6-6-6 6"/>',
+ kebab:'<circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/>',
+ tick:'<path d="M20 6 9 17l-5-5"/>',
+ user:'<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+ logout:'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>',
+ sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+ monitor:'<rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>',
+ smartphone:'<rect width="14" height="20" x="5" y="2" rx="2" ry="2"/><path d="M12 18h.01"/>',
+ external:'<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+ sliders:'<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/>',
+ trash:'<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>',
+ info:'<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+ inbox:'<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+ send:'<path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/>',
+ clipboard:'<rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/>',
+ clapper:'<path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z"/><path d="m6.2 5.3 3.1 3.9"/><path d="m12.4 3.4 3.1 4"/><path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
+ gallery:'<path d="M18 22H4a2 2 0 0 1-2-2V6"/><path d="m22 13-1.296-1.296a2.41 2.41 0 0 0-3.408 0L11 18"/><circle cx="12" cy="8" r="2"/><rect width="16" height="16" x="6" y="2" rx="2"/>',
+ megaphone:'<path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/>',
+ usercog:'<circle cx="18" cy="15" r="3"/><circle cx="9" cy="7" r="4"/><path d="M10 15H6a4 4 0 0 0-4 4v2"/><path d="m21.7 16.4-.9-.3"/><path d="m15.2 13.9-.9-.3"/><path d="m16.6 18.7.3-.9"/><path d="m19.1 12.2.3-.9"/><path d="m19.6 18.7-.4-1"/><path d="m16.8 12.3-.4-1"/><path d="m14.3 16.6 1-.4"/><path d="m20.7 13.8 1-.4"/>',
+ tv:'<rect width="20" height="15" x="2" y="7" rx="2" ry="2"/><polyline points="17 2 12 7 7 2"/>',
+ wallet:'<path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>',
+ trophy:'<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>',
+ swords:'<polyline points="14.5 17.5 3 6 3 3 6 3 17.5 14.5"/><line x1="13" x2="19" y1="19" y2="13"/><line x1="16" x2="20" y1="16" y2="20"/><line x1="19" x2="21" y1="21" y2="19"/><polyline points="14.5 6.5 18 3 21 3 21 6 17.5 9.5"/><line x1="5" x2="9" y1="14" y2="18"/><line x1="7" x2="4" y1="17" y2="20"/><line x1="3" x2="5" y1="19" y2="21"/>',
+ award:'<path d="m15.477 12.89 1.515 8.526a.5.5 0 0 1-.81.47l-3.58-2.687a1 1 0 0 0-1.197 0l-3.586 2.686a.5.5 0 0 1-.81-.469l1.514-8.526"/><circle cx="12" cy="8" r="6"/>',
+ scan:'<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/>',
  home:'<path d="M3 10.3 12 3.2l9 7.1V20a1 1 0 0 1-1 1h-4.6v-6H8.6v6H4a1 1 0 0 1-1-1z"/>',
  myday:'<rect x="3" y="4.6" width="18" height="16.4" rx="2.4"/><path d="M8 2.6v4M16 2.6v4M3 9.6h18M8.6 15.2l2.2 2.2 4.1-4.3"/>',
  folder:'<path d="M3 7.2a2 2 0 0 1 2-2h3.6l2 2.2H19a2 2 0 0 1 2 2v8.4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
@@ -3622,28 +3690,28 @@ const NAV = [
     {r:'#/media/my-day', i:'myday', l:'My Day', sk:'m'}
   ]},
   {group:'SMC Network',items:[
-    {r:'#/media/smc',i:'users',l:'SMC Management', cap:'smc.manage', pfx:['#/media/smc']}
+    {r:'#/media/smc',i:'users',l:'SMC Management', ml:'SMC', mi:'megaphone', cap:'smc.manage', pfx:['#/media/smc']}
   ]},
   {group:'Operations',items:[
     /* The coordinator's two owned stages. Admin sees them too — they oversee the
        pipeline — but nobody else has a reason to. */
-    {r:'#/media/requests',i:'file',  l:'Request Intake',    roles:['coordinator','admin']},
-    {r:'#/media/dispatch',i:'flow',  l:'Dispatch',          roles:['coordinator','admin'],
+    {r:'#/media/requests',i:'file',  l:'Request Intake', ml:'Requests', mi:'inbox', roles:['coordinator','admin']},
+    {r:'#/media/dispatch',i:'flow',  l:'Dispatch', mi:'send', roles:['coordinator','admin'],
       badge:()=>(typeof dispatchQueue==='function'?dispatchQueue().length:0)||''}
   ]},
   {group:'Production',items:[
     {r:'#/media/projects',i:'folder',l:'Projects', sk:'p'},
-    {r:'#/media/pipeline',i:'flow',  l:'Production Pipeline', badge:()=>overdueDeliverables().length||''},
-    {r:'#/media/reports', i:'file',  l:'Daily Reports', sk:'r', badge:()=>reviewQueueCount()||''},
-    {r:'#/media/boards',  i:'board', l:'Production Board',    cap:'boards.manage'}
+    {r:'#/media/pipeline',i:'flow',  l:'Production Pipeline', ml:'Pipeline', badge:()=>overdueDeliverables().length||''},
+    {r:'#/media/reports', i:'file',  l:'Daily Reports', ml:'Reports', mi:'clipboard', sk:'r', badge:()=>reviewQueueCount()||''},
+    {r:'#/media/boards',  i:'board', l:'Production Board', ml:'Boards', cap:'boards.manage'}
   ]},
   {group:'Casting',items:[
-    {r:'#/media/casting',i:'users', l:'Casting Preview',    cap:'casting.view'},
-    {r:'#/media/casting-admin',i:'layers',l:'Casting Management', cap:'casting.manage',
+    {r:'#/media/casting',i:'users', l:'Casting Preview', ml:'Casting', mi:'clapper', cap:'casting.view'},
+    {r:'#/media/casting-admin',i:'layers',l:'Casting Management', ml:'Casting mgmt', cap:'casting.manage',
       badge:()=>(typeof openCastingRequests==='function'?openCastingRequests().length:0)||''}
   ]},
   {group:'Assets',items:[
-    {r:'#/media/library', i:'layers',l:'Media Library', sk:'l'},
+    {r:'#/media/library', i:'layers',l:'Media Library', ml:'Library', mi:'gallery', sk:'l'},
     {r:'#/media/equipment',i:'camera',l:'Equipment', sk:'e', badge:()=>overdueEquipment().length||''}
   ]},
   {group:'Planning',items:[
@@ -3655,7 +3723,7 @@ const NAV = [
     {r:'#/media/analytics',i:'chart',l:'Analytics', sk:'a', cap:'analytics.department'},
     {r:'#/media/kra',     i:'target',l:'KRA'},
     {r:'#/media/performance',i:'trend',l:'Performance'},
-    {r:'#/media/ai',      i:'sparkles',l:'AI Assist'}
+    {r:'#/media/ai',      i:'sparkles',l:'AI Assist', ml:'AI'}
   ]},
   {group:'Creator Network',items:[
     /* Parul's incentive-based content workforce — a vertical inside Media Ops,
@@ -3678,15 +3746,15 @@ const NAV = [
 
        optIn: never handed out by defaultModulesFor(). Unlike every other module,
        a role does not imply a wall display — an Admin grants it deliberately. */
-    {r:'#/media/tv', i:'grid', l:'TV Display Board', optIn:true}
+    {r:'#/media/tv', i:'grid', l:'TV Display Board', ml:'TV board', mi:'tv', optIn:true}
   ]},
   {group:'Admin',items:[
     /* '#/media/admin' (bare) resolves to Settings' lookups view, so Settings
        owns that prefix too; longer prefixes below still win the match. */
     {r:'#/media/admin/settings',i:'settings',l:'Settings',    minRole:'admin', pfx:['#/media/admin/settings','#/media/admin']},
     {r:'#/media/admin/automations',i:'zap',l:'Automations',   minRole:'admin'},
-    {r:'#/media/admin/audit',i:'shield',l:'Audit Logs',       cap:'admin.audit'},
-    {r:'#/media/admin/users',i:'users',l:'Users & Roles',     minRole:'admin'}
+    {r:'#/media/admin/audit',i:'shield',l:'Audit Logs', ml:'Audit', cap:'admin.audit'},
+    {r:'#/media/admin/users',i:'users',l:'Users & Roles', ml:'Users', mi:'usercog', minRole:'admin'}
   ]}
 ];
 const ROLE_RANK={employee:0,team_lead:1,admin:2};
@@ -3709,6 +3777,10 @@ function navShow(it,r){
   }
   return true;
 }
+/* Reachable = shown to this role AND the module not revoked. One predicate for
+   the sidebar, the mobile bar, firstAllowedRoute and the palette, so no two of
+   them can ever disagree about what the viewer may open. */
+const navReachable = it => navShow(it) && moduleAllowed(hashModule(it.r));
 /* ── Per-user Module Access ────────────────────────────────────────────────
    Admin grants a set of module keys per user (allowed_modules on /state.users).
    NULL = unrestricted (role-based, the default for existing users/admins); an
@@ -3734,7 +3806,7 @@ function hashModule(hash){ let best=null,len=-1; for(const m of MODULES) for(con
 function moduleAllowed(mod){ if(mod==null)return true; if(isAdmin())return true;
   const eff=effectiveModulesFor(me()); return eff===null||eff.includes(mod); }
 function firstAllowedRoute(){ if(isAdmin()||effectiveModulesFor(me())===null)return '#/media/home';
-  for(const g of NAV)for(const it of g.items)if(navShow(it)&&moduleAllowed(hashModule(it.r)))return it.r; return null; }
+  for(const g of NAV)for(const it of g.items)if(navReachable(it))return it.r; return null; }
 /* Role defaults — derived, so they can never drift from the sidebar either. */
 /* What a group starts with. A configured default wins; otherwise fall back to
    the set derived from the nav, so a group nobody has touched behaves exactly as
@@ -3806,8 +3878,7 @@ function renderNav(){
      way around the module; every other module keeps its entry. */
   const cnOpen=!!creatorNavHtml();
   $('#nav').innerHTML = NAV.map(g=>{
-    const items=g.items.filter(it=>navShow(it)&&moduleAllowed(hashModule(it.r))
-      &&!(cnOpen&&it.r===CN_ROOT));
+    const items=g.items.filter(it=>navReachable(it)&&!(cnOpen&&it.r===CN_ROOT));
     if(!items.length)return '';
     return `<div class="nav-group"><div class="nav-group-label">${g.group}</div>${items.map(it=>{
       const b=it.badge?it.badge():'';
@@ -3836,10 +3907,11 @@ function renderNav(){
   renderMobileBar();
   const u=me();
   $('#me-av').style.backgroundImage="url('"+avatarURL(S.me)+"')";
-  $('#me-av').title=u.full_name+' · '+({admin:'Admin',team_lead:'Team Lead',employee:'Employee'})[u.role];
+  $('#me-av').title=u.full_name+' · '+({admin:'Admin',team_lead:'Team Lead',coordinator:'Coordinator',employee:'Employee'})[u.role];
   $('#me-name').textContent=u.full_name.split(' ')[0]+' '+u.full_name.split(' ').slice(-1)[0][0]+'.';
   const un=DB.notifications.filter(n=>n.user_id===S.me&&!n.is_read).length;
   $('#bell-count').textContent=un; $('#bell-count').style.display=un?'grid':'none';
+  const bell=$('#btn-bell'); if(bell) bell.style.display=(isMobileLayout()&&DB.my_module_group==='creator')?'none':'';
   const cur=NAV.flatMap(g=>g.items).find(it=>S.route===it.r||S.route.startsWith(it.r+'/'));
   /* Inside the Creator Network the crumb names the PAGE. The sidebar already
      says which module they are in, so repeating "Creator Network" here would
@@ -3864,7 +3936,164 @@ function renderNav(){
 /* The bottom bar on a phone. Same rule as the sidebar: it lists what this
    viewer can open, and nothing else. `log` is the Log-a-task FAB, which needs
    the reports module like the L shortcut does. */
+
+/* ── The phone bottom bar and the More sheet (P3) ───────────────────────────
+   The bar carries the 4-5 destinations a role opens most; everything else is
+   one tap away in the More sheet, grouped exactly like the sidebar. Both are
+   derived from the same permissions the sidebar uses (navReachable), so a phone
+   can never offer a door the desktop would not, nor hide one it would. */
+const MOBILE_PRIMARY = {
+  admin:      {keys:['home','projects','reports','leave'], fb:['pipeline','my-day','team','dispatch','calendar']},
+  team_lead:  {keys:['home','projects','reports','leave'], fb:['my-day','pipeline','team','calendar']},
+  coordinator:{keys:['my-day','requests','dispatch','projects'], fb:['home','pipeline','calendar','equipment']},
+  employee:   {fab:'log', keys:['my-day','projects','equipment'], fb:['calendar','reports','home','library']},
+  smc_member: {fab:'log', keys:['my-day','projects','calendar'], fb:['equipment','leave','home','library']},
+};
+const CN_MOBILE = {
+  self:  ['assistant','opps','tasks','points'],
+  lead:  ['assistant','tasks','review','teams'],
+  manage:['overview','review','tasks','events'],
+};
+const navByModule = key => NAV.flatMap(g=>g.items).find(it=>modKeyOf(it.r)===key);
+/* A bar entry from a module key, or null if this viewer cannot reach it. */
+function barNavEntry(key){
+  const it=navByModule(key); if(!it||!navReachable(it)) return null;
+  return {r:it.r, i:it.mi||it.i, l:it.ml||it.l, badge:it.badge};
+}
+/* The bar the signed-in viewer gets: at most four destinations plus More. */
+function mobileBarModel(){
+  if((S.route||'').startsWith(CN_ROOT)){
+    const m=cnMode();
+    if(!m) return [{more:true,i:'apps',l:'More'}];   // still loading, or refused
+    const items=CN_MOBILE[m].map(k=>{const it=cnItems().find(x=>x.k===k);
+      return it?{r:cnRoute(it),i:it.mi||it.i,l:it.ml||it.l,cnk:it.k}:null;})
+      .filter(Boolean).slice(0,4);
+    items.push({more:true,i:'apps',l:'More'});
+    return items;
+  }
+  const spec=MOBILE_PRIMARY[DB.my_module_group||role()]||MOBILE_PRIMARY.employee;
+  const wantFab=spec.fab==='log'&&moduleAllowed('reports');
+  const picks=[], seen=new Set();
+  for(const key of [...spec.keys,...spec.fb]){
+    if(picks.length>=(wantFab?3:4)) break;
+    if(seen.has(key)) continue;
+    const e=barNavEntry(key); if(e){picks.push(e);seen.add(key);}
+  }
+  if(wantFab) picks.splice(Math.min(2,picks.length),0,{fab:true,i:'plus',l:'Log'});
+  picks.push({more:true,i:'apps',l:'More'});
+  return picks;
+}
+/* The route an empty hash lands on for this viewer — the first bar destination. */
+function mobileLanding(){ const e=mobileBarModel().find(x=>x.r); return e?e.r:'#/media/home'; }
+
+function phoneBarActive(e){
+  if(e.fab||e.more) return false;
+  if(e.cnk) return (cnCurrent()||{}).k===e.cnk;
+  return hashModule(S.route)===hashModule(e.r);
+}
+function renderPhoneBar(){
+  const bar=$('#mobilebar'), inner=bar&&bar.querySelector('.mb-in'); if(!inner) return;
+  const model=mobileBarModel();
+  const sheetOpen=$('#m-sheet')&&$('#m-sheet').classList.contains('on');
+  inner.innerHTML=model.map((e,i)=>{
+    const on=e.more?sheetOpen:phoneBarActive(e);
+    const badge=(!e.fab&&!e.more&&e.badge)?e.badge():'';
+    const dot=e.more&&moreHasBadge()?'<span class="mb-dot"></span>':'';
+    const cls=`mb-it${e.fab?' fab':''}${on?' on':''}`;
+    const label=e.fab?'Log':(e.more?'More':esc(e.l));
+    return `<button class="${cls}" data-mbi="${i}" ${on?'aria-current="page"':''}
+      aria-label="${esc(e.fab?'Log a task':label)}"><span class="mi">${ic(e.i)}${badge?`<span class="mb-badge">${badge}</span>`:''}${dot}</span>${label}</button>`;
+  }).join('');
+  bar.style.display='';
+  inner.querySelectorAll('button').forEach((btn,i)=>btn.onclick=()=>{
+    const e=model[i];
+    if(e.fab){ openTaskLog(); return; }
+    if(e.more){ openMoreSheet(); return; }
+    /* Tapping the tab you are already on scrolls its page back to the top. */
+    if(phoneBarActive(e)){ const c=$('#content'); if(c) c.scrollTop=0; return; }
+    closeMoreSheet(); location.hash=e.r;
+  });
+}
+/* Does anything hidden in the More sheet carry a count worth a dot on More? */
+function moreHasBadge(){
+  const onBar=new Set(mobileBarModel().filter(e=>e.r).map(e=>e.r));
+  return NAV.flatMap(g=>g.items).some(it=>navReachable(it)&&!onBar.has(it.r)&&it.badge&&it.badge());
+}
+
+/* ── The More sheet ─────────────────────────────────────────────────────────
+   Everything off the bar, grouped like the sidebar, plus an Account group. */
+function moreGroups(){
+  const onBar=new Set(mobileBarModel().filter(e=>e.r).map(e=>e.r));
+  const groups=[];
+  const inCreator=(S.route||'').startsWith(CN_ROOT)&&cnMode();
+  if(inCreator){
+    for(const g of cnGroups()){
+      const items=g.items.filter(it=>!onBar.has(cnRoute(it)))
+        .map(it=>({go:cnRoute(it),i:it.mi||it.i,l:it.l}));
+      if(items.length) groups.push({label:g.group,items});
+    }
+    /* Staff who are also on the network keep every Media Ops door, under one head. */
+    const mo=NAV.flatMap(g=>g.items).filter(it=>navReachable(it)&&it.r!==CN_ROOT)
+      .map(it=>({go:it.r,i:it.i,l:it.l,badge:it.badge}));
+    if(mo.length) groups.push({label:'Media Ops',items:mo});
+  } else {
+    const cnOpen=false;
+    for(const g of NAV){
+      const items=g.items.filter(it=>navReachable(it)&&!onBar.has(it.r))
+        .map(it=>({go:it.r,i:it.i,l:it.l,badge:it.badge}));
+      if(items.length) groups.push({label:g.group,items});
+    }
+  }
+  /* Account: the shell controls, reachable from the sheet rather than the topbar. */
+  const acct=[];
+  if(!(DB.my_module_group==='creator')) acct.push({act:'moreNotifications',i:'bell',l:'Notifications',
+    badge:()=>DB.notifications.filter(n=>n.user_id===S.me&&!n.is_read).length||''});
+  acct.push({act:'moreProfile',i:'user',l:'Profile'});
+  if(moduleAllowed('kiosk')&&moduleAllowed('equipment')) acct.push({act:'moreKiosk',i:'kiosk',l:'Kiosk mode'});
+  acct.push({act:'moreNerveHome',i:'external',l:'Nerve home'});
+  acct.push({act:'logout',i:'logout',l:'Log out',danger:true});
+  groups.push({label:'Account',items:acct});
+  return groups;
+}
+function drawMoreSheet(){
+  const sheet=$('#m-sheet'); if(!sheet) return;
+  sheet.innerHTML=`<div class="m-sheet-head"><h2 id="m-sheet-h">Menu</h2>
+      <button class="icon-btn" aria-label="Close" data-msclose>${ic('x')}</button></div>
+    <div class="m-sheet-body">${moreGroups().map(g=>`
+      <div class="m-sheet-group"><div class="m-sheet-label">${esc(g.label)}</div>
+      ${g.items.map(it=>{const b=it.badge?it.badge():'';
+        const attr=it.go?`data-go="${it.go}"`:`data-act="${it.act}"`;
+        return `<button class="m-sheet-row${it.danger?' danger':''}" ${attr}>
+          <span class="msr-ico">${ic(it.i)}</span><span class="msr-l">${esc(it.l)}</span>
+          ${b?`<span class="msr-badge">${b}</span>`:''}${it.act==='moreNerveHome'?`<span class="msr-ext">${ic('external')}</span>`:''}</button>`;}).join('')}
+      </div>`).join('')}</div>`;
+  sheet.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>{closeMoreSheet();location.hash=b.dataset.go;});
+  sheet.querySelectorAll('[data-msclose]').forEach(b=>b.onclick=closeMoreSheet);
+  sheet.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>MORE_ACTIONS[b.dataset.act]&&MORE_ACTIONS[b.dataset.act]());
+}
+const MORE_ACTIONS={
+  moreNotifications:()=>{closeMoreSheet();location.hash='#/media/notifications';},
+  moreProfile:()=>{closeMoreSheet();$('#btn-role').onclick();},
+  moreKiosk:()=>{closeMoreSheet();openKiosk();},
+  moreNerveHome:()=>{closeMoreSheet();window.location.href='/';},
+  logout:()=>ACTIONS.logout(),
+};
+function openMoreSheet(){
+  drawMoreSheet();
+  $('#m-sheet-scrim').classList.add('on');
+  $('#m-sheet').classList.add('on');
+  renderMobileBar();   /* light the More tab */
+}
+function closeMoreSheet(){
+  const sh=$('#m-sheet'); if(!sh||!sh.classList.contains('on')){ moFlushLayout(); return; }
+  sh.classList.remove('on');
+  $('#m-sheet-scrim').classList.remove('on');
+  renderMobileBar();
+  moFlushLayout();
+}
+
 function renderMobileBar(){
+  if(isMobileLayout()) return renderPhoneBar();
   const bar=$('#mobilebar'); if(!bar) return;
   const inCreator=(S.route||'').startsWith(CN_ROOT), items=inCreator?cnItems():[];
   let html;
@@ -3985,6 +4214,7 @@ addEventListener('hashchange',moFlushLayout);
 addEventListener('mo:layout-before',()=>{
   document.body.classList.remove('nav-open');
   if(!$('#drawer.on')) $('#scrim').classList.remove('on');
+  const sh=$('#m-sheet'); if(sh){ sh.classList.remove('on'); $('#m-sheet-scrim').classList.remove('on'); }
 });
 /* render() redraws the page, the sidebar and the bottom bar for the new layout. */
 addEventListener('mo:layout',()=>render());
@@ -4022,7 +4252,7 @@ function closeMobileNav(){
 $('#sidebar').addEventListener('click',e=>{
   if(isMobileLayout()&&e.target.closest('a[href],.nav-item')) closeMobileNav();
 });
-addEventListener('hashchange',()=>{ if(isMobileLayout()) closeMobileNav(); });
+addEventListener('hashchange',()=>{ if(isMobileLayout()){ closeMobileNav(); closeMoreSheet(); } });
 { const ms=$('#btn-msearch'); if(ms) ms.onclick=()=>openPalette(); }
 $('#scrim').onclick=()=>{closeDrawer();document.body.classList.remove('nav-open');};
 $('#btn-theme').onclick=()=>toggleTheme();
@@ -4035,7 +4265,7 @@ $('#btn-bell').onclick=()=>{location.hash='#/media/notifications';};
 $('#btn-quickadd').onclick=e=>menu(e.currentTarget,quickAddItems());
 $('#btn-logout').onclick=()=>ACTIONS.logout();
 $('#btn-role').onclick=()=>{
-  const m=me(), rl={admin:'Admin',team_lead:'Team Lead',employee:'Employee'}[m.role]||'Member';
+  const m=me(), rl={admin:'Admin',team_lead:'Team Lead',coordinator:'Coordinator',employee:'Employee'}[m.role]||'Member';
   modal(`<div class="mo-head"><div class="f ac gap3">${avatar(S.me,'lg')}
       <div><h2>${esc(m.full_name)}</h2><p>${esc(m.email||'')} · ${rl}</p></div></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
@@ -4183,7 +4413,7 @@ function paletteItems(q){
      navigation; the way back out is the Media Ops entry itself. */
   const navItems = M.inCreator
     ? cnItems().map(it=>({i:it.i,l:it.l,r:cnRoute(it)}))
-    : NAV.flatMap(g=>g.items).filter(it=>navShow(it)&&moduleAllowed(hashModule(it.r)))
+    : NAV.flatMap(g=>g.items).filter(navReachable)
          .map(it=>({i:it.i,l:it.l,r:it.r}));
   navItems.filter(it=>!q||it.l.toLowerCase().includes(q))
     .slice(0,q?5:4).forEach(it=>A('Navigate',it.i,it.l,it.r,()=>location.hash=it.r));
@@ -11238,17 +11468,17 @@ const CN_NAV = {
   self:[
     {group:'Creator Network',items:[
       {k:'assistant',   s:'assistant',    l:'Assistant',    i:'sparkles',sk:'a'},
-      {k:'opps',        s:'opportunities',l:'Opportunities',i:'file',    sk:'o'},
+      {k:'opps',        s:'opportunities',l:'Opportunities',i:'file',    ml:'Opps', sk:'o'},
       {k:'tasks',       s:'tasks',        l:'My Tasks',     i:'board',   sk:'t'},
-      {k:'board',       s:'leaderboard',  l:'Leaderboard',  i:'trend',   sk:'l'},
-      {k:'warzone',     s:'war-zone',     l:'War Zone',     i:'target',  sk:'w'},
-      {k:'achievements',s:'achievements', l:'Achievements', i:'star',    sk:'h'}]},
+      {k:'board',       s:'leaderboard',  l:'Leaderboard',  i:'trend',   mi:'trophy', sk:'l'},
+      {k:'warzone',     s:'war-zone',     l:'War Zone',     i:'target',  mi:'swords', sk:'w'},
+      {k:'achievements',s:'achievements', l:'Achievements', i:'star',    mi:'award', sk:'h'}]},
     {group:'Insights',items:[
       {k:'analytics',s:'analytics',l:'My Analytics',i:'chart',sk:'n'},
       {k:'points',   s:'points',   l:'My Points',   i:'zap',  sk:'p'}]},
     {group:'Account',items:[
-      {k:'payouts',s:'payouts',l:'My Payouts',i:'file', sk:'y'},
-      {k:'profile',s:'profile',l:'My Profile',i:'users',sk:'m'}]}
+      {k:'payouts',s:'payouts',l:'My Payouts',i:'file', mi:'wallet', sk:'y'},
+      {k:'profile',s:'profile',l:'My Profile',i:'users',mi:'user',sk:'m'}]}
   ],
   /* A Team Lead runs a team AND is a creator themselves, so their navigation
      carries both: My Team and Review beside My Tasks and My Points. What it
@@ -11258,13 +11488,13 @@ const CN_NAV = {
   lead:[
     {group:'Creator Network',items:[
       {k:'assistant',   s:'assistant',    l:'Assistant',    i:'sparkles',sk:'a'},
-      {k:'teams',       s:'my-team',      l:'My Team',      i:'users',   sk:'e'},
-      {k:'opps',        s:'opportunities',l:'Opportunities',i:'file',    sk:'o'},
+      {k:'teams',       s:'my-team',      l:'My Team',      i:'users',   ml:'Team', mi:'users', sk:'e'},
+      {k:'opps',        s:'opportunities',l:'Opportunities',i:'file',    ml:'Opps', sk:'o'},
       {k:'tasks',       s:'tasks',        l:'My Tasks',     i:'board',   sk:'t'},
       {k:'review',      s:'review',       l:'Review',       i:'check',   sk:'r'},
-      {k:'board',       s:'leaderboard',  l:'Leaderboard',  i:'trend',   sk:'l'},
-      {k:'warzone',     s:'war-zone',     l:'War Zone',     i:'target',  sk:'w'},
-      {k:'achievements',s:'achievements', l:'Achievements', i:'star',    sk:'h'}]},
+      {k:'board',       s:'leaderboard',  l:'Leaderboard',  i:'trend',   mi:'trophy', sk:'l'},
+      {k:'warzone',     s:'war-zone',     l:'War Zone',     i:'target',  mi:'swords', sk:'w'},
+      {k:'achievements',s:'achievements', l:'Achievements', i:'star',    mi:'award', sk:'h'}]},
     {group:'Insights',items:[
       {k:'teamAnalytics',s:'team-analytics',l:'Team Analytics',i:'chart',sk:'g'},
       {k:'analytics',    s:'analytics',     l:'My Analytics',  i:'trend',sk:'n'},
@@ -11287,7 +11517,7 @@ const CN_NAV = {
       {k:'review',   s:'review',     l:'Review',   i:'check', sk:'r'}]},
     {group:'Money & Standing',items:[
       {k:'points',     s:'points',     l:'Points',     i:'zap',   sk:'p'},
-      {k:'payouts',    s:'payouts',    l:'Payouts',    i:'file',  sk:'y'},
+      {k:'payouts',    s:'payouts',    l:'Payouts',    i:'file',  mi:'wallet', sk:'y'},
       {k:'recognition',s:'recognition',l:'Recognition',i:'star',  sk:'h'}]},
     {group:'Insights',items:[
       {k:'analytics',s:'analytics',l:'Analytics',i:'chart',   sk:'a'},
