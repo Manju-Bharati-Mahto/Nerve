@@ -267,7 +267,7 @@ describe("checkout and check-in defer to the server", () => {
     expect(m).toMatch(/Expected return date/i);
   });
 
-  it("reports BR-8 from the server's answer rather than recomputing it", async () => {
+  it("reports the damage verdict from the server rather than recomputing it", async () => {
     /* The asset is in the cache because a registry or detail page put it
        there, which is how these actions are reached in the app. */
     ev("assetPut({id:1, asset_tag:'EQ-CAM-001', make:'Sony', model:'A7', condition:'good', status:'available', category_id:1});");
@@ -288,7 +288,7 @@ describe("checkout and check-in defer to the server", () => {
     expect((sent.body as { condition_noted: string }).condition_noted).toBe("good");
     /* The message reports the SERVER's verdict — the browser no longer works
        out for itself whether the condition dropped. */
-    expect(toastText()).toContain("BR-8");
+    expect(toastText()).toMatch(/damage report was opened/i);
   });
 });
 

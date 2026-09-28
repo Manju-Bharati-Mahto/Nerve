@@ -62,6 +62,10 @@ const AV_TOTAL = 80;
 
 const addDays = (iso: string, n: number) =>
   new Date(Date.parse(iso) + n * 86_400_000).toISOString().slice(0, 10);
+/* The page computes TODAY from local time (index.html: NOW minus the timezone
+   offset), so the fixture has to agree with it rather than with UTC. */
+const LOCAL_TODAY = (() => { const n = new Date();
+  return new Date(n.getTime() - n.getTimezoneOffset() * 60_000).toISOString().slice(0, 10); })();
 
 /** A page of bookings in the shape GET /equipment/bookings returns — placed
     inside the window that was asked for, as an overlap query would return. */
@@ -88,8 +92,13 @@ function availability(n: number, offset: number) {
       condition: "good", pool_quantity: null, category_name: "Camera Body",
       available: !broken && !taken,
       blocked_by: broken ? "status" : taken ? "booking" : null,
+      /* RELATIVE TO TODAY, not a calendar date. The grid paints from the page's
+         TODAY forward, so a reservation pinned to 25–26 Sep 2026 stopped being
+         drawn on the 27th and this test began failing on every branch at once —
+         a time-bomb, not a regression. A window starting today is inside the
+         grid whenever the suite runs. */
       bookings: taken
-        ? [{ id: `9${i}`, starts_at: "2026-09-25", ends_at: "2026-09-26",
+        ? [{ id: `9${i}`, starts_at: LOCAL_TODAY, ends_at: addDays(LOCAL_TODAY, 1),
              status: "reserved", user_name: "Asha K." }]
         : [],
     };
@@ -986,7 +995,9 @@ describe("the booking picker stops deciding for itself", () => {
     h.calls.length = 0;
     h.ev("ACTIONS.bookingCheck()");
     await new Promise((r) => setTimeout(r, 120));
-    expect(d.getElementById("bk-conflict")!.textContent).toContain("VR-8");
+    /* The rule is what matters, not the identifier that used to prefix it. */
+    expect(d.getElementById("bk-conflict")!.textContent)
+      .toMatch(/end must be on or after the start/i);
     expect(h.equipmentCalls().filter((c) => c.startsWith("/equipment/availability")))
       .toEqual([]);
   });

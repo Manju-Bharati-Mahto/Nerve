@@ -1047,6 +1047,60 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       const meInt = idMap.get(u.id);
       out.saved_views = arr("saved_views")
         .filter((r) => Number(r.user_id) === meInt || r.is_shared === true);
+      /* PROJECT CONVERSATION FOLLOWS PROJECT VISIBILITY. `visibleProjects()` on
+         the client gives an employee only the projects they own or are assigned
+         to, while production history stays departmental for everyone above them
+         (§16 note 1). The comment threads hanging off those projects were
+         ignoring that split and shipping every conversation in the department
+         to every session. Scoped to the same set the client would draw, so a
+         thread is readable exactly where its project is.
+
+         A coordinator is the deliberate exception. moRoleOf() resolves them to
+         'employee' — which is right for leave and KRAs, and wrong here, because
+         intake and dispatch run across the whole registry and the Projects page
+         already shows them every project. Scoping their comments below their
+         projects would empty a tab they are expected to work in. */
+      const coordinator = await isCoordinator(u);
+      if (myRole === "employee" && !coordinator) {
+        const myProjects = new Set<number>();
+        for (const p of arr("projects")) if (Number(p.owner_id) === meInt) myProjects.add(Number(p.id));
+        /* project_assignments is already filtered to removed_at IS NULL in the
+           STATE query, so a past assignment does not keep a thread open. */
+        for (const a of arr("project_assignments")) if (Number(a.user_id) === meInt) myProjects.add(Number(a.project_id));
+        const myDeliverables = new Set(arr("deliverables")
+          .filter((d) => myProjects.has(Number(d.project_id))).map((d) => Number(d.id)));
+        out.comments = arr("comments").filter((c) =>
+          /* Your own words come back to you even if you have since been removed
+             from the project — losing your own sent messages reads as data loss. */
+          Number(c.user_id) === meInt
+          || (c.entity_type === "project" && myProjects.has(Number(c.entity_id)))
+          || (c.entity_type === "deliverable" && myDeliverables.has(Number(c.entity_id))));
+      }
+      /* A REQUEST IS AN OUTSIDE STAKEHOLDER'S CONTACT DETAIL — the faculty
+         member's name, email and phone that a coordinator took down on a call,
+         plus the budget they named. That is not departmental production history,
+         and intake is already a module: `requests` sits in the admin, team_lead
+         and coordinator defaults and in no employee's. The rows were shipping to
+         every media session regardless of whether the page was even reachable.
+
+         Gated on the module the caller actually holds rather than on their role,
+         so an explicit per-user grant opens the data the same way it opens the
+         page, and a group that has been narrowed closes both at once. */
+      const myModules = await effectiveModules(u);
+      if (!myModules.includes("requests")) {
+        /* The intake WORKFLOW, not just the intake table. A meeting is logged
+           against a request, a vendor activity against a vendor chased for one,
+           a follow-up against the stakeholder waiting on one. Stripping the
+           requests and shipping the notes that reference them would leave an
+           employee holding half a conversation — the contact detail without the
+           record it belongs to. Every one of these is drawn only by the
+           coordinator dashboard, so no employee surface loses anything. */
+        out.requests = [];
+        out.request_links = [];
+        out.meetings = [];
+        out.vendor_activities = [];
+        out.followups = [];
+      }
     }
     // D1 — real "fires / 30d" counters per automation rule, from execution records.
     const fireRows = await pool.query(`
