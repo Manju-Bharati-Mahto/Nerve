@@ -7886,7 +7886,7 @@ function viewLibrary(){
 
     <div class="card mb4"><div class="card-body tight">
       <div class="f gap2 ac wrap">
-        <input class="inp" style="flex:1;min-width:240px" placeholder="Search projects, deliverables, spec notes… (Postgres FTS: name A, tags B, description C)"
+        <input class="inp" style="flex:1;min-width:240px" placeholder="Search projects, deliverables and notes"
           value="${esc(S.filters.libq||'')}" oninput="ACTIONS.libQ({},this)">
         <button class="btn sm" data-act="nlSearch">✦ Natural language</button>
         <span class="small mut3">${rows.length} results</span>

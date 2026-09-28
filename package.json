@@ -18,6 +18,8 @@
     "audit:test-isolation": "node scripts/audit-test-isolation.mjs",
     "audit:migration-order": "node scripts/audit-migration-order.mjs",
     "audit:media-ops": "node scripts/audit-media-ops-bundle.mjs",
+    "test:e2e": "playwright test",
+    "test:e2e:baseline": "E2E_UPDATE=1 playwright test desktop-baseline --update-snapshots",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json",
     "preview": "vite preview",
     "start:server": "node dist-server/server/index.js",

@@ -87,3 +87,8 @@ dist-ssr
 uploads/avatars/
 # Staging area for videos in flight to Google Drive, which is where they live.
 uploads/outreach-video/
+
+# Playwright: pixel baselines are local (regenerate from the P0 commit); run output is disposable
+e2e/__screenshots__/
+test-results/
+playwright-report/
