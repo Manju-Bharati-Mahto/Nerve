@@ -1094,6 +1094,82 @@ html[data-theme=dark] .cal-ev{color:var(--text-inv)}
    desktop). No @media inside: the layout attribute is the only switch, so a
    forced Mobile on a wide screen and a phone in landscape get the same rules.
    src/test/phone-layer-scope.test.ts fails the build on anything else. */
+/* ── Phone-only markup is invisible on desktop — the one rule not scoped to mobile */
+html:not([data-layout="mobile"]) .m-only{display:none!important}
+
+/* ── Tokens. env() is 0 everywhere except under a notch, a home indicator or
+      landscape side insets, which is exactly where it is needed. */
+html[data-layout="mobile"]{--safe-t:env(safe-area-inset-top,0px);--safe-r:env(safe-area-inset-right,0px);
+  --safe-b:env(safe-area-inset-bottom,0px);--safe-l:env(safe-area-inset-left,0px);
+  --topbar-h:56px;--mbar-h:60px;-webkit-text-size-adjust:100%;text-size-adjust:100%}
+html[data-layout="mobile"] body{-webkit-tap-highlight-color:transparent}
+
+/* ── (a) Mirrors of the width rules, so a phone in LANDSCAPE (844-932px wide)
+      and a forced Mobile on a wide screen get the same chrome as a phone in
+      portrait. At portrait phone widths the @media rules already say the same. */
+html[data-layout="mobile"] #sidebar{position:fixed;left:0;top:0;bottom:0;transform:translateX(-101%);
+  transition:transform 220ms var(--ease);box-shadow:var(--sh-3)}
+html[data-layout="mobile"] body.nav-open #sidebar{transform:translateX(0)}
+html[data-layout="mobile"] body.nav-collapsed #sidebar{width:var(--sidebar-w);flex-basis:var(--sidebar-w)}
+html[data-layout="mobile"] body.nav-collapsed :is(.brand-txt,.nav-label,.nav-badge){display:block}
+html[data-layout="mobile"] body.nav-collapsed .nav-item{justify-content:flex-start;padding:8px var(--s3)}
+html[data-layout="mobile"] #mobilebar{display:block}
+html[data-layout="mobile"] .page{padding:var(--s4) var(--s3) var(--s8)}
+html[data-layout="mobile"] .page-title{font-size:22px}
+html[data-layout="mobile"] .page-sub{font-size:13.5px}
+html[data-layout="mobile"] .hide-sm{display:none!important}
+html[data-layout="mobile"] .tbl-wrap{overflow-x:auto}
+html[data-layout="mobile"] .role-switch .who{display:none}
+html[data-layout="mobile"] :is(.g2,.g3,.g4,.g5,.g21,.g12,.mg-wrap){grid-template-columns:1fr}
+html[data-layout="mobile"] .myday-cols{grid-template-columns:1fr}
+html[data-layout="mobile"] .ts-strip{scroll-snap-type:x mandatory}
+html[data-layout="mobile"] .ts-card{flex-basis:86%;width:86%}
+html[data-layout="mobile"] .asg-chip b{display:none}
+html[data-layout="mobile"] .nring{--nring-size:84px}
+html[data-layout="mobile"] .nring--md{--nring-size:62px}
+html[data-layout="mobile"] .nring--sm{--nring-size:54px}
+html[data-layout="mobile"] #drawer{width:100vw}
+html[data-layout="mobile"] .facets{width:100%;flex:1 1 auto}
+html[data-layout="mobile"] .opp-row{flex-wrap:wrap;gap:var(--s2)}
+html[data-layout="mobile"] .opp-row .lr-main{flex:1 1 100%}
+html[data-layout="mobile"] .opp-counts{flex:1 1 auto}
+html[data-layout="mobile"] .opp-act{min-width:0;flex:0 0 auto}
+html[data-layout="mobile"] .opp-ev-meta{margin-left:0;flex:1 1 100%;white-space:normal}
+
+/* ── (b) The phone chrome ─────────────────────────────────────────────────── */
+/* Topbar: page title where the breadcrumb and search pill used to be squeezed
+   ("Sea" at 375px). Search becomes an icon that opens the full search. Every
+   control a thumb target: 44px. */
+html[data-layout="mobile"] #topbar{height:calc(var(--topbar-h) + var(--safe-t));flex-basis:calc(var(--topbar-h) + var(--safe-t));
+  padding:var(--safe-t) max(4px,var(--safe-r)) 0 max(4px,var(--safe-l));gap:2px}
+html[data-layout="mobile"] #topbar .search-wrap{display:none}
+html[data-layout="mobile"] #topbar .icon-btn{width:44px;height:44px}
+html[data-layout="mobile"] .role-switch{min-width:44px;height:44px;padding:4px;gap:0;justify-content:center}
+html[data-layout="mobile"] .role-switch > svg{display:none}
+html[data-layout="mobile"] .m-title{display:block;flex:1;min-width:0;padding-left:2px;font-size:17px;font-weight:650;line-height:1.2;
+  color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* The menu opened by the burger sits ABOVE its scrim (z60), so its links take
+   the tap; the scrim covers everything else and closes it. It also clears the
+   notch, the home indicator and the bottom bar it now covers. */
+html[data-layout="mobile"] body.nav-open #sidebar{z-index:61}
+html[data-layout="mobile"] #sidebar{padding-top:var(--safe-t);padding-bottom:var(--safe-b)}
+
+/* Bottom bar: 60px of controls ABOVE the home indicator, not 58px that the
+   indicator eats into. */
+html[data-layout="mobile"] #mobilebar{height:calc(var(--mbar-h) + var(--safe-b));padding:0 var(--safe-r) var(--safe-b) var(--safe-l)}
+html[data-layout="mobile"] #mobilebar .mb-in{height:var(--mbar-h)}
+html[data-layout="mobile"] #mobilebar button{min-width:0;gap:3px;font-size:10.5px}
+html[data-layout="mobile"] #mobilebar .mi{font-size:20px;line-height:1;display:grid;place-items:center}
+html[data-layout="mobile"] #mobilebar .mi svg{width:22px;height:22px}
+html[data-layout="mobile"] #mobilebar button.fab .mi{width:44px;height:44px;margin-top:-14px;box-shadow:0 4px 14px rgba(37,99,235,.40)}
+html[data-layout="mobile"] #content{padding-bottom:calc(var(--mbar-h) + var(--safe-b));
+  padding-left:var(--safe-l);padding-right:var(--safe-r)}
+
+/* Toasts sit above the bar instead of on it, full width so a long message wraps
+   rather than running off a 320px screen. */
+html[data-layout="mobile"] #toasts{left:12px;right:12px;transform:none;width:auto;max-width:none;
+  bottom:calc(var(--mbar-h) + var(--safe-b) + 8px)}
 /* ==== END PHONE LAYER ==== */
 </style>
 </head>
@@ -1123,6 +1199,7 @@ html[data-theme=dark] .cal-ev{color:var(--text-inv)}
     <header id="topbar">
       <button class="icon-btn" id="btn-burger" aria-label="Toggle navigation">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3.6 6.6h16.8M3.6 12h16.8M3.6 17.4h16.8"/></svg></button>
+      <b class="m-title m-only" id="m-title" aria-live="polite"></b>
       <nav class="crumbs hide-sm" aria-label="Breadcrumb">
         <span>Media Ops</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9.4 6 6 6-6 6"/></svg>
@@ -1134,6 +1211,8 @@ html[data-theme=dark] .cal-ev{color:var(--text-inv)}
                aria-label="Global search" autocomplete="off">
         <span class="kbd">⌘K</span>
       </div>
+      <button class="icon-btn m-only" id="btn-msearch" aria-label="Search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20.4 20.4-4.3-4.3"/></svg></button>
       <button class="icon-btn solid" id="btn-quickadd" title="Quick add" aria-label="Quick add">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
       <button class="icon-btn hide-sm" id="btn-theme" title="Toggle dark mode · D" aria-label="Toggle theme">
@@ -3767,6 +3846,7 @@ function renderNav(){
      be the third copy of the same word on one screen. */
   const cnCur=(S.route||'').startsWith(CN_ROOT)?cnCurrent():null;
   $('#crumb-page').textContent=cnCur?cnCur.l:(cur?cur.l:'Home');
+  { const mt=$('#m-title'); if(mt) mt.textContent=$('#crumb-page').textContent; }
 }
 
 /* ── The Creator Network's own navigation ──────────────────────────────────
@@ -3902,7 +3982,10 @@ addEventListener('hashchange',render);
 addEventListener('hashchange',moFlushLayout);
 /* Runs while the OLD layout is still set. Flips never happen under an open
    overlay, so there is nothing to close — only the off-canvas nav to put away. */
-addEventListener('mo:layout-before',()=>{document.body.classList.remove('nav-open');});
+addEventListener('mo:layout-before',()=>{
+  document.body.classList.remove('nav-open');
+  if(!$('#drawer.on')) $('#scrim').classList.remove('on');
+});
 /* render() redraws the page, the sidebar and the bottom bar for the new layout. */
 addEventListener('mo:layout',()=>render());
 
@@ -3923,7 +4006,24 @@ function wirePage(){
    SHELL WIRING
    ========================================================================== */
 $('#btn-collapse').onclick=()=>{S.navCollapsed=!S.navCollapsed;document.body.classList.toggle('nav-collapsed',S.navCollapsed);};
-$('#btn-burger').onclick=()=>document.body.classList.toggle('nav-open');
+$('#btn-burger').onclick=()=>{
+  document.body.classList.toggle('nav-open');
+  /* On a phone the open menu gets its scrim, so a tap beside it closes it. The
+     desktop narrow-window behaviour is unchanged here (its own fix is pending). */
+  if(isMobileLayout()) $('#scrim').classList.toggle('on',document.body.classList.contains('nav-open'));
+};
+/* PHONE: the menu opened by the burger used to stay open after a link was
+   tapped, and nothing but the burger — which it covered — could close it. */
+function closeMobileNav(){
+  if(!document.body.classList.contains('nav-open')) return;
+  document.body.classList.remove('nav-open');
+  if(!$('#drawer.on')) $('#scrim').classList.remove('on');
+}
+$('#sidebar').addEventListener('click',e=>{
+  if(isMobileLayout()&&e.target.closest('a[href],.nav-item')) closeMobileNav();
+});
+addEventListener('hashchange',()=>{ if(isMobileLayout()) closeMobileNav(); });
+{ const ms=$('#btn-msearch'); if(ms) ms.onclick=()=>openPalette(); }
 $('#scrim').onclick=()=>{closeDrawer();document.body.classList.remove('nav-open');};
 $('#btn-theme').onclick=()=>toggleTheme();
 function toggleTheme(){S.theme=S.theme==='light'?'dark':'light';
@@ -4145,6 +4245,7 @@ document.addEventListener('keydown',e=>{
   const typing=/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
   if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();openPalette();return;}
   if(e.key==='Escape'){closePalette();closeModal();closeDrawer();closeMenu();
+    if(isMobileLayout()) closeMobileNav();
     if($('#kiosk').classList.contains('on')&&S.kiosk.step===0)closeKiosk();return;}
   if(typing)return;
   if(e.key==='/'){e.preventDefault();$('#globalsearch').focus();}

@@ -16,7 +16,8 @@
    see below the fold, in text, cheaply enough to commit. Hooks the phone
    layer is allowed to add to shared markup (elements with .m-only, data-m*
    and data-fb* attributes) are removed first, so adding an inert hook does
-   not count as a desktop change — anything else does.
+   not count as a desktop change — anything else does. Whitespace between tags
+   is collapsed for the same reason.
    ═══════════════════════════════════════════════════════════════════════════ */
 import { createHash } from "node:crypto";
 import type { Page } from "@playwright/test";
@@ -84,5 +85,9 @@ export async function desktopFingerprint(page: Page): Promise<string> {
     });
     return parts.join("\n");
   });
-  return createHash("sha1").update(html).digest("hex");
+  /* Whitespace between tags is collapsed: removing an .m-only element leaves
+     its line break and indent behind, which would otherwise read as a desktop
+     change. Whitespace that DOES render differently is the pixel baseline's job. */
+  const norm = html.replace(/>\s+</g, "><").replace(/\s+/g, " ");
+  return createHash("sha1").update(norm).digest("hex");
 }
