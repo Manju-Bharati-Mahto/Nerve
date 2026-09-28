@@ -6272,8 +6272,7 @@ function velocityWidget(){
           <span class="delta ${growth>=0?'up':'dn'}">${growth>=0?'▲':'▼'} ${Math.abs(growth)}%</span> vs first half</span>
       </div>
     </div>
-    <div class="card-foot">
-      Deliverable state is the objective signal — task percentages are not.</div>
+
   </div>`;
 }
 
@@ -6869,8 +6868,7 @@ function viewMyDay(){
         <p>Nothing scheduled for today. Every kind of work — a shoot, an edit, a meeting —
         lands here on the day it is scheduled for you.</p></div>`:''}
     </div>
-    <div class="card-foot">Everything you need to do today is in this one queue. Logging an item moves it
-      out of here and into today’s task log.</div></div>`
+    </div>`
     + smcMyDaySection();
 
   /* Sits directly under the queue: pressing Log on an assignment moves it here. */
@@ -6967,8 +6965,7 @@ function viewMyDay(){
           :`<div class="dlv-acts"><button class="btn xs" data-drawer="deliverable:${d.id}">Open</button></div>`}
       </div>`;}).join(''):`<div class="empty" style="padding:20px"><p>Nothing here yet. A deliverable lands here once a Team Lead approves its latest version.</p></div>`}
     </div>
-    <div class="card-foot">Delivered work leaves “My deliverables” and stays here with its review and approval
-      state — one record, updated by your Team Lead.</div></div>`;
+    </div>`;
 
   /* ── COLUMN 3 — reference: the context I work in, and the gear I hold ──── */
   const cProjects=`<div class="card">
@@ -7123,13 +7120,7 @@ function reportsMine(){
               <div class="between"><span class="small mut">Late submissions</span><b>${DB.daily_reports.filter(r=>r.user_id===S.me&&r.late).length}</b></div>
               <div class="between"><span class="small mut">Flagged (all time)</span><b>${DB.daily_reports.filter(r=>r.user_id===S.me&&r.flag_rules.length).length}</b></div>
             </div></div>
-          <div class="note"><b>Holidays and approved leave are excluded</b> from the denominator — you are never penalised for a day the system did not expect a report.</div>
-        </div></div>
-      <div class="card"><div class="card-head"><h3>Offline queue</h3></div>
-        <div class="card-body">
-          <div class="between mb3"><span class="small">Connection</span><span class="status st-success"><span class="si">●</span>Online</span></div>
-          <div class="between mb3"><span class="small">Queued locally</span><b>0 tasks</b></div>
-          <div class="small mut3">Tours are a core scenario, not an edge case. Conflicts resolve last-write-wins with an audit entry.</div>
+          <div class="note">Holidays and approved leave don't count against you.</div>
         </div></div>
     </div></div>`;
 }
@@ -7839,9 +7830,7 @@ function projDeliverablesTab(p,dls){
             ${canScheduleWork(p)?`<button class="btn xs" data-act="scheduleDeliv" data-did="${d.id}">◷ Schedule</button>`:''}
             <button class="btn xs" data-act="delivAction" data-did="${d.id}">⋯</button></td></tr>`;}).join('')}
       </tbody></table></div></div>
-    <div class="card-foot">Deliverables are project scope — they stay on this page always. Scheduling one for a date is what puts it in that owner's Today's Assignments, for that day only.<br>
-      Status machine: Not Started → In Progress → In Review → Changes Requested → Approved → Delivered (+ Not Required, Cancelled).
-      A version cannot be approved by its submitter; Delivered requires an approved latest version except review-exempt types.</div>
+    <div class="card-foot">Schedule a deliverable for a date to put it in its owner's day.</div>
   </div>`;
 }
 /* ── Who executes this deliverable ────────────────────────────────────────
@@ -7993,8 +7982,7 @@ function viewPipeline(){
   const over=ds.filter(d=>d.due_date&&d.due_date<TODAY&&!['delivered','not_required','cancelled'].includes(d.status));
   return `<div class="page-head">
       <div><h1 class="page-title">Production Pipeline</h1>
-      <div class="page-sub">${isEmp()?'Your deliverables':'Every deliverable in the department'}.
-        This board is what replaces the Excel workbook — the unit is the <b>deliverable</b>, not a spreadsheet row.</div></div>
+      <div class="page-sub">${isEmp()?'Your deliverables.':'Every deliverable in the department.'}</div></div>
       <div class="page-actions">
         <button class="btn" data-act="exportOpen" data-what="pipeline">⇩ Export</button>
         ${(!isEmp()||canOwnProjects().length)?`<button class="btn primary" data-act="newDeliverable">＋ Deliverable</button>`:''}</div></div>
@@ -8037,9 +8025,7 @@ function viewPipeline(){
             <div class="kc-foot">${avatar(d.owner_id,'xs')}<span class="trunc">${esc(user(d.owner_id).full_name.split(' ')[0])}</span>
               <span class="sp"></span><span>${d.due_date?D.fmt(d.due_date):'—'}</span></div></div>`;}).join('')}
         </div></div>`;}).join('')}</div>
-    <div class="note mt4">Drag to change status. The board enforces the same rules the API does: a deliverable cannot be
-      approved by its own submitter, and Delivered requires an approved latest version unless the type is
-      review-exempt. Blocked drags explain themselves rather than silently reverting.</div>`;
+    <div class="note mt4">Drag a card to change its status.</div>`;
 }
 
 /* ==========================================================================
@@ -10806,8 +10792,7 @@ function viewCalendar(){
             <span class="small">${esc(ev.t)}</span></button>`).join('')}
         </div>`).join('')||'<div class="empty" style="padding:40px"><p>Nothing in the next three weeks.</p></div>'}</div></div>`}
 
-    <div class="note mt4">Each user gets a tokenised read-only ICS URL so shoots appear in Google Calendar
-       — the platform does not try to become their calendar.</div>`;
+    <div class="note mt4">Your shoots can appear in Google Calendar through your personal read-only calendar link.</div>`;
 }
 
 /* ==========================================================================
@@ -14098,8 +14083,7 @@ function perfMe(uid){
         ${metrics.map(([l,k,u])=>`<td class="num">${s[k]}${u}</td>`).join('')}
         <td>${i===0?'<span class="status st-warn"><span class="si">◔</span>Open</span>':'<span class="status st-neutral"><span class="si">🔒</span>Closed</span>'}</td></tr>`).join('')}
       </tbody></table></div></div>
-    <div class="card-foot">AUTO-11 recomputes these on the 1st at 02:00 and feeds them into KRA auto-metrics.
-      A month-close snapshot must match hand-computed values exactly.</div></div>
+    <div class="card-foot">Snapshots are recalculated on the 1st of each month.</div></div>
   <div class="card mt4"><div class="card-head"><h3>Manager layer</h3></div>
     <div class="card-body">
       <div class="note mb3"><b>Jul 2026 — from Harsh Patel:</b> “Turnaround on the YEEP aftermovie recut was quick and the notes
@@ -14573,7 +14557,7 @@ function anKRA(){
         <td>${k.metric_source==='auto'?`<span class="chip sel mono">${esc(k.auto_metric_key)}</span>`:'<span class="chip">manual</span>'}</td>
         <td class="small mut">${esc(k.target_text)}</td><td class="num b">${k.weight}%</td></tr>`).join('')}
       </tbody></table></div></div>
-    <div class="card-foot">Auto-metric keys must exist in the metric registry. Registry: ${Object.keys(METRIC_DEFS).length} canonical metrics.</div></div>`;
+    </div>`;
 }
 function anPack(from){
   const scope=DB.users.filter(u=>u.is_active).map(u=>u.id);
@@ -14888,7 +14872,7 @@ function viewNotifications(){
           <div class="card-body">${kinds.map(k=>`<div class="switch-row">
             <div class="sr-txt"><b>${esc(k)}</b><span>${DB.notifications.filter(n=>n.kind===k).length} in the last 30 days</span></div>
             <span class="switch on"></span></div>`).join('')}</div>
-          <div class="card-foot">The metric to watch is notification-to-action rate. Kinds below 5% get redesigned or demoted to digest.</div></div>
+          </div>
       </div></div>`;
 }
 /* ==========================================================================
@@ -15410,10 +15394,7 @@ function admTemplates(){
       <div class="card-foot">${items.length} deliverables auto-created · used by ${DB.projects.filter(p=>p.project_type_id===t.project_type_id).length} projects</div></div>`;}).join('')}</div>`;
 }
 function admAutomations(){
-  return `<div class="note mb4">The engine consumes domain events plus a scheduler and emits notifications and actions.
-    Each rule is a row in <span class="mono">automation_rules</span> — Admin can tune thresholds, times and escalation chains
-    without a deploy . The internal event bus is what keeps this configurable
-    without touching core code.</div>
+  return `<div class="note mb4">These rules run automatically. Thresholds, times and escalation can be changed here and take effect straight away.</div>
   <div class="card"><div class="card-head"><h3>Rules</h3>
       <div class="ca"><span class="chip">${DB.automation_rules.filter(r=>r.is_enabled).length} of ${DB.automation_rules.length} enabled</span></div></div>
     <div class="card-body flush">
@@ -15612,8 +15593,7 @@ function admUsers(){
     <div class="card"><div class="card-head"><h3>Admin bus-factor</h3></div>
       <div class="card-body">
         <div class="note danger"><b>Only one Admin remains.</b>
-          Rather than creating a second in-app Admin, the mitigation is a documented break-glass procedure via the Nerve
-          platform superuser. That keeps the permission model honest while removing the single point of failure.</div>
+          If that account becomes unavailable, the Nerve platform superuser can restore access.</div>
         <dl class="kv mt3">
           <dt>Current Admin</dt><dd>${avatar(1,'xs')} Rahul Joshi</dd>
           <dt>Break-glass</dt><dd class="small">Nerve platform superuser — request via IT with CEO office approval; every use is audited</dd>
@@ -15654,9 +15634,8 @@ function admPermissions(){
       <thead><tr><th style="min-width:290px">Capability</th><th class="c">Employee</th><th class="c">Team Lead</th><th class="c">Admin</th></tr></thead>
       <tbody>${caps.map(c=>`<tr><td>${esc(c[0])}</td><td class="c">${cell(c[1])}</td>
         <td class="c">${cell(c[2])}</td><td class="c">${cell(c[3])}</td></tr>`).join('')}</tbody></table></div></div>
-    <div class="card-foot"><b>Note 1:</b> Library visibility for employees includes all projects and deliverables — production
-      history is departmental knowledge. Only sensitive data (others’ performance, reports, leave requests) is scoped.
-      <b>Note 2:</b> single-Admin bus-factor mitigated by a documented break-glass procedure, not a second in-app Admin.</div></div>
+    <div class="card-foot">Projects and deliverables are visible to everyone in the department. Other people's reports,
+      leave and performance are visible only to them, their Team Lead and Admin.</div></div>
 
   <div class="card mt4"><div class="card-head"><h3>Live check — what ${esc(me().full_name)} can do right now</h3></div>
     <div class="card-body"><div class="f wrap gap2">
@@ -15678,9 +15657,8 @@ function admAudit(){
   if(f.actor)rows=rows.filter(a=>a.actor_id===+f.actor);
   if(f.action)rows=rows.filter(a=>a.action.includes(f.action));
   if(f.entity)rows=rows.filter(a=>a.entity_type===f.entity);
-  return `<div class="note mb4"><b>Append-only.</b> Audit rows are never deleted, are excluded from hard-delete operations,
-    are retained ≥ 3 years and are partitioned monthly . Exports of personal data are
-    themselves audited.</div>
+  return `<div class="note mb4"><b>Append-only.</b> Audit entries are never edited or deleted, and are kept for at least 3 years.
+    Exports of personal data are audited too.</div>
   <div class="card mb4"><div class="card-body tight"><div class="f wrap gap2 ac">
     <select class="inp" style="max-width:200px" onchange="ACTIONS.auditFilter({k:'actor'},this)">
       <option value="">All actors</option>${DB.users.map(u=>`<option value="${u.id}" ${f.actor==String(u.id)?'selected':''}>${esc(u.full_name)}</option>`).join('')}</select>
