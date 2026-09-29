@@ -1218,6 +1218,76 @@ html[data-layout="mobile"] .msr-badge{min-width:20px;height:20px;padding:0 6px;b
   color:#fff;font-size:11px;font-weight:700;line-height:20px;text-align:center;font-variant-numeric:tabular-nums}
 html[data-layout="mobile"] .msr-ext{display:grid;place-items:center;color:var(--text-3)}
 html[data-layout="mobile"] .msr-ext svg{width:15px;height:15px}
+
+/* ── P5 overlays: modals, drawer, menus, palette, toasts as phone surfaces ── */
+@keyframes m-sheetup{from{transform:translateY(100%)}to{transform:translateY(0)}}
+
+/* Modal layer sizes to the VISIBLE viewport (--vvh/--vvt), so the keyboard
+   never hides the footer. A sheet for prompts, a full screen for forms. */
+html[data-layout="mobile"] #modal-layer{padding:0;place-items:end stretch;top:var(--vvt,0);bottom:auto;height:var(--vvh,100dvh)}
+html[data-layout="mobile"] #modal-layer[data-mkind=sheet] .modal{width:100%;max-height:calc(100% - 24px - var(--safe-t));
+  border-radius:var(--r-xl) var(--r-xl) 0 0;animation:m-sheetup 220ms var(--ease)}
+html[data-layout="mobile"] #modal-layer[data-mkind=full] .modal{width:100%;height:100%;max-height:none;border-radius:0}
+/* A modal is a grid item; its default min-width:auto is min-content, so a wide
+   child (a row of footer buttons, a side-by-side field pair) would stretch it
+   past the screen. Let it shrink to the viewport and make the content reflow. */
+html[data-layout="mobile"] #modal-layer .modal{min-width:0}
+html[data-layout="mobile"] .mo-foot .f{width:100%;flex-wrap:wrap}
+html[data-layout="mobile"] .mo-foot .f > *{flex:1 1 auto}
+html[data-layout="mobile"] .mo-body .row{flex-wrap:wrap}
+html[data-layout="mobile"] .mo-body .row > *{flex:1 1 140px;min-width:0}
+html[data-layout="mobile"] .mo-head{padding-top:calc(12px + var(--safe-t));
+  padding-left:max(var(--s5),var(--safe-l));padding-right:max(var(--s5),var(--safe-r))}
+html[data-layout="mobile"] .mo-body{padding:16px;padding-left:max(16px,var(--safe-l));padding-right:max(16px,var(--safe-r));
+  overscroll-behavior:contain}
+html[data-layout="mobile"] .mo-foot{padding:12px 16px calc(12px + var(--safe-b));
+  padding-left:max(16px,var(--safe-l));padding-right:max(16px,var(--safe-r));
+  flex-direction:column-reverse;align-items:stretch}
+html[data-layout="mobile"] .mo-foot .f{flex-wrap:wrap}
+html[data-layout="mobile"] .mo-foot .btn{width:100%;min-height:44px}
+
+/* Drawer: full-width, sized to the visible viewport, safe-area padded. */
+html[data-layout="mobile"] #drawer{width:100%;top:var(--vvt,0);height:var(--vvh,100dvh)}
+html[data-layout="mobile"] .dr-head{padding-top:calc(var(--s4) + var(--safe-t));
+  padding-left:max(var(--s4),var(--safe-l));padding-right:max(var(--s4),var(--safe-r))}
+html[data-layout="mobile"] .dr-head .icon-btn{width:44px;height:44px}
+html[data-layout="mobile"] .dr-body{overscroll-behavior:contain;
+  padding-left:max(var(--s4),var(--safe-l));padding-right:max(var(--s4),var(--safe-r))}
+html[data-layout="mobile"] .dr-foot{padding-bottom:calc(var(--s3) + var(--safe-b));
+  padding-left:max(var(--s4),var(--safe-l));padding-right:max(var(--s4),var(--safe-r))}
+html[data-layout="mobile"] .dr-foot .btn{min-height:44px}
+
+/* Menus become bottom action sheets above their own scrim; above the modal
+   (z90) so a menu opened inside a modal still shows. */
+html[data-layout="mobile"] .menu-scrim{position:fixed;inset:0;background:var(--overlay);z-index:91}
+html[data-layout="mobile"] .menu.as-sheet{left:0;right:0;bottom:0;top:auto;width:100%;min-width:0;max-height:70dvh;overflow-y:auto;
+  border-radius:var(--r-xl) var(--r-xl) 0 0;z-index:92;animation:m-sheetup 220ms var(--ease);
+  padding:8px max(8px,var(--safe-l)) calc(8px + var(--safe-b)) max(8px,var(--safe-r))}
+html[data-layout="mobile"] .menu.as-sheet .menu-item{min-height:48px;font-size:15px}
+html[data-layout="mobile"] .menu.as-sheet .menu-item svg{width:16px;height:16px}
+html[data-layout="mobile"] .menu.as-sheet .menu-cancel{justify-content:center;margin-top:4px;color:var(--text-3);font-weight:600}
+
+/* Palette becomes a full-screen search. */
+html[data-layout="mobile"] #palette{padding:0;align-items:stretch;top:var(--vvt,0);height:var(--vvh,100dvh)}
+html[data-layout="mobile"] .pal{width:100%;max-height:none;border-radius:0;border:none}
+html[data-layout="mobile"] .pal-inp{padding-top:calc(14px + var(--safe-t));
+  padding-left:max(var(--s5),var(--safe-l));padding-right:max(var(--s5),var(--safe-r))}
+html[data-layout="mobile"] .pal-list{padding-left:max(6px,var(--safe-l));padding-right:max(6px,var(--safe-r))}
+html[data-layout="mobile"] .pal-item{min-height:52px}
+html[data-layout="mobile"] .pal-foot{display:none}
+
+/* Toasts clear the bottom bar, and lift above the keyboard when it is open. */
+html[data-layout="mobile"] #toasts{left:max(12px,var(--safe-l));right:max(12px,var(--safe-r));transform:none;width:auto;max-width:none;
+  bottom:calc(var(--mbar-h) + var(--safe-b) + 8px);z-index:130}
+html[data-layout="mobile"] .toast button{min-height:44px}
+html[data-layout="mobile"].kb-open #toasts{top:calc(var(--safe-t) + 12px);bottom:auto}
+html[data-layout="mobile"].kb-open #mobilebar{display:none}
+
+/* Kiosk scrolls (steps 3-4 are taller than a phone) and keeps a gutter even
+   where every safe-area inset is 0. */
+html[data-layout="mobile"] #kiosk{overflow-y:auto;justify-content:flex-start;
+  padding:max(var(--s4),var(--safe-t)) max(var(--s4),var(--safe-r)) max(var(--s4),var(--safe-b)) max(var(--s4),var(--safe-l))}
+html[data-layout="mobile"] .kiosk-inner{margin:auto 0}
 /* ==== END PHONE LAYER ==== */
 </style>
 </head>
@@ -1288,7 +1358,8 @@ html[data-layout="mobile"] .msr-ext svg{width:15px;height:15px}
 <div id="palette" role="dialog" aria-modal="true" aria-label="Command palette">
   <div class="pal">
     <div class="pal-inp"><span style="color:var(--text-3)">⌘</span>
-      <input id="pal-input" placeholder="Search or run a command…" autocomplete="off" aria-label="Command palette input"></div>
+      <input id="pal-input" placeholder="Search or run a command…" autocomplete="off" enterkeyhint="search" aria-label="Command palette input">
+      <button class="btn ghost m-only" onclick="closePalette()">Cancel</button></div>
     <div class="pal-list" id="pal-list"></div>
     <div class="pal-foot"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">↵</span> open</span>
       <span><span class="kbd">esc</span> close</span></div>
@@ -3377,6 +3448,74 @@ function moOverlayOpen(){
 window.moCanFlip = ()=>!moOverlayOpen();
 /* Called when an overlay closes or the route changes: apply a postponed flip. */
 const moFlushLayout = ()=>{ if(window.moLayout) window.moLayout.flushPending(); };
+
+/* ── Overlay engine (P5): sheets, Back, focus containment ───────────────────
+   On a phone every overlay (modal, drawer, menu, palette, More sheet, kiosk)
+   pushes one history entry when it opens, so the hardware Back button and the
+   iOS edge-swipe dismiss it instead of leaving the page. The URL does not
+   change — the entry carries {moOv:n} on the same hash — so nothing re-renders.
+
+   Closing from the UI pops that entry; closing via Back is driven by popstate.
+   A flag keeps the two from fighting: a UI close calls history.back() once, and
+   the popstate it triggers finds the entry already gone and does nothing. The
+   Escape chain (four closers in a row) therefore calls back() at most once,
+   because only the overlay that owns the top entry pops. */
+let _ovStack = [], _ovN = 0, _inPop = false;
+function ovPush(closeFn, guard){
+  if(!isMobileLayout()) return null;
+  const entry = {n: ++_ovN, closeFn, guard, pushed: false};
+  _ovStack.push(entry);
+  try{ history.pushState({moOv: entry.n}, ''); entry.pushed = true; }catch(_){}
+  return entry;
+}
+function ovDrop(entry){
+  if(!entry) return;
+  const i = _ovStack.indexOf(entry); if(i < 0) return;   // already dropped
+  _ovStack.splice(i, 1);
+  if(!_inPop && entry.pushed){ try{ history.back(); }catch(_){} }
+}
+addEventListener('popstate', ()=>{
+  const top = _ovStack[_ovStack.length - 1]; if(!top) return;
+  if(top.guard && top.guard() && !confirm('Discard changes?')){
+    try{ history.pushState({moOv: top.n}, ''); }catch(_){}   // veto: put the entry back
+    return;
+  }
+  _inPop = true; try{ top.closeFn(); } finally { _inPop = false; }
+});
+/* The main content and the bottom bar are siblings of every overlay (all after
+   #app), so inerting them traps focus and the screen reader inside the overlay
+   without touching the overlay itself. Phone only; a layout flip that closes an
+   overlay clears it whatever the layout now is, so desktop is never left inert. */
+function setInert(on){
+  const app = $('#app'), bar = $('#mobilebar');
+  if(app) app.inert = on;
+  if(bar) bar.inert = on;
+}
+
+/* Visual-viewport tracking: when the on-screen keyboard opens, the layout
+   viewport does not shrink but visualViewport does. --vvh/--vvt let the fixed
+   overlays size to the space actually visible, and .kb-open hides the bottom
+   bar and lifts the toasts so Save is never behind the keyboard. */
+function mVV(){
+  if(!window.visualViewport) return;
+  const vv = window.visualViewport, d = document.documentElement;
+  const upd = ()=>{
+    if(!isMobileLayout()){ d.style.removeProperty('--vvh'); d.style.removeProperty('--vvt'); d.classList.remove('kb-open'); return; }
+    d.style.setProperty('--vvh', vv.height + 'px');
+    d.style.setProperty('--vvt', vv.offsetTop + 'px');
+    d.classList.toggle('kb-open', (window.innerHeight - vv.height) > 120);
+  };
+  vv.addEventListener('resize', upd); vv.addEventListener('scroll', upd); upd();
+}
+/* A focused field inside a phone overlay is scrolled into view once the
+   keyboard settles, so it is never left under it. */
+addEventListener('focusin', (e)=>{
+  if(!isMobileLayout()) return;
+  const t = e.target;
+  if(t && t.closest && t.closest('#modal-layer, #drawer') && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))
+    setTimeout(()=>{ try{ t.scrollIntoView({block: 'center', behavior: 'auto'}); }catch(_){} }, 250);
+});
+
 const esc = s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const el = (h)=>{const t=document.createElement('template');t.innerHTML=h.trim();return t.content.firstElementChild;};
 
@@ -3588,40 +3727,101 @@ function money(n){return '₹'+Number(n).toLocaleString('en-IN');}
 function toast(msg,kind='',action){
   const id='t'+(++S.toastId);
   const ic=kind==='ok'?'✔':kind==='bad'?'✕':kind==='warn'?'⚠':'ⓘ';
-  const node=el(`<div class="toast ${kind}" id="${id}"><span class="ti">${ic}</span><span>${esc(msg)}</span>${action?`<button data-act="undo">${esc(action.label)}</button>`:''}</div>`);
+  const node=el(`<div class="toast ${kind}" ${kind==='bad'&&isMobileLayout()?'role="alert"':''} id="${id}"><span class="ti">${ic}</span><span>${esc(msg)}</span>${action?`<button data-act="undo">${esc(action.label)}</button>`:''}</div>`);
   $('#toasts').appendChild(node);
   if(action)node.querySelector('[data-act=undo]').onclick=()=>{action.fn();node.remove();};
   setTimeout(()=>{node.classList.add('out');setTimeout(()=>node.remove(),220);},action?6000:3400);
 }
+let _modalOv=null;
 function modal(html,opts={}){
-  const layer=$('#modal-layer');
-  layer.innerHTML=`<div class="modal ${opts.size||''}">${html}</div>`;
+  const layer=$('#modal-layer'), mob=isMobileLayout();
+  /* A sheet for a short prompt (no text field, or size 'small'); a full-screen
+     surface for a form, so the keyboard has room and the footer stays put. */
+  const kind = mob ? (opts.mobile || ((opts.size==='small'||!/<input|<textarea/i.test(html)) ? 'sheet' : 'full')) : '';
+  layer.dataset.mkind=kind; layer.dataset.dirty='';
+  layer.innerHTML=`<div class="modal ${opts.size||''}" ${mob?'tabindex="-1"':''}>${html}</div>`;
   layer.classList.add('on');
-  layer.onclick=e=>{if(e.target===layer&&!opts.sticky)closeModal();};
-  const f=layer.querySelector('input,select,textarea,button.primary');if(f)setTimeout(()=>f.focus(),60);
-  return layer.querySelector('.modal');
+  const box=layer.querySelector('.modal');
+  if(mob){
+    const head=box.querySelector('.mo-head');
+    if(head&&!head.querySelector('.icon-btn')){
+      const b=el(`<button class="icon-btn ml-auto" aria-label="Close">${ic('x')}</button>`);
+      b.onclick=()=>closeModal(); head.appendChild(b);
+    }
+    const h2=box.querySelector('.mo-head h2');
+    if(h2){ if(!h2.id) h2.id='mo-h-'+(++_ovN); box.setAttribute('aria-labelledby',h2.id); }
+  }
+  layer.onclick=e=>{ if(e.target===layer&&!opts.sticky){
+    if(mob&&layer.dataset.dirty==='1'&&!confirm('Discard changes?'))return; closeModal(); } };
+  if(mob){
+    /* No autofocus on a phone: focusing an input pops the keyboard the instant
+       a form opens, before the person has read it. Focus the surface instead. */
+    box.focus();
+    layer.addEventListener('input',()=>{layer.dataset.dirty='1';},{once:true});
+    setInert(true);
+    _modalOv=ovPush(closeModal, ()=>layer.dataset.dirty==='1');
+  } else {
+    const f=layer.querySelector('input,select,textarea,button.primary');if(f)setTimeout(()=>f.focus(),60);
+  }
+  return box;
 }
-function closeModal(){$('#modal-layer').classList.remove('on');$('#modal-layer').innerHTML='';moFlushLayout();}
+function closeModal(){
+  const layer=$('#modal-layer');
+  layer.classList.remove('on'); layer.innerHTML=''; layer.dataset.mkind=''; layer.dataset.dirty='';
+  if(_modalOv){ setInert(false); const e=_modalOv; _modalOv=null; ovDrop(e); }
+  moFlushLayout();
+}
+let _drawerOv=null;
 function openDrawer(html){
-  $('#drawer').innerHTML=html;$('#drawer').classList.add('on');$('#scrim').classList.add('on');
+  const dr=$('#drawer');
+  dr.innerHTML=html; dr.classList.add('on'); $('#scrim').classList.add('on');
+  dr.removeAttribute('inert'); dr.removeAttribute('aria-hidden');
+  if(isMobileLayout()){
+    setInert(true);
+    const h=dr.querySelector('.dr-head h2'); if(h){ h.setAttribute('tabindex','-1'); h.focus(); }
+    _drawerOv=ovPush(closeDrawer);
+  }
 }
-function closeDrawer(){$('#drawer').classList.remove('on');$('#scrim').classList.remove('on');moFlushLayout();}
+function closeDrawer(){
+  const dr=$('#drawer');
+  dr.classList.remove('on'); $('#scrim').classList.remove('on');
+  /* Removed from the tab order and the accessibility tree while closed, on both
+     layouts — an off-screen drawer with stale content should not be reachable. */
+  dr.setAttribute('inert',''); dr.setAttribute('aria-hidden','true');
+  if(_drawerOv){ setInert(false); const e=_drawerOv; _drawerOv=null; ovDrop(e); }
+  moFlushLayout();
+}
+let _menuOv=null;
 function menu(anchor,items){
   closeMenu();
-  const r=anchor.getBoundingClientRect();
-  const m=el(`<div class="menu">${items.map((it,i)=>it.sep?'<div class="menu-sep"></div>':
+  const mob=isMobileLayout();
+  const rows=items.map((it,i)=>it.sep?'<div class="menu-sep"></div>':
     it.label_only?`<div class="menu-label">${esc(it.label_only)}</div>`:
     `<button class="menu-item ${it.cls||''} ${it.on?'on':''}" data-i="${i}" ${it.disabled?'disabled':''}>
-      ${it.icon?`<span>${it.icon}</span>`:''}<span>${esc(it.label)}</span>${it.hint?`<span class="mk">${esc(it.hint)}</span>`:''}</button>`).join('')}</div>`);
-  document.body.appendChild(m);
-  const w=m.offsetWidth,h=m.offsetHeight;
-  let left=Math.min(r.left,innerWidth-w-10), top=r.bottom+6;
-  if(top+h>innerHeight-10) top=Math.max(10,r.top-h-6);
-  m.style.left=left+'px';m.style.top=top+'px';
-  m.querySelectorAll('.menu-item').forEach(b=>b.onclick=()=>{const it=items[+b.dataset.i];closeMenu();if(it.fn)it.fn();});
-  setTimeout(()=>document.addEventListener('click',closeMenu,{once:true}),10);
+      ${it.icon?`<span>${it.icon}</span>`:''}<span>${esc(it.label)}</span>${it.hint?`<span class="mk">${esc(it.hint)}</span>`:''}</button>`).join('');
+  const m=el(`<div class="menu ${mob?'as-sheet':''}">${rows}${mob?'<button class="menu-item menu-cancel" data-cancel>Cancel</button>':''}</div>`);
+  if(mob){
+    const scrim=el('<div class="menu-scrim"></div>'); scrim.onclick=closeMenu;
+    document.body.appendChild(scrim); document.body.appendChild(m);
+    _menuOv=ovPush(closeMenu);
+  } else {
+    document.body.appendChild(m);
+    const r=anchor.getBoundingClientRect(), w=m.offsetWidth,h=m.offsetHeight;
+    let left=Math.max(10,Math.min(r.left,innerWidth-w-10)), top=r.bottom+6;
+    if(top+h>innerHeight-10) top=Math.max(10,r.top-h-6);
+    m.style.left=left+'px';m.style.top=top+'px';
+    setTimeout(()=>document.addEventListener('click',closeMenu,{once:true}),10);
+  }
+  m.querySelectorAll('.menu-item').forEach(b=>b.onclick=()=>{
+    if(b.hasAttribute('data-cancel')){closeMenu();return;}
+    const it=items[+b.dataset.i];closeMenu();if(it.fn)it.fn();});
 }
-function closeMenu(){$$('.menu').forEach(m=>m.remove());moFlushLayout();}
+function closeMenu(){
+  $$('.menu-scrim').forEach(s=>s.remove());
+  $$('.menu').forEach(m=>m.remove());
+  if(_menuOv){ const e=_menuOv; _menuOv=null; ovDrop(e); }
+  moFlushLayout();
+}
 
 /* ---------- SVG charts (no CDN) ---------- */
 function chartBar(data,opts={}){
@@ -4093,17 +4293,20 @@ const MORE_ACTIONS={
   moreNerveHome:()=>{closeMoreSheet();window.location.href='/';},
   logout:()=>ACTIONS.logout(),
 };
+let _moreOv=null;
 function openMoreSheet(){
   drawMoreSheet();
   $('#m-sheet-scrim').classList.add('on');
   $('#m-sheet').classList.add('on');
   renderMobileBar();   /* light the More tab */
+  _moreOv=ovPush(closeMoreSheet);
 }
 function closeMoreSheet(){
   const sh=$('#m-sheet'); if(!sh||!sh.classList.contains('on')){ moFlushLayout(); return; }
   sh.classList.remove('on');
   $('#m-sheet-scrim').classList.remove('on');
   renderMobileBar();
+  if(_moreOv){ const e=_moreOv; _moreOv=null; ovDrop(e); }
   moFlushLayout();
 }
 
@@ -4323,6 +4526,7 @@ $('#btn-help').onclick=()=>showShortcuts();
 $('#btn-bell').onclick=()=>{location.hash='#/media/notifications';};
 $('#btn-quickadd').onclick=e=>menu(e.currentTarget,quickAddItems());
 $('#btn-display').onclick=e=>openDisplayMenu(e.currentTarget);
+mVV();
 $('#btn-logout').onclick=()=>ACTIONS.logout();
 $('#btn-role').onclick=()=>{
   const m=me(), rl={admin:'Admin',team_lead:'Team Lead',coordinator:'Coordinator',employee:'Employee'}[m.role]||'Member';
@@ -4503,12 +4707,18 @@ function paletteItems(q){
   }
   return out;
 }
+let _palOv=null;
 function openPalette(pre){
   $('#palette').classList.add('on');
   const inp=$('#pal-input');inp.value=pre||'';S.palIndex=0;
   drawPalette();inp.focus();inp.select();
+  if(isMobileLayout()) _palOv=ovPush(closePalette);
 }
-function closePalette(){$('#palette').classList.remove('on');moFlushLayout();}
+function closePalette(){
+  $('#palette').classList.remove('on');
+  if(_palOv){ const e=_palOv; _palOv=null; ovDrop(e); }
+  moFlushLayout();
+}
 function drawPalette(){
   const items=paletteItems($('#pal-input').value);S._pal=items;
   if(S.palIndex>=items.length)S.palIndex=0;
@@ -10787,8 +10997,11 @@ function a360Audit(e){
 function openKiosk(){
   S.kiosk={step:0.5,pin:'',mode:null,items:[],ret:D.add(TODAY,1),
            who:null,whoName:'',token:null,holder:null,err:null,busy:false};
-  $('#kiosk').classList.add('on');drawKiosk();}
-function closeKiosk(){$('#kiosk').classList.remove('on');S.kiosk.step=0;}
+  $('#kiosk').classList.add('on');drawKiosk();
+  if(isMobileLayout()) _kioskOv=ovPush(closeKiosk);}
+let _kioskOv=null;
+function closeKiosk(){$('#kiosk').classList.remove('on');S.kiosk.step=0;
+  if(_kioskOv){ const e=_kioskOv; _kioskOv=null; ovDrop(e); } moFlushLayout();}
 function drawKiosk(){
   const K=S.kiosk;let h='';
   if(K.step===0.5){
