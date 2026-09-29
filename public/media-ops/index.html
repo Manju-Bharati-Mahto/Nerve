@@ -3512,11 +3512,13 @@ function ovPush(closeFn, guard){
   try{ history.pushState({moOv: entry.n}, ''); entry.pushed = true; }catch(_){}
   return entry;
 }
-function ovDrop(entry){
+function ovDrop(entry, keepHistory){
   if(!entry) return;
   const i = _ovStack.indexOf(entry); if(i < 0) return;   // already dropped
   _ovStack.splice(i, 1);
-  if(!_inPop && entry.pushed){ try{ history.back(); }catch(_){} }
+  /* keepHistory: the caller is about to REPLACE this entry with somewhere else,
+     so spending a history step here would fight that navigation. See moreSheetGo. */
+  if(!_inPop && entry.pushed && !keepHistory){ try{ history.back(); }catch(_){} }
 }
 addEventListener('popstate', ()=>{
   const top = _ovStack[_ovStack.length - 1]; if(!top) return;
@@ -4267,7 +4269,7 @@ function renderPhoneBar(){
     if(e.more){ openMoreSheet(); return; }
     /* Tapping the tab you are already on scrolls its page back to the top. */
     if(phoneBarActive(e)){ const c=$('#content'); if(c) c.scrollTop=0; return; }
-    closeMoreSheet(); location.hash=e.r;
+    moreSheetGo(e.r);
   });
 }
 /* Does anything hidden in the More sheet carry a count worth a dot on More? */
@@ -4324,7 +4326,7 @@ function drawMoreSheet(){
           <span class="msr-ico">${ic(it.i)}</span><span class="msr-l">${esc(it.l)}</span>
           ${b?`<span class="msr-badge">${b}</span>`:''}${it.act==='moreNerveHome'?`<span class="msr-ext">${ic('external')}</span>`:''}</button>`;}).join('')}
       </div>`).join('')}</div>`;
-  sheet.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>{closeMoreSheet();location.hash=b.dataset.go;});
+  sheet.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>moreSheetGo(b.dataset.go));
   sheet.querySelectorAll('[data-msclose]').forEach(b=>b.onclick=closeMoreSheet);
   /* Account rows resolve through MORE_ACTIONS; the display segs (setLayout /
      setTheme) are ordinary ACTIONS, so fall through to those, passing the
@@ -4333,7 +4335,7 @@ function drawMoreSheet(){
     const fn=MORE_ACTIONS[b.dataset.act]||ACTIONS[b.dataset.act]; if(fn) fn(b.dataset,b);});
 }
 const MORE_ACTIONS={
-  moreNotifications:()=>{closeMoreSheet();location.hash='#/media/notifications';},
+  moreNotifications:()=>moreSheetGo('#/media/notifications'),
   moreProfile:()=>{closeMoreSheet();$('#btn-role').onclick();},
   moreKiosk:()=>{closeMoreSheet();openKiosk();},
   moreNerveHome:()=>{closeMoreSheet();window.location.href='/';},
@@ -4346,6 +4348,26 @@ function openMoreSheet(){
   $('#m-sheet').classList.add('on');
   renderMobileBar();   /* light the More tab */
   _moreOv=ovPush(closeMoreSheet);
+}
+/* LEAVING THE MORE SHEET FOR ANOTHER PAGE.
+
+   The sheet owns a history entry (see ovPush), so closing it the ordinary way
+   QUEUES a history.back(). Setting location.hash in the same tick then loses
+   the race: the browser applies the hash, then applies the queued back, and the
+   viewer lands on the page they came from. Every row in the More sheet was
+   dead this way — tap Calendar, get Home.
+
+   So when the sheet holds an entry, drop it without spending a history step and
+   let the destination REPLACE it. The sheet's entry becomes the new route, and
+   Back still returns to the previous page exactly once. With no entry held
+   (the bottom bar when the sheet was never opened) this is a plain navigation,
+   because replacing there would eat the entry Back needs. */
+function moreSheetGo(to){
+  const owned = _moreOv;
+  if(owned){ _moreOv = null; ovDrop(owned, true); }
+  closeMoreSheet();
+  if(location.hash === to){ render(); return; }   // same page: no hashchange is coming
+  if(owned) location.replace(to); else location.hash = to;
 }
 function closeMoreSheet(){
   const sh=$('#m-sheet'); if(!sh||!sh.classList.contains('on')){ moFlushLayout(); return; }

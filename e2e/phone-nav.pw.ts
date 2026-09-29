@@ -140,6 +140,22 @@ test.describe("the bar in use", () => {
     await expect(page.locator("#m-sheet")).not.toHaveClass(/\bon\b/);
   });
 
+  /* The sheet holds a history entry, so closing it queues a history.back(). When
+     that raced the row's own navigation the viewer was bounced straight back to
+     where they started. Both halves are asserted: you arrive, and ONE Back
+     returns you — not zero (entry eaten) and not two (entry left behind). */
+  test("one Back after a More row returns to the page you left", async ({ page }) => {
+    await bootStaff(page, "admin");
+    await page.evaluate("location.hash='#/media/projects'");
+    await page.waitForFunction("location.hash==='#/media/projects'");
+    await page.click('#mobilebar [aria-label="More"]');
+    await page.click('#m-sheet [data-go="#/media/calendar"]');
+    await page.waitForTimeout(80);   // any queued history step would land by now
+    expect(await page.evaluate("location.hash"), "the navigation was undone").toBe("#/media/calendar");
+    await page.goBack();
+    expect(await page.evaluate("location.hash")).toBe("#/media/projects");
+  });
+
   test("tapping a bar item navigates; tapping the active one scrolls to the top", async ({ page }) => {
     await bootStaff(page, "admin");
     await page.click('#mobilebar button:has-text("Projects")');
