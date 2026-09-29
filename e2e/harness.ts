@@ -43,6 +43,14 @@ const SEED: Record<Staff, { id: number; relabel?: string }> = {
   coordinator: { id: 17, relabel: "coordinator" },
 };
 
+/* A fulfilled response the browser is allowed to cache can be served from the
+   memory cache on a later request for the same URL — and a cache hit never
+   reaches the route handler. That silently broke every test that boots two
+   viewers in one page: the second boot got the FIRST one's /creator/state, so
+   three creator modes all resolved to 'self' and the lead/manage screens went
+   unmeasured while the suite still passed. Nothing here may be cached. */
+const NO_STORE = { "cache-control": "no-store, max-age=0" };
+
 function serveFile(route: Route, pathname: string) {
   const rel = pathname.slice("/api/media-ops/".length) || "index.html";
   const file = normalize(join(ROOT, rel));
@@ -50,6 +58,7 @@ function serveFile(route: Route, pathname: string) {
   return route.fulfill({
     status: 200, body: readFileSync(file),
     contentType: TYPES[extname(file)] ?? "application/octet-stream",
+    headers: NO_STORE,
   });
 }
 
@@ -110,14 +119,26 @@ export async function bootCreator(page: Page, mode: CreatorMode) {
     const p = new URL(route.request().url()).pathname;
     if (p.startsWith("/api/media-ops/")) return serveFile(route, p);
     const json = (status: number, body: unknown) =>
-      route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+      route.fulfill({ status, contentType: "application/json",
+                      body: JSON.stringify(body), headers: NO_STORE });
     if (p.endsWith("/api/v1/media/state")) return json(403, { message: "Media Ops is not available for your role." });
     if (p.endsWith("/creator/state")) return json(200, creatorState(mode));
     if (p.startsWith("/api/")) return json(200, {});
     return route.abort("internetdisconnected");
   });
+  /* goto() to a URL that differs only after the '#' is a FRAGMENT navigation:
+     the document is not re-executed, so hydrateCreatorShell never re-runs and
+     the shell keeps the previous viewer. Landing on about:blank first forces a
+     real document load, so each boot starts from nothing. */
+  await page.goto("about:blank");
   await page.goto(`${ORIGIN}/api/media-ops/index.html?as=creator#/media/creator`);
   await ready(page);
+  /* The shell must have resolved to THIS viewer's mode. bootStaff has always
+     checked its role; this check is here because its absence hid the caching
+     bug above for three phases. */
+  const want = mode === "creator" ? "self" : mode === "team_lead" ? "lead" : "manage";
+  const got = await page.evaluate("cnMode()");
+  if (got !== want) throw new Error(`booted creator mode ${got}, wanted ${want}`);
 }
 
 /* Parameterised routes need a value the seed actually has. */

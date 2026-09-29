@@ -1307,6 +1307,68 @@ html[data-layout="mobile"] :is(.mo-body,.dr-body) .row{flex-wrap:wrap}
 html[data-layout="mobile"] :is(.mo-body,.dr-body) .row > .field{flex:1 1 140px;min-width:0}
 /* Native date/time controls render left-aligned and shrinkable. */
 html[data-layout="mobile"] input[type=date],html[data-layout="mobile"] input[type=time]{appearance:none;-webkit-appearance:none;min-width:0;text-align:left}
+
+/* ── P7 shared layout utilities ─────────────────────────────────────────────
+   Broad rules first, so most screens improve without per-screen surgery; the
+   worst tables then get the card treatment below. */
+
+/* Flex/grid children default to min-width:min-content and refuse to shrink,
+   which is what pushes a wide child (a dense table) past the screen. Let them
+   shrink; the table itself becomes a horizontal scroller (next rule). */
+html[data-layout="mobile"] .fc{min-width:0}
+html[data-layout="mobile"] :is(.g2,.g3,.g4,.g5,.g21,.g12,.mg-wrap,.grid) > *{min-width:0}
+
+/* Stat/KPI grids go two-up rather than one-per-row (the generic grid mirror) or
+   four-across (too wide). :has targets any grid of stat tiles without a marker. */
+html[data-layout="mobile"] .grid:has(> .stat),html[data-layout="mobile"] .grid:has(> button.stat){grid-template-columns:repeat(2,minmax(0,1fr))!important}
+html[data-layout="mobile"] .stat{padding:11px;min-width:0;overflow:hidden}
+html[data-layout="mobile"] .stat .stat-ico,html[data-layout="mobile"] .stat .stat-icon{display:none}
+html[data-layout="mobile"] .stat .stat-val{font-size:22px;overflow-wrap:anywhere}
+html[data-layout="mobile"] .stat :is(.stat-label,.stat-meta){white-space:normal;overflow-wrap:anywhere;min-width:0}
+/* Daily-report timeline: the block beside the time column must shrink and wrap. */
+html[data-layout="mobile"] .day-block{min-width:0}
+html[data-layout="mobile"] .day-block .between{flex-wrap:wrap;gap:4px}
+
+/* Any dense table scrolls sideways inside itself instead of stretching the page.
+   Tables given the card treatment (.m-cards) opt out. */
+html[data-layout="mobile"] table.tbl:not(.m-cards),html[data-layout="mobile"] table.matrix:not(.m-cards){display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+
+/* Rows and action clusters wrap rather than overflow. */
+html[data-layout="mobile"] .list-row{flex-wrap:wrap}
+html[data-layout="mobile"] .list-row .lr-main{flex:1 1 calc(100% - 48px);min-width:0}
+html[data-layout="mobile"] .ca{flex-wrap:wrap}
+html[data-layout="mobile"] .card-head{flex-wrap:wrap}
+html[data-layout="mobile"] .switch-row{flex-wrap:wrap;gap:6px}
+/* A title-and-control row wraps instead of pushing the control off-screen. */
+html[data-layout="mobile"] .between{flex-wrap:wrap;gap:6px}
+html[data-layout="mobile"] .between > *{min-width:0}
+html[data-layout="mobile"] .between .f{flex-wrap:wrap;min-width:0}
+/* A chip holding a long value (an automation config list) wraps rather than
+   running off the screen; chips are nowrap by design on desktop. */
+html[data-layout="mobile"] .chip{white-space:normal;height:auto;min-height:26px;overflow-wrap:anywhere}
+/* Definition lists stack: a 132px label column leaves too little for the value. */
+html[data-layout="mobile"] .kv{grid-template-columns:1fr;gap:2px}
+html[data-layout="mobile"] .kv dt{margin-top:8px}
+html[data-layout="mobile"] .kv dd{overflow-wrap:anywhere;min-width:0}
+html[data-layout="mobile"] .page-actions{flex-wrap:wrap}
+
+/* ── m-cards: a table rendered as a stack of cards, by cell role ───────────── */
+html[data-layout="mobile"] table.m-cards{display:block}
+html[data-layout="mobile"] table.m-cards thead{display:none}
+html[data-layout="mobile"] table.m-cards tbody,html[data-layout="mobile"] table.m-cards tr{display:block}
+html[data-layout="mobile"] table.m-cards tr{padding:12px 14px;border-bottom:1px solid var(--border);
+  display:grid;grid-template-columns:1fr auto;gap:4px 10px;align-items:start}
+html[data-layout="mobile"] table.m-cards td{display:block;padding:0;border:none}
+html[data-layout="mobile"] table.m-cards td[data-m=title]{font-weight:600;font-size:14px}
+html[data-layout="mobile"] table.m-cards td[data-m=aside]{grid-column:2;grid-row:1;text-align:right}
+html[data-layout="mobile"] table.m-cards td[data-m=meta]{grid-column:1;font-size:12px;color:var(--text-3)}
+html[data-layout="mobile"] table.m-cards td[data-m=actions]{grid-column:1 / -1;display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+html[data-layout="mobile"] table.m-cards td[data-m=actions] .btn{min-height:40px}
+html[data-layout="mobile"] table.m-cards td[data-m=hide]{display:none}
+
+/* ── m-sticky: keep the first column visible on a wide readability table ───── */
+html[data-layout="mobile"] table.m-sticky{display:block;overflow-x:auto}
+html[data-layout="mobile"] table.m-sticky :is(th,td):first-child{position:sticky;left:0;background:var(--surface);z-index:1}
 /* ==== END PHONE LAYER ==== */
 </style>
 </head>
@@ -3474,6 +3536,18 @@ const moFlushLayout = ()=>{ if(window.moLayout) window.moLayout.flushPending(); 
 /* Phone keyboard hints, applied to whatever is currently on screen. Never
    changes an input's type, so validation is unchanged; only the on-screen
    keyboard and autocorrect behaviour improve. */
+/* A tab bar wider than the screen scrolls; make sure the tab you are ON is the
+   one you can see, rather than leaving the strip parked at its start. */
+function mTabs(){
+  if(!isMobileLayout()) return;
+  $$('#page .tabs, #page .dr-tabs, #page .seg').forEach(bar=>{
+    if(bar.scrollWidth<=bar.clientWidth+1) return;
+    const on=bar.querySelector('.on,.active,[aria-current]')
+      ||[...bar.querySelectorAll('a[href]')].find(a=>a.getAttribute('href')===location.hash);
+    if(!on) return;
+    bar.scrollLeft=Math.max(0, on.offsetLeft-(bar.clientWidth-on.offsetWidth)/2);
+  });
+}
 function mInputAttrs(root){
   if(!isMobileLayout()) return;
   (root||document).querySelectorAll('input').forEach(inp=>{
@@ -4524,6 +4598,7 @@ function render(){
   $('#content').scrollTop=0;
   wirePage();
   mInputAttrs($('#page'));
+  mTabs();
   /* Anything a label asked for during this render, fetched once, together. */
   assetFlushWanted();
 }
