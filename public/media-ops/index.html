@@ -1288,6 +1288,25 @@ html[data-layout="mobile"].kb-open #mobilebar{display:none}
 html[data-layout="mobile"] #kiosk{overflow-y:auto;justify-content:flex-start;
   padding:max(var(--s4),var(--safe-t)) max(var(--s4),var(--safe-r)) max(var(--s4),var(--safe-b)) max(var(--s4),var(--safe-l))}
 html[data-layout="mobile"] .kiosk-inner{margin:auto 0}
+
+/* ── P6 forms: no iOS zoom, thumb-sized controls, wrapping field rows ──────── */
+/* 16px is the smallest size iOS will not zoom into on focus. !important beats
+   the ~20 selects that set font-size inline. */
+html[data-layout="mobile"] :is(.inp,select.inp,textarea.inp,.pal-inp input){font-size:16px!important}
+html[data-layout="mobile"] :is(.inp:not(textarea),select.inp){height:44px!important}
+html[data-layout="mobile"] textarea.inp{font-size:16px!important}
+html[data-layout="mobile"] .btn{min-height:40px}
+html[data-layout="mobile"] .seg button{height:40px}
+html[data-layout="mobile"] .chk input{width:20px;height:20px}
+/* Small controls keep their size but gain an invisible 44px-ish hit area. */
+html[data-layout="mobile"] :is(.btn.xs,.btn.sm,.chip,.dc-btn,.seg button,.btn-group button,.icon-btn.sm){position:relative}
+html[data-layout="mobile"] :is(.btn.xs,.dc-btn,.btn-group button){min-height:36px}
+html[data-layout="mobile"] :is(.btn.xs,.chip,.dc-btn,.btn-group button)::after{content:"";position:absolute;inset:-8px}
+/* Field pairs stack rather than crush together. */
+html[data-layout="mobile"] :is(.mo-body,.dr-body) .row{flex-wrap:wrap}
+html[data-layout="mobile"] :is(.mo-body,.dr-body) .row > .field{flex:1 1 140px;min-width:0}
+/* Native date/time controls render left-aligned and shrinkable. */
+html[data-layout="mobile"] input[type=date],html[data-layout="mobile"] input[type=time]{appearance:none;-webkit-appearance:none;min-width:0;text-align:left}
 /* ==== END PHONE LAYER ==== */
 </style>
 </head>
@@ -3448,6 +3467,31 @@ function moOverlayOpen(){
 window.moCanFlip = ()=>!moOverlayOpen();
 /* Called when an overlay closes or the route changes: apply a postponed flip. */
 const moFlushLayout = ()=>{ if(window.moLayout) window.moLayout.flushPending(); };
+/* A filter box that re-renders the whole page on every keystroke loses focus
+   and the caret with it, so the next character is dropped — on a phone the
+   keyboard closes too. render(), then put focus and the caret back by id. This
+   is the pattern dirSearch already used; these four boxes never got it. */
+/* Phone keyboard hints, applied to whatever is currently on screen. Never
+   changes an input's type, so validation is unchanged; only the on-screen
+   keyboard and autocorrect behaviour improve. */
+function mInputAttrs(root){
+  if(!isMobileLayout()) return;
+  (root||document).querySelectorAll('input').forEach(inp=>{
+    const ph=(inp.getAttribute('placeholder')||'');
+    if(/^https:\/\//i.test(ph)||inp.type==='url'){
+      inp.setAttribute('inputmode','url'); inp.setAttribute('autocapitalize','off');
+      inp.setAttribute('autocorrect','off'); inp.setAttribute('spellcheck','false');
+    }
+    if(inp.type==='number') inp.setAttribute('inputmode', inp.step&&inp.step!=='1'?'decimal':'numeric');
+    if(inp.type==='search'||/search/i.test(ph)||inp.classList.contains('inp')&&/search/i.test(ph))
+      inp.setAttribute('enterkeyhint','search');
+  });
+}
+function moRerender(id){
+  render();
+  const e=document.getElementById(id);
+  if(e){ e.focus(); try{ e.setSelectionRange(e.value.length,e.value.length); }catch(_){} }
+}
 
 /* ── Overlay engine (P5): sheets, Back, focus containment ───────────────────
    On a phone every overlay (modal, drawer, menu, palette, More sheet, kiosk)
@@ -3758,6 +3802,7 @@ function modal(html,opts={}){
        a form opens, before the person has read it. Focus the surface instead. */
     box.focus();
     layer.addEventListener('input',()=>{layer.dataset.dirty='1';},{once:true});
+    mInputAttrs(box);
     setInert(true);
     _modalOv=ovPush(closeModal, ()=>layer.dataset.dirty==='1');
   } else {
@@ -3777,6 +3822,7 @@ function openDrawer(html){
   dr.innerHTML=html; dr.classList.add('on'); $('#scrim').classList.add('on');
   dr.removeAttribute('inert'); dr.removeAttribute('aria-hidden');
   if(isMobileLayout()){
+    mInputAttrs(dr);
     setInert(true);
     const h=dr.querySelector('.dr-head h2'); if(h){ h.setAttribute('tabindex','-1'); h.focus(); }
     _drawerOv=ovPush(closeDrawer);
@@ -4455,6 +4501,7 @@ function render(){
   renderNav();
   $('#content').scrollTop=0;
   wirePage();
+  mInputAttrs($('#page'));
   /* Anything a label asked for during this render, fetched once, together. */
   assetFlushWanted();
 }
@@ -5512,9 +5559,9 @@ function castAdminRecords(f){
   list=castFilter(list,f);
   const views=[['all','All'],['active','Active'],['archived','Archived'],['consent','Consent pending'],['stale','Needs review']];
   return `<div class="cast-bar">
-      <div class="search-wrap cast-search"><input class="inp" value="${esc(f.q)}"
+      <div class="search-wrap cast-search"><input class="inp" id="castadm-q" value="${esc(f.q)}"
         placeholder="Search name, CAST ID, profession, tag, collection…"
-        oninput="S.filters.castadmin.q=this.value;render()"></div>
+        oninput="S.filters.castadmin.q=this.value;moRerender('castadm-q')"></div>
       <div class="f wrap gap1">${views.map(([k,l])=>`<button class="chip ${f.view===k?'sel':''}"
         onclick="S.filters.castadmin.view='${k}';render()">${esc(l)}</button>`).join('')}</div>
     </div>
@@ -5568,9 +5615,9 @@ function castAdminRequests(){
     onclick="S.filters.castreq.${k}=S.filters.castreq.${k}==='${v}'?'':'${v}';render()">${esc(l)}${n!=null?` <span class="mut3">${n}</span>`:''}</button>`;
   const byStatus=k=>castRequests().filter(r=>r.status===k).length;
   return `<div class="cast-bar">
-      <div class="search-wrap cast-search"><input class="inp" value="${esc(f.q)}"
+      <div class="search-wrap cast-search"><input class="inp" id="castreq-q" value="${esc(f.q)}"
         placeholder="Search request ID, applicant, email, mobile, enrolment, department, campaign, CAST ID…"
-        oninput="S.filters.castreq.q=this.value;render()"></div>
+        oninput="S.filters.castreq.q=this.value;moRerender('castreq-q')"></div>
       <select class="inp" style="height:34px;font-size:12.5px;width:auto"
         onchange="S.filters.castreq.sort=this.value;render()">
         ${[['newest','Newest first'],['oldest','Oldest first'],['status','By status'],
@@ -6145,9 +6192,9 @@ function viewRequests(){
     onclick="S.filters.req.${k}=S.filters.req.${k}==='${v}'?'':'${v}';render()">${esc(l)}${n!=null?` <span class="mut3">${n}</span>`:''}</button>`;
   return `${requestsHead()}${counts}${requestsTabs(tab,open,conv,shut)}
     <div class="cast-bar">
-      <div class="search-wrap cast-search"><input class="inp" value="${esc(f.q)}"
+      <div class="search-wrap cast-search"><input class="inp" id="req-q" value="${esc(f.q)}"
         placeholder="Search request ID, project, event, institute, stakeholder, email, team lead…"
-        oninput="S.filters.req.q=this.value;render()"></div>
+        oninput="S.filters.req.q=this.value;moRerender('req-q')"></div>
       <div class="f wrap gap1">
         ${chip('when','','Any time')}${chip('when','today','Today')}${chip('when','week','This week')}
         ${chip('when','month','This month')}${chip('when','overdue','Overdue',overdueRequests().length)}
@@ -6233,8 +6280,8 @@ function viewDispatch(){
       <div class="page-sub">Approved work, out the door. Nothing is archived without a recorded recipient.</div></div></div>
     <div class="tabs">${tabs.map(([k,l,c])=>`<button data-tab="${k}" data-tabkey="dispatch" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>
     ${tab!=='queue'?`<div class="search-wrap mb3" style="max-width:360px">
-      <input class="inp" placeholder="Search project, deliverable or recipient…" value="${esc(S.filters.dispatch.q)}"
-        oninput="S.filters.dispatch.q=this.value;render()"></div>`:''}
+      <input class="inp" id="disp-q" placeholder="Search project, deliverable or recipient…" value="${esc(S.filters.dispatch.q)}"
+        oninput="S.filters.dispatch.q=this.value;moRerender('disp-q')"></div>`:''}
     <div class="card"><div class="card-body flush">
       ${tab==='queue'
         ? (rows.length?rows.map(dispatchRow).join('')
@@ -18011,7 +18058,7 @@ const ACTIONS = {
     if(qty&&(qty<1||qty>100000))return fieldError('#tl-qty','Quantity must be between 1 and 100,000.');
     if(link&&!/^https:\/\/(drive|docs)\.google\.com\//.test(link))
       return fieldError('#tl-link','Use a Google Drive or Docs link.');
-    if(status==='blocked'&&!$('#tl-blocknote').value.trim()){toast('a blocker note is required','bad');return;}
+    if(status==='blocked'&&!$('#tl-blocknote').value.trim())return fieldError('#tl-blocknote','Add a note — what is blocking this?');
     let r=DB.daily_reports.find(x=>x.user_id===S.me&&x.report_date===TODAY);
     if(!r){r={id:Math.max(0,...DB.daily_reports.map(x=>x.id))+1,user_id:S.me,report_date:TODAY,status:'draft',
       submitted_at:null,note:'',flagged_reason:null,reviewed_by:null,reviewed_at:null,total_minutes:0,
