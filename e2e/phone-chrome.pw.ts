@@ -85,51 +85,12 @@ test("a toast sits above the bar, not on it", async ({ page }) => {
   expect(toastBottom).toBeLessThanOrEqual(barTop);
 });
 
-test.describe("the menu behind the burger", () => {
-  const open = async (page: Page) => {
-    await page.click("#btn-burger");
-    await expect(page.locator("body")).toHaveClass(/nav-open/);
-    await expect(page.locator("#scrim")).toHaveClass(/\bon\b/);
-  };
-  const closed = async (page: Page) => {
-    await expect(page.locator("body")).not.toHaveClass(/nav-open/);
-    await expect(page.locator("#scrim")).not.toHaveClass(/\bon\b/);
-  };
-
-  test("closes when a link in it is tapped, and goes there", async ({ page }) => {
-    await bootStaff(page, "admin");
-    await open(page);
-    await page.locator('#sidebar a.nav-item[href="#/media/calendar"]').click();
-    await closed(page);
-    expect(await page.evaluate("location.hash")).toBe("#/media/calendar");
-  });
-
-  test("closes when the dimmed page beside it is tapped", async ({ page }) => {
-    await bootStaff(page, "admin");
-    await open(page);
-    await page.mouse.click(page.viewportSize()!.width - 10, 300);
-    await closed(page);
-  });
-
-  test("closes on Escape (a hardware keyboard on a tablet)", async ({ page }) => {
-    await bootStaff(page, "admin");
-    await open(page);
-    await page.keyboard.press("Escape");
-    await closed(page);
-  });
-
-  test("takes taps on its own links, above its scrim", async ({ page }) => {
-    await bootStaff(page, "admin");
-    await open(page);
-    const hit = await page.evaluate(() => {
-      const a = document.querySelector('#sidebar a.nav-item[href="#/media/calendar"]')!;
-      const r = a.getBoundingClientRect();
-      return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest("#sidebar") !== null;
-    });
-    expect(hit, "the scrim is on top of the menu it belongs to").toBe(true);
-  });
-});
-
+/* NOTE: the "menu behind the burger" tests that lived here were removed in P4.
+   P3 hid the burger on phones (#btn-burger{display:none}) and replaced the
+   off-canvas sidebar with the More sheet, so those tests exercised a control
+   that no longer exists on a phone. The More sheet's open/close/navigate is
+   covered by e2e/phone-nav.pw.ts. The burger still exists for the narrow-desktop
+   (<=820, mouse) regime; its fix and test are the deferred Q5 item. */
 test("a phone in landscape gets the same chrome as in portrait", async ({ page }) => {
   await page.setViewportSize({ width: 844, height: 390 });
   await bootStaff(page, "admin");

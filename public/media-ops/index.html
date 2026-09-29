@@ -53,6 +53,11 @@
     pending=false;
     if(vp) vp.setAttribute('content',(p==='desktop'&&narrow0)?'width=1280, viewport-fit=cover':VP0);
     d.setAttribute('data-layout',l); d.setAttribute('data-layout-pref',p);
+    /* Theme is remembered per device on a PHONE only (Q17): a home-screen app
+       should reopen in the theme you left it in. On desktop the theme is not
+       persisted, so nothing here touches it. */
+    if(l==='mobile'){ try{ var t=localStorage.getItem('mo_theme');
+      if(t==='dark'||t==='light') d.setAttribute('data-theme',t); }catch(_){} }
     if(was&&was!==l) window.dispatchEvent(new Event('mo:layout'));
   }
   apply();
@@ -1265,6 +1270,7 @@ html[data-layout="mobile"] .msr-ext svg{width:15px;height:15px}
       <button class="icon-btn" id="btn-bell" title="Notifications" aria-label="Notifications">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8.6a6 6 0 1 0-12 0c0 6.4-2.6 8.2-2.6 8.2h17.2S18 15 18 8.6"/><path d="M13.7 20.4a2 2 0 0 1-3.4 0"/></svg>
         <span class="dot-badge" id="bell-count">0</span></button>
+      <button class="icon-btn" id="btn-display" aria-label="Display: Desktop" title="Display: Desktop"></button>
       <button class="role-switch" id="btn-role" title="My profile" aria-label="Open profile menu">
         <span class="av" id="me-av"></span>
         <span class="who" id="me-name">Rahul J.</span>
@@ -2519,8 +2525,11 @@ function notify(user_id,kind,title,body,et,eid,ago){
 /* ==========================================================================
    CORE ENGINE — state, permissions, router, helpers
    ========================================================================== */
+/* The head script may have set data-theme from a saved phone preference before
+   this ran; adopt it so S.theme is never out of step with what is on screen. */
+const _bootTheme = document.documentElement.getAttribute('data-theme')==='dark'?'dark':'light';
 const S = {
-  me:1, theme:'light', route:'#/media/home', navCollapsed:false,
+  me:1, theme:_bootTheme, route:'#/media/home', navCollapsed:false,
   filters:{}, sort:{}, viewMode:{}, tab:{}, drawerStack:[], toastId:0,
   palIndex:0, kiosk:{step:0,pin:'',mode:null,items:[]}, board:1,
   /* The calendar opens on the month the user is in. It used to open on a
@@ -3912,6 +3921,7 @@ function renderNav(){
   const un=DB.notifications.filter(n=>n.user_id===S.me&&!n.is_read).length;
   $('#bell-count').textContent=un; $('#bell-count').style.display=un?'grid':'none';
   const bell=$('#btn-bell'); if(bell) bell.style.display=(isMobileLayout()&&DB.my_module_group==='creator')?'none':'';
+  renderDisplayButton();
   const cur=NAV.flatMap(g=>g.items).find(it=>S.route===it.r||S.route.startsWith(it.r+'/'));
   /* Inside the Creator Network the crumb names the PAGE. The sidebar already
      says which module they are in, so repeating "Creator Network" here would
@@ -4052,7 +4062,7 @@ function moreGroups(){
   if(moduleAllowed('kiosk')&&moduleAllowed('equipment')) acct.push({act:'moreKiosk',i:'kiosk',l:'Kiosk mode'});
   acct.push({act:'moreNerveHome',i:'external',l:'Nerve home'});
   acct.push({act:'logout',i:'logout',l:'Log out',danger:true});
-  groups.push({label:'Account',items:acct});
+  groups.push({label:'Account',pre:displayBlock(),items:acct});
   return groups;
 }
 function drawMoreSheet(){
@@ -4061,6 +4071,7 @@ function drawMoreSheet(){
       <button class="icon-btn" aria-label="Close" data-msclose>${ic('x')}</button></div>
     <div class="m-sheet-body">${moreGroups().map(g=>`
       <div class="m-sheet-group"><div class="m-sheet-label">${esc(g.label)}</div>
+      ${g.pre||''}
       ${g.items.map(it=>{const b=it.badge?it.badge():'';
         const attr=it.go?`data-go="${it.go}"`:`data-act="${it.act}"`;
         return `<button class="m-sheet-row${it.danger?' danger':''}" ${attr}>
@@ -4069,7 +4080,11 @@ function drawMoreSheet(){
       </div>`).join('')}</div>`;
   sheet.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>{closeMoreSheet();location.hash=b.dataset.go;});
   sheet.querySelectorAll('[data-msclose]').forEach(b=>b.onclick=closeMoreSheet);
-  sheet.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>MORE_ACTIONS[b.dataset.act]&&MORE_ACTIONS[b.dataset.act]());
+  /* Account rows resolve through MORE_ACTIONS; the display segs (setLayout /
+     setTheme) are ordinary ACTIONS, so fall through to those, passing the
+     button's dataset (setLayout reads d.v). */
+  sheet.querySelectorAll('[data-act]').forEach(b=>b.onclick=()=>{
+    const fn=MORE_ACTIONS[b.dataset.act]||ACTIONS[b.dataset.act]; if(fn) fn(b.dataset,b);});
 }
 const MORE_ACTIONS={
   moreNotifications:()=>{closeMoreSheet();location.hash='#/media/notifications';},
@@ -4090,6 +4105,39 @@ function closeMoreSheet(){
   $('#m-sheet-scrim').classList.remove('on');
   renderMobileBar();
   moFlushLayout();
+}
+
+
+/* ── Display control (P4): choose Auto / Desktop / Mobile, and the theme, per
+   device. The same control sits in the topbar (a menu), the profile sheet and
+   the More sheet, so it is where anyone would look for it. */
+function displayBlock(){
+  const p=(window.moLayout&&moLayout.pref)||'auto';
+  const seg=(act,opts)=>`<div class="seg" role="radiogroup" aria-label="${act==='setLayout'?'Layout':'Theme'}">`
+    +opts.map(([v,l,cur])=>`<button data-act="${act}" data-v="${v}" role="radio" aria-checked="${cur}" class="${cur?'on':''}">${l}</button>`).join('')+`</div>`;
+  return `<div class="m-display mb4"><div class="small b mb2" id="dsp-h">Display on this device</div>
+    <div class="f ac gap3 wrap" role="group" aria-labelledby="dsp-h">
+      ${seg('setLayout',[['auto','Auto',p==='auto'],['desktop','Desktop',p==='desktop'],['mobile','Mobile',p==='mobile']])}
+      ${seg('setTheme',[['light','Light',S.theme==='light'],['dark','Dark',S.theme==='dark']])}</div>
+    <div class="hint">Auto uses the phone layout on touch screens up to tablet size. Saved on this device only.</div></div>`;
+}
+/* The topbar button opens the layout choice as a menu (a seg would not fit). */
+function openDisplayMenu(anchor){
+  const p=(window.moLayout&&moLayout.pref)||'auto';
+  menu(anchor,[
+    {label_only:'Display'},
+    {label:'Auto',   icon:ic('refresh'),  on:p==='auto',    fn:()=>ACTIONS.setLayout({v:'auto'})},
+    {label:'Desktop',icon:ic('monitor'),  on:p==='desktop', fn:()=>ACTIONS.setLayout({v:'desktop'})},
+    {label:'Mobile', icon:ic('smartphone'),on:p==='mobile', fn:()=>ACTIONS.setLayout({v:'mobile'})},
+  ]);
+}
+/* Keep the topbar button showing the layout in force. */
+function renderDisplayButton(){
+  const b=$('#btn-display'); if(!b) return;
+  const mob=isMobileLayout();
+  b.innerHTML=ic(mob?'smartphone':'monitor');
+  b.setAttribute('aria-label','Display: '+(mob?'Mobile':'Desktop'));
+  b.title='Display: '+(mob?'Mobile':'Desktop');
 }
 
 function renderMobileBar(){
@@ -4258,11 +4306,23 @@ $('#scrim').onclick=()=>{closeDrawer();document.body.classList.remove('nav-open'
 $('#btn-theme').onclick=()=>toggleTheme();
 function toggleTheme(){S.theme=S.theme==='light'?'dark':'light';
   document.documentElement.dataset.theme=S.theme;
-  toast('Theme: '+S.theme+' — token-swapped, no per-feature cost','ok');}
+  refreshDisplaySegs();}
+/* Re-sync every on-screen display control's segs to the live layout and theme,
+   without rebuilding the modal or sheet around them. */
+function refreshDisplaySegs(){
+  const pref=(window.moLayout&&moLayout.pref)||'auto';
+  $$('.m-display').forEach(box=>{
+    box.querySelectorAll('[data-act=setLayout]').forEach(b=>{
+      const on=b.dataset.v===pref; b.classList.toggle('on',on); b.setAttribute('aria-checked',on);});
+    box.querySelectorAll('[data-act=setTheme]').forEach(b=>{
+      const on=b.dataset.v===S.theme; b.classList.toggle('on',on); b.setAttribute('aria-checked',on);});
+  });
+}
 
 $('#btn-help').onclick=()=>showShortcuts();
 $('#btn-bell').onclick=()=>{location.hash='#/media/notifications';};
 $('#btn-quickadd').onclick=e=>menu(e.currentTarget,quickAddItems());
+$('#btn-display').onclick=e=>openDisplayMenu(e.currentTarget);
 $('#btn-logout').onclick=()=>ACTIONS.logout();
 $('#btn-role').onclick=()=>{
   const m=me(), rl={admin:'Admin',team_lead:'Team Lead',coordinator:'Coordinator',employee:'Employee'}[m.role]||'Member';
@@ -4270,6 +4330,7 @@ $('#btn-role').onclick=()=>{
       <div><h2>${esc(m.full_name)}</h2><p>${esc(m.email||'')} · ${rl}</p></div></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
     <div class="mo-body">
+      ${displayBlock()}<div class="divider"></div>
       <dl class="kv mb4"><dt>Name</dt><dd>${esc(m.full_name)}</dd>
         <dt>Email</dt><dd>${esc(m.email||'—')}</dd>
         <dt>Role</dt><dd>${rl}</dd>
@@ -19987,6 +20048,9 @@ const ACTIONS = {
       .then(j=>{const m=DB.users.find(u=>u.id===S.me); if(m)m.avatar_url=j.avatar_url; render(); toast('Profile photo updated','ok'); closeModal();})
       .catch(e=>{st.textContent='Upload failed: '+e.message;});
   },
+  setLayout:(d)=>{ closeModal(); closeMoreSheet(); if(window.moLayout) moLayout.set(d.v); },
+  setTheme:(d)=>{ if(S.theme!==d.v) toggleTheme(); else refreshDisplaySegs();
+    if(isMobileLayout()){ try{ localStorage.setItem('mo_theme',d.v); }catch(_){} } },
   logout:()=>{
     modal(`<div class="mo-head"><div><h2>Log out</h2></div>
         <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
@@ -22139,9 +22203,11 @@ async function clearClientAuth(){
   /* How this DEVICE shows Nerve is not session data: signing out or expiring
      must not quietly switch a phone back to Auto. Kept only if it was set,
      restored before the first await so nothing can read the gap. */
-  let layoutPref=null; try{ layoutPref=localStorage.getItem('mo_layout'); }catch(_){}
+  let layoutPref=null, themePref=null;
+  try{ layoutPref=localStorage.getItem('mo_layout'); themePref=localStorage.getItem('mo_theme'); }catch(_){}
   try{ localStorage.clear(); sessionStorage.clear(); }catch(_){}
-  try{ if(layoutPref!==null) localStorage.setItem('mo_layout',layoutPref); }catch(_){}
+  try{ if(layoutPref!==null) localStorage.setItem('mo_layout',layoutPref);
+       if(themePref!==null) localStorage.setItem('mo_theme',themePref); }catch(_){}
   try{ if(window.caches){ const ks=await caches.keys(); await Promise.all(ks.map(k=>caches.delete(k))); } }catch(_){}
   try{ if(navigator.serviceWorker){ const rs=await navigator.serviceWorker.getRegistrations(); await Promise.all(rs.map(r=>r.unregister())); } }catch(_){}
 }
