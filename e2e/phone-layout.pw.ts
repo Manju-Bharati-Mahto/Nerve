@@ -103,3 +103,21 @@ test("a dense table scrolls inside itself rather than stretching the page", asyn
   });
   expect(ok).toBe(true);
 });
+
+/* A wide read-only table scrolls sideways (P7). That only helps if the column
+   naming the row stays put while it does — otherwise you are reading values
+   with nothing to attach them to. */
+test("the first column stays put while a wide table scrolls sideways", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  await bootStaff(page, "admin");
+  await go(page, "#/media/admin/audit");
+  const moved = await page.evaluate(() => {
+    const t = document.querySelector("#page table.tbl") as HTMLElement | null;
+    if (!t || t.scrollWidth <= t.clientWidth + 1) return "table is not wide enough to test";
+    const cell = t.querySelector("tbody td:first-child") as HTMLElement;
+    const before = cell.getBoundingClientRect().left;
+    t.scrollLeft = 200;
+    return Math.abs(cell.getBoundingClientRect().left - before);
+  });
+  expect(typeof moved === "number" ? moved : moved, "the identifying column scrolled away").toBeLessThan(2);
+});

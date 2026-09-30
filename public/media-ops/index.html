@@ -1385,6 +1385,17 @@ html[data-layout="mobile"] table.m-cards td[data-m=actions]{grid-column:1 / -1;d
 html[data-layout="mobile"] table.m-cards td[data-m=actions] .btn{min-height:40px}
 html[data-layout="mobile"] table.m-cards td[data-m=hide]{display:none}
 
+/* The first column stays put while a wide table scrolls sideways, so a row
+   never loses the thing that identifies it. These are the read-only admin,
+   custodian and manager tables: the page cannot make them narrow, so the job is
+   to keep them readable. Rows are a flat --surface with no striping, so the
+   pinned cell matches; the hairline marks where the pinned column ends.
+   Tables given the card treatment opt out, having no columns to pin. */
+html[data-layout="mobile"] table.tbl:not(.m-cards) :is(th,td):first-child{position:sticky;left:0;
+  background:var(--surface);box-shadow:1px 0 0 var(--border)}
+html[data-layout="mobile"] table.tbl:not(.m-cards) td:first-child{z-index:1}
+html[data-layout="mobile"] table.tbl:not(.m-cards) th:first-child{z-index:3}
+
 /* ── m-sticky: keep the first column visible on a wide readability table ───── */
 html[data-layout="mobile"] table.m-sticky{display:block;overflow-x:auto}
 html[data-layout="mobile"] table.m-sticky :is(th,td):first-child{position:sticky;left:0;background:var(--surface);z-index:1}
@@ -14627,9 +14638,9 @@ function teamCard(t,canMng,unassigned){
   const ms=teamMembers(t.id);
   const pool=[...unassigned,...DB.users.filter(u=>u.is_active&&!ms.includes(u.id)&&u.id!==t.lead_user_id
     &&!unassigned.some(x=>x.id===u.id))];
-  return `<div class="tm" data-tid="${t.id}" ${canMng?'draggable="true"':''}>
+  return `<div class="tm" data-tid="${t.id}" ${canMng&&!isMobileLayout()?'draggable="true"':''}>
     <div class="tm-top">
-      ${canMng?'<span class="tm-grip" title="Drag to reorder">⣿</span>':''}
+      ${canMng?'<span class="tm-grip hide-m" title="Drag to reorder">⣿</span>':''}
       <span class="tm-ico" style="background:${teamColor(t)}1f;color:${teamColor(t)}">${esc(teamIcon(t))}</span>
       <span class="tm-name">${esc(t.name)}</span>
       <span class="chip" title="Every team has exactly one Team Lead">${avatar(t.lead_user_id,'xs')} ${esc((user(t.lead_user_id)||{full_name:'— no lead'}).full_name)}</span>
@@ -22411,7 +22422,20 @@ const MENUS = {
   /* Team card actions (Organization Management). Rename and Change lead both open
      the one team form, so there is a single definition of what a team is. */
   teamMenu:(d)=>{const t=team(+d.tid);
+    /* REORDERING WITH A FINGER. The order is set by dragging a team card, and
+       HTML5 drag does not exist on touch, so on a phone the order simply could
+       not be changed. These two entries rebuild the same id list a drop would
+       have produced and hand it to the same teamReorder action — the order
+       still lives in sort_order and the server call is unchanged. Phone only,
+       because dragging is the better tool where there is a pointer. */
+    const order=activeTeams().map(x=>x.id), at=order.indexOf(+d.tid);
+    const swap=(j)=>{const ids=order.slice(); const [m]=ids.splice(at,1); ids.splice(j,0,m);
+      ACTIONS.teamReorder({ids}); render();};
     return [{label_only:t.name},
+      ...(isMobileLayout()&&order.length>1?[
+        {label:'Move up',icon:'▲',disabled:at<=0,fn:()=>swap(at-1)},
+        {label:'Move down',icon:'▼',disabled:at<0||at>=order.length-1,fn:()=>swap(at+1)},
+        {sep:true}]:[]),
       {label:'Rename / edit',icon:'✎',fn:()=>openTeamForm(+d.tid)},
       {label:'Change lead',icon:'▲',fn:()=>{openTeamForm(+d.tid);setTimeout(()=>{const s=$('#tf-lead');if(s)s.focus();},80);}},
       {label:'Open team dashboard',icon:'◉',fn:()=>location.hash='#/media/team/'+t.lead_user_id},

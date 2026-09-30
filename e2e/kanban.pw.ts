@@ -141,3 +141,63 @@ test.describe("on a desktop", () => {
     expect(notes).toContain("Drag a card");
   });
 });
+
+/* ── Teams reorder ──────────────────────────────────────────────────────────
+   The same gap as a kanban card: the order was set by dragging, which a finger
+   cannot do. The tap path rebuilds the id list a drop would have produced and
+   hands it to the existing action. */
+test.describe("reordering teams", () => {
+  test.use(PHONE);
+
+  test("Move down actually changes the stored order", async ({ page }) => {
+    await bootStaff(page, "admin");
+    await go(page, "#/media/team");
+    await page.evaluate("S.tab.team='structure'; render()");
+    const before = await page.evaluate("activeTeams().map(t=>t.id)") as number[];
+    expect(before.length, "need at least two teams to reorder").toBeGreaterThan(1);
+
+    await page.locator(`#page .tm[data-tid="${before[0]}"] [data-menu="teamMenu"]`).click();
+    await page.locator('.menu-item:has-text("Move down")').click();
+
+    const after = await page.evaluate("activeTeams().map(t=>t.id)") as number[];
+    expect(after[0]).toBe(before[1]);
+    expect(after[1]).toBe(before[0]);
+    /* Same set, only the order moved. */
+    expect([...after].sort()).toEqual([...before].sort());
+  });
+
+  test("the ends of the list cannot move past themselves", async ({ page }) => {
+    await bootStaff(page, "admin");
+    await go(page, "#/media/team");
+    await page.evaluate("S.tab.team='structure'; render()");
+    const ids = await page.evaluate("activeTeams().map(t=>t.id)") as number[];
+    await page.locator(`#page .tm[data-tid="${ids[0]}"] [data-menu="teamMenu"]`).click();
+    await expect(page.locator('.menu-item:has-text("Move up")')).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await page.locator(`#page .tm[data-tid="${ids[ids.length - 1]}"] [data-menu="teamMenu"]`).click();
+    await expect(page.locator('.menu-item:has-text("Move down")')).toBeDisabled();
+  });
+
+  test("a phone does not advertise a drag it cannot do", async ({ page }) => {
+    await bootStaff(page, "admin");
+    await go(page, "#/media/team");
+    await page.evaluate("S.tab.team='structure'; render()");
+    expect(await page.evaluate(() =>
+      document.querySelector("#page .tm")?.getAttribute("draggable"))).toBeNull();
+    expect(await page.evaluate(() =>
+      [...document.querySelectorAll("#page .tm-grip")].some((g) => (g as HTMLElement).offsetParent !== null)))
+      .toBe(false);
+  });
+});
+
+test("on a desktop, teams still reorder by dragging and offer no Move entries", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await bootStaff(page, "admin");
+  await go(page, "#/media/team");
+  await page.evaluate("S.tab.team='structure'; render()");
+  expect(await page.evaluate(() =>
+    document.querySelector("#page .tm")?.getAttribute("draggable"))).toBe("true");
+  const id = await page.evaluate("activeTeams()[0].id");
+  await page.locator(`#page .tm[data-tid="${id}"] [data-menu="teamMenu"]`).click();
+  await expect(page.locator('.menu-item:has-text("Move down")')).toHaveCount(0);
+});
