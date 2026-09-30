@@ -563,7 +563,10 @@ html[data-theme=dark] .btn-group button.on{background:var(--brand-100)}
 .mg-ico svg{width:15px;height:15px}
 .status{display:inline-flex;align-items:center;gap:5px;height:25px;padding:0 9px;border-radius:7px;
   font-size:12px;font-weight:650;white-space:nowrap;border:1px solid transparent}
-.status .si{font-size:10px;line-height:1}
+.status .si{font-size:10px;line-height:1;display:inline-flex;align-items:center}
+/* The pill's icon is sized to the cap height of its label, so the row's
+   vertical rhythm is the same as it was with a glyph. */
+.status .si svg{width:12px;height:12px;stroke-width:2.2}
 .st-neutral{background:var(--neutral-bg);color:var(--neutral);border-color:var(--border)}
 .st-info{background:var(--info-bg);color:var(--info)}
 .st-success{background:var(--success-bg);color:var(--success)}
@@ -796,6 +799,14 @@ html[data-theme=dark] .pal-item:hover,html[data-theme=dark] .pal-item.on{backgro
 .menu-item{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:8px;font-size:13px;
   width:100%;text-align:left;color:var(--text);white-space:nowrap}
 .menu-item:hover{background:var(--surface-2)}
+/* The icon column: a fixed box so labels line up whether the entry carries an
+   icon, a data glyph, or nothing. */
+.menu-item .mi{display:inline-flex;align-items:center;justify-content:center;
+  width:16px;height:16px;flex:0 0 16px;color:var(--text-3)}
+.menu-item .mi svg{width:16px;height:16px}
+.menu-item.danger .mi{color:var(--danger)}
+.pri svg{width:12px;height:12px;stroke-width:2.4}
+.btn-group button svg{width:14px;height:14px;vertical-align:-2px}
 .menu-item.danger{color:var(--danger)}
 .menu-item.on{background:var(--primary-surface);color:var(--primary-text);font-weight:600}
 html[data-theme=dark] .menu-item.on{background:var(--brand-100)}
@@ -3275,29 +3286,29 @@ const wtype = id=>(DB.work_types||[]).find(w=>w.id===id)
 
 /* ---------- status metadata (colour + icon + label — NFR-5) ---------- */
 const PROJ_STATUS = {
-  proposed:{l:'Proposed',c:'st-neutral',i:'◌'}, approved:{l:'Approved',c:'st-info',i:'✓'},
-  planning:{l:'Planning',c:'st-info',i:'◔'}, in_production:{l:'In Production',c:'st-brand',i:'▶'},
-  in_review:{l:'In Review',c:'st-warn',i:'◎'}, delivered:{l:'Delivered',c:'st-success',i:'⤴'},
-  completed:{l:'Completed',c:'st-success',i:'✔'}, archived:{l:'Archived',c:'st-neutral',i:'⛁'},
-  on_hold:{l:'On Hold',c:'st-warn',i:'‖'}, cancelled:{l:'Cancelled',c:'st-danger',i:'✕'}
+  proposed:{l:'Proposed',c:'st-neutral',i:'◌',ico:'pending'}, approved:{l:'Approved',c:'st-info',i:'✓',ico:'check'},
+  planning:{l:'Planning',c:'st-info',i:'◔',ico:'clipboard'}, in_production:{l:'In Production',c:'st-brand',i:'▶',ico:'play'},
+  in_review:{l:'In Review',c:'st-warn',i:'◎',ico:'eye'}, delivered:{l:'Delivered',c:'st-success',i:'⤴',ico:'check'},
+  completed:{l:'Completed',c:'st-success',i:'✔',ico:'check'}, archived:{l:'Archived',c:'st-neutral',i:'⛁',ico:'archive'},
+  on_hold:{l:'On Hold',c:'st-warn',i:'‖',ico:'pause'}, cancelled:{l:'Cancelled',c:'st-danger',i:'✕',ico:'x'}
 };
 const DELIV_STATUS = {
-  not_started:{l:'Not Started',c:'st-neutral',i:'◌'}, in_progress:{l:'In Progress',c:'st-info',i:'▶'},
-  in_review:{l:'In Review',c:'st-warn',i:'◎'}, changes_requested:{l:'Changes Requested',c:'st-danger',i:'↩'},
-  approved:{l:'Approved',c:'st-brand',i:'✓'}, delivered:{l:'Delivered',c:'st-success',i:'✔'},
-  not_required:{l:'Not Required',c:'st-neutral',i:'–'}, cancelled:{l:'Cancelled',c:'st-danger',i:'✕'}
+  not_started:{l:'Not Started',c:'st-neutral',i:'◌',ico:'pending'}, in_progress:{l:'In Progress',c:'st-info',i:'▶',ico:'play'},
+  in_review:{l:'In Review',c:'st-warn',i:'◎',ico:'eye'}, changes_requested:{l:'Changes Requested',c:'st-danger',i:'↩',ico:'undo'},
+  approved:{l:'Approved',c:'st-brand',i:'✓',ico:'check'}, delivered:{l:'Delivered',c:'st-success',i:'✔',ico:'check'},
+  not_required:{l:'Not Required',c:'st-neutral',i:'–',ico:'ban'}, cancelled:{l:'Cancelled',c:'st-danger',i:'✕',ico:'x'}
 };
 /* Reviewer verdict on a DELIVERED output (separate from version review). */
 const DELIV_APPROVAL = {
-  pending:{l:'Awaiting review',c:'st-warn',i:'◔'}, approved:{l:'Approved',c:'st-success',i:'✔'},
-  changes_requested:{l:'Needs revision',c:'st-danger',i:'↩'}, rejected:{l:'Rejected',c:'st-danger',i:'✕'}
+  pending:{l:'Awaiting review',c:'st-warn',i:'◔',ico:'clock'}, approved:{l:'Approved',c:'st-success',i:'✔',ico:'check'},
+  changes_requested:{l:'Needs revision',c:'st-danger',i:'↩',ico:'undo'}, rejected:{l:'Rejected',c:'st-danger',i:'✕',ico:'x'}
 };
 const REPORT_STATUS = {
-  draft:{l:'Draft',c:'st-neutral',i:'✎'}, submitted:{l:'Submitted',c:'st-info',i:'⤴'},
-  flagged:{l:'Flagged',c:'st-danger',i:'⚑'}, returned:{l:'Returned',c:'st-warn',i:'↩'},
-  approved:{l:'Approved',c:'st-success',i:'✔'}, auto_approved:{l:'Auto-approved',c:'st-success',i:'◷'},
+  draft:{l:'Draft',c:'st-neutral',i:'✎',ico:'edit'}, submitted:{l:'Submitted',c:'st-info',i:'⤴',ico:'send'},
+  flagged:{l:'Flagged',c:'st-danger',i:'⚑',ico:'flag'}, returned:{l:'Returned',c:'st-warn',i:'↩',ico:'undo'},
+  approved:{l:'Approved',c:'st-success',i:'✔',ico:'check'}, auto_approved:{l:'Auto-approved',c:'st-success',i:'◷',ico:'history'},
   /* synthetic — a submitted report whose content changed after review */
-  edited:{l:'Edited · Pending Review',c:'st-warn',i:'✎'}
+  edited:{l:'Edited · Pending Review',c:'st-warn',i:'✎',ico:'edit'}
 };
 /* Effective status key for display: an edited-since-review report never shows
    an Approved badge — it shows "Edited · Pending Review" until re-reviewed. */
@@ -3348,12 +3359,12 @@ function eqStateChips(st){
 }
 
 const EQ_STATUS = {
-  available:{l:'Available',c:'st-success',i:'✓'}, checked_out:{l:'Checked Out',c:'st-info',i:'→'},
-  booked:{l:'Booked',c:'st-warn',i:'◷'}, maintenance:{l:'Maintenance',c:'st-danger',i:'⚒'},
-  retired:{l:'Retired',c:'st-neutral',i:'⛔'}, lost:{l:'Lost',c:'st-danger',i:'?'}
+  available:{l:'Available',c:'st-success',i:'✓',ico:'check'}, checked_out:{l:'Checked Out',c:'st-info',i:'→',ico:'send'},
+  booked:{l:'Booked',c:'st-warn',i:'◷',ico:'clock'}, maintenance:{l:'Maintenance',c:'st-danger',i:'⚒',ico:'wrench'},
+  retired:{l:'Retired',c:'st-neutral',i:'⛔',ico:'ban'}, lost:{l:'Lost',c:'st-danger',i:'?',ico:'alert'}
 };
-const LEAVE_STATUS = {pending:{l:'Pending',c:'st-warn',i:'◔'},approved:{l:'Approved',c:'st-success',i:'✔'},
-  rejected:{l:'Rejected',c:'st-danger',i:'✕'},cancelled:{l:'Cancelled',c:'st-neutral',i:'–'}};
+const LEAVE_STATUS = {pending:{l:'Pending',c:'st-warn',i:'◔',ico:'clock'},approved:{l:'Approved',c:'st-success',i:'✔',ico:'check'},
+  rejected:{l:'Rejected',c:'st-danger',i:'✕',ico:'x'},cancelled:{l:'Cancelled',c:'st-neutral',i:'–',ico:'x'}};
 const DAY_TYPE_LABEL = {full:'Full day',half_morning:'Half day (Morning)',half_afternoon:'Half day (Afternoon)'};
 
 /* BR-1 project state machine */
@@ -3926,7 +3937,36 @@ const ICONS={
  star:'<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1 6.2-5.5-2.9-5.5 2.9 1-6.2L3 9.6l6.2-.9z"/>',
  play:'<circle cx="12" cy="12" r="9"/><path d="m10.2 8.6 6 3.4-6 3.4z"/>',
  db:'<ellipse cx="12" cy="5.6" rx="8" ry="3"/><path d="M4 5.6v12.8c0 1.7 3.6 3 8 3s8-1.3 8-3V5.6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/>',
- nerve:'<path d="M5 20V5.6L19 20V4"/>'
+ nerve:'<path d="M5 20V5.6L19 20V4"/>',
+/* ── P10: status, view-mode and row-action glyphs replaced by real icons.
+   Extracted with scripts/extract-lucide-icons.mjs, which walks the module
+   rather than pattern-matching it — a regex here once dropped the elements of
+   any icon Lucide wrapped over several lines, and those shipped as a single
+   stroke with nothing failing.
+   Portions © Lucide Contributors (ISC); see node_modules/lucide-react/LICENSE. */
+ eye:'<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',
+ archive:'<rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
+ undo:'<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/>',
+ pending:'<path d="M10.1 2.182a10 10 0 0 1 3.8 0"/><path d="M13.9 21.818a10 10 0 0 1-3.8 0"/><path d="M17.609 3.721a10 10 0 0 1 2.69 2.7"/><path d="M2.182 13.9a10 10 0 0 1 0-3.8"/><path d="M20.279 17.609a10 10 0 0 1-2.7 2.69"/><path d="M21.818 10.1a10 10 0 0 1 0 3.8"/><path d="M3.721 6.391a10 10 0 0 1 2.7-2.69"/><path d="M6.391 20.279a10 10 0 0 1-2.69-2.7"/>',
+ pause:'<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
+ ban:'<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/>',
+ wrench:'<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+ hourglass:'<path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>',
+ plane:'<path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/>',
+ half:'<circle cx="12" cy="12" r="10"/><path d="M12 18a6 6 0 0 0 0-12v12z"/>',
+ diamond:'<path d="M2.7 10.3a2.41 2.41 0 0 0 0 3.41l7.59 7.59a2.41 2.41 0 0 0 3.41 0l7.59-7.59a2.41 2.41 0 0 0 0-3.41l-7.59-7.59a2.41 2.41 0 0 0-3.41 0Z"/>',
+ mail:'<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
+ xcircle:'<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
+ dot:'<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/>',
+ copy:'<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+ history:'<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
+ sort:'<path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/>',
+ call:'<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>',
+ unlock:'<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
+ key:'<path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/>',
+ list:'<path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M3 6h.01"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M8 6h13"/>',
+ table:'<path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/>',
+ timeline:'<path d="M10 6h8"/><path d="M12 16h6"/><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M8 11h7"/>',
 };
 function ic(n,extra){return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" '+
   'stroke-linecap="round" stroke-linejoin="round"'+(extra?' class="'+extra+'"':'')+'>'+(ICONS[n]||ICONS.dots)+'</svg>';}
@@ -4003,13 +4043,23 @@ function avStack(ids,max=4){
 /* person cell: photo only, name lives in the tooltip (per design direction) */
 function who(uid,cls='sm'){return avatar(uid,cls);}
 function whoStack(ids,max=4){return avStack(ids,max);}
-function statusPill(map,key,extra=''){const s=map[key]||{l:key,c:'st-neutral',i:'○'};
-  return `<span class="status ${s.c} ${extra}"><span class="si">${s.i}</span>${s.l}</span>`;}
+/* THE GLYPH IN A STATUS PILL.
+
+   Every status entry carries both: `i`, a text glyph, and `ico`, the key of a
+   real icon. Both, because a pill can hold SVG and an <option> cannot — the
+   role and status <select>s render `i` as plain text, and an icon key there
+   would print the word "check" next to the label. So `ico` is used wherever
+   markup is allowed and `i` remains the fallback. */
+const sIco = s => (s && s.ico) ? ic(s.ico) : ((s && s.i) || '');
+function statusPill(map,key,extra=''){const s=map[key]||{l:key,c:'st-neutral',i:'○',ico:'dot'};
+  return `<span class="status ${s.c} ${extra}"><span class="si">${sIco(s)}</span>${s.l}</span>`;}
 function bar(pct,cls=''){return `<span class="bar"><i class="${cls}" style="width:${Math.min(100,pct)}%"></i></span>`;}
 function ageBadge(days){const c=days>=7?'hot':days>=3?'warm':'';
   return `<span class="age ${c}">${days}d</span>`;}
-function priTag(p){const m={urgent:'⬆ Urgent',high:'▲ High',normal:'— Normal',low:'▽ Low'};
-  return `<span class="pri pri-${p}">${m[p]||p}</span>`;}
+function priTag(p){
+  const m={urgent:['flag','Urgent'],high:['up','High'],normal:['dot','Normal'],low:['down','Low']};
+  const x=m[p]; if(!x) return `<span class="pri pri-${p}">${p}</span>`;
+  return `<span class="pri pri-${p}">${ic(x[0])}${x[1]}</span>`;}
 function money(n){return '₹'+Number(n).toLocaleString('en-IN');}
 
 function toast(msg,kind='',action){
@@ -4082,13 +4132,22 @@ function closeDrawer(){
   moFlushLayout();
 }
 let _menuOv=null;
+/* A MENU ICON IS EITHER AN ICON KEY OR A GLYPH.
+
+   The app's own menu entries now name an icon; the ones that come from DATA —
+   a project type or a category an admin gave a character to in Lookups — are
+   still that character, and must stay it, because it is their content and not
+   ours to reinterpret. Anything matching a known icon renders as one, anything
+   else renders as itself, so both kinds coexist without a flag. */
+const mIco = v => (v && ICONS[v]) ? ic(v) : (v || '');
+
 function menu(anchor,items){
   closeMenu();
   const mob=isMobileLayout();
   const rows=items.map((it,i)=>it.sep?'<div class="menu-sep"></div>':
     it.label_only?`<div class="menu-label">${esc(it.label_only)}</div>`:
     `<button class="menu-item ${it.cls||''} ${it.on?'on':''}" data-i="${i}" ${it.disabled?'disabled':''}>
-      ${it.icon?`<span>${it.icon}</span>`:''}<span>${esc(it.label)}</span>${it.hint?`<span class="mk">${esc(it.hint)}</span>`:''}</button>`).join('');
+      ${it.icon?`<span class="mi">${mIco(it.icon)}</span>`:''}<span>${esc(it.label)}</span>${it.hint?`<span class="mk">${esc(it.hint)}</span>`:''}</button>`).join('');
   const m=el(`<div class="menu ${mob?'as-sheet':''}">${rows}${mob?'<button class="menu-item menu-cancel" data-cancel>Cancel</button>':''}</div>`);
   if(mob){
     const scrim=el('<div class="menu-scrim"></div>'); scrim.onclick=closeMenu;
@@ -4946,10 +5005,10 @@ function shortcutModel(){
 function quickAddItems(){
   const m=shortcutModel();
   const extra=[
-    {label:'Request Leave',   icon:'◑', mod:'leave',    fn:()=>openLeaveRequest()},
-    {label:'New Deliverable', icon:'◆', mod:'pipeline', fn:()=>openNewDeliverable()},
-    {label:'Assign Work',     icon:'◉', mod:'projects', cap:'project.assign', fn:()=>openAssignWork()},
-    {label:'New Board Card',  icon:'▥', mod:'boards',   cap:'boards.manage',  fn:()=>openNewCard()}
+    {label:'Request Leave',   icon:'umbrella', mod:'leave',    fn:()=>openLeaveRequest()},
+    {label:'New Deliverable', icon:'file', mod:'pipeline', fn:()=>openNewDeliverable()},
+    {label:'Assign Work',     icon:'users', mod:'projects', cap:'project.assign', fn:()=>openAssignWork()},
+    {label:'New Board Card',  icon:'board', mod:'boards',   cap:'boards.manage',  fn:()=>openNewCard()}
   ].filter(a=>actAllowed(a.mod,a.cap));
   const primary=m.actions.map(a=>({label:a.l,icon:a.icon,hint:a.k.toUpperCase(),fn:a.fn}));
   const out=[...primary];
@@ -5155,11 +5214,11 @@ function flaggedReports(){return visibleReports().filter(r=>r.status==='flagged'
 /* Live status reuses the app's existing status pills — green healthy, amber
    attention, red critical, blue information. No second colour system. */
 const LIVE_STATUS={
-  working :{l:'Working',        c:'st-success', i:'●'},
-  reported:{l:'Report submitted',c:'st-info',   i:'✓'},
-  idle    :{l:'Idle',           c:'st-warn',    i:'◔'},
-  leave   :{l:'On leave',       c:'st-danger',  i:'◐'},
-  offline :{l:'Offline',        c:'st-neutral', i:'○'}
+  working :{l:'Working',        c:'st-success', i:'●',ico:'play'},
+  reported:{l:'Report submitted',c:'st-info',   i:'✓',ico:'check'},
+  idle    :{l:'Idle',           c:'st-warn',    i:'◔',ico:'clock'},
+  leave   :{l:'On leave',       c:'st-danger',  i:'◐',ico:'umbrella'},
+  offline :{l:'Offline',        c:'st-neutral', i:'○',ico:'dot'}
 };
 function liveStatus(uid,snap){
   if(leaveOn(uid,TODAY))return 'leave';
@@ -5429,12 +5488,12 @@ function drawerPerson(uid){
    Media Library.
    ══════════════════════════════════════════════════════════════════════════ */
 const CAST_AVAIL={
-  available:{l:'Available',c:'st-success',i:'●'}, limited:{l:'Limited',c:'st-warn',i:'◐'},
-  unavailable:{l:'Unavailable',c:'st-neutral',i:'○'}, archived:{l:'Archived',c:'st-neutral',i:'⛁'}
+  available:{l:'Available',c:'st-success',i:'●',ico:'check'}, limited:{l:'Limited',c:'st-warn',i:'◐',ico:'half'},
+  unavailable:{l:'Unavailable',c:'st-neutral',i:'○',ico:'ban'}, archived:{l:'Archived',c:'st-neutral',i:'⛁',ico:'archive'}
 };
 const CAST_CONSENT={
-  confirmed:{l:'Consent confirmed',c:'st-success',i:'✔'}, pending:{l:'Consent pending',c:'st-warn',i:'◔'},
-  restricted:{l:'Restricted',c:'st-danger',i:'⚑'}, expired:{l:'Consent expired',c:'st-danger',i:'⌛'}
+  confirmed:{l:'Consent confirmed',c:'st-success',i:'✔',ico:'check'}, pending:{l:'Consent pending',c:'st-warn',i:'◔',ico:'clock'},
+  restricted:{l:'Restricted',c:'st-danger',i:'⚑',ico:'lock'}, expired:{l:'Consent expired',c:'st-danger',i:'⌛',ico:'hourglass'}
 };
 const AGE_GROUPS=[['child','Child'],['teen','Teen'],['young_adult','Young Adult'],
   ['adult','Adult'],['middle_aged','Middle-aged'],['senior','Senior']];
@@ -5445,12 +5504,12 @@ const TAG_CATEGORIES=[['profession','Profession'],['production_type','Production
 /* Review states. The green/amber/red system is carried by the badge colour AND
    the label — never colour alone. */
 const CR_REVIEW={
-  new:{l:'New',c:'st-info',i:'✦'},
-  under_review:{l:'Under review',c:'st-warn',i:'◔'},
-  clarification:{l:'Clarification required',c:'st-warn',i:'?'},
-  approved:{l:'Approved',c:'st-success',i:'✔'},
-  rejected:{l:'Rejected',c:'st-danger',i:'✕'},
-  archived:{l:'Archived',c:'st-neutral',i:'⛁'}
+  new:{l:'New',c:'st-info',i:'✦',ico:'sparkles'},
+  under_review:{l:'Under review',c:'st-warn',i:'◔',ico:'eye'},
+  clarification:{l:'Clarification required',c:'st-warn',i:'?',ico:'help'},
+  approved:{l:'Approved',c:'st-success',i:'✔',ico:'check'},
+  rejected:{l:'Rejected',c:'st-danger',i:'✕',ico:'x'},
+  archived:{l:'Archived',c:'st-neutral',i:'⛁',ico:'archive'}
 };
 const castLinks = ()=>(DB.casting_links||[]).sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
 const castLink  = id=>(DB.casting_links||[]).find(l=>l.id===id)||null;
@@ -5464,9 +5523,9 @@ const linkIsOpen = l=>{
 };
 const registrationUrl = l=>location.origin+'/casting/register/'+l.token;
 const CR_STATUS={
-  new:{l:'New',c:'st-info',i:'✦'}, reviewing:{l:'Reviewing',c:'st-warn',i:'◔'},
-  searching:{l:'Searching',c:'st-warn',i:'⌕'}, candidate_found:{l:'Candidate found',c:'st-brand',i:'◆'},
-  completed:{l:'Completed',c:'st-success',i:'✔'}, rejected:{l:'Rejected',c:'st-neutral',i:'✕'}
+  new:{l:'New',c:'st-info',i:'✦',ico:'sparkles'}, reviewing:{l:'Reviewing',c:'st-warn',i:'◔',ico:'eye'},
+  searching:{l:'Searching',c:'st-warn',i:'⌕',ico:'search'}, candidate_found:{l:'Candidate found',c:'st-brand',i:'◆',ico:'diamond'},
+  completed:{l:'Completed',c:'st-success',i:'✔',ico:'check'}, rejected:{l:'Rejected',c:'st-neutral',i:'✕',ico:'x'}
 };
 const castRecords = ()=>(DB.casting_records||[]);
 const castTags    = ()=>(DB.casting_tags||[]).filter(t=>t.is_active!==false&&!t.archived_at)
@@ -5650,7 +5709,7 @@ function drawerCastRequest(id){
   const ext=q.source==='external';
   openDrawer(`
     <div class="dr-head"><div class="dh-txt">
-      <div class="f ac gap2 mb1"><span class="status ${rv.c}"><span class="si">${rv.i}</span>${rv.l}</span>
+      <div class="f ac gap2 mb1"><span class="status ${rv.c}"><span class="si">${sIco(rv)}</span>${rv.l}</span>
         ${ext?'<span class="chip">External registration</span>':'<span class="chip">Internal request</span>'}</div>
       <h2>${esc(q.applicant_name||q.need)}</h2>
       <div class="dh-meta"><span class="code">${esc(q.request_id||'')}</span>
@@ -5727,7 +5786,7 @@ function drawerCasting(id){
   openDrawer(`
     <div class="dr-head">
       <div class="dh-txt"><div class="f ac gap2 mb1">${statusPill(CAST_AVAIL,r.availability)}
-        <span class="status ${cs.c}"><span class="si">${cs.i}</span>${cs.l}</span>
+        <span class="status ${cs.c}"><span class="si">${sIco(cs)}</span>${cs.l}</span>
         ${castNeedsReview(r)?'<span class="status st-warn"><span class="si">⚑</span>Needs review</span>':''}</div>
         <h2>${esc(r.name)}</h2>
         <div class="dh-meta"><span class="code">${esc(r.cast_id||'')}</span><span>·</span><span>${esc(r.category)}</span>
@@ -5740,7 +5799,7 @@ function drawerCasting(id){
         <dt>Languages</dt><dd>${(r.languages||[]).map(l=>`<span class="chip">${esc(l)}</span>`).join(' ')||'—'}</dd>
         <dt>Location</dt><dd>${esc(r.location||(r.campus_id?(DB.campuses.find(c=>c.id===r.campus_id)||{name:'—'}).name:'—'))}</dd>
         <dt>Availability</dt><dd>${statusPill(CAST_AVAIL,r.availability)}</dd>
-        <dt>Consent</dt><dd><span class="status ${cs.c}"><span class="si">${cs.i}</span>${cs.l}</span>
+        <dt>Consent</dt><dd><span class="status ${cs.c}"><span class="si">${sIco(cs)}</span>${cs.l}</span>
           ${r.consent_date?` <span class="mut3 small">since ${D.fmt(r.consent_date)}</span>`:''}</dd>
         ${r.consent_scope?`<dt>Usage scope</dt><dd>${esc(r.consent_scope)}</dd>`:''}
         ${r.review_date?`<dt>Review by</dt><dd>${D.fmt(r.review_date)}</dd>`:''}
@@ -5850,7 +5909,7 @@ function castAdminRecords(f){
           <td class="small">${esc((AGE_GROUPS.find(a=>a[0]===r.age_group)||[])[1]||'—')}</td>
           <td>${statusPill(CAST_AVAIL,r.availability)}</td>
           <td>${(()=>{const c=CAST_CONSENT[r.consent_status]||CAST_CONSENT.pending;
-            return `<span class="status ${c.c}"><span class="si">${c.i}</span>${c.l}</span>`;})()}</td>
+            return `<span class="status ${c.c}"><span class="si">${sIco(c)}</span>${c.l}</span>`;})()}</td>
           <td class="small">${tagsOf(r.id).length}</td>
           <td data-stop>${r.drive_url
             ? `<a class="chip ${r.drive_ok===false?'warnchip':''}" href="${esc(r.drive_url)}" target="_blank" rel="noopener"
@@ -5915,7 +5974,7 @@ function castAdminRequests(){
       return `<div class="dc" data-drawer="castreq:${q.id}" style="cursor:pointer">
       <div class="dc-head"><span class="code">${esc(q.request_id||'')}</span>
         <b class="dc-title">${esc(q.applicant_name||q.need)}</b>
-        <span class="status ${rv.c}"><span class="si">${rv.i}</span>${rv.l}</span></div>
+        <span class="status ${rv.c}"><span class="si">${sIco(rv)}</span>${rv.l}</span></div>
       <div class="dc-grid">
         <div class="dc-kv"><span class="dc-k">${q.source==='external'?'Applicant':'Requested by'}</span>
           <span class="dc-v">${esc(q.source==='external'?(q.applicant_type||'—'):(user(q.requested_by)||{full_name:'—'}).full_name)}</span></div>
@@ -6180,18 +6239,18 @@ function openCastingForm(cid){
    rest of the app writes, and add only the two operational stages.
    ══════════════════════════════════════════════════════════════════════════ */
 const REQ_STATUS={
-  new:{l:'New request',c:'st-info',i:'✦'},
-  under_review:{l:'Under review',c:'st-warn',i:'◔'},
-  needs_clarification:{l:'Needs clarification',c:'st-warn',i:'?'},
-  ready:{l:'Ready for conversion',c:'st-brand',i:'✓'},
-  converted:{l:'Converted',c:'st-success',i:'⤴'},
-  closed:{l:'Closed',c:'st-neutral',i:'⛁'},
-  rejected:{l:'Rejected',c:'st-danger',i:'✕'}
+  new:{l:'New request',c:'st-info',i:'✦',ico:'sparkles'},
+  under_review:{l:'Under review',c:'st-warn',i:'◔',ico:'eye'},
+  needs_clarification:{l:'Needs clarification',c:'st-warn',i:'?',ico:'help'},
+  ready:{l:'Ready for conversion',c:'st-brand',i:'✓',ico:'check'},
+  converted:{l:'Converted',c:'st-success',i:'⤴',ico:'check'},
+  closed:{l:'Closed',c:'st-neutral',i:'⛁',ico:'archive'},
+  rejected:{l:'Rejected',c:'st-danger',i:'✕',ico:'x'}
 };
 const DISPATCH={
-  none:{l:'—',c:'st-neutral',i:'○'}, queued:{l:'Queued for dispatch',c:'st-warn',i:'◔'},
-  sent:{l:'Email sent',c:'st-info',i:'✉'}, delivered:{l:'Delivered',c:'st-success',i:'✔'},
-  archived:{l:'Archived',c:'st-neutral',i:'⛁'}
+  none:{l:'—',c:'st-neutral',i:'○',ico:'dot'}, queued:{l:'Queued for dispatch',c:'st-warn',i:'◔',ico:'clock'},
+  sent:{l:'Email sent',c:'st-info',i:'✉',ico:'mail'}, delivered:{l:'Delivered',c:'st-success',i:'✔',ico:'check'},
+  archived:{l:'Archived',c:'st-neutral',i:'⛁',ico:'archive'}
 };
 const reqs      = ()=>(DB.requests||[]);
 const meetings  = ()=>(DB.meetings||[]);
@@ -7584,9 +7643,9 @@ function dayProgress(uid=S.me,date){
    venue, Editing shows editing fields, and an unknown template falls back to the
    standard card. There is deliberately no branch on a work type's NAME, and no
    second queue for any kind of work. */
-const ASSIGN_STATUS={not_started:{l:'Not started',c:'st-neutral',i:'◌'},
-  in_progress:{l:'In progress',c:'st-info',i:'▶'}, done:{l:'Done',c:'st-success',i:'✔'},
-  blocked:{l:'Blocked',c:'st-danger',i:'‖'}};
+const ASSIGN_STATUS={not_started:{l:'Not started',c:'st-neutral',i:'◌',ico:'pending'},
+  in_progress:{l:'In progress',c:'st-info',i:'▶',ico:'play'}, done:{l:'Done',c:'st-success',i:'✔',ico:'check'},
+  blocked:{l:'Blocked',c:'st-danger',i:'‖',ico:'ban'}};
 const PRI_COLOR={urgent:'var(--danger)',high:'var(--warn)',normal:'var(--info)',low:'var(--text-3)'};
 /* Badge for a queue row: work type for tasks and shoots, deliverable type for
    scheduled project scope. Both are Admin-configurable master data. */
@@ -7605,7 +7664,7 @@ function assignmentCard(a){
       <span class="pri-dot" style="background:${PRI_COLOR[a.priority]||'var(--info)'}" title="${esc(a.priority||'normal')} priority"></span>
       <span class="chip wt-badge">${esc(b.icon)} ${esc(b.label)}</span>
       <b class="asg-title">${esc(a.title)}</b>
-      <span class="status ${st.c}"><span class="si">${st.i}</span>${st.l}</span>
+      <span class="status ${st.c}"><span class="si">${sIco(st)}</span>${st.l}</span>
     </div>
     <div class="asg-meta">
       <span><span class="code">${esc(p.code||'')}</span> ${esc(p.name)}</span>
@@ -7773,7 +7832,7 @@ function viewMyDay(){
         <div class="dlv-top">
           <span style="font-size:14px;flex:0 0 auto">${dtype(d.deliverable_type_id).icon}</span>
           <b class="dlv-title" data-drawer="deliverable:${d.id}" style="cursor:pointer">${esc(d.title)}</b>
-          <span class="status ${ap.c}"><span class="si">${ap.i}</span>${ap.l}</span>
+          <span class="status ${ap.c}"><span class="si">${sIco(ap)}</span>${ap.l}</span>
         </div>
         <div class="dlv-meta">
           <span><span class="code">${esc(proj(d.project_id).code||'')}</span> ${esc(proj(d.project_id).name)}</span>
@@ -8118,8 +8177,10 @@ function viewProjects(){
   const mode=S.viewMode.projects||'list';
   const f=projectFilters();
   const ps=filteredProjects();
-  const modes=[['list','List','▤'],['table','Table','▦'],['kanban','Kanban','▥'],
-               ['timeline','Timeline','▬'],['calendar','Calendar','▦'],['gallery','Gallery','▩']];
+  /* Four of these six used to be near-identical box glyphs (▤ ▦ ▥ ▩), with
+     Table and Calendar literally the same character. */
+  const modes=[['list','List','list'],['table','Table','table'],['kanban','Kanban','board'],
+               ['timeline','Timeline','timeline'],['calendar','Calendar','calendar'],['gallery','Gallery','gallery']];
   return `<div class="page-head">
       <div><h1 class="page-title">Projects</h1>
       <div class="page-sub">Events, tours, deputations and campaigns.</div></div>
@@ -8141,7 +8202,7 @@ function viewProjects(){
         ${(f.type.length||f.status.length||f.unit.length||f.priority.length||f.q||f.mine)?`<button class="btn sm ghost" data-act="projClear">Clear</button>`:''}
         <span class="ml-auto f gap2 ac">
           <span class="small mut3">${ps.length} of ${visibleProjects().length}</span>
-          <div class="btn-group">${modes.map(([k,l,i])=>`<button data-act="projMode" data-v="${k}" class="${mode===k?'on':''}" title="${l}">${i}<span class="hide-sm"> ${l}</span></button>`).join('')}</div>
+          <div class="btn-group">${modes.map(([k,l,i])=>`<button data-act="projMode" data-v="${k}" class="${mode===k?'on':''}" title="${l}">${ic(i)}<span class="hide-sm"> ${l}</span></button>`).join('')}</div>
         </span>
       </div></div></div>
 
@@ -8168,7 +8229,7 @@ function projList(ps){
             <span class="hide-sm">${avStack(crew,3)}</span>
             ${priTag(p.priority)}
             ${(can('project.status')||isAdmin())?`<span class="icon-btn" role="button" title="Delete project" style="flex:0 0 auto;color:var(--danger)"
-              onclick="event.stopPropagation();event.preventDefault();ACTIONS.deleteProject({pid:${p.id}})">🗑</span>`:''}</button>`;}).join('')}
+              onclick="event.stopPropagation();event.preventDefault();ACTIONS.deleteProject({pid:${p.id}})">${ic('trash')}</span>`:''}</button>`;}).join('')}
       </div></div></div>`).join('')||`<div class="empty"><div class="e-ico">◌</div><h4>No projects match</h4>
         <p>Adjust the filters, or create one.</p><button class="btn primary" data-act="newProject">＋ New project</button></div>`;
 }
@@ -8525,7 +8586,7 @@ function projOverview(p,dls,crew,shoots,pr){
             <td class="num">${dls.filter(d=>d.owner_id===a.user_id).length}</td>
             <td class="num">${statusPill(PRESENCE_MAP(),presence(a.user_id))}
               ${(can('project.assign')&&!a.is_project_manager)?`<span class="icon-btn" role="button" title="Remove from project" style="color:var(--danger)"
-                onclick="event.stopPropagation();event.preventDefault();ACTIONS.removeAssignment({pid:${p.id},uid:${a.user_id}})">🗑</span>`:''}</td></tr>`).join('')}
+                onclick="event.stopPropagation();event.preventDefault();ACTIONS.removeAssignment({pid:${p.id},uid:${a.user_id}})">${ic('trash')}</span>`:''}</td></tr>`).join('')}
           </tbody></table></div></div></div>
     </div>
 
@@ -8558,8 +8619,8 @@ function projOverview(p,dls,crew,shoots,pr){
         </div></div></div>
     </div></div>`;
 }
-function PRESENCE_MAP(){return {present:{l:'Present',c:'st-success',i:'●'},shoot:{l:'On shoot',c:'st-info',i:'◉'},
-  leave:{l:'On leave',c:'st-warn',i:'◐'},half_day:{l:'Half day',c:'st-warn',i:'◑'},tour:{l:'On tour',c:'st-brand',i:'✈'}};}
+function PRESENCE_MAP(){return {present:{l:'Present',c:'st-success',i:'●',ico:'check'},shoot:{l:'On shoot',c:'st-info',i:'◉',ico:'camera'},
+  leave:{l:'On leave',c:'st-warn',i:'◐',ico:'umbrella'},half_day:{l:'Half day',c:'st-warn',i:'◑',ico:'half'},tour:{l:'On tour',c:'st-brand',i:'✈',ico:'plane'}};}
 
 /* The people to show under "Team & logged hours": everyone assigned to the
    project (the existing crew assignment) plus anyone carrying a deliverable in
@@ -8655,7 +8716,7 @@ function projDeliverablesTab(p,dls){
           <td class="small">${esc(d.mail_status)}</td>
           <td>${statusPill(DELIV_STATUS,d.status)}
             ${d.status==='delivered'?(()=>{const ap=DELIV_APPROVAL[d.approval_status||'pending']||DELIV_APPROVAL.pending;
-              return `<div class="t-sub"><span class="status ${ap.c}" style="font-size:10px"><span class="si">${ap.i}</span>${ap.l}</span></div>`;})():''}</td>
+              return `<div class="t-sub"><span class="status ${ap.c}" style="font-size:10px"><span class="si">${sIco(ap)}</span>${ap.l}</span></div>`;})():''}</td>
           <td class="num nowrap" data-stop>
             ${d.status==='delivered'&&(d.approval_status||'pending')==='pending'&&(isAdmin()||isTL()||isPMof(p.id))&&d.owner_id!==S.me?
               `<button class="btn xs primary" data-act="reviewDelivered" data-did="${d.id}" data-v="approved">✔ Approve</button>
@@ -8712,15 +8773,15 @@ function projShootsTab(p,shoots){
           <td><span class="chip">${esc(s.status)}</span>
             ${can('project.assign')?`<span class="nowrap" onclick="event.stopPropagation()">
               <button class="btn xs" onclick="ACTIONS.editShoot({sid:${s.id}})">✎</button>
-              <button class="btn xs" style="color:var(--danger)" onclick="ACTIONS.deleteShoot({sid:${s.id}})">🗑</button></span>`:''}</td></tr>`;}).join('')
+              <button class="btn xs" style="color:var(--danger)" onclick="ACTIONS.deleteShoot({sid:${s.id}})">${ic('trash')}</button></span>`:''}</td></tr>`;}).join('')
         ||'<tr><td colspan="7" class="tbl-empty">No shoots. A multi-day event has many shoot sessions with different crews and gear.</td></tr>'}
       </tbody></table></div></div></div>`;
 }
 function projFilesTab(p){
   const links=DB.drive_links.filter(l=>(l.entity_type==='project'&&l.entity_id===p.id)||
     (l.entity_type==='deliverable'&&projectDeliverables(p.id).some(d=>d.id===l.entity_id)));
-  const VS={ok:{l:'Valid',c:'st-success',i:'✔'},broken:{l:'Broken',c:'st-danger',i:'✕'},
-    no_permission:{l:'No permission',c:'st-warn',i:'🔒'},unchecked:{l:'Unchecked',c:'st-neutral',i:'◌'}};
+  const VS={ok:{l:'Valid',c:'st-success',i:'✔',ico:'check'},broken:{l:'Broken',c:'st-danger',i:'✕',ico:'xcircle'},
+    no_permission:{l:'No permission',c:'st-warn',i:'🔒',ico:'lock'},unchecked:{l:'Unchecked',c:'st-neutral',i:'◌',ico:'pending'}};
   return `<div class="note mb4"><b>Media files stay in Drive.</b> The platform stores structured, validated links —
     entity, label, URL, who added it, and a validation state checked weekly by AUTO-5 with read-metadata scope only.
     </div>
@@ -12186,10 +12247,10 @@ function cnCurrent(){
 }
 
 const CN_ROLE   = {creator_admin:'Creator Admin', team_lead:'Team Lead', creator:'Creator'};
-const CN_STATUS = {active:{l:'Active',c:'st-success',i:'✓'}, inactive:{l:'Inactive',c:'st-neutral',i:'◌'},
-                   suspended:{l:'Suspended',c:'st-warn',i:'⚑'}, archived:{l:'Archived',c:'st-neutral',i:'⛁'}};
+const CN_STATUS = {active:{l:'Active',c:'st-success',i:'✓',ico:'check'}, inactive:{l:'Inactive',c:'st-neutral',i:'◌',ico:'pending'},
+                   suspended:{l:'Suspended',c:'st-warn',i:'⚑',ico:'pause'}, archived:{l:'Archived',c:'st-neutral',i:'⛁',ico:'archive'}};
 const cnStatus = s=>{const m=CN_STATUS[s]||CN_STATUS.inactive;
-  return `<span class="status ${m.c}"><span class="si">${m.i}</span>${m.l}</span>`;};
+  return `<span class="status ${m.c}"><span class="si">${sIco(m)}</span>${m.l}</span>`;};
 
 function creatorProfileCards(st){
   const p=st.profile||{};
@@ -14575,7 +14636,7 @@ function dirCard(u){
                ${leads?'<span class="chip" style="height:17px;padding:0 6px;font-size:9.5px">Lead</span>':''}`
             : '<span class="mut3">Unassigned</span>'}</span></div>
         ${(can('admin.users')&&u.id!==S.me&&u.is_active)?`<span class="icon-btn ml-auto" role="button" title="Remove member" style="color:var(--danger)"
-          onclick="event.stopPropagation();event.preventDefault();ACTIONS.deleteCrew({uid:${u.id},name:'${esc((u.full_name||'').replace(/'/g,''))}'})">🗑</span>`:''}</div>
+          onclick="event.stopPropagation();event.preventDefault();ACTIONS.deleteCrew({uid:${u.id},name:'${esc((u.full_name||'').replace(/'/g,''))}'})">${ic('trash')}</span>`:''}</div>
       ${!u.is_active?`<div class="note mb2" style="padding:7px 10px;font-size:11.5px">
         <b>Removed${u.deactivated_at?' '+D.fmt(u.deactivated_at):''}.</b> No access; their past work is unchanged.
         ${can('admin.users')?`<button class="btn xs mt2" onclick="event.stopPropagation();event.preventDefault();ACTIONS.restoreCrew({uid:${u.id}})">Restore</button>`:''}</div>`:''}
@@ -18492,7 +18553,7 @@ const ACTIONS = {
     row.innerHTML=`<div class="f gap2 ac mb2">
         <input class="inp np-d-title" placeholder="e.g. Event photography, Aftermovie, Highlight reel" style="flex:1"
           list="np-d-suggest" autocomplete="off">
-        <button type="button" class="icon-btn np-d-del" title="Remove this deliverable" style="color:var(--danger)">🗑</button></div>
+        <button type="button" class="icon-btn np-d-del" title="Remove this deliverable" style="color:var(--danger)">${ic('trash')}</button></div>
       <div class="f gap2 wrap ac">
         <select class="inp np-d-type" style="height:30px;font-size:12px;width:auto">
           ${types.map(t=>`<option value="${t.id}">${t.icon||''} ${esc(t.name)}</option>`).join('')}</select>
@@ -18776,14 +18837,14 @@ const ACTIONS = {
     moSync(MO_API.post('/drive-links',payload), ()=>{render();toast('Drive link added','ok');});
   },
   delivAction:(d,n)=>menu(n,[
-    {label:'Open drawer',icon:'▤',fn:()=>drawerDeliverable(+d.did)},
+    {label:'Open drawer',icon:'file',fn:()=>drawerDeliverable(+d.did)},
     /* Both of these set dl.status in memory, re-rendered, and said it had
        worked. The server never heard, so the deliverable was back on the board
        at the next reload — and neither one ran the state-machine checks that
        every other status change goes through. applyDelivStatus() is that one
        path: the rules, the audit entry and the POST, in the right order. */
-    {label:'Mark not required',icon:'–',fn:()=>{const dl=deliv(+d.did);if(dl)applyDelivStatus(dl,'not_required');}},
-    {label:'Cancel deliverable',icon:'✕',cls:'danger',fn:()=>{const dl=deliv(+d.did);if(dl)applyDelivStatus(dl,'cancelled');}}
+    {label:'Mark not required',icon:'ban',fn:()=>{const dl=deliv(+d.did);if(dl)applyDelivStatus(dl,'not_required');}},
+    {label:'Cancel deliverable',icon:'x',cls:'danger',fn:()=>{const dl=deliv(+d.did);if(dl)applyDelivStatus(dl,'cancelled');}}
   ]),
 
   /* ---- equipment ---- */
@@ -20782,7 +20843,7 @@ const ACTIONS = {
     row.style.cssText='border:1px solid var(--border);border-radius:var(--r);padding:10px;margin-bottom:8px;background:var(--surface-2)';
     row.innerHTML=`<div class="f gap2 ac mb2">
         <input class="inp co-title" placeholder="e.g. Reel Creator" style="flex:1">
-        <button type="button" class="icon-btn co-del" style="color:var(--danger)" title="Remove">🗑</button></div>
+        <button type="button" class="icon-btn co-del" style="color:var(--danger)" title="Remove">${ic('trash')}</button></div>
       <div class="f gap2 wrap ac">
         <input class="inp co-type" placeholder="Type (Reels, Vlogs…)" style="width:170px;height:30px;font-size:12px">
         <span class="f ac gap1"><span class="xsmall mut3">Need</span>
@@ -22493,41 +22554,41 @@ const MENUS = {
       ACTIONS.teamReorder({ids}); render();};
     return [{label_only:t.name},
       ...(isMobileLayout()&&order.length>1?[
-        {label:'Move up',icon:'▲',disabled:at<=0,fn:()=>swap(at-1)},
-        {label:'Move down',icon:'▼',disabled:at<0||at>=order.length-1,fn:()=>swap(at+1)},
+        {label:'Move up',icon:'up',disabled:at<=0,fn:()=>swap(at-1)},
+        {label:'Move down',icon:'down',disabled:at<0||at>=order.length-1,fn:()=>swap(at+1)},
         {sep:true}]:[]),
-      {label:'Rename / edit',icon:'✎',fn:()=>openTeamForm(+d.tid)},
-      {label:'Change lead',icon:'▲',fn:()=>{openTeamForm(+d.tid);setTimeout(()=>{const s=$('#tf-lead');if(s)s.focus();},80);}},
-      {label:'Open team dashboard',icon:'◉',fn:()=>location.hash='#/media/team/'+t.lead_user_id},
+      {label:'Rename / edit',icon:'edit',fn:()=>openTeamForm(+d.tid)},
+      {label:'Change lead',icon:'user',fn:()=>{openTeamForm(+d.tid);setTimeout(()=>{const s=$('#tf-lead');if(s)s.focus();},80);}},
+      {label:'Open team dashboard',icon:'grid',fn:()=>location.hash='#/media/team/'+t.lead_user_id},
       {sep:true},
-      {label:'Archive',icon:'⛁',fn:()=>ACTIONS.teamArchive({tid:d.tid,on:'1'})},
-      {label:'Delete',icon:'🗑',cls:'danger',fn:()=>ACTIONS.teamDelete({tid:d.tid})}];},
+      {label:'Archive',icon:'archive',fn:()=>ACTIONS.teamArchive({tid:d.tid,on:'1'})},
+      {label:'Delete',icon:'trash',cls:'danger',fn:()=>ACTIONS.teamDelete({tid:d.tid})}];},
   /* Three-dot menus on the Today's team status cards. Every entry routes to a
      module that already exists — nothing here owns its own page or data. */
   tsMember:(d)=>{const uid=+d.uid,n=user(uid).full_name.split(' ')[0];
     return [{label_only:n+' — quick actions'},
-      {label:'View my day',icon:'◉',fn:()=>drawerPerson(uid)},
-      {label:'View daily report',icon:'▤',fn:()=>{const r=DB.daily_reports.find(x=>x.user_id===uid&&x.report_date===TODAY);
+      {label:'View my day',icon:'myday',fn:()=>drawerPerson(uid)},
+      {label:'View daily report',icon:'clipboard',fn:()=>{const r=DB.daily_reports.find(x=>x.user_id===uid&&x.report_date===TODAY);
         r?drawerReport(r.id):toast(n+' has not started today’s report','warn');}},
-      {label:'View projects',icon:'▣',fn:()=>location.hash='#/media/team/'+uid},
-      {label:'View workload',icon:'◴',fn:()=>location.hash='#/media/team'},
+      {label:'View projects',icon:'folder',fn:()=>location.hash='#/media/team/'+uid},
+      {label:'View workload',icon:'chart',fn:()=>location.hash='#/media/team'},
       {sep:true},
-      {label:'Reassign work',icon:'⇄',fn:()=>openAssignWork()},
-      {label:'Message employee',icon:'✉',hint:'coming soon',
+      {label:'Reassign work',icon:'users',fn:()=>openAssignWork()},
+      {label:'Message employee',icon:'mail',hint:'coming soon',
         fn:()=>toast('Messaging is not wired up yet — use the project comment thread','warn')}];},
   tsLead:(d)=>{const uid=+d.uid,n=user(uid).full_name.split(' ')[0];
     return [{label_only:n+'’s team — quick actions'},
-      {label:'Open team dashboard',icon:'◉',fn:()=>location.hash='#/media/team/'+uid},
-      {label:'Projects',icon:'▣',fn:()=>location.hash='#/media/projects'},
-      {label:'Reports',icon:'▤',fn:()=>{S.tab.reports='team';location.hash='#/media/reports';}},
-      {label:'Team performance',icon:'◈',fn:()=>location.hash='#/media/performance'},
-      {label:'Team capacity',icon:'◴',fn:()=>location.hash='#/media/team'},
+      {label:'Open team dashboard',icon:'grid',fn:()=>location.hash='#/media/team/'+uid},
+      {label:'Projects',icon:'folder',fn:()=>location.hash='#/media/projects'},
+      {label:'Reports',icon:'clipboard',fn:()=>{S.tab.reports='team';location.hash='#/media/reports';}},
+      {label:'Team performance',icon:'trend',fn:()=>location.hash='#/media/performance'},
+      {label:'Team capacity',icon:'chart',fn:()=>location.hash='#/media/team'},
       {sep:true},
-      {label:'Assign project',icon:'＋',fn:()=>openNewProject()}];},
+      {label:'Assign project',icon:'plus',fn:()=>openNewProject()}];},
   savedViews:()=>[{label_only:'Saved views — every filter set is a URL'},
     ...DB.saved_views.filter(v=>v.module==='projects').map(v=>({label:v.name,icon:'◷',
       hint:v.is_shared?'shared':'', fn:()=>{toast('Applied “'+v.name+'”','ok');}})),
-    {sep:true},{label:'Save current view…',icon:'＋',fn:()=>toast('View saved and shareable by URL','ok')}],
+    {sep:true},{label:'Save current view…',icon:'plus',fn:()=>toast('View saved and shareable by URL','ok')}],
   filterType:()=>DB.project_types.map(t=>({label:t.name,icon:t.icon,on:projectFilters().type.includes(t.id),
     fn:()=>{const f=projectFilters();const i=f.type.indexOf(t.id);i>=0?f.type.splice(i,1):f.type.push(t.id);render();}})),
   filterStatus:()=>Object.keys(PROJ_STATUS).map(k=>({label:PROJ_STATUS[k].l,icon:PROJ_STATUS[k].i,
@@ -22565,30 +22626,30 @@ const MENUS = {
     const r=(S._crudData?.rows||[]).find(x=>x.id===+d.id)||{};
     const active=!!r[mod.activeCol], archived=!!r.archived_at;
     return [
-      {label:'View',icon:'◔',fn:()=>ACTIONS.crudViewOne(d)},
-      {label:'Edit',icon:'✎',disabled:!can.update,fn:()=>ACTIONS.crudEdit(d)},
-      {label:'Duplicate',icon:'⧉',disabled:!can.create,fn:()=>ACTIONS.crudDup(d)},
+      {label:'View',icon:'eye',fn:()=>ACTIONS.crudViewOne(d)},
+      {label:'Edit',icon:'edit',disabled:!can.update,fn:()=>ACTIONS.crudEdit(d)},
+      {label:'Duplicate',icon:'copy',disabled:!can.create,fn:()=>ACTIONS.crudDup(d)},
       {sep:true},
-      active?{label:'Disable',icon:'○',disabled:!can.state,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'disable'})}
-            :{label:'Enable',icon:'●',disabled:!can.state,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'enable'})},
-      archived?{label:'Restore',icon:'↺',disabled:!can.archive,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'restore'})}
-              :{label:'Archive',icon:'⛁',disabled:!can.archive,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'archive'})},
-      {label:'Delete',icon:'🗑',cls:'danger',disabled:!can.delete,fn:()=>ACTIONS.crudDelete(d)}];
+      active?{label:'Disable',icon:'ban',disabled:!can.state,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'disable'})}
+            :{label:'Enable',icon:'check',disabled:!can.state,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'enable'})},
+      archived?{label:'Restore',icon:'undo',disabled:!can.archive,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'restore'})}
+              :{label:'Archive',icon:'archive',disabled:!can.archive,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'archive'})},
+      {label:'Delete',icon:'trash',cls:'danger',disabled:!can.delete,fn:()=>ACTIONS.crudDelete(d)}];
   },
   projMore:(d)=>{
     const p=proj(+d.pid);
     return [
-      {label:'Assign crew',icon:'◈',disabled:!can('project.assign'),fn:()=>ACTIONS.assignProject(d)},
-      {label:'Edit details',icon:'✎',disabled:!(isAdmin()||isTL()||p.owner_id===S.me||isPMof(p.id)),fn:()=>ACTIONS.editProject(d)},
-      {label:'Add Drive link',icon:'⛁',fn:()=>ACTIONS.addLink(d)},
+      {label:'Assign crew',icon:'users',disabled:!can('project.assign'),fn:()=>ACTIONS.assignProject(d)},
+      {label:'Edit details',icon:'edit',disabled:!(isAdmin()||isTL()||p.owner_id===S.me||isPMof(p.id)),fn:()=>ACTIONS.editProject(d)},
+      {label:'Add Drive link',icon:'link',fn:()=>ACTIONS.addLink(d)},
       {sep:true},
-      {label:'Delete project',icon:'🗑',cls:'danger',disabled:!(can('project.status')||isAdmin()),fn:()=>ACTIONS.deleteProject(d)},
-      {label:'Archive project',icon:'⛁',disabled:!can('project.archive'),
+      {label:'Delete project',icon:'trash',cls:'danger',disabled:!(can('project.status')||isAdmin()),fn:()=>ACTIONS.deleteProject(d)},
+      {label:'Archive project',icon:'archive',disabled:!can('project.archive'),
        fn:()=>{p.status='archived';p.archived_at=TODAY;
          audit(S.me,'project.archived','project',p.id,{status:'completed'},{status:'archived'});
          render();toast('Archived — read-only except for Admin, always searchable in the Library','ok');
          moSync(MO_API.post('/projects/'+p.id+'/status',{status:'archived'}));}},
-      {label:'Cancel project',icon:'✕',cls:'danger',disabled:!can('project.status',{project_id:p.id}),
+      {label:'Cancel project',icon:'x',cls:'danger',disabled:!can('project.status',{project_id:p.id}),
        fn:()=>{p.status='cancelled';render();toast('Cancelled','warn');
          moSync(MO_API.post('/projects/'+p.id+'/status',{status:'cancelled'}));}}];
   },
@@ -22598,8 +22659,8 @@ const MENUS = {
       ...(DELIV_TRANSITIONS[dl.status]||[]).map(s=>({label:'→ '+DELIV_STATUS[s].l,icon:DELIV_STATUS[s].i,
         fn:()=>{applyDelivStatus(dl,s);}})),
       {sep:true},
-      {label:'Copy Drive link',icon:'⛁',fn:()=>ACTIONS.copyLink({did:dl.id})},
-      {label:'Open project',icon:'▤',fn:()=>{closeDrawer();location.hash='#/media/projects/'+dl.project_id;}}];
+      {label:'Copy Drive link',icon:'copy',fn:()=>ACTIONS.copyLink({did:dl.id})},
+      {label:'Open project',icon:'folder',fn:()=>{closeDrawer();location.hash='#/media/projects/'+dl.project_id;}}];
   },
   pipeType:()=>DB.deliverable_types.map(t=>({label:t.name,icon:t.icon,on:S.filters.pipe.type.includes(t.id),
     fn:()=>{const f=S.filters.pipe;const i=f.type.indexOf(t.id);i>=0?f.type.splice(i,1):f.type.push(t.id);render();}})),

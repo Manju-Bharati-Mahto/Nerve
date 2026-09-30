@@ -125,3 +125,33 @@ describe("the service worker and the manifest agree", () => {
     expect(SW).toContain('const CACHE = "mo-v3"');
   });
 });
+
+/* ═══ P10: the status glyphs became icons ══════════════════════════════════
+   Both fields are kept on purpose. A pill can hold SVG; an <option> cannot,
+   and the role and status selects render the plain-text one. Dropping `i`
+   would print the word "check" beside a label in those menus. */
+describe("status icons", () => {
+  const MAPS = /\{l:'[^']*',\s*c:'st-[\w-]+',\s*i:'[^']*'(,ico:'[\w]+')?\}/g;
+
+  it("every status entry names an icon as well as a glyph", () => {
+    const entries = HTML.match(MAPS) ?? [];
+    expect(entries.length, "no status maps found — the shape changed").toBeGreaterThan(80);
+    const without = entries.filter((e) => !e.includes("ico:'"));
+    expect(without, "these statuses would fall back to a geometric glyph").toEqual([]);
+  });
+
+  it("names only icons that exist", () => {
+    const icons = HTML.slice(HTML.indexOf("const ICONS"), HTML.indexOf("\n};", HTML.indexOf("const ICONS")));
+    const keys = new Set([...icons.matchAll(/^\s*([a-zA-Z]\w*):'/gm)].map((m) => m[1]));
+    const used = new Set([...HTML.matchAll(/ico:'(\w+)'/g)].map((m) => m[1]));
+    const missing = [...used].filter((k) => !keys.has(k));
+    expect(missing, "ic() falls back to a dots glyph for an unknown key, silently").toEqual([]);
+  });
+
+  it("keeps the text glyph, because <option> cannot hold an icon", () => {
+    /* The role and status selects render `${m.i} ${m.l}` as plain text. */
+    expect(HTML).toMatch(/<option value="\$\{r\}"[^>]*>\$\{m\.i\}/);
+    const entries = HTML.match(MAPS) ?? [];
+    expect(entries.every((e) => /i:'[^']*'/.test(e))).toBe(true);
+  });
+});
