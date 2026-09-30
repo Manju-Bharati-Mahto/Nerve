@@ -3,9 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0E1512">
+<!-- The bar colour follows the RESOLVED layout and theme, set by the head
+     script's apply() below — not a width query, which would get a landscape
+     phone and a forced Desktop wrong. Desktop keeps the value it has always had. -->
+<meta name="theme-color" id="tc-phone" content="#0E1512">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Media Ops">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<!-- Stamped with a content hash at build time by scripts/stamp-media-ops-build.mjs.
+     An installed app compares this with the server's copy to notice a new
+     version; it stays "dev" in the repo, so the check never fires locally. -->
+<meta name="mo-build" content="dev">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="apple-touch-icon" href="icon.svg">
+<!-- iOS masks the corners itself, so this one is full-bleed; an icon with its
+     own rounded corners shows white behind them. -->
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
 <link rel="icon" type="image/svg+xml" href="icon.svg">
 <title>Nerve Media Ops — Media Crew, Parul University</title>
 <script>
@@ -44,6 +57,17 @@
     var q=/[?&]layout=(auto|desktop|mobile)\b/.exec(location.search); if(q) return q[1];
     try{ var p=localStorage.getItem(KEY); return p==='desktop'||p==='mobile'?p:'auto'; }catch(_){ return 'auto'; }
   }
+  /* THE STATUS-BAR COLOUR. On a phone it matches the surface the app actually
+     paints — white in light, the dark surface in dark — so the bar does not sit
+     in a colour the app never uses. On desktop it keeps #0E1512, which is what
+     the tab and any desktop-installed title bar have always shown. Called from
+     apply(), so a layout or theme change moves it too. */
+  function themeColor(l){
+    var m=d.getAttribute('data-theme')==='dark';
+    var c=l==='mobile'?(m?'#131A24':'#FFFFFF'):'#0E1512';
+    var tag=document.getElementById('tc-phone'); if(tag) tag.setAttribute('content',c);
+  }
+  window.moThemeColor=function(){ themeColor(d.getAttribute('data-layout')); };
   function apply(){
     var p=pref(), l=p==='auto'?(mq&&mq.matches?'mobile':'desktop'):p, was=d.getAttribute('data-layout');
     if(was&&was!==l){
@@ -58,6 +82,7 @@
        persisted, so nothing here touches it. */
     if(l==='mobile'){ try{ var t=localStorage.getItem('mo_theme');
       if(t==='dark'||t==='light') d.setAttribute('data-theme',t); }catch(_){} }
+    themeColor(l);
     if(was&&was!==l) window.dispatchEvent(new Event('mo:layout'));
   }
   apply();
@@ -792,6 +817,23 @@ html[data-theme=dark] .menu-item.on{background:var(--brand-100)}
 .toast .ti{font-size:15px}
 .toast.ok .ti{color:var(--on-dark-success)} .toast.bad .ti{color:var(--on-dark-danger)} .toast.warn .ti{color:var(--on-dark-warn)}
 .toast button{color:var(--bg);font-weight:700;font-size:12.5px;text-decoration:underline;opacity:.85}
+
+/* ---- Offline card (installed app with no network; see moOfflineCard) ---- */
+.offline-card{min-height:100dvh;display:grid;place-items:center;padding:24px;
+  padding-bottom:calc(24px + env(safe-area-inset-bottom))}
+.offline-card .oc-box{max-width:340px;text-align:center}
+.offline-card .oc-ico{color:var(--text-3);margin-bottom:14px}
+.offline-card .oc-ico svg{width:40px;height:40px}
+.offline-card h1{font-size:20px;margin:0 0 8px}
+.offline-card p{color:var(--text-2);font-size:14px;line-height:1.5;margin:0 0 18px}
+
+/* ---- Update banner (installed app only; see moShowUpdate) ---- */
+#mo-update{position:fixed;left:max(12px,env(safe-area-inset-left));right:max(12px,env(safe-area-inset-right));
+  bottom:calc(env(safe-area-inset-bottom) + 12px);z-index:80;display:flex;align-items:center;gap:12px;
+  padding:12px 14px;border-radius:var(--r-lg);background:var(--surface);border:1px solid var(--border);
+  box-shadow:var(--sh-3);font-size:13.5px;color:var(--text)}
+#mo-update button{flex:0 0 auto;margin-left:auto}
+html[data-layout="mobile"] #mo-update{bottom:calc(var(--bar-h,58px) + env(safe-area-inset-bottom) + 12px)}
 
 /* ---- Kanban ---- */
 .kb{display:flex;gap:var(--s3);overflow-x:auto;padding-bottom:var(--s4);scroll-snap-type:x proximity;
@@ -3581,6 +3623,16 @@ function isStandalone(){
   try{ return !!((window.matchMedia&&window.matchMedia('(display-mode: standalone)').matches)
     ||window.navigator.standalone===true); }catch(_){ return false; }
 }
+/* iOS, including an iPad reporting itself as a Mac (it has a touch screen; no
+   Mac does). Used only to WORD things accurately — never to gate a feature. */
+function isIOS(){
+  try{
+    const ua=navigator.userAgent||'';
+    return /iPad|iPhone|iPod/.test(ua)
+      || (/Macintosh/.test(ua) && (navigator.maxTouchPoints||0) > 1);
+  }catch(_){ return false; }
+}
+
 /* A layout change is postponed while any of these is open, so a rotation or
    resize can never tear down something a person is in the middle of. */
 function moOverlayOpen(){
@@ -4498,7 +4550,12 @@ function moreGroups(){
     badge:()=>DB.notifications.filter(n=>n.user_id===S.me&&!n.is_read).length||''});
   acct.push({act:'moreProfile',i:'user',l:'Profile'});
   if(moduleAllowed('kiosk')&&moduleAllowed('equipment')) acct.push({act:'moreKiosk',i:'kiosk',l:'Kiosk mode'});
-  acct.push({act:'moreNerveHome',i:'external',l:'Nerve home'});
+  /* An installed app has no address bar to reload from, so leaving is the only
+     way out of a wedged screen unless we offer this. */
+  if(isStandalone()) acct.push({act:'moreReload',i:'refresh',l:'Reload app'});
+  /* On iOS a standalone app opens external links in Safari, which keeps its own
+     cookies — so this lands there signed out. Saying so beats the surprise. */
+  acct.push({act:'moreNerveHome',i:'external',l:'Nerve home'+(isStandalone()&&isIOS()?' (opens in Safari)':'')});
   acct.push({act:'logout',i:'logout',l:'Log out',danger:true});
   groups.push({label:'Account',pre:displayBlock(),items:acct});
   return groups;
@@ -4528,6 +4585,7 @@ const MORE_ACTIONS={
   moreNotifications:()=>moreSheetGo('#/media/notifications'),
   moreProfile:()=>{closeMoreSheet();$('#btn-role').onclick();},
   moreKiosk:()=>{closeMoreSheet();openKiosk();},
+  moreReload:()=>{closeMoreSheet();location.reload();},
   moreNerveHome:()=>{closeMoreSheet();window.location.href='/';},
   logout:()=>ACTIONS.logout(),
 };
@@ -4770,6 +4828,8 @@ $('#scrim').onclick=()=>{closeDrawer();document.body.classList.remove('nav-open'
 $('#btn-theme').onclick=()=>toggleTheme();
 function toggleTheme(){S.theme=S.theme==='light'?'dark':'light';
   document.documentElement.dataset.theme=S.theme;
+  /* The status bar follows the theme on a phone (head script, same rule). */
+  if(window.moThemeColor) moThemeColor();
   refreshDisplaySegs();}
 /* Re-sync every on-screen display control's segs to the live layout and theme,
    without rebuilding the modal or sheet around them. */
@@ -23922,6 +23982,60 @@ if('serviceWorker' in navigator){ try{
   }).catch(()=>{});
   navigator.serviceWorker.register('sw.js').catch(()=>{});
 }catch(_){} }
+/* ── A NEW VERSION IS ON THE SERVER ────────────────────────────────────────
+   An installed app keeps running the shell the worker cached, so a deploy can
+   go unnoticed for days. This compares the build id of the running page with
+   the one the server is serving now; on a mismatch it offers a reload.
+
+   A toast is wrong for this: action toasts auto-dismiss after six seconds, and
+   this has to survive being ignored. The banner stays until it is used or the
+   app is reloaded. Standalone only — a browser tab has its own reload, and its
+   ordinary refresh already picks up the new page.
+
+   ETag is not usable here: a page cannot read the headers of its own
+   navigation, so there is nothing to compare a later response against. */
+const MO_BUILD = (document.querySelector('meta[name="mo-build"]')||{}).content||'';
+let _updSeen=false, _updAt=0;
+async function moCheckUpdate(){
+  if(!isStandalone()||_updSeen||!MO_BUILD) return;
+  const now=Date.now(); if(now-_updAt < 600000) return;   // at most every 10 minutes
+  _updAt=now;
+  try{
+    const r=await fetch('index.html',{cache:'no-store'});
+    if(!r.ok) return;
+    /* [\w.-]+ deliberately: the page's own source contains this pattern, and a
+       looser class would match THAT rather than the tag in the head. */
+    const m=/<meta name="mo-build" content="([\w.-]+)"/.exec(await r.text());
+    if(m&&m[1]&&m[1]!==MO_BUILD){ _updSeen=true; moShowUpdate(); }
+  }catch(_){ /* offline, or the server is down: ask again next time */ }
+}
+function moShowUpdate(){
+  if($('#mo-update')) return;
+  const b=el(`<div id="mo-update" role="status">
+    <span>A new version of Media Ops is available.</span>
+    <button class="btn sm" type="button">Reload</button></div>`);
+  b.querySelector('button').onclick=()=>location.reload();
+  document.body.appendChild(b);
+}
+addEventListener('visibilitychange',()=>{ if(!document.hidden) moCheckUpdate(); });
+
+/* The whole screen, because at this point there is no data to render a shell
+   around: no identity, no department, nothing the nav could be built from. */
+function moOfflineCard(){
+  const app=$('#app'); if(!app) return;
+  app.innerHTML=`<div class="offline-card">
+    <div class="oc-box">
+      <div class="oc-ico">${ic('alert')}</div>
+      <h1>You're offline</h1>
+      <p>Media Ops needs a connection to load your department's data.
+         Nothing you have already saved is lost.</p>
+      <button class="btn primary" id="oc-retry" type="button">Retry</button>
+    </div></div>`;
+  const retry=()=>location.reload();
+  const btn=$('#oc-retry'); if(btn) btn.onclick=retry;
+  addEventListener('online',retry,{once:true});
+}
+
 (async function boot(){
   if(!location.hash)location.hash='#/media/home';
   let live=null, creatorShell=false;
@@ -23939,6 +24053,14 @@ if('serviceWorker' in navigator){ try{
   // is used as a fallback so the app still runs.
   try{ if(!creatorShell) live=await hydrateFromServer(); }
   catch(e){
+    /* A 401 has already started a redirect to sign in; painting anything here
+       would flash a wrong screen over it. */
+    if(_loggingOut) return;
+    /* THE NETWORK NEVER ANSWERED (status 0), IN AN INSTALLED APP. A browser tab
+       falling back to seed data is a developer convenience; a home-screen app
+       doing it shows a demo department that looks like the real one, with real
+       names on it. An installed app says it is offline instead. */
+    if(e&&e.status===0&&isStandalone()) return moOfflineCard();
     /* A Creator Network member is refused /state by design — requireMedia()
        does not admit them, and it must not start. Falling through to the seed
        data would show them a demo Media Crew, so try the scoped creator shell
@@ -23961,6 +24083,7 @@ if('serviceWorker' in navigator){ try{
       ? `Live · ${live.projects} projects and ${live.reports} daily reports from the server. Signed in as ${me().full_name}.`
       : 'Running on seed data — sign in to Nerve to load live data.', live?'ok':'warn');
   },700);
+  moCheckUpdate();
 })();
 </script>
 </body>

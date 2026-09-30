@@ -9,7 +9,7 @@
     "dev:local": "bash ./scripts/dev-local.sh",
     "dev:native": "bash ./scripts/dev-native.sh",
     "seed:creator": "tsx scripts/seed-creator-demo.ts",
-    "build:client": "vite build",
+    "build:client": "vite build && node scripts/stamp-media-ops-build.mjs",
     "build:server": "tsc -p tsconfig.server.json",
     "build": "npm run build:client && npm run build:server",
     "build:dev": "vite build --mode development",
@@ -27,7 +27,8 @@
     "test:watch": "vitest",
     "test:db:setup": "bash ./scripts/test-db-setup.sh",
     "test:db:reset": "bash ./scripts/test-db-setup.sh --reset",
-    "test:db:migrate": "tsx scripts/test-db-migrate.ts"
+    "test:db:migrate": "tsx scripts/test-db-migrate.ts",
+    "icons:media-ops": "node scripts/generate-media-ops-icons.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
