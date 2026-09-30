@@ -67,6 +67,31 @@ test("stat tiles sit two per row, not one or four", async ({ page }) => {
   expect(perRow).toBe(2);
 });
 
+/* Overflow alone is a gameable metric: breaking every word mid-character drives
+   it to zero while making the screen unreadable. P7 did exactly that, and the
+   Pipeline tiles rendered "In flight / 45" as "In fligh t" over a two-line
+   "4 5" while the gate reported success. A number must never wrap. */
+test("a stat number never breaks across lines, on any screen", async ({ page }) => {
+  test.setTimeout(3 * 60_000);
+  await page.setViewportSize({ width: 320, height: 568 });
+  const broken: string[] = [];
+  for (const role of STAFF) {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+    await bootStaff(page, role);
+    for (const r of await staffRoutes(page)) {
+      await go(page, r);
+      const wrapped = await page.evaluate(() =>
+        [...document.querySelectorAll("#page .stat-val")]
+          .filter((el) => (el as HTMLElement).offsetParent !== null)
+          /* One line box per element: more than one means the value wrapped. */
+          .filter((el) => el.getClientRects().length > 1)
+          .map((el) => (el.textContent || "").trim().slice(0, 30)));
+      broken.push(...wrapped.map((t) => `${role} ${r}: "${t}"`));
+    }
+  }
+  expect(broken).toEqual([]);
+});
+
 test("a dense table scrolls inside itself rather than stretching the page", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 568 });
   await bootStaff(page, "admin");

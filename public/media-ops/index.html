@@ -1321,10 +1321,21 @@ html[data-layout="mobile"] :is(.g2,.g3,.g4,.g5,.g21,.g12,.mg-wrap,.grid) > *{min
 /* Stat/KPI grids go two-up rather than one-per-row (the generic grid mirror) or
    four-across (too wide). :has targets any grid of stat tiles without a marker. */
 html[data-layout="mobile"] .grid:has(> .stat),html[data-layout="mobile"] .grid:has(> button.stat){grid-template-columns:repeat(2,minmax(0,1fr))!important}
-html[data-layout="mobile"] .stat{padding:11px;min-width:0;overflow:hidden}
+/* A tile is a COLUMN on a phone: label, then the number, then the caption.
+   .stat is display:flex, and while most tiles wrap their text in .stat-main
+   (already a column), several — Pipeline's among them — put label, value and
+   meta as direct children. Those laid out as three side-by-side columns of
+   ~80px, which is what made "In flight / 45" render as "In fligh t" over a
+   two-line "4 5". Stacking fixes the cause; it is a no-op where .stat-main
+   already does the stacking. */
+html[data-layout="mobile"] .stat{padding:11px;min-width:0;overflow:hidden;flex-direction:column;gap:2px;align-items:stretch}
 html[data-layout="mobile"] .stat .stat-ico,html[data-layout="mobile"] .stat .stat-icon{display:none}
-html[data-layout="mobile"] .stat .stat-val{font-size:22px;overflow-wrap:anywhere}
-html[data-layout="mobile"] .stat :is(.stat-label,.stat-meta){white-space:normal;overflow-wrap:anywhere;min-width:0}
+/* break-word, never anywhere: a word breaks only when it cannot fit a line of
+   its own. `anywhere` breaks at any character even when the line has room,
+   which is how a plain number came apart mid-digit. Numbers never break. */
+html[data-layout="mobile"] .stat .stat-val{font-size:22px;overflow-wrap:normal;line-height:1.15}
+html[data-layout="mobile"] .stat :is(.stat-label,.stat-meta){white-space:normal;overflow-wrap:break-word;min-width:0}
+html[data-layout="mobile"] .stat .stat-meta{margin-top:2px}
 /* Daily-report timeline: the block beside the time column must shrink and wrap. */
 html[data-layout="mobile"] .day-block{min-width:0}
 html[data-layout="mobile"] .day-block .between{flex-wrap:wrap;gap:4px}
@@ -1345,11 +1356,16 @@ html[data-layout="mobile"] .between > *{min-width:0}
 html[data-layout="mobile"] .between .f{flex-wrap:wrap;min-width:0}
 /* A chip holding a long value (an automation config list) wraps rather than
    running off the screen; chips are nowrap by design on desktop. */
+/* `anywhere` is right HERE and wrong on a number: a chip carries machine values
+   — an address list, an id, a config blob — where a token longer than the
+   screen must break somewhere, and mid-token is the least-bad place. Unlike
+   break-word, `anywhere` also shrinks the element's min-content width, which is
+   what stops the chip from widening the row that holds it. */
 html[data-layout="mobile"] .chip{white-space:normal;height:auto;min-height:26px;overflow-wrap:anywhere}
 /* Definition lists stack: a 132px label column leaves too little for the value. */
 html[data-layout="mobile"] .kv{grid-template-columns:1fr;gap:2px}
 html[data-layout="mobile"] .kv dt{margin-top:8px}
-html[data-layout="mobile"] .kv dd{overflow-wrap:anywhere;min-width:0}
+html[data-layout="mobile"] .kv dd{overflow-wrap:break-word;min-width:0}
 html[data-layout="mobile"] .page-actions{flex-wrap:wrap}
 
 /* ── m-cards: a table rendered as a stack of cards, by cell role ───────────── */
