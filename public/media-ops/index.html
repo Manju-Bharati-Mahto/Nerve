@@ -1101,6 +1101,9 @@ html[data-theme=dark] .cal-ev{color:var(--text-inv)}
    src/test/phone-layer-scope.test.ts fails the build on anything else. */
 /* ── Phone-only markup is invisible on desktop — the one rule not scoped to mobile */
 html:not([data-layout="mobile"]) .m-only{display:none!important}
+/* ── and its mirror: desktop-only wording a phone must not show, such as an
+      instruction to drag something that cannot be dragged with a finger. */
+html[data-layout="mobile"] .hide-m{display:none!important}
 
 /* ── Tokens. env() is 0 everywhere except under a notch, a home indicator or
       landscape side insets, which is exactly where it is needed. */
@@ -1385,6 +1388,36 @@ html[data-layout="mobile"] table.m-cards td[data-m=hide]{display:none}
 /* ── m-sticky: keep the first column visible on a wide readability table ───── */
 html[data-layout="mobile"] table.m-sticky{display:block;overflow-x:auto}
 html[data-layout="mobile"] table.m-sticky :is(th,td):first-child{position:sticky;left:0;background:var(--surface);z-index:1}
+
+/* ── Kanban on a phone: one column per screen ──────────────────────────────
+   The board keeps its horizontal scroller and snap, but a column now fills the
+   width and grows to its content, so the page scrolls vertically instead of
+   each column scrolling inside a 400px window. */
+html[data-layout="mobile"] .kb{gap:10px;padding-bottom:10px;min-height:0;scroll-snap-type:x mandatory}
+html[data-layout="mobile"] .kb-col{flex:0 0 100%;width:100%;max-height:none}
+html[data-layout="mobile"] .kb-cards{overflow-y:visible;max-height:none}
+html[data-layout="mobile"] .kb-col-head{position:sticky;top:0;z-index:1;background:var(--surface-2);border-radius:var(--r-lg) var(--r-lg) 0 0}
+/* With a switcher above, the column's own heading says the same thing twice. */
+html[data-layout="mobile"] .kb.kb-switched .kb-col-head{display:none}
+/* A card is a tap target, not a drag handle. */
+html[data-layout="mobile"] .kb-card{padding:12px;position:relative;padding-right:46px}
+/* The move control sits in the card's corner, so it needs no wrapper in the
+   markup and desktop keeps the structure it had. */
+html[data-layout="mobile"] .kb-card .kc-move{position:absolute;top:6px;right:6px;width:36px;height:36px;
+  display:grid;place-items:center;border-radius:var(--r);color:var(--text-3)}
+html[data-layout="mobile"] .kb-card .kc-move svg{width:18px;height:18px}
+html[data-layout="mobile"] .kb-card .chip{white-space:normal;height:auto;min-height:22px}
+html[data-layout="mobile"] .kb-card .kc-title{font-size:14px}
+
+/* The switcher mKanban builds from the columns themselves. */
+html[data-layout="mobile"] .kb-switch{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;
+  padding:2px 0 10px;-webkit-overflow-scrolling:touch}
+html[data-layout="mobile"] .kb-switch::-webkit-scrollbar{display:none}
+html[data-layout="mobile"] .kb-switch .kbs{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;
+  min-height:36px;padding:0 12px;border-radius:var(--r-pill);border:1px solid var(--border);
+  background:var(--surface);color:var(--text-2);font-size:13px;font-weight:600;white-space:nowrap}
+html[data-layout="mobile"] .kb-switch .kbs.on{background:var(--primary-surface);color:var(--primary-text);border-color:var(--brand-400)}
+html[data-layout="mobile"] .kb-switch .kbs-c{font-size:11px;font-weight:700;opacity:.8}
 /* ==== END PHONE LAYER ==== */
 </style>
 </head>
@@ -3564,6 +3597,62 @@ function mTabs(){
     bar.scrollLeft=Math.max(0, on.offsetLeft-(bar.clientWidth-on.offsetWidth)/2);
   });
 }
+/* A KANBAN ON A PHONE: one column at a time, with a switcher.
+
+   The board is a horizontal strip of 286px columns, each with its own vertical
+   scroller capped at calc(100vh - 260px). On a phone that is a scroller inside
+   a scroller inside the page — you swipe sideways through six or seven columns
+   while each one scrolls its own cards in a 400px window. The CSS gives each
+   column the full width and lets the PAGE do the vertical scrolling, so a
+   column reads like an ordinary list.
+
+   Swiping still works, but discovering it is not obvious and reaching the sixth
+   column means five swipes, so this builds a chip row from the columns already
+   in the markup — every board gets it without touching its own renderer, and a
+   board that adds a column gets a chip for free. The chips mirror each column's
+   own heading and count rather than restating them, so nothing here knows what
+   a status IS. */
+function mKanban(){
+  if(!isMobileLayout()) return;
+  $$('#page .kb').forEach(kb=>{
+    const cols=[...kb.querySelectorAll(':scope > .kb-col')];
+    if(cols.length<2) return;
+    if(kb.previousElementSibling&&kb.previousElementSibling.classList.contains('kb-switch'))
+      kb.previousElementSibling.remove();
+    const row=document.createElement('div');
+    row.className='kb-switch m-only';
+    row.setAttribute('role','tablist');
+    cols.forEach((col,i)=>{
+      const head=col.querySelector('.kb-col-head');
+      const name=(head&&head.querySelector('.kt')?head.querySelector('.kt').textContent:'').trim()||('Column '+(i+1));
+      const count=(head&&head.querySelector('.kc')?head.querySelector('.kc').textContent:'').trim();
+      const b=document.createElement('button');
+      b.type='button'; b.className='kbs'+(i?'':' on'); b.setAttribute('role','tab');
+      b.innerHTML='<span class="kbs-l"></span>'+(count?'<span class="kbs-c"></span>':'');
+      b.querySelector('.kbs-l').textContent=name;
+      if(count) b.querySelector('.kbs-c').textContent=count;
+      b.onclick=()=>kb.scrollTo({left:col.offsetLeft-cols[0].offsetLeft, behavior:'smooth'});
+      row.appendChild(b);
+    });
+    kb.classList.add('kb-switched');   // the switcher now names the column; its head would only repeat that
+    kb.parentNode.insertBefore(row,kb);
+    /* The chips follow the swipe, so the row always says which column is showing. */
+    let tick=false;
+    kb.addEventListener('scroll',()=>{
+      if(tick) return; tick=true;
+      requestAnimationFrame(()=>{
+        tick=false;
+        const x=kb.scrollLeft+kb.clientWidth/2;
+        let best=0,bd=Infinity;
+        cols.forEach((c,i)=>{const d=Math.abs((c.offsetLeft-cols[0].offsetLeft)+c.offsetWidth/2-x);
+          if(d<bd){bd=d;best=i;}});
+        [...row.children].forEach((ch,i)=>ch.classList.toggle('on',i===best));
+        const on=row.children[best];
+        if(on) row.scrollLeft=Math.max(0,on.offsetLeft-(row.clientWidth-on.offsetWidth)/2);
+      });
+    },{passive:true});
+  });
+}
 function mInputAttrs(root){
   if(!isMobileLayout()) return;
   (root||document).querySelectorAll('input').forEach(inp=>{
@@ -4615,6 +4704,7 @@ function render(){
   wirePage();
   mInputAttrs($('#page'));
   mTabs();
+  mKanban();
   /* Anything a label asked for during this render, fetched once, together. */
   assetFlushWanted();
 }
@@ -8034,9 +8124,21 @@ function projTable(ps){
         <td class="num">${projectHours(p.id).toFixed(0)}h</td></tr>`;}).join('')}
       </tbody></table></div></div></div>`;
 }
+/* THE TAP PATH ONTO A KANBAN CARD.
+
+   Dragging is the only way to move a card, and HTML5 drag does not exist on
+   touch — so on a phone the board was read-only while its own note told you to
+   drag. This is the phone-only control that opens the SAME menu the rest of the
+   app uses for that object, so permissions, valid transitions, the audit entry
+   and the API call are the existing ones; nothing about a status is decided
+   here. data-stop keeps the tap off the card's own open-the-thing handler. */
+const kcMove = (menu,attrs,label)=>`<button class="icon-btn kc-move m-only" data-stop
+  data-menu="${menu}" ${attrs} aria-label="Move ${esc(label||'card')}">${ic('kebab')}</button>`;
+
 function projKanban(ps){
   const cols=['proposed','approved','planning','in_production','in_review','delivered','completed'];
-  return `<div class="note mb3">Drag a card to change status.
+  return `<div class="note mb3"><span class="hide-m">Drag a card to change status.</span>
+    <span class="m-only">Tap ⋯ on a card to change its status.</span>
     ${can('project.status')?'':'You have read-only access to status here.'}</div>
     <div class="kb">${cols.map(c=>{
       const list=ps.filter(p=>p.status===c);
@@ -8047,7 +8149,8 @@ function projKanban(ps){
           return `<div class="kb-card" draggable="true" data-drag="project:${p.id}" data-go="#/media/projects/${p.id}">
             <div class="kc-top"><span class="chip" style="border-color:${ptype(p.project_type_id).color}">
               <span class="dot" style="background:${ptype(p.project_type_id).color}"></span>${esc(ptype(p.project_type_id).name)}</span>
-              ${p.priority==='urgent'||p.priority==='high'?priTag(p.priority):''}</div>
+              ${p.priority==='urgent'||p.priority==='high'?priTag(p.priority):''}
+              ${kcMove('projStatus',`data-pid="${p.id}"`,p.name)}</div>
             <div class="kc-title">${esc(p.name)}</div>${bar(pr)}
             <div class="kc-foot"><span class="code">${p.code}</span><span class="sp"></span>
               ${avStack(crew,3)}<span>${D.fmt(p.end_date)}</span></div></div>`;}).join('')}
@@ -8681,12 +8784,14 @@ function viewPipeline(){
           return `<div class="kb-card" draggable="true" data-drag="deliverable:${d.id}" data-drawer="deliverable:${d.id}">
             <div class="kc-top"><span class="code">${p.code}</span>
               <span style="color:${ptype(p.project_type_id).color}">${dtype(d.deliverable_type_id).icon}</span>
-              ${over?`<span class="status st-danger" style="height:18px;font-size:10px"><span class="si">⚑</span>${D.diff(TODAY,d.due_date)}d</span>`:''}</div>
+              ${over?`<span class="status st-danger" style="height:18px;font-size:10px"><span class="si">⚑</span>${D.diff(TODAY,d.due_date)}d</span>`:''}
+              ${kcMove('delivMenu',`data-did="${d.id}"`,d.title)}</div>
             <div class="kc-title">${esc(d.title)}</div>
             <div class="kc-foot">${avatar(d.owner_id,'xs')}<span class="trunc">${esc(user(d.owner_id).full_name.split(' ')[0])}</span>
               <span class="sp"></span><span>${d.due_date?D.fmt(d.due_date):'—'}</span></div></div>`;}).join('')}
         </div></div>`;}).join('')}</div>
-    <div class="note mt4">Drag a card to change its status.</div>`;
+    <div class="note mt4"><span class="hide-m">Drag a card to change its status.</span>
+      <span class="m-only">Tap ⋯ on a card to change its status.</span></div>`;
 }
 
 /* ==========================================================================
@@ -15291,6 +15396,7 @@ function viewBoards(){
           return `<div class="kb-card" draggable="true" data-drag="card:${card.id}" data-drawer="card:${card.id}">
             ${card.labels.length?`<div class="f gap1 mb2">${card.labels.map(l=>{const lb=DB.labels.find(x=>x.id===l);
               return `<span style="height:5px;width:26px;border-radius:3px;background:${lb.color}" title="${esc(lb.name)}"></span>`;}).join('')}</div>`:''}
+            ${kcMove('cardMove',`data-cid="${card.id}"`,card.title)}
             <div class="kc-title">${esc(card.title)}</div>
             ${card.linked_entity_type?`<div class="mb2"><span class="chip">${card.linked_entity_type==='project'?'▤':'◆'}
               ${esc(card.linked_entity_type==='project'?proj(card.linked_entity_id).name:(deliv(card.linked_entity_id)||{title:'—'}).title).slice(0,30)}
@@ -22419,6 +22525,15 @@ const MENUS = {
     fn:()=>{const f=S.filters.pipe;const i=f.unit.indexOf(x.id);i>=0?f.unit.splice(i,1):f.unit.push(x.id);render();}})),
   pipePtype:()=>DB.project_types.map(t=>({label:t.name,icon:t.icon,on:S.filters.pipe.ptype.includes(t.id),
     fn:()=>{const f=S.filters.pipe;const i=f.ptype.indexOf(t.id);i>=0?f.ptype.splice(i,1):f.ptype.push(t.id);render();}})),
+  /* The columns of the board this card is on — the same destinations a drag
+     offers, since both end in moveCardToColumn. */
+  cardMove:(d)=>{
+    const c=DB.cards.find(x=>x.id===+d.cid); if(!c) return [{label_only:'Card not found'}];
+    const cols=DB.board_columns.filter(x=>x.board_id===c.board_id).sort((a,b)=>a.sort_order-b.sort_order);
+    return [{label_only:'Move to column'},
+      ...cols.map(col=>({label:col.name,on:col.id===c.column_id,
+        disabled:col.id===c.column_id,fn:()=>moveCardToColumn(c.id,col.id)}))];
+  },
   boardSwitch:()=>DB.boards.map(b=>({label:b.name,icon:'▥',on:b.id===S.board,fn:()=>{S.board=b.id;render();}})),
   periodPick:()=>[{label_only:'Reporting period'},
     ...['July 2026','June 2026','May 2026','AY 2026-27'].map((l,i)=>({label:l,on:i===0,
@@ -22450,6 +22565,26 @@ function applyDelivStatus(dl,s){
 /* ==========================================================================
    DRAG & DROP (optimistic, permission-checked, audited)
    ========================================================================== */
+/* Moving a card between columns, for BOTH the drag on desktop and the menu on a
+   phone. It was written inline in the drop handler; it lives here so the two
+   paths cannot drift apart — the board's two-way sync in particular is a rule
+   that must not exist in two copies. */
+function moveCardToColumn(cardId,colId){
+  const c=DB.cards.find(x=>x.id===cardId);
+  const col2=DB.board_columns.find(x=>x.id===colId);
+  if(!c||!col2||c.column_id===colId) return;
+  c.column_id=colId;
+  const b=DB.boards.find(x=>x.id===c.board_id);
+  let synced='';
+  if(b.sync_status&&col2.maps_to_status&&c.linked_entity_type==='deliverable'){
+    const dl=deliv(c.linked_entity_id);
+    if(dl){dl.status=col2.maps_to_status;synced=' · linked deliverable synced to '+DELIV_STATUS[col2.maps_to_status].l;}
+  }
+  audit(S.me,'card.moved','card',c.id,null,{column:col2.name});
+  render();toast('Moved to '+col2.name+synced,'ok');
+  moSync(MO_API.patch('/cards/'+c.id,{column_id:colId}));
+}
+
 function wireDnD(){
   $$('[data-drag]').forEach(el=>{
     el.addEventListener('dragstart',e=>{S.dragging=el.dataset.drag;el.classList.add('dragging');
@@ -22480,20 +22615,7 @@ function wireDnD(){
           toast('Not a valid transition: '+DELIV_STATUS[dl.status].l+' → '+DELIV_STATUS[did].l,'bad');return;}
         applyDelivStatus(dl,did);
       }
-      else if(skind==='card'&&dkind==='cardcol'){
-        const c=DB.cards.find(x=>x.id===+sid);
-        const col2=DB.board_columns.find(x=>x.id===+did);
-        c.column_id=+did;
-        const b=DB.boards.find(x=>x.id===c.board_id);
-        let synced='';
-        if(b.sync_status&&col2.maps_to_status&&c.linked_entity_type==='deliverable'){
-          const dl=deliv(c.linked_entity_id);
-          if(dl){dl.status=col2.maps_to_status;synced=' · linked deliverable synced to '+DELIV_STATUS[col2.maps_to_status].l;}
-        }
-        audit(S.me,'card.moved','card',c.id,null,{column:col2.name});
-        render();toast('Moved to '+col2.name+synced,'ok');
-        moSync(MO_API.patch('/cards/'+c.id,{column_id:+did}));
-      }
+      else if(skind==='card'&&dkind==='cardcol'){ moveCardToColumn(+sid,+did); }
     });
   });
 }
