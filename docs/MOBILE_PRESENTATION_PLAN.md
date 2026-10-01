@@ -4,6 +4,71 @@
 
 ---
 
+## 0. Outcome (October 2026)
+
+P0–P10 shipped on `nerve-redesign-phase1`, one commit per phase plus three
+fixes. **This section is the record of what actually happened; the sections
+below are the plan as written beforehand and were not rewritten to match.**
+Where they disagree, this section is right.
+
+### What shipped
+| Phase | Commit | Note |
+|---|---|---|
+| P0 measurement | `02662ad` | Playwright harness, desktop fingerprints + pixel baselines, phone report |
+| P1 layout switch | `fc8ed42` | `data-layout`, touch-aware Auto, pre-paint theme |
+| P2 phone chrome | `fb69b29` | PHONE LAYER, topbar, bar, safe areas |
+| P3 navigation | `8e75d97` | Bottom bar, More sheet, Tier A icons |
+| P4 toggle | `39acb60` | Display control in profile + More sheet |
+| P5 overlays | `8048eed` | Sheets, Back closes overlays, keyboard handling |
+| P6 forms | `7406112` | 16px fields, 44px controls, keyboard hints |
+| P7 daily screens | `8b5f3c3`, `6b51c0f` | Shared layout utilities; **the fix matters, see below** |
+| P8 kanban + RO | `f55fba4`, `5cfed9e` | One column per screen, tap-to-move, sticky first column |
+| P9 PWA | `ebf3fdc` | Icons, manifest, `sw.js` v3, update notice, offline card |
+| P10 icons | `a50f064` | Status/menu/view-mode glyphs → real icons (**desktop changes here**) |
+
+Plus `df600c1`, a real bug: More-sheet rows navigated and bounced straight
+back, because closing the sheet queued a `history.back()` that raced the
+navigation. Broken since P5 and the existing test had been failing unnoticed.
+
+### Deliberately not done
+- **In-scope standalone sign-in.** §7 recommends it, conditional on a device
+  test. Not run, so not built. Decide after installing on iOS: sign out, sign
+  in. If iOS loops or lands signed out, build the card described in §7.
+- **Lookup/category glyphs (68 of them).** A project type's icon is content an
+  admin typed into Lookups, not UI chrome. `mIco()` renders a known icon key as
+  an icon and anything else as itself, so these stay as entered. Decided
+  against converting on 1 Oct 2026.
+- **Per-table `m-cards`.** §5 lists it for many tables. P8 used a sticky first
+  column instead: one rule, every table, no per-view markup. `m-cards` and
+  `m-sticky` exist for a table that later needs the full treatment.
+- **Filter-into-bottom-sheet.** Deferred from P6 through P8. Needs per-view
+  markers (`data-filterbar`); filters currently wrap instead.
+
+### Two lessons worth keeping
+- **Overflow is a gameable metric.** P7 reached "0 screens overflow" partly by
+  setting `overflow-wrap:anywhere`, which broke words — and numbers — at any
+  character. The Pipeline tiles rendered "In flight / 45" as "In fligh t" over a
+  two-line "4 5" while the gate reported success. Fixed in `6b51c0f`; a test now
+  pins that a stat number renders on one line. **Screenshot before believing a
+  number.**
+- **Read test output in full.** Four burger tests failed silently from P3, and
+  the More-sheet test from P5, because failures mid-list were being missed.
+
+### Before trusting a deploy
+1. `npm run build` — `build:client` stamps `mo-build` into `dist/media-ops`.
+   Without that stamp the update notice can never fire.
+2. Bump `CACHE` in `sw.js` whenever the shell list, manifest or icons change.
+3. `npm run icons:media-ops` after any brand-colour change, then step 2.
+
+### The device test that is still owed (§10)
+Install on a current iPhone and an Android, then check: the home-screen icon
+and name; it opens portrait, standalone, with no browser chrome; the status bar
+matches the theme; safe areas clear the notch and home indicator; sign out and
+back in; airplane mode shows the offline card, not seed data; deploy again and
+confirm the update banner appears.
+
+---
+
 ## 1. What exists today
 
 - **Head (F:1-10).** `viewport` already has `viewport-fit=cover` (5). `theme-color` is `#0E1512` (6). The manifest link is at 7. `apple-touch-icon` points to `icon.svg` (7), which iOS cannot use. `<html>` carries only `data-theme` (2). There is no head script, and no JS anywhere calls `matchMedia`. The only viewport read is in `menu()` (F:3312-3314: `innerWidth`/`innerHeight`), and no touch or pointer handlers exist.

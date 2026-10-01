@@ -1467,7 +1467,9 @@ html[data-layout="mobile"] .kb.kb-switched .kb-col-head{display:none}
 html[data-layout="mobile"] .kb-card{padding:12px;position:relative;padding-right:46px}
 /* The move control sits in the card's corner, so it needs no wrapper in the
    markup and desktop keeps the structure it had. */
-html[data-layout="mobile"] .kb-card .kc-move{position:absolute;top:6px;right:6px;width:36px;height:36px;
+/* 44×44 even though the glyph is 18: the hit area is what a thumb needs, and
+   the button is transparent, so the larger box costs nothing visually. */
+html[data-layout="mobile"] .kb-card .kc-move{position:absolute;top:2px;right:2px;width:44px;height:44px;
   display:grid;place-items:center;border-radius:var(--r);color:var(--text-3)}
 html[data-layout="mobile"] .kb-card .kc-move svg{width:18px;height:18px}
 html[data-layout="mobile"] .kb-card .chip{white-space:normal;height:auto;min-height:22px}
@@ -1478,7 +1480,7 @@ html[data-layout="mobile"] .kb-switch{display:flex;gap:6px;overflow-x:auto;scrol
   padding:2px 0 10px;-webkit-overflow-scrolling:touch}
 html[data-layout="mobile"] .kb-switch::-webkit-scrollbar{display:none}
 html[data-layout="mobile"] .kb-switch .kbs{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;
-  min-height:36px;padding:0 12px;border-radius:var(--r-pill);border:1px solid var(--border);
+  min-height:44px;padding:0 14px;border-radius:var(--r-pill);border:1px solid var(--border);
   background:var(--surface);color:var(--text-2);font-size:13px;font-weight:600;white-space:nowrap}
 html[data-layout="mobile"] .kb-switch .kbs.on{background:var(--primary-surface);color:var(--primary-text);border-color:var(--brand-400)}
 html[data-layout="mobile"] .kb-switch .kbs-c{font-size:11px;font-weight:700;opacity:.8}
