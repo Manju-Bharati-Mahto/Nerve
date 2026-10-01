@@ -846,6 +846,24 @@ html[data-theme=dark] .menu-item.on{background:var(--brand-100)}
 #mo-update button{flex:0 0 auto;margin-left:auto}
 html[data-layout="mobile"] #mo-update{bottom:calc(var(--bar-h,58px) + env(safe-area-inset-bottom) + 12px)}
 
+/* ---- A search box in a card header ---- */
+.cn-search{position:relative;display:inline-flex;align-items:center}
+.cn-search .inp{height:30px;font-size:12px;width:230px;padding-right:30px}
+.cn-search .icon-btn{position:absolute;right:2px;width:26px;height:26px}
+.cn-search .icon-btn svg{width:13px;height:13px}
+.cn-search input[type=search]::-webkit-search-cancel-button{-webkit-appearance:none}
+
+/* ---- Points stepper (the approve dialog) ---- */
+.pts-step{display:flex;align-items:center;gap:8px}
+.pts-step .btn{flex:0 0 auto;width:40px;min-width:40px;justify-content:center;
+  font-size:18px;line-height:1;font-weight:600}
+.pts-step .inp{flex:1 1 auto;min-width:0;text-align:center;font-size:18px;font-weight:650;
+  font-variant-numeric:tabular-nums}
+/* The browser's own spinners sit on top of a control that already has two. */
+.pts-step .inp::-webkit-outer-spin-button,.pts-step .inp::-webkit-inner-spin-button{
+  -webkit-appearance:none;margin:0}
+.pts-step .inp{-moz-appearance:textfield}
+
 /* ---- Kanban ---- */
 .kb{display:flex;gap:var(--s3);overflow-x:auto;padding-bottom:var(--s4);scroll-snap-type:x proximity;
   align-items:flex-start;min-height:340px}
@@ -1122,6 +1140,11 @@ html[data-theme=dark] .cal-ev{color:var(--text-inv)}
 .opp-row .opp-desc{color:var(--text-2)}
 .opp-counts{display:flex;gap:var(--s3);flex-shrink:0}
 .opp-count{font-size:12px;color:var(--text-3);font-variant-numeric:tabular-nums;white-space:nowrap}
+/* What the task is worth is the thing a creator decides on, so it does not
+   read as one more grey count. */
+.opp-pts{font-weight:650;color:var(--brand-700);background:var(--primary-surface);
+  border-radius:var(--r-pill);padding:2px 9px}
+html[data-theme=dark] .opp-pts{color:var(--brand-400)}
 .opp-count.is-full{color:var(--text-2);font-weight:600}
 .opp-act{display:flex;align-items:center;gap:var(--s2);flex-shrink:0;justify-content:flex-end;min-width:150px}
 .opp-ev-meta{font-size:12px;color:var(--text-3);margin-left:var(--s3);white-space:nowrap}
@@ -1484,6 +1507,16 @@ html[data-layout="mobile"] .kb-switch .kbs{flex:0 0 auto;display:inline-flex;ali
   background:var(--surface);color:var(--text-2);font-size:13px;font-weight:600;white-space:nowrap}
 html[data-layout="mobile"] .kb-switch .kbs.on{background:var(--primary-surface);color:var(--primary-text);border-color:var(--brand-400)}
 html[data-layout="mobile"] .kb-switch .kbs-c{font-size:11px;font-weight:700;opacity:.8}
+
+/* A stepper is a thumb control: both buttons and the field are 44 high. */
+html[data-layout="mobile"] .pts-step .btn{width:52px;min-width:52px;height:44px}
+html[data-layout="mobile"] .pts-step .inp{height:44px}
+
+/* A search box is a field like any other on a phone: full width, 16px so iOS
+   does not zoom, and a thumb's height. */
+html[data-layout="mobile"] .cn-search{display:flex;width:100%}
+html[data-layout="mobile"] .cn-search .inp{width:100%;height:44px;font-size:16px}
+html[data-layout="mobile"] .cn-search .icon-btn{width:40px;height:40px;right:2px}
 /* ==== END PHONE LAYER ==== */
 </style>
 </head>
@@ -11886,8 +11919,8 @@ const CREATOR_LIST  = {loaded:false, rows:[], total:0, err:null,
 const CREATOR_PAGE  = 25;
 /* Phase 2 surfaces. Each loads once per render cycle and re-renders when it
    arrives — the same pattern the directory uses. */
-const CN_EVENTS = {loaded:false, rows:[], err:null};
-const CN_TASKS  = {loaded:false, rows:[], err:null, status:'all'};
+const CN_EVENTS = {loaded:false, rows:[], err:null, q:''};
+const CN_TASKS  = {loaded:false, rows:[], err:null, status:'all', q:''};
 const CN_OPPS   = {loaded:false, rows:[], err:null};
 const CN_EVENT  = {id:null, loaded:false, data:null, interests:[], err:null};
 const CN_REVIEW = {loaded:false, rows:[], total:0, err:null, status:'submitted', canReview:false};
@@ -11995,6 +12028,24 @@ const CN_SUB = {
   rejected:         {l:'Not accepted',     c:'st-neutral'},
 };
 const cnSubPill = s=>{const m=CN_SUB[s]; return m?`<span class="status ${m.c}">${esc(m.l)}</span>`:'';};
+
+/* A SEARCH BOX THAT ASKS THE SERVER LOSES FOCUS TWICE, not once.
+
+   render() replaces the input, and the restore after it is not enough: the
+   fetch that render kicked off lands later and renders AGAIN, taking focus a
+   second time. So the id is remembered and given back by whoever re-renders
+   last. moRefocus() is called at the end of the render that follows a
+   response; typing into the field clears the claim. */
+let _refocusId=null;
+function refocusAfterFetch(id){ _refocusId=id; }
+function moRefocus(){
+  if(!_refocusId) return;
+  const el=$('#'+_refocusId);
+  if(!el) return;
+  if(document.activeElement===el) return;     // already there, leave the caret alone
+  const n=el.value?el.value.length:0;
+  el.focus(); try{ el.setSelectionRange(n,n); }catch(_){}
+}
 
 function creatorReload(what){
   if(what==='state'){CREATOR_STATE.loaded=false;CREATOR_STATE.data=null;
@@ -12338,15 +12389,15 @@ function creatorDirectoryTab(st,manage){
     MO_API.get('/creator/creators?'+qs)
       .then(d=>{CREATOR_LIST.rows=d.creators||[];CREATOR_LIST.total=d.total||0;CREATOR_LIST.err=null;})
       .catch(e=>{CREATOR_LIST.err=e.message;})
-      .finally(()=>{CREATOR_LIST.loaded=true;render();});
+      .finally(()=>{CREATOR_LIST.loaded=true;render();moRefocus();});
   }
   const rows=CREATOR_LIST.rows;
   const from=CREATOR_LIST.offset, to=Math.min(from+CREATOR_PAGE, CREATOR_LIST.total);
   return `
   <div class="card">
     <div class="card-head" style="gap:8px;flex-wrap:wrap">
-      <input class="inp" id="cr-q" placeholder="Search creators…" value="${esc(f.q)}"
-        onkeydown="if(event.key==='Enter')ACTIONS.crFilter({k:'q'},this)" style="max-width:260px">
+      <input class="inp" id="cr-q" type="search" placeholder="Search creators…" value="${esc(f.q)}"
+        aria-label="Search creators" oninput="ACTIONS.crQ({q:this.value})" style="max-width:260px">
       <select class="inp" style="width:auto" onchange="ACTIONS.crFilter({k:'status'},this)">
         ${['all','active','inactive','suspended','archived'].map(v=>
           `<option value="${v}" ${f.status===v?'selected':''}>${v==='all'?'All statuses':CN_STATUS[v].l}</option>`).join('')}
@@ -12462,9 +12513,26 @@ function cnEventsTab(manage){
     <p>${manage?'Create an event and say what it needs — 5 reel creators, 2 vloggers, and so on.'
       :'Nothing has been published to the network.'}</p>
     ${manage?'<button class="btn primary mt3" data-act="cnNewEvent">＋ Event</button>':''}</div></div>`;
-  return `<div class="card"><div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
+  /* Client-side: the endpoint takes no q and every row is already here (capped
+     at 100, not paged), so there is nothing to fetch. */
+  const eq=(CN_EVENTS.q||'').trim().toLowerCase();
+  const evRows=!eq?CN_EVENTS.rows:CN_EVENTS.rows.filter(e=>
+    [e.title,e.unit_name,e.venue,CN_EV_STATUS[e.status]||e.status]
+      .some(v=>v&&String(v).toLowerCase().includes(eq)));
+  return `<div class="card">
+    <div class="card-head"><h3>Events</h3>
+      <div class="ca"><span class="cn-search">
+        <input class="inp" id="cn-ev-q" type="search" value="${esc(CN_EVENTS.q||'')}"
+          placeholder="Search event, unit or venue…" aria-label="Search events"
+          oninput="ACTIONS.cnEventQ({q:this.value})">
+        ${CN_EVENTS.q?`<button class="icon-btn" title="Clear search"
+          onclick="ACTIONS.cnEventQ({q:''})">${ic('x')}</button>`:''}
+      </span></div></div>
+    ${eq?`<div class="hint" style="padding:0 20px 10px">${evRows.length} of ${CN_EVENTS.rows.length} shown${
+      evRows.length?'':' — nothing matches “'+esc(CN_EVENTS.q)+'”'}</div>`:''}
+    <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
     <thead><tr><th>Event</th><th>Date</th><th>Venue</th><th>Requirements</th><th>Status</th><th class="num"></th></tr></thead>
-    <tbody>${CN_EVENTS.rows.map(e=>`<tr class="click" data-act="cnViewEvent" data-eid="${e.id}">
+    <tbody>${evRows.map(e=>`<tr class="click" data-act="cnViewEvent" data-eid="${e.id}">
       <td class="t-main">${esc(e.title)}${e.unit_name?`<div class="t-sub">${esc(e.unit_name)}</div>`:''}</td>
       <td class="small">${e.event_date?D.fmt(e.event_date):'—'}</td>
       <td class="small">${esc(e.venue||'—')}</td>
@@ -12583,18 +12651,38 @@ function cnTasksTab(manage,own){
     return '<div class="card"><div class="empty" style="padding:26px"><p>Loading…</p></div></div>';
   }
   if(CN_TASKS.err) return `<div class="card"><div class="empty" style="padding:26px"><p>${esc(CN_TASKS.err)}</p></div></div>`;
-  const rows=CN_TASKS.rows;
-  if(!rows.length) return `<div class="card"><div class="empty" style="padding:40px"><div class="e-ico">◌</div>
+  /* SEARCHED HERE, NOT ON THE SERVER: /creator/tasks takes no q, and the whole
+     list is already in the browser (it is capped at 200, not paged), so asking
+     again would cost a round trip and a flicker to filter rows we hold. The
+     fields are the ones the row actually shows, plus the role and category it
+     came from — somebody looking for "reel" means the kind of work, and that
+     word is in creator_type or the opportunity title, not in the task title. */
+  const tq=(CN_TASKS.q||'').trim().toLowerCase();
+  const rows=!tq?CN_TASKS.rows:CN_TASKS.rows.filter(t=>
+    [t.creator_name,t.team_name,t.title,t.event_title,t.opportunity_title,t.creator_type,t.event_venue]
+      .some(v=>v&&String(v).toLowerCase().includes(tq)));
+  const total=CN_TASKS.rows.length;
+  if(!total) return `<div class="card"><div class="empty" style="padding:40px"><div class="e-ico">◌</div>
     <h4>${own?'No work assigned yet':'No tasks'}</h4>
     <p>${own?'Register interest in an open opportunity and a Creator Admin will take it from there.'
       :'Assignments will appear here once creators are selected.'}</p></div></div>`;
   return `<div class="card"><div class="card-head">
       <h3>${own?'My tasks':'Tasks'}</h3>
-      <div class="ca"><select class="inp" style="width:auto;height:30px;font-size:12px"
+      <div class="ca f gap2 ac">
+        <span class="cn-search">
+          <input class="inp" id="cn-task-q" type="search" value="${esc(CN_TASKS.q||'')}"
+            placeholder="${own?'Search your tasks…':'Search creator, task, event or category…'}"
+            aria-label="Search tasks" oninput="ACTIONS.cnTaskQ({q:this.value})">
+          ${CN_TASKS.q?`<button class="icon-btn" title="Clear search"
+            onclick="ACTIONS.cnTaskQ({q:''})">${ic('x')}</button>`:''}
+        </span>
+        <select class="inp" style="width:auto;height:30px;font-size:12px"
         onchange="ACTIONS.cnTaskFilter({},this)">
         ${['all','assigned','accepted','in_progress','completed','declined','cancelled'].map(v=>
           `<option value="${v}" ${CN_TASKS.status===v?'selected':''}>${v==='all'?'All':CN_TASK[v].l}</option>`).join('')}
       </select></div></div>
+    ${tq?`<div class="hint" style="padding:0 20px 10px">${rows.length} of ${total} shown${
+      rows.length?'':' — nothing matches “'+esc(CN_TASKS.q)+'”'}</div>`:''}
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
       <thead><tr>${own?'':'<th>Creator</th>'}<th>Task</th><th>Event</th><th>Due</th><th>Task status</th>
         <th>Submission</th><th class="num">Actions</th></tr></thead>
@@ -12695,6 +12783,70 @@ function cnReviewTab(){
     </div></div>`;
 }
 
+/* THE APPROVE DIALOG: what this is worth, before it is worth it.
+
+   Approval writes to the point ledger, and the ledger is what a payout is
+   computed from, so this is the last moment anyone decides the number. It
+   opens with the rule's own figure — never a guess, and never a default typed
+   in here — and lets the reviewer move it, with a note saying why.
+
+   Where no rule applies, there is no number to offer and none is invented: the
+   dialog says so and approval proceeds exactly as it does today, awarding
+   nothing. Setting points there would need a ledger row with no rule, which
+   the idempotency index cannot protect from being written twice. */
+function cnApproveDialog(sid){
+  const r=(CN_REVIEW.rows||[]).find(x=>Number(x.id)===sid);
+  if(!r) return toast('That submission is no longer on screen — reload and try again.','bad');
+  const p=r.preset||{};
+  const has=p.points!==null&&p.points!==undefined;
+  const why=p.reason==='ambiguous'
+      ? 'More than one active rule could apply to this opportunity, so none is assumed.'
+    : p.reason==='none'
+      ? 'No point rule is set up yet.'
+      : '';
+  modal(`<div class="mo-head"><div><h2>Approve this submission</h2>
+      <p>${esc(r.creator_name||'')} · ${esc(r.task_title||'')} · V${r.version_no}</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">${ic('x')}</button></div>
+    <div class="mo-body">
+      ${has?`
+        <div class="field">
+          <label class="lbl" for="rv-points">Points to award</label>
+          <div class="pts-step">
+            <button type="button" class="btn" data-pt="-1" aria-label="Fewer points">−</button>
+            <input class="inp" id="rv-points" type="number" inputmode="numeric"
+                   min="0" max="10000" step="1" value="${p.points}">
+            <button type="button" class="btn" data-pt="1" aria-label="More points">+</button>
+          </div>
+          <div class="hint" id="rv-points-hint">${p.rule_name
+            ? esc(p.rule_name)+' sets '+p.points+' for this task.'
+            : 'The rule sets '+p.points+' for this task.'}</div>
+          <div class="field-err" id="rv-points-err" role="alert"></div>
+        </div>
+        <div class="field">
+          <label class="lbl" for="rv-points-note">Why the change <span class="mut3">(only if you changed it)</span></label>
+          <input class="inp" id="rv-points-note" maxlength="300"
+                 placeholder="e.g. re-shot twice after the venue changed">
+        </div>`
+      :`<div class="note">${esc(why)} Approving still records the verdict and tells the creator;
+          no points are added. Set a rule under Points → Rules &amp; cycles, then approve.</div>`}
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn primary ml-auto" data-act="cnApproveGo" data-sid="${r.id}">Approve</button></div>`);
+  const layer=$('#modal-layer');
+  layer.querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  /* The stepper moves the same field the reviewer can type into, and clamps,
+     so the two cannot disagree about what will be sent. */
+  const box=layer.querySelector('#rv-points');
+  layer.querySelectorAll('[data-pt]').forEach(b=>b.onclick=()=>{
+    const n=parseInt(box.value,10);
+    box.value=Math.max(0,Math.min(10000,(Number.isInteger(n)?n:0)+Number(b.dataset.pt)));
+    box.removeAttribute('aria-invalid');
+    const err=layer.querySelector('#rv-points-err'); if(err) err.textContent='';
+  });
+  if(box) box.oninput=()=>{ box.removeAttribute('aria-invalid');
+    const err=layer.querySelector('#rv-points-err'); if(err) err.textContent=''; };
+}
+
 /* ── Open opportunities, from a creator's side ─────────────────────────── */
 function cnOppsTab(){
   if(!CN_OPPS.loaded){
@@ -12745,6 +12897,9 @@ function cnOppsTab(){
         ${meta?`<span>${meta}</span>`:''}
         ${o.description?`<span class="opp-desc">${esc(o.description)}</span>`:''}</span>
       <span class="opp-counts">
+        ${o.preset&&o.preset.points!==null&&o.preset.points!==undefined
+          ? `<span class="opp-count opp-pts" title="${esc(o.preset.rule_name||'Points for this task')}">${cnPts(o.preset.points)} points</span>`
+          : ''}
         <span class="opp-count" title="Creators who have registered interest">${o.interested} interested</span>
         <span class="opp-count ${full?'is-full':''}" title="Places filled out of places needed">${o.assigned} of ${o.required_count} filled</span>
       </span>
@@ -12753,6 +12908,10 @@ function cnOppsTab(){
   };
   return `<div class="fc gap4">${[...byEvent.values()].map(ev=>{
     const openCount=ev.rows.filter(o=>o.assigned<o.required_count).length;
+    /* Roles open answers "is there a way in"; places left answers "how many of
+       us". Both, because a single open role needing four people reads as
+       almost-full when only the first is shown. */
+    const placesLeft=ev.rows.reduce((n,o)=>n+Math.max(0,o.required_count-o.assigned),0);
     const meta=[ev.date?D.fmt(ev.date):null, ev.venue?esc(ev.venue):null].filter(Boolean).join(' · ');
     return `<div class="card">
       <div class="card-head">
@@ -12760,6 +12919,7 @@ function cnOppsTab(){
         ${meta?`<span class="opp-ev-meta">${meta}</span>`:''}
         <div class="ca"><span class="chip ${openCount?'sel':''}">${openCount
           ?openCount+(openCount===1?' role open':' roles open')
+            +(placesLeft?' · '+placesLeft+(placesLeft===1?' place left':' places left'):'')
           :'All roles filled'}</span></div>
       </div>
       <div class="card-body flush">${ev.rows.map(oppRow).join('')}</div>
@@ -20769,20 +20929,42 @@ const ACTIONS = {
     }).catch(e=>toast(e.message,'bad'));
   },
   cnReviewFilter:(d,n)=>{CN_REVIEW.status=n.value;cnReload('review');},
-  cnReview:(d)=>{
-    /* Approving needs no justification; the other two owe the creator one, and
-       the server refuses them without it. */
-    if(d.o==='approved'){
-      MO_API.post('/creator/submissions/'+d.sid+'/review',{outcome:'approved'})
-        .then(r=>{const p=r.points||{};
-          toast(p.awarded?`Approved · ${cnPts(p.awarded)} points${p.pending?' (waiting for a cycle)':''}`
-               :p.reason==='rule_ambiguous'?'Approved · no points: more than one rule could apply, so none was assumed'
-               :p.reason==='no_rule'?'Approved · no points: no rule is set up yet'
-               :'Approved','ok');
-          cnReload('review','tasks','ledger','board','points','cycles');})
-        .catch(e=>toast(e.message,'bad'));
-      return;
+  /* Nothing here decides what the work is worth. The number shown is the one
+     the server resolved from the rule for this opportunity, and the same
+     resolution runs again when the approval is posted — this dialog only lets
+     a reviewer disagree with it, on the record. */
+  cnApproveGo:(d,btn)=>{
+    const box=$('#rv-points');
+    const body={outcome:'approved'};
+    if(box){
+      const n=parseInt(box.value,10);
+      if(!Number.isInteger(n)||n<0||n>10000){
+        box.setAttribute('aria-invalid','true');
+        const err=$('#rv-points-err'); if(err) err.textContent='Enter a whole number between 0 and 10000.';
+        box.focus(); return;
+      }
+      body.points=n;
+      const note=$('#rv-points-note');
+      if(note&&note.value.trim()) body.points_note=note.value.trim();
     }
+    if(btn) btn.disabled=true;
+    MO_API.post('/creator/submissions/'+d.sid+'/review',body)
+      .then(r=>{const p=r.points||{};
+        closeModal();
+        toast(p.awarded?`Approved · ${cnPts(p.awarded)} points${p.adjusted?' (adjusted)':''}${p.pending?' · waiting for a cycle':''}`
+             :p.reason==='rule_ambiguous'?'Approved · no points: more than one rule could apply, so none was assumed'
+             :p.reason==='no_rule'?'Approved · no points: no rule is set up yet'
+             :p.reason==='already_awarded'?'Approved · points were already recorded'
+             :'Approved','ok');
+        cnReload('review','tasks','ledger','board','points','cycles');})
+      .catch(e=>{ if(btn) btn.disabled=false; toast(e.message,'bad'); });
+  },
+  cnReview:(d)=>{
+    /* Approving is the moment the points are decided, so it asks rather than
+       fires: the rule's number is offered and the reviewer may change it. The
+       other two outcomes owe the creator a reason, and the server refuses them
+       without one. */
+    if(d.o==='approved'){ cnApproveDialog(+d.sid); return; }
     const heading=d.o==='rejected'?'Not accepting this submission':'Request changes';
     modal(`<div class="mo-head"><div><h2>${heading}</h2>
         <p>${d.o==='rejected'?'The creator will see this reason, and the task closes to further versions.'
@@ -20932,6 +21114,23 @@ const ACTIONS = {
       .catch(e=>toast(e.message,'bad'));
   },
   cnTaskFilter:(d,n)=>{CN_TASKS.status=n.value;cnReload('tasks');},
+  /* render() replaces the input, taking focus and the caret with it, so the
+     next character would be dropped and on a phone the keyboard would close.
+     Focus and caret go back by id afterwards — the same fix dirSearch uses.
+     render(), not cnReload(): the rows are already here and the status filter
+     is what owns the round trip. */
+  cnEventQ:(d)=>{
+    if(CN_EVENTS.q===d.q) return;
+    CN_EVENTS.q=d.q; render();
+    const el=$('#cn-ev-q');
+    if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);}
+  },
+  cnTaskQ:(d)=>{
+    if(CN_TASKS.q===d.q) return;
+    CN_TASKS.q=d.q; render();
+    const el=$('#cn-task-q');
+    if(el){el.focus();el.setSelectionRange(el.value.length,el.value.length);}
+  },
   cnTaskMove:(d)=>{
     const go=(reason)=>MO_API.patch('/creator/assignments/'+d.tid,
         Object.assign({status:d.to}, reason?{reason}:{}))
@@ -22013,6 +22212,23 @@ const ACTIONS = {
   },
   crFilter:(d,n)=>{
     CREATOR_LIST.f[d.k]=n.value; CREATOR_LIST.offset=0; creatorReload('list');
+  },
+  /* SEARCHED ON THE SERVER, unlike tasks and events: this list is paged — the
+     browser holds 25 of possibly hundreds — so filtering what is on screen
+     would quietly search one page and call it the answer. The typing is
+     debounced so it is one request per pause rather than one per keystroke,
+     and the caret is put back where it was afterwards, because the response
+     re-renders the input out from under it. */
+  crQ:(d)=>{
+    const f=CREATOR_LIST.f;
+    if(f.q===d.q) return;
+    f.q=d.q; CREATOR_LIST.offset=0;
+    clearTimeout(S._crq);
+    S._crq=setTimeout(()=>{
+      refocusAfterFetch('cr-q');   // the response will re-render over this field
+      creatorReload('list');
+      moRefocus();                 // and the render just now already replaced it
+    },300);
   },
   crPage:(d)=>{
     CREATOR_LIST.offset=Math.max(0, CREATOR_LIST.offset + (+d.d)*CREATOR_PAGE);

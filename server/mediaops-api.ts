@@ -12570,8 +12570,10 @@ async function allocateInternalCode(
          FROM mo_creator_opportunities o JOIN mo_creator_events e ON e.id = o.event_id
         WHERE e.status IN ('open','closed')${where}
         ORDER BY e.event_date NULLS LAST, o.id LIMIT $${params.length}`, params);
+    const presets = await rulesForOpportunities(rows.map((o) => Number(o.id)));
     res.json({ opportunities: rows.map((o) => ({ ...o, id: Number(o.id), event_id: Number(o.event_id),
-      event_date: dOnly(o.event_date), task_deadline: dOnly(o.task_deadline) })) });
+      event_date: dOnly(o.event_date), task_deadline: dOnly(o.task_deadline),
+      preset: presetOf(presets.get(Number(o.id))) })) });
   }));
 
   /* ── Interest ───────────────────────────────────────────────────────────
@@ -12762,7 +12764,7 @@ async function allocateInternalCode(
     params.push(limit);
     const { rows } = await pool.query(
       `SELECT a.*, COALESCE(NULLIF(c.display_name,''), usr.full_name) AS creator_name,
-              t.name AS team_name, o.title AS opportunity_title,
+              t.name AS team_name, o.title AS opportunity_title, o.creator_type,
               e.id AS event_id, e.title AS event_title, e.event_date, e.venue AS event_venue,
               /* The latest submission rides along, so the task list can show
                  where the work stands without a query per row. */
@@ -13048,6 +13050,10 @@ async function allocateInternalCode(
         ORDER BY (s.status='submitted') DESC, s.submitted_at DESC
         LIMIT $${params.length - 1} OFFSET $${params.length}`, params);
 
+    /* What approving each of these would award, resolved exactly as the award
+       itself resolves it, so the number in the approve dialog is the number
+       that lands in the ledger. */
+    const presets = await rulesForOpportunities(rows.map((r) => Number(r.opportunity_id)));
     res.json({
       submissions: rows.map((r) => ({
         ...shapeSubmission(r),
@@ -13057,6 +13063,7 @@ async function allocateInternalCode(
         opportunity: { id: Number(r.opportunity_id), title: r.opportunity_title },
         event: { id: Number(r.event_id), title: r.event_title, date: dOnly(r.event_date) },
         versions: Number(r.versions),
+        preset: presetOf(presets.get(Number(r.opportunity_id))),
       })),
       total, limit, offset, scope: scope.level,
       can_review: isMoAdmin(u) || (await creatorRoleOf(u)) === "creator_admin",
@@ -13099,6 +13106,19 @@ async function allocateInternalCode(
     if (outcome !== "approved" && comment.length < 3)
       return sendError(res, 400, "Tell the creator what to change — a comment is required.");
 
+    /* THE REVIEWER MAY SET THE POINTS, within limits, at the moment of
+       approval. Absent, the rule's own number is used exactly as before, so
+       nothing changes for a caller that does not send one. */
+    let override: { points: number; note: string } | undefined;
+    if (outcome === "approved" && b.points !== undefined && b.points !== null && b.points !== "") {
+      const n = Number(b.points);
+      if (!Number.isInteger(n))
+        return sendError(res, 400, "Points must be a whole number.");
+      if (n < 0 || n > POINTS_MAX)
+        return sendError(res, 400, `Points must be between 0 and ${POINTS_MAX}.`);
+      override = { points: n, note: String(b.points_note ?? "").trim().slice(0, 300) };
+    }
+
     /* Guarded by the status in the WHERE clause, so two simultaneous reviewers
        cannot both write a verdict: the second updates nothing and is told. */
     const upd = await pool.query(
@@ -13123,7 +13143,7 @@ async function allocateInternalCode(
        request, from the record that was just approved. There is no separate
        award endpoint and nothing the client can call to grant itself points.
        The unique index makes a repeat harmless. */
-    const points = outcome === "approved" ? await awardForSubmission(u, id, req) : null;
+    const points = outcome === "approved" ? await awardForSubmission(u, id, req, override) : null;
     /* Phase 6: approval is the moment a lifetime achievement can become true,
        so it is evaluated here — for THIS creator only, never a sweep of the
        network. It reads the point ledger and the submission history and
@@ -13152,18 +13172,51 @@ async function allocateInternalCode(
      unambiguous and is used. With several and no choice recorded, nothing is
      awarded rather than a rule being picked at random — a silent wrong number
      is worse than a visible zero, and the response says which happened. */
-  async function ruleForOpportunity(opportunityId: number) {
+  type RuleChoice = {
+    rule: Record<string, unknown> | null;
+    why: "opportunity" | "default" | "ambiguous" | "none";
+  };
+
+  /* The same question for MANY opportunities, in two queries rather than two
+     per row. This is the only implementation: ruleForOpportunity delegates to
+     it, so what a screen SHOWS an opportunity is worth and what approval
+     actually awards cannot drift apart — the opportunity list and the review
+     list both display this, and a card promising points the award would refuse
+     is a worse bug than showing nothing. */
+  async function rulesForOpportunities(ids: number[]): Promise<Map<number, RuleChoice>> {
+    const out = new Map<number, RuleChoice>();
+    const unique = [...new Set(ids.filter((n) => Number.isFinite(n)))];
+    if (!unique.length) return out;
     const chosen = (await pool.query(
-      `SELECT r.* FROM mo_creator_opportunities o
+      `SELECT o.id AS opportunity_id, r.* FROM mo_creator_opportunities o
          JOIN mo_creator_point_rules r ON r.id = o.point_rule_id
-        WHERE o.id=$1 AND r.is_active`, [opportunityId])).rows[0];
-    if (chosen) return { rule: chosen, why: "opportunity" as const };
+        WHERE o.id = ANY($1::bigint[]) AND r.is_active`, [unique])).rows;
+    const byOpp = new Map(chosen.map((r) => [Number(r.opportunity_id), r]));
     const active = (await pool.query(
       `SELECT * FROM mo_creator_point_rules
         WHERE is_active AND source_type='approved_submission' LIMIT 2`)).rows;
-    if (active.length === 1) return { rule: active[0], why: "default" as const };
-    return { rule: null, why: active.length ? ("ambiguous" as const) : ("none" as const) };
+    for (const id of unique) {
+      const c = byOpp.get(id);
+      if (c) out.set(id, { rule: c, why: "opportunity" });
+      else if (active.length === 1) out.set(id, { rule: active[0], why: "default" });
+      else out.set(id, { rule: null, why: active.length ? "ambiguous" : "none" });
+    }
+    return out;
   }
+
+  async function ruleForOpportunity(opportunityId: number): Promise<RuleChoice> {
+    return (await rulesForOpportunities([opportunityId])).get(opportunityId)
+      ?? { rule: null, why: "none" };
+  }
+
+  /* What a screen may say an opportunity is worth: the number, and why there is
+     not one when there is not. Never a guess. */
+  const presetOf = (c: RuleChoice | undefined) => ({
+    points: c && c.rule ? Number(c.rule.points) : null,
+    rule_id: c && c.rule ? Number(c.rule.id) : null,
+    rule_name: c && c.rule ? String(c.rule.name) : null,
+    reason: c ? c.why : "none",
+  });
 
   /* Award for an approved submission.
 
@@ -13175,9 +13228,17 @@ async function allocateInternalCode(
      Idempotency is the unique index on (source_type, source_id, rule_id), so
      ten simultaneous approvals of one submission produce one row. ON CONFLICT
      DO NOTHING turns the losers into no-ops rather than errors. */
+  /* An override is bounded on purpose. Taking points BACK is what the
+     'reversal' source type is for, and an approval that deducts is almost
+     always a slip of the minus button, so an approval may only award zero or
+     more. The ceiling is a guard against a typed-in order of magnitude. */
+  const POINTS_MAX = 10000;
+
   async function awardForSubmission(
     actor: CurrentUser, submissionId: number, req: express.Request,
-  ): Promise<{ awarded: number; reason: string; pending: boolean }> {
+    override?: { points: number; note: string },
+  ): Promise<{ awarded: number; reason: string; pending: boolean;
+               preset: number | null; adjusted: boolean }> {
     const s = (await pool.query(
       `SELECT s.id, s.status, a.user_id, a.title, o.id AS opportunity_id
          FROM mo_creator_submissions s
@@ -13185,10 +13246,23 @@ async function allocateInternalCode(
          JOIN mo_creator_opportunities o ON o.id = a.opportunity_id
         WHERE s.id=$1`, [submissionId])).rows[0];
     // Only genuinely approved work earns. Never taken on trust from a caller.
-    if (!s || s.status !== "approved") return { awarded: 0, reason: "not_approved", pending: false };
+    if (!s || s.status !== "approved")
+      return { awarded: 0, reason: "not_approved", pending: false, preset: null, adjusted: false };
 
     const { rule, why } = await ruleForOpportunity(Number(s.opportunity_id));
-    if (!rule) return { awarded: 0, reason: why === "ambiguous" ? "rule_ambiguous" : "no_rule", pending: false };
+    /* NO RULE, NO AWARD — even when a reviewer typed a number. The ledger's
+       idempotency index is (source_type, source_id, rule_id), and Postgres
+       treats NULLs as distinct, so a row with no rule_id would not collide
+       with itself: the same submission could be awarded twice by two clicks.
+       Rather than weaken that guarantee, an opportunity with no rule behaves
+       as it always has and the screen says why. */
+    if (!rule)
+      return { awarded: 0, reason: why === "ambiguous" ? "rule_ambiguous" : "no_rule",
+               pending: false, preset: null, adjusted: false };
+
+    const preset = Number(rule.points);
+    const adjusted = !!override && override.points !== preset;
+    const points = override ? override.points : preset;
 
     /* No active cycle: the points are RECORDED with no cycle rather than
        discarded, guessed into a month, or allowed to invent a cycle. An Admin
@@ -13202,19 +13276,28 @@ async function allocateInternalCode(
        VALUES ($1,$2,$3,$4,'approved_submission',$5,$6,$7)
        ON CONFLICT DO NOTHING
        RETURNING id, points`,
-      [s.user_id, cycle?.id ?? null, rule.id, rule.points, submissionId,
-       `${rule.name} — ${s.title}`, actor.id]);
+      [s.user_id, cycle?.id ?? null, rule.id, points, submissionId,
+       /* The ledger row explains itself without needing the audit log: what it
+          was for, and — when a reviewer changed it — what the rule said and why
+          they differed. */
+       adjusted
+         ? `${String(rule.name)} — ${s.title} · adjusted from ${preset}`
+           + (override && override.note ? ` · ${override.note}` : "")
+         : `${String(rule.name)} — ${s.title}`,
+       actor.id]);
     // Already awarded: a retry, a second reviewer, a refresh. Not an error.
-    if (!ins.rows[0]) return { awarded: 0, reason: "already_awarded", pending: false };
+    if (!ins.rows[0])
+      return { awarded: 0, reason: "already_awarded", pending: false, preset, adjusted: false };
 
     await audit(actor, "creator_points.awarded", "creator_point_ledger", Number(ins.rows[0].id), null,
-      { user_id: s.user_id, points: rule.points, rule: rule.name, rule_source: why,
+      { user_id: s.user_id, points, preset, adjusted, note: override?.note ?? null,
+        rule: rule.name, rule_source: why,
         submission_id: submissionId, cycle_id: cycle?.id ?? null }, req);
     await notifyCreator(String(s.user_id), "points",
-      `${rule.points > 0 ? "+" : ""}${rule.points} points — ${rule.name}`,
+      `${points > 0 ? "+" : ""}${points} points — ${String(rule.name)}`,
       cycle ? `${s.title} · ${cycle.label}` : `${s.title} · awaiting a scoring cycle`,
       "creator_point_ledger", Number(ins.rows[0].id));
-    return { awarded: Number(rule.points), reason: "awarded", pending: !cycle };
+    return { awarded: points, reason: "awarded", pending: !cycle, preset, adjusted };
   }
 
   /* ── Point rules ────────────────────────────────────────────────────── */
