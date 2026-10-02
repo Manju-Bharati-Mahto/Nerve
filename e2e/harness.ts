@@ -29,7 +29,7 @@ export const FIXED_NOW = new Date("2026-09-24T10:00:00+05:30");
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".svg": "image/svg+xml",
   ".webmanifest": "application/manifest+json", ".png": "image/png",
-  ".json": "application/json", ".css": "text/css",
+  ".json": "application/json", ".css": "text/css", ".woff2": "font/woff2", ".txt": "text/plain; charset=utf-8",
 };
 
 export type Staff = "admin" | "team_lead" | "coordinator" | "employee";

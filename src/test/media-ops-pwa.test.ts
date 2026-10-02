@@ -122,7 +122,18 @@ describe("the service worker and the manifest agree", () => {
   });
 
   it("was version-bumped along with them", () => {
-    expect(SW).toContain('const CACHE = "mo-v3"');
+    expect(SW).toContain('const CACHE = "mo-v4"');
+  });
+
+  /* The first screen is set in two self-hosted faces. A font the shell names
+     but the folder lacks fails addAll exactly like a missing icon; a font the
+     page preloads but the shell omits leaves an offline launch in system type. */
+  it("precaches the fonts the page preloads, and every one of them exists", () => {
+    const preloads = [...HEAD.matchAll(/<link rel="preload" href="(fonts\/[\w.-]+\.woff2)" as="font"/g)].map((m) => m[1]);
+    expect(preloads.length, "the page no longer preloads its fonts").toBeGreaterThan(0);
+    for (const f of preloads) expect(SW, `${f} is preloaded but not in SHELL`).toContain(`/api/media-ops/${f}`);
+    const shelled = [...SW.matchAll(/"\/api\/media-ops\/(fonts\/[\w.-]+)"/g)].map((m) => m[1]);
+    for (const f of shelled) expect(existsSync(join(DIR, f)), `${f} is in SHELL but missing on disk`).toBe(true);
   });
 });
 

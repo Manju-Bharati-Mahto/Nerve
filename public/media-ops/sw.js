@@ -5,7 +5,7 @@
    require connectivity.
 
    Bump CACHE whenever the shell list, the manifest or the icons change. */
-const CACHE = "mo-v3";
+const CACHE = "mo-v4";
 const PAGE = "/api/media-ops/index.html";
 const SHELL = [
   PAGE,
@@ -15,6 +15,11 @@ const SHELL = [
   "/api/media-ops/icon-512.png",
   "/api/media-ops/icon-maskable-512.png",
   "/api/media-ops/apple-touch-icon.png",
+  /* The interface face and the greeting's hand-written one (Latin). Without
+     them an offline launch falls back to system fonts and the first screen
+     loses its look. The Latin Extended files are fetched on demand. */
+  "/api/media-ops/fonts/plus-jakarta-sans-latin.woff2",
+  "/api/media-ops/fonts/caveat-latin.woff2",
 ];
 
 /* addAll is atomic: one missing file fails the whole install, and silently,

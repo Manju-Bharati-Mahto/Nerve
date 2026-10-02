@@ -109,12 +109,13 @@ describe("install", () => {
 describe("activate", () => {
   it("drops its own old caches and leaves everyone else's alone", async () => {
     const { fire, caches } = load(async () => res());
+    caches.store.set("mo-v3", new Map());
     caches.store.set("mo-v2", new Map());
     caches.store.set("mo-v1", new Map());
     caches.store.set("workbox-precache", new Map());   // somebody else on the origin
-    caches.store.set("mo-v3", new Map());
+    caches.store.set("mo-v4", new Map());
     await fire("activate", {});
-    expect([...caches.store.keys()].sort()).toEqual(["mo-v3", "workbox-precache"]);
+    expect([...caches.store.keys()].sort()).toEqual(["mo-v4", "workbox-precache"]);
   });
 });
 
@@ -168,7 +169,7 @@ describe("icons and the manifest", () => {
     let hits = 0;
     const { fire, caches } = load(async () => { hits++; return res({ ct: "image/png" }); });
     const url = "http://x.test/api/media-ops/icon-192.png";
-    (await caches.api.open("mo-v3")).put(url, res({ ct: "image/png", body: "old" }));
+    (await caches.api.open("mo-v4")).put(url, res({ ct: "image/png", body: "old" }));
     const out = await fire("fetch", { request: { method: "GET", mode: "no-cors", url } }) as Res;
     expect(out.body, "served from the network instead of the cache").toBe("old");
     await new Promise((r) => setTimeout(r, 0));

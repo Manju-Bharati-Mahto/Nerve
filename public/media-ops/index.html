@@ -20,6 +20,12 @@
      own rounded corners shows white behind them. -->
 <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
 <link rel="icon" type="image/svg+xml" href="icon.svg">
+<!-- The two faces of the interface, self-hosted so an installed app keeps them
+     offline: Plus Jakarta Sans for everything, Caveat for the one hand-written
+     word — the person's name in the greeting. Both SIL OFL 1.1 (fonts/OFL-*.txt).
+     Preloaded because both are on the first screen anyone sees. -->
+<link rel="preload" href="fonts/plus-jakarta-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/caveat-latin.woff2" as="font" type="font/woff2" crossorigin>
 <title>Nerve Media Ops — Media Crew, Parul University</title>
 <script>
 /* ═══ LAYOUT SWITCH ═══════════════════════════════════════════════════════════
@@ -106,6 +112,21 @@
    Every component references tokens only, so dark mode costs nothing per
    feature. Status is never colour-only: colour + icon + label.
    ========================================================================= */
+/* ── Type. Latin and Latin Extended only; anything else (the status glyphs,
+      Devanagari in a name) falls through to the system stack below. Variable
+      fonts, so every weight from 200 to 800 is one file. */
+@font-face{font-family:"Plus Jakarta Sans";font-style:normal;font-weight:200 800;font-display:swap;
+  src:url(fonts/plus-jakarta-sans-latin.woff2) format("woff2");
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:"Plus Jakarta Sans";font-style:normal;font-weight:200 800;font-display:swap;
+  src:url(fonts/plus-jakarta-sans-latin-ext.woff2) format("woff2");
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
+@font-face{font-family:"Caveat";font-style:normal;font-weight:400 700;font-display:swap;
+  src:url(fonts/caveat-latin.woff2) format("woff2");
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+@font-face{font-family:"Caveat";font-style:normal;font-weight:400 700;font-display:swap;
+  src:url(fonts/caveat-latin-ext.woff2) format("woff2");
+  unicode-range:U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF}
 :root{
   /* ── BRAND RAMP — the single source of truth for the brand colour ────────
      Change these ten values (and their dark counterparts below) and the whole
@@ -139,8 +160,14 @@
   --ring-glow:rgba(59,130,246,.34);
 
   /* Surfaces — blue-grey neutrals so the brand sits in its own family */
-  --bg:#F7F9FC; --surface:#FFFFFF; --surface-2:#F4F7FB; --surface-3:#EAEFF6;
-  --border:#E4EAF2; --border-strong:#CDD6E3; --overlay:rgba(15,23,42,.45);
+  --bg:#F8FAFC; --surface:#FFFFFF; --surface-2:#F4F7FB; --surface-3:#EAEFF6;
+  --border:#E2E8F0; --border-strong:#CBD5E1; --overlay:rgba(15,23,42,.45);
+  /* The hairline INSIDE a card (a footer rule, a row divider) — one step
+     quieter than the card's own edge, so the card still reads as one object. */
+  --border-soft:#EEF2F7;
+  /* Sidebar icons sit a step lighter than their labels and take the brand
+     colour on hover — the label carries the meaning, the icon the rhythm. */
+  --nav-ico:#94A3B8;
   --tint-green:#E8F6EE; --tint-red:#FDECEC; --tint-blue:#EAF1FD; --tint-amber:#FDF4E3;
   --tint-violet:#F2EDFD; --tint-teal:#E5F5F6;
 
@@ -154,6 +181,11 @@
   --info:#1D4ED8;    --info-bg:#E8F0FC;
   --neutral:#4B5563; --neutral-bg:#EEF2F6;
 
+  /* Fills — for bars and meters, never for text. The semantic text colours
+     above are deliberately dark for contrast, which makes a 6px bar look
+     brown; a fill wants the bright step of the same hue. */
+  --fill-brand:#3B82F6; --fill-violet:#8B5CF6; --fill-amber:#F59E0B; --fill-green:#10B981; --fill-sky:#0EA5E9;
+
   /* Always-dark surfaces (toast, kiosk): semantic colours that stay legible
      on a dark sheet regardless of the active theme. */
   --on-dark-success:#4ADE80; --on-dark-warn:#FBBF24; --on-dark-danger:#F87171;
@@ -165,34 +197,43 @@
   /* Spacing scale 4/8/12/16/24/32/48/64 */
   --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px; --s8:64px;
 
-  /* Radii & elevation */
-  --r-sm:8px; --r:10px; --r-lg:16px; --r-xl:22px; --r-pill:999px;
-  --sh-1:0 1px 2px rgba(15,28,23,.04);
-  --sh-2:0 2px 6px rgba(15,28,23,.06), 0 8px 20px rgba(15,28,23,.05);
-  --sh-3:0 8px 24px rgba(15,28,23,.10), 0 24px 48px rgba(15,28,23,.10);
-  --sh-drag:0 12px 28px rgba(15,28,23,.20);
+  /* Radii & elevation. Small things are 8-12px, cards 16-20px, the hero and
+     the big panels 24px; pills and live badges are fully round. */
+  --r-sm:8px; --r:12px; --r-lg:16px; --r-card:20px; --r-xl:24px; --r-pill:999px;
+  --sh-1:0 1px 3px 0 rgba(15,23,42,.04), 0 1px 2px -1px rgba(15,23,42,.03);
+  --sh-2:0 4px 18px -2px rgba(15,23,42,.08), 0 2px 6px -1px rgba(15,23,42,.04);
+  --sh-3:0 8px 24px rgba(15,23,42,.10), 0 24px 48px rgba(15,23,42,.10);
+  --sh-drag:0 12px 28px rgba(15,23,42,.20);
+  /* Resting card, and the brand-tinted lift a card takes on hover. */
+  --sh-card:0 4px 18px -2px rgba(15,23,42,.05), 0 2px 6px -1px rgba(15,23,42,.02);
+  --sh-float:0 12px 30px -4px rgba(37,99,235,.13);
 
-  /* Type */
-  --font-display:ui-serif, Georgia, "Iowan Old Style", "Times New Roman", serif;
-  --font-ui:Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* Type. One family for the whole interface — heavy weights for headings,
+     tight tracking for the large ones — and a hand-written face that is only
+     ever used for a person's name in a greeting. */
+  --font-display:"Plus Jakarta Sans", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-ui:"Plus Jakarta Sans", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-script:"Caveat", "Segoe Script", "Bradley Hand", "Snell Roundhand", cursive;
   --font-mono:ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
   /* Layout */
-  --sidebar-w:268px; --sidebar-collapsed:76px; --topbar-h:68px; --drawer-w:500px;
-  --content-max:1440px;
+  --sidebar-w:256px; --sidebar-collapsed:76px; --topbar-h:64px; --drawer-w:500px;
+  --content-max:1600px;
   --dur:170ms; --ease:cubic-bezier(.2,.7,.3,1);
 }
-/* ── DARK THEME ────────────────────────────────────────────────────────────
-   Purpose-built, not an inversion. Deep blue-grey surfaces that step up in
-   elevation (bg → surface → surface-2 → surface-3), desaturated brand steps so
-   nothing glows, and borders light enough to read against every surface.
-   Reference feel: Linear / GitHub Dark / Vercel. */
+/* ── DARK THEME — "Liquid Chromatic Glass" ────────────────────────────────
+   Purpose-built, not an inversion. An obsidian canvas lit by two slow ambient
+   glows (cobalt top-right, cyan bottom-left — see the body rule below), with
+   panels that read as frosted glass over it: deep navy surfaces stepping up in
+   elevation (bg → surface → surface-2 → surface-3), a hairline specular rim on
+   every card, and desaturated brand steps so text never glows. */
 html[data-theme="dark"]{
-  --bg:#0B1017; --surface:#131A24; --surface-2:#182231; --surface-3:#1F2A3A;
-  --border:#212C3C; --border-strong:#33415A; --overlay:rgba(2,6,12,.66);
+  --bg:#090D16; --surface:#111827; --surface-2:#172033; --surface-3:#1E293D;
+  --border:#212C40; --border-strong:#34415A; --overlay:rgba(2,6,14,.68);
+  --border-soft:#1A2336; --nav-ico:#6E7C93;
   --tint-green:#0E2A1C; --tint-red:#2E1614; --tint-blue:#12213A; --tint-amber:#31240F;
   --tint-violet:#221A3A; --tint-teal:#0F2A2C;
-  --text:#E6EDF7; --text-2:#A3B0C2; --text-3:#8A97AA; --text-inv:#0B1220;
+  --text:#E6EBF5; --text-2:#A9B4C6; --text-3:#8B97AB; --text-inv:#0B1220;
   /* Dark ramp: low steps are near-surface tints, high steps are the readable
      accents. Peaks at 400/300 — never the saturated 500 — to avoid neon. */
   --brand-50:#111C2E; --brand-100:#152540; --brand-200:#1D3358; --brand-300:#93C5FD;
@@ -222,9 +263,13 @@ html[data-theme="dark"]{
   --neutral:#9AA7B8; --neutral-bg:#1B2534;
   --cat-1:#5B8DEF; --cat-2:#A277F0; --cat-3:#EE6FA8; --cat-4:#F0854B;
   --cat-5:#3FB4CE; --cat-6:#DCB03F; --cat-7:#3FBF92; --cat-8:#8D9AA6;
-  /* Soft, wide shadows — depth without haloing */
+  /* Soft, wide shadows — depth without haloing. A card's resting shadow
+     carries the glass rim (a 1px inner highlight on its top edge); the hover
+     lift adds a faint cobalt halo, the only place light leaks out. */
   --sh-1:0 1px 2px rgba(0,0,0,.44); --sh-2:0 2px 8px rgba(0,0,0,.5);
   --sh-3:0 10px 32px rgba(0,0,0,.58); --sh-drag:0 14px 30px rgba(0,0,0,.62);
+  --sh-card:inset 0 1px 0 rgba(255,255,255,.055), 0 18px 40px -16px rgba(0,0,0,.65);
+  --sh-float:inset 0 1px 0 rgba(255,255,255,.08), 0 18px 44px -12px rgba(0,0,0,.7), 0 0 26px -6px rgba(59,130,246,.30);
 }
 
 /* ===== Reset ===== */
@@ -233,6 +278,12 @@ html,body{height:100%}
 body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font-ui);
   font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;
   font-variant-numeric:tabular-nums;overflow:hidden}
+/* The ambient light of the dark canvas. The body never scrolls (#content
+   does), so these sit still behind everything like a lit room. */
+html[data-theme=dark] body{background:
+  radial-gradient(900px 640px at 92% -12%,rgba(59,130,246,.13),transparent 62%),
+  radial-gradient(720px 560px at 0% 108%,rgba(6,182,212,.085),transparent 60%),
+  var(--bg)}
 button,input,select,textarea{font:inherit;color:inherit}
 button{cursor:pointer;background:none;border:none;padding:0}
 a{color:var(--primary-text);text-decoration:none}
@@ -260,41 +311,52 @@ ul,ol{margin:0;padding-left:1.15em}
   border-right:1px solid var(--border);display:flex;flex-direction:column;
   transition:width var(--dur) var(--ease),flex-basis var(--dur) var(--ease);z-index:40}
 body.nav-collapsed #sidebar{width:var(--sidebar-collapsed);flex-basis:var(--sidebar-collapsed)}
-.brand{display:flex;align-items:center;gap:11px;height:var(--topbar-h);padding:0 20px;flex:0 0 auto}
-.brand-mark{width:34px;height:34px;flex:0 0 34px;border-radius:10px;
-  background:linear-gradient(145deg,var(--brand-400),var(--brand-700));
-  display:grid;place-items:center;color:#fff;box-shadow:0 3px 10px rgba(27,122,86,.30)}
+.brand{display:flex;align-items:center;gap:12px;height:var(--topbar-h);padding:0 20px;flex:0 0 auto;
+  border-bottom:1px solid var(--border-soft)}
+.brand-mark{width:36px;height:36px;flex:0 0 36px;border-radius:12px;
+  background:linear-gradient(45deg,var(--brand-700),var(--brand-500));
+  display:grid;place-items:center;color:#fff;box-shadow:0 4px 12px -2px rgba(59,130,246,.45)}
 .brand-mark svg{width:19px;height:19px}
-.brand-txt{min-width:0;line-height:1.05}
-.brand-txt b{display:block;font-size:16px;font-weight:800;letter-spacing:.055em}
-.brand-txt span{display:block;font-size:9.5px;color:var(--primary-text);letter-spacing:.16em;
+.brand-txt{min-width:0;line-height:1.08}
+.brand-txt b{display:block;font-size:15px;font-weight:800;letter-spacing:-.01em}
+.brand-txt span{display:block;font-size:10px;color:var(--primary-text);letter-spacing:.14em;
   text-transform:uppercase;font-weight:700;margin-top:2px}
 body.nav-collapsed .brand-txt{display:none}
 body.nav-collapsed .brand{justify-content:center;padding:0}
-.nav{flex:1;overflow-y:auto;overflow-x:hidden;padding:6px 14px 24px}
-.nav-group{margin-bottom:20px}
-.nav-group-label{font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--text-3);
-  padding:0 12px;margin:0 0 8px;font-weight:700;white-space:nowrap}
+.nav{flex:1;overflow-y:auto;overflow-x:hidden;padding:14px 12px 24px}
+.nav-group{margin-bottom:22px}
+.nav-group-label{font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--text-3);
+  padding:0 12px;margin:0 0 8px;font-weight:800;white-space:nowrap}
 body.nav-collapsed .nav-group-label{opacity:0;height:10px;overflow:hidden}
-.nav-item{display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:10px;
-  color:var(--text-2);font-weight:500;font-size:14px;white-space:nowrap;position:relative;
-  width:100%;text-align:left;transition:background var(--dur),color var(--dur);margin-bottom:2px}
+.nav-item{display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:12px;
+  color:var(--text-2);font-weight:600;font-size:13px;white-space:nowrap;position:relative;
+  width:100%;text-align:left;transition:background var(--dur),color var(--dur),box-shadow var(--dur);margin-bottom:4px}
 .nav-item:hover{background:var(--surface-2);color:var(--text);text-decoration:none}
-.nav-item.active{background:var(--primary-solid);color:var(--primary-contrast);font-weight:600;
-  box-shadow:0 2px 8px rgba(27,122,86,.28)}
-html[data-theme=dark] .nav-item.active{background:var(--primary);color:var(--text-inv)}
+.nav-item:hover .nav-ico{color:var(--primary-text)}
+.nav-item.active{background:var(--primary-solid);color:var(--primary-contrast);font-weight:700;
+  box-shadow:0 1px 2px rgba(37,99,235,.25),0 6px 16px -6px rgba(37,99,235,.6)}
+/* Dark: the liquid button — a translucent cobalt gradient with a lit top edge. */
+html[data-theme=dark] .nav-item.active{background:linear-gradient(135deg,rgba(59,130,246,.88),rgba(37,99,235,.96));
+  color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 8px 22px -8px rgba(59,130,246,.65)}
 .nav-item.active .nav-badge,.nav-item.active .nav-badge.muted{background:rgba(255,255,255,.24);color:var(--primary-contrast)}
-html[data-theme=dark] .nav-item.active .nav-badge,html[data-theme=dark] .nav-item.active .nav-badge.muted{background:rgba(11,18,32,.22);color:var(--text-inv)}
-.nav-item.active .nav-ico{opacity:1}
-.nav-ico{width:19px;height:19px;flex:0 0 19px;display:grid;place-items:center;opacity:.85}
-.nav-ico svg{width:19px;height:19px}
+html[data-theme=dark] .nav-item.active .nav-badge,html[data-theme=dark] .nav-item.active .nav-badge.muted{background:rgba(255,255,255,.2);color:#fff}
+.nav-item.active .nav-ico,.nav-item.active:hover .nav-ico{color:inherit}
+.nav-ico{width:18px;height:18px;flex:0 0 18px;display:grid;place-items:center;color:var(--nav-ico);
+  transition:color var(--dur)}
+.nav-ico svg{width:18px;height:18px}
 .nav-label{flex:1;overflow:hidden;text-overflow:ellipsis}
-body.nav-collapsed .nav-label,body.nav-collapsed .nav-badge{display:none}
+body.nav-collapsed .nav-label,body.nav-collapsed .nav-badge,body.nav-collapsed .nav-tag{display:none}
 body.nav-collapsed .nav-item{justify-content:center;padding:10px}
-.nav-badge{background:var(--danger);color:#fff;border-radius:var(--r-pill);font-size:10.5px;
-  font-weight:700;padding:1px 7px;min-width:20px;text-align:center}
+.nav-badge{background:var(--danger);color:#fff;border-radius:var(--r-pill);font-size:10px;
+  font-weight:700;padding:0 6px;min-width:20px;height:20px;line-height:20px;text-align:center}
 .nav-item.active .nav-badge{background:rgba(255,255,255,.28)}
-.nav-badge.muted{background:var(--surface-3);color:var(--text)}
+.nav-badge.muted{background:var(--border);color:var(--text)}
+/* A word, not a count — "Today" beside My Day. Quieter than a badge, and it
+   picks up the brand tint when the row is pointed at. */
+.nav-tag{font-size:10px;font-weight:700;padding:2px 8px;border-radius:var(--r-pill);
+  background:var(--surface-3);color:var(--text-2);transition:background var(--dur),color var(--dur)}
+.nav-item:hover .nav-tag{background:var(--primary-surface);color:var(--primary-text)}
+.nav-item.active .nav-tag{background:rgba(255,255,255,.22);color:#fff}
 .nav-foot{padding:12px 14px 16px;flex:0 0 auto;display:flex;align-items:center;gap:8px}
 .collapse-btn{width:30px;height:30px;border-radius:50%;border:1px solid var(--border);
   background:var(--surface);display:grid;place-items:center;color:var(--text-3);
@@ -306,60 +368,91 @@ body.nav-collapsed .collapse-btn svg{transform:rotate(180deg)}
 /* ---- Main column ---- */
 #main{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
 #topbar{height:var(--topbar-h);flex:0 0 var(--topbar-h);background:var(--surface);
-  border-bottom:1px solid var(--border);display:flex;align-items:center;gap:14px;
-  padding:0 22px;z-index:30}
-.crumbs{display:flex;align-items:center;gap:9px;font-size:14px;color:var(--text-3);white-space:nowrap}
-.crumbs b{color:var(--text);font-weight:600}
-.crumbs svg{width:14px;height:14px;opacity:.55}
-.icon-btn{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;
-  color:var(--text-2);transition:background var(--dur),color var(--dur);position:relative;flex:0 0 auto}
-.icon-btn svg{width:19px;height:19px}
+  border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;
+  padding:0 28px;z-index:30}
+/* Dark: both bars are frosted glass over the lit canvas. */
+html[data-theme=dark] #topbar{background:rgba(11,17,29,.62);border-bottom-color:rgba(255,255,255,.06);
+  -webkit-backdrop-filter:blur(24px) saturate(160%);backdrop-filter:blur(24px) saturate(160%)}
+html[data-theme=dark] #sidebar{background:rgba(13,19,32,.74);border-right-color:rgba(255,255,255,.06);
+  -webkit-backdrop-filter:blur(24px) saturate(160%);backdrop-filter:blur(24px) saturate(160%)}
+.crumbs{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:500;color:var(--text-3);white-space:nowrap}
+.crumbs b{color:var(--text);font-weight:700;font-size:12px;background:var(--surface-3);
+  padding:3px 10px;border-radius:7px}
+.crumbs svg{width:13px;height:13px;opacity:.5}
+.icon-btn{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
+  color:var(--text-3);transition:background var(--dur),color var(--dur),transform var(--dur);position:relative;flex:0 0 auto}
+.icon-btn svg{width:18px;height:18px}
 .icon-btn:hover{background:var(--surface-2);color:var(--text)}
 .icon-btn.on{background:var(--primary-surface);color:var(--primary-text)}
-.icon-btn.solid{background:var(--primary-solid);color:var(--primary-contrast);width:40px;height:40px;border-radius:11px;
-  box-shadow:0 3px 10px rgba(27,122,86,.3)}
-.icon-btn.solid:hover{background:var(--primary-hover);color:var(--primary-contrast)}
+.icon-btn.solid{background:var(--primary-solid);color:var(--primary-contrast);width:34px;height:34px;border-radius:10px;
+  box-shadow:0 1px 2px rgba(37,99,235,.3),0 6px 14px -4px rgba(37,99,235,.5)}
+.icon-btn.solid:hover{background:var(--primary-hover);color:var(--primary-contrast);transform:scale(1.05)}
 html[data-theme=dark] .icon-btn.solid{color:var(--primary-contrast)}
-.dot-badge{position:absolute;top:2px;right:2px;min-width:17px;height:17px;padding:0 4px;
-  border-radius:var(--r-pill);background:var(--danger);color:#fff;font-size:10px;font-weight:700;
+.dot-badge{position:absolute;top:-4px;right:-5px;min-width:18px;height:17px;padding:0 4px;
+  border-radius:var(--r-pill);background:#E11D48;color:#fff;font-size:9px;font-weight:800;
   display:grid;place-items:center;border:2px solid var(--surface)}
-.search-wrap{flex:1;max-width:440px;position:relative;margin-left:auto}
-.search-wrap input{width:100%;height:42px;border-radius:12px;border:1px solid var(--border);
-  background:var(--surface);padding:0 58px 0 42px;font-size:14px;
-  transition:border var(--dur),box-shadow var(--dur)}
+/* Centred between the crumbs and the actions: it may grow to 400px, and the
+   auto margins share whatever room is left, so it sits in the middle at any
+   width — and fills the bar when the crumbs go away at narrow widths. */
+.search-wrap{flex:1;max-width:400px;position:relative;margin:0 auto}
+.search-wrap input{width:100%;height:38px;border-radius:12px;border:1px solid var(--border);
+  background:var(--bg);padding:0 52px 0 38px;font-size:13px;
+  transition:border var(--dur),box-shadow var(--dur),background var(--dur)}
 .search-wrap input::placeholder{color:var(--text-3)}
-.search-wrap input:focus{border-color:var(--primary);outline:none;box-shadow:0 0 0 3px var(--primary-ring)}
-.search-wrap .s-ico{position:absolute;left:14px;top:50%;transform:translateY(-50%);
+.search-wrap input:focus{border-color:var(--primary-solid);background:var(--surface);outline:none;box-shadow:0 0 0 3px var(--primary-ring)}
+html[data-theme=dark] .search-wrap input{background:rgba(15,23,42,.5);border-color:rgba(255,255,255,.1)}
+html[data-theme=dark] .search-wrap input:focus{border-color:var(--brand-500);background:rgba(15,23,42,.7);box-shadow:0 0 16px rgba(59,130,246,.3)}
+.search-wrap .s-ico{position:absolute;left:13px;top:50%;transform:translateY(-50%);
   color:var(--text-3);pointer-events:none;display:grid}
-.search-wrap .s-ico svg{width:17px;height:17px}
+.search-wrap .s-ico svg{width:16px;height:16px}
 html[data-theme=dark] .dot-badge,html[data-theme=dark] .nav-badge:not(.muted){color:var(--text-inv)}
 html[data-theme=dark] .nav-badge.muted{color:var(--text)}
 .btn.primary .mut{color:var(--primary-contrast);opacity:.85}
 .kbd{font-family:var(--font-ui);font-size:11px;font-weight:600;color:var(--text-2);
   background:var(--surface-2);border:1px solid var(--border);border-radius:6px;
   padding:2px 6px;white-space:nowrap}
-.search-wrap .kbd{position:absolute;right:11px;top:50%;transform:translateY(-50%);pointer-events:none}
+.search-wrap .kbd{position:absolute;right:10px;top:50%;transform:translateY(-50%);pointer-events:none;
+  font-size:10px;color:var(--text-3);background:var(--surface);box-shadow:var(--sh-1)}
 .topbar-spacer{flex:1}
-.role-switch{display:flex;align-items:center;gap:10px;padding:4px 10px 4px 4px;border-radius:var(--r-pill);
+.tb-div{width:1px;height:24px;flex:0 0 1px;background:var(--border);margin:0 4px}
+.role-switch{display:flex;align-items:center;gap:8px;padding:3px 10px 3px 3px;border-radius:var(--r-pill);
   transition:background var(--dur)}
 .role-switch:hover{background:var(--surface-2)}
-.role-switch .who{text-align:left;line-height:1.15;font-size:14px;font-weight:600}
+.role-switch .who{text-align:left;line-height:1.15;font-size:13px;font-weight:700;transition:color var(--dur)}
+.role-switch:hover .who{color:var(--primary-text)}
 .role-switch svg{width:14px;height:14px;color:var(--text-3)}
-@media(max-width:1000px){.role-switch .who{display:none}}
+/* The signed-in face: a warm-to-cool ring and a green presence dot. */
+.me-ring{position:relative;display:inline-grid;padding:2px;border-radius:50%;flex:0 0 auto;
+  background:linear-gradient(45deg,#FBBF24,#4F46E5)}
+.me-ring .av{width:32px;height:32px;box-shadow:none}
+.me-online{position:absolute;right:-1px;bottom:-1px;width:11px;height:11px;border-radius:50%;
+  background:#10B981;border:2px solid var(--surface)}
+/* As the bar narrows, the search keeps its room: first the name beside the
+   photo goes (the photo still opens the profile), then the "Media Ops ›"
+   prefix, leaving the page pill. */
+@media(max-width:1180px){.role-switch .who{display:none}}
+@media(max-width:1100px){.crumbs > span,.crumbs > svg{display:none}}
 
 /* ---- Content ---- */
 #content{flex:1;overflow-y:auto;overflow-x:hidden;scroll-behavior:smooth}
-.page{max-width:var(--content-max);margin:0 auto;padding:30px 30px var(--s8)}
+.page{max-width:var(--content-max);margin:0 auto;padding:30px 32px var(--s8)}
 .page-head{display:flex;align-items:flex-start;gap:var(--s4);margin-bottom:26px;flex-wrap:wrap}
-.page-title{font-family:var(--font-display);font-size:40px;font-weight:500;letter-spacing:-.025em;line-height:1.08}
-.page-sub{color:var(--text-3);font-size:15px;margin-top:8px;max-width:78ch;line-height:1.55}
-@media(max-width:820px){.page-title{font-size:28px}.page-sub{font-size:13.5px}}
+.page-title{font-family:var(--font-display);font-size:30px;font-weight:800;letter-spacing:-.035em;line-height:1.15}
+.page-sub{color:var(--text-3);font-size:14.5px;font-weight:500;margin-top:6px;max-width:78ch;line-height:1.55}
+@media(max-width:820px){.page-title{font-size:24px}.page-sub{font-size:13.5px}}
 .page-actions{margin-left:auto;display:flex;gap:var(--s2);flex-wrap:wrap;align-items:center}
-.crumb{font-size:12px;color:var(--text-3);margin-bottom:5px;display:flex;gap:6px;align-items:center}
-.sec{margin-bottom:28px}
+.crumb{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--text-3);
+  margin-bottom:6px;display:flex;gap:6px;align-items:center}
+.sec{margin-bottom:32px}
 .sec-head{display:flex;align-items:center;gap:var(--s3);margin-bottom:var(--s3);flex-wrap:wrap}
-.sec-title{font-size:16.5px;font-weight:650;letter-spacing:-.015em}
+.sec-title{font-size:18px;font-weight:800;letter-spacing:-.025em;line-height:1.3}
+.sec-sub{font-size:12.5px;font-weight:500;color:var(--text-3);margin-top:2px}
 .sec-actions{margin-left:auto;display:flex;gap:var(--s2);align-items:center}
+/* A section heading with its controls on the right, bottoms aligned. */
+.sec-row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px 16px;margin-bottom:16px;flex-wrap:wrap}
+.sec-row-acts{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.sec-link{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;font-weight:700;color:var(--primary-text);white-space:nowrap}
+.sec-link svg{width:14px;height:14px}
 .rule-key{font-family:var(--font-mono);font-size:10px;font-weight:600;color:var(--primary-text);
   background:var(--brand-50);border:1px solid var(--brand-100);border-radius:5px;padding:1px 5px;
   letter-spacing:.02em;white-space:nowrap}
@@ -378,44 +471,54 @@ html[data-theme=dark] .rule-key{background:var(--brand-100);border-color:var(--b
 @media(max-width:720px){.g2,.g3,.g4,.g5{grid-template-columns:1fr}}
 
 /* ---- Card ---- */
-.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);
-  box-shadow:var(--sh-1);overflow:hidden}
-.card-head{display:flex;align-items:center;gap:var(--s2);padding:16px 20px 12px;min-height:52px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);
+  box-shadow:var(--sh-card);overflow:hidden}
+/* Dark: the glass rim. The surface itself stays opaque — a table's sticky
+   header and a phone's pinned column paint var(--surface) and must match it. */
+html[data-theme=dark] .card{border-color:rgba(255,255,255,.07)}
+.card-head{display:flex;align-items:center;gap:var(--s2);padding:18px 22px 12px;min-height:56px}
 .card-head.ruled{border-bottom:1px solid var(--border);padding-bottom:14px}
-.card-head h3{font-size:15.5px;font-weight:650;letter-spacing:-.01em}
-.card-head .sub{font-size:12.5px;color:var(--text-3);font-weight:400;display:block;margin-top:2px}
+.card-head h3{font-size:15.5px;font-weight:800;letter-spacing:-.02em}
+.card-head .sub{font-size:12px;color:var(--text-3);font-weight:500;letter-spacing:0;display:block;margin-top:2px}
 .card-head .ca{margin-left:auto;display:flex;gap:6px;align-items:center}
-.card-body{padding:0 20px 20px}
-.card-body.pad{padding:20px}
+.card-body{padding:0 22px 22px}
+.card-body.pad{padding:22px}
 .card-body.tight{padding:var(--s3)}
 .card-body.flush{padding:0}
-.card-foot{padding:12px 20px;border-top:1px solid var(--border);background:var(--surface-2);
-  font-size:12.5px;color:var(--text-2);display:flex;align-items:center;gap:var(--s2)}
-.card-link{display:flex;align-items:center;gap:6px;padding:14px 20px;border-top:1px solid var(--border);
-  font-size:13.5px;font-weight:600;color:var(--primary-text);width:100%;transition:background var(--dur)}
+.card-foot{padding:12px 22px;border-top:1px solid var(--border-soft);background:var(--surface-2);
+  font-size:12px;color:var(--text-2);display:flex;align-items:center;gap:var(--s2)}
+.card-link{display:flex;align-items:center;gap:6px;padding:14px 22px;border-top:1px solid var(--border-soft);
+  font-size:13px;font-weight:700;color:var(--primary-text);width:100%;transition:background var(--dur)}
 .card-link:hover{background:var(--surface-2);text-decoration:none}
 .card-link svg{width:15px;height:15px;margin-left:auto}
 
-/* Stat card (value, delta, sparkline) */
+/* Stat card (value, delta, sparkline) — compact: an uppercase label, a heavy
+   number, and an icon tile whose hairline is tinted by its own colour. */
 .stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);
-  padding:20px;box-shadow:var(--sh-1);display:flex;gap:16px;position:relative;
+  padding:16px;box-shadow:var(--sh-card);display:flex;gap:14px;position:relative;
   transition:box-shadow var(--dur),transform var(--dur),border-color var(--dur);text-align:left;width:100%}
-button.stat:hover{box-shadow:var(--sh-2);transform:translateY(-2px);border-color:var(--border-strong)}
-.stat-ico{width:46px;height:46px;flex:0 0 46px;border-radius:13px;display:grid;place-items:center;
-  background:var(--primary-surface);color:var(--primary-text)}
-.stat-ico svg{width:22px;height:22px}
+button.stat:hover{box-shadow:var(--sh-float);transform:translateY(-2px);border-color:var(--primary-border)}
+html[data-theme=dark] .stat{border-color:rgba(255,255,255,.07);
+  background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,0) 55%),var(--surface)}
+html[data-theme=dark] button.stat:hover{border-color:rgba(96,165,250,.35)}
+.stat-ico{width:40px;height:40px;flex:0 0 40px;border-radius:12px;display:grid;place-items:center;
+  background:var(--primary-surface);color:var(--primary-text);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,currentColor 20%,transparent)}
+.stat-ico svg{width:20px;height:20px}
 .stat-ico.red{background:var(--tint-red);color:var(--danger)}
 .stat-ico.blue{background:var(--tint-blue);color:var(--info)}
 .stat-ico.amber{background:var(--tint-amber);color:var(--warn)}
 .stat-ico.violet{background:var(--tint-violet);color:var(--cat-2)}
-.stat-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
-.stat-label{font-size:13.5px;color:var(--text-2);font-weight:500;letter-spacing:0;text-transform:none}
-.stat-val{font-size:34px;font-weight:650;letter-spacing:-.035em;line-height:1.12;font-family:var(--font-ui)}
-.stat-val small{font-size:17px;color:var(--text-3);font-weight:500;letter-spacing:0}
-.stat-meta{font-size:12.5px;color:var(--text-3);display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:5px}
-.delta-pill{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 9px;border-radius:8px;
-  font-size:12.5px;font-weight:650;background:var(--tint-green);color:var(--success)}
-.delta-pill svg{width:13px;height:13px}
+.stat-ico.sky{background:var(--tint-teal);color:var(--cat-5)}
+.stat-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.stat-label{font-size:11px;color:var(--text-3);font-weight:700;letter-spacing:.06em;text-transform:uppercase;line-height:1.35}
+.stat-val{font-size:26px;font-weight:800;letter-spacing:-.03em;line-height:1.15;font-family:var(--font-ui)}
+.stat-val small{font-size:14px;color:var(--text-3);font-weight:700;letter-spacing:0;margin-left:2px}
+.stat-meta{font-size:11.5px;color:var(--text-3);display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-top:4px}
+.delta-pill{display:inline-flex;align-items:center;gap:3px;height:20px;padding:0 8px;border-radius:var(--r-pill);
+  font-size:10.5px;font-weight:700;background:var(--tint-green);color:var(--success);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,currentColor 22%,transparent)}
+.delta-pill svg{width:11px;height:11px}
 .delta-pill.dn{background:var(--tint-red);color:var(--danger)}
 .delta-pill.flat{background:var(--surface-2);color:var(--text-3)}
 .stat-bullets{display:flex;flex-direction:column;gap:5px;margin-top:7px}
@@ -429,22 +532,34 @@ html[data-theme=dark] .stat.alert{border-color:#4A2320} html[data-theme=dark] .s
 /* ---- Buttons ---- */
 .btn svg{width:16px;height:16px}
 .btn.xs svg{width:13px;height:13px}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;height:38px;padding:0 15px;
-  border-radius:10px;font-size:13.5px;font-weight:600;border:1px solid var(--border);
-  background:var(--surface);color:var(--text);transition:all var(--dur) var(--ease);white-space:nowrap}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;height:38px;padding:0 16px;
+  border-radius:12px;font-size:13px;font-weight:700;border:1px solid var(--border);
+  background:var(--surface);color:var(--text);transition:all var(--dur) var(--ease);white-space:nowrap;
+  box-shadow:var(--sh-1)}
 .btn:hover{background:var(--surface-2);border-color:var(--border-strong)}
 .btn:active{transform:translateY(1px)}
 .btn[disabled],.btn.disabled{opacity:.45;cursor:not-allowed;pointer-events:none}
 .btn.primary{background:var(--primary-solid);border-color:var(--primary-solid);color:var(--primary-contrast);
-  box-shadow:0 2px 8px rgba(27,122,86,.28)}
+  box-shadow:0 1px 2px rgba(37,99,235,.2),0 6px 16px -6px rgba(37,99,235,.55)}
 .btn.primary:hover{background:var(--primary-hover);border-color:var(--primary-hover)}
-html[data-theme=dark] .btn.primary{color:var(--primary-contrast)}
+/* Dark: the liquid primary — translucent cobalt with a lit top edge. */
+html[data-theme=dark] .btn.primary{color:var(--primary-contrast);
+  background:linear-gradient(135deg,rgba(59,130,246,.88),rgba(37,99,235,.96));border-color:rgba(255,255,255,.16);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 8px 20px -8px rgba(59,130,246,.6)}
+html[data-theme=dark] .btn.primary:hover{background:linear-gradient(135deg,rgba(96,165,250,.92),rgba(37,99,235,1))}
+/* Dark: the secondary glass button, brightening to a cyan perimeter on hover. */
+html[data-theme=dark] .btn:not(:is(.primary,.danger,.ghost)){background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.12)}
+html[data-theme=dark] .btn:not(:is(.primary,.danger,.ghost)):hover{background:rgba(255,255,255,.08);border-color:rgba(76,215,246,.35)}
+/* The brand-outlined secondary ("Log Task") — a step quieter than primary. */
+.btn.brand-outline{border-color:var(--primary-border);color:var(--primary-text)}
+.btn.brand-outline:hover{background:var(--primary-surface);border-color:var(--primary-muted)}
+html[data-theme=dark] .btn.brand-outline{border-color:rgba(96,165,250,.4)}
 .btn.danger{background:var(--danger);border-color:var(--danger);color:#fff}
-.btn.ghost{background:transparent;border-color:transparent;color:var(--text-2)}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--text-2);box-shadow:none}
 .btn.ghost:hover{background:var(--surface-2);color:var(--text)}
-.btn.sm{height:32px;padding:0 12px;font-size:12.5px;border-radius:9px}
-.btn.xs{height:24px;padding:0 8px;font-size:11.5px;border-radius:7px;gap:4px}
-.btn.lg{height:42px;padding:0 20px;font-size:14.5px}
+.btn.sm{height:32px;padding:0 12px;font-size:12px;border-radius:10px}
+.btn.xs{height:24px;padding:0 8px;font-size:11.5px;border-radius:8px;gap:4px;box-shadow:none}
+.btn.lg{height:44px;padding:0 20px;font-size:14px;border-radius:14px}
 .btn.block{width:100%}
 .btn-group{display:inline-flex;border:1px solid var(--border);border-radius:var(--r);overflow:hidden;background:var(--surface)}
 .btn-group button{height:30px;padding:0 11px;font-size:12.5px;font-weight:600;color:var(--text-2);
@@ -455,8 +570,8 @@ html[data-theme=dark] .btn.primary{color:var(--primary-contrast)}
 html[data-theme=dark] .btn-group button.on{background:var(--brand-100)}
 
 /* ---- Chips / badges / pills ---- */
-.chip{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:8px;
-  font-size:12px;font-weight:600;background:var(--surface-2);color:var(--text-2);
+.chip{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:var(--r-pill);
+  font-size:11.5px;font-weight:700;background:var(--surface-2);color:var(--text-2);
   border:1px solid var(--border);white-space:nowrap;max-width:100%}
 .chip svg{width:13px;height:13px}
 .chip .av{box-shadow:none}
@@ -470,11 +585,51 @@ html[data-theme=dark] .btn-group button.on{background:var(--brand-100)}
    Horizontal scroller: ~4–5 cards on desktop, 2–3 on tablet, one-per-swipe on
    phones. Same scroll-snap pattern as the Kanban board. */
 .ts-h{font-size:15px;font-weight:700;letter-spacing:-.01em}
-.ts-strip{display:flex;gap:14px;overflow-x:auto;padding:2px 2px 14px;scroll-snap-type:x proximity;
+.ts-strip{display:flex;gap:16px;overflow-x:auto;padding:2px 2px 14px;scroll-snap-type:x proximity;
   align-items:stretch;overscroll-behavior-x:contain}
 .ts-card{flex:0 0 300px;width:300px;scroll-snap-align:start;background:var(--surface);
-  border:1px solid var(--border);border-radius:var(--r-lg);padding:14px;
-  display:flex;flex-direction:column;gap:11px;box-shadow:var(--sh-1)}
+  border:1px solid var(--border);border-radius:var(--r-card);padding:16px;
+  display:flex;flex-direction:column;gap:12px;box-shadow:var(--sh-card)}
+html[data-theme=dark] .ts-card{border-color:rgba(255,255,255,.07);
+  background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,0) 40%),var(--surface)}
+/* The Admin's view: one large card per Team Lead, laid out as a grid rather
+   than a scroller — there are a handful of leads, and each card is a panel. */
+.ts-leads{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(380px,100%),1fr));gap:24px;align-items:stretch}
+/* One lead fills half the row, not all of it — a single card a page wide
+   reads as a banner. */
+.ts-leads:has(> .ts-card:only-child){grid-template-columns:minmax(0,640px)}
+.ts-card.ts-lead{flex:none;width:auto;border-radius:var(--r-xl);padding:22px;gap:16px}
+.ts-lead .ts-who{gap:12px}
+.ts-lead .av.lg{width:48px;height:48px}
+.ts-lead .ts-name b{font-size:16px;font-weight:800;letter-spacing:-.015em}
+.ts-lead .ts-name span{font-size:12px;font-weight:600}
+.av.sq{border-radius:16px}
+.av.sm.sq,.av.xs.sq{border-radius:8px}
+.ts-mini{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.ts-lead .ts-stat{padding:10px 6px;border-radius:12px}
+.ts-lead .ts-stat .ts-v{font-size:16px;font-weight:800}
+.ts-lead .ts-grid{gap:8px}
+.ts-lead .ts-grid .ts-stat{padding:12px 8px}
+.ts-lead .ts-grid .ts-v{font-size:18px}
+.ts-lead .ts-grid .ts-l{font-size:10px;letter-spacing:.03em}
+.ts-lead .ts-foot{padding-top:14px;border-top:1px solid var(--border-soft);justify-content:space-between}
+.ts-lead .ts-rep{flex:0 1 auto;display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px}
+.ts-rep svg,.ts-open svg{width:13px;height:13px}
+/* "17 open" / "All clear" — the one number an Admin triages a lead on. */
+.ts-open{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:var(--r-pill);
+  font-size:11.5px;font-weight:700;white-space:nowrap;background:var(--danger-bg);color:var(--danger);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,currentColor 22%,transparent)}
+.ts-open i{width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 6px}
+.ts-open.ok{background:var(--success-bg);color:var(--success)}
+.ts-open.warn{background:var(--warn-bg);color:var(--warn)}
+/* Section-level pills beside "Today's team status". */
+.ts-att{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 13px;border-radius:var(--r-pill);
+  font-size:12px;font-weight:700;background:var(--warn-bg);color:var(--warn);white-space:nowrap;
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,currentColor 24%,transparent)}
+.ts-att i{width:8px;height:8px;border-radius:50%;background:currentColor;flex:0 0 8px}
+.ts-att.ok{background:var(--success-bg);color:var(--success)}
+.ts-cnt{display:inline-flex;align-items:center;height:30px;padding:0 13px;border-radius:var(--r-pill);
+  font-size:12px;font-weight:700;background:var(--surface-3);color:var(--text-2);white-space:nowrap}
 @media(max-width:1180px){.ts-card{flex-basis:284px;width:284px}}
 @media(max-width:640px){.ts-strip{scroll-snap-type:x mandatory}.ts-card{flex-basis:86%;width:86%}}
 .ts-top{display:flex;align-items:flex-start;gap:8px}
@@ -485,13 +640,16 @@ html[data-theme=dark] .btn-group button.on{background:var(--brand-100)}
 .ts-name span{font-size:11px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ts-row{display:flex;align-items:center;gap:12px}
 .ts-assign{display:flex;gap:6px;flex:1;min-width:0}
-.ts-stat{flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;
-  padding:6px 4px;display:flex;flex-direction:column;align-items:center;gap:1px;transition:background .12s}
+.ts-stat{flex:1;min-width:0;background:var(--surface-2);border:1px solid var(--border-soft);border-radius:10px;
+  padding:7px 4px;display:flex;flex-direction:column;align-items:center;gap:2px;transition:background .12s,border-color .12s}
 .ts-stat:hover{background:var(--primary-surface);border-color:var(--primary-border)}
-.ts-stat .ts-v{font-size:14.5px;font-weight:700;line-height:1.1}
-.ts-stat .ts-l{font-size:9px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-3);text-align:center}
-.ts-stat.warn .ts-v{color:var(--warn)}
-.ts-stat.bad  .ts-v{color:var(--danger)}
+.ts-stat .ts-v{font-size:15px;font-weight:800;line-height:1.1;letter-spacing:-.01em}
+.ts-stat .ts-l{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3);text-align:center}
+.ts-stat.warn{background:color-mix(in srgb,var(--warn-bg) 75%,var(--surface));border-color:color-mix(in srgb,var(--warn) 16%,transparent)}
+.ts-stat.bad{background:color-mix(in srgb,var(--danger-bg) 75%,var(--surface));border-color:color-mix(in srgb,var(--danger) 16%,transparent)}
+.ts-stat.warn .ts-v,.ts-stat.warn .ts-l{color:var(--warn)}
+.ts-stat.bad  .ts-v,.ts-stat.bad .ts-l{color:var(--danger)}
+html[data-theme=dark] .ts-stat:not(.warn):not(.bad){background:rgba(255,255,255,.03);border-color:rgba(255,255,255,.06)}
 .ts-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .ts-k{font-size:9px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3);flex:0 0 auto}
 .ts-work{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:7px 9px;border-radius:8px;
@@ -561,8 +719,11 @@ html[data-theme=dark] .btn-group button.on{background:var(--brand-100)}
 .mg-item input:disabled+.mg-ico,.mg-item input:disabled~span{opacity:.5}
 .mg-ico{display:inline-flex;width:15px;height:15px;color:var(--text-3);flex:0 0 auto}
 .mg-ico svg{width:15px;height:15px}
-.status{display:inline-flex;align-items:center;gap:5px;height:25px;padding:0 9px;border-radius:7px;
-  font-size:12px;font-weight:650;white-space:nowrap;border:1px solid transparent}
+.status{display:inline-flex;align-items:center;gap:5px;height:24px;padding:0 10px;border-radius:var(--r-pill);
+  font-size:11.5px;font-weight:700;white-space:nowrap;border:1px solid transparent}
+/* Every tinted pill gets a hairline in its own colour, so it reads as a pill
+   on white and on glass alike. */
+.status:is(.st-info,.st-success,.st-warn,.st-danger,.st-brand){border-color:color-mix(in srgb,currentColor 22%,transparent)}
 .status .si{font-size:10px;line-height:1;display:inline-flex;align-items:center}
 /* The pill's icon is sized to the cap height of its label, so the row's
    vertical rhythm is the same as it was with a glyph. */
@@ -653,6 +814,7 @@ table.matrix td.c{text-align:center;font-weight:700}
 .bar>i{display:block;height:100%;border-radius:var(--r-pill);background:var(--primary);transition:width 400ms var(--ease)}
 .bar.thin{height:4px}
 .bar>i.warn{background:var(--warn)} .bar>i.danger{background:var(--danger)} .bar>i.info{background:var(--info)}
+.bar>i.sky{background:var(--fill-sky)}
 .bar-seg{display:flex;height:8px;border-radius:var(--r-pill);overflow:hidden;background:var(--surface-3)}
 .bar-seg>i{display:block;height:100%}
 /* Circular percentage — THE shared ring. Every round progress indicator in
@@ -679,7 +841,7 @@ table.matrix td.c{text-align:center;font-weight:700}
    an empty ring must look empty, so hide the arc outright at 0. */
 .nring.is-zero .nring-arc{opacity:0}
 .nring-txt{position:relative;z-index:1;text-align:center;line-height:1.02;padding:0 6px}
-.nring-txt b{display:block;font-family:var(--font-display);font-weight:650;color:var(--text);
+.nring-txt b{display:block;font-family:var(--font-display);font-weight:800;color:var(--text);
   letter-spacing:-.02em;font-size:calc(var(--nring-size)*.27)}
 .nring-txt b i{font-style:normal;font-weight:600;color:var(--text-3);
   font-size:.52em;margin-left:1px;vertical-align:.34em}
@@ -733,7 +895,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
 .dr-head{padding:var(--s4);border-bottom:1px solid var(--border);display:flex;gap:var(--s3);
   align-items:flex-start;flex:0 0 auto}
 .dr-head .dh-txt{flex:1;min-width:0}
-.dr-head h2{font-size:16.5px;font-weight:650;letter-spacing:-.01em;line-height:1.25}
+.dr-head h2{font-size:16.5px;font-weight:800;letter-spacing:-.02em;line-height:1.25}
 .dr-head .dh-meta{font-size:11.5px;color:var(--text-3);margin-top:4px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .dr-body{flex:1;overflow-y:auto;padding:var(--s4)}
 .dr-foot{padding:var(--s3) var(--s4);border-top:1px solid var(--border);background:var(--surface-2);
@@ -744,7 +906,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
 
 /* ---- Tabs ---- */
 .tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:22px;overflow-x:auto}
-.tabs button{padding:11px 15px;font-size:14px;font-weight:600;color:var(--text-3);border-bottom:2px solid transparent;
+.tabs button{padding:11px 15px;font-size:13.5px;font-weight:700;color:var(--text-3);border-bottom:2px solid transparent;
   margin-bottom:-1px;white-space:nowrap;transition:color var(--dur),border var(--dur)}
 .tabs button:hover{color:var(--text)}
 .tabs button.on{color:var(--primary-text);border-bottom-color:var(--primary)}
@@ -762,7 +924,11 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
 @keyframes pop{from{opacity:0;transform:scale(.97) translateY(8px)}to{opacity:1;transform:none}}
 .mo-head{padding:var(--s4) var(--s5) var(--s3);border-bottom:1px solid var(--border);display:flex;
   align-items:flex-start;gap:var(--s3)}
-.mo-head h2{font-size:17px;font-weight:650;font-family:var(--font-display)}
+.mo-head h2{font-size:17px;font-weight:800;letter-spacing:-.02em;font-family:var(--font-display)}
+/* Dark: overlays keep their opaque surface (forms and tables live in them)
+   and take the glass rim and a faint cyan halo instead. */
+html[data-theme=dark] :is(.modal,.pal,.menu){border-color:rgba(255,255,255,.1);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 24px 64px -12px rgba(0,0,0,.72),0 0 32px 2px rgba(6,182,212,.10)}
 .mo-head p{font-size:12.5px;color:var(--text-2);margin:4px 0 0}
 .mo-body{padding:var(--s5);overflow-y:auto;flex:1}
 .mo-foot{padding:var(--s3) var(--s5);border-top:1px solid var(--border);background:var(--surface-2);
@@ -1009,7 +1175,7 @@ html[data-theme=dark] .cal-ev{color:var(--text-inv)}
   color:#fff;display:none;flex-direction:column;align-items:center;justify-content:center;padding:var(--s5);text-align:center}
 #kiosk.on{display:flex}
 .kiosk-inner{width:min(560px,100%)}
-.kiosk-h{font-family:var(--font-display);font-size:30px;font-weight:600;margin-bottom:10px}
+.kiosk-h{font-family:var(--font-display);font-size:30px;font-weight:800;letter-spacing:-.03em;margin-bottom:10px}
 .kiosk-p{color:var(--text-3);font-size:15px;margin-bottom:var(--s6)}
 .kiosk-btn{display:flex;align-items:center;justify-content:center;gap:12px;width:100%;height:88px;
   border-radius:var(--r-xl);font-size:21px;font-weight:700;background:rgba(255,255,255,.08);
@@ -1162,9 +1328,266 @@ html[data-theme=dark] .opp-pts{color:var(--brand-400)}
 .diff .dl{padding:3px 9px;display:flex;gap:9px}
 .diff .dl.a{background:var(--danger-bg);color:var(--danger)}
 .diff .dl.b{background:var(--success-bg);color:var(--success)}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE GREETING HERO — Home, My Day and the coordinator's two screens.
+   The time of day in heavy capitals, the person's own first name in a
+   hand-written face, and above them a live strip that is never empty: the
+   crew shift, a ticking clock, the date and the campus. Light comes from two
+   soft glows in the far corner; in dark mode the panel is frosted glass with
+   a luminous rim. Every glow is a background, never a positioned element, so
+   nothing here can poke past the edge of a phone.
+   ══════════════════════════════════════════════════════════════════════════ */
+.hero{position:relative;overflow:hidden;isolation:isolate;border-radius:var(--r-xl);padding:30px 32px;margin-bottom:28px;
+  border:1px solid color-mix(in srgb,var(--border) 75%,transparent);
+  background:
+    radial-gradient(400px 300px at 97% -20%,rgba(59,130,246,.14),transparent 70%),
+    radial-gradient(320px 220px at 72% 125%,rgba(99,102,241,.10),transparent 70%),
+    linear-gradient(115deg,var(--surface) 45%,color-mix(in srgb,var(--brand-50) 70%,var(--surface)) 100%);
+  box-shadow:var(--sh-float),var(--sh-1)}
+html[data-theme=dark] .hero{border:0;
+  background:
+    radial-gradient(420px 320px at 97% -22%,rgba(59,130,246,.30),transparent 70%),
+    radial-gradient(360px 240px at 70% 128%,rgba(6,182,212,.16),transparent 70%),
+    linear-gradient(135deg,rgba(30,41,69,.82),rgba(17,24,39,.66));
+  box-shadow:inset 0 1px 1px rgba(255,255,255,.14),0 16px 48px -8px rgba(0,0,0,.55),0 0 24px -2px rgba(59,130,246,.15)}
+/* The luminous edge: a 1px gradient ring, masked to the border band only. */
+html[data-theme=dark] .hero::before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;pointer-events:none;
+  background:linear-gradient(135deg,rgba(255,255,255,.28),rgba(59,130,246,.35) 45%,rgba(255,255,255,.05));
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;
+  mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);mask-composite:exclude}
+.hero-in{display:flex;align-items:center;justify-content:space-between;gap:24px 32px;flex-wrap:wrap}
+.hero-l{flex:1 1 560px;min-width:0}
+.hero-live{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px;margin-bottom:14px}
+.hero-meta{display:inline-flex;align-items:center;flex-wrap:wrap;gap:4px 8px;font-size:12.5px;font-weight:500;color:var(--text-3)}
+.hero-clock{display:inline-flex;align-items:center;gap:5px;font-weight:700;color:var(--text-2);font-variant-numeric:tabular-nums}
+.hero-clock svg{width:14px;height:14px;color:var(--primary-text)}
+/* The time is painted from an attribute rather than written as text. It is
+   still read out and still ticks, but it is not part of the page's text, so
+   two renders a second apart are the same page — a ticking digit inside the
+   content would make every "did this page change?" comparison time-dependent. */
+[data-clock]::after{content:attr(data-time)}
+.hero-sep{color:var(--border-strong);font-weight:700}
+.hero-switch{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 10px;border-radius:8px;
+  font-size:12px;font-weight:600;white-space:nowrap;color:var(--primary-text);
+  background:color-mix(in srgb,var(--primary-surface) 85%,transparent);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary-border) 70%,transparent)}
+a.hero-switch:hover{text-decoration:none;color:var(--primary-hover);background:var(--primary-surface-2)}
+.hero-switch svg{width:13px;height:13px}
+.hero-greet{display:flex;align-items:baseline;flex-wrap:wrap;column-gap:16px;row-gap:2px;margin:0;letter-spacing:0}
+.hg-hi{font-family:var(--font-display);font-size:40px;font-weight:800;letter-spacing:-.035em;line-height:1.08;
+  text-transform:uppercase;color:var(--text)}
+.hg-name{font-family:var(--font-script);font-size:64px;font-weight:700;line-height:.86;color:var(--primary-solid);
+  display:inline-block;transform:rotate(-2deg);transform-origin:0 100%;padding-right:.08em;
+  text-shadow:0 1px 1px rgba(15,23,42,.06)}
+html[data-theme=dark] .hg-name{color:var(--brand-400);text-shadow:0 0 28px rgba(96,165,250,.45)}
+.hero-sub{font-size:15.5px;line-height:1.6;font-weight:500;color:var(--text-2);margin:12px 0 0;max-width:68ch}
+.hero-sub b{color:var(--text);font-weight:700}
+.hero-r{display:flex;align-items:center;gap:20px;flex:0 1 auto;min-width:0}
+.hero-acts{display:flex;flex-wrap:wrap;align-items:center;gap:12px;max-width:400px}
+.hero-acts .btn{height:40px;border-radius:12px}
+@media(max-width:1100px){.hg-hi{font-size:34px}.hg-name{font-size:56px}}
+@media(max-width:820px){.hero{padding:20px 18px;border-radius:20px}.hg-hi{font-size:26px}.hg-name{font-size:46px}
+  .hero-sub{font-size:14px}.hero-acts{max-width:none}}
+
+/* The live pill. A pulsing dot means a shift is on; off-hours, Sundays and
+   holidays get a still dot and a quieter tone. */
+.live-pill{display:inline-flex;align-items:center;gap:8px;height:28px;padding:0 12px 0 11px;border-radius:var(--r-pill);
+  font-size:12px;font-weight:700;letter-spacing:.01em;white-space:nowrap;
+  background:rgba(16,185,129,.10);color:#047857;box-shadow:inset 0 0 0 1px rgba(16,185,129,.24)}
+.live-dot{position:relative;width:8px;height:8px;border-radius:50%;background:#10B981;flex:0 0 8px}
+.live-pill.on .live-dot::after{content:"";position:absolute;inset:0;border-radius:50%;background:inherit;
+  animation:livePing 1.8s cubic-bezier(0,0,.2,1) infinite}
+@keyframes livePing{0%{transform:scale(1);opacity:.55}75%,100%{transform:scale(2.6);opacity:0}}
+.live-pill.neutral{background:var(--surface-3);color:var(--text-2);box-shadow:inset 0 0 0 1px var(--border)}
+.live-pill.neutral .live-dot{background:var(--text-3)}
+.live-pill.warn{background:var(--warn-bg);color:var(--warn);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--warn) 24%,transparent)}
+.live-pill.warn .live-dot{background:var(--warn)}
+html[data-theme=dark] .live-pill.ok{background:rgba(16,185,129,.12);color:#6EE7B7;box-shadow:inset 0 0 0 1px rgba(52,211,153,.3)}
+html[data-theme=dark] .live-pill.on .live-dot{box-shadow:0 0 10px rgba(16,185,129,.9)}
+.live-pill.bad{background:var(--danger-bg);color:var(--danger);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--danger) 24%,transparent)}
+.live-pill.bad .live-dot{background:var(--danger)}
+.live-pill.info{background:var(--info-bg);color:var(--info);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--info) 22%,transparent)}
+.live-pill.info .live-dot{background:var(--info)}
+
+/* ── The title variant: a page's name in heavy capitals, a thin dash, and a
+      hand-written line after it — "MY DAY — Let's create something great
+      today". Same voice as the greeting, used wherever a page has no person
+      to greet. */
+/* The dash and the line after it travel together: if the line does not fit
+   beside the name it wraps as a whole, so a dash never dangles at the end of
+   the capitals. */
+.hg-tagline{display:inline-flex;align-items:center;gap:14px;min-width:0;max-width:100%}
+/* The stacked title: the name, and the hand-written line on its own row. */
+.hg-stack{flex-direction:column;align-items:flex-start;row-gap:4px}
+/* Wrapped onto its own row (heroTitleFit measures it), the line needs no dash. */
+.hero-greet.is-wrapped .hg-dash{display:none}
+.hero-greet.is-wrapped{row-gap:4px}
+.hg-stack .hg-tag{padding-left:2px;max-width:100%}
+.hg-dash{font-family:var(--font-display);font-size:32px;font-weight:300;line-height:1;color:var(--border-strong);flex:0 0 auto}
+.hg-tag{font-family:var(--font-script);font-size:46px;font-weight:700;line-height:.95;color:var(--primary-solid);
+  display:inline-block;transform:rotate(-1.5deg);transform-origin:0 100%;padding-right:.08em;
+  text-shadow:0 1px 1px rgba(15,23,42,.06)}
+html[data-theme=dark] .hg-tag{color:var(--brand-400);text-shadow:0 0 24px rgba(96,165,250,.4)}
+
+/* ── My Day: the ring sits between the words and the actions, a size up, and
+      the actions stack — where the report stands, then what you log, then
+      what you send. The words take only the room they need, so the auto
+      margins put the ring in the middle of what is left. */
+.hero-mid{flex:0 0 auto;margin:0 auto;display:grid;place-items:center}
+.hero.has-mid .hero-l{flex:0 1 640px}
+.nring--lg{--nring-size:136px}
+.hero-acts.as-stack{flex-direction:column;align-items:stretch;flex-wrap:nowrap;gap:10px;width:240px;max-width:none}
+.as-stack .btn{width:100%;justify-content:flex-start;height:42px}
+.as-hint{margin-left:auto;font-size:11px;font-weight:600;opacity:.72}
+.as-row{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:42px;padding:6px 6px 6px 14px;
+  border-radius:12px;background:color-mix(in srgb,var(--surface) 75%,transparent);border:1px solid var(--border)}
+.as-k{font-size:10.5px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;color:var(--text-3)}
+html[data-theme=dark] .as-row{background:rgba(255,255,255,.035);border-color:rgba(255,255,255,.1)}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THE PAGE HERO — the summary card every module opens with. Where you are
+   (the module and its group), what is live there this minute, the page's
+   name with its hand-written line, one sentence that sums the page up, the
+   page's own actions, and along the bottom the page's count tiles. Those
+   tiles are the page's own .stat cards, moved inside rather than repeated, so
+   every filter they were and every number they showed is unchanged.
+   ══════════════════════════════════════════════════════════════════════════ */
+.hero.ph{padding:24px 28px 22px;margin-bottom:24px}
+.ph .hero-live{margin-bottom:10px}
+.ph-mod{display:inline-flex;align-items:center;gap:8px;height:28px;padding:0 12px 0 4px;border-radius:var(--r-pill);
+  background:color-mix(in srgb,var(--surface) 72%,transparent);box-shadow:inset 0 0 0 1px var(--border);
+  font-size:10.5px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--text-2);white-space:nowrap}
+.ph-ico{width:22px;height:22px;flex:0 0 22px;border-radius:50%;display:grid;place-items:center;
+  background:linear-gradient(45deg,var(--brand-700),var(--brand-500));color:#fff;box-shadow:0 2px 6px -1px rgba(37,99,235,.5)}
+.ph-ico svg{width:12px;height:12px;stroke-width:2.2}
+html[data-theme=dark] .ph-mod{background:rgba(255,255,255,.04);box-shadow:inset 0 0 0 1px rgba(255,255,255,.1)}
+.ph .hg-hi{font-size:34px}
+.ph .hg-dash{font-size:28px}
+.ph .hg-tag{font-size:42px}
+.ph .hero-sub{font-size:14.5px;margin-top:8px;max-width:84ch}
+/* A page's controls get a little more room than Home's, sit right-aligned
+   when they wrap, and a segmented control stands as tall as a button. */
+.ph .hero-acts{max-width:520px;justify-content:flex-end}
+.hero-acts .btn-group{border-radius:12px;box-shadow:var(--sh-1)}
+.hero-acts .btn-group button{height:38px;padding:0 13px;font-size:12.5px}
+.ph-kpis{display:grid;grid-template-columns:repeat(var(--kc,4),minmax(0,1fr));gap:10px;margin-top:20px;padding-top:18px;
+  border-top:1px solid color-mix(in srgb,var(--border) 70%,transparent)}
+.ph-kpis .stat{padding:12px 14px;gap:10px;border-radius:14px;box-shadow:none;
+  background:color-mix(in srgb,var(--surface) 80%,transparent);border-color:color-mix(in srgb,var(--border) 85%,transparent)}
+.ph-kpis button.stat:hover{transform:translateY(-1px)}
+/* A tile that wants somebody reads as one: tinted, its figure in the tone. */
+.ph-kpis .stat.alert{border-color:color-mix(in srgb,var(--danger) 32%,transparent);background:color-mix(in srgb,var(--danger-bg) 60%,transparent)}
+.ph-kpis .stat.alert .stat-val{color:var(--danger)}
+.ph-kpis .stat.warn{border-color:color-mix(in srgb,var(--warn) 32%,transparent);background:color-mix(in srgb,var(--warn-bg) 60%,transparent)}
+.ph-kpis .stat.warn .stat-val{color:var(--warn)}
+/* A tile that is also a filter shows when it is the one in force. */
+.ph-kpis .stat.sel{border-color:var(--primary-border);background:var(--primary-surface);box-shadow:0 0 0 3px var(--primary-ring)}
+html[data-theme=dark] .ph-kpis .stat.sel{border-color:rgba(96,165,250,.5);background:rgba(59,130,246,.14)}
+.ph-kpis .stat-label{font-size:10.5px}
+.ph-kpis .stat-val{font-size:22px;white-space:nowrap}
+.ph-kpis .stat-val small{font-size:12px}
+.ph-kpis .stat-val.txt{font-size:16px;line-height:1.35;padding-top:3px;overflow:hidden;text-overflow:ellipsis}
+.ph-kpis .stat-meta{font-size:11px;margin-top:2px}
+html[data-theme=dark] .ph-kpis .stat{background:rgba(255,255,255,.035);border-color:rgba(255,255,255,.08)}
+@media(max-width:1180px){.ph-kpis{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}}
+@media(max-width:1100px){.hero.has-mid .hero-l{flex:1 1 100%}.hero-mid{margin:0}}
+@media(max-width:820px){.hero.ph{padding:18px 18px 16px}.ph .hg-hi{font-size:24px}.ph .hg-tag,.hg-tag{font-size:34px}
+  .hg-dash{font-size:22px}}
+
+/* What is happening in the field right now, beside the shift. */
+.live-note{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:var(--r-pill);
+  font-size:12px;font-weight:700;white-space:nowrap;background:var(--info-bg);color:var(--info);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,currentColor 20%,transparent)}
+.live-note svg{width:13px;height:13px}
+
+/* ── Home tiles. Label and caption on the left, the number and its pill on the
+      right, a ruled footer with the breakdown. Still .stat underneath, so the
+      shared rules (hover lift, two-up on a phone, a number that never wraps)
+      all hold. */
+.stat.hs{flex-direction:column;gap:0;justify-content:space-between}
+.hs-row{display:flex;align-items:center;gap:10px;width:100%;min-width:0}
+.hs-txt{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+/* A label that cannot fit wraps rather than losing its last word to an
+   ellipsis; the footers still line up because the row's tiles share a height. */
+.hs-txt .stat-label{overflow-wrap:normal}
+.hs-sub{font-size:11.5px;font-weight:500;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hs-num{display:flex;flex-direction:column;align-items:flex-end;gap:5px;flex:0 0 auto}
+.stat.hs .stat-val{font-size:28px;line-height:1;white-space:nowrap}
+.hs-pill{display:inline-flex;align-items:center;gap:3px;height:19px;padding:0 6px;border-radius:var(--r-pill);
+  font-size:10px;font-weight:700;white-space:nowrap;background:var(--surface-2);color:var(--text-2);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,currentColor 20%,transparent)}
+.hs-pill svg{width:10px;height:10px;stroke-width:2.6}
+.hs-pill.up{background:var(--success-bg);color:var(--success)}
+.hs-pill.dn{background:var(--danger-bg);color:var(--danger)}
+.hs-pill.info{background:var(--info-bg);color:var(--info)}
+.hs-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-width:0;
+  margin-top:12px;padding-top:10px;border-top:1px solid var(--border-soft);font-size:11.5px;color:var(--text-3);font-weight:500}
+.hs-foot>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hs-tag{flex:0 0 auto;font-weight:700;color:var(--text-2);background:var(--surface-2);padding:2px 8px;border-radius:6px;white-space:nowrap}
+.hs-go{flex:0 0 auto;font-weight:700;color:var(--primary-text);white-space:nowrap}
+.hs-mute{font-style:italic}
+.hs-meter{flex:0 1 120px;min-width:56px;display:flex}
+.hs-meter .bar{flex:1;min-width:0}
+.stat.hs.alert .stat-label,.stat.hs.alert .hs-sub,.stat.hs.alert .hs-go{color:var(--danger)}
+.stat.hs.alert .hs-sub{font-weight:600}
+.stat.hs.alert .stat-val{color:var(--danger)}
+.stat.hs.alert .hs-foot{border-top-color:color-mix(in srgb,var(--danger) 14%,transparent)}
+
+/* ── Active projects as folder cards: type glyph, status, name, code and type,
+      then weighted progress, the crew and the deadline. */
+.hp-grid{gap:16px}
+.pcard{display:flex;flex-direction:column;justify-content:space-between;text-align:left;width:100%;min-width:0;
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);padding:16px;
+  box-shadow:var(--sh-card);transition:box-shadow var(--dur),border-color var(--dur),transform var(--dur)}
+.pcard:hover{box-shadow:var(--sh-float);border-color:var(--primary-border);transform:translateY(-2px)}
+html[data-theme=dark] .pcard{border-color:rgba(255,255,255,.07);
+  background:linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,0) 55%),var(--surface)}
+html[data-theme=dark] .pcard:hover{border-color:rgba(96,165,250,.35)}
+.pc-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px;min-width:0}
+.pc-ico{width:32px;height:32px;flex:0 0 32px;border-radius:10px;display:grid;place-items:center;font-size:14px;font-weight:700;
+  color:var(--pc);background:color-mix(in srgb,var(--pc) 10%,var(--surface));
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--pc) 18%,transparent)}
+.pc-ico svg{width:16px;height:16px}
+.pcard .status{height:22px;padding:0 9px;font-size:10.5px}
+.pc-title{font-size:14px;font-weight:700;line-height:1.35;color:var(--text);letter-spacing:-.01em;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;transition:color var(--dur)}
+.pcard:hover .pc-title{color:var(--primary-text)}
+.pc-meta{display:block;font-size:11.5px;color:var(--text-3);font-weight:500;margin-top:4px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pc-prog{display:flex;flex-direction:column;gap:8px;margin-top:16px;padding-top:12px;border-top:1px solid var(--border-soft)}
+.pc-pl{display:flex;justify-content:space-between;gap:8px;font-size:11.5px;color:var(--text-3);font-weight:500}
+.pc-pl b{color:var(--text);font-weight:700}
+.pc-bar{display:block;height:6px;border-radius:var(--r-pill);background:var(--surface-3);overflow:hidden}
+.pc-bar i{display:block;height:100%;border-radius:var(--r-pill)}
+.pc-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:24px}
+.pc-due{font-size:11px;color:var(--text-3);font-weight:500;white-space:nowrap}
+.pc-due.late{color:var(--danger);font-weight:700}
+
+/* ── Recent activity rows: a face, who and when on one line, what below. */
+.ra{display:flex;align-items:flex-start;gap:10px;padding:12px 22px;width:100%;text-align:left;
+  border-bottom:1px solid var(--border-soft);transition:background var(--dur)}
+.ra:last-child{border-bottom:none}
+.ra:hover{background:var(--surface-2)}
+.ra .av{margin-top:1px}
+.ra-tag{width:28px;height:28px;flex:0 0 28px;border-radius:8px;display:grid;place-items:center;margin-top:1px;
+  font-size:10px;font-weight:800;background:var(--primary-surface);color:var(--primary-text)}
+.ra-main{flex:1;min-width:0}
+.ra-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.ra-top b{font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ra-time{font-size:11px;font-weight:500;color:var(--text-3);white-space:nowrap;font-variant-numeric:tabular-nums}
+.ra-txt{display:flex;align-items:center;gap:6px;margin-top:2px;min-width:0;font-size:12px;color:var(--text-2)}
+.ra-t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ra-ico{width:18px;height:18px;flex:0 0 18px;border-radius:6px;display:grid;place-items:center;
+  background:var(--tint-blue);color:var(--info)}
+.ra-ico svg{width:11px;height:11px;stroke-width:2.2}
+.ra-ico.g{background:var(--primary-surface);color:var(--primary-text)}
+.ra-ico.a{background:var(--tint-amber);color:var(--warn)}
+.ra-ico.r{background:var(--tint-red);color:var(--danger)}
+.ra-ico.v{background:var(--tint-violet);color:var(--cat-2)}
 .print-only{display:none}
 @media print{
-  #sidebar,#topbar,#mobilebar,.page-actions,.no-print{display:none!important}
+  #sidebar,#topbar,#mobilebar,.page-actions,.hero-acts,.hero-switch,.no-print{display:none!important}
   #content{overflow:visible} body{overflow:visible} .print-only{display:block}
   .card{break-inside:avoid;box-shadow:none}
 }
@@ -1517,6 +1940,56 @@ html[data-layout="mobile"] .pts-step .inp{height:44px}
 html[data-layout="mobile"] .cn-search{display:flex;width:100%}
 html[data-layout="mobile"] .cn-search .inp{width:100%;height:44px;font-size:16px}
 html[data-layout="mobile"] .cn-search .icon-btn{width:40px;height:40px;right:2px}
+
+/* ── The greeting hero on a phone: same voice, smaller type, the actions
+      become a full-width row of thumb-sized buttons under the text. */
+html[data-layout="mobile"] .hero{padding:18px 16px;border-radius:20px;margin-bottom:18px}
+html[data-layout="mobile"] .hero-in{gap:16px}
+html[data-layout="mobile"] .hero-l{flex:1 1 100%}
+html[data-layout="mobile"] .hero-live{gap:6px 8px;margin-bottom:10px}
+html[data-layout="mobile"] .hero-meta{font-size:12px}
+html[data-layout="mobile"] .hg-hi{font-size:25px}
+html[data-layout="mobile"] .hg-name{font-size:44px}
+html[data-layout="mobile"] .hero-sub{font-size:14px;margin-top:8px}
+html[data-layout="mobile"] .hero-r{flex:1 1 100%;flex-wrap:wrap;gap:12px}
+html[data-layout="mobile"] .hero-acts{max-width:none;width:100%;gap:8px}
+html[data-layout="mobile"] .hero-acts > *{flex:1 1 auto}
+html[data-layout="mobile"] .hero-acts .btn{min-height:44px}
+html[data-layout="mobile"] .hero-switch{position:relative}
+html[data-layout="mobile"] .hero-switch::after{content:"";position:absolute;inset:-9px -4px}
+/* Home tiles stack: label, then the number beside its pill, then the footer. */
+html[data-layout="mobile"] .stat.hs .hs-row{flex-wrap:wrap;gap:4px}
+html[data-layout="mobile"] .stat.hs .hs-txt{flex:1 1 100%}
+html[data-layout="mobile"] .stat.hs .hs-sub{display:none}
+html[data-layout="mobile"] .stat.hs .hs-num{flex-direction:row;align-items:center;flex-wrap:wrap;gap:6px}
+html[data-layout="mobile"] .stat.hs .stat-val{font-size:22px}
+html[data-layout="mobile"] .stat.hs .hs-foot{flex-wrap:wrap;gap:4px 8px;margin-top:8px;padding-top:8px}
+html[data-layout="mobile"] .stat.hs .hs-meter{flex:1 1 100%}
+/* Project cards become one swipeable row instead of four stacked panels. */
+html[data-layout="mobile"] .hp-grid{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;gap:12px;
+  padding-bottom:4px;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch}
+html[data-layout="mobile"] .hp-grid > .pcard{flex:0 0 84%;scroll-snap-align:start}
+html[data-layout="mobile"] .ts-leads{grid-template-columns:1fr;gap:14px}
+html[data-layout="mobile"] .ts-card.ts-lead{padding:16px;border-radius:20px;width:auto;flex-basis:auto}
+html[data-layout="mobile"] .ra{padding:12px 16px}
+html[data-layout="mobile"] .tb-div{display:none}
+html[data-layout="mobile"] .me-ring .av{width:30px;height:30px}
+/* The page hero on a phone: the same card, tighter, its tiles two-up. */
+html[data-layout="mobile"] .hero.ph{padding:16px 16px 14px;margin-bottom:16px}
+html[data-layout="mobile"] .ph .hg-hi{font-size:22px}
+html[data-layout="mobile"] .hg-dash{font-size:20px}
+html[data-layout="mobile"] .hg-tag{font-size:32px}
+html[data-layout="mobile"] .ph .hg-tag{font-size:30px}
+html[data-layout="mobile"] .ph .hero-sub{font-size:13.5px}
+html[data-layout="mobile"] .ph-kpis{gap:8px;margin-top:14px;padding-top:12px}
+html[data-layout="mobile"] .ph-kpis .stat-val{font-size:20px}
+html[data-layout="mobile"] .ph-kpis .stat-val.txt{font-size:15px}
+html[data-layout="mobile"] .ph-mod{height:30px}
+/* My Day: the words, then the ring on its own, then the stack full width. */
+html[data-layout="mobile"] .hero.has-mid .hero-l{flex:1 1 100%}
+html[data-layout="mobile"] .hero-mid{flex:1 1 100%;margin:0}
+html[data-layout="mobile"] .nring--lg{--nring-size:104px}
+html[data-layout="mobile"] .hero-acts.as-stack{width:100%}
 /* ==== END PHONE LAYER ==== */
 </style>
 </head>
@@ -1570,8 +2043,9 @@ html[data-layout="mobile"] .cn-search .icon-btn{width:40px;height:40px;right:2px
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8.6a6 6 0 1 0-12 0c0 6.4-2.6 8.2-2.6 8.2h17.2S18 15 18 8.6"/><path d="M13.7 20.4a2 2 0 0 1-3.4 0"/></svg>
         <span class="dot-badge" id="bell-count">0</span></button>
       <button class="icon-btn" id="btn-display" aria-label="Display: Desktop" title="Display: Desktop"></button>
+      <span class="tb-div" aria-hidden="true"></span>
       <button class="role-switch" id="btn-role" title="My profile" aria-label="Open profile menu">
-        <span class="av" id="me-av"></span>
+        <span class="me-ring"><span class="av" id="me-av"></span><i class="me-online" aria-hidden="true"></i></span>
         <span class="who" id="me-name">Rahul J.</span>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9.4 6 6 6-6"/></svg>
       </button>
@@ -4280,7 +4754,9 @@ function legend(items){return `<div class="legend">${items.map(i=>`<span><i styl
 const NAV = [
   {group:'Main',items:[
     {r:'#/media/home',   i:'home',  l:'Home',   sk:'h'},
-    {r:'#/media/my-day', i:'myday', l:'My Day', sk:'m'}
+    /* tag: a word shown beside the label in the sidebar only — never a count,
+       so the phone bar (which reads badge) does not pick it up. */
+    {r:'#/media/my-day', i:'myday', l:'My Day', sk:'m', tag:'Today'}
   ]},
   {group:'SMC Network',items:[
     {r:'#/media/smc',i:'users',l:'SMC Management', ml:'SMC', mi:'megaphone', cap:'smc.manage', pfx:['#/media/smc']}
@@ -4478,7 +4954,8 @@ function renderNav(){
       const active=S.route===it.r||(S.route.startsWith(it.r+'/')&&it.r!=='#/media/home');
       return `<a class="nav-item ${active?'active':''}" href="${it.r}" title="${esc(it.l)}">
         <span class="nav-ico">${ic(it.i)}</span><span class="nav-label">${esc(it.l)}</span>
-        ${b?`<span class="nav-badge ${it.r.includes('leave')||it.r.includes('reports')?'':'muted'}">${b}</span>`:''}</a>`;
+        ${b?`<span class="nav-badge ${it.r.includes('leave')||it.r.includes('reports')?'':'muted'}">${b}</span>`
+          :it.tag?`<span class="nav-tag">${esc(it.tag)}</span>`:''}</a>`;
     }).join('')}</div>`;
   }).join('') + creatorNavHtml();
   // Kiosk is its own grantable module (System group) and still needs Equipment,
@@ -4865,6 +5342,7 @@ function render(){
   renderNav();
   $('#content').scrollTop=0;
   wirePage();
+  heroTitleFit();
   mInputAttrs($('#page'));
   mTabs();
   mKanban();
@@ -5339,10 +5817,10 @@ function teamStatusRoster(){
 }
 
 /* ---- Card chrome shared by both card types --------------------------------- */
-function tsHead(uid,sub,statusHtml){
+function tsHead(uid,sub,statusHtml,big){
   return `<div class="ts-top">
     <button class="ts-who" data-go="#/media/team/${uid}" title="Open ${esc(user(uid).full_name)}'s dashboard">
-      ${avatarP(uid,'md')}
+      ${avatarP(uid,big?'lg sq':'md')}
       <span class="ts-name"><b>${esc(user(uid).full_name)}</b><span>${esc(sub||'—')}</span></span>
     </button>
     ${statusHtml}
@@ -5390,7 +5868,7 @@ function employeeCard(s){
         title="${s.reported?'Open today’s submitted report':'Open today’s report'}">
         ${!s.expects?'◐ On leave':s.reported?'✓ Report submitted':'◔ Report pending'}
       </button>
-      <button class="icon-btn" data-menu="tsMember" data-uid="${s.uid}" title="More actions">⋯</button>
+      <button class="icon-btn" data-menu="tsMember" data-uid="${s.uid}" title="More actions" aria-label="More actions">${ic('dots')}</button>
     </div>
 
     ${s.blockers.length
@@ -5405,21 +5883,19 @@ function employeeCard(s){
 /* ---- ADMIN VIEW — one card per Team Lead ----------------------------------- */
 function leadCard(s){
   const u=user(s.uid);
-  const dept=(DB.departments&&DB.departments.find(d=>d.id===u.department_id)||{}).name
-    ||(s.team?s.team.name:'Media Crew');
-  const health=s.issues===0?'st-success':s.issues<=3?'st-warn':'st-danger';
-  return `<div class="ts-card">
-    ${tsHead(s.uid,dept,`<span class="status ${health}"><span class="si">${s.issues?'⚑':'✔'}</span>${s.issues?s.issues+' open':'All clear'}</span>`)}
+  /* The team the lead runs says more than the department everyone shares. */
+  const sub=s.team?s.team.name:((DB.departments&&DB.departments.find(d=>d.id===u.department_id)||{}).name||'Media Crew');
+  const tone=s.issues===0?'ok':s.issues<=3?'warn':'';
+  return `<div class="ts-card ts-lead">
+    ${tsHead(s.uid,sub,`<span class="ts-open ${tone}" title="Everything on this team that wants a person today">
+      ${s.issues?'<i></i>'+s.issues+' open':ic('check')+'All clear'}</span>`,true)}
 
-    <div class="ts-row">
-      ${ring(Math.min(100,Math.round(s.avgHours/8*100)),{size:'sm',value:s.avgHours.toFixed(1),
-        label:'avg h',title:'Average '+s.avgHours.toFixed(1)+'h logged per member today'})}
-      <div class="ts-assign">
-        ${tsStat('Members',s.members,`data-go="#/media/team/${s.uid}"`)}
-        ${tsStat('Present',s.present,`data-go="#/media/team/${s.uid}"`,s.present<s.members?'warn':'')}
-        ${tsStat('Reports',s.reports+'/'+s.expecting,`data-act="teamReports" data-uid="${s.uid}"`,
-          s.reports<s.expecting?'warn':'')}
-      </div>
+    <div class="ts-mini">
+      ${tsStat('Avg h',s.avgHours.toFixed(1),`data-act="teamAnalytics" data-uid="${s.uid}"`)}
+      ${tsStat('Members',s.members,`data-go="#/media/team/${s.uid}"`)}
+      ${tsStat('Present',s.present,`data-go="#/media/team/${s.uid}"`,s.present<s.members?'warn':'')}
+      ${tsStat('Reports',s.reports+'/'+s.expecting,`data-act="teamReports" data-uid="${s.uid}"`,
+        s.reports<s.expecting?'warn':'')}
     </div>
 
     <div class="ts-grid">
@@ -5433,8 +5909,8 @@ function leadCard(s){
 
     <div class="ts-foot">
       <button class="ts-rep na" data-act="teamAnalytics" data-uid="${s.uid}"
-        title="Open analytics for this team">◷ ${s.avgHours.toFixed(1)}h average logged</button>
-      <button class="icon-btn" data-menu="tsLead" data-uid="${s.uid}" title="More actions">⋯</button>
+        title="Open analytics for this team">${ic('clock')} ${s.avgHours.toFixed(1)}h average logged</button>
+      <button class="icon-btn" data-menu="tsLead" data-uid="${s.uid}" title="More actions" aria-label="More actions">${ic('dots')}</button>
     </div>
   </div>`;
 }
@@ -5449,20 +5925,20 @@ function teamStatusSection(){
     ? roster.map(id=>leadToday(id)).filter(x=>x.issues>0).length
     : roster.map(employeeToday).filter(s=>(s.expects&&!s.reported)||s.blockers.length||(s.assigned&&!s.logged)).length;
   return `<div class="sec">
-    <div class="between mb3">
+    <div class="sec-row">
       <div>
-        <h3 class="ts-h">Today’s team status</h3>
-        <div class="small mut3">${admin
+        <h2 class="sec-title">Today’s team status</h2>
+        <div class="sec-sub">${admin
           ? 'One card per Team Lead — open a card to drill into that lead’s team.'
           : 'Your direct reports, live. Every figure comes from My Day, the task log and daily reports.'}</div>
       </div>
-      <div class="f gap2 ac">
-        ${attention?`<span class="status st-warn"><span class="si">⚑</span>${attention} need${attention===1?'s':''} attention</span>`
-                   :`<span class="status st-success"><span class="si">✔</span>All clear</span>`}
-        <span class="chip">${roster.length} ${admin?'team lead':'report'}${roster.length===1?'':'s'}</span>
+      <div class="sec-row-acts">
+        ${attention?`<span class="ts-att"><i></i>${attention} need${attention===1?'s':''} attention</span>`
+                   :`<span class="ts-att ok"><i></i>All clear</span>`}
+        <span class="ts-cnt">${roster.length} ${admin?'team lead':'report'}${roster.length===1?'':'s'}</span>
       </div>
     </div>
-    ${roster.length?`<div class="ts-strip">${cards.join('')}</div>`
+    ${roster.length?(admin?`<div class="ts-leads">${cards.join('')}</div>`:`<div class="ts-strip">${cards.join('')}</div>`)
       :`<div class="card"><div class="empty" style="padding:26px"><div class="e-ico">◎</div>
         <p>${admin?'No Team Leads configured yet. Add one in Settings → Teams.'
                   :'No one reports to you yet. Ask an Admin to add members to your team.'}</p></div></div>`}
@@ -5631,12 +6107,23 @@ function viewCasting(){
   const all=previewRecords();
   const list=castFilter(all,f);
   const chip=(k,v,l)=>`<button class="chip ${f[k]===v?'sel':''}" onclick="ACTIONS.castFilter({k:'${k}',v:'${esc(v)}'})">${esc(l)}</button>`;
-  return `<div class="page-head">
-      <div><div class="crumb">Casting library</div><h1 class="page-title">Casting</h1>
-      <div class="page-sub">Find people and casting references for upcoming productions.</div></div>
-      <div class="page-actions">
-        ${can('casting.request')?`<button class="btn primary" data-act="newCastRequest">＋ Request casting</button>`:''}
-        ${can('casting.manage')?`<a class="btn" href="#/media/casting-admin">Casting Management</a>`:''}</div></div>
+  /* Only records cleared for production are ever counted here — the same set
+     the cards below are drawn from. A tile narrows the list, like a chip. */
+  const avail=k=>all.filter(r=>r.availability===k).length;
+  const colls=castColls().filter(c=>all.some(r=>collsOf(r.id).includes(c.id))).length;
+  const pick=(k,v)=>`onclick="ACTIONS.castFilter({k:'${k}',v:'${v}'})"`;
+  return `${pageHero({icon:'clapper',group:'Casting',title:'Casting Preview',tag:'Find the right face',
+      live: avail('available')?liveChip(`${avail('available')} available now`,'ok'):liveChip('No one available right now','neutral',false),
+      sub:`Find people and casting references for upcoming productions —
+        ${andList([`<b>${plural(all.length,'person','people')}</b> cleared for production`,`<b>${avail('available')}</b> available`,
+          `<b>${plural(colls,'collection')}</b> to browse`])}.`,
+      actions:`${can('casting.request')?`<button class="btn primary" data-act="newCastRequest">${ic('plus')} Request casting</button>`:''}
+        ${can('casting.manage')?`<a class="btn" href="#/media/casting-admin">${ic('layers')} Casting Management</a>`:''}`,
+      kpis:[kpi('Cleared for production',all.length,{meta:'consent confirmed'}),
+        kpi('Available',avail('available'),{attrs:pick('avail','available'),tone:f.avail==='available'?'sel':''}),
+        kpi('Limited',avail('limited'),{attrs:pick('avail','limited'),tone:f.avail==='limited'?'sel':''}),
+        kpi('Unavailable',avail('unavailable'),{attrs:pick('avail','unavailable'),tone:f.avail==='unavailable'?'sel':''}),
+        kpi('Collections',colls,{meta:'curated sets'})]})}
 
     <div class="cast-bar">
       <div class="search-wrap cast-search">
@@ -5876,15 +6363,18 @@ function viewCastingAdmin(){
     ['external','External registration',castLinks().filter(linkIsOpen).length],
     ['tags','Tags',castTags().length],['collections','Collections',castColls().length],
     ['activity','Activity',0],['work','My casting work',0]];
-  return `<div class="page-head">
-      <div><div class="crumb">Casting library · management</div><h1 class="page-title">Casting Management</h1>
-      <div class="page-sub">Casting records, collections, tags and availability.</div></div>
-      <div class="page-actions">
-        <button class="btn primary" data-act="newCasting">＋ Add casting</button>
-        <button class="btn" data-go="#/media/admin/lookups?m=casting_tags">Manage tags</button>
-        <button class="btn" data-go="#/media/admin/lookups?m=casting_collections">Manage categories</button></div></div>
-
-    ${castAdminStats(all,active)}
+  const toReview=castRequests().filter(r=>['new','under_review'].includes(r.status)).length;
+  const consent=all.filter(r=>r.consent_status==='pending').length;
+  return `${pageHero({icon:'layers',group:'Casting',title:'Casting Management',tag:'The people behind the frame',
+      live: toReview?liveChip(`${toReview} request${toReview===1?'':'s'} to review`,'warn')
+          :liveChip('Every request reviewed','ok',false),
+      sub:`Casting records, collections, tags and availability —
+        ${andList([`<b>${plural(active.length,'active record')}</b>`,`<b>${consent}</b> waiting on consent`,
+          `<b>${castStale().length}</b> due a review`])}.`,
+      actions:`<button class="btn primary" data-act="newCasting">${ic('plus')} Add casting</button>
+        <button class="btn" data-go="#/media/admin/lookups?m=casting_tags">${ic('sliders')} Manage tags</button>
+        <button class="btn" data-go="#/media/admin/lookups?m=casting_collections">${ic('layers')} Manage categories</button>`,
+      kpis:castAdminStats(all,active)})}
 
     <div class="tabs">${tabs.map(([k,l,c])=>`<button data-tab="${k}" data-tabkey="castadmin" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>
     ${tab==='records'?castAdminRecords(f)
@@ -5896,25 +6386,21 @@ function viewCastingAdmin(){
       :castWorkLog()}
     ${castingStyles()}`;
 }
-/* Actionable metrics — every card sets a filter rather than just showing a number. */
+/* Actionable metrics — every card sets a filter rather than just showing a
+   number. They are the page hero's tiles, in the same order as before. */
 function castAdminStats(all,active){
-  const month=D.add(TODAY,-30);
-  const cell=(l,n,act,tone)=>`<button class="stat ${tone||''}" data-act="castStat" data-k="${act}">
-    <span class="stat-main"><span class="stat-label">${esc(l)}</span><span class="stat-val">${n}</span></span></button>`;
-  return `<div class="grid g4 sec">
-      ${cell('Total records',all.length,'all')}
-      ${cell('Active records',active.length,'active')}
-      ${cell('Consent pending',all.filter(r=>r.consent_status==='pending').length,'consent',
-        all.filter(r=>r.consent_status==='pending').length?'alert':'')}
-      ${cell('Needs review',castStale().length,'stale',castStale().length?'alert':'')}
-    </div>
-    <div class="grid g4 sec">
-      ${cell('Registration links',castLinks().filter(linkIsOpen).length,'links')}
-      ${cell('Pending review',castRequests().filter(r=>['new','under_review','clarification'].includes(r.status)).length,'pending',
-        castRequests().filter(r=>['new','under_review'].includes(r.status)).length?'alert':'')}
-      ${cell('Approved requests',castRequests().filter(r=>r.status==='approved').length,'approved')}
-      ${cell('My actions today',castAudit(TODAY).length,'work')}
-    </div>`;
+  const cell=(l,n,act,tone)=>kpi(l,n,{attrs:`data-act="castStat" data-k="${act}"`,tone});
+  return [
+      cell('Total records',all.length,'all'),
+      cell('Active records',active.length,'active'),
+      cell('Consent pending',all.filter(r=>r.consent_status==='pending').length,'consent',
+        all.filter(r=>r.consent_status==='pending').length?'alert':''),
+      cell('Needs review',castStale().length,'stale',castStale().length?'alert':''),
+      cell('Registration links',castLinks().filter(linkIsOpen).length,'links'),
+      cell('Pending review',castRequests().filter(r=>['new','under_review','clarification'].includes(r.status)).length,'pending',
+        castRequests().filter(r=>['new','under_review'].includes(r.status)).length?'alert':''),
+      cell('Approved requests',castRequests().filter(r=>r.status==='approved').length,'approved'),
+      cell('My actions today',castAudit(TODAY).length,'work')];
 }
 function castAdminRecords(f){
   let list=castRecords();
@@ -6524,18 +7010,18 @@ function viewRequests(){
   const open=all.filter(r=>['new','under_review','needs_clarification','ready'].includes(r.status));
   const conv=all.filter(r=>r.status==='converted');
   const shut=all.filter(r=>['closed','rejected'].includes(r.status));
-  /* Actionable counts (§47): each one is a filter, not a decoration. */
-  const stat=(l,n,k,tone)=>`<button class="stat ${tone||''}" data-act="reqStat" data-k="${k}">
-    <span class="stat-main"><span class="stat-label">${esc(l)}</span><span class="stat-val">${n}</span></span></button>`;
-  const counts=`<div class="grid g5 sec">
-      ${stat('New requests',all.filter(r=>r.status==='new').length,'new',all.filter(r=>r.status==='new').length?'':'')}
-      ${stat('Needs clarification',all.filter(r=>r.status==='needs_clarification').length,'needs_clarification')}
-      ${stat('Ready to convert',all.filter(r=>r.status==='ready').length,'ready',all.filter(r=>r.status==='ready').length?'alert':'')}
-      ${stat('Converted today',all.filter(r=>r.status==='converted'&&dOf(r.converted_at)===TODAY).length,'converted_today')}
-      ${stat('Overdue',overdueRequests().length,'overdue',overdueRequests().length?'alert':'')}
-    </div>`;
+  /* Actionable counts (§47): each one is a filter, not a decoration. They are
+     the page hero's tiles now, which changes where they sit and nothing else. */
+  const nSt=k=>all.filter(r=>r.status===k).length;
+  const stat=(l,n,k,tone)=>kpi(l,n,{attrs:`data-act="reqStat" data-k="${k}"`,tone});
+  const counts=[
+      stat('New requests',nSt('new'),'new'),
+      stat('Needs clarification',nSt('needs_clarification'),'needs_clarification'),
+      stat('Ready to convert',nSt('ready'),'ready',nSt('ready')?'alert':''),
+      stat('Converted today',all.filter(r=>r.status==='converted'&&dOf(r.converted_at)===TODAY).length,'converted_today'),
+      stat('Overdue',overdueRequests().length,'overdue',overdueRequests().length?'alert':'')];
 
-  if(tab==='links')return `${requestsHead()}${counts}${requestsTabs(tab,open,conv,shut)}${requestLinksSection()}`;
+  if(tab==='links')return `${requestsHead(counts,all)}${requestsTabs(tab,open,conv,shut)}${requestLinksSection()}`;
 
   let list=tab==='queue'?open:tab==='converted'?conv:shut;
   const week=D.add(TODAY,-7), month=D.add(TODAY,-30);
@@ -6558,7 +7044,7 @@ function viewRequests(){
 
   const chip=(k,v,l,n)=>`<button class="chip ${f[k]===v?'sel':''}"
     onclick="S.filters.req.${k}=S.filters.req.${k}==='${v}'?'':'${v}';render()">${esc(l)}${n!=null?` <span class="mut3">${n}</span>`:''}</button>`;
-  return `${requestsHead()}${counts}${requestsTabs(tab,open,conv,shut)}
+  return `${requestsHead(counts,all)}${requestsTabs(tab,open,conv,shut)}
     <div class="cast-bar">
       <div class="search-wrap cast-search"><input class="inp" id="req-q" value="${esc(f.q)}"
         placeholder="Search request ID, project, event, institute, stakeholder, email, team lead…"
@@ -6586,13 +7072,19 @@ function viewRequests(){
         </div></div>`}
     </div></div>`;
 }
-function requestsHead(){
-  return `<div class="page-head">
-      <div><div class="crumb">Operations · intake</div><h1 class="page-title">Request Intake</h1>
-      <div class="page-sub">A request becomes a project when you convert it and hand it to a team.</div></div>
-      <div class="page-actions">
-        <button class="btn" onclick="S.tab.req='links';render()">◆ Request links</button>
-        <button class="btn primary" data-act="newRequest">＋ New request</button></div></div>`;
+function requestsHead(kpis,all){
+  all=all||reqs();
+  const today=requestsToday().length, od=overdueRequests().length;
+  const open=all.filter(r=>['new','under_review','needs_clarification','ready'].includes(r.status)).length;
+  const clar=all.filter(r=>r.status==='needs_clarification').length, ready=all.filter(r=>r.status==='ready').length;
+  return pageHero({icon:'inbox',group:'Operations',title:'Request Intake',tag:'Every ask, captured',
+    live: od?liveChip(`${od} untouched past ${REQ_SLA_DAYS} days`,'bad')
+        :today?liveChip(`${today} new today`,'ok'):liveChip('Nothing new today','neutral',false),
+    sub:`A request becomes a project when you convert it and hand it to a team —
+      ${andList([`<b>${plural(open,'open request')}</b>`,`<b>${clar}</b> waiting on a stakeholder`,`<b>${ready}</b> ready to convert`])}.`,
+    actions:`<button class="btn" onclick="S.tab.req='links';render()">${ic('link')} Request links</button>
+      <button class="btn primary" data-act="newRequest">${ic('plus')} New request</button>`,
+    kpis});
 }
 function requestsTabs(tab,open,conv,shut){
   const tabs=[['queue','Queue',open.length],['converted','Converted',conv.length],
@@ -6643,9 +7135,21 @@ function viewDispatch(){
   const f=(S.filters.dispatch||(S.filters.dispatch={q:''})).q.toLowerCase();
   const match=d=>!f||((d.title+' '+proj(d.project_id).name+' '+(d.dispatch_recipient||'')).toLowerCase().includes(f));
   const rows=(tab==='queue'?q:tab==='delivered'?delivered:archived).filter(match);
-  return `<div class="page-head">
-      <div><div class="crumb">Operations · dispatch</div><h1 class="page-title">Dispatch</h1>
-      <div class="page-sub">Approved work, out the door. Nothing is archived without a recorded recipient.</div></div></div>
+  /* §18 — an approved item waiting past the window is the one thing here that
+     wants somebody now, so it is what the live chip says when it exists. */
+  const late=q.filter(d=>d.queued_at&&D.diff(TODAY,dOf(d.queued_at))>=DISPATCH_SLA_DAYS).length;
+  const sentToday=dispatchedToday().length;
+  const toTab=k=>`data-tab="${k}" data-tabkey="dispatch"`;
+  return `${pageHero({icon:'send',group:'Operations',title:'Dispatch',tag:'Out the door, on time',
+      live: late?liveChip(`${late} waiting over ${DISPATCH_SLA_DAYS*24}h`,'bad')
+          :q.length?liveChip(`${q.length} ready to send`,'info'):liveChip('Queue clear','neutral',false),
+      sub:`Approved work, out the door. Nothing is archived without a recorded recipient —
+        ${andList([`<b>${q.length}</b> ready for dispatch`,`<b>${sentToday}</b> sent today`,`<b>${archived.length}</b> archived`])}.`,
+      kpis:[kpi('Ready for dispatch',q.length,{attrs:toTab('queue'),tone:late?'alert':''}),
+        kpi('Waiting too long',late,{attrs:toTab('queue'),tone:late?'alert':'',meta:`over ${DISPATCH_SLA_DAYS*24}h in the queue`}),
+        kpi('Sent today',sentToday,{attrs:toTab('delivered')}),
+        kpi('Delivered',delivered.length,{attrs:toTab('delivered'),meta:'not yet archived'}),
+        kpi('Archived',archived.length,{attrs:toTab('archive')})]})}
     <div class="tabs">${tabs.map(([k,l,c])=>`<button data-tab="${k}" data-tabkey="dispatch" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>
     ${tab!=='queue'?`<div class="search-wrap mb3" style="max-width:360px">
       <input class="inp" id="disp-q" placeholder="Search project, deliverable or recipient…" value="${esc(S.filters.dispatch.q)}"
@@ -6677,8 +7181,6 @@ function viewDispatch(){
 
 function viewCoordDashboard(){
   loadMyActivity();
-  const u=me();
-  const greet=NOW.getHours()<12?'Good morning':NOW.getHours()<17?'Good afternoon':'Good evening';
   const nw=reqs().filter(r=>r.status==='new');
   const clar=reqs().filter(r=>r.status==='needs_clarification');
   const ready=reqs().filter(r=>r.status==='ready');
@@ -6693,14 +7195,16 @@ function viewCoordDashboard(){
     <span class="stat-main"><span class="stat-label">${esc(label)}</span>
       <span class="stat-val">${val}</span>
       <span class="stat-meta">${meta}</span></span></button>`;
-  return `<div class="page-head">
-      <div><div class="crumb">Operations · intake → dispatch</div>
-        <h1 class="page-title">${greet}, ${esc(u.full_name.split(' ')[0])}</h1>
-        <div class="page-sub">What came in, what is waiting on a stakeholder, and what is ready to go out.</div></div>
-      <div class="page-actions">
-        <button class="btn primary" data-act="newRequest">＋ New request</button>
-        <button class="btn" data-act="logMeeting">◷ Log meeting</button>
-        <button class="btn" data-act="logVendor">⛁ Log vendor</button></div></div>
+  return `${heroBlock({
+      link: moduleAllowed(hashModule('#/media/my-day'))
+        ? `<a class="hero-switch" href="#/media/my-day">Switch to My Day view${ic('right')}</a>`:'',
+      sub: `What came in, what is waiting on a stakeholder, and what is ready to go out —
+        ${andList([`<b>${plural(nw.length,'new request')}</b>`,`<b>${plural(clar.length,'clarification')}</b> pending`,
+          `<b>${q.length}</b> ready for dispatch`])}.`,
+      actions: `<button class="btn" data-act="logMeeting">${ic('clock')} Log meeting</button>
+        <button class="btn" data-act="logVendor">${ic('db')} Log vendor</button>
+        <button class="btn primary" data-act="newRequest">${ic('plus')} New request</button>`
+    })}
 
     <div class="grid g4 sec">
       ${card('New requests',nw.length,`${requestsToday().length} received today`,'data-go="#/media/requests"',nw.length?'':'')}
@@ -6897,20 +7401,22 @@ function viewCoordMyDay(){
   const assigned=reqs().filter(r=>r.status==='converted'&&r.lead_user_id).slice(0,6);
   const done=coordAudit(TODAY).length;
 
-  return `<div class="page-head">
-      <div class="f ac gap4">
-        ${ring(Math.min(100,done*5),{size:'md',value:done,label:'actions',
-          title:done+' operational actions recorded today'})}
-        <div><div class="crumb">${D.fmtLong(TODAY)} · Operations</div>
-          <h1 class="page-title">My Day</h1>
-          <div class="page-sub">Requests in, meetings and follow-ups through the day, approved work out.</div></div>
-      </div>
-      <div class="page-actions">
-        <button class="btn" data-act="newRequest">＋ Request</button>
-        <button class="btn" data-act="logMeeting">◷ Meeting</button>
-        <button class="btn" data-act="logVendor">⛁ Vendor</button>
-        <button class="btn primary" data-act="coordReport">▤ Submit daily report</button></div>
-    </div>
+  return `${heroBlock({
+      title:'My Day', tag:'Let’s create something great today', under:true,
+      link: moduleAllowed(hashModule('#/media/home'))
+        ? `<a class="hero-switch" href="#/media/home">Switch to Operations overview${ic('right')}</a>`:'',
+      sub: `Requests in, meetings and follow-ups through the day, approved work out —
+        ${andList([`<b>${plural(mtg.length,'meeting')}</b> today`,`<b>${plural(fu.length,'follow-up')}</b> open`,
+          `<b>${q.length}</b> ready for dispatch`])}.`,
+      mid: ring(Math.min(100,done*5),{size:'lg',value:done,label:'actions',
+        title:done+' operational actions recorded today'}),
+      stack: true,
+      /* Intake first, then what gets logged through the day, then the report. */
+      actions: `<button class="btn" data-act="newRequest">${ic('plus')} New request</button>
+        <button class="btn" data-act="logMeeting">${ic('clock')} Log meeting</button>
+        <button class="btn" data-act="logVendor">${ic('db')} Log vendor</button>
+        <button class="btn primary" data-act="coordReport">${ic('file')} Submit daily report</button>`
+    })}
     <div class="myday-cols">
       <div class="myday-col">
         <div class="card"><div class="card-head"><h3>Today’s requests</h3>
@@ -7035,11 +7541,210 @@ function viewCoordMyDay(){
     </style>`;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   THE GREETING HERO — one component for Home, My Day and the coordinator's
+   screens, so everyone is greeted the same way: the time of day in heavy
+   capitals, their own first name in a hand-written face, and a live strip
+   that is never empty — the crew shift, a ticking clock, the date, the campus.
+
+   Everything in it is derived, nothing is typed in. The shift comes from the
+   clock and the holiday calendar; the field note beside it from today's
+   shoots; the sentence under the name from the same counts as the cards below
+   it. The clock, the shift and the greeting tick in place (moTick) instead of
+   re-rendering the page under somebody's cursor.
+   ══════════════════════════════════════════════════════════════════════════ */
+const WEEKDAYS=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const MONTHS_LONG=['January','February','March','April','May','June','July','August','September','October','November','December'];
+const greetWord=(now=new Date())=>now.getHours()<12?'Good morning':now.getHours()<17?'Good afternoon':'Good evening';
+/* The calendar day of a Date in local time — the same rule TODAY is built on. */
+const localDay=now=>new Date(now.getTime()-now.getTimezoneOffset()*60000).toISOString().slice(0,10);
+const dayLong=now=>`${WEEKDAYS[now.getDay()]}, ${now.getDate()} ${MONTHS_LONG[now.getMonth()]} ${now.getFullYear()}`;
+function fmtClock(now){
+  const h=now.getHours();
+  return `${h%12||12}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')} ${h<12?'AM':'PM'}`;
+}
+/* Where the viewer works: their campus, else their department, else the crew. */
+function campusLabel(){
+  const u=me();
+  const c=(DB.campuses||[]).find(x=>x.id===u.campus_id);
+  if(c&&c.name) return c.name;
+  const d=(DB.departments||[]).find(x=>x.id===u.department_id);
+  return d&&d.name?d.name:'Media Crew';
+}
+/* The crew's shift right now. A holiday on the viewer's campus and Sunday say
+   so; otherwise the working day runs in three shifts, and the hours outside
+   them are "after hours" — a still dot, not a pulsing one. */
+function crewShift(now=new Date()){
+  const day=localDay(now), camp=me().campus_id;
+  const hol=(DB.holidays||[]).find(h=>String(h.date||'').slice(0,10)===day&&(!h.campus_id||!camp||h.campus_id===camp));
+  if(hol) return {k:'holiday',l:'Holiday · '+hol.name,tone:'warn',live:false};
+  if(now.getDay()===0) return {k:'sunday',l:'Sunday · crew off duty',tone:'neutral',live:false};
+  const h=now.getHours();
+  if(h>=6&&h<12)  return {k:'morning',  l:'Morning Crew Shift Active',  tone:'ok',live:true};
+  if(h>=12&&h<17) return {k:'afternoon',l:'Afternoon Crew Shift Active',tone:'ok',live:true};
+  if(h>=17&&h<21) return {k:'evening',  l:'Evening Crew Shift Active',  tone:'ok',live:true};
+  return {k:'night',l:'After hours · crew off shift',tone:'neutral',live:false};
+}
+const shiftPill=s=>`<span class="live-pill ${s.tone}${s.live?' on':''}" data-shift="${s.k}"><i class="live-dot" aria-hidden="true"></i>${esc(s.l)}</span>`;
+/* What the field looks like this minute: a shoot running now, else the next
+   call time today. An employee hears only about shoots they are crewed on. */
+function liveNote(now=new Date()){
+  const day=localDay(now);
+  const hm=String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0');
+  const t=x=>String(x||'').slice(0,5);
+  const shoots=(DB.shoots||[]).filter(s=>!s.deleted_at&&s.status!=='cancelled'&&String(s.shoot_date||'').slice(0,10)===day)
+    .filter(s=>!isEmp()||(DB.shoot_crew||[]).some(c=>c.shoot_id===s.id&&c.user_id===S.me));
+  const onNow=shoots.filter(s=>s.call_time&&t(s.call_time)<=hm&&(!s.end_time||t(s.end_time)>hm));
+  if(onNow.length) return {k:'field',ico:'video',l:`${onNow.length} shoot${onNow.length===1?'':'s'} on location now`};
+  const next=shoots.filter(s=>s.call_time&&t(s.call_time)>hm).sort((a,b)=>t(a.call_time).localeCompare(t(b.call_time)))[0];
+  if(next) return {k:'next:'+next.id,ico:'clock',l:`Next call time ${t(next.call_time)}`};
+  return null;
+}
+const noteChip=n=>n?`<span class="live-note" data-note="${esc(n.k)}">${ic(n.ico)}${esc(n.l)}</span>`
+                   :`<span data-note="" hidden></span>`;
+/* o.link — a chip after the date; o.sub — the sentence under the name (HTML,
+   callers escape); o.aside — something beside the actions; o.actions — the
+   buttons. o.title + o.tag replace the greeting with a page name and its
+   hand-written line; o.under sets that line beneath the name instead of
+   after a dash (a long line, like My Day's, always wraps anyway); o.mid puts
+   something (My Day's ring) between the words and the actions; o.stack lays
+   the actions out one above the other. */
+function heroBlock(o={}){
+  const now=new Date(), first=(me().full_name||'').trim().split(/\s+/)[0]||'there';
+  const h1=o.title
+    ? `<h1 class="hero-greet${o.under?' hg-stack':''}"><span class="hg-hi">${esc(o.title)}</span>${o.under
+        ? `<span class="hg-tag">${esc(o.tag||'')}</span>`
+        : `<span class="hg-tagline"><span class="hg-dash" aria-hidden="true">—</span><span class="hg-tag">${esc(o.tag||'')}</span></span>`}</h1>`
+    : `<h1 class="hero-greet"><span class="hg-hi" data-greet>${greetWord(now)},</span>
+        <span class="hg-name">${esc(first)}</span></h1>`;
+  return `<section class="hero${o.mid?' has-mid':''}" aria-label="Today">
+    <div class="hero-in">
+      <div class="hero-l">
+        <div class="hero-live">
+          ${shiftPill(crewShift(now))}${noteChip(liveNote(now))}
+          <span class="hero-meta">
+            <span class="hero-clock" title="Local time">${ic('clock')}<b data-clock data-time="${fmtClock(now)}"></b></span>
+            <span class="hero-sep" aria-hidden="true">•</span><span data-day>${dayLong(now)}</span>
+            <span class="hero-sep" aria-hidden="true">•</span><span>${esc(campusLabel())}</span>
+          </span>
+          ${o.link||''}
+        </div>
+        ${h1}
+        ${o.sub?`<p class="hero-sub">${o.sub}</p>`:''}
+      </div>
+      ${o.mid?`<div class="hero-mid">${o.mid}</div>`:''}
+      ${o.aside||o.actions?`<div class="hero-r">${o.aside||''}${o.actions?`<div class="hero-acts${o.stack?' as-stack':''}">${o.actions}</div>`:''}</div>`:''}
+    </div>
+  </section>`;
+}
+
+/* ══ THE PAGE HERO ═════════════════════════════════════════════════════════
+   Every module opens with the same summary card: the module and its group,
+   one live fact about it, the page's name in heavy capitals with a
+   hand-written line, one sentence that sums the page up, the page's own
+   actions, and its count tiles along the bottom. The tiles are the page's own
+   .stat cards, moved inside rather than repeated — a filter tile is still the
+   same filter. Nothing in it is typed in: every number is computed from the
+   data the page below is drawn from.
+   o: {icon, group, title, tag, live, sub, actions, kpis:[html]} */
+function pageHero(o){
+  const now=new Date(), k=o.kpis||[];
+  /* Up to six tiles share one row; more fold into two even-ish rows. */
+  const kc=k.length<=6?k.length:Math.ceil(k.length/2);
+  return `<section class="hero ph" aria-label="${esc(o.title)}">
+    <div class="hero-in">
+      <div class="hero-l">
+        <div class="hero-live">
+          <span class="ph-mod"><span class="ph-ico">${ic(o.icon||'grid')}</span>${esc(o.group||'Media Ops')}</span>
+          ${o.live||''}
+          <span class="hero-meta">
+            <span class="hero-clock" title="Local time">${ic('clock')}<b data-clock data-time="${fmtClock(now)}"></b></span>
+            <span class="hero-sep" aria-hidden="true">•</span><span data-day>${dayLong(now)}</span>
+          </span>
+        </div>
+        <h1 class="hero-greet"><span class="hg-hi">${esc(o.title)}</span>${o.tag
+          ?`<span class="hg-tagline"><span class="hg-dash" aria-hidden="true">—</span><span class="hg-tag">${esc(o.tag)}</span></span>`:''}</h1>
+        ${o.sub?`<p class="hero-sub">${o.sub}</p>`:''}
+      </div>
+      ${o.actions?`<div class="hero-r"><div class="hero-acts">${o.actions}</div></div>`:''}
+    </div>
+    ${k.length?`<div class="ph-kpis grid" style="--kc:${kc}">${k.join('')}</div>`:''}
+  </section>`;
+}
+/* One count tile for a page hero. With attrs it is a button (a filter, a
+   jump to a tab); without, a plain figure. */
+function kpi(label,val,o={}){
+  const t=o.attrs?'button':'div';
+  /* o.txt: the value is a word ("Draft", a cycle name), set smaller than a
+     figure so it never crowds a tile on a phone. */
+  return `<${t} class="stat ${o.tone||''}" ${o.attrs||''}${o.title?` title="${esc(o.title)}"`:''}>
+    <span class="stat-main"><span class="stat-label">${esc(label)}</span><span class="stat-val${o.txt?' txt':''}">${val}</span>${
+      o.meta?`<span class="stat-meta">${o.meta}</span>`:''}</span></${t}>`;
+}
+/* The live chip beside the module name: a dot that pulses while something is
+   happening, a quieter tone when nothing is. */
+const liveChip=(label,tone='ok',pulse=true)=>
+  `<span class="live-pill ${tone}${pulse?' on':''}"><i class="live-dot" aria-hidden="true"></i>${esc(label)}</span>`;
+/* "a, b and c" — for the hero's sentence. */
+const andList=a=>a.length<2?(a[0]||''):a.slice(0,-1).join(', ')+' and '+a[a.length-1];
+const plural=(n,one,many)=>`${n} ${n===1?one:(many||one+'s')}`;
+/* The live strip keeps itself current. Once a second it rewrites the clock;
+   once a minute (and only when something changed) the shift pill, the field
+   note, the greeting and the day. Nothing else on the page is touched. */
+let _moTickMin=-1;
+function moTick(){
+  const clocks=document.querySelectorAll('[data-clock]');
+  if(!clocks.length) return;
+  const now=new Date(), t=fmtClock(now);
+  clocks.forEach(el=>{ if(el.dataset.time!==t) el.dataset.time=t; });
+  if(now.getMinutes()===_moTickMin) return;
+  _moTickMin=now.getMinutes();
+  const sh=crewShift(now);
+  document.querySelectorAll('[data-shift]').forEach(el=>{ if(el.dataset.shift!==sh.k) el.outerHTML=shiftPill(sh); });
+  const n=liveNote(now);
+  document.querySelectorAll('[data-note]').forEach(el=>{ if(el.dataset.note!==(n?n.k:'')) el.outerHTML=noteChip(n); });
+  const g=greetWord(now)+',';
+  document.querySelectorAll('[data-greet]').forEach(el=>{ if(el.textContent!==g) el.textContent=g; });
+  const d=dayLong(now);
+  document.querySelectorAll('[data-day]').forEach(el=>{ if(el.textContent!==d) el.textContent=d; });
+}
+setInterval(moTick,1000);
+/* A hero title whose hand-written line no longer fits beside the name wraps
+   it onto the next row — where a dash in front of it would read as a bullet.
+   This notices the wrap and drops the dash. It measures with the dash shown,
+   in one task, so the result is stable and never flickers. */
+function heroTitleFit(){
+  document.querySelectorAll('.hero-greet').forEach(h=>{
+    const a=h.querySelector('.hg-hi'), b=h.querySelector('.hg-tagline');
+    if(!a||!b) return;
+    h.classList.remove('is-wrapped');
+    h.classList.toggle('is-wrapped', b.offsetTop>a.offsetTop+a.offsetHeight/2);
+  });
+}
+{ let _hfT=0; addEventListener('resize',()=>{ clearTimeout(_hfT); _hfT=setTimeout(heroTitleFit,120); }); }
+if(document.fonts&&document.fonts.ready) document.fonts.ready.then(()=>heroTitleFit()).catch(()=>{});
+
+/* The Home sentence: at most two things that want a person, then the field. */
+function homeSentence(c){
+  const lead=c.emp?'Here is your day at a glance.':'Here is what is happening across the Media Crew today.';
+  const bits=[];
+  if(c.overdue) bits.push(`<b>${plural(c.overdue,'overdue deliverable')}</b> ${c.overdue===1?'needs':'need'} a decision`);
+  if(c.reviews) bits.push(`<b>${plural(c.reviews,'version')}</b> ${c.reviews===1?'awaits':'await'} review`);
+  if(c.due) bits.push(`<b>${plural(c.due,'deliverable')}</b> ${c.due===1?'is':'are'} due this week`);
+  const field=c.shoots?`<b>${plural(c.shoots,'shoot')}</b> ${c.shoots===1?'is':'are'} on today’s call sheet`
+                      :'nothing is scheduled in the field';
+  /* A quiet day says so, rather than leaving only the field status. */
+  if(!bits.length) bits.push('nothing is waiting on a decision');
+  const list=andList([...bits.slice(0,2),field]);
+  return `${lead} ${list.charAt(0).toUpperCase()}${list.slice(1)}.`;
+}
+const shortDate=s=>{const d=D.parse(s);return d.getDate()+' '+['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];};
+
 function viewDashboard(){
   /* The coordinator's operational picture replaces the production dashboard
      entirely — different job, different first screen. */
   if(isCoord())return viewCoordDashboard();
-  const u=me(), W=S.widgets;
+  const W=S.widgets;
   const shoots=todayShoots().filter(x=>isEmp()?DB.shoot_crew.some(c=>c.shoot_id===x.id&&c.user_id===S.me):true);
   const pend=pendingReportsToday();
   const dueWeek=deliverablesDue(TODAY,D.add(TODAY,7)).filter(d=>isEmp()?d.owner_id===S.me:true);
@@ -7053,57 +7758,71 @@ function viewDashboard(){
      shows an em dash rather than zero: nothing out and nobody knows are
      different things. */
   const eqSum2=eqSummaryAsk();
-  const out=eqSum2.data?eqSum2.data.checked_out:null;
-  const pctOut=eqSum2.data&&eqSum2.data.total?Math.round(eqSum2.data.checked_out/eqSum2.data.total*100):null;
-  const greet=NOW.getHours()<12?'Good morning':NOW.getHours()<17?'Good afternoon':'Good evening';
+  const eq=eqSum2.data;
+  const pctOut=eq&&eq.total?Math.round(eq.checked_out/eq.total*100):null;
   const dProj=active.length-lastMonth;
+  /* Same scope as the Pending Approvals widget: everyone above employee sees
+     the queue, an employee only the projects they manage. */
+  const reviews=pendingVersionReviews().filter(({d})=>!isEmp()||isPMof(d.project_id)).length;
+  const prog=dayProgress(S.me);
+  const inProd=active.filter(p=>['in_production','in_review'].includes(p.status)).length;
+  const preProd=active.length-inProd;
+  /* Who the week's deliverables belong to, by team: "3 Motion · 1 Stills". */
+  const byTeam={};
+  dueWeek.forEach(d=>{const t=teamOf(d.owner_id);const k=t?String(t.name).replace(/\s+team$/i,''):'Unassigned';byTeam[k]=(byTeam[k]||0)+1;});
+  const teamSplit=Object.entries(byTeam).sort((a,b)=>b[1]-a[1]).slice(0,2).map(([k,n])=>`${n} ${esc(k)}`).join(' • ');
+  const nowT=new Date(), hm=String(nowT.getHours()).padStart(2,'0')+':'+String(nowT.getMinutes()).padStart(2,'0');
+  const liveShoots=shoots.filter(s=>s.call_time&&String(s.call_time).slice(0,5)<=hm&&(!s.end_time||String(s.end_time).slice(0,5)>hm)).length;
+  const prevMon=D.month(D.add(TODAY,-30)).split(' ')[0];
+
+  const tile=o=>`<button class="stat hs ${o.tone||''}" ${o.go}>
+      <span class="hs-row">
+        <span class="stat-ico ${o.icoTone||''}">${ic(o.ico)}</span>
+        <span class="hs-txt"><span class="stat-label">${esc(o.label)}</span><span class="hs-sub">${o.sub}</span></span>
+        <span class="hs-num"><span class="stat-val">${o.val}</span>${o.pill||''}</span>
+      </span>
+      <span class="hs-foot">${o.foot}</span></button>`;
 
   return `
-  <div class="page-head">
-    <div>
-      <h1 class="page-title">${greet}, ${esc(u.full_name.split(' ')[0])}</h1>
-      <div class="page-sub">Here is what is happening across the Media Crew today.</div>
-    </div>
-    <div class="page-actions">
-      <button class="btn" data-menu="periodPick">${ic('calendar')} ${D.month(TODAY).replace("'"," 20")} ${ic('down')}</button>
-      <button class="btn primary" data-act="exportOpen" data-what="pack">${ic("download")} ${isEmp()?"Download my report":"Download Report"}</button>
-    </div>
-  </div>
+  ${heroBlock({
+    link: moduleAllowed(hashModule('#/media/my-day'))
+      ? `<a class="hero-switch" href="#/media/my-day">Switch to My Day view (${prog.pct}% logged)${ic('right')}</a>`:'',
+    sub: homeSentence({emp:isEmp(),overdue:overdue.length,reviews,due:dueWeek.length,shoots:shoots.length}),
+    actions: `<button class="btn" data-menu="periodPick">${ic('calendar')} ${D.month(TODAY).replace("'"," 20")} ${ic('down')}</button>
+      ${moduleAllowed('reports')?`<button class="btn brand-outline" data-act="logTask">${ic('plus')} Log Task (≤60s)</button>`:''}
+      <button class="btn primary" data-act="exportOpen" data-what="pack">${ic('download')} ${isEmp()?'Download my report':'Download Report'}</button>`
+  })}
 
   ${W.overview?`
   <div class="grid g4 sec">
-    <button class="stat" data-go="#/media/projects">
-      <span class="stat-ico">${ic('folder')}</span>
-      <span class="stat-main"><span class="stat-label">Active Projects</span>
-        <span class="stat-val">${active.length}</span>
-        <span class="stat-meta"><span class="delta-pill ${dProj>=0?'':'dn'}">${ic('trend')} ${dProj>=0?'+':''}${dProj}</span>
-          vs ${D.month(D.add(TODAY,-30))}</span></span></button>
+    ${tile({go:'data-go="#/media/projects"',ico:'folder',label:'Active Projects',
+      sub:isEmp()?'your ongoing work':'ongoing production',val:active.length,
+      pill:`<span class="hs-pill ${dProj>0?'up':dProj<0?'dn':''}">${ic(dProj<0?'down':'up')} ${dProj>0?'+':''}${dProj} vs ${prevMon}</span>`,
+      foot:`<span>${inProd} in production</span><b class="hs-tag">${preProd} pre-production</b>`})}
 
-    <button class="stat" data-go="#/media/calendar">
-      <span class="stat-ico blue">${ic('video')}</span>
-      <span class="stat-main"><span class="stat-label">Shoots Today</span>
-        <span class="stat-val">${shoots.length}</span>
-        <span class="stat-bullets">${shoots.slice(0,2).map(x=>`<span><i style="background:var(--brand-500)"></i>${esc(x.title.split('—')[0].trim())}</span>`).join('')
-          ||'<span class="mut3" style="font-size:12.5px">Nothing in the field today</span>'}</span></span></button>
+    ${tile({go:'data-go="#/media/calendar"',ico:'video',icoTone:'violet',label:'Shoots Today',
+      sub:'scheduled in the field',val:shoots.length,
+      pill:shoots.length?`<span class="hs-pill info">${liveShoots?liveShoots+' live':'Scheduled'}</span>`:`<span class="hs-pill">Standby</span>`,
+      foot:shoots.length
+        ?`<span>${esc(String(shoots[0].title||'').split('—')[0].trim())}${shoots.length>1?` +${shoots.length-1}`:''}</span><span class="hs-go">Call sheet ›</span>`
+        :`<span class="hs-mute">Nothing in the field today</span><span class="hs-go">Calendar ›</span>`})}
 
-    <button class="stat ${overdue.length?'alert':''}" data-go="#/media/pipeline">
-      <span class="stat-ico ${overdue.length?'red':'amber'}">${ic('file')}</span>
-      <span class="stat-main"><span class="stat-label">Deliverables Due</span>
-        <span class="stat-val">${dueWeek.length}</span>
-        <span class="stat-meta">${overdue.length?
-          `<span class="delta-pill dn">${ic('alert')} ${overdue.length} overdue</span>`:
-          `<span class="delta-pill">${ic('check')} none overdue</span>`}</span></span></button>
+    ${tile({go:'data-go="#/media/pipeline"',tone:overdue.length?'alert':'',ico:'file',icoTone:overdue.length?'red':'amber',
+      label:'Deliverables Due',sub:overdue.length?'urgent sign-off':'due in the next 7 days',val:dueWeek.length,
+      pill:overdue.length?`<span class="hs-pill dn">${ic('alert')} ${overdue.length} overdue</span>`
+                         :`<span class="hs-pill up">${ic('check')} none overdue</span>`,
+      foot:`<span>${teamSplit||'Nothing due this week'}</span><span class="hs-go">Resolve queue ›</span>`})}
 
-    <button class="stat" data-go="#/media/equipment">
-      <span class="stat-ico">${ic('camera')}</span>
-      <span class="stat-main"><span class="stat-label">Equipment Out</span>
-        ${eqSum2.data
-          ?`<span class="stat-val">${out}<small>/${eqSum2.data.total}</small></span>
-            <span class="f ac gap3 mt2" style="width:100%">${bar(pctOut)}<span class="small b">${pctOut}%</span></span>`
-          :eqSum2.err
-            ?`<span class="stat-val">—</span><span class="small st-danger-txt mt2">Could not be loaded</span>`
-            :`<span class="stat-val">—</span><span class="small mut3 mt2">Loading…</span>`}</span></button>
+    ${tile({go:'data-go="#/media/equipment"',ico:'camera',icoTone:'sky',label:'Equipment Out',
+      sub:eq?`${eq.available!=null?eq.available:eq.total-eq.checked_out} available in studio`
+         :eqSum2.err?'<span class="st-danger-txt">Could not be loaded</span>':'Loading…',
+      val:eq?`${eq.checked_out}<small>/${eq.total}</small>`:'—',
+      pill:eq?`<span class="hs-pill info">${pctOut}% in custody</span>`:'',
+      foot:eq?`<span class="hs-meter">${bar(pctOut,'sky')}</span><span class="hs-go">${eq.overdue?`${eq.overdue} overdue · `:''}Locker ›</span>`
+             :`<span class="hs-mute">${eqSum2.err?'Summary unavailable':'Asking the server…'}</span><span class="hs-go">Equipment ›</span>`})}
   </div>`:''}
+
+  ${W.projects?homeProjectsSection():''}
 
   ${isEmp()?'':teamStatusSection()}
 
@@ -7117,19 +7836,21 @@ function viewDashboard(){
     ${(!isEmp()||DB.project_assignments.some(a=>a.user_id===S.me&&a.is_project_manager&&!a.removed_at))?pendingApprovalsWidget():""}
   </div>
 
-  <div class="grid g21 sec">
-    <div class="fc" style="gap:20px">
-      ${W.attention?attentionWidget(overdue):''}
-      ${W.projects?runningProjectsWidget():''}
-    </div>
-    <div class="fc" style="gap:20px">
-      ${W.availability&&!isEmp()?availabilityWidget():''}
-      ${W.pending&&!isEmp()?pendingReportsWidget(pend):''}
-      ${W.equipment?equipmentDueWidget(custodyDueBy(TODAY, isEmp()?S.me:null).rows
-          .map(r=>({e:r.asset, h:r.custody}))):''}
-      ${W.contributors?contributorsWidget():''}
-    </div>
-  </div>
+  ${(()=>{
+    /* The exceptions and the people doing well share the wide column; who is
+       here, who has not reported and what is due back share the narrow one —
+       two columns of about the same height either way. */
+    const left=[W.attention?attentionWidget(overdue):'', W.contributors?contributorsWidget():''].filter(Boolean);
+    const right=[W.availability&&!isEmp()?availabilityWidget():'',
+      W.pending&&!isEmp()?pendingReportsWidget(pend):'',
+      W.equipment?equipmentDueWidget(custodyDueBy(TODAY, isEmp()?S.me:null).rows.map(r=>({e:r.asset, h:r.custody}))):''].filter(Boolean);
+    /* With one side switched off there is nothing to pair with, so the rest
+       share a row instead of leaving a hole beside them. */
+    return left.length&&right.length
+      ? `<div class="grid g21 sec"><div class="fc" style="gap:20px">${left.join('')}</div>
+          <div class="fc" style="gap:20px">${right.join('')}</div></div>`
+      : left.length||right.length?`<div class="grid g2 sec">${[...left,...right].join('')}</div>`:'';
+  })()}
 
   ${W.summary?summaryWidget():''}
   ${W.heatmap?`<div class="grid g2 sec">${heatmapWidget()}${upcomingWidget()}</div>`:''}
@@ -7138,6 +7859,53 @@ function viewDashboard(){
     <button class="btn sm" data-act="configWidgets">${ic('settings')} Configure widgets</button>
     <span class="small mut3" style="align-self:center">Widget visibility and order are configurable per role by Admin, and per user individually.</span>
   </div>`;
+}
+
+/* Active projects as folder cards — the four with the closest deadlines,
+   filterable by project type. Progress is weighted deliverable completion
+   (D3), shown beside the plain count so neither number is mistaken for the
+   other. */
+function homeProjectsSection(){
+  let ps=visibleProjects().filter(p=>['planning','in_production','in_review','approved'].includes(p.status));
+  if(isEmp())ps=ps.filter(p=>isOnProject(p.id)||p.owner_id===S.me);
+  const total=ps.length, ft=S.filters.homePType||'';
+  if(ft)ps=ps.filter(p=>String(p.project_type_id)===String(ft));
+  ps.sort((a,b)=>(a.end_date||'9')<(b.end_date||'9')?-1:1);
+  return `<section class="sec">
+    <div class="sec-row">
+      <div><h2 class="sec-title">Active Projects &amp; Workspaces</h2>
+        <div class="sec-sub">${isEmp()?'Projects you are on':'Closest deadlines first'} — progress is weighted deliverable completion</div></div>
+      <div class="sec-row-acts">
+        <button class="btn sm" data-menu="homeProjType">${ic('filter')} ${esc(ft?ptype(+ft).name:'All types')} ${ic('down')}</button>
+        ${moduleAllowed('projects')?`<a class="sec-link" href="#/media/projects">View all ${plural(total,'project')} ${ic('arrow')}</a>`:''}
+      </div>
+    </div>
+    ${ps.length?`<div class="grid g4 hp-grid">${ps.slice(0,4).map(projectFolderCard).join('')}</div>`
+      :`<div class="card"><div class="empty" style="padding:28px"><div class="e-ico">${ic('folder')}</div>
+          <p>${ft?'No active projects of this type.':'No active projects right now.'}</p></div></div>`}
+  </section>`;
+}
+function projectFolderCard(p){
+  const t=ptype(p.project_type_id);
+  const pr=projectProgress(p.id);
+  const ds=projectDeliverables(p.id).filter(d=>!['not_required','cancelled'].includes(d.status));
+  const done=ds.filter(isDeliveredOutput).length;
+  const crew=DB.project_assignments.filter(a=>a.project_id===p.id&&!a.removed_at).map(a=>a.user_id);
+  const dleft=p.end_date?D.diff(p.end_date,TODAY):null;
+  const tone={planning:'var(--fill-violet)',approved:'var(--fill-green)',in_review:'var(--fill-amber)'}[p.status]||'var(--fill-brand)';
+  return `<button class="pcard" data-go="#/media/projects/${p.id}" title="Open ${esc(p.name)}">
+    <span class="pc-top"><span class="pc-ico" style="--pc:${esc(t.color||'var(--brand-500)')}">${mIco(t.icon)||ic('folder')}</span>
+      ${statusPill(PROJ_STATUS,p.status)}</span>
+    <span class="pc-title">${esc(p.name)}</span>
+    <span class="pc-meta"><span class="code">${esc(p.code||'')}</span> • ${esc(t.name)}</span>
+    <span class="pc-prog">
+      <span class="pc-pl"><span>${done}/${ds.length} deliverables ready</span><b>${pr}%</b></span>
+      <span class="pc-bar" role="img" aria-label="${pr}% weighted progress"><i style="width:${pr}%;background:${tone}"></i></span>
+      <span class="pc-foot">${crew.length?`<span class="av-stack">${crew.slice(0,3).map(id=>avatar(id,'xs')).join('')}${crew.length>3?`<span class="av xs av-more">+${crew.length-3}</span>`:''}</span>`
+          :'<span class="pc-due">No crew yet</span>'}
+        <span class="pc-due ${dleft!=null&&dleft<0?'late':''}">${p.end_date?(dleft<0?Math.abs(dleft)+'d overdue':'Due '+shortDate(p.end_date)):'No deadline'}</span></span>
+    </span>
+  </button>`;
 }
 
 /* FR-1.6 — Production velocity */
@@ -7224,35 +7992,43 @@ function activityWidget(){
     S._recentAct={rows:null};
     MO_API.get('/activity/recent').then(r=>{S._recentAct={rows:r.activity};render();}).catch(()=>{S._recentAct={rows:[]};});
   }
+  /* A face, who and when on one line, what below. The live feed carries a
+     name, not an id, so a face is found by name and falls back to initials. */
+  const initials=n=>String(n||'?').trim().split(/\s+/).map(w=>w[0]).join('').slice(0,2).toUpperCase();
   if(window.__MO_LIVE__){
     const rows=(S._recentAct&&S._recentAct.rows)||[];
     return `<div class="card">
-      <div class="card-head"><h3>Recent Activity</h3></div>
+      <div class="card-head"><h3>Recent Activity<span class="sub">Your projects and your own actions, newest first</span></h3></div>
       <div class="card-body flush">
-        ${rows.slice(0,7).map(a=>`<div class="act-row" style="cursor:default">
-          <span class="lr-main"><b class="small">${esc(a.actor||'system')}</b>
-            <span class="small mut">${esc(String(a.action).replace(/[._]/g,' '))} · ${esc(a.entity_type||'')}${a.entity_id?' #'+a.entity_id:''}</span></span>
-          <span class="xsmall mut3 nowrap">${esc(String(a.occurred_at).replace('T',' ').slice(5,16))}</span></div>`).join('')
+        ${rows.slice(0,7).map(a=>{const who=a.actor||'system', u=DB.users.find(x=>x.full_name===who);
+          return `<div class="ra" style="cursor:default">
+          ${u?avatar(u.id,'sm sq'):`<span class="ra-tag" aria-hidden="true">${esc(initials(who))}</span>`}
+          <span class="ra-main">
+            <span class="ra-top"><b>${esc(who)}</b><span class="ra-time">${esc(String(a.occurred_at).replace('T',' ').slice(5,16))}</span></span>
+            <span class="ra-txt"><span class="ra-t">${esc(String(a.action).replace(/[._]/g,' '))} • ${esc(a.entity_type||'')}${a.entity_id?' #'+esc(a.entity_id):''}</span></span>
+          </span></div>`;}).join('')
           ||'<div class="empty" style="padding:24px"><p>No activity on your projects yet.</p></div>'}
       </div>
-      ${can('admin.audit')?`<button class="card-link" data-go="#/media/admin/audit">View all activity ${ic('right')}</button>`:''}
+      ${can('admin.audit')?`<button class="card-link" data-go="#/media/admin/audit">View full audit log ${ic('right')}</button>`:''}
     </div>`;
   }
   const acts=DB.audit_logs.slice(0,7);
   return `<div class="card">
-    <div class="card-head"><h3>Recent Activity</h3></div>
+    <div class="card-head"><h3>Recent Activity<span class="sub">Newest first, across the crew</span></h3></div>
     <div class="card-body flush" style="padding:0 0 4px">
       ${acts.map(a=>{const [cls,icon]=ICO[kindOf(a)];
         const t=a.occurred_at.slice(11,16)||'';
         const hr=t?(+t.slice(0,2)%12||12)+':'+t.slice(3)+' '+(+t.slice(0,2)<12?'AM':'PM'):'';
-        return `<button class="act-row" title="${esc(user(a.actor_id).full_name)} — ${esc(a.action)}">
-          ${avatar(a.actor_id,'sm')}
-          <span class="act-ico ${cls}">${ic(icon)}</span>
-          <span class="act-txt"><b>${esc(user(a.actor_id).full_name.split(' ')[0])} ${esc(user(a.actor_id).full_name.split(' ').slice(-1)[0][0])}.</b>
-            ${esc(verb(a))} <span class="mut">${esc(auditTarget(a).slice(0,42))}</span></span>
-          <span class="act-time">${hr||D.fmt(a.occurred_at.slice(0,10))}</span></button>`;}).join('')}
+        const fn=user(a.actor_id).full_name;
+        return `<button class="ra" title="${esc(fn)} — ${esc(a.action)}">
+          ${avatar(a.actor_id,'sm sq')}
+          <span class="ra-main">
+            <span class="ra-top"><b>${esc(fn)}</b><span class="ra-time">${hr||D.fmt(a.occurred_at.slice(0,10))}</span></span>
+            <span class="ra-txt"><span class="ra-ico ${cls}">${ic(icon)}</span>
+              <span class="ra-t">${esc(verb(a))} <span class="mut">${esc(auditTarget(a).slice(0,60))}</span></span></span>
+          </span></button>`;}).join('')}
     </div>
-    <button class="card-link" ${can('admin.audit')?'data-go="#/media/admin/audit"':''}>View all activity ${ic('right')}</button>
+    <button class="card-link" ${can('admin.audit')?'data-go="#/media/admin/audit"':''}>View full audit log ${ic('right')}</button>
   </div>`;
 }
 
@@ -7379,12 +8155,15 @@ function availabilityWidget(){
 }
 
 function pendingReportsWidget(pend){
+  /* The first eight by name; the rest are one tap away in Daily Reports, so a
+     late afternoon with the whole crew outstanding does not become a wall. */
+  const SHOW=8, more=pend.length-SHOW;
   return `<div class="card">
     <div class="card-head"><h3>Pending Daily Reports</h3>
-      
+
       <div class="ca"><span class="chip">${pend.length}</span></div></div>
     <div class="card-body flush">
-      ${pend.length?pend.map(id=>{
+      ${pend.length?pend.slice(0,SHOW).map(id=>{
         const r=DB.daily_reports.find(x=>x.user_id===id&&x.report_date===TODAY);
         return `<div class="list-row" data-go="#/media/team/${id}">
           ${avatarP(id,'sm')}<span class="lr-main"><b>${esc(personName(id))}</b>
@@ -7392,34 +8171,8 @@ function pendingReportsWidget(pend){
           </div>`;}).join(''):
         `<div class="empty" style="padding:26px"><h4>All in</h4><p>Everyone expected to report today has logged.</p></div>`}
     </div>
+    ${more>0&&moduleAllowed('reports')?`<button class="card-link" data-go="#/media/reports">${plural(more,'more person','more people')} — open Daily Reports ${ic('right')}</button>`:''}
     <div class="card-foot">Reminders go out automatically at 17:30 and 20:00. People on leave are not expected to report.</div>
-  </div>`;
-}
-
-function runningProjectsWidget(){
-  let ps=visibleProjects().filter(p=>['planning','in_production','in_review','approved'].includes(p.status));
-  if(isEmp())ps=ps.filter(p=>isOnProject(p.id)||p.owner_id===S.me);
-  ps.sort((a,b)=>(a.end_date||'9')<(b.end_date||'9')?-1:1);
-  return `<div class="card">
-    <div class="card-head"><h3>Running Projects<span class="sub">Progress is weighted deliverable completion</span></h3>
-      </div>
-    <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>Project</th><th class="hide-sm">Type</th><th style="width:150px">Progress</th>
-        <th class="hide-sm">Crew</th><th class="num">Deadline</th></tr></thead>
-      <tbody>${ps.slice(0,7).map(p=>{
-        const pr=projectProgress(p.id), dleft=D.diff(p.end_date,TODAY), t=ptype(p.project_type_id);
-        const crew=DB.project_assignments.filter(a=>a.project_id===p.id&&!a.removed_at).map(a=>a.user_id);
-        return `<tr class="click" data-go="#/media/projects/${p.id}">
-          <td><div class="f ac gap2"><span class="thumb" style="background:${t.color}">${ic('film')}</span>
-            <div><div class="t-main" style="font-size:13px">${esc(p.name)}</div>
-            <div class="t-sub code">${p.code}</div></div></div></td>
-          <td class="hide-sm"><span class="chip"><span class="dot" style="background:${t.color}"></span>${esc(t.name)}</span></td>
-          <td><div class="f ac gap2">${bar(pr,pr<30&&dleft<7?'danger':pr<60&&dleft<7?'warn':'')}<span class="xsmall b">${pr}%</span></div></td>
-          <td class="hide-sm">${avStack(crew,3)}</td>
-          <td class="num"><div style="font-size:12.5px;font-weight:600">${D.fmt(p.end_date)}</div>
-            <div class="t-sub" style="${dleft<3?'color:var(--danger);font-weight:700':''}">${dleft<0?Math.abs(dleft)+'d over':dleft+'d left'}</div></td>
-        </tr>`;}).join('')}</tbody></table></div></div>
-    <button class="card-link" data-go="#/media/projects">View all projects ${ic('right')}</button>
   </div>`;
 }
 
@@ -7909,22 +8662,31 @@ function viewMyDay(){
       </button>`;}).join(''):`<div class="empty" style="padding:20px"><p>Nothing checked out to you.</p></div>`}
     </div></div>`;
 
-  return `<div class="page-head">
-      <div class="f ac gap4">
-        ${ring(prog.pct,{size:'md',label:'today',
-          title:prog.total?prog.done+' of '+prog.total+' scheduled items logged today'
-                          :mins2h(prog.mins||0)+' logged today'})}
-        <div><div class="crumb">${D.fmtLong(TODAY)}</div>
-        <h1 class="page-title">My Day</h1>
-        <div class="page-sub">Everything scheduled for you today.</div></div>
-      </div>
-      <div class="page-actions">
-        ${expects?(r?reportPill(r):'<span class="status st-neutral"><span class="si">◌</span>Not started</span>'):
-          '<span class="status st-warn"><span class="si">◐</span>On leave</span>'}
-        <button class="btn" data-act="logTask">＋ Log task</button>
-        <button class="btn ${submitted?'':'primary'}" data-act="submitReport" ${submitted?'disabled':''}>${submitted?'Submitted ✔':'Submit report'}</button>
-      </div>
-    </div>
+  /* The same greeting as Home, for everyone: My Day is where most of the crew
+     starts, so this is the screen that says good morning to them by name. */
+  const daySub=andList([
+    myAssigns.length?`<b>${plural(myAssigns.length,'assignment')}</b> in your queue`:'nothing left in your queue',
+    `<b>${mins2h(mins)}</b> logged so far`,
+    ...(myDue.length?[`<b>${plural(myDue.length,'deliverable')}</b> still open`]:[])]);
+  /* My Day is a workspace, not a greeting: it says what the page is, in the
+     same voice as Home. The ring — how much of today is logged — is a size up
+     and sits in the middle; the actions stack in the order the day runs:
+     where the report stands, log the work, send the report. */
+  return `${heroBlock({
+      title:'My Day', tag:'Let’s create something great today', under:true,
+      link: moduleAllowed(hashModule('#/media/home'))
+        ? `<a class="hero-switch" href="#/media/home">Switch to Home overview${ic('right')}</a>`:'',
+      sub: `Everything scheduled for you today — ${daySub}.`,
+      mid: ring(prog.pct,{size:'lg',label:'today',
+        title:prog.total?prog.done+' of '+prog.total+' scheduled items logged today'
+                        :mins2h(prog.mins||0)+' logged today'}),
+      stack: true,
+      actions: `<div class="as-row"><span class="as-k">Today’s report</span>${expects
+          ?(r?reportPill(r):'<span class="status st-neutral"><span class="si">◌</span>Not started</span>')
+          :'<span class="status st-warn"><span class="si">◐</span>On leave</span>'}</div>
+        <button class="btn brand-outline" data-act="logTask">${ic('plus')} Log task <span class="as-hint">≤ 60s</span></button>
+        <button class="btn ${submitted?'':'primary'}" data-act="submitReport" ${submitted?'disabled':''}>${ic(submitted?'check':'send')} ${submitted?'Report submitted':'Submit report'}</button>`
+    })}
     ${expects?'':`<div class="note warn mb4"><b>No report expected today.</b> You have approved leave — reminders are
       suppressed and the day is excluded from consistency metrics.</div>`}
     <div class="myday-cols">
@@ -7990,13 +8752,33 @@ function viewReports(date){
                   ['team','Team calendar',myTeamIds().length],
                   ['compliance','Compliance',0]]:[])
   ];
-  return `<div class="page-head">
-      <div><h1 class="page-title">Daily Reports</h1>
-      <div class="page-sub">Your day's task log becomes your report. Submit once a day; unflagged reports approve automatically after 48 hours.</div></div>
-      <div class="page-actions">
-        <button class="btn" data-act="logTask">＋ Log task <span class="kbd">L</span></button>
-        <button class="btn primary" data-act="submitReport">Submit today’s report</button>
-      </div></div>
+  /* Today, for me — and for a reviewer, what is waiting on them. */
+  const mineToday=DB.daily_reports.find(x=>x.user_id===S.me&&x.report_date===TODAY);
+  const myTasks=mineToday?DB.report_tasks.filter(t=>t.daily_report_id===mineToday.id):[];
+  const myMins=myTasks.reduce((s,t)=>s+t.minutes,0);
+  const queue=reviewQueueCount();
+  const yetToReport=isEmp()?0:pendingReportsToday().length;
+  const cons=consistency(S.me);
+  const myState=mineToday?((REPORT_STATUS[mineToday.status]||{l:mineToday.status}).l):'Not started';
+  const sentIn=!!mineToday&&['submitted','approved','flagged','auto_approved'].includes(mineToday.status);
+  const toTab=k=>`data-tab="${k}" data-tabkey="reports"`;
+  return `${pageHero({icon:'clipboard',group:'Production',title:'Daily Reports',tag:'What the day really held',
+      live: !isEmp()&&queue?liveChip(`${queue} waiting for review`,'warn')
+          :!isEmp()&&yetToReport?liveChip(`${yetToReport} yet to report today`,'info')
+          :sentIn?liveChip('Your report is in','ok',false):liveChip(`${plural(myTasks.length,'task')} logged today`,'info'),
+      sub:`Your day’s task log becomes your report. Submit once a day; unflagged reports approve automatically after 48 hours —
+        today you have <b>${plural(myTasks.length,'task')}</b> and <b>${mins2h(myMins)}</b> logged, report <b>${esc(myState.toLowerCase())}</b>.`,
+      actions:`<button class="btn" data-act="logTask">${ic('plus')} Log task <span class="kbd">L</span></button>
+        <button class="btn primary" data-act="submitReport">${ic('send')} Submit today’s report</button>`,
+      kpis: isEmp()
+        ? [kpi('Tasks today',myTasks.length,{meta:mins2h(myMins)+' logged'}),
+           kpi('Today’s report',esc(myState),{attrs:toTab('mine'),txt:true,tone:mineToday&&mineToday.status==='returned'?'alert':''}),
+           kpi('Returned to you',queue,{attrs:toTab('mine'),tone:queue?'alert':'',meta:'needs a fix'}),
+           kpi('Consistency (30d)',cons+'<small>%</small>',{meta:'holidays and leave excluded'})]
+        : [kpi('Review queue',queue,{attrs:toTab('queue'),tone:queue?'alert':'',meta:'flagged, returned or edited'}),
+           kpi('Yet to report',yetToReport,{meta:'expected today'}),
+           kpi('My tasks today',myTasks.length,{attrs:toTab('mine'),meta:mins2h(myMins)+' logged'}),
+           kpi('My consistency (30d)',cons+'<small>%</small>',{meta:'holidays and leave excluded'})]})}
     <div class="tabs">${tabs.map(([k,l,c])=>`<button data-tab="${k}" data-tabkey="reports" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>
     ${tab==='mine'?reportsMine():tab==='queue'?reportsQueue():tab==='team'?reportsTeam():reportsCompliance()}`;
 }
@@ -8216,14 +8998,28 @@ function viewProjects(){
      Table and Calendar literally the same character. */
   const modes=[['list','List','list'],['table','Table','table'],['kanban','Kanban','board'],
                ['timeline','Timeline','timeline'],['calendar','Calendar','calendar'],['gallery','Gallery','gallery']];
-  return `<div class="page-head">
-      <div><h1 class="page-title">Projects</h1>
-      <div class="page-sub">Events, tours, deputations and campaigns.</div></div>
-      <div class="page-actions">
-        <button class="btn" data-menu="savedViews">◷ Saved views</button>
-        <button class="btn" data-act="exportOpen" data-what="projects">⇩ Export</button>
-        <button class="btn primary" data-act="newProject">＋ New project <span class="kbd">P</span></button>
-      </div></div>
+  /* The summary is of every project this viewer can see, not of the filtered
+     list below — the filters narrow the list, not the picture. */
+  const act=visibleProjects().filter(p=>['planning','in_production','in_review','approved'].includes(p.status));
+  const actIds=new Set(act.map(p=>p.id));
+  const inProd=act.filter(p=>['in_production','in_review'].includes(p.status)).length;
+  const endWeek=act.filter(p=>p.end_date&&p.end_date>=TODAY&&p.end_date<=D.add(TODAY,7)).length;
+  const past=act.filter(p=>p.end_date&&p.end_date<TODAY).length;
+  const openDl=DB.deliverables.filter(d=>!d.deleted_at&&actIds.has(d.project_id)
+    &&!['delivered','not_required','cancelled'].includes(d.status)).length;
+  return `${pageHero({icon:'folder',group:'Production',title:'Projects',tag:'Every story we’re telling',
+      live: past?liveChip(`${past} past their end date`,'bad')
+          :endWeek?liveChip(`${endWeek} ending this week`,'info'):liveChip(`${act.length} active`,'ok'),
+      sub:`Events, tours, deputations and campaigns — ${andList([`<b>${plural(act.length,'active project')}</b>`,
+        `<b>${inProd}</b> in production`,`<b>${endWeek}</b> ending in the next 7 days`])}.`,
+      actions:`<button class="btn" data-menu="savedViews">${ic('history')} Saved views</button>
+        <button class="btn" data-act="exportOpen" data-what="projects">${ic('download')} Export</button>
+        <button class="btn primary" data-act="newProject">${ic('plus')} New project <span class="kbd">P</span></button>`,
+      kpis:[kpi('Active projects',act.length,{meta:`${visibleProjects().length} in total`}),
+        kpi('In production',inProd,{meta:'shooting, editing or in review'}),
+        kpi('Ending this week',endWeek,{meta:'end date within 7 days'}),
+        kpi('Past end date',past,{tone:past?'alert':'',meta:past?'still open':'none'}),
+        kpi('Open deliverables',openDl,{meta:'across active projects'})]})}
 
     <div class="card mb4"><div class="card-body tight">
       <div class="f wrap gap2 ac">
@@ -8911,23 +9707,23 @@ function viewPipeline(){
   if(f.ptype.length)ds=ds.filter(d=>f.ptype.includes(proj(d.project_id).project_type_id));
   const cols=['not_started','in_progress','in_review','changes_requested','approved','delivered'];
   const over=ds.filter(d=>d.due_date&&d.due_date<TODAY&&!['delivered','not_required','cancelled'].includes(d.status));
-  return `<div class="page-head">
-      <div><h1 class="page-title">Production Pipeline</h1>
-      <div class="page-sub">${isEmp()?'Your deliverables.':'Every deliverable in the department.'}</div></div>
-      <div class="page-actions">
-        <button class="btn" data-act="exportOpen" data-what="pipeline">⇩ Export</button>
-        ${(!isEmp()||canOwnProjects().length)?`<button class="btn primary" data-act="newDeliverable">＋ Deliverable</button>`:''}</div></div>
-
-    <div class="grid g4 sec">
-      <div class="stat"><span class="stat-label">In flight</span><span class="stat-val">${ds.filter(d=>!['delivered','not_required','cancelled'].includes(d.status)).length}</span>
-        <span class="stat-meta">across ${new Set(ds.map(d=>d.project_id)).size} projects</span></div>
-      <div class="stat ${over.length?'alert':''}"><span class="stat-label">Overdue</span><span class="stat-val">${over.length}</span>
-        <span class="stat-meta">${over.length?'oldest '+Math.max(...over.map(d=>D.diff(TODAY,d.due_date)))+'d':'clean'}</span></div>
-      <div class="stat"><span class="stat-label">Awaiting review</span><span class="stat-val">${ds.filter(d=>d.status==='in_review').length}</span>
-        <span class="stat-meta">${pendingVersionReviews().length} versions pending</span></div>
-      <div class="stat"><span class="stat-label">Delivered (30d)</span><span class="stat-val">${ds.filter(d=>d.completed_at&&d.completed_at>=D.add(TODAY,-30)).length}</span>
-        <span class="stat-meta">weighted ${ds.filter(d=>d.completed_at&&d.completed_at>=D.add(TODAY,-30)).reduce((s,d)=>s+d.weight,0)}</span></div>
-    </div>
+  const flight=ds.filter(d=>!['delivered','not_required','cancelled'].includes(d.status));
+  const nProj=new Set(ds.map(d=>d.project_id)).size;
+  const oldest=over.length?Math.max(...over.map(d=>D.diff(TODAY,d.due_date))):0;
+  const inReview=ds.filter(d=>d.status==='in_review').length;
+  const done30=ds.filter(d=>d.completed_at&&d.completed_at>=D.add(TODAY,-30));
+  return `${pageHero({icon:'flow',group:'Production',title:'Production Pipeline',tag:'Keep it flowing',
+      live: over.length?liveChip(`${over.length} overdue · oldest ${oldest}d`,'bad')
+          :inReview?liveChip(`${inReview} in review`,'info'):liveChip('Everything on time','ok'),
+      sub:`${isEmp()?'Your deliverables, by status':'Every deliverable in the department, by status'} —
+        ${andList([`<b>${flight.length}</b> in flight across <b>${plural(nProj,'project')}</b>`,
+          over.length?`<b>${over.length}</b> overdue`:'nothing overdue',`<b>${inReview}</b> awaiting review`])}.`,
+      actions:`<button class="btn" data-act="exportOpen" data-what="pipeline">${ic('download')} Export</button>
+        ${(!isEmp()||canOwnProjects().length)?`<button class="btn primary" data-act="newDeliverable">${ic('plus')} Deliverable</button>`:''}`,
+      kpis:[kpi('In flight',flight.length,{meta:`across ${plural(nProj,'project')}`}),
+        kpi('Overdue',over.length,{tone:over.length?'alert':'',meta:over.length?'oldest '+oldest+'d':'clean'}),
+        kpi('Awaiting review',inReview,{meta:`${pendingVersionReviews().length} versions pending`}),
+        kpi('Delivered (30d)',done30.length,{meta:`weighted ${done30.reduce((s,d)=>s+d.weight,0)}`})]})}
 
     <div class="card mb4"><div class="card-body tight"><div class="f wrap gap2 ac">
       <input class="inp" style="max-width:250px" placeholder="Filter deliverables…" value="${esc(f.q)}" oninput="ACTIONS.pipeQ({},this)">
@@ -8987,13 +9783,25 @@ function viewLibrary(){
         onchange="ACTIONS.libFacet({key:'${key}',v:'${String(o.v).replace(/'/g,"\\'")}'})">
         <span class="fn">${esc(o.l)}</span><span class="fq">${n}</span></label>`;}).join('')}</div>`;
 
-  return `<div class="page-head">
-      <div><h1 class="page-title">Media Library</h1>
-      <div class="page-sub">Search everything the department has produced.</div></div>
-      <div class="page-actions">
-        <div class="btn-group"><button data-act="libView" data-v="table" class="${S.libView==='table'?'on':''}">▦ Table</button>
-          <button data-act="libView" data-v="gallery" class="${S.libView==='gallery'?'on':''}">▩ Gallery</button></div>
-        <button class="btn primary" data-act="exportOpen" data-what="library">⇩ Export ${rows.length} rows</button></div></div>
+  /* The archive as a whole; the facets and search below narrow the rows. */
+  const allD=DB.deliverables.filter(d=>!d.deleted_at);
+  const shipped=allD.filter(d=>d.status==='delivered').length;
+  const nProj=new Set(allD.map(d=>d.project_id)).size;
+  const links=(DB.drive_links||[]).filter(l=>l.entity_type==='deliverable').length;
+  const narrowed=rows.length!==allD.length;
+  return `${pageHero({icon:'gallery',group:'Assets',title:'Media Library',tag:'Everything we’ve made',
+      live: narrowed?liveChip(`${rows.length} of ${allD.length} match`,'info',false):liveChip(`${allD.length} in the archive`,'ok',false),
+      sub:`Search everything the department has produced —
+        ${andList([`<b>${plural(allD.length,'deliverable')}</b> across <b>${plural(nProj,'project')}</b>`,
+          `<b>${shipped}</b> delivered`,`<b>${plural(links,'Drive link')}</b> on record`])}.`,
+      actions:`<div class="btn-group"><button data-act="libView" data-v="table" class="${S.libView==='table'?'on':''}">${ic('table')} Table</button>
+          <button data-act="libView" data-v="gallery" class="${S.libView==='gallery'?'on':''}">${ic('gallery')} Gallery</button></div>
+        <button class="btn primary" data-act="exportOpen" data-what="library">${ic('download')} Export ${rows.length} rows</button>`,
+      kpis:[kpi('Deliverables',allD.length,{meta:'everything on record'}),
+        kpi('Delivered',shipped,{meta:allD.length?Math.round(shipped/allD.length*100)+'% of the archive':'—'}),
+        kpi('Projects',nProj,{meta:'with work in the library'}),
+        kpi('Drive links',links,{meta:'held against deliverables'}),
+        kpi('Showing',rows.length,{tone:narrowed?'sel':'',meta:narrowed?'after search and filters':'no filter applied'})]})}
 
     <div class="card mb4"><div class="card-body tight">
       <div class="f gap2 ac wrap">
@@ -9082,36 +9890,34 @@ function viewEquipment(){
      the catalog rather than drawing a panel whose tab is not on the bar. */
   const want=S.tab.equip||'catalog';
   const tab=tabs.some(t=>t[0]===want)?want:'catalog';
-  return `<div class="page-head">
-      <div><h1 class="page-title">Equipment</h1>
-      <div class="page-sub">Book, check out and return equipment.</div></div>
-      <div class="page-actions">
-        <button class="btn" data-act="openKiosk">▣ Kiosk mode</button>
-        <button class="btn" data-act="booking">＋ Book <span class="kbd">B</span></button>
+  const sm=EQ_LIST.summary;
+  return `${pageHero({icon:'camera',group:'Assets',title:'Equipment',tag:'Gear in good hands',
+      live: od.length?liveChip(`${plural(od.length,'item')} overdue`,'bad')
+          :sm&&sm.checked_out?liveChip(`${sm.checked_out} out with the crew`,'info')
+          :sm?liveChip('Everything is in','ok',false):liveChip('Asking the registry…','neutral',false),
+      sub: sm
+        ? `Book, check out and return equipment — ${andList([`<b>${sm.available}</b> of <b>${sm.total}</b> available now`,
+            `<b>${sm.checked_out}</b> checked out`,`<b>${sm.maintenance}</b> under maintenance`])}.`
+        : 'Book, check out and return equipment. The registry’s figures appear as soon as the server answers.',
+      actions:`<button class="btn" data-act="openKiosk">${ic('kiosk')} Kiosk mode</button>
+        <button class="btn" data-act="booking">${ic('calendar')} Book <span class="kbd">B</span></button>
         ${/* Scanning is how somebody standing at the shelf starts any task, so it
              is a button on the module rather than a tab inside it. */''}
-        <button class="btn" data-act="eqScan">▣ Scan</button>
-        ${can('equipment.manage')?`<button class="btn primary" data-act="newEquipment">＋ Add item</button>`:''}</div></div>
+        <button class="btn" data-act="eqScan">${ic('scan')} Scan</button>
+        ${can('equipment.manage')?`<button class="btn primary" data-act="newEquipment">${ic('plus')} Add item</button>`:''}`,
+      /* These four used to be reductions over every asset in /state. They are
+         now the summary GET /equipment returns beside the page — integers,
+         computed by the database over the same filters the list uses, so the
+         header describes what the catalog is showing. Until the first page
+         arrives they show a dash rather than a stale or invented number. */
+      kpis:[kpi('Total items',eqSum('total'),{meta:sm?money(sm.book_value||0)+' book value':'—'}),
+        kpi('Available now',eqSum('available'),{meta:sm?`${sm.checked_out} out · ${sm.booked} booked`:'—'}),
+        kpi('Overdue',od.length,{tone:od.length?'alert':'',meta:od.length?'escalating':'clean ledger'}),
+        kpi('Under maintenance',eqSum('maintenance'),{meta:EQ_MT.summary?EQ_MT.summary.open+' open records':'—'})]})}
 
     ${od.length?`<div class="note danger mb4"><b>${od.length} item${od.length>1?'s':''} overdue.</b>
       ${od.map(o=>`${esc(o.item.asset_tag)} — ${esc(user(o.tx.holder_id).full_name)} (${o.days}d)`).join(' · ')}.
       AUTO-3 escalation: holder → custodian → TL/Admin at 3 days. New checkouts blocked at 7 days.</div>`:''}
-
-    <div class="grid g4 sec">
-      ${/* These four used to be reductions over every asset in /state. They are
-           now the summary GET /equipment returns beside the page — integers,
-           computed by the database over the same filters the list uses, so the
-           header describes what the catalog is showing. Until the first page
-           arrives they show a dash rather than a stale or invented number. */''}
-      <div class="stat"><span class="stat-label">Total items</span><span class="stat-val">${eqSum('total')}</span>
-        <span class="stat-meta">${EQ_LIST.summary?money(EQ_LIST.summary.book_value||0)+' book value':'—'}</span></div>
-      <div class="stat"><span class="stat-label">Available now</span><span class="stat-val">${eqSum('available')}</span>
-        <span class="stat-meta">${EQ_LIST.summary?`${EQ_LIST.summary.checked_out} out · ${EQ_LIST.summary.booked} booked`:'—'}</span></div>
-      <div class="stat ${od.length?'alert':''}"><span class="stat-label">Overdue</span><span class="stat-val">${od.length}</span>
-        <span class="stat-meta">${od.length?'escalating':'clean ledger'}</span></div>
-      <div class="stat"><span class="stat-label">Under maintenance</span><span class="stat-val">${eqSum('maintenance')}</span>
-        <span class="stat-meta">${EQ_MT.summary?EQ_MT.summary.open+' open records':'—'}</span></div>
-    </div>
 
     <div class="tabs">${tabs.map(([k,l,c])=>`<button data-tab="${k}" data-tabkey="equip" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>
     ${tab==='dashboard'?eqDashboard():
@@ -11697,16 +12503,33 @@ function viewCalendar(){
   };
   const m=D.parse(S.cal.month);
   const agenda=[];for(let i=0;i<21;i++){const d=D.add(TODAY,i);const e=eventsFor(d);if(e.length)agenda.push({d,e});}
-  return `<div class="page-head">
-      <div><h1 class="page-title">Calendar</h1>
-      <div class="page-sub">
-        ${isEmp()?'Scoped to your work plus department events.':'Scoped to your team / department.'}</div></div>
-      <div class="page-actions">
+  /* The next two weeks at a glance, scoped exactly as the grid is. */
+  const to14=D.add(TODAY,13), to30=D.add(TODAY,30);
+  const shoots14=DB.shoots.filter(s=>s.shoot_date>=TODAY&&s.shoot_date<=to14&&s.status!=='cancelled')
+    .filter(s=>isEmp()?DB.shoot_crew.some(c=>c.shoot_id===s.id&&c.user_id===S.me):true).length;
+  const due14=DB.deliverables.filter(d=>d.due_date>=TODAY&&d.due_date<=to14&&!['delivered','cancelled','not_required'].includes(d.status))
+    .filter(d=>scoped(d.owner_id)).length;
+  const away=DB.leave_requests.filter(l=>l.status==='approved'&&TODAY>=l.starts_on&&TODAY<=l.ends_on).filter(l=>scoped(l.user_id)).length;
+  const hols=DB.holidays.filter(h=>h.date>=TODAY&&h.date<=to30);
+  const onToday=eventsFor(TODAY).length;
+  return `${pageHero({icon:'calendar',group:'Planning',title:'Calendar',tag:'Every shoot, every deadline',
+      live: onToday?liveChip(`${plural(onToday,'event')} today`,'info'):liveChip('A clear day','ok',false),
+      sub:`${isEmp()?'Your work plus department events':'Shoots, deadlines, leave and bookings for your team and department'} —
+        ${andList([`<b>${plural(shoots14,'shoot')}</b>`,`<b>${plural(due14,'deadline')}</b> in the next two weeks`,
+          hols.length?`<b>${esc(hols[0].name)}</b> on ${D.fmt(hols[0].date)}`:'no holiday this month'])}.`,
+      /* The month stepper is one control, so ‹ and › can never wrap away
+         from the month they move. */
+      actions:`<div class="btn-group" role="group" aria-label="Month">
+          <button data-act="calPrev" aria-label="Previous month">${ic('left')}</button>
+          <button data-act="calToday" title="Back to this month">${D.month(S.cal.month)}</button>
+          <button data-act="calNext" aria-label="Next month">${ic('right')}</button></div>
         <div class="btn-group">${['month','agenda'].map(v=>`<button data-act="calView" data-v="${v}" class="${S.cal.view===v?'on':''}">${v[0].toUpperCase()+v.slice(1)}</button>`).join('')}</div>
-        <button class="btn" data-act="icsFeed">⇩ ICS feed</button>
-        <button class="btn" data-act="calPrev">‹</button>
-        <button class="btn" data-act="calToday">${D.month(S.cal.month)}</button>
-        <button class="btn" data-act="calNext">›</button></div></div>
+        <button class="btn" data-act="icsFeed">${ic('download')} ICS feed</button>`,
+      kpis:[kpi('On today',onToday,{meta:'on the layers you have on'}),
+        kpi('Shoots (14d)',shoots14,{meta:isEmp()?'you are crewed on':'scheduled'}),
+        kpi('Deadlines (14d)',due14,{meta:'deliverables due'}),
+        kpi('Away today',away,{meta:'approved leave'}),
+        kpi('Holidays (30d)',hols.length,{meta:hols.length?esc(hols[0].name):'none coming up'})]})}
 
     <div class="card mb4"><div class="card-body tight"><div class="f wrap gap2 ac">
       <span class="small b">Layers</span>
@@ -11739,10 +12562,23 @@ function viewTeam(){
   const tab=S.tab.team||(can('team.workload')?'workload':'directory');
   const tabs=[...(can('team.workload')?[['workload','Workload',0]]:[]),['directory','Directory',DB.users.filter(u=>u.is_active).length],
     ['availability','Availability',0],['skills','Skills matrix',0],['structure','Teams & duties',0]];
-  return `<div class="page-head">
-      <div><h1 class="page-title">Team</h1>
-      <div class="page-sub">Workload, availability, skills and duties.</div></div>
-      <div class="page-actions">${can('admin.users')?`<button class="btn primary" data-act="addUser">＋ Add member</button>`:''}</div></div>
+  /* Who this viewer leads (all of the crew for an Admin), as they stand today. */
+  const ids=myTeamIds().filter(id=>user(id)&&user(id).is_active!==false);
+  const pres=ids.map(id=>presence(id));
+  const here=pres.filter(p=>p==='present').length, field=pres.filter(p=>p==='shoot'||p==='tour').length;
+  const off=pres.filter(p=>p==='leave'||p==='half_day').length;
+  const over=can('team.workload')?ids.filter(id=>workload(id).over).length:null;
+  const toTab=k=>`data-tab="${k}" data-tabkey="team"`;
+  return `${pageHero({icon:'users',group:'Planning',title:'Team',tag:'The crew behind the camera',
+      live: field?liveChip(`${field} in the field`,'info'):liveChip(`${here} on campus`,'ok'),
+      sub:`Workload, availability, skills and duties — ${andList([`<b>${plural(ids.length,'person','people')}</b>`,
+        `<b>${here}</b> on campus`,`<b>${field}</b> in the field`,`<b>${off}</b> away`])}.`,
+      actions:can('admin.users')?`<button class="btn primary" data-act="addUser">${ic('plus')} Add member</button>`:'',
+      kpis:[kpi('People',ids.length,{attrs:toTab('directory'),meta:'in your scope'}),
+        kpi('On campus',here,{attrs:toTab('availability')}),
+        kpi('In the field',field,{attrs:toTab('availability'),meta:'shoots and tours'}),
+        kpi('Away',off,{attrs:toTab('availability'),meta:'leave or half day'}),
+        ...(over==null?[]:[kpi('Overloaded',over,{attrs:toTab('workload'),tone:over?'alert':'',meta:'load index over 100%'})])]})}
     <div class="tabs">${tabs.map(([k,l,c])=>`<button data-tab="${k}" data-tabkey="team" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>
     ${tab==='workload'?teamWorkload():tab==='directory'?teamDirectory():tab==='availability'?teamAvailability():
       tab==='skills'?teamSkills():teamStructure()}`;
@@ -12087,28 +12923,28 @@ function creatorWorkspace(st){
      block above every screen spends vertical space to say what the sidebar is
      already saying. Every other page gets its own plain title. */
   const who = manage ? 'Creator Management' : (p.display_name||p.full_name||'Creator Network');
-  const head = landing
-    ? `<h1 class="page-title">${esc(who)}</h1><div class="page-sub">${manage
+  const sub = landing
+    ? (manage
         ? 'A Media Ops module. Directory, teams, work, points and money across the whole Creator Network.'
         : mode==='lead'
           ? 'Your creator team, and your own standing in the Parul Creator Network.'
-          : 'Your standing in the Parul Creator Network.'}</div>`
-    : `<h1 class="page-title">${esc(it.l)}</h1><div class="page-sub">${esc(CN_PAGE_SUB[it.k]||'')}</div>`;
-
+          : 'Your standing in the Parul Creator Network.')
+    : (CN_PAGE_SUB[it.k]||'');
+  /* The hand-written line belongs to the page a person lands on; the pages
+     behind it are tools, and keep a plain title. */
+  const tag = landing ? (manage?'Parul’s creator workforce':mode==='lead'?'Lead the squad':'Create, earn, grow') : '';
+  const team = p.team&&p.team.name ? p.team.name : '';
   const counts=st.counts, c=counts||{};
+  const total=counts?['active','inactive','suspended','archived'].reduce((a,k)=>a+(c[k]||0),0):0;
   return `
-  <div class="page-head">
-    <div>${head}</div>
-    ${manage?`<div class="page-actions">
-      <button class="btn" data-act="crNewTeam">＋ Team</button>
-      <button class="btn" data-act="cnNewEvent">＋ Event</button>
-      <button class="btn primary" data-act="crNewCreator">＋ Creator</button></div>`:''}
-  </div>
-  ${landing&&counts?`<div class="grid g4 sec">
-    ${[['Active','active'],['Inactive','inactive'],['Suspended','suspended'],['Archived','archived']]
-      .map(([l,k])=>`<div class="stat"><span class="stat-main">
-        <span class="stat-label">${l}</span><span class="stat-val">${c[k]||0}</span></span></div>`).join('')}
-  </div>`:''}
+  ${pageHero({icon:it.mi||it.i||'sparkles',group:'Creator Network',title:landing?who:it.l,tag,
+    live:liveChip(({manage:'Managing the network',lead:'Team lead',self:'Creator'})[mode]+(team?' · '+team:''),'info',false),
+    sub:landing&&counts?`${esc(sub.replace(/\.$/,''))} — <b>${c.active||0}</b> active of <b>${total}</b> on the network.`:esc(sub),
+    actions:manage?`<button class="btn" data-act="crNewTeam">${ic('plus')} Team</button>
+      <button class="btn" data-act="cnNewEvent">${ic('plus')} Event</button>
+      <button class="btn primary" data-act="crNewCreator">${ic('plus')} Creator</button>`:'',
+    kpis:landing&&counts?[['Active','active'],['Inactive','inactive'],['Suspended','suspended'],['Archived','archived']]
+      .map(([l,k])=>kpi(l,c[k]||0,{tone:k==='suspended'&&c[k]?'alert':''})):[]})}
   ${cnPage(it.k,st,manage,mode)}`;
 }
 
@@ -15104,10 +15940,27 @@ function viewPerformance(){
   const scope=can('team.workload')?myTeamIds():[S.me];
   const tab=S.tab.perf||'me';
   const tabs=[['me','My snapshots',0],...(can('team.workload')?[['team','Team',scope.length],['compare','Comparison',0]]:[])];
-  return `<div class="page-head">
-      <div><h1 class="page-title">Performance</h1>
-      <div class="page-sub">Monthly snapshots, computed from your logged work. They freeze when the month closes.</div></div>
-      <div class="page-actions"><button class="btn" data-act="exportOpen" data-what="performance">⇩ Export</button></div></div>
+  /* The quality side of my latest snapshot — the volume side (hours, tasks,
+     deliverables, weighted output) is what My snapshots opens with, so the
+     hero carries the rest rather than repeating it. */
+  const snaps=DB.performance_snapshots.filter(s=>s.user_id===S.me);
+  const last=snaps[snaps.length-1]||{}, prev=snaps[snaps.length-2]||{};
+  const dd=k=>{const a=last[k],b=prev[k];if(a==null||b==null)return '';const v=a-b;
+    return `<span class="delta ${v>0?'up':v<0?'dn':'flat'}">${v>0?'▲':v<0?'▼':'—'} ${Math.abs(v)}</span> vs last month`;};
+  const teamCons=can('team.workload')&&scope.length
+    ?Math.round(scope.reduce((a,id)=>a+consistency(id),0)/scope.length):null;
+  return `${pageHero({icon:'trend',group:'Insight',title:'Performance',tag:'Growth, made visible',
+      live: last.month?liveChip(`${D.month(last.month)} snapshot · open`,'info'):liveChip('No snapshot yet','neutral',false),
+      sub:`Monthly snapshots, computed from your logged work. They freeze when the month closes —
+        ${last.month?andList([`<b>${last.on_time_pct||0}%</b> on time`,`<b>${last.consistency_pct||0}%</b> reporting consistency`,
+          `<b>${plural(last.projects_touched||0,'project')}</b> touched this month`]):'your first one appears after a month of logged work'}.`,
+      actions:`<button class="btn" data-act="exportOpen" data-what="performance">${ic('download')} Export</button>`,
+      kpis:[kpi('On-time delivery',(last.on_time_pct||0)+'<small>%</small>',{meta:dd('on_time_pct')||'this month'}),
+        kpi('Reporting consistency',(last.consistency_pct||0)+'<small>%</small>',{meta:dd('consistency_pct')||'this month'}),
+        kpi('Projects touched',last.projects_touched||0,{meta:dd('projects_touched')||'this month'}),
+        kpi('Snapshots',snaps.length,{meta:'months on record'}),
+        ...(teamCons==null?[]:[kpi('Team consistency',teamCons+'<small>%</small>',{attrs:`data-tab="team" data-tabkey="perf"`,
+          meta:`${plural(scope.length,'person','people')}, last 30 days`})])]})}
     <div class="tabs">${tabs.map(([k,l,c])=>`<button data-tab="${k}" data-tabkey="perf" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>
     ${tab==='me'?perfMe(S.me):tab==='team'?perfTeam(scope):perfCompare(scope)}`;
 }
@@ -15202,10 +16055,10 @@ function perfCompare(scope){
    ========================================================================== */
 function viewKRA(){
   const cycle=DB.kra_cycles.find(c=>c.status==='active');
-  if(!cycle) return `<div class="page-head"><div>
-      <h1 class="page-title">KRA</h1>
-      <div class="page-sub">Objectives for the current cycle.</div></div>
-      <div class="page-actions">${(isAdmin()||isTL())?`<button class="btn primary" data-act="newKraCycle">＋ New cycle</button>`:''}</div></div>
+  if(!cycle) return `${pageHero({icon:'target',group:'Insight',title:'KRA',tag:'What we’re measured on',
+      live:liveChip('No cycle open','neutral',false),
+      sub:'Objectives for the current cycle — none is open yet, so there is nothing to weigh or score.',
+      actions:(isAdmin()||isTL())?`<button class="btn primary" data-act="newKraCycle">${ic('plus')} New cycle</button>`:''})}
     <div class="card"><div class="empty"><div class="e-ico">◎</div><h4>No active KRA cycle</h4>
       <p>${isAdmin()?'Open a cycle to start setting KRAs for the team.':'Your admin will open a KRA cycle here.'}</p></div></div>`;
   const scope=can('team.workload')?myTeamIds():[S.me];
@@ -15221,23 +16074,20 @@ function viewKRA(){
     return map[k.auto_metric_key]??0;
   };
   const score=mine.reduce((s,k)=>s+k.weight*((achievement(k)??70)/100),0);
-  return `<div class="page-head">
-      <div><h1 class="page-title">KRA</h1>
-      <div class="page-sub">Objectives for the current cycle.</div></div>
-      <div class="page-actions">${(isAdmin()||isTL())?`<button class="btn" data-act="newKraCycle">＋ New cycle</button>`:''}
-        <button class="btn" data-act="newKra" data-cid="${cycle.id}">＋ Add KRA</button>
-        <button class="btn primary" data-act="selfReview" data-cid="${cycle.id}">Start self review</button></div></div>
-
-    <div class="grid g4 sec">
-      <div class="stat"><span class="stat-label">Cycle</span><span class="stat-val" style="font-size:18px;padding-top:8px">${esc(cycle.label)}</span>
-        <span class="stat-meta">${D.fmt(cycle.starts_on)} → ${D.fmt(cycle.ends_on)}</span></div>
-      <div class="stat ${total!==100?'alert':''}"><span class="stat-label">Weightage</span><span class="stat-val">${total}<small>/100</small></span>
-        <span class="stat-meta">${total===100?'<span class="delta up">✔ valid</span>':'must total exactly 100 at submission'}</span></div>
-      <div class="stat"><span class="stat-label">Projected score</span><span class="stat-val">${score.toFixed(1)}</span>
-        <span class="stat-meta">Σ(weight × achievement)</span></div>
-      <div class="stat"><span class="stat-label">Days left in cycle</span><span class="stat-val">${D.diff(cycle.ends_on,TODAY)}</span>
-        <span class="stat-meta">reviews open at cycle end</span></div>
-    </div>
+  const left=D.diff(cycle.ends_on,TODAY);
+  return `${pageHero({icon:'target',group:'Insight',title:'KRA',tag:'What we’re measured on',
+      live: total!==100?liveChip(`Weights total ${total} of 100`,'warn')
+          :liveChip(`${plural(Math.max(0,left),'day')} left in ${cycle.label}`,'info'),
+      sub:`Objectives for the current cycle — ${andList([`<b>${plural(mine.length,'KRA')}</b> weighted <b>${total}/100</b>`,
+        `a projected score of <b>${score.toFixed(1)}</b>`])}.`,
+      actions:`${(isAdmin()||isTL())?`<button class="btn" data-act="newKraCycle">${ic('plus')} New cycle</button>`:''}
+        <button class="btn" data-act="newKra" data-cid="${cycle.id}">${ic('plus')} Add KRA</button>
+        <button class="btn primary" data-act="selfReview" data-cid="${cycle.id}">${ic('edit')} Start self review</button>`,
+      kpis:[kpi('Cycle',esc(cycle.label),{txt:true,meta:`${D.fmt(cycle.starts_on)} → ${D.fmt(cycle.ends_on)}`}),
+        kpi('Weightage',`${total}<small>/100</small>`,{tone:total!==100?'alert':'',
+          meta:total===100?'<span class="delta up">✔ valid</span>':'must total exactly 100 at submission'}),
+        kpi('Projected score',score.toFixed(1),{meta:'Σ(weight × achievement)'}),
+        kpi('Days left in cycle',left,{meta:'reviews open at cycle end'})]})}
 
     <div class="card mb4"><div class="card-head"><h3>My KRAs — ${esc(cycle.label)}</h3>
         </div>
@@ -15306,10 +16156,28 @@ function viewLeave(){
   const tabs=[...(mayApprove?[['approvals','Approvals',pendingLeaveCount()]]:[]),
     ['mine','My leave',DB.leave_requests.filter(l=>l.user_id===S.me).length],
     ['calendar','Leave calendar',0]];
-  return `<div class="page-head">
-      <div><h1 class="page-title">Leave</h1>
-      <div class="page-sub">Who's away, who's applied and who is covering.</div></div>
-      <div class="page-actions"><button class="btn primary" data-act="requestLeave">＋ Request leave</button></div></div>
+  /* Operational, not HR: who is away from the work today and this week, and
+     what is waiting on a decision. Scoped to the people this viewer leads. */
+  const scope=myTeamIds();
+  const awayToday=scope.filter(id=>leaveOn(id,TODAY)).length;
+  const pending=pendingLeaveCount();
+  const wk=D.add(TODAY,7);
+  const upcoming=DB.leave_requests.filter(l=>l.status==='approved'&&l.starts_on>TODAY&&l.starts_on<=wk&&scope.includes(l.user_id)).length;
+  const decide=mayApprove?myApprovalQueue():DB.leave_requests.filter(l=>l.user_id===S.me&&l.status==='pending');
+  const clashes=decide.filter(l=>{const c=leaveConflicts(l);return c.shoots.length||c.dls.length;}).length;
+  const toTab=k=>`data-tab="${k}" data-tabkey="leave"`;
+  return `${pageHero({icon:'umbrella',group:'Planning',title:'Leave',tag:'Rest is part of the work',
+      live: mayApprove&&pending?liveChip(`${pending} waiting for your decision`,'warn')
+          :awayToday?liveChip(`${awayToday} away today`,'info'):liveChip('Everyone in today','ok',false),
+      sub:`Who’s away, who’s applied and who is covering — ${andList([`<b>${awayToday}</b> away today`,
+        `<b>${pending}</b> ${mayApprove?'awaiting your decision':'of yours pending'}`,`<b>${upcoming}</b> starting in the next 7 days`])}.`,
+      actions:`<button class="btn primary" data-act="requestLeave">${ic('plus')} Request leave</button>`,
+      kpis:[kpi('Away today',awayToday,{attrs:toTab('calendar'),meta:mayApprove?'in your team':'you'}),
+        kpi(mayApprove?'Awaiting decision':'My pending',pending,{attrs:toTab(mayApprove?'approvals':'mine'),tone:mayApprove&&pending?'alert':''}),
+        kpi('Starting this week',upcoming,{attrs:toTab('calendar'),meta:'approved, next 7 days'}),
+        kpi('Clash with work',clashes,{attrs:toTab(mayApprove?'approvals':'mine'),tone:clashes?'alert':'',
+          meta:'pending, over a shoot or deadline'}),
+        kpi('My requests',DB.leave_requests.filter(l=>l.user_id===S.me).length,{attrs:toTab('mine'),meta:'all time'})]})}
     <div class="tabs">${tabs.map(([k,l,c])=>`<button data-tab="${k}" data-tabkey="leave" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>
     ${tab==='approvals'?leaveApprovals():tab==='mine'?leaveMine():leaveCalendar()}`;
 }
@@ -15430,13 +16298,28 @@ function viewAnalytics(which){
   const range=S.filters.anRange||'3M';
   const days=range==='1M'?30:range==='3M'?90:range==='6M'?180:365;
   const from=D.add(TODAY,-days);
-  return `<div class="page-head">
-      <div><h1 class="page-title">Analytics</h1>
-      <div class="page-sub">Department reporting. Every chart drills through to the records behind it.</div></div>
-      <div class="page-actions">
-        <div class="btn-group">${['1M','3M','6M','1Y'].map(r=>`<button data-act="anRange" data-v="${r}" class="${range===r?'on':''}">${r}</button>`).join('')}</div>
-        <button class="btn" data-act="metricDefs">ℹ Metric definitions</button>
-        <button class="btn primary" data-act="exportOpen" data-what="analytics">⇩ Export</button></div></div>
+  /* The department over the chosen range, with the same scope and the same
+     definitions the reports below use (Metric definitions spells them out). */
+  const scope=isAdmin()?DB.users.filter(u=>u.is_active).map(u=>u.id):myTeamIds();
+  const hrs=Math.round(scope.reduce((a,id)=>a+userHours(id,from,TODAY),0));
+  const shipped=DB.deliverables.filter(x=>scope.includes(x.owner_id)&&x.completed_at&&String(x.completed_at).slice(0,10)>=from);
+  const reps=DB.daily_reports.filter(r=>scope.includes(r.user_id)&&r.report_date>=from&&r.status!=='draft').length;
+  const cons=scope.length?Math.round(scope.reduce((a,id)=>a+consistency(id,Math.min(days,90)),0)/scope.length):0;
+  const shotDone=DB.shoots.filter(s=>s.status==='done'&&s.shoot_date>=from&&s.shoot_date<=TODAY).length;
+  const rangeName={'1M':'month','3M':'3 months','6M':'6 months','1Y':'year'}[range];
+  return `${pageHero({icon:'chart',group:'Insight',title:'Analytics',tag:'The numbers behind the work',
+      live:liveChip(`Last ${rangeName} · ${plural(scope.length,'person','people')}`,'info',false),
+      sub:`Department reporting. Every chart drills through to the records behind it — over the last ${rangeName}
+        ${andList([`<b>${hrs.toLocaleString('en-IN')}h</b> logged`,`<b>${plural(shipped.length,'deliverable')}</b> delivered`,
+          `<b>${plural(reps,'report')}</b> submitted`])}.`,
+      actions:`<div class="btn-group">${['1M','3M','6M','1Y'].map(r=>`<button data-act="anRange" data-v="${r}" class="${range===r?'on':''}">${r}</button>`).join('')}</div>
+        <button class="btn" data-act="metricDefs">${ic('info')} Metric definitions</button>
+        <button class="btn primary" data-act="exportOpen" data-what="analytics">${ic('download')} Export</button>`,
+      kpis:[kpi('Hours logged',hrs.toLocaleString('en-IN')+'<small>h</small>',{meta:`last ${rangeName}`}),
+        kpi('Delivered',shipped.length,{meta:`weighted ${shipped.reduce((s,x)=>s+(x.weight||0),0)}`}),
+        kpi('Reports submitted',reps,{meta:'drafts excluded'}),
+        kpi('Avg consistency',cons+'<small>%</small>',{meta:`per person, last ${Math.min(days,90)} days`}),
+        kpi('Shoots completed',shotDone,{meta:`last ${rangeName}`})]})}
 
     <div class="tabs">${ANALYTICS_REPORTS.map(([k,l])=>`<a href="#/media/analytics/${k}"
       style="padding:9px 13px;font-size:13px;font-weight:600;text-decoration:none;color:${w===k?'var(--primary-text)':'var(--text-2)'};
@@ -15667,13 +16550,30 @@ function viewBoards(){
     <div class="card"><div class="empty"><div class="e-ico">▥</div><h4>No boards yet</h4>
       <p>Management boards will appear here once they’re created.</p></div></div>`;
   const cols=DB.board_columns.filter(c=>c.board_id===b.id).sort((x,y)=>x.sort_order-y.sort_order);
-  return `<div class="page-head">
-      <div><h1 class="page-title">Management Boards</h1>
-      <div class="page-sub">Cards can stand alone or track a project or deliverable.</div></div>
-      <div class="page-actions">
-        <button class="btn" data-menu="boardSwitch">${esc(b.name)} ▾</button>
-        <button class="btn" data-act="boardSettings" data-bid="${b.id}">⚙</button>
-        <button class="btn primary" data-act="newCard" data-bid="${b.id}">＋ Card</button></div></div>
+  /* The board in one breath: what is on it, what is hot, what is tied to real
+     work, how far the checklists have got, and which columns are over their
+     WIP limit. */
+  const colIds=new Set(cols.map(c=>c.id));
+  const onBoard=DB.cards.filter(x=>colIds.has(x.column_id)&&!x.archived_at);
+  const hot=onBoard.filter(x=>['urgent','high'].includes(x.priority)).length;
+  const linked=onBoard.filter(x=>x.linked_entity_type).length;
+  const items=onBoard.flatMap(x=>x.checklist||[]), doneItems=items.filter(i=>i.is_done).length;
+  const overWip=cols.filter(c=>c.wip_limit&&onBoard.filter(x=>x.column_id===c.id).length>c.wip_limit).length;
+  return `${pageHero({icon:'board',group:'Production',title:'Production Board',tag:'Plan it, move it, ship it',
+      live: overWip?liveChip(`${plural(overWip,'column')} over WIP limit`,'warn')
+          :liveChip(`${b.name} · sync ${b.sync_status?'on':'off'}`,'info',!!b.sync_status),
+      sub:`Cards can stand alone or track a project or deliverable —
+        ${andList([`<b>${plural(onBoard.length,'card')}</b> across <b>${plural(cols.length,'column')}</b>`,
+          `<b>${hot}</b> urgent or high`,`<b>${linked}</b> linked to real work`])}.`,
+      actions:`<button class="btn" data-menu="boardSwitch">${ic('board')} ${esc(b.name)} ${ic('down')}</button>
+        <button class="btn" data-act="boardSettings" data-bid="${b.id}" title="Board settings" aria-label="Board settings">${ic('settings')}</button>
+        <button class="btn primary" data-act="newCard" data-bid="${b.id}">${ic('plus')} Card</button>`,
+      kpis:[kpi('Open cards',onBoard.length,{meta:`${plural(cols.length,'column')}`}),
+        kpi('Urgent or high',hot,{tone:hot?'alert':''}),
+        kpi('Linked',linked,{meta:'track a project or deliverable'}),
+        kpi('Checklists',items.length?Math.round(doneItems/items.length*100)+'<small>%</small>':'—',
+          {meta:items.length?`${doneItems} of ${items.length} items done`:'no checklist items'}),
+        kpi('Over WIP limit',overWip,{tone:overWip?'alert':'',meta:overWip?'columns to unblock':'all within limits'})]})}
 
     <div class="note mb4"><b>${esc(b.description)}</b> · Two-way sync with linked objects is
       <b>${b.sync_status?'on':'off'}</b> for this board — moving a linked card ${b.sync_status?'updates':'does not update'}
@@ -22903,7 +23803,18 @@ const MENUS = {
       fn:()=>toast('Period: '+l+' — dashboards and the leadership pack both honour this','ok')}))],
   velRange:()=>[{label:'Last month',on:(S.filters.dashRange||'3M')==='1M',fn:()=>{S.filters.dashRange='1M';render();}},
     {label:'Last 3 months',on:(S.filters.dashRange||'3M')==='3M',fn:()=>{S.filters.dashRange='3M';render();}},
-    {label:'Last 6 months',on:(S.filters.dashRange||'3M')==='6M',fn:()=>{S.filters.dashRange='6M';render();}}]
+    {label:'Last 6 months',on:(S.filters.dashRange||'3M')==='6M',fn:()=>{S.filters.dashRange='6M';render();}}],
+  /* Home's project cards, narrowed to one project type. Only types that have an
+     active project are offered, so no choice ever leads to an empty row. */
+  homeProjType:()=>{
+    const cur=String(S.filters.homePType||'');
+    const ids=[...new Set(visibleProjects().filter(p=>['planning','in_production','in_review','approved'].includes(p.status))
+      .filter(p=>!isEmp()||isOnProject(p.id)||p.owner_id===S.me).map(p=>p.project_type_id))];
+    return [{label_only:'Project type'},
+      {label:'All types',on:!cur,fn:()=>{S.filters.homePType='';render();}},
+      ...ids.map(id=>ptype(id)).sort((a,b)=>String(a.name).localeCompare(String(b.name)))
+        .map(t=>({label:t.name,on:cur===String(t.id),fn:()=>{S.filters.homePType=String(t.id);render();}}))];
+  }
 };
 function applyDelivStatus(dl,s){
   const t=dtype(dl.deliverable_type_id);
@@ -23173,16 +24084,14 @@ function viewSmcMyDay(){
   const awaiting = live.filter(a=>a.smc_status==='submitted');
   const prof = SMC.myday.profile||{};
 
-  const hour=new Date().getHours();
-  const greet = hour<12?'Good morning':hour<17?'Good afternoon':'Good evening';
-
   return `${smcStyles()}
   <div class="smc-day">
-    <div class="page-head">
-      <div><h1 class="page-title">${greet}, ${esc((me().full_name||'').split(' ')[0]||'there')}</h1>
-        <p class="page-sub">Your institute coverage for today${prof.institute?` · ${esc(prof.institute)}`:''}</p></div>
-      <div class="ca"><button class="btn sm" data-act="smcReload">Refresh</button></div>
-    </div>
+    ${heroBlock({
+      title:'My Day', tag:'Let’s create something great today', under:true,
+      sub: `Your institute coverage for today${prof.institute?` · ${esc(prof.institute)}`:''} —
+        ${andList([`<b>${plural(today.length,'assignment')}</b> today`,`<b>${awaiting.length}</b> awaiting review`])}.`,
+      actions: `<button class="btn" data-act="smcReload">${ic('refresh')} Refresh</button>`
+    })}
 
     <div class="smc-sum">
       ${smcSum('Today', today.length, 'today')}
@@ -23219,10 +24128,11 @@ function viewSmcMyDay(){
 const smcSum = (label,n,tone) => `<div class="smc-sum-c ${tone||''}">
   <b>${n}</b><span>${esc(label)}</span></div>`;
 
-function smcSkeleton(msg){
+/* withHead=false: the caller has already drawn its own hero (SMC Management),
+   so only the placeholder cards are wanted. */
+function smcSkeleton(msg,withHead=true){
   return `${smcStyles()}<div class="smc-day">
-    <div class="page-head"><div><h1 class="page-title">My Day</h1>
-      <p class="page-sub">${esc(msg)}</p></div></div>
+    ${withHead?heroBlock({title:'My Day',tag:'Let’s create something great today',under:true,sub:esc(msg)}):''}
     ${[1,2].map(()=>`<div class="smc-card skel"><div class="sk-l w60"></div>
       <div class="sk-l w40"></div><div class="sk-l w80"></div></div>`).join('')}
   </div>`;
@@ -23474,33 +24384,38 @@ async function smcRefreshBoth(){
 function viewSmcManagement(){
   if(!can('smc.manage')) return roleDenied("You don't have permission to view SMC Management.");
   const M=SMC.mgmt;
-  if(M.loading && !M.overview) return smcSkeleton('Loading SMC data…');
-  if(M.err && !M.overview) return `<div class="empty"><div class="e-ico">⚠</div>
+  /* The card is the same whatever state the data is in, so the page never
+     jumps from a bare title to a hero once the figures arrive. */
+  const hero=o=>pageHero({icon:'megaphone',group:'SMC Network',title:'SMC Management',tag:'Every institute, covered',
+    live: !o?liveChip(M.err?'Could not reach the server':'Loading…',M.err?'bad':'neutral',false)
+        :o.unaccepted?liveChip(`${o.unaccepted} not yet accepted`,'bad')
+        :o.assignments_today?liveChip(`${plural(o.assignments_today,'assignment')} today`,'ok'):liveChip('Nothing scheduled today','neutral',false),
+    sub: o?`Manage institute coverage, members, assignments and submissions —
+        ${andList([`<b>${plural(o.members||0,'member')}</b> covering <b>${plural(o.institutes_covered||0,'institute')}</b>`,
+          `<b>${o.assignments_today||0}</b> on today`,`<b>${o.submitted||0}</b> waiting for review`])}.`
+      :'Manage institute coverage, members, assignments and submissions.',
+    actions:`<button class="btn" data-act="smcMgmtReload">${ic('refresh')} Refresh</button>
+      ${o?`<button class="btn primary" data-act="smcNewAssignment">${ic('plus')} New assignment</button>`:''}`,
+    /* Cards are filters, not decoration (§16): each opens the tab it summarises. */
+    kpis: o?[smcStat('Total members',o.members,'members'),
+      smcStat('Active',o.active_members,'members'),
+      smcStat('Institutes covered',o.institutes_covered,'institutes'),
+      smcStat("Today's assignments",o.assignments_today,'coverage'),
+      smcStat('Unaccepted',o.unaccepted,'assignments','assigned',o.unaccepted?'bad':''),
+      smcStat('In progress',o.in_progress,'assignments','in_progress'),
+      smcStat('Submitted',o.submitted,'submissions','submitted',o.submitted?'warn':''),
+      smcStat('Revision required',o.revision_required,'submissions','revision_required',o.revision_required?'bad':''),
+      smcStat('Missed',o.missed,'assignments','missed',o.missed?'bad':'')]:[]});
+  if(M.loading && !M.overview) return `${hero(null)}${smcSkeleton('Loading SMC data…',false)}`;
+  if(M.err && !M.overview) return `${hero(null)}<div class="card"><div class="empty"><div class="e-ico">⚠</div>
     <h4>We could not load SMC data</h4><p>${esc(M.err)}</p>
-    <button class="btn primary" data-act="smcMgmtReload">Try again</button></div>`;
-  if(!M.overview){ smcMgmtLoad(); return smcSkeleton('Loading SMC data…'); }
+    <button class="btn primary" data-act="smcMgmtReload">Try again</button></div></div>`;
+  if(!M.overview){ smcMgmtLoad(); return `${hero(null)}${smcSkeleton('Loading SMC data…',false)}`; }
 
   const tab=S.tab.smc||'overview';
   const o=M.overview;
   return `${smcStyles()}${smcMgmtStyles()}
-  <div class="page-head">
-    <div><h1 class="page-title">SMC Management</h1>
-      <p class="page-sub">Manage institute coverage, members, assignments and submissions.</p></div>
-    <div class="ca"><button class="btn sm" data-act="smcMgmtReload">Refresh</button>
-      <button class="btn sm primary" data-act="smcNewAssignment">＋ New assignment</button></div>
-  </div>
-
-  <div class="smc-stats">
-    ${smcStat('Total members',o.members,'members')}
-    ${smcStat('Active',o.active_members,'members')}
-    ${smcStat('Institutes covered',o.institutes_covered,'institutes')}
-    ${smcStat("Today's assignments",o.assignments_today,'coverage')}
-    ${smcStat('Unaccepted',o.unaccepted,'assignments','assigned',o.unaccepted?'bad':'')}
-    ${smcStat('In progress',o.in_progress,'assignments','in_progress')}
-    ${smcStat('Submitted',o.submitted,'submissions','submitted',o.submitted?'warn':'')}
-    ${smcStat('Revision required',o.revision_required,'submissions','revision_required',o.revision_required?'bad':'')}
-    ${smcStat('Missed',o.missed,'assignments','missed',o.missed?'bad':'')}
-  </div>
+  ${hero(o)}
 
   <div class="tabs mb4">${SMC_TABS.map(([k,l])=>
     `<button class="tab${tab===k?' on':''}" data-tab="${k}" data-tabkey="smc">${esc(l)}</button>`).join('')}</div>
@@ -23515,9 +24430,9 @@ function viewSmcManagement(){
 }
 
 /* Cards are filters, not decoration (§16): each opens the tab it summarises. */
-const smcStat=(label,n,tab,status,tone)=>`<button class="smc-stat ${tone||''}"
-  data-act="smcJump" data-tab="${tab}"${status?` data-status="${status}"`:''}>
-  <b>${esc(String(n??0))}</b><span>${esc(label)}</span></button>`;
+const smcStat=(label,n,tab,status,tone)=>kpi(label,esc(String(n??0)),{
+  attrs:`data-act="smcJump" data-tab="${tab}"${status?` data-status="${status}"`:''}`,
+  tone:tone==='bad'?'alert':tone||''});
 
 function smcTabOverview(){
   const M=SMC.mgmt, gaps=M.assignments.filter(a=>
