@@ -644,6 +644,61 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     return true;
   }
 
+  /* ── Project-scoped authority ─────────────────────────────────────────────
+     assignableMemberIds() answers WHO a lead may put on work. These answer the
+     other half: WHICH PROJECTS they may act on. Being a Team Lead somewhere is
+     not standing on a project routed to somebody else's team, so no
+     project-scoped route may stop at isMoTL().
+
+     A project belongs to the lead of its team. Projects created before
+     mo_projects.team_id existed have none, so for those the Team Lead who owns
+     the project stands in — owner_id has always carried the lead. Re-read on
+     every request, so a change of team lead takes effect immediately. */
+  async function isTeamLeadOfProject(actor: CurrentUser, projectId: number): Promise<boolean> {
+    if (!isMoTL(actor) || !projectId) return false;
+    const p = (await pool.query(`SELECT team_id, owner_id FROM mo_projects WHERE id=$1`, [projectId])).rows[0];
+    if (!p) return false;
+    if (p.team_id == null) return String(p.owner_id) === actor.id;
+    return !!(await pool.query(
+      `SELECT 1 FROM mo_teams WHERE id=$1 AND lead_user_id=$2 AND is_active AND archived_at IS NULL`,
+      [p.team_id, actor.id])).rows[0];
+  }
+
+  async function isProjectPM(actor: CurrentUser, projectId: number): Promise<boolean> {
+    return !!(await pool.query(
+      `SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND is_project_manager AND removed_at IS NULL`,
+      [projectId, actor.id])).rows[0];
+  }
+
+  /** Who may run a project day to day: Admin, its Team Lead, or its owner/PM.
+      A PM who is not the lead still schedules and allocates — but only inside
+      their own assignable scope, which assertAssignable() keeps. */
+  async function canManageProject(actor: CurrentUser, projectId: number): Promise<boolean> {
+    if (isMoAdmin(actor) || await isTeamLeadOfProject(actor, projectId)) return true;
+    const owner = (await pool.query(`SELECT owner_id FROM mo_projects WHERE id=$1`, [projectId])).rows[0]?.owner_id;
+    return String(owner ?? "") === actor.id || await isProjectPM(actor, projectId);
+  }
+
+  /** Who may review and approve a project's deliverables: Admin, or its Team Lead. */
+  async function canReviewProject(actor: CurrentUser, projectId: number): Promise<boolean> {
+    return isMoAdmin(actor) || await isTeamLeadOfProject(actor, projectId);
+  }
+
+  /** The person a submission should reach: the project team's lead, else (a
+      legacy project) its owner when they are a Team Lead, else the Admins. */
+  async function reviewerIdsFor(projectId: number): Promise<string[]> {
+    const r = (await pool.query(
+      `SELECT CASE WHEN p.team_id IS NOT NULL THEN t.lead_user_id
+                   WHEN o.role = 'sub_admin' AND o.team = 'media' THEN p.owner_id END AS lead
+         FROM mo_projects p
+         LEFT JOIN mo_teams t ON t.id = p.team_id AND t.is_active AND t.archived_at IS NULL
+         LEFT JOIN users o ON o.id = p.owner_id
+        WHERE p.id = $1`, [projectId])).rows[0];
+    if (r?.lead) return [String(r.lead)];
+    return (await pool.query(
+      `SELECT id FROM users WHERE team='media' AND role IN ('admin','super_admin')`)).rows.map((x) => String(x.id));
+  }
+
   // Per-user module access (allowed_modules). Admins bypass; NULL = unrestricted
   // (role-based). Backend defense-in-depth behind the client's nav/route gating.
   async function requireModule(res: express.Response, u: CurrentUser, key: string): Promise<boolean> {
@@ -1302,7 +1357,19 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        deliverable. Resolved server-side from the team id, so a forged
        lead_user_id from the browser cannot put work on someone who does not
        lead that team. */
-    const teamId = b.team_id ? Number(b.team_id) : null;
+    let teamId = b.team_id ? Number(b.team_id) : null;
+    /* A Team Lead raises work for their OWN team. Routing a project to another
+       team is the Coordinator's call (or an Admin's) — a lead naming someone
+       else's team would hand that lead work over their head. A lead who names
+       no team gets the one they lead. */
+    if (isMoTL(u)) {
+      const mine = (await pool.query(
+        `SELECT id FROM mo_teams WHERE lead_user_id=$1 AND is_active AND archived_at IS NULL ORDER BY id`, [u.id]))
+        .rows.map((r) => Number(r.id));
+      if (teamId && !mine.includes(teamId))
+        return sendError(res, 403, "A Team Lead can only create projects for their own team.");
+      if (!teamId && mine.length === 1) teamId = mine[0];
+    }
     let leadId: string | null = null, teamName: string | null = null;
     if (teamId) {
       const t = await resolveTeamLead(teamId);
@@ -1451,16 +1518,15 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const from = cur.rows[0].status as string;
     if (!(PROJ_TRANSITIONS[from] ?? []).includes(to))
       return sendError(res, 400, `BR-1: ${from} → ${to} is not a valid transition.`);
-    // §16: TL/Admin (or PM/owner) may move status; only Admin may archive.
-    const isOwnerPM = cur.rows[0].owner_id === u.id;
+    // §16: the project's own lead, Admin, or its owner/PM may move status; only Admin may archive.
     // BR-11 / FR-3.6 — the approval gate is its OWN capability: an employee may move
     // their own project through production states, but NEVER approve a proposal
     // (that would let them approve their own gated project — audit finding 9.1).
-    if (from === "proposed" && to === "approved" && !(isMoAdmin(u) || isMoTL(u)))
-      return sendError(res, 403, "BR-11: only a Team Lead or Admin may approve a proposed project.");
+    if (from === "proposed" && to === "approved" && !(isMoAdmin(u) || await isTeamLeadOfProject(u, id)))
+      return sendError(res, 403, "BR-11: only the project's Team Lead or an Admin may approve a proposed project.");
     if (to === "archived" && !isMoAdmin(u)) return sendError(res, 403, "Only Admin may archive (BR-1).");
     if (from === "archived" && !isMoAdmin(u)) return sendError(res, 403, "BR-12: only Admin may un-archive.");
-    if (!(isMoAdmin(u) || isMoTL(u) || isOwnerPM)) return sendError(res, 403, "You cannot change this project's status.");
+    if (!(await canManageProject(u, id))) return sendError(res, 403, "You cannot change this project's status.");
     await pool.query(
       `UPDATE mo_projects SET status=$1,
          archived_at=CASE WHEN $1='archived' THEN NOW() WHEN $3 THEN NULL ELSE archived_at END,
@@ -1472,8 +1538,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   app.post(`${P}/projects/:id/assignments`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may assign crew.");
     const id = parseInt(getSingleParam(req.params.id), 10);
+    if (!(isMoAdmin(u) || await isTeamLeadOfProject(u, id)))
+      return sendError(res, 403, "Only the project's Team Lead or an Admin may assign crew.");
     const b = req.body as Record<string, unknown>;
     // A4: clean 400s instead of FK-violation 500s.
     if (!b.user_id || typeof b.user_id !== "string") return sendError(res, 400, "user_id is required.");
@@ -1501,15 +1568,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   app.post(`${P}/projects/:id/deliverables`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const pid = parseInt(getSingleParam(req.params.id), 10);
-    // §16: "Create/edit deliverables — Employee: on own projects." Owner or PM only.
-    if (!(isMoAdmin(u) || isMoTL(u))) {
-      const own = await pool.query(
-        `SELECT 1 FROM mo_projects p WHERE p.id=$1 AND (p.owner_id=$2
-            OR EXISTS (SELECT 1 FROM mo_project_assignments a WHERE a.project_id=p.id AND a.user_id=$2 AND a.is_project_manager AND a.removed_at IS NULL))`,
-        [pid, u.id]);
-      if (!own.rows[0]) return sendError(res, 403, "§16: employees may create deliverables only on their own projects (owner or PM).");
-    }
+    // §16: "Create/edit deliverables" — the project's lead, Admin, or its owner/PM.
+    if (!(await canManageProject(u, pid)))
+      return sendError(res, 403, "§16: only the project's Team Lead, owner/PM or an Admin may add deliverables.");
     const b = req.body as Record<string, unknown>;
+    // Naming an owner is an assignment — same team scope as every other path.
+    if (b.owner_id && !(await assertAssignable(res, u, [String(b.owner_id)]))) return;
     const title = String(b.title ?? "").trim();
     if (!title) return sendError(res, 400, "Title is required.");
     const typeId = Number(b.deliverable_type_id);
@@ -1562,13 +1626,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const id = parseInt(getSingleParam(req.params.id), 10);
     const cur = (await pool.query(`SELECT * FROM mo_deliverables WHERE id=$1`, [id])).rows[0];
     if (!cur) return sendError(res, 404, "Deliverable not found.");
-    if (!(isMoAdmin(u) || isMoTL(u))) {
-      const own = await pool.query(
-        `SELECT 1 FROM mo_projects p WHERE p.id=$1 AND (p.owner_id=$2
-            OR EXISTS (SELECT 1 FROM mo_project_assignments a WHERE a.project_id=p.id AND a.user_id=$2 AND a.is_project_manager AND a.removed_at IS NULL))`,
-        [cur.project_id, u.id]);
-      if (!own.rows[0]) return sendError(res, 403, "Only a Team Lead, Admin, or the project owner/PM may schedule work.");
-    }
+    if (!(await canManageProject(u, Number(cur.project_id))))
+      return sendError(res, 403, "Only the project's Team Lead, owner/PM or an Admin may schedule work.");
     const b = req.body as Record<string, unknown>;
     const date = b.scheduled_date == null || b.scheduled_date === "" ? null : String(b.scheduled_date);
     if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return sendError(res, 400, "scheduled_date must be YYYY-MM-DD (or null to unschedule).");
@@ -1597,22 +1656,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   }));
 
   // ── Edit a deliverable's due date (PRD §4/§5/§7) ─────────────────────────
-  // Admin: any project. Team Lead: only projects whose crew are on a team they
-  // lead. Employee: read-only. A hand-picked date flips due_date_source to
-  // 'manual' so a later project-start change never overwrites it (§9).
+  // Admin: any project. Team Lead: only their own team's projects. Employee:
+  // read-only. A hand-picked date flips due_date_source to 'manual' so a later
+  // project-start change never overwrites it (§9).
   async function canEditProjectDates(actor: CurrentUser, projectId: number): Promise<boolean> {
-    if (isMoAdmin(actor)) return true;
-    if (!isMoTL(actor)) return false;                       // employees are read-only
-    const scope = await assignableMemberIds(actor);
-    const { rows } = await pool.query(
-      `SELECT p.owner_id, p.created_by,
-              COALESCE(ARRAY(SELECT a.user_id FROM mo_project_assignments a
-                              WHERE a.project_id=p.id AND a.removed_at IS NULL), '{}') AS crew
-         FROM mo_projects p WHERE p.id=$1`, [projectId]);
-    if (!rows[0]) return false;
-    const people = [String(rows[0].owner_id), String(rows[0].created_by), ...(rows[0].crew as string[]).map(String)];
-    // The project belongs to this lead if they own it or anyone on it is theirs.
-    return people.some((id) => scope.has(id));
+    return isMoAdmin(actor) || await isTeamLeadOfProject(actor, projectId);
   }
 
   app.patch(`${P}/deliverables/:id/due-date`, asyncHandler(async (req, res) => {
@@ -1953,12 +2001,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const wt = (await pool.query(`SELECT * FROM mo_work_types WHERE id=$1`, [Number(b.work_type_id)])).rows[0];
     if (!wt) return sendError(res, 400, "Unknown work type.");
     if (!wt.is_active || wt.archived_at) return sendError(res, 400, "That work type is archived or disabled — pick an active one.");
-    // Both templates need assign rights; shoots additionally allow the PM.
-    const isPMrow = (await pool.query(
-      `SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND is_project_manager AND removed_at IS NULL`,
-      [pid, u.id])).rows[0];
-    if (!(isMoAdmin(u) || isMoTL(u) || isPMrow))
-      return sendError(res, 403, "Only a PM, Team Lead or Admin may assign work.");
+    // Assigning work is running the project: its lead, its owner/PM, or Admin.
+    if (!(await canManageProject(u, pid)))
+      return sendError(res, 403, "Only the project's Team Lead, PM or an Admin may assign work.");
 
     if (wt.form_template === "shoot") {
       if (!String(b.title ?? "").trim()) return sendError(res, 400, "Title is required.");
@@ -2026,11 +2071,18 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // POST /projects/:id/shoots endpoint was the second, divergent creation path
   // (no work type, no assignable-crew check, no attribution) and is gone.
 
-  // A2 — soft-delete a shoot (BR-13). TL/Admin.
+  /** A shoot is project work: Admin, or the lead of the project it belongs to. */
+  async function leadsShootProject(actor: CurrentUser, shootId: number): Promise<boolean> {
+    if (isMoAdmin(actor)) return true;
+    const s = (await pool.query(`SELECT project_id FROM mo_shoots WHERE id=$1`, [shootId])).rows[0];
+    return !!s && await isTeamLeadOfProject(actor, Number(s.project_id));
+  }
+
+  // A2 — soft-delete a shoot (BR-13). The project's lead or Admin.
   app.delete(`${P}/shoots/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may delete a shoot.");
     const id = parseInt(getSingleParam(req.params.id), 10);
+    if (!(await leadsShootProject(u, id))) return sendError(res, 403, "Only the project's Team Lead or an Admin may delete a shoot.");
     await pool.query(`UPDATE mo_shoots SET deleted_at=NOW(), status='cancelled' WHERE id=$1`, [id]);
     await audit(u, "shoot.deleted", "shoot", id, null, null, req);
     res.json({ ok: true });
@@ -2038,8 +2090,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   app.patch(`${P}/shoots/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may edit a shoot.");
     const id = parseInt(getSingleParam(req.params.id), 10);
+    if (!(await leadsShootProject(u, id))) return sendError(res, 403, "Only the project's Team Lead or an Admin may edit a shoot.");
     const b = req.body as Record<string, unknown>;
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
     for (const k of ["title", "shoot_date", "call_time", "end_time", "location", "notes", "status"])
@@ -8366,8 +8418,9 @@ async function allocateInternalCode(
   // Delete a project (soft) — #11. TL/Admin.
   app.delete(`${P}/projects/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may delete a project.");
     const id = parseInt(getSingleParam(req.params.id), 10);
+    if (!(isMoAdmin(u) || await isTeamLeadOfProject(u, id)))
+      return sendError(res, 403, "Only the project's Team Lead or an Admin may delete a project.");
     // G1: cascade the soft-delete so no orphans pollute the Library/Workload.
     await pool.query(`UPDATE mo_projects SET deleted_at=NOW() WHERE id=$1`, [id]);
     await pool.query(`UPDATE mo_deliverables SET deleted_at=NOW() WHERE project_id=$1 AND deleted_at IS NULL`, [id]);
@@ -10125,8 +10178,9 @@ async function allocateInternalCode(
   // Remove a crew member from a project (#3). TL/Admin.
   app.delete(`${P}/projects/:id/assignments/:uid`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may change assignments.");
     const pid = parseInt(getSingleParam(req.params.id), 10);
+    if (!(isMoAdmin(u) || await isTeamLeadOfProject(u, pid)))
+      return sendError(res, 403, "Only the project's Team Lead or an Admin may change assignments.");
     const uid = getSingleParam(req.params.uid);
     await pool.query(`UPDATE mo_project_assignments SET removed_at=NOW() WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`, [pid, uid]);
     await audit(u, "project.assignment_removed", "project", pid, null, { user_id: uid }, req);
@@ -10136,8 +10190,8 @@ async function allocateInternalCode(
   // Remove a crew member from a shoot (#7).
   app.delete(`${P}/shoots/:id/crew/:uid`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may change shoot crew.");
     const sid = parseInt(getSingleParam(req.params.id), 10);
+    if (!(await leadsShootProject(u, sid))) return sendError(res, 403, "Only the project's Team Lead or an Admin may change shoot crew.");
     const uid = getSingleParam(req.params.uid);
     await pool.query(`DELETE FROM mo_shoot_crew WHERE shoot_id=$1 AND user_id=$2`, [sid, uid]);
     await audit(u, "shoot.crew_removed", "shoot", sid, null, { user_id: uid }, req);
@@ -10147,10 +10201,13 @@ async function allocateInternalCode(
   // Add crew to a shoot (#7).
   app.post(`${P}/shoots/:id/crew`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may assign shoot crew.");
     const sid = parseInt(getSingleParam(req.params.id), 10);
-    for (const raw of (Array.isArray((req.body as Record<string, unknown>).crew) ? (req.body as Record<string, unknown>).crew as unknown[] : []))
-      await pool.query(`INSERT INTO mo_shoot_crew (shoot_id, user_id, capacity_role_id) VALUES ($1,$2,2) ON CONFLICT DO NOTHING`, [sid, String(raw)]);
+    if (!(await leadsShootProject(u, sid))) return sendError(res, 403, "Only the project's Team Lead or an Admin may assign shoot crew.");
+    const crew = (Array.isArray((req.body as Record<string, unknown>).crew) ? (req.body as Record<string, unknown>).crew as unknown[] : []).map(String);
+    // Crewing a shoot is an assignment — the same team scope as every other path.
+    if (!(await assertAssignable(res, u, crew))) return;
+    for (const uid of crew)
+      await pool.query(`INSERT INTO mo_shoot_crew (shoot_id, user_id, capacity_role_id) VALUES ($1,$2,2) ON CONFLICT DO NOTHING`, [sid, uid]);
     await audit(u, "shoot.crew_added", "shoot", sid, null, null, req);
     res.status(201).json({ ok: true });
   }));
@@ -10867,12 +10924,11 @@ async function allocateInternalCode(
     const id = parseInt(getSingleParam(req.params.id), 10);
     const cur = (await pool.query(`SELECT * FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [id])).rows[0];
     if (!cur) return sendError(res, 404, "Project not found.");
-    const isPM = await pool.query(`SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND is_project_manager AND removed_at IS NULL`, [id, u.id]);
     // The Coordinator owns the operational record — metadata and which team it
     // is routed to — without owning production.
     const isCoord = await isCoordinator(u);
-    if (!(isMoAdmin(u) || isMoTL(u) || isCoord || cur.owner_id === u.id || isPM.rows[0]))
-      return sendError(res, 403, "Only the owner/PM, a Team Lead, Coordinator or Admin may edit this project.");
+    if (!(isCoord || await canManageProject(u, id)))
+      return sendError(res, 403, "Only the project's Team Lead, owner/PM, the Coordinator or an Admin may edit this project.");
     const b = req.body as Record<string, unknown>;
     if (typeof b.name === "string" && (b.name.trim().length < 3 || b.name.trim().length > 120))
       return sendError(res, 400, "VR-6: name must be 3–120 characters.");
@@ -10889,6 +10945,10 @@ async function allocateInternalCode(
     /* Re-routing to another team moves production ownership with it — the lead
        is resolved from the team id server-side, never taken from the browser. */
     let newLead: string | null = null, newTeamName: string | null = null;
+    /* Routing is the Coordinator's (or an Admin's) decision. A lead does not hand
+       their project to another team, and nobody else moves it at all. */
+    if ("team_id" in b && Number(b.team_id ?? 0) !== Number(cur.team_id ?? 0) && !(isCoord || isMoAdmin(u)))
+      return sendError(res, 403, "Only the Coordinator or an Admin may change which team a project is routed to.");
     if ("team_id" in b && b.team_id != null && Number(b.team_id) !== Number(cur.team_id)) {
       const t = await resolveTeamLead(Number(b.team_id));
       if ("error" in t) return sendError(res, 400, t.error);
@@ -11054,8 +11114,9 @@ async function allocateInternalCode(
   // assignee's "Today's Assignments" when today ∈ [start_date, due_date].
   app.post(`${P}/projects/:id/tasks`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may assign tasks.");
     const pid = parseInt(getSingleParam(req.params.id), 10);
+    if (!(isMoAdmin(u) || await isTeamLeadOfProject(u, pid)))
+      return sendError(res, 403, "Only the project's Team Lead or an Admin may assign tasks.");
     const b = req.body as Record<string, unknown>;
     const title = String(b.title ?? "").trim();
     if (!title) return sendError(res, 400, "Task title is required.");
@@ -11083,8 +11144,15 @@ async function allocateInternalCode(
     const cur = (await pool.query(`SELECT * FROM mo_assignments WHERE id=$1`, [id])).rows[0];
     if (!cur) return sendError(res, 404, "Assignment not found.");
     const isAssignee = (await pool.query(`SELECT 1 FROM mo_assignment_users WHERE assignment_id=$1 AND user_id=$2`, [id, u.id])).rows[0];
-    const priv = isMoAdmin(u) || isMoTL(u) || cur.assigned_by === u.id;
+    /* Crew work on a project is managed by that project's lead (or Admin, or
+       whoever set it). SMC coverage keeps its own long-standing rule here — its
+       lifecycle lives under /smc/* and is not this route's to reshape. */
+    const priv = isMoAdmin(u) || cur.assigned_by === u.id || (cur.is_smc || cur.project_id == null
+      ? isMoTL(u) : await isTeamLeadOfProject(u, Number(cur.project_id)));
     if (!priv && !isAssignee) return sendError(res, 403, "You can't change this assignment.");
+    const b0 = req.body as Record<string, unknown>;
+    if (priv && !cur.is_smc && Array.isArray(b0.assignees)
+        && !(await assertAssignable(res, u, (b0.assignees as unknown[]).map(String)))) return;
     const b = req.body as Record<string, unknown>;
     // Assignees may only move the status; TL/Admin/creator may edit everything.
     const cols = priv ? ["title", "priority", "status", "start_date", "due_date", "start_time", "end_time", "notes"] : ["status"];
@@ -11102,8 +11170,11 @@ async function allocateInternalCode(
 
   app.delete(`${P}/assignments/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may delete an assignment.");
     const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT project_id, is_smc FROM mo_assignments WHERE id=$1`, [id])).rows[0];
+    const may = isMoAdmin(u) || (!cur || cur.is_smc || cur.project_id == null
+      ? isMoTL(u) : await isTeamLeadOfProject(u, Number(cur.project_id)));
+    if (!may) return sendError(res, 403, "Only the project's Team Lead or an Admin may delete an assignment.");
     await pool.query(`DELETE FROM mo_assignments WHERE id=$1`, [id]);
     await audit(u, "assignment.deleted", "assignment", id, null, null, req);
     res.json({ ok: true });

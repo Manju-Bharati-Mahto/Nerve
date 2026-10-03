@@ -209,12 +209,14 @@ maybe("project creation — the Coordinator routes to ONE team", () => {
   });
 
   it("5 — Team B's lead cannot operate on Team A's project", async () => {
-    expect((await as("leadB", "PATCH", `/projects/${pid}`, { description: "hijacked" })).status).toBe(200);
-    expect((await as("leadB", "POST", `/projects/${pid}/status`, { status: "in_production" })).status).toBe(200);
+    expect((await as("leadB", "PATCH", `/projects/${pid}`, { description: "hijacked" })).status).toBe(403);
+    expect((await as("leadB", "POST", `/projects/${pid}/status`, { status: "in_production" })).status).toBe(403);
     expect((await as("leadB", "POST", `/projects/${pid}/deliverables`,
-      { title: `${PX} extra`, deliverable_type_id: dtype })).status).toBe(201);
+      { title: `${PX} extra`, deliverable_type_id: dtype })).status).toBe(403);
     const victim = await routed(teamA);
-    expect((await as("leadB", "DELETE", `/projects/${victim.pid}`)).status).toBe(200);
+    expect((await as("leadB", "DELETE", `/projects/${victim.pid}`)).status).toBe(403);
+    // …while Team A's own lead still runs it.
+    expect((await as("leadA", "POST", `/projects/${pid}/status`, { status: "in_production" })).status).toBe(200);
   });
 });
 
@@ -257,21 +259,24 @@ maybe("team lead — allocates inside their own team, on their own team's projec
     const d = b.dids[0];
     expect((await as("leadA", "PATCH", `/deliverables/${d}`, { owner_id: ACTORS.empA1.id })).status).toBe(200);
     expect((await as("leadA", "POST", `/deliverables/${d}/assignee`, { kind: "crew", user_id: ACTORS.empA1.id })).status).toBe(201);
-    expect((await as("leadA", "POST", `/deliverables/${d}/schedule`, { scheduled_date: "2026-10-04" })).status).toBe(200);
+    expect((await as("leadA", "POST", `/deliverables/${d}/schedule`, { scheduled_date: "2026-10-04" })).status).toBe(403);
     expect((await as("leadA", "PATCH", `/deliverables/${d}/due-date`, { due_date: "2026-10-09" })).status).toBe(403);
     expect((await as("leadA", "POST", `/projects/${b.pid}/work`,
-      { work_type_id: workTypeId, title: `${PX} task`, assignees: [ACTORS.empA1.id] })).status).toBe(201);
+      { work_type_id: workTypeId, title: `${PX} task`, assignees: [ACTORS.empA1.id] })).status).toBe(403);
     expect((await as("leadA", "POST", `/projects/${b.pid}/tasks`,
-      { title: `${PX} task`, assignees: [ACTORS.empA1.id] })).status).toBe(201);
-    expect((await as("leadA", "POST", `/projects/${b.pid}/assignments`, { user_id: ACTORS.empA1.id })).status).toBe(201);
-    expect((await as("leadA", "PATCH", `/projects/${b.pid}`, { team_id: teamA })).status).toBe(200);
+      { title: `${PX} task`, assignees: [ACTORS.empA1.id] })).status).toBe(403);
+    expect((await as("leadA", "POST", `/projects/${b.pid}/assignments`, { user_id: ACTORS.empA1.id })).status).toBe(403);
+    expect((await as("leadA", "PATCH", `/projects/${b.pid}`, { team_id: teamA })).status).toBe(403);
+    expect(Number((await project(b.pid)).team_id)).toBe(teamB);
+    // A lead does not re-route even their own project — that is the Coordinator's call.
+    expect((await as("leadA", "PATCH", `/projects/${a.pid}`, { team_id: teamB })).status).toBe(403);
   });
 
   it("9 — Team A's lead cannot create a project for Team B", async () => {
     const r = await as("leadA", "POST", "/projects", {
       name: `${PX} wrong team ${Math.random().toString(36).slice(2, 8)}`, project_type_id: projectTypeId,
       start_date: "2026-10-01", end_date: "2026-10-10", team_id: teamB });
-    expect(r.status).toBe(201);
+    expect(r.status).toBe(403);
   });
 
   it("9b — a lead who names no team gets their own", async () => {
@@ -279,7 +284,9 @@ maybe("team lead — allocates inside their own team, on their own team's projec
       name: `${PX} own team ${Math.random().toString(36).slice(2, 8)}`, project_type_id: projectTypeId,
       start_date: "2026-10-01", end_date: "2026-10-10" });
     expect(r.status).toBe(201);
-    expect((r.body.project as Record<string, unknown>).team_id).toBe(null);
+    const p = r.body.project as Record<string, unknown>;
+    expect(Number(p.team_id)).toBe(teamA);
+    expect(p.owner_id).toBe(ACTORS.leadA.id);
   });
 });
 
@@ -517,21 +524,22 @@ maybe("legacy projects, PMs, shoots and ad-hoc assignments", () => {
     const shoot = await one(
       `INSERT INTO mo_shoots (project_id, title, shoot_date, location, status, created_by)
        VALUES ($1,$2,'2026-10-05','Auditorium','planned',$3) RETURNING id`, [pid, `${PX} shoot`, ACTORS.leadA.id]);
-    expect((await as("leadB", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empB1.id] })).status).toBe(201);
-    expect((await as("leadA", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empB1.id] })).status).toBe(201);
+    expect((await as("leadB", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empB1.id] })).status).toBe(403);
+    expect((await as("leadA", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empB1.id] })).status).toBe(403);
     expect((await as("leadA", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empA1.id] })).status).toBe(201);
-    expect((await as("leadB", "PATCH", `/shoots/${shoot.id}`, { notes: "x" })).status).toBe(200);
+    expect((await as("leadB", "PATCH", `/shoots/${shoot.id}`, { notes: "x" })).status).toBe(403);
+    expect((await as("leadA", "PATCH", `/shoots/${shoot.id}`, { notes: "x" })).status).toBe(200);
   });
 
   it("an assignment's members cannot be replaced from outside its project's team", async () => {
     const { pid } = await routed(teamA);
     const t = await as("leadA", "POST", `/projects/${pid}/tasks`, { title: `${PX} t`, assignees: [ACTORS.empA1.id] });
     const id = Number((t.body.assignment as Record<string, unknown>).id);
-    expect((await as("leadB", "PATCH", `/assignments/${id}`, { assignees: [ACTORS.empB1.id] })).status).toBe(200);
-    expect((await as("leadA", "PATCH", `/assignments/${id}`, { assignees: [ACTORS.empB1.id] })).status).toBe(200);
+    expect((await as("leadB", "PATCH", `/assignments/${id}`, { assignees: [ACTORS.empB1.id] })).status).toBe(403);
+    expect((await as("leadA", "PATCH", `/assignments/${id}`, { assignees: [ACTORS.empB1.id] })).status).toBe(403);
     expect((await as("leadA", "PATCH", `/assignments/${id}`, { assignees: [ACTORS.empA2.id] })).status).toBe(200);
     expect((await as("empA2", "PATCH", `/assignments/${id}`, { status: "in_progress" })).status).toBe(200);
-    expect((await as("leadB", "DELETE", `/assignments/${id}`)).status).toBe(200);
+    expect((await as("leadB", "DELETE", `/assignments/${id}`)).status).toBe(403);
   });
 
   it("a Coordinator still re-routes any project", async () => {
