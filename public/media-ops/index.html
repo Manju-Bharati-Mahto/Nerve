@@ -1443,6 +1443,10 @@ html[data-theme=dark] .opp-pts{color:var(--brand-400)}
 .kv{display:grid;grid-template-columns:132px 1fr;gap:8px var(--s3);font-size:13px;align-items:start}
 .kv dt{color:var(--text-3);font-size:12px;font-weight:600}
 .kv dd{margin:0}
+/* A casting photo streamed from Drive through Nerve, inside a drawer. Capped so
+   a portrait does not push the facts below it off screen. */
+.cast-photo{display:block;width:100%;max-height:320px;object-fit:cover;border-radius:var(--r);
+  border:1px solid var(--border);background:var(--surface-2);margin-bottom:var(--s3)}
 .diff{font-family:var(--font-mono);font-size:11.5px;border-radius:var(--r);overflow:hidden;border:1px solid var(--border)}
 .diff .dl{padding:3px 9px;display:flex;gap:9px}
 .diff .dl.a{background:var(--danger-bg);color:var(--danger)}
@@ -6532,6 +6536,18 @@ const CR_REVIEW={
   rejected:{l:'Rejected',c:'st-danger',i:'✕',ico:'x'},
   archived:{l:'Archived',c:'st-neutral',i:'⛁',ico:'archive'}
 };
+/* Email verification on a registration link. Off means anyone, with any address,
+   so only an Admin may turn it off; turning it back on is open to the Casting
+   team. Only an explicit false is "off" — links older than the switch verify. */
+const castOtpOn = l=>!l||l.require_otp!==false;
+const castOtpHint = (on,dom)=>on
+  ?`Applicants must verify an @${esc(dom||'paruluniversity.ac.in')} email with a one-time code before the form opens.`
+  :'No verification. Anyone with the link can register with any email address; submissions are marked unverified.';
+const castOtpSwitch = (on,attrs='')=>{
+  const locked=on&&!isAdmin();
+  return `<span class="switch ${on?'on':''}" role="switch" aria-checked="${on}" tabindex="${locked?-1:0}"
+    ${locked?'aria-disabled="true" title="Only an Admin can turn verification off" style="opacity:.45;cursor:not-allowed"':''} ${attrs}></span>`;
+};
 const castLinks = ()=>(DB.casting_links||[]).sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
 const castLink  = id=>(DB.casting_links||[]).find(l=>l.id===id)||null;
 const extRequests = ()=>castRequests().filter(r=>r.source==='external');
@@ -6565,6 +6581,11 @@ const extLink=(u,label)=>{ const h=safeExtUrl(u);
   if(!h) return u?`<span class="mut3">${esc(String(u))}</span>`:notGiven();
   return `<a class="btn xs" href="${esc(h)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`; };
 const openCastingRequests = ()=>castRequests().filter(r=>!['completed','rejected'].includes(r.status));
+/* An uploaded photo is streamed by the API from the Casting Manager's Drive —
+   same session, same authority as the row. '' when the row has none (a pasted
+   link, or a record added by hand), so callers can simply test for it. */
+const castReqPhoto = q=>q&&q.photo_file_id?MO_API.base+'/casting-requests/'+q.id+'/photo':'';
+const castRecPhoto = r=>r&&r.photo_file_id?MO_API.base+'/casting/'+r.id+'/photo':'';
 const tagsOf  = rid=>(DB.casting_record_tags||[]).filter(x=>x.record_id===rid).map(x=>x.tag_id);
 const collsOf = rid=>(DB.casting_record_collections||[]).filter(x=>x.record_id===rid).map(x=>x.collection_id);
 const castTag = id=>(DB.casting_tags||[]).find(t=>t.id===id)||{name:'—',category:'other'};
@@ -6670,7 +6691,9 @@ function castCard(r){
   const tags=tagsOf(r.id).slice(0,3);
   return `<div class="card cast-card" data-drawer="casting:${r.id}" style="cursor:pointer">
     <div class="card-body">
-      <div class="cast-thumb">${r.drive_url&&r.drive_ok!==false
+      <div class="cast-thumb">${castRecPhoto(r)
+        ? `<img src="${castRecPhoto(r)}" alt="${esc(r.name)}" loading="lazy" onerror="this.remove()"><span class="cast-ph">⛁<span>Media in Drive</span></span>`
+        : r.drive_url&&r.drive_ok!==false
         ? `<span class="cast-ph">⛁<span>Media in Drive</span></span>`
         : `<span class="cast-ph mut">◌<span>No preview</span></span>`}</div>
       <div class="between mt3">
@@ -6712,7 +6735,10 @@ function castAdminLinks(){
             <button class="btn xs" data-act="castLinkSubs" data-lid="${l.id}">${subs.length}</button></span></div>
           <div class="dc-kv"><span class="dc-k">Created</span><span class="dc-v">${D.fmt(l.created_at)}${l.created_by?' · '+esc((user(l.created_by)||{full_name:'—'}).full_name.split(' ')[0]):''}</span></div>
           <div class="dc-kv"><span class="dc-k">Last submission</span><span class="dc-v">${last?D.fmt(last):'—'}</span></div>
-          <div class="dc-kv"><span class="dc-k">Allowed domain</span><span class="dc-v">@${esc(l.allowed_domain)}</span></div>
+          <div class="dc-kv"><span class="dc-k">Allowed domain</span><span class="dc-v">${castOtpOn(l)?'@'+esc(l.allowed_domain):'Any email'}</span></div>
+          <div class="dc-kv"><span class="dc-k">OTP verification</span><span class="dc-v f gap2 ac">
+            ${castOtpSwitch(castOtpOn(l),`data-act="toggleCastOtp" data-lid="${l.id}" data-on="${castOtpOn(l)?'0':'1'}"`)}
+            <span class="small">${castOtpOn(l)?'Required':'Off'}</span></span></div>
           <div class="dc-kv"><span class="dc-k">Expires</span><span class="dc-v">${l.expires_on?D.fmt(l.expires_on):'no expiry'}</span></div>
           <div class="dc-kv"><span class="dc-k">Link</span><span class="dc-v mono" style="font-size:10.5px">/casting/register/${esc(String(l.token).slice(0,10))}…</span></div>
         </div>
@@ -6752,7 +6778,10 @@ function drawerCastRequest(id){
       ${ext?`<h4 class="small b mb2">Applicant</h4>
         <dl class="kv mb4">
           <dt>Name</dt><dd>${esc(q.applicant_name||'—')}</dd>
-          <dt>University email</dt><dd class="mono">${esc(q.applicant_email||'—')}</dd>
+          ${q.email_verified===false
+            ?`<dt>Email</dt><dd><span class="mono">${esc(q.applicant_email||'—')}</span>
+                <span class="chip" title="Submitted through a link with OTP verification off" style="margin-left:6px">Unverified</span></dd>`
+            :`<dt>University email</dt><dd class="mono">${esc(q.applicant_email||'—')}</dd>`}
           <dt>Mobile</dt><dd>${q.mobile_phone
             ?`<a class="mono" href="tel:${esc(q.mobile_phone)}">${esc(q.mobile_phone)}</a>`:notGiven()}</dd>
           <dt>Type</dt><dd>${esc(q.applicant_type||'—')}</dd>
@@ -6762,8 +6791,10 @@ function drawerCastRequest(id){
             ?`<span class="mono">${esc(q.enrolment_number)}</span>`:notGiven()}</dd>
         </dl>
         <h4 class="small b mb2">Photo &amp; profile</h4>
+        ${castReqPhoto(q)?`<img class="cast-photo" src="${castReqPhoto(q)}" alt="${esc(q.applicant_name||'Applicant photo')}" loading="lazy" onerror="this.remove()">`:''}
         <dl class="kv mb4">
-          <dt>Google Drive photo</dt><dd>${extLink(q.photo_url,'⛁ Open Google Drive')}</dd>
+          <dt>Photo in Drive</dt><dd>${q.photo_url?extLink(q.photo_url,'⛁ Open in Google Drive')
+            :(q.photo_file_id?'<span class="mut3">Uploaded — shown above</span>':notGiven())}</dd>
           <dt>Instagram</dt><dd>${extLink(q.instagram_url,'↗ Open profile')}</dd>
         </dl>`:''}
       <h4 class="small b mb2">Casting information</h4>
@@ -6825,6 +6856,7 @@ function drawerCasting(id){
           ${r.profession?`<span>·</span><span>${esc(r.profession)}</span>`:''}</div></div>
       <button class="icon-btn" onclick="closeDrawer()">✕</button></div>
     <div class="dr-body">
+      ${castRecPhoto(r)?`<img class="cast-photo" src="${castRecPhoto(r)}" alt="${esc(r.name)}" loading="lazy" onerror="this.remove()">`:''}
       <dl class="kv mb4">
         <dt>Age group</dt><dd>${esc((AGE_GROUPS.find(a=>a[0]===r.age_group)||[])[1]||'—')}</dd>
         ${r.gender?`<dt>Gender</dt><dd>${esc(r.gender)}</dd>`:''}
@@ -6863,6 +6895,7 @@ function drawerCasting(id){
 /* ── Casting Management — the Casting Manager's workspace ─────────────────── */
 function viewCastingAdmin(){
   loadMyActivity();      // work log + timeline read the server's audit trail
+  if(isAdmin())loadCastDrive();   // where applicants' photos go — the Admin's button
   if(!can('casting.manage'))
     return roleDenied('Casting Management is for the designated Casting Manager. You can browse the library from Casting Preview.');
   const tab=S.tab.castadmin||'records';
@@ -6883,7 +6916,8 @@ function viewCastingAdmin(){
           `<b>${castStale().length}</b> due a review`])}.`,
       actions:`<button class="btn primary" data-act="newCasting">${ic('plus')} Add casting</button>
         <button class="btn" data-go="#/media/admin/lookups?m=casting_tags">${ic('sliders')} Manage tags</button>
-        <button class="btn" data-go="#/media/admin/lookups?m=casting_collections">${ic('layers')} Manage categories</button>`,
+        <button class="btn" data-go="#/media/admin/lookups?m=casting_collections">${ic('layers')} Manage categories</button>
+        ${isAdmin()?`<button class="btn" data-act="castDrive">${ic('link')} ${castDriveLabel()}</button>`:''}`,
       kpis:castAdminStats(all,active)})}
 
     <div class="tabs">${tabs.map(([k,l,c])=>`<button data-tab="${k}" data-tabkey="castadmin" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>
@@ -7156,6 +7190,8 @@ function castingStyles(){
     .cast-ph{display:flex;flex-direction:column;align-items:center;gap:4px;font-size:22px;color:var(--text-3)}
     .cast-ph span{font-size:10.5px;letter-spacing:.03em}
     .cast-ph.mut{opacity:.55}
+    .cast-card .cast-thumb{position:relative;overflow:hidden}
+    .cast-thumb img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
     .cast-card:hover{border-color:var(--primary-border)}
   </style>`;
 }
@@ -7188,8 +7224,11 @@ function showCastLink(l){
     <div class="mo-body">
       <div class="field"><label class="lbl">Registration link</label>
         <input class="inp mono" id="nl-url" value="${esc(url)}" readonly onclick="this.select()"></div>
-      <div class="note">Anyone with this link can open the form, but only
-        <b>@${esc(l.allowed_domain)}</b> Google accounts can submit. Applicants never get a NERVE account.</div>
+      <div class="note">${castOtpOn(l)
+        ?`Anyone with this link can open the form, but only <b>@${esc(l.allowed_domain)}</b>
+          addresses that pass OTP verification can submit.`
+        :'<b>OTP verification is off.</b> Anyone with this link can submit, with any email address.'}
+        Applicants never get a NERVE account.</div>
     </div>
     <div class="mo-foot"><button class="btn" onclick="closeModal()">Done</button>
       <a class="btn" href="${esc(url)}" target="_blank" rel="noopener">Open registration</a>
@@ -7260,6 +7299,108 @@ function openCastingForm(cid){
       ${r&&r.drive_url?`<button class="btn" data-act="checkCastDrive" data-cid="${r.id}">Check Drive link</button>`:''}
       <button class="btn primary" data-act="saveCasting" ${r?`data-cid="${r.id}"`:''}>${r?'Save changes':'Add casting'}</button></div>`,{size:'wide'});
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+}
+
+/* ── Google Drive for casting photos — the Admin's button ──────────────────
+   Applicants' photos are saved to a Google Drive an Admin connects by signing
+   in with Google, once, from here. The status is one row only an Admin may
+   read, so it is not part of /state: fetched when Casting Management opens and
+   again after every change. The one thing that still comes from Google Cloud
+   Console is the OAuth client; the dialog shows the exact redirect URI to
+   register and takes the id and secret, unless the server environment has them. */
+function loadCastDrive(force){
+  if(!window.__MO_LIVE__)return Promise.resolve(null);
+  if(S._castDriveLoading)return S._castDriveLoading;
+  if(S.castDrive&&!force)return Promise.resolve(S.castDrive);
+  S._castDriveLoading=MO_API.get('/casting-drive')
+    .then(r=>{S.castDrive=r;S._castDriveLoading=null;render();return r;})
+    .catch(e=>{S._castDriveLoading=null;S.castDrive={error:e.message};return null;});
+  return S._castDriveLoading;
+}
+const castDriveLabel=()=>{const d=S.castDrive; if(!d||d.error)return 'Google Drive';
+  return d.connected?'Google Drive · connected':d.source==='env'||d.source==='local'?'Google Drive · via server':'Google Drive · set up';};
+function openCastDriveModal(d){
+  if(!d){ loadCastDrive(true).then(r=>{ if(r)openCastDriveModal(r); else toast((S.castDrive&&S.castDrive.error)||'Could not read the Drive status','bad'); }); return; }
+  const f=d.folder, on=!!d.connected, noClient=d.client==='none';
+  const fallback=d.source==='env'?`<div class="note mb3">Right now photos go to the Drive folder set in the <b>server environment</b>
+      (GOOGLE_DRIVE_CASTING_FOLDER_ID). Connecting an account here takes precedence over it.</div>`
+    :d.source==='local'?`<div class="note mb3"><b>Development mode.</b> Photos are being written to a local folder
+      (DRIVE_LOCAL_ROOT), not to Google Drive.</div>`:'';
+  const redirect=`<input class="inp mono mt2" value="${esc(d.redirect_uri||'')}" readonly onclick="this.select()" title="Authorised redirect URI">`;
+  modal(`<div class="mo-head"><div><h2>Google Drive for casting photos</h2>
+      <p>Applicants upload a photo on the registration form; Nerve saves it to a folder in a Google Drive you
+        connect, one sub-folder per request. Nerve keeps only the links.</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      ${on?fallback.replace('Right now photos go','Photos used to go'):fallback}
+      <div class="note ${on?'ok':'warn'} mb3">${on
+        ?`<b>Connected</b> as <span class="mono">${esc(d.account_email||'—')}</span>${d.connected_at?` · since ${D.fmt(d.connected_at)}`:''}${d.connected_by_name?` · by ${esc(d.connected_by_name)}`:''}<br>
+          Folder: <b>${esc((f&&f.name)||'—')}</b>
+          ${f&&f.url?`<a class="btn xs" style="margin-left:6px" href="${esc(f.url)}" target="_blank" rel="noopener">⛁ Open in Drive</a>`:''}`
+        :`<b>Not connected.</b> ${d.source==='none'?'Applicants are asked to paste a Drive link until a Google account is connected.':'The fallback above is in use until a Google account is connected.'}`}</div>
+      ${noClient?`
+      <h4 class="small b mb2">Step 1 — tell Google about this Nerve (once)</h4>
+      <div class="note mb3">In <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a>:
+        <ol style="margin:6px 0 0 18px;padding:0">
+          <li><b>APIs &amp; Services → Library</b>: enable the <b>Google Drive API</b>.</li>
+          <li><b>OAuth consent screen</b>: user type <b>Internal</b>.</li>
+          <li><b>Credentials → Create credentials → OAuth client ID</b>, type <b>Web application</b>, and add this authorised redirect URI:
+            ${redirect}</li>
+          <li>Copy the client ID and client secret into the two boxes below. They are stored encrypted on the server.</li>
+        </ol></div>
+      <div class="row">
+        <div class="field"><label class="lbl">Client ID</label>
+          <input class="inp mono" id="cd-client-id" placeholder="…apps.googleusercontent.com" autocomplete="off" spellcheck="false"></div>
+        <div class="field"><label class="lbl">Client secret</label>
+          <input class="inp mono" id="cd-client-secret" type="password" placeholder="GOCSPX-…" autocomplete="off"></div>
+      </div>
+      <button class="btn" data-act="castDriveSaveClient">Save OAuth client</button>
+      <div class="divider"></div>`
+      :`<details class="mb3"><summary class="small b" style="cursor:pointer">OAuth client: ${d.client==='env'?'from the server environment':'saved in Nerve'}
+          <span class="mono xsmall mut3">${esc(d.client_id||'')}</span></summary>
+        <div class="note mt2">The redirect URI registered with Google must be exactly:${redirect}
+          ${d.client==='app'?`<div class="row mt2">
+            <div class="field"><label class="lbl">Replace client ID</label><input class="inp mono" id="cd-client-id" autocomplete="off" spellcheck="false"></div>
+            <div class="field"><label class="lbl">Client secret</label><input class="inp mono" id="cd-client-secret" type="password" autocomplete="off"></div></div>
+            <button class="btn xs" data-act="castDriveSaveClient">Save</button>`:''}</div></details>`}
+      <h4 class="small b mb2">${noClient?'Step 2 — ':''}${on?'Account':'Connect'}</h4>
+      <p class="small mut mb2">${on?'Reconnect to switch to another Google account. The folder is kept if the new account can see it; otherwise a new one is created.'
+        :'Sign in with the Google account whose Drive should hold the photos. Nerve asks for Drive access and your email address, nothing else, and creates a folder for you.'}</p>
+      <button class="btn ${on?'':'primary'}" data-act="castDriveConnect" ${noClient?'disabled':''}>${ic('link')} ${on?'Reconnect with Google':'Sign in with Google and connect Drive'}</button>
+      ${on?`<div class="divider"></div>
+      <h4 class="small b mb2">Folder</h4>
+      <p class="small mut mb2">Every request gets its own sub-folder (<span class="code">CR-00012</span>) inside this folder.</p>
+      <div class="field"><label class="lbl">Use a folder you already have</label>
+        <div class="f gap2"><input class="inp" id="cd-folder" placeholder="Paste the Google Drive folder link" autocomplete="off" spellcheck="false">
+          <button class="btn" data-act="castDriveFolder">Use folder</button></div></div>
+      <div class="field"><label class="lbl">Or create a new folder in My Drive</label>
+        <div class="f gap2"><input class="inp" id="cd-folder-name" value="${esc(d.default_folder_name||'NERVE Casting Registrations')}">
+          <button class="btn" data-act="castDriveCreateFolder">Create folder</button></div></div>`:''}
+      <div id="cd-msg"></div>
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Close</button>
+      ${on?`<button class="btn" data-act="castDriveCheck">Check connection</button>
+        <button class="btn danger ml-auto" data-act="castDriveDisconnect">Disconnect</button>`:''}</div>`,{size:'wide'});
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+}
+/* A Drive change is not a /state change, so this does not go through moSync:
+   the dialog is redrawn from the status the server answers with. */
+async function castDriveCall(promise,okMsg){
+  const box=$('#cd-msg'); if(box)box.innerHTML='<div class="note">Working…</div>';
+  try{ const r=await promise; S.castDrive=r; render(); toast(okMsg,'ok'); openCastDriveModal(r); }
+  catch(e){ const b=$('#cd-msg'); if(b)b.innerHTML=`<div class="note warn">✕ ${esc(e.message)}</div>`; else toast(e.message,'bad'); }
+}
+/* The popup Google sends the Admin back to tells THIS window how it went. */
+let castDriveListening=false;
+function castDriveListen(){
+  if(castDriveListening)return; castDriveListening=true;
+  window.addEventListener('message',e=>{
+    const m=e.data; if(!m||m.type!=='nerve-casting-drive'||e.origin!==location.origin)return;
+    loadCastDrive(true).then(r=>{
+      toast(m.ok?'Google Drive connected':(m.message||'Google Drive was not connected'),m.ok?'ok':'bad');
+      if(r)openCastDriveModal(r);
+    });
+  });
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -13344,23 +13485,23 @@ function teamWorkload(){
    future (department_head, intern, vendor…) creates its own section with no code
    change. Anything not listed here still gets a group, humanised and ranked last. */
 const ROLE_META={
-  admin          :{l:'Admin',           p:'Admins',           i:'★', rank:10},
-  department_head:{l:'Department Head', p:'Department Heads', i:'◆', rank:20},
-  project_manager:{l:'Project Manager', p:'Project Managers', i:'◈', rank:30},
-  coordinator    :{l:'Operations Coordinator', p:'Operations Coordinators', i:'◎', rank:35},
-  team_lead      :{l:'Team Lead',       p:'Team Leads',       i:'▲', rank:40},
-  employee       :{l:'Employee',        p:'Employees',        i:'●', rank:50},
-  smc_member     :{l:'SMC Member',      p:'SMC Members',      i:'◈', rank:55},
+  admin          :{l:'Admin',           p:'Admins', rank:10},
+  department_head:{l:'Department Head', p:'Department Heads', rank:20},
+  project_manager:{l:'Project Manager', p:'Project Managers', rank:30},
+  coordinator    :{l:'Operations Coordinator', p:'Operations Coordinators', rank:35},
+  team_lead      :{l:'Team Lead',       p:'Team Leads', rank:40},
+  employee       :{l:'Employee',        p:'Employees', rank:50},
+  smc_member     :{l:'SMC Member',      p:'SMC Members', rank:55},
   /* Creator Network domain roles. They sit at the end of the hierarchy because
      they are not a rung on the Media Ops ladder at all — a Creator Team Lead
      leads a creator team and holds none of a Media Ops Team Lead's authority,
      which is exactly why they need their own group rather than sharing one. */
-  creator_admin    :{l:'Creator Admin',     p:'Creator Admins',     i:'✦', rank:82},
-  creator_team_lead:{l:'Creator Team Lead', p:'Creator Team Leads', i:'✧', rank:84},
-  creator          :{l:'Creator',           p:'Creators',           i:'◇', rank:86},
-  intern         :{l:'Intern',          p:'Interns',          i:'◔', rank:60},
-  vendor         :{l:'Vendor',          p:'Vendors',          i:'⛁', rank:70},
-  freelancer     :{l:'Freelancer',      p:'Freelancers',      i:'◇', rank:80}
+  creator_admin    :{l:'Creator Admin',     p:'Creator Admins', rank:82},
+  creator_team_lead:{l:'Creator Team Lead', p:'Creator Team Leads', rank:84},
+  creator          :{l:'Creator',           p:'Creators', rank:86},
+  intern         :{l:'Intern',          p:'Interns', rank:60},
+  vendor         :{l:'Vendor',          p:'Vendors', rank:70},
+  freelancer     :{l:'Freelancer',      p:'Freelancers', rank:80}
 };
 const titleCase=s=>String(s||'').replace(/[_-]+/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
 /* The roles an Admin may assign, in hierarchy order. ONE definition, rendered by
@@ -13381,13 +13522,13 @@ const isCreatorFormRole=r=>CREATOR_ADDABLE_ROLES.includes(r);
    unmistakable to the Admin choosing. */
 const ADD_ROLE_OPTIONS=(cur)=>
   `<optgroup label="Media Ops roles">${ADDABLE_ROLES.map(r=>{const m=roleMeta(r);
-     return `<option value="${r}" ${cur===r?'selected':''}>${m.i} ${esc(m.l)}</option>`;}).join('')}</optgroup>`
+     return `<option value="${r}" ${cur===r?'selected':''}>${esc(m.l)}</option>`;}).join('')}</optgroup>`
  +`<optgroup label="Creator Network roles">${CREATOR_ADDABLE_ROLES.map(r=>{const m=roleMeta(r);
-     return `<option value="${r}" ${cur===r?'selected':''}>${m.i} ${esc(m.l)}</option>`;}).join('')}</optgroup>`;
+     return `<option value="${r}" ${cur===r?'selected':''}>${esc(m.l)}</option>`;}).join('')}</optgroup>`;
 const ROLE_OPTIONS=(cur)=>ASSIGNABLE_ROLES.map(r=>{const m=roleMeta(r);
-  return `<option value="${r}" ${cur===r?'selected':''}>${m.i} ${esc(m.l)}</option>`;}).join('');
+  return `<option value="${r}" ${cur===r?'selected':''}>${esc(m.l)}</option>`;}).join('');
 function roleMeta(r){
-  return ROLE_META[r]||{l:titleCase(r)||'Unspecified',p:(titleCase(r)||'Unspecified')+'s',i:'○',rank:999};
+  return ROLE_META[r]||{l:titleCase(r)||'Unspecified',p:(titleCase(r)||'Unspecified')+'s',rank:999};
 }
 /* The role groups actually present, in hierarchy order. Empty groups cannot
    occur — a group exists only because somebody holds that role. */
@@ -16229,7 +16370,9 @@ function teamDirectory(){
       .dir-cnt{font-size:11px;color:var(--text-3);font-weight:600}
       .dir-body{margin-top:12px}
       .dir-more{grid-column:1/-1;display:flex;justify-content:center;padding:6px}
-      .dir-team{display:inline-flex;align-items:center;gap:5px;font-size:11px;margin-top:3px}
+      .dir-meta{display:flex;align-items:center;flex-wrap:wrap;gap:5px;margin-top:5px;line-height:1.3}
+      .dir-role{font-size:12px;font-weight:700;color:var(--text-2)}
+      .dir-team{display:inline-flex;align-items:center;gap:5px;font-size:11px}
     </style>`;
 }
 /* One collapsible role section. Search forces matching groups open (§Search)
@@ -16265,13 +16408,13 @@ function smcDirCard(u){
   const rm=roleMeta('smc_member');
   const q=JSON.stringify(String(u.id));
   return `<div class="card" onclick='smcMemberDetail(${q})' style="cursor:pointer">
-    <div class="card-body">
+    <div class="card-body pad">
       <div class="f gap3 ac mb3">${avatar(u.id,'xl')}
         <div style="min-width:0"><b class="trunc" style="display:block;font-size:15px">${esc(u.full_name)}</b>
           <span class="small mut trunc" style="display:block">${esc(u.designation||'SMC Member')}</span>
-          <span class="xsmall mut3">${rm.i} ${esc(rm.l)}</span>
+          <div class="dir-meta"><span class="dir-role">${esc(rm.l)}</span>
           <span class="dir-team"><span class="mut3">·</span>
-            <span class="mut3">${esc(u.institute||'No institute')}</span></span></div>
+            <span class="mut3">${esc(u.institute||'No institute')}</span></span></div></div>
       </div>
       ${!u.is_active?`<div class="note mb2" style="padding:7px 10px;font-size:11.5px">
         <b>Inactive.</b> Receives no new assignments; their history is unchanged.</div>`:''}
@@ -16303,14 +16446,14 @@ function creatorDirCard(u){
   const q=JSON.stringify(String(u.id));
   const st=CN_STATUS[u.creator_status]||CN_STATUS.inactive;
   return `<div class="card" onclick="ACTIONS.cnOpenCreator({id:${esc(q)}})" style="cursor:pointer">
-    <div class="card-body">
+    <div class="card-body pad">
       <div class="f gap3 ac mb3">${avatar(u.id,'xl')}
         <div style="min-width:0"><b class="trunc" style="display:block;font-size:15px">${esc(u.full_name)}</b>
           <span class="small mut trunc" style="display:block">${esc(u.designation||rm.l)}</span>
-          <span class="xsmall mut3">${rm.i} ${esc(rm.l)}</span>
+          <div class="dir-meta"><span class="dir-role">${esc(rm.l)}</span>
           <span class="dir-team"><span class="mut3">·</span>
             <span class="mut3">${u.creator_team?esc(u.creator_team):(u.creator_role==='creator_admin'?'Network-wide':'No creator team')}</span>
-            ${u.leads_team?'<span class="tag">Leads</span>':''}</span></div>
+            ${u.leads_team?'<span class="tag">Leads</span>':''}</span></div></div>
       </div>
       ${u.creator_status!=='active'?`<div class="note mb2" style="padding:7px 10px;font-size:11.5px">
         <b>${esc(st.l)}.</b> Their records are unchanged; they cannot enter the network.</div>`:''}
@@ -16327,7 +16470,7 @@ function creatorDirCard(u){
           <select class="inp xs" style="flex:1" title="Creator Network role"
             onchange="ACTIONS.cnChangeCreatorRole({id:${esc(q)}},this)">
             ${CREATOR_ADDABLE_ROLES.map(r=>{const m=roleMeta(r);
-              return `<option value="${r}" ${u.role===r?'selected':''}>${m.i} ${esc(m.l)}</option>`;}).join('')}
+              return `<option value="${r}" ${u.role===r?'selected':''}>${esc(m.l)}</option>`;}).join('')}
           </select>
           <button class="btn xs" title="Module access" onclick='ACTIONS.editModules({uid:${q}})'>⚿ Modules${Array.isArray(u.allowed_modules)?' ('+u.allowed_modules.length+')':''}</button>
         </div>
@@ -16348,16 +16491,16 @@ function dirCard(u){
   const leads=t&&t.lead_user_id===u.id;
   const rm=roleMeta(u.role);
   return `<div class="card" data-go="#/media/team/${u.id}" style="cursor:pointer">
-    <div class="card-body">
+    <div class="card-body pad">
       <div class="f gap3 ac mb3">${avatarP(u.id,'xl')}
         <div style="min-width:0"><b class="trunc" style="display:block;font-size:15px">${esc(u.full_name)}</b>
           <span class="small mut trunc" style="display:block">${esc(u.designation||capacityOf(u.id))}</span>
-          <span class="xsmall mut3">${rm.i} ${esc(rm.l)}</span>
+          <div class="dir-meta"><span class="dir-role">${esc(rm.l)}</span>
           <span class="dir-team"><span class="mut3">·</span>${t
             ? `<span style="color:${teamColor(t)}">${esc(teamIcon(t))}</span>
                <span class="${leads?'b':'mut3'}">${esc(t.name)}</span>
                ${leads?'<span class="chip" style="height:17px;padding:0 6px;font-size:9.5px">Lead</span>':''}`
-            : '<span class="mut3">Unassigned</span>'}</span></div>
+            : '<span class="mut3">Unassigned</span>'}</span></div></div>
         ${(can('admin.users')&&u.id!==S.me&&u.is_active)?`<span class="icon-btn ml-auto" role="button" title="Remove member" style="color:var(--danger)"
           onclick="event.stopPropagation();event.preventDefault();ACTIONS.deleteCrew({uid:${u.id},name:'${esc((u.full_name||'').replace(/'/g,''))}'})">${ic('trash')}</span>`:''}</div>
       ${!u.is_active?`<div class="note mb2" style="padding:7px 10px;font-size:11.5px">
@@ -16594,7 +16737,7 @@ function viewTeamMember(uid){
         <div><div class="crumb"><a href="#/media/team">Team</a> › ${esc(u.full_name)}</div>
           <h1 class="page-title">${esc(u.full_name)}</h1>
           <div class="f wrap gap2 ac mt2"><span class="chip">${esc(u.designation)}</span>
-            <span class="chip">${(m=>`${m.i} ${esc(m.l)}`)(roleMeta(u.role))}</span>
+            <span class="chip">${esc(roleMeta(u.role).l)}</span>
             ${statusPill(PRESENCE_MAP(),presence(uid))}
             <span class="chip">joined ${D.fmt(u.joined_on)}</span>
             ${DB.user_duties.filter(d=>d.user_id===uid).map(d=>`<span class="chip sel">⚑ ${esc((DB.duty_flags.find(f=>f.id===d.duty_flag_id)||{name:'duty'}).name)}</span>`).join('')}
@@ -18631,7 +18774,7 @@ function admUsers(){
           held?`holds ${plural(held,'item')} of gear`:''].filter(Boolean).join(' · ');
         return `<tr><td><div class="f ac gap2">${avatar(u.id,'sm')}<div><div class="t-main">${esc(u.full_name)}</div>
           <div class="t-sub">${esc(u.email)}</div>${ids?`<div class="t-sub">${ids}</div>`:''}</div></div></td>
-        <td><span class="chip ${u.role==='admin'?'sel':''}">${roleMeta(u.role).i} ${esc(roleMeta(u.role).l)}</span></td>
+        <td><span class="chip ${u.role==='admin'?'sel':''}">${esc(roleMeta(u.role).l)}</span></td>
         <td class="small">${(()=>{const t=teamOf(u.id);return t?esc(t.name)+(t.lead_user_id===u.id?' · lead':''):'<span class="mut3">—</span>';})()}</td>
         <td>${DB.user_duties.filter(d=>d.user_id===u.id).map(d=>`<span class="chip sel">⚑ ${esc(DB.duty_flags.find(f=>f.id===d.duty_flag_id).name)}</span>`).join(' ')||'<span class="mut3">—</span>'}</td>
         <td class="small">${Array.isArray(u.allowed_modules)?`<button class="chip" onclick="ACTIONS.editModules({uid:${u.id}})" title="${esc(u.allowed_modules.join(', '))}">⚿ ${u.allowed_modules.length}</button>`:`<button class="chip" onclick="ACTIONS.editModules({uid:${u.id}})">All (role)</button>`}</td>
@@ -20154,11 +20297,24 @@ const ACTIONS = {
           <input class="inp" id="cl-domain" value="paruluniversity.ac.in" ${isAdmin()?'':'readonly'}>
           <div class="hint">${isAdmin()?'Only change this if a campaign genuinely needs a different domain.'
             :'Locked to the university domain. Only an Admin can change it.'}</div></div>
+        <div class="switch-row">
+          <div class="sr-txt"><b>Parul University email verification (OTP)</b>
+            <span id="cl-otp-hint">${castOtpHint(true)}</span></div>
+          ${castOtpSwitch(true,'id="cl-otp"')}</div>
         <label class="chk"><input type="checkbox" id="cl-dept"> Require department / institute</label>
       </div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" data-act="newCastLinkGo">Create registration link</button></div>`,{size:'wide'});
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+    const sw=$('#cl-otp');
+    const flip=()=>{
+      if(sw.getAttribute('aria-disabled')==='true'){toast('Only an Admin can turn verification off','bad');return;}
+      const on=!sw.classList.contains('on');
+      sw.classList.toggle('on',on);sw.setAttribute('aria-checked',String(on));
+      $('#cl-otp-hint').innerHTML=castOtpHint(on,$('#cl-domain').value.trim());
+    };
+    sw.onclick=flip;
+    sw.onkeydown=e=>{if(e.key===' '||e.key==='Enter'){e.preventDefault();flip();}};
   },
   newCastLinkGo:()=>{
     const name=$('#cl-name').value.trim();
@@ -20166,7 +20322,8 @@ const ACTIONS = {
     const body={name,description:$('#cl-desc').value.trim(),
       active_from:$('#cl-from').value||null,expires_on:$('#cl-until').value||null,
       allowed_domain:$('#cl-domain').value.trim()||'paruluniversity.ac.in',
-      require_department:$('#cl-dept').checked};
+      require_department:$('#cl-dept').checked,
+      require_otp:$('#cl-otp').classList.contains('on')};
     closeModal();
     moSync(MO_API.post('/casting-links',body).then(r=>hydrateFromServer().then(()=>r)),
       (r)=>{loadMyActivity(true);render();
@@ -20182,6 +20339,14 @@ const ACTIONS = {
     moSync(MO_API.patch('/casting-links/'+d.lid,{is_active:on}).then(()=>hydrateFromServer()),
       ()=>{loadMyActivity(true);render();
         toast(on?'Registration reopened':'Registration closed. Existing submissions are untouched','ok');});
+  },
+  toggleCastOtp:(d)=>{
+    const on=d.on==='1';
+    if(!on&&!isAdmin()){toast('Only an Admin can turn verification off','bad');return;}
+    moSync(MO_API.patch('/casting-links/'+d.lid,{require_otp:on}).then(()=>hydrateFromServer()),
+      ()=>{loadMyActivity(true);render();
+        toast(on?'OTP verification is now required on this link'
+                :'OTP verification turned off. Anyone with the link can register','ok');});
   },
   castLinkSubs:(d)=>{
     S.tab.castadmin='requests';
@@ -20220,6 +20385,43 @@ const ACTIONS = {
       (r)=>{loadMyActivity(true);closeDrawer();render();
         toast(r&&r.cast_id?('Approved. '+r.cast_id+' created and added to the casting library')
           :('Request marked '+String(d.to).replace('_',' ')),'ok');});
+  },
+  /* ---- Google Drive for casting photos (Admin) ---- */
+  castDrive:()=>openCastDriveModal(S.castDrive&&!S.castDrive.error?S.castDrive:null),
+  castDriveSaveClient:()=>{
+    const id=(($('#cd-client-id')||{}).value||'').trim(), secret=(($('#cd-client-secret')||{}).value||'').trim();
+    if(!id||!secret){toast('Paste both the client ID and the client secret','bad');return;}
+    castDriveCall(MO_API.post('/casting-drive/client',{client_id:id,client_secret:secret}),'OAuth client saved. Now sign in with Google.');
+  },
+  castDriveConnect:async()=>{
+    /* Opened IN the click, or the browser blocks it; the URL arrives a moment
+       later and is written into the window already open. */
+    const w=window.open('about:blank','nerve-drive','popup,width=540,height=720');
+    try{
+      const r=await MO_API.post('/casting-drive/connect',{});
+      castDriveListen();
+      if(w)w.location.href=r.url; else location.href=r.url;
+    }catch(e){ if(w)w.close(); toast(e.message,'bad'); }
+  },
+  castDriveFolder:()=>{
+    const v=(($('#cd-folder')||{}).value||'').trim();
+    if(!v){toast('Paste a Google Drive folder link','bad');return;}
+    castDriveCall(MO_API.post('/casting-drive/folder',{folder:v}),'Folder changed');
+  },
+  castDriveCreateFolder:()=>{
+    const v=(($('#cd-folder-name')||{}).value||'').trim();
+    castDriveCall(MO_API.post('/casting-drive/folder',{create:v}),'Folder created');
+  },
+  castDriveCheck:async()=>{
+    const box=$('#cd-msg'); if(box)box.innerHTML='<div class="note">Asking Google Drive…</div>';
+    try{ const r=await MO_API.post('/casting-drive/check',{}); const b=$('#cd-msg'); if(!b)return;
+      b.innerHTML=r.ok?`<div class="note ok">✔ Google Drive answered. Folder “${esc(r.folder_name||'')}” is reachable.</div>`
+        :`<div class="note warn">✕ ${esc(r.error||'The folder could not be reached.')}</div>`;
+    }catch(e){ const b=$('#cd-msg'); if(b)b.innerHTML=`<div class="note warn">✕ ${esc(e.message)}</div>`; }
+  },
+  castDriveDisconnect:()=>{
+    if(!confirm('Disconnect Google Drive? Photos already saved stay in Drive, but new registrations will have nowhere to go until an account is connected again.'))return;
+    castDriveCall(MO_API.del('/casting-drive'),'Google Drive disconnected');
   },
   /* ---- Casting library ---------------------------------------------------
      Preview is discovery; management writes through the API and re-reads the

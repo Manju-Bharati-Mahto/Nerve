@@ -1944,6 +1944,10 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_mo_casting_links_token ON mo_casting_links(token)`);
+  /* Whether applicants must prove an @allowed_domain address with a one-time
+     code. On by default — every link made before the switch existed was
+     verified — and only an Admin may turn it off, because off means anyone. */
+  await pool.query(`ALTER TABLE mo_casting_links ADD COLUMN IF NOT EXISTS require_otp BOOLEAN NOT NULL DEFAULT true`);
 
   // The same requests table carries external submissions — §16 asks for one
   // review queue, not two. Internal requests simply leave these columns null.
@@ -1963,6 +1967,14 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
     // The applicant hosts their own photo and gives us the link — NERVE stores the
     // URL, never a copy of the image. The column the intake layer always reserved.
     ["photo_url", "TEXT"],
+    // Where the photo actually lives once it is UPLOADED through the form (see
+    // server/casting-photos.ts): the Drive file, the request's own folder, and
+    // the type the stream is served as. photo_url then carries the file's Drive
+    // web link, so the older "open the link" buttons keep working. All three
+    // stay null for a pasted link.
+    ["photo_file_id", "TEXT"],
+    ["photo_folder_id", "TEXT"],
+    ["photo_mime", "TEXT"],
     ["mobile_phone", "TEXT"],             // normalised on the way in, never free text
     ["enrolment_number", "TEXT"],         // optional: staff, alumni and externals have none
     ["instagram_url", "TEXT"],
@@ -1977,6 +1989,9 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
     ["reviewed_at", "TIMESTAMPTZ"],
     ["archived_at", "TIMESTAMPTZ"],
     ["submitted_ip", "TEXT"],
+    // False only when the link had verification switched off: the address was
+    // typed, never proven. Every earlier row came through the OTP flow.
+    ["email_verified", "BOOLEAN NOT NULL DEFAULT true"],
   ];
   for (const [c, t] of REQ_COLS)
     await pool.query(`ALTER TABLE mo_casting_requests ADD COLUMN IF NOT EXISTS "${c}" ${t}`);
@@ -2002,6 +2017,30 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
   await pool.query(`ALTER TABLE mo_casting_records ADD COLUMN IF NOT EXISTS source_request_id BIGINT
                     REFERENCES mo_casting_requests(id) ON DELETE SET NULL`);
   await pool.query(`ALTER TABLE mo_casting_records ADD COLUMN IF NOT EXISTS applicant_email TEXT`);
+  // Approval carries an uploaded photo across to the record, so Casting Preview
+  // can show the face without opening Drive. drive_url keeps the FOLDER link.
+  await pool.query(`ALTER TABLE mo_casting_records ADD COLUMN IF NOT EXISTS photo_file_id TEXT`);
+  await pool.query(`ALTER TABLE mo_casting_records ADD COLUMN IF NOT EXISTS photo_mime TEXT`);
+
+  /* The Google Drive an Admin connected IN THE APP for casting photos (see
+     server/casting-drive.ts): one row, because there is one casting intake.
+     Secrets are sealed with server/secret-box.ts, never stored in clear. The
+     OAuth client may come from the environment instead, in which case the two
+     client columns stay null. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_casting_drive (
+      id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+      oauth_client_id TEXT,
+      oauth_client_secret_enc TEXT,
+      refresh_token_enc TEXT,
+      account_email TEXT,
+      folder_id TEXT,
+      folder_name TEXT,
+      folder_url TEXT,
+      connected_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      connected_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
 
   /* ═══════════ AI REQUEST METERING (§ AI operating layer) ═══════════════════
      Operational accountability and cost tracking for the AI layer — NOT

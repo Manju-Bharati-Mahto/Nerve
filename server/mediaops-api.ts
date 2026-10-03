@@ -46,6 +46,23 @@ import { config } from "./config.js";
 import { normalizeRow, rowsFromRecords, type AssetRef, type CategoryRef,
          type ScopeRef, type SourceRow } from "./asset-import.js";
 import type { AiCapability, AiUserContext } from "./ai/types.js";
+/* Casting registration photos live in Google Drive; this is the one module
+   that knows where. The API only stores the ids it hands back and streams the
+   bytes on request. */
+import {
+  castingPhotosConfigured, castingPhotoSource, storeCastingPhoto, openCastingPhoto, driveFolderUrl,
+  resetCastingPhotoClient, CastingPhotosNotConfiguredError, CASTING_PHOTO_MIME, CASTING_PHOTO_MAX_BYTES,
+  type StoredCastingPhoto,
+} from "./casting-photos.js";
+/* The Google Drive an Admin connects in the app for those photos: the OAuth
+   dance, the folder, the status the dialog shows. Admin-only routes below. */
+import {
+  castingDriveStatus, castingDriveAuthUrl, completeCastingDriveConnect, saveCastingDriveClient,
+  useCastingDriveFolder, createCastingDriveFolder, checkCastingDrive, disconnectCastingDrive,
+  verifyDriveState, CastingDriveError,
+} from "./casting-drive.js";
+import { promises as fsp } from "node:fs";
+import { Readable } from "node:stream";
 
 type Handlers = {
   asyncHandler: (fn: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<unknown>) =>
@@ -67,6 +84,12 @@ type Handlers = {
      integration suites can mount the API without any upload machinery at all;
      a missing one degrades to a pass-through, exactly as the limiters do. */
   assetImportUpload?: RequestHandler;
+  /* The multer middleware that receives an applicant's photo on the public
+     casting form, staged in a private temp dir on its way to Google Drive.
+     Optional for the same reason as assetImportUpload: the server supplies it,
+     the integration suites may mount the API without any upload machinery, and
+     a plain JSON submit must keep working either way. */
+  castingPhotoUpload?: RequestHandler;
 };
 
 export interface CurrentUser { id: string; role: string; team: string | null; full_name?: string; email?: string; }
@@ -9046,6 +9069,154 @@ async function allocateInternalCode(
     res.json({ ok, checked_at: new Date().toISOString() });
   }));
 
+  /* ── The photo itself ──────────────────────────────────────────────────────
+     Streamed from Google Drive THROUGH Nerve, so the browser needs neither a
+     Google session nor a public sharing link — the Drive stays private to the
+     Casting Manager. Who may look is exactly who may see the row: a request's
+     photo goes to whoever may work the queue, a record's to whoever may see the
+     record (the Preview rule for the crew, everything for the manager). A row
+     the caller may not see is a 404, not a 403, so nothing is confirmed. */
+  async function streamCastingPhoto(res: express.Response, fileId: string, mime: string | null): Promise<void> {
+    try {
+      const upstream = await openCastingPhoto(fileId);
+      res.status(200);
+      res.setHeader("Content-Type", mime && CASTING_PHOTO_MIME[mime] ? mime : "application/octet-stream");
+      res.setHeader("Content-Disposition", "inline");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Cache-Control", "private, max-age=300");
+      const len = upstream.headers.get("content-length");
+      if (len) res.setHeader("Content-Length", len);
+      if (!upstream.body) { res.end(); return; }
+      Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]).pipe(res);
+    } catch (err) {
+      if (err instanceof CastingPhotosNotConfiguredError) return sendError(res, 503, "Photo storage is not configured.");
+      console.error("Casting photo stream failed", err);
+      return sendError(res, 502, "The photo could not be fetched from Google Drive.");
+    }
+  }
+  app.get(`${P}/casting-requests/:id/photo`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const r = (await pool.query(`SELECT photo_file_id, photo_mime FROM mo_casting_requests WHERE id=$1`, [id])).rows[0];
+    if (!r) return sendError(res, 404, "Casting request not found.");
+    if (!r.photo_file_id) return sendError(res, 404, "This request has no uploaded photo.");
+    await streamCastingPhoto(res, String(r.photo_file_id), (r.photo_mime as string | null) ?? null);
+  }));
+  app.get(`${P}/casting/:id/photo`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const manage = await canManageCasting(u);
+    const r = (await pool.query(
+      `SELECT photo_file_id, photo_mime FROM mo_casting_records WHERE id=$1${manage ? "" : ` AND ${PREVIEW_WHERE}`}`,
+      [id])).rows[0];
+    if (!r) return sendError(res, 404, "Casting record not found.");
+    if (!r.photo_file_id) return sendError(res, 404, "This casting record has no uploaded photo.");
+    await streamCastingPhoto(res, String(r.photo_file_id), (r.photo_mime as string | null) ?? null);
+  }));
+
+  /* ── Google Drive for casting photos — the Admin's button ──────────────────
+     One Drive for the whole intake, connected by signing in with Google from
+     Casting Management. Admin only (not the Casting Manager duty): this is a
+     credential for an outside account, and whoever holds it can see every
+     applicant photo. Everything that talks to Google lives in casting-drive.ts;
+     these routes only decide who may ask, and what the popup is told. */
+  const driveAdmin = async (res: express.Response, u: CurrentUser): Promise<boolean> => {
+    if (isMoAdmin(u)) return true;
+    sendError(res, 403, "Only an Admin may configure Google Drive for casting.");
+    return false;
+  };
+  const driveFailed = (res: express.Response, err: unknown) => {
+    if (err instanceof CastingDriveError) return sendError(res, err.status, err.message);
+    console.error("Casting Drive operation failed", err);
+    return sendError(res, 502, "Google Drive did not answer. Please try again.");
+  };
+  const driveStatusFor = async () => ({ ...(await castingDriveStatus()), source: await castingPhotoSource() });
+
+  app.get(`${P}/casting-drive`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await driveAdmin(res, u))) return;
+    res.json(await driveStatusFor());
+  }));
+  app.post(`${P}/casting-drive/client`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await driveAdmin(res, u))) return;
+    const b = req.body as Record<string, unknown>;
+    const id = String(b.client_id ?? "").trim(), secret = String(b.client_secret ?? "").trim();
+    if (!/^[\w.-]+\.apps\.googleusercontent\.com$/.test(id))
+      return sendError(res, 400, "That does not look like a Google OAuth client id (it ends in .apps.googleusercontent.com).");
+    if (secret.length < 8) return sendError(res, 400, "Paste the OAuth client secret as well.");
+    await saveCastingDriveClient(id, secret);
+    resetCastingPhotoClient();
+    await audit(u, "casting_drive.client_saved", "casting_drive", 1, null, { client_id: id }, req);
+    res.json(await driveStatusFor());
+  }));
+  app.post(`${P}/casting-drive/connect`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await driveAdmin(res, u))) return;
+    try { res.json({ url: await castingDriveAuthUrl(u.id) }); }
+    catch (err) { driveFailed(res, err); }
+  }));
+  /* Google sends the Admin's browser here, in the popup the dialog opened. The
+     answer is a small page that tells the opener what happened and closes;
+     nothing about the token ever reaches the browser. */
+  const htmlEsc = (v: string) => v.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
+  const drivePopup = (ok: boolean, message: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Google Drive — NERVE Media Ops</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#F7F9FC;color:#0F172A;font:15px/1.5 system-ui,sans-serif}
+.c{background:#fff;border:1px solid #E3E9F2;border-radius:12px;padding:26px 28px;max-width:440px;text-align:center}
+h1{font-size:18px;margin:0 0 8px}p{margin:0;color:#475569;font-size:14px}.ok{color:#15803D}.bad{color:#B91C1C}</style></head>
+<body><div class="c"><h1 class="${ok ? "ok" : "bad"}">${ok ? "Google Drive connected" : "Google Drive was not connected"}</h1>
+<p>${htmlEsc(message)}</p><p style="margin-top:14px">You can close this window.</p></div>
+<script>try{if(window.opener)window.opener.postMessage({type:'nerve-casting-drive',ok:${ok ? "true" : "false"},message:${JSON.stringify(message)}},'*');}catch(e){}
+${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></html>`;
+  app.get(`${P}/casting-drive/callback`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return void res.status(403).type("html").send(drivePopup(false, "Only an Admin may connect Google Drive."));
+    const q = req.query as Record<string, string | undefined>;
+    if (q.error) return void res.status(400).type("html").send(drivePopup(false, q.error === "access_denied"
+      ? "You cancelled the Google sign-in, or did not allow access to Drive." : `Google reported: ${q.error}`));
+    if (!q.code || !q.state || !verifyDriveState(String(q.state), u.id))
+      return void res.status(400).type("html").send(drivePopup(false, "This sign-in link is not valid or has expired. Close this window and press Connect again."));
+    try {
+      const out = await completeCastingDriveConnect(String(q.code), u.id);
+      resetCastingPhotoClient();
+      await audit(u, "casting_drive.connected", "casting_drive", 1, null, { account: out.email, folder: out.folder.name }, req);
+      res.type("html").send(drivePopup(true, `${out.email ? out.email + " — " : ""}photos will be saved to “${out.folder.name}”.`));
+    } catch (err) {
+      console.error("Casting Drive connect failed", err);
+      res.status(err instanceof CastingDriveError ? err.status : 502).type("html")
+        .send(drivePopup(false, err instanceof CastingDriveError ? err.message : "Google Drive did not answer. Please try again."));
+    }
+  }));
+  app.post(`${P}/casting-drive/folder`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await driveAdmin(res, u))) return;
+    const b = req.body as Record<string, unknown>;
+    try {
+      const folder = b.create !== undefined
+        ? await createCastingDriveFolder(String(b.create ?? ""))
+        : await useCastingDriveFolder(String(b.folder ?? ""));
+      resetCastingPhotoClient();
+      await audit(u, "casting_drive.folder_changed", "casting_drive", 1, null, { folder_id: folder.id, folder: folder.name }, req);
+      res.json(await driveStatusFor());
+    } catch (err) { driveFailed(res, err); }
+  }));
+  app.post(`${P}/casting-drive/check`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await driveAdmin(res, u))) return;
+    res.json(await checkCastingDrive());
+  }));
+  app.delete(`${P}/casting-drive`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await driveAdmin(res, u))) return;
+    const before = await castingDriveStatus();
+    await disconnectCastingDrive();
+    resetCastingPhotoClient();
+    await audit(u, "casting_drive.disconnected", "casting_drive", 1, { account: before.account_email }, null, req);
+    res.json(await driveStatusFor());
+  }));
+
   // ── Casting requests ──────────────────────────────────────────────────────
   app.post(`${P}/casting-requests`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;               // anyone on the crew may ask
@@ -9265,11 +9436,16 @@ async function allocateInternalCode(
     const st = linkOpen(l);
     res.json({
       campaign: { name: l.name, description: l.description, allowed_domain: l.allowed_domain,
-        require_department: l.require_department },
+        require_department: l.require_department, require_otp: l.require_otp !== false },
       open: st.ok, message: st.why ?? null,
+      /* Whether the form should offer "Upload photo" (the server can put it in
+         Drive) or fall back to asking for a Drive link. Decided by the server's
+         configuration, never by the page. */
+      photo_upload: await castingPhotosConfigured(),
       // The applicant verifies an email address; there is no OAuth client to
-      // hand out and no NERVE account involved.
-      auth: "email_otp", otp_ttl_minutes: OTP_TTL_MINUTES,
+      // hand out and no NERVE account involved. A link with verification off
+      // takes the address as typed, from anyone.
+      auth: l.require_otp === false ? "none" : "email_otp", otp_ttl_minutes: OTP_TTL_MINUTES,
       resend_after_seconds: OTP_RESEND_COOLDOWN_SECONDS,
       /* The form renders the wording it is SERVED and echoes the version back on
          submit, so the text an applicant agreed to is never guessed from the
@@ -9296,6 +9472,9 @@ async function allocateInternalCode(
       if (!l) return sendError(res, 404, invalidMsg);
       const st = linkState(l);
       if (!st.ok) return sendError(res, 403, st.why!);
+      // Request portals have no such column, so only an explicit false counts.
+      if (l.require_otp === false)
+        return sendError(res, 400, "This registration does not need email verification.");
 
       const domain = String(l.allowed_domain).replace(/^@/, "");
       const email = String((req.body as Record<string, unknown>).email ?? "").trim().toLowerCase();
@@ -9351,30 +9530,84 @@ async function allocateInternalCode(
     if (!emailInDomain(who.email, String(l.allowed_domain)))
       return sendError(res, 403, `Please use your official @${String(l.allowed_domain).replace(/^@/, "")} email address.`);
     const ex = (await pool.query(
-      `SELECT request_id, status, created_at FROM mo_casting_requests
+      `SELECT request_id, status, created_at,
+              (photo_file_id IS NOT NULL OR photo_url IS NOT NULL) AS has_photo
+         FROM mo_casting_requests
         WHERE link_id=$1 AND lower(applicant_email)=lower($2)`, [l.id, who.email])).rows[0];
     res.json({ email: who.email, name: who.name, existing: ex ?? null });
   }));
 
   // ── PUBLIC: submit. Verified identity + domain + consent + dedupe, all here.
-  app.post(`/api/v1/public/casting/:token/submit`, asyncHandler(async (req, res) => {
+  /* The photo arrives as multipart/form-data — one `payload` field holding the
+     JSON the form always sent, plus the `photo` file — or, from a server
+     without Drive or an older page, as the plain JSON body. Multer's own
+     errors (too large, not an image) become 400s HERE: the global error
+     handler only knows how to say "Internal server error", which is the wrong
+     answer for a student filling in a form on a phone. */
+  type StagedPhoto = { path: string; mimetype: string; size: number };
+  const receiveCastingPhoto: RequestHandler = (req, res, next) => {
+    if (!h.castingPhotoUpload || !req.is("multipart/form-data")) return next();
+    h.castingPhotoUpload(req, res, (err?: unknown) => {
+      if (!err) return next();
+      const code = (err as { code?: string }).code;
+      sendError(res, 400, code === "LIMIT_FILE_SIZE"
+        ? `Your photo is larger than ${Math.round(CASTING_PHOTO_MAX_BYTES / 1024 / 1024)} MB. Please choose a smaller one.`
+        : (err instanceof Error && err.message) || "The photo could not be received. Please try again.");
+    });
+  };
+  const photoStoreFailed = (res: express.Response, err: unknown) => {
+    console.error("Casting photo could not be stored in Drive", err);
+    if (err instanceof CastingPhotosNotConfiguredError)
+      return sendError(res, 503, "Photo upload is not available right now. Please try again later.");
+    return sendError(res, 502, "Your photo could not be saved. Please try again.");
+  };
+  app.post(`/api/v1/public/casting/:token/submit`, receiveCastingPhoto, asyncHandler(async (req, res) => {
+    const staged = (req as express.Request & { file?: StagedPhoto }).file ?? null;
+    try {
+      await submitCastingRegistration(req, res, staged);
+    } finally {
+      // The staged copy goes whatever happened — Drive has it, or nobody does.
+      if (staged) await fsp.unlink(staged.path).catch(() => {});
+    }
+  }));
+  async function submitCastingRegistration(req: express.Request, res: express.Response, staged: StagedPhoto | null): Promise<unknown> {
     const token = getSingleParam(req.params.token);
     const l = (await pool.query(`SELECT * FROM mo_casting_links WHERE token=$1`, [token])).rows[0];
     if (!l) return sendError(res, 404, "This casting registration link is not valid.");
     const st = linkOpen(l);
     if (!st.ok) return sendError(res, 403, st.why!);
 
-    const b = req.body as Record<string, unknown>;
-    // The identity comes from the verified session, never from the body — the
-    // client cannot nominate whose submission this is (§6).
-    const who = await portalIdentity("casting", token, b);
-    if (!who) return sendError(res, 401, "Please verify your email address to continue.");
-    const domain = String(l.allowed_domain).replace(/^@/, "");
-    /* Domain is re-checked here even though /lookup checked it: the session is
-       the identity, and this endpoint must not depend on an earlier call having
-       run. emailInDomain() is main's shared helper — the OTP flow's rule, kept. */
-    if (!emailInDomain(who.email, domain))
-      return sendError(res, 403, `Please use your official @${domain} email address.`);
+    /* Multipart carries the form's JSON in one `payload` field, so every rule
+       below reads the same shape whichever way the page sent it. */
+    const raw = (req.body ?? {}) as Record<string, unknown>;
+    let b: Record<string, unknown>;
+    if (staged || typeof raw.payload === "string") {
+      try { b = JSON.parse(String(raw.payload ?? "{}")) as Record<string, unknown>; }
+      catch { return sendError(res, 400, "The form could not be read. Please reload the page and try again."); }
+      if (!b || typeof b !== "object" || Array.isArray(b)) b = {};
+    } else b = raw;
+    const verified = l.require_otp !== false;
+    let who: PortalIdentity | null;
+    if (verified) {
+      // The identity comes from the verified session, never from the body — the
+      // client cannot nominate whose submission this is (§6).
+      who = await portalIdentity("casting", token, b);
+      if (!who) return sendError(res, 401, "Please verify your email address to continue.");
+      const domain = String(l.allowed_domain).replace(/^@/, "");
+      /* Domain is re-checked here even though /lookup checked it: the session is
+         the identity, and this endpoint must not depend on an earlier call having
+         run. emailInDomain() is main's shared helper — the OTP flow's rule, kept. */
+      if (!emailInDomain(who.email, domain))
+        return sendError(res, 403, `Please use your official @${domain} email address.`);
+    } else {
+      /* Verification is off for this link: the address is a claim, any domain,
+         kept for contact and dedupe only — and marked unverified on the row. */
+      const email = String(b.email ?? "").trim().toLowerCase();
+      if (!email) return sendError(res, 400, "Please enter your email address.");
+      if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+        return sendError(res, 400, "Please enter a valid email address.");
+      who = { email, name: "", email_verified: false };
+    }
     /* Consent: the version the applicant was SHOWN is what gets recorded, so a
        reword between page load and submit cannot silently move the goalposts.
        An unknown version means the form is stale — say so rather than storing it. */
@@ -9400,10 +9633,18 @@ async function allocateInternalCode(
     if (!mobilePhone)
       return sendError(res, 400, "Please enter a valid mobile number — 10 digits for an Indian number, or +country code.");
 
+    /* The photo: an uploaded file when this server can put it in Drive, else
+       the applicant's own Drive link. A file wins; a link from a stale tab is
+       still accepted; a re-submission may keep the photo already on file —
+       decided below, once the earlier row is known. */
+    const uploads = await castingPhotosConfigured();
+    if (staged && !uploads)
+      return sendError(res, 503, "Photo upload is not available right now. Please reload the page and try again.");
+    if (staged && !CASTING_PHOTO_MIME[staged.mimetype])
+      return sendError(res, 400, "Please upload a JPG, PNG or WEBP photo.");
     const rawDrive = String(b.photo_url ?? "").trim();
-    if (!rawDrive) return sendError(res, 400, "Please add the Google Drive link to your photo.");
-    const driveUrl = normaliseDriveUrl(rawDrive);
-    if (!driveUrl)
+    const driveUrl = rawDrive ? normaliseDriveUrl(rawDrive) : null;
+    if (rawDrive && !driveUrl)
       return sendError(res, 400, "Please enter a valid Google Drive link (it should start with https://drive.google.com/ or https://docs.google.com/).");
 
     // Optional. Empty is a normal answer and must never block a submission —
@@ -9419,6 +9660,19 @@ async function allocateInternalCode(
     const ex = (await pool.query(
       `SELECT * FROM mo_casting_requests WHERE link_id=$1 AND lower(applicant_email)=lower($2)`,
       [l.id, who.email])).rows[0];
+    /* An unproven address cannot update anything: whoever typed it may not be
+       its owner, so it neither overwrites the earlier row nor learns its id. */
+    if (ex && !verified)
+      return res.status(409).json({ duplicate: true,
+        message: "This email address has already been used to register for this drive. Please contact the Media Crew if your details need to change." });
+    if (ex && ["approved", "rejected"].includes(String(ex.status)))
+      return res.status(200).json({ duplicate: true, request_id: ex.request_id, status: ex.status,
+        message: "You have already submitted a casting request for this drive." });
+    /* A first submission needs a photo. A re-submission may keep the one on
+       file — the form says it is there and asks only if they want to replace it. */
+    const photoOnFile = !!(ex && (ex.photo_file_id || ex.photo_url));
+    if (!staged && !driveUrl && !photoOnFile)
+      return sendError(res, 400, uploads ? "Please upload your photo." : "Please add the Google Drive link to your photo.");
     const payload = {
       applicant_name: name, applicant_type: type,
       department: String(b.department ?? "") || null, designation: String(b.designation ?? "") || null,
@@ -9430,23 +9684,37 @@ async function allocateInternalCode(
       location: String(b.location ?? "") || null,
       intro: String(b.intro ?? "") || null,
       mobile_phone: mobilePhone, enrolment_number: enrolment,
-      instagram_url: instagram, photo_url: driveUrl,
+      instagram_url: instagram,
       need: `${type} — ${name}`,
     };
     if (ex) {
-      if (["approved", "rejected"].includes(String(ex.status)))
-        return res.status(200).json({ duplicate: true, request_id: ex.request_id, status: ex.status,
-          message: "You have already submitted a casting request for this drive." });
+      /* The row exists, so its folder name is known: the new photo goes to
+         Drive first and the row only changes once Drive has it. A failure
+         leaves the earlier submission exactly as it was. */
+      let photo: StoredCastingPhoto | null = null;
+      if (staged) {
+        try { photo = await storeCastingPhoto({ requestCode: String(ex.request_id), localPath: staged.path, mimeType: staged.mimetype }); }
+        catch (err) { return photoStoreFailed(res, err); }
+      }
+      /* Photo columns move together, or not at all: a new upload sets all
+         four, a pasted link sets the url and clears the Drive ids, and neither
+         keeps what is on file. */
+      const setPhoto = !!(photo || driveUrl);
       await pool.query(
         `UPDATE mo_casting_requests SET applicant_name=$1, applicant_type=$2, department=$3, designation=$4,
            age_group=$5, gender=$6, languages=$7, category=$8, interests=$9, availability=$10, location=$11,
-           intro=$12, need=$13, mobile_phone=$14, enrolment_number=$15, instagram_url=$16, photo_url=$17,
-           consent_given=true, consent_at=NOW(), consent_version=$18, consent_text=$19,
-           updated_at=NOW() WHERE id=$20`,
+           intro=$12, need=$13, mobile_phone=$14, enrolment_number=$15, instagram_url=$16,
+           photo_url=CASE WHEN $17::boolean THEN $18 ELSE photo_url END,
+           photo_file_id=CASE WHEN $17::boolean THEN $19 ELSE photo_file_id END,
+           photo_folder_id=CASE WHEN $17::boolean THEN $20 ELSE photo_folder_id END,
+           photo_mime=CASE WHEN $17::boolean THEN $21 ELSE photo_mime END,
+           consent_given=true, consent_at=NOW(), consent_version=$22, consent_text=$23,
+           updated_at=NOW() WHERE id=$24`,
         [payload.applicant_name, payload.applicant_type, payload.department, payload.designation,
          payload.age_group, payload.gender, payload.languages, payload.category, payload.interests,
          payload.availability, payload.location, payload.intro, payload.need,
-         payload.mobile_phone, payload.enrolment_number, payload.instagram_url, payload.photo_url,
+         payload.mobile_phone, payload.enrolment_number, payload.instagram_url,
+         setPhoto, photo ? photo.webViewUrl : driveUrl, photo?.fileId ?? null, photo?.folderId ?? null, photo?.mimeType ?? null,
          consentVersion, consentText, ex.id]);
       return res.json({ updated: true, request_id: ex.request_id, status: ex.status });
     }
@@ -9458,15 +9726,35 @@ async function allocateInternalCode(
       `INSERT INTO mo_casting_requests (request_id, source, link_id, applicant_email, applicant_name, applicant_type,
          department, designation, age_group, gender, languages, category, interests, availability, location, intro,
          need, mobile_phone, enrolment_number, instagram_url, photo_url,
-         consent_given, consent_at, consent_version, consent_text, status, submitted_ip)
+         consent_given, consent_at, consent_version, consent_text, status, submitted_ip, email_verified)
        VALUES ($1,'external',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-               true,NOW(),$21,$22,'new',$23) RETURNING *`,
+               true,NOW(),$21,$22,'new',$23,$24) RETURNING *`,
       [code, l.id, who.email, payload.applicant_name, payload.applicant_type, payload.department,
        payload.designation, payload.age_group, payload.gender, payload.languages, payload.category,
        payload.interests, payload.availability, payload.location, payload.intro, payload.need,
-       payload.mobile_phone, payload.enrolment_number, payload.instagram_url, payload.photo_url,
+       payload.mobile_phone, payload.enrolment_number, payload.instagram_url, driveUrl,
        consentVersion, consentText,
-       (req.headers["x-forwarded-for"] as string) || req.ip || null]);
+       (req.headers["x-forwarded-for"] as string) || req.ip || null, verified]);
+
+    if (staged) {
+      /* Row first, Drive second. The row is what allocates the request code
+         the Drive folder is named after, and the unique index on request_id is
+         what catches two first-time submissions racing for the same number —
+         before anything is written to Drive under the wrong name. If Drive
+         then fails the row goes again, the applicant is told, and a retry is
+         a clean first submission. No transaction spans the upload: a pooled
+         client is never held while awaiting anything but that client
+         (db-pool-safety.test.ts). */
+      let photo: StoredCastingPhoto;
+      try { photo = await storeCastingPhoto({ requestCode: code, localPath: staged.path, mimeType: staged.mimetype }); }
+      catch (err) {
+        await pool.query(`DELETE FROM mo_casting_requests WHERE id=$1`, [ins.rows[0].id]);
+        return photoStoreFailed(res, err);
+      }
+      await pool.query(
+        `UPDATE mo_casting_requests SET photo_url=$1, photo_file_id=$2, photo_folder_id=$3, photo_mime=$4 WHERE id=$5`,
+        [photo.webViewUrl, photo.fileId, photo.folderId, photo.mimeType, ins.rows[0].id]);
+    }
 
     // Audited without a NERVE actor — the applicant has no account, by design (§7).
     await pool.query(
@@ -9475,7 +9763,8 @@ async function allocateInternalCode(
       // vocabulary mo_audit_logs already uses for non-user actors.
       `INSERT INTO mo_audit_logs (actor_id, actor_role, action, entity_type, entity_id, before, after, ip)
        VALUES (NULL,'system','casting_request.submitted','casting_request',$1,NULL,$2,$3)`,
-      [ins.rows[0].id, JSON.stringify({ request_id: code, campaign: l.name, applicant: who.email }),
+      [ins.rows[0].id, JSON.stringify({ request_id: code, campaign: l.name, applicant: who.email,
+                                        email_verified: verified }),
        (req.ip ?? null)]);
     // Tell whoever holds the casting duty.
     const managers = (await pool.query(
@@ -9485,8 +9774,8 @@ async function allocateInternalCode(
         `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
          VALUES ($1,'casting',$2,$3,'casting_request',$4)`,
         [m.user_id, "New casting registration", `${code} — ${name} (${type})`, ins.rows[0].id]);
-    res.status(201).json({ request_id: code });
-  }));
+    return res.status(201).json({ request_id: code });
+  }
 
   // ── Registration links (Casting Manager / Admin) ───────────────────────────
   app.post(`${P}/casting-links`, asyncHandler(async (req, res) => {
@@ -9499,14 +9788,19 @@ async function allocateInternalCode(
     const domain = String(b.allowed_domain ?? "paruluniversity.ac.in").replace(/^@/, "");
     if (domain !== "paruluniversity.ac.in" && !isMoAdmin(u))
       return sendError(res, 403, "Only an Admin may allow a domain other than the university's.");
+    // Off opens the link to any address, which is wider than any domain change.
+    const requireOtp = b.require_otp !== false;
+    if (!requireOtp && !isMoAdmin(u))
+      return sendError(res, 403, "Only an Admin may turn off email verification.");
     const token = randomUUID().replace(/-/g, "");
     const ins = await pool.query(
       `INSERT INTO mo_casting_links (token, name, description, allowed_domain, active_from, expires_on,
-         require_department, is_active, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8) RETURNING *`,
+         require_department, require_otp, is_active, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9) RETURNING *`,
       [token, name, String(b.description ?? ""), domain, (b.active_from as string) || null,
-       (b.expires_on as string) || null, !!b.require_department, u.id]);
-    await audit(u, "casting_link.created", "casting_link", ins.rows[0].id, null, { name, domain }, req);
+       (b.expires_on as string) || null, !!b.require_department, requireOtp, u.id]);
+    await audit(u, "casting_link.created", "casting_link", ins.rows[0].id, null,
+      { name, domain, require_otp: requireOtp }, req);
     res.status(201).json({ link: ins.rows[0] });
   }));
 
@@ -9522,11 +9816,17 @@ async function allocateInternalCode(
       if (b[c] !== undefined) { fields.push(`${c}=$${i++}`); vals.push(b[c] === "" ? null : b[c]); }
     if (b.is_active !== undefined) { fields.push(`is_active=$${i++}`); vals.push(!!b.is_active); }
     if (b.require_department !== undefined) { fields.push(`require_department=$${i++}`); vals.push(!!b.require_department); }
+    if (b.require_otp !== undefined) {
+      if (b.require_otp === false && !isMoAdmin(u))
+        return sendError(res, 403, "Only an Admin may turn off email verification.");
+      fields.push(`require_otp=$${i++}`); vals.push(b.require_otp !== false);
+    }
     if (!fields.length) return res.json({ link: cur });
     fields.push(`updated_at=NOW()`); vals.push(id);
     const l = (await pool.query(`UPDATE mo_casting_links SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals)).rows[0];
     await audit(u, b.is_active === false ? "casting_link.deactivated" : "casting_link.updated",
-      "casting_link", id, { is_active: cur.is_active }, { name: l.name, is_active: l.is_active }, req);
+      "casting_link", id, { is_active: cur.is_active, require_otp: cur.require_otp },
+      { name: l.name, is_active: l.is_active, require_otp: l.require_otp }, req);
     res.json({ link: l });
   }));
 
@@ -9562,8 +9862,8 @@ async function allocateInternalCode(
          actually opens, and check-drive can then probe it like any other. */
       `INSERT INTO mo_casting_records (cast_id, name, category, profession, age_group, gender, languages,
          campus_id, location, availability, consent_status, consent_date, notes, drive_url,
-         source, source_request_id, applicant_email, created_by, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'confirmed',CURRENT_DATE,$11,$12,'external_registration',$13,$14,$15,$15)
+         source, source_request_id, applicant_email, created_by, updated_by, photo_file_id, photo_mime)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'confirmed',CURRENT_DATE,$11,$12,'external_registration',$13,$14,$15,$15,$16,$17)
        RETURNING *`,
       [castId, r.applicant_name ?? r.need, r.category ?? r.applicant_type ?? "Other", r.designation ?? null,
        r.age_group ?? null, r.gender ?? null, JSON.stringify(r.languages ?? []),
@@ -9571,8 +9871,11 @@ async function allocateInternalCode(
        ({ "Available regularly": "available", "Available occasionally": "limited",
           "Available with advance notice": "limited", "Currently unavailable": "unavailable" } as Record<string, string>)[String(r.availability)] ?? "available",
        [r.intro, r.department ? `Department: ${r.department}` : null].filter(Boolean).join("\n"),
-       r.photo_url ?? null,
-       id, r.applicant_email, u.id])).rows[0];
+       /* An uploaded photo makes the request's Drive FOLDER the record's link —
+          that is what a shoot day opens, and later media can sit beside the
+          photo. A pasted link is carried across as it is. */
+       r.photo_file_id && r.photo_folder_id && r.photo_url ? driveFolderUrl(String(r.photo_folder_id)) : (r.photo_url ?? null),
+       id, r.applicant_email, u.id, r.photo_file_id ?? null, r.photo_mime ?? null])).rows[0];
     await pool.query(
       `UPDATE mo_casting_requests SET status='approved', matched_record_id=$1, review_note=COALESCE($2, review_note),
          handled_by=$3, reviewed_at=NOW(), updated_at=NOW() WHERE id=$4`, [rec.id, note, u.id, id]);

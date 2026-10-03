@@ -103,6 +103,65 @@ GET  /api/v1/media/ai/status           # never returns the key
 POST /api/v1/media/ai/test-connection  # reachability + auth + model check
 ```
 
+## Google Drive Variables (optional)
+
+Two Media Ops workflows keep their media in Google Drive and talk to it from the
+API with one set of credentials: the Outreach video workflow and casting
+registration photos. With none of these set, both report themselves
+unconfigured and everything else runs exactly as before. The casting form, in
+particular, falls back to asking the applicant for a Drive link.
+
+| Variable | Required | Purpose | Example |
+| --- | --- | --- | --- |
+| `GOOGLE_SA_CLIENT_EMAIL` | One auth shape | Service-account email. Needs a **Shared Drive**: a service account has no storage quota of its own | `nerve@project.iam.gserviceaccount.com` |
+| `GOOGLE_SA_PRIVATE_KEY` | One auth shape | The key's PEM, with literal `\n` escapes | `-----BEGIN PRIVATE KEY-----\n...` |
+| `GOOGLE_OAUTH_CLIENT_ID` | One auth shape | OAuth client acting as one Google account. Works with an ordinary My Drive folder | `1234-abc.apps.googleusercontent.com` |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | One auth shape | Its secret. **Server-only** | `GOCSPX-...` |
+| `GOOGLE_OAUTH_REFRESH_TOKEN` | One auth shape | A refresh token for that account with the `https://www.googleapis.com/auth/drive` scope | `1//0g...` |
+| `GOOGLE_DRIVE_ROOT_FOLDER_ID` | For Outreach video | The "Agency Video Workflow" folder id | `1AbC...` |
+| `GOOGLE_DRIVE_CASTING_FOLDER_ID` | For casting photos | The folder applicants' photos go under, one sub-folder per request (`CR-00012/`) | `1XyZ...` |
+| `DRIVE_LOCAL_ROOT` | Dev/test | A directory standing in for Drive. Ignored whenever real credentials are present | `/tmp/nerve-drive` |
+
+### Setting up casting photo upload
+
+The easy way is in the app. An **Admin** opens **Casting Management → Google
+Drive**, and the dialog walks through it:
+
+1. **Once, in [Google Cloud Console](https://console.cloud.google.com/apis/credentials)**
+   (the dialog shows the exact redirect URI to paste): enable the **Google
+   Drive API**; set the **OAuth consent screen** to user type **Internal**
+   (the paruluniversity.ac.in Workspace — an *External* app left in Testing
+   expires its tokens after seven days); create an **OAuth client ID** of type
+   *Web application* with the authorised redirect URI
+   `<APP_BASE_URL>/api/v1/media/casting-drive/callback`. Google accepts
+   `http://` only for `localhost`, and never a bare IP address, so
+   `APP_BASE_URL` must be an https domain in production.
+2. Paste the client ID and secret into the dialog. They are stored encrypted
+   (AES-256-GCM under a key derived from `SESSION_SECRET`). Alternatively set
+   `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` in the environment
+   and the dialog uses those.
+3. Press **Sign in with Google and connect Drive**, sign in as the account
+   whose Drive should hold the photos, and allow access. Nerve stores the
+   refresh token (encrypted) and creates a **NERVE Casting Registrations**
+   folder in that account's My Drive. Use a folder you already have by pasting
+   its link, or create another one, from the same dialog.
+
+From then on the public registration form shows **Upload photo**; each
+submission creates `<folder>/CR-xxxxx/` with the photo inside, and Casting
+Management and Casting Preview show the photo streamed from Drive. An
+app connection takes precedence over the environment variables below.
+
+#### Environment-only alternative
+
+Without the dialog, set `GOOGLE_DRIVE_CASTING_FOLDER_ID` to a folder id plus
+one credential shape. For the OAuth shape, obtain a refresh token with the
+scope `https://www.googleapis.com/auth/drive` through
+[developers.google.com/oauthplayground](https://developers.google.com/oauthplayground)
+(gear icon → *Use your own OAuth credentials*) and set
+`GOOGLE_OAUTH_REFRESH_TOKEN`. A **service account** (`GOOGLE_SA_CLIENT_EMAIL`
++ `GOOGLE_SA_PRIVATE_KEY`) also works, but the folder must then live in a
+Shared Drive the service account has *Content manager* access to.
+
 ## Frontend Variables
 
 Local development or build-time variables:
