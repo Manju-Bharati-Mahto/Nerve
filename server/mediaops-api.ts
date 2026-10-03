@@ -1814,7 +1814,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        · approving needs a version waiting for review; changes can be asked for
          on a pending version or on one already approved (sent back);
        · approval queues the deliverable for dispatch; changes pull it out. */
-  async function reviewDeliverable(u: CurrentUser, d: Record<string, any>, outcome: "approved" | "changes_requested",
+  async function reviewDeliverable(u: CurrentUser, d: Record<string, unknown>, outcome: "approved" | "changes_requested",
                                    comment: string, req: express.Request): Promise<{ status: number; message?: string }> {
     if (!(await canReviewProject(u, Number(d.project_id))))
       return { status: 403, message: "Only the project's Team Lead or an Admin may review this deliverable." };
