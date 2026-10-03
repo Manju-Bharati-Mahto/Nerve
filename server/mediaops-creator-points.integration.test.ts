@@ -338,6 +338,108 @@ maybe("rule → cycle → approval → ledger → rank", () => {
 
 /* ── Idempotency and concurrency ─────────────────────────────────────────── */
 
+/* ── The reviewer decides the number, at the moment of approval ────────────
+   The rule says what the work is normally worth; a reviewer may disagree once,
+   on this submission, and the ledger records both what was awarded and what
+   the rule had said. Nothing here lets a reviewer invent points where no rule
+   applies — see the last case, and the comment in awardForSubmission. */
+maybe("points can be adjusted while approving", () => {
+  let ruleId = 0;
+
+  it("a rule and an active cycle exist", async () => {
+    const r = await as("creatorAdmin", "POST", "/creator/rules",
+      { name: `${PX} Adjustable Reel`, points: 10, description: "ten by default" });
+    ruleId = Number(r.body.id);
+    const c = await as("creatorAdmin", "POST", "/creator/cycles",
+      { label: `${PX} Adjust cycle`, starts_on: "2027-01-01", ends_on: "2027-01-31" });
+    await as("creatorAdmin", "PATCH", `/creator/cycles/${Number(c.body.id)}`, { status: "active" });
+  });
+
+  it("the review queue says what approving would award, before anyone clicks", async () => {
+    const { submissionId } = await submissionReadyFor("c1", ruleId);
+    const q = await as("creatorAdmin", "GET", "/creator/submissions?status=submitted&limit=200");
+    const mine = (q.body.submissions as Array<Record<string, unknown>>)
+      .find((x) => x.id === submissionId)!;
+    /* The dialog shows this number; it must be the rule's, not the client's guess. */
+    expect(mine.preset).toMatchObject({ points: 10, rule_id: ruleId, reason: "opportunity" });
+  });
+
+  it("sending no points still awards exactly what the rule says", async () => {
+    const { submissionId } = await submissionReadyFor("c1", ruleId);
+    const r = await approve(submissionId);
+    expect(r.body.points).toMatchObject({ awarded: 10, adjusted: false, preset: 10 });
+    expect(Number((await ledgerFor(submissionId))[0].points)).toBe(10);
+  });
+
+  it("a reviewer can award more than the rule, and the row says so", async () => {
+    const { submissionId } = await submissionReadyFor("c2", ruleId);
+    const r = await as("creatorAdmin", "POST", `/creator/submissions/${submissionId}/review`,
+      { outcome: "approved", points: 25, points_note: "re-shot after the venue moved" });
+    expect(r.status).toBe(200);
+    expect(r.body.points).toMatchObject({ awarded: 25, preset: 10, adjusted: true });
+    const row = (await ledgerFor(submissionId))[0];
+    expect(Number(row.points)).toBe(25);
+    expect(Number(row.rule_id)).toBe(ruleId);          // still hangs off the rule it departed from
+    expect(String(row.reason)).toContain("adjusted from 10");
+    expect(String(row.reason)).toContain("venue moved");
+  });
+
+  it("and can award fewer, including none at all", async () => {
+    const { submissionId } = await submissionReadyFor("c2", ruleId);
+    const r = await as("creatorAdmin", "POST", `/creator/submissions/${submissionId}/review`,
+      { outcome: "approved", points: 0 });
+    expect(r.body.points).toMatchObject({ awarded: 0, adjusted: true });
+    expect(Number((await ledgerFor(submissionId))[0].points)).toBe(0);
+  });
+
+  it("the adjustment is in the audit trail, with the figure it replaced", async () => {
+    const { submissionId } = await submissionReadyFor("c1", ruleId);
+    await as("creatorAdmin", "POST", `/creator/submissions/${submissionId}/review`,
+      { outcome: "approved", points: 15, points_note: "extra cutdown" });
+    const a = (await pool.query(
+      `SELECT after FROM mo_audit_logs
+        WHERE action='creator_points.awarded' AND actor_id=$1
+        ORDER BY id DESC LIMIT 1`, [A.creatorAdmin.id])).rows[0];
+    const after = a.after as Record<string, unknown>;
+    expect(after.points).toBe(15);
+    expect(after.preset).toBe(10);
+    expect(after.adjusted).toBe(true);
+  });
+
+  it("refuses a number that is not a whole number, or is out of range", async () => {
+    const { submissionId } = await submissionReadyFor("c1", ruleId);
+    for (const bad of [10.5, -1, 10001]) {
+      const r = await as("creatorAdmin", "POST", `/creator/submissions/${submissionId}/review`,
+        { outcome: "approved", points: bad });
+      expect(r.status, `points=${bad} was accepted`).toBe(400);
+    }
+    /* Every attempt was refused, so the submission is still awaiting a verdict. */
+    expect((await pool.query(`SELECT status FROM mo_creator_submissions WHERE id=$1`,
+      [submissionId])).rows[0].status).toBe("submitted");
+    expect(await ledgerFor(submissionId)).toHaveLength(0);
+  });
+
+  it("a creator cannot set their own points by sending the field", async () => {
+    const { submissionId } = await submissionReadyFor("c1", ruleId);
+    const r = await as("c1", "POST", `/creator/submissions/${submissionId}/review`,
+      { outcome: "approved", points: 9999 });
+    expect(r.status).toBe(403);
+    expect(await ledgerFor(submissionId)).toHaveLength(0);
+  });
+
+  it("with no rule, a typed-in number awards nothing — the index could not protect it", async () => {
+    /* An opportunity with no rule, and more than one active rule in the network
+       so the single-rule fallback does not apply either. */
+    const { submissionId } = await submissionReadyFor("c2");
+    const r = await as("creatorAdmin", "POST", `/creator/submissions/${submissionId}/review`,
+      { outcome: "approved", points: 50 });
+    expect(r.status).toBe(200);                       // approval itself is never blocked
+    expect(r.body.points.awarded).toBe(0);
+    expect(["rule_ambiguous", "no_rule"]).toContain(r.body.points.reason);
+    expect(await ledgerFor(submissionId)).toHaveLength(0);
+  });
+});
+
 maybe("one approval earns once, however it arrives", () => {
   let ruleId = 0;
   beforeAll(async () => { if (dbUp) ruleId = await ruleNamed("Approved Reel"); });
@@ -638,14 +740,23 @@ maybe("the client is never trusted", () => {
     expect(await balance(A.c1.id)).toBe(before);
   });
 
-  it("TESTS 10, 28 — an award's creator and amount come from the record, not the caller", async () => {
+  /* THE AMOUNT USED TO BE ON THIS LIST. A reviewer may now set it while
+     approving, which is a deliberate change — see "points can be adjusted
+     while approving" above, and the 403 there proving a creator still cannot
+     set their own. Everything else about an award is still derived and still
+     ignores whatever the caller sends: WHO earned it comes from the
+     assignment, WHICH cycle from the one that is active. */
+  it("TESTS 10, 28 — an award's creator and cycle come from the record, not the caller", async () => {
     const ruleId = await ruleNamed("Approved Reel");
     const { submissionId } = await submissionReadyFor("c3", ruleId);
+    const live = (await pool.query(`SELECT id FROM mo_creator_cycles WHERE status='active'`)).rows[0];
     await as("creatorAdmin", "POST", `/creator/submissions/${submissionId}/review`,
-      { outcome: "approved", user_id: A.c1.id, creator_id: A.c1.id, points: 9999, cycle_id: 1 });
+      { outcome: "approved", user_id: A.c1.id, creator_id: A.c1.id, cycle_id: 1 });
     const row = (await ledgerFor(submissionId))[0];
     expect(row.user_id).toBe(A.c3.id);            // whoever the assignment belongs to
-    expect(Number(row.points)).toBe(10);          // whatever the rule says
+    expect(Number(row.points)).toBe(10);          // the rule's, because none was sent
+    expect(row.cycle_id === null ? null : Number(row.cycle_id))
+      .toBe(live ? Number(live.id) : null);       // never the caller's cycle_id
   });
 
   it("a manager names the rule a role earns, and cannot name one that is gone", async () => {

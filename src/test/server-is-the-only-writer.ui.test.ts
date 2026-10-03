@@ -26,8 +26,12 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 
 const HTML = readFileSync("public/media-ops/index.html", "utf8");
-/** The one script tag — the file is served verbatim, so this is what ships. */
-const JS = HTML.slice(HTML.indexOf(">", HTML.indexOf("<script")) + 1, HTML.lastIndexOf("</script>"));
+/** The application script — the file is served verbatim, so this is what ships.
+    Selected as the largest inline script rather than "the first <script": a
+    small head script now sets the layout before first paint, and slicing from
+    it would sweep the whole stylesheet and body markup into "the JS". */
+const JS = [...HTML.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)]
+  .map((m) => m[1]).reduce((a, b) => (b.length > a.length ? b : a), "");
 
 describe("no equipment mutation can be invented by the browser", () => {
   it("writes no equipment row into a client array, anywhere", () => {

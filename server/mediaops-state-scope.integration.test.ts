@@ -43,6 +43,9 @@ let api: typeof import("./mediaops-api.js");
 let server: Server;
 let base = "";
 let teamId = 0, cycleId = 0, leaveTypeId = 0, shootId = 0;
+let projMine = 0, projTheirs = 0;
+/* Distinctive enough that finding it anywhere in the payload is proof. */
+const REQUEST_PHONE = "+91-90000-00042";
 
 /* lead leads the team that member belongs to. other is media crew on nobody's
    team. coord is an employee carrying mo_role='coordinator'. smc is on the SMC
@@ -106,6 +109,10 @@ async function cleanup() {
   await pool.query(`DELETE FROM mo_performance_snapshots WHERE user_id LIKE $1`, like);
   await pool.query(`DELETE FROM mo_saved_views WHERE user_id LIKE $1`, like);
   await pool.query(`DELETE FROM mo_shoots WHERE title LIKE $1`, [`${PX} %`]);
+  await pool.query(`DELETE FROM mo_comments WHERE body LIKE $1`, [`${PX} %`]);
+  await pool.query(`DELETE FROM mo_requests WHERE code LIKE $1`, like);
+  await pool.query(`DELETE FROM mo_deliverables WHERE project_id IN
+                      (SELECT id FROM mo_projects WHERE code LIKE $1)`, like);
   await pool.query(`DELETE FROM mo_projects WHERE code LIKE $1`, like);
   await pool.query(`DELETE FROM mo_team_members WHERE user_id LIKE $1`, like);
   await pool.query(`DELETE FROM mo_teams WHERE name LIKE $1`, [`${PX} %`]);
@@ -160,7 +167,12 @@ beforeAll(async () => {
        VALUES ($1,'ZST',$2,$3::jsonb) ON CONFLICT (user_id) DO UPDATE
          SET mo_role=EXCLUDED.mo_role, allowed_modules=EXCLUDED.allowed_modules`,
       [a.id, a.id === A.coord.id ? "coordinator" : "employee",
-       JSON.stringify(["home", "my-day", "reports", "leave", "kra", "performance"])]);
+       /* `requests` is intake. It belongs to the two actors whose job it is and
+          to nobody else, which is what makes the module gate testable at all:
+          if every fixture held it, an empty payload would prove nothing. */
+       JSON.stringify(a.id === A.coord.id || a.id === A.lead.id
+         ? ["home", "my-day", "reports", "leave", "kra", "performance", "requests"]
+         : ["home", "my-day", "reports", "leave", "kra", "performance"])]);
 
   teamId = Number((await pool.query(
     `INSERT INTO mo_teams (department_id, name, lead_user_id, is_active)
@@ -203,6 +215,46 @@ beforeAll(async () => {
     `INSERT INTO mo_saved_views (user_id, module, name, filters, is_shared)
      VALUES ($1,'projects',$2,'{}'::jsonb,false), ($3,'projects',$4,'{}'::jsonb,true)`,
     [A.other.id, `${PX} private view`, A.other.id, `${PX} shared view`]);
+
+  /* TWO PROJECTS AND THE CONVERSATION ON EACH. `mine` is a project the employee
+     owns; `theirs` belongs to somebody else and the employee is on neither its
+     team nor its assignments. Every comment below is planted by `other`, except
+     the one the employee wrote on a project they cannot see — which is the row
+     that separates "scoped to your projects" from "scoped to your own words". */
+  const ptype = Number((await pool.query(
+    `SELECT id FROM mo_project_types ORDER BY id LIMIT 1`)).rows[0].id);
+  const dtype = Number((await pool.query(
+    `SELECT id FROM mo_deliverable_types ORDER BY id LIMIT 1`)).rows[0].id);
+  const mkProject = async (code: string, owner: string) => Number((await pool.query(
+    `INSERT INTO mo_projects (project_type_id, code, name, created_by, owner_id, status)
+     VALUES ($1,$2,$3,$4,$5,'in_production') RETURNING id`,
+    [ptype, code, `${PX} ${code}`, A.admin.id, owner])).rows[0].id);
+  const mkDeliverable = async (project: number, title: string) => Number((await pool.query(
+    `INSERT INTO mo_deliverables (project_id, deliverable_type_id, title)
+     VALUES ($1,$2,$3) RETURNING id`, [project, dtype, `${PX} ${title}`])).rows[0].id);
+  const comment = (type: string, id: number, by: string, body: string) => pool.query(
+    `INSERT INTO mo_comments (entity_type, entity_id, user_id, body) VALUES ($1,$2,$3,$4)`,
+    [type, id, by, `${PX} ${body}`]);
+
+  projMine = await mkProject(`${PX}-P-MINE`, A.member.id);
+  projTheirs = await mkProject(`${PX}-P-THEIRS`, A.other.id);
+  const delivMine = await mkDeliverable(projMine, "deliverable on my project");
+  const delivTheirs = await mkDeliverable(projTheirs, "deliverable on their project");
+  await comment("project", projMine, A.other.id, "thread on a project I am on");
+  await comment("project", projTheirs, A.other.id, "thread on a project I am not on");
+  await comment("project", projTheirs, A.member.id, "my own words on their project");
+  await comment("deliverable", delivMine, A.other.id, "deliverable note I may read");
+  await comment("deliverable", delivTheirs, A.other.id, "deliverable note I may not read");
+
+  /* An intake row carries an outside stakeholder's contact detail. The phone is
+     the string the byte-level assertions hunt for. */
+  await pool.query(
+    `INSERT INTO mo_requests (code, institute, stakeholder, contact, contact_phone,
+                              contact_email, event_name, description, received_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [`${PX}-REQ-1`, `${PX} Institute`, `${PX} Prof Stakeholder`, `${PX} contact`,
+     REQUEST_PHONE, `${PX}-requester@x.invalid`, `${PX} Convocation`,
+     `${PX} request description`, A.coord.id]);
 
   await boot();
 }, 90_000);
@@ -360,5 +412,126 @@ maybe("scoping the read model did not narrow anything else", () => {
   it("still returns every table the client bootstraps from", async () => {
     const emp = await state("member"), adm = await state("admin");
     expect(Object.keys(emp.body).sort()).toEqual(Object.keys(adm.body).sort());
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PROJECT CONVERSATION, AND INTAKE.
+
+   Two tables the audit named that the scoping block did NOT cover until now.
+   They are not HR data, so they never belonged in the `vis` set above, and they
+   are not uniformly departmental either — they follow two different rules that
+   the product already states somewhere else:
+
+     mo_comments  follows `visibleProjects()` — an employee's projects are the
+                  ones they own or are assigned to; for everyone above them
+                  production history is departmental (§16 note 1).
+     mo_requests  follows the `requests` MODULE — intake sits in the admin,
+                  team_lead and coordinator defaults and in no employee's,
+                  because an intake row is an outside stakeholder's name, email
+                  and phone rather than anything the department produced.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** Comment bodies that survived into this actor's payload, fixtures only. */
+const threads = (s: State): Set<string> => new Set((s.body.comments ?? [])
+  .map((c) => String(c.body)).filter((b) => b.startsWith(PX)));
+
+maybe("project conversation follows project visibility", () => {
+  it("gives an employee the thread on a project they own", async () => {
+    const s = await state("member");
+    expect(threads(s)).toContain(`${PX} thread on a project I am on`);
+  });
+
+  it("does not put a thread from somebody else's project in the payload at all", async () => {
+    /* Bytes, not membership: the client hiding a comment it was handed is not
+       the same thing as never being handed it. */
+    const s = await state("member");
+    expect(s.raw, "an employee received a thread from a project they are not on")
+      .not.toContain(`${PX} thread on a project I am not on`);
+  });
+
+  it("returns an employee their own comment even on a project they cannot see", async () => {
+    /* Losing your own sent messages reads as data loss, not as security. */
+    const s = await state("member");
+    expect(threads(s)).toContain(`${PX} my own words on their project`);
+  });
+
+  it("scopes a deliverable's notes by the project that owns the deliverable", async () => {
+    const s = await state("member");
+    expect(threads(s)).toContain(`${PX} deliverable note I may read`);
+    expect(s.raw, "a deliverable note leaked from a project the employee is not on")
+      .not.toContain(`${PX} deliverable note I may not read`);
+  });
+
+  it("keeps the departmental view for a coordinator, whose projects are all of them", async () => {
+    /* moRoleOf() resolves a coordinator to 'employee', which is right for leave
+       and KRAs and wrong here: intake and dispatch run across the registry and
+       the Projects page already shows them everything. Scoping their comments
+       below their projects would empty a tab they work in every day. */
+    const s = await state("coord");
+    expect(threads(s)).toContain(`${PX} thread on a project I am not on`);
+  });
+
+  it("keeps the departmental view for a team lead", async () => {
+    const s = await state("lead");
+    expect(threads(s)).toContain(`${PX} thread on a project I am not on`);
+  });
+
+  it("gives an admin every thread", async () => {
+    const s = await state("admin");
+    expect(threads(s).size).toBe(5);
+  });
+});
+
+maybe("intake is gated on the module, not on the role", () => {
+  it("ships no request, and no stakeholder's phone number, to an employee", async () => {
+    const s = await state("member");
+    expect(s.body.requests, "an employee received intake rows").toEqual([]);
+    expect(s.raw, "a stakeholder's phone number reached a session without the intake module")
+      .not.toContain(REQUEST_PHONE);
+  });
+
+  it("ships the same nothing to an SMC member", async () => {
+    const s = await state("smc");
+    expect(s.body.requests).toEqual([]);
+    expect(s.raw).not.toContain(REQUEST_PHONE);
+  });
+
+  it("ships intake to the coordinator who holds the module", async () => {
+    const s = await state("coord");
+    expect(s.body.requests?.length, "the coordinator lost the queue they work")
+      .toBeGreaterThan(0);
+    expect(s.raw).toContain(REQUEST_PHONE);
+  });
+
+  it("ships intake to a team lead, who also holds the module", async () => {
+    const s = await state("lead");
+    expect(s.body.requests?.length).toBeGreaterThan(0);
+  });
+
+  it("ships intake to an admin, who is not scoped at all", async () => {
+    const s = await state("admin");
+    expect(s.body.requests?.length).toBeGreaterThan(0);
+    expect(s.raw).toContain(REQUEST_PHONE);
+  });
+
+  it("empties request_links alongside requests, not just the rows they hang off", async () => {
+    const s = await state("member");
+    expect(s.body.request_links).toEqual([]);
+  });
+
+  it("takes the whole intake workflow with it, not just the request table", async () => {
+    /* Half a conversation is its own defect: meeting notes and vendor chases
+       reference the requests that were just withheld. */
+    const s = await state("member");
+    for (const k of ["meetings", "vendor_activities", "followups"])
+      expect(s.body[k], `${k} shipped to a session without the intake module`).toEqual([]);
+  });
+
+  it("leaves the coordinator's intake workflow whole", async () => {
+    const s = await state("coord");
+    for (const k of ["requests", "meetings", "vendor_activities", "followups"])
+      expect(Array.isArray(s.body[k]), `${k} missing for a coordinator`).toBe(true);
+    expect(s.body.requests?.length).toBeGreaterThan(0);
   });
 });

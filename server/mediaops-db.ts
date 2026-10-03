@@ -3293,20 +3293,20 @@ export async function bootstrapCreatorNetwork() {
     seeded; MODULE_DEFAULT_ROLES in mediaops-api.ts is the admin-editable
     subset of the same list ('creator' is system-managed, see below). */
 export const MODULE_DEFAULT_SEED: Record<string, string[]> = {
-  admin: ["home", "my-day", "smc", "requests", "dispatch", "followups", "projects", "pipeline",
+  admin: ["home", "my-day", "smc", "requests", "dispatch", "projects", "pipeline",
     "reports", "boards", "casting", "casting-admin", "library", "equipment", "calendar", "team",
     "leave", "analytics", "kra", "performance", "ai", "admin/settings", "admin/automations",
-    "admin/audit", "admin/users", "spec", "kiosk"],
-  team_lead: ["home", "my-day", "requests", "dispatch", "followups", "projects", "pipeline",
+    "admin/audit", "admin/users", "kiosk"],
+  team_lead: ["home", "my-day", "requests", "dispatch", "projects", "pipeline",
     "reports", "boards", "casting", "library", "equipment", "calendar", "team",
     "leave", "analytics", "kra", "performance", "ai", "kiosk"],
-  coordinator: ["home", "my-day", "requests", "dispatch", "followups", "projects", "pipeline",
+  coordinator: ["home", "my-day", "requests", "dispatch", "projects", "pipeline",
     "reports", "casting", "library", "equipment", "calendar", "leave",
     "analytics", "kra", "performance", "ai", "kiosk"],
-  employee: ["home", "my-day", "requests", "dispatch", "followups", "projects", "pipeline",
+  employee: ["home", "my-day", "requests", "dispatch", "projects", "pipeline",
     "reports", "casting", "library", "equipment", "calendar", "leave",
     "kra", "performance", "ai", "kiosk"],
-  smc_member: ["home", "my-day", "requests", "dispatch", "followups", "projects", "pipeline",
+  smc_member: ["home", "my-day", "requests", "dispatch", "projects", "pipeline",
     "reports", "library", "equipment", "calendar", "leave", "kra", "performance", "ai", "kiosk"],
   /* CREATOR IS DELIBERATELY NOT ITS DERIVATION. The derived set for a creator
      is the same sixteen modules an SMC member gets, which would hand the
@@ -3332,6 +3332,51 @@ export async function seedModuleDefaults(): Promise<void> {
       `INSERT INTO mo_module_defaults (role, modules) VALUES ($1, $2::jsonb)
        ON CONFLICT (role) DO NOTHING`,
       [role, JSON.stringify(modules)]);
+  await retireRemovedModules();
+}
+
+/** Module keys that no longer address a page. */
+const RETIRED_MODULES = [
+  /* The Follow-ups VIEW was deleted in August 2026 while its route, its
+     navigation entry, its badge and this key all stayed behind — so the key
+     granted access to a page that answered with a JavaScript stack trace. */
+  "followups",
+  /* Spec Coverage was a PRD traceability matrix — 211 requirement IDs — sitting
+     in the primary navigation as though it were a product feature. */
+  "spec",
+];
+
+/**
+ * Retire module keys that no longer address anything.
+ *
+ * Removing a key from MODULE_DEFAULT_SEED above only helps a database that has
+ * never been seeded; seedModuleDefaults is ON CONFLICT DO NOTHING by design,
+ * because an administrator's choices outrank a seed. Every existing
+ * installation still carries the key, in the group defaults and in any per-user
+ * override copied from them.
+ *
+ * This can only ever REMOVE keys that no longer resolve to a page. It cannot
+ * widen access, it touches no other entry and it preserves the order of the
+ * ones it keeps, so an administrator's list comes back as they left it minus
+ * the dead entries. Once they are gone the UPDATEs match no rows.
+ *
+ * Nothing else is deleted: the follow-up table, its rows and its endpoints are
+ * all still there. What goes is a pointer to a page that does not exist.
+ */
+async function retireRemovedModules(): Promise<void> {
+  const dead = JSON.stringify(RETIRED_MODULES);
+  await pool.query(`
+    UPDATE mo_module_defaults
+       SET modules = (SELECT COALESCE(jsonb_agg(k), '[]'::jsonb)
+                        FROM jsonb_array_elements_text(modules) t(k)
+                       WHERE NOT (k = ANY (SELECT jsonb_array_elements_text($1::jsonb))))
+     WHERE modules ?| (SELECT array_agg(x) FROM jsonb_array_elements_text($1::jsonb) x)`, [dead]);
+  await pool.query(`
+    UPDATE mo_user_profiles
+       SET allowed_modules = (SELECT COALESCE(jsonb_agg(k), '[]'::jsonb)
+                                FROM jsonb_array_elements_text(allowed_modules) t(k)
+                               WHERE NOT (k = ANY (SELECT jsonb_array_elements_text($1::jsonb))))
+     WHERE allowed_modules ?| (SELECT array_agg(x) FROM jsonb_array_elements_text($1::jsonb) x)`, [dead]);
 }
 
 // ── Lookup / reference seed (idempotent, NFR-10 config-driven) ──────────────

@@ -457,4 +457,40 @@ maybe("the Creator Network and Equipment are unchanged", () => {
     expect((await as("admin", "GET", "/equipment")).status).toBe(200);
     expect((await as("admin", "GET", "/tv/board")).status).toBe(200);
   });
+
+  describe("retired modules", () => {
+    /* The Follow-ups VIEW was deleted in August 2026; its route, nav entry and
+       this module key were not, so the key granted three roles access to a page
+       that answered with a stack trace. Removing it from MODULE_DEFAULT_SEED
+       only helps a database that has never been seeded — seedModuleDefaults is
+       ON CONFLICT DO NOTHING, because an administrator's choices outrank a
+       seed — so bootstrap also strips it from what is already stored. */
+    const RETIRED = ["followups", "spec"];
+
+    it.each(RETIRED)("%s is gone from every group's stored defaults", async (key) => {
+      const { rows } = await pool.query(
+        `SELECT role FROM mo_module_defaults WHERE modules @> $1::jsonb`, [JSON.stringify([key])]);
+      expect(rows.map((r) => r.role), "a group still grants a module with no page").toEqual([]);
+    });
+
+    it.each(RETIRED)("%s is gone from per-user overrides copied from those defaults", async (key) => {
+      const { rows } = await pool.query(
+        `SELECT user_id FROM mo_user_profiles WHERE allowed_modules @> $1::jsonb`, [JSON.stringify([key])]);
+      expect(rows.map((r) => r.user_id)).toEqual([]);
+    });
+
+    it("strips them again if they come back, and takes nothing else with them", async () => {
+      const before = (await pool.query(
+        `SELECT modules FROM mo_module_defaults WHERE role='coordinator'`)).rows[0].modules as string[];
+      await pool.query(
+        `UPDATE mo_module_defaults SET modules = modules || '["followups","spec"]'::jsonb WHERE role='coordinator'`);
+      await db.bootstrapMediaOpsDatabase();
+      const after = (await pool.query(
+        `SELECT modules FROM mo_module_defaults WHERE role='coordinator'`)).rows[0].modules as string[];
+      for (const key of RETIRED) expect(after).not.toContain(key);
+      /* The point of the narrow UPDATE: everything the administrator chose is
+         still there, in the order they had it. */
+      expect(after).toEqual(before);
+    });
+  });
 });

@@ -172,6 +172,54 @@ npm run dev          # Vite (8080/8081)
 
 ## 7. Change log
 
+- **Visual redesign — Media Ops only (October 2026).** The whole prototype
+  takes one design language; no other Nerve department (Branding, Content,
+  Design, Outreach) is touched, because they are separate React pages and
+  this lives entirely in `public/media-ops/`.
+  *Type:* Plus Jakarta Sans for the interface and Caveat for one word — the
+  person's first name in the greeting — both self-hosted in
+  `public/media-ops/fonts/` (SIL OFL 1.1, licences beside them), preloaded,
+  and precached by `sw.js` (`mo-v4`) so an installed app keeps them offline.
+  *Greeting hero* (`heroBlock()`): Home, My Day, the coordinator's two
+  screens and the SMC My Day all open with "GOOD MORNING," in heavy capitals
+  and the viewer's own name hand-written, under a live strip that is never
+  empty — the crew shift pill (derived from the clock, Sundays and the
+  campus holiday calendar), a field note when a shoot is on location or due
+  today, a ticking clock, the date and the campus. `moTick()` updates the
+  clock, shift, note and greeting in place once a second; nothing re-renders.
+  *Home* follows the October design: compact stat tiles with a ruled footer,
+  "Active Projects & Workspaces" folder cards (closest deadlines, filter by
+  type — these replace the Running Projects table), large Team Lead cards for
+  an Admin, and restyled activity rows. Every sentence and number is computed
+  from the same data as before.
+  *Everywhere:* compact uppercase stat labels, 20px cards, pill chips and
+  statuses, bolder headings, a 256px sidebar with a "Today" tag on My Day, a
+  centred search, and a ringed profile photo.
+  *Dark mode* is "Liquid Chromatic Glass": an obsidian canvas with cobalt and
+  cyan ambient light, frosted sidebar and topbar, glass-rimmed cards and a
+  luminous hero edge. Surfaces stay opaque wherever a table or form lives.
+  The desktop fingerprints in `e2e/baselines/desktop-dom.json` were re-recorded
+  for this change, deliberately; the phone suites were left as the gate.
+  *Second pass — a summary card on every module page.* `pageHero()` opens
+  Request Intake, Dispatch, Projects, Production Pipeline, Daily Reports,
+  Production Board, Casting Preview, Casting Management, Media Library,
+  Equipment, Calendar, Team, Leave, Analytics, KRA, Performance, the Creator
+  Network (Creator Management on its landing page) and SMC Management: the
+  module and its group, one live chip, the clock and date, the page name in
+  heavy capitals with a hand-written line, a one-sentence summary, the page's
+  actions, and a strip of count tiles. Where a page already had count tiles
+  (Request Intake, Casting Management, Pipeline, Equipment, KRA, Creator, SMC)
+  those exact tiles moved inside — same filters, same order — rather than
+  being repeated. Every figure is computed from the data the page itself
+  draws. *My Day* reads "MY DAY" with "Let's create something great today"
+  hand-written beneath it, the progress ring is larger and sits between the
+  words and the actions, and the actions stack in the order of the day:
+  where today's report stands, Log task, Submit report. The clock is painted
+  from a `data-time` attribute (CSS `content: attr()`), so it ticks without
+  changing the page's text — a "did this page change?" comparison is not at
+  the mercy of the second hand. `heroTitleFit()` drops the dash before a
+  hand-written line that has wrapped onto its own row.
+
 - **AI Assist made real + Super Admin sync.** The AI Assist page is now computed
   from live data: `GET /ai/digest` (anomalies), `GET /ai/duplicates` (project
   similarity — title/description Jaccard + faculty + date-overlap, threshold 0.5),

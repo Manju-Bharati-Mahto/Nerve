@@ -60,7 +60,10 @@ describe("the analytics table no longer claims a utilisation it cannot compute",
   it("does not promise a formula it has not implemented", () => {
     expect(HTML, "the tooltip still claims checked-out days ÷ available days")
       .not.toContain("Checked-out days ÷ available days, per item/category");
-    expect(section).toMatch(/This is not utilisation/i);
+    /* Asserted on the caveat itself rather than on the section id it used to
+       carry: the point is that the page says what the number is NOT. */
+    expect(section).toMatch(/not utilisation/i);
+    expect(section).toMatch(/available days are not recorded/i);
   });
 
   it("compares each item with the busiest one shown, which needs no denominator", () => {
