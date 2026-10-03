@@ -1334,15 +1334,15 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   async function createProjectWithTemplate(o: {
     actor: CurrentUser; req: express.Request; name: string; description: string; typeId: number;
     unitId: number | null; priority: string; start: string | null; end: string | null;
-    ownerId: string | null; source: string; venue?: string | null;
+    ownerId: string | null; source: string; venue?: string | null; teamId?: number | null;
   }): Promise<{ id: number; deliverables: number }> {
     const ay = await pool.query(`SELECT id FROM mo_academic_years WHERE is_current LIMIT 1`);
     const ins = await pool.query(
       `INSERT INTO mo_projects (department_id, campus_id, academic_year_id, project_type_id, code, name, description,
-         academic_unit_id, status, priority, owner_id, created_by, start_date, end_date, type_meta, source, venue)
-       VALUES (1,1,$1,$2,${PENDING_CODE},$3,$4,$5,'planning',$6,$7,$8,$9,$10,'{}'::jsonb,$11,$12) RETURNING id`,
+         academic_unit_id, status, priority, owner_id, created_by, start_date, end_date, type_meta, source, venue, team_id)
+       VALUES (1,1,$1,$2,${PENDING_CODE},$3,$4,$5,'planning',$6,$7,$8,$9,$10,'{}'::jsonb,$11,$12,$13) RETURNING id`,
       [ay.rows[0]?.id ?? null, o.typeId, o.name, o.description, o.unitId, o.priority,
-       o.ownerId, o.actor.id, o.start, o.end, o.source, o.venue ?? null]);
+       o.ownerId, o.actor.id, o.start, o.end, o.source, o.venue ?? null, o.teamId ?? null]);
     const id = Number(ins.rows[0].id);
     await pool.query(`UPDATE mo_projects SET code=$1 WHERE id=$2`, [`MC-2627-${100 + id}`, id]);
     // Only the production owner is assigned as PM. The creator is NOT added —
@@ -9916,8 +9916,11 @@ async function allocateInternalCode(
       leadId = r.leadId;
     } else if (b.lead_user_id) leadId = String(toUid(b.lead_user_id));
     else if (r.lead_user_id) leadId = String(r.lead_user_id);
-    const start = (b.start_date as string) || r.event_date || null;
-    const end = (b.end_date as string) || r.end_date || r.event_date || null;
+    /* pg returns a DATE as a JS Date; the template's due-date arithmetic needs
+       YYYY-MM-DD, and a raw Date made every conversion without dates in the
+       body fail with "Invalid time value". */
+    const start = (b.start_date as string) || dOnly(r.event_date);
+    const end = (b.end_date as string) || dOnly(r.end_date) || dOnly(r.event_date);
 
     /* §2 — the coordinator creates the operational record; they are Created By and
        nothing more. Production ownership belongs to the Team Lead, and a project
@@ -9928,6 +9931,9 @@ async function allocateInternalCode(
       typeId, unitId: r.academic_unit_id ? Number(r.academic_unit_id) : null,
       priority: String(r.priority), start, end,
       ownerId: leadId, venue: (r.venue as string) || null,
+      // The team the Coordinator routed it to is part of the project — not
+      // something to recover from the request later.
+      teamId,
       source: "request",
     });
 

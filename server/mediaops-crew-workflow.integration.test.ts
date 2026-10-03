@@ -511,14 +511,20 @@ maybe("conversion — a request becomes a project on the team it was routed to",
       { project_type_id: projectTypeId, team_id: teamA, start_date: "2026-10-12", end_date: "2026-10-12" });
     expect(r.status).toBe(201);
     const p = await project(Number(r.body.project_id));
-    expect(p.team_id).toBe(null);
+    expect(Number(p.team_id)).toBe(teamA);
     expect(p.owner_id).toBe(ACTORS.leadA.id);
+    // …so the lead's authority follows from the team, not from a backfill.
+    const did = Number((await one(`SELECT id FROM mo_deliverables WHERE project_id=$1 LIMIT 1`, [p.id]))?.id ?? 0);
+    if (did) expect((await as("leadB", "POST", `/deliverables/${did}/schedule`, { scheduled_date: null })).status).toBe(403);
   });
 
   it("27b — a team chosen on the request carries over when the dialog names none", async () => {
     const req = await request(teamB);
     const r = await as("coord", "POST", `/requests/${req.id}/convert`, {});
-    expect(r.status).toBe(500);
+    expect(r.status).toBe(201);
+    const p = await project(Number(r.body.project_id));
+    expect(Number(p.team_id)).toBe(teamB);
+    expect(p.owner_id).toBe(ACTORS.leadB.id);
   });
 });
 
