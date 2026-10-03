@@ -1200,6 +1200,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ activity: rows });
   }));
 
+  /* The real code is MC-2627-<100+id>, which needs the id, so the row goes in
+     under a placeholder and is renamed straight after. code is UNIQUE, so the
+     placeholder must be unique too: a shared literal made two projects created
+     in the same instant collide, and the second one 500'd. */
+  const PENDING_CODE = `'PENDING-' || md5(random()::text || clock_timestamp()::text)`;
+
   /* Create a project's deliverables from its type's active template. ONE
      implementation, shared by POST /projects and the coordinator's
      Convert-to-Project, so both produce identical scope, offsets and due dates.
@@ -1246,7 +1252,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const ins = await pool.query(
       `INSERT INTO mo_projects (department_id, campus_id, academic_year_id, project_type_id, code, name, description,
          academic_unit_id, status, priority, owner_id, created_by, start_date, end_date, type_meta, source, venue)
-       VALUES (1,1,$1,$2,'PENDING',$3,$4,$5,'planning',$6,$7,$8,$9,$10,'{}'::jsonb,$11,$12) RETURNING id`,
+       VALUES (1,1,$1,$2,${PENDING_CODE},$3,$4,$5,'planning',$6,$7,$8,$9,$10,'{}'::jsonb,$11,$12) RETURNING id`,
       [ay.rows[0]?.id ?? null, o.typeId, o.name, o.description, o.unitId, o.priority,
        o.ownerId, o.actor.id, o.start, o.end, o.source, o.venue ?? null]);
     const id = Number(ins.rows[0].id);
@@ -1340,7 +1346,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const ins = await pool.query(
       `INSERT INTO mo_projects (department_id, campus_id, academic_year_id, project_type_id, code, name, description,
          academic_unit_id, status, priority, owner_id, created_by, start_date, end_date, type_meta, source, team_id)
-       VALUES (1,1,$1,$2,'PENDING',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'app',$13) RETURNING id`,
+       VALUES (1,1,$1,$2,${PENDING_CODE},$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'app',$13) RETURNING id`,
       [ay.rows[0]?.id ?? null, typeId, name, String(b.description ?? ""), unitId,
        gated ? "proposed" : "planning", (b.priority as string) || "normal", ownerId, u.id, start, end,
        JSON.stringify(b.type_meta ?? {}), teamId]);
