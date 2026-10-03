@@ -1155,6 +1155,10 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         /* project_assignments is already filtered to removed_at IS NULL in the
            STATE query, so a past assignment does not keep a thread open. */
         for (const a of arr("project_assignments")) if (Number(a.user_id) === meInt) myProjects.add(Number(a.project_id));
+        /* Owning a deliverable is being on the work, crew row or not — an owner
+           assigned before assignment added them to the crew still needs the
+           thread their Team Lead's feedback lives in. */
+        for (const d of arr("deliverables")) if (Number(d.owner_id) === meInt && !d.deleted_at) myProjects.add(Number(d.project_id));
         const myDeliverables = new Set(arr("deliverables")
           .filter((d) => myProjects.has(Number(d.project_id))).map((d) => Number(d.id)));
         out.comments = arr("comments").filter((c) =>

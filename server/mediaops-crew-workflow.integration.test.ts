@@ -154,6 +154,7 @@ async function cleanup() {
   await pool.query(`DELETE FROM mo_shoot_crew WHERE shoot_id IN (SELECT id FROM mo_shoots WHERE project_id IN ${pj})`);
   await pool.query(`DELETE FROM mo_shoots WHERE project_id IN ${pj}`);
   await pool.query(`DELETE FROM mo_deliverable_versions WHERE deliverable_id IN (SELECT id FROM mo_deliverables WHERE project_id IN ${pj})`);
+  await pool.query(`DELETE FROM mo_comments WHERE body LIKE '${PX} %'`);
   await pool.query(`DELETE FROM mo_deliverables WHERE project_id IN ${pj}`);
   await pool.query(`DELETE FROM mo_project_assignments WHERE project_id IN ${pj}`);
   await pool.query(`UPDATE mo_requests SET project_id=NULL WHERE event_name LIKE '${PX}%'`);
@@ -307,6 +308,16 @@ maybe("employee — sees and executes their own work, and nothing more", () => {
       `SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`,
       [pid, ACTORS.empA1.id]);
     expect(crew.rowCount).toBe(1);
+  });
+
+  it("10b — an owner from before crew-on-assignment still receives the project's thread", async () => {
+    const legacy = await routed(teamA);
+    await pool.query(`UPDATE mo_deliverables SET owner_id=$1 WHERE id=$2`, [ACTORS.empA2.id, legacy.dids[0]]);
+    await pool.query(`INSERT INTO mo_comments (entity_type, entity_id, user_id, body) VALUES ('project',$1,$2,$3)`,
+      [legacy.pid, ACTORS.leadA.id, `${PX} feedback for the owner`]);
+    const raw = async (a: ActorName) => JSON.stringify(await (await fetch(`${base}/state`, { headers: { "x-actor": a } })).json());
+    expect(await raw("empA2")).toContain(`${PX} feedback for the owner`);
+    expect(await raw("empB1")).not.toContain(`${PX} feedback for the owner`);
   });
 
   it("11/12 — owner_id names exactly one employee as the executor", async () => {
