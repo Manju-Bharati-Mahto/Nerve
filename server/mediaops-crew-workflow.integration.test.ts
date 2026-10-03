@@ -237,16 +237,17 @@ maybe("team lead — allocates inside their own team, on their own team's projec
   it("6b — the drawer's assign path writes the same owner_id, and no duplicate crew row", async () => {
     const r = await as("leadA", "POST", `/deliverables/${a.dids[1]}/assignee`, { kind: "crew", user_id: ACTORS.empA2.id });
     expect(r.status).toBe(201);
-    expect((await deliv(a.dids[1])).owner_id).toBe(null);
+    expect((await deliv(a.dids[1])).owner_id).toBe(ACTORS.empA2.id);
     const rows = await pool.query(
       `SELECT 1 FROM mo_assignments WHERE deliverable_id=$1 AND NOT is_smc AND status<>'cancelled'`, [a.dids[1]]);
-    expect(rows.rowCount).toBe(1);
+    expect(rows.rowCount).toBe(0);
+    expect((await notes(ACTORS.empA2.id, "deliverable", a.dids[1])).map((n) => n.title)).toContain("New assignment");
   });
 
   it("6c — reading the assignee back reports the owner", async () => {
     await pool.query(`UPDATE mo_deliverables SET owner_id=$1 WHERE id=$2`, [ACTORS.empA1.id, a.dids[3]]);
     const r = await as("leadA", "GET", `/deliverables/${a.dids[3]}/assignees`);
-    expect((r.body.crew as Record<string, unknown> | null)?.user_id ?? null).toBe(null);
+    expect((r.body.crew as Record<string, unknown> | null)?.user_id ?? null).toBe(ACTORS.empA1.id);
   });
 
   it("7 — Team A's lead cannot assign a Team B employee, by either path", async () => {
@@ -257,8 +258,9 @@ maybe("team lead — allocates inside their own team, on their own team's projec
 
   it("8 — Team A's lead cannot operate on Team B's project", async () => {
     const d = b.dids[0];
-    expect((await as("leadA", "PATCH", `/deliverables/${d}`, { owner_id: ACTORS.empA1.id })).status).toBe(200);
-    expect((await as("leadA", "POST", `/deliverables/${d}/assignee`, { kind: "crew", user_id: ACTORS.empA1.id })).status).toBe(201);
+    expect((await as("leadA", "PATCH", `/deliverables/${d}`, { owner_id: ACTORS.empA1.id })).status).toBe(403);
+    expect((await as("leadA", "POST", `/deliverables/${d}/assignee`, { kind: "crew", user_id: ACTORS.empA1.id })).status).toBe(403);
+    expect((await deliv(d)).owner_id).toBe(null);
     expect((await as("leadA", "POST", `/deliverables/${d}/schedule`, { scheduled_date: "2026-10-04" })).status).toBe(403);
     expect((await as("leadA", "PATCH", `/deliverables/${d}/due-date`, { due_date: "2026-10-09" })).status).toBe(403);
     expect((await as("leadA", "POST", `/projects/${b.pid}/work`,
@@ -304,7 +306,7 @@ maybe("employee — sees and executes their own work, and nothing more", () => {
     const crew = await pool.query(
       `SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`,
       [pid, ACTORS.empA1.id]);
-    expect(crew.rowCount).toBe(0);
+    expect(crew.rowCount).toBe(1);
   });
 
   it("11/12 — owner_id names exactly one employee as the executor", async () => {
@@ -314,11 +316,10 @@ maybe("employee — sees and executes their own work, and nothing more", () => {
 
   it("13 — an employee cannot take or hand out deliverables", async () => {
     // claiming an unassigned one
-    expect((await as("empA2", "PATCH", `/deliverables/${dids[1]}`, { owner_id: ACTORS.empA2.id })).status).toBe(200);
-    await pool.query(`UPDATE mo_deliverables SET owner_id=NULL WHERE id=$1`, [dids[1]]);
+    expect((await as("empA2", "PATCH", `/deliverables/${dids[1]}`, { owner_id: ACTORS.empA2.id })).status).toBe(403);
     // taking a colleague's
-    expect((await as("empA2", "PATCH", `/deliverables/${dids[0]}`, { owner_id: ACTORS.empA2.id })).status).toBe(200);
-    await pool.query(`UPDATE mo_deliverables SET owner_id=$1 WHERE id=$2`, [ACTORS.empA1.id, dids[0]]);
+    expect((await as("empA2", "PATCH", `/deliverables/${dids[0]}`, { owner_id: ACTORS.empA2.id })).status).toBe(403);
+    expect((await deliv(dids[0])).owner_id).toBe(ACTORS.empA1.id);
     // handing one to a colleague
     expect((await as("empA1", "PATCH", `/deliverables/${dids[0]}`, { owner_id: ACTORS.empA2.id })).status).toBe(403);
     expect((await as("empA1", "POST", `/deliverables/${dids[2]}/assignee`,
@@ -326,10 +327,13 @@ maybe("employee — sees and executes their own work, and nothing more", () => {
   });
 
   it("13b — an employee cannot edit another employee's deliverable", async () => {
-    expect((await as("empA2", "PATCH", `/deliverables/${dids[0]}`, { title: "tampered" })).status).toBe(200);
-    await pool.query(`UPDATE mo_deliverables SET title='Edited Photos' WHERE id=$1`, [dids[0]]);
-    expect((await as("empB1", "PATCH", `/deliverables/${dids[0]}`, { scheduled_date: "2026-10-04" })).status).toBe(200);
-    await pool.query(`UPDATE mo_deliverables SET scheduled_date=NULL WHERE id=$1`, [dids[0]]);
+    expect((await as("empA2", "PATCH", `/deliverables/${dids[0]}`, { title: "tampered" })).status).toBe(403);
+    expect((await as("empB1", "PATCH", `/deliverables/${dids[0]}`, { scheduled_date: "2026-10-04" })).status).toBe(403);
+    expect((await as("empA1", "PATCH", `/deliverables/${dids[0]}`, { priority: "urgent" })).status).toBe(403);
+    expect((await as("coord", "PATCH", `/deliverables/${dids[0]}`, { due_date: "2026-10-09" })).status).toBe(403);
+    expect((await as("coord", "PATCH", `/deliverables/${dids[0]}`, { mail_status: "sent" })).status).toBe(200);
+    const d = await deliv(dids[0]);
+    expect([d.title, d.scheduled_date, d.priority]).toEqual(["Edited Photos", null, "normal"]);
   });
 
   it("13c — the owner may update their own execution fields", async () => {
@@ -343,8 +347,9 @@ maybe("employee — sees and executes their own work, and nothing more", () => {
   });
 
   it("14 — an employee cannot change approval_status", async () => {
-    expect((await as("empA1", "PATCH", `/deliverables/${dids[0]}`, { approval_status: "approved" })).status).toBe(200);
-    await pool.query(`UPDATE mo_deliverables SET approval_status='pending' WHERE id=$1`, [dids[0]]);
+    expect((await as("empA1", "PATCH", `/deliverables/${dids[0]}`, { approval_status: "approved" })).status).toBe(400);
+    expect((await as("leadA", "PATCH", `/deliverables/${dids[0]}`, { approval_status: "approved" })).status).toBe(400);
+    expect((await deliv(dids[0])).approval_status ?? "pending").toBe("pending");
   });
 });
 
@@ -435,7 +440,8 @@ maybe("review — Team A's lead decides, and approval queues dispatch", () => {
 maybe("approval bypass — there is one road to approved", () => {
   it("24 — an employee cannot approve through PATCH", async () => {
     const { did } = await ownedBy("empA1");
-    expect((await as("empA1", "PATCH", `/deliverables/${did}`, { approval_status: "approved" })).status).toBe(200);
+    expect((await as("empA1", "PATCH", `/deliverables/${did}`, { approval_status: "approved" })).status).toBe(400);
+    expect((await deliv(did)).approval_status ?? "pending").not.toBe("approved");
   });
 
   it("25 — an employee cannot skip review by marking their work delivered", async () => {
