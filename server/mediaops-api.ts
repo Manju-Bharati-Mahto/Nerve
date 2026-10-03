@@ -1157,13 +1157,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   // FR-1.10 — Recent Activity for the Home dashboard, scoped per §16: admin sees the
   // department stream; others see their own actions + activity on projects they are
-  // assigned to (never department-wide).
+  // assigned to (never department-wide). before/after and entity_uid let the client
+  // name the person a row is about ("added Jay Thakkar to …") instead of "a crew member".
   app.get(`${P}/activity/recent`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     let rows;
     if (isMoAdmin(u)) {
       rows = (await pool.query(
-        `SELECT a.action, a.entity_type, a.entity_id, a.occurred_at, us.full_name AS actor
+        `SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor
            FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
           ORDER BY a.occurred_at DESC LIMIT 20`)).rows;
     } else {
@@ -1171,7 +1172,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         `WITH my_projects AS (
            SELECT p.id FROM mo_projects p WHERE p.deleted_at IS NULL AND (p.owner_id=$1
              OR EXISTS (SELECT 1 FROM mo_project_assignments a WHERE a.project_id=p.id AND a.user_id=$1 AND a.removed_at IS NULL)))
-         SELECT a.action, a.entity_type, a.entity_id, a.occurred_at, us.full_name AS actor
+         SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor
            FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
           WHERE a.actor_id=$1
              OR (a.entity_type='project' AND a.entity_id IN (SELECT id FROM my_projects))
@@ -1187,7 +1188,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
     const { rows } = await pool.query(
-      `SELECT a.action, a.entity_type, a.entity_id, a.before, a.after, a.occurred_at, us.full_name AS actor
+      `SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor
          FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
         WHERE (a.entity_type='project' AND a.entity_id=$1)
            OR (a.entity_type IN ('deliverable','shoot','assignment')
@@ -4679,6 +4680,344 @@ async function allocateInternalCode(
     res.json({ revoked: gone, remaining_active: remaining, no_custodian: remaining === 0 });
   }));
 
+  /* ═══ EQUIPMENT → PERMISSIONS: EVERY EQUIPMENT GRANT, ONE SCREEN ══════════
+     The Equipment page's Permissions popup. Before it, "make Niraj the PID
+     custodian" meant Settings → Admin → Lookups → Inventory Scopes for the
+     inventory, the scope's Custodians tab for the assignment, and Team → Duty
+     flags for the duty — three screens, each organised differently, any of
+     which could be forgotten.
+
+     NOTHING NEW IS AUTHORISED HERE. These endpoints read and write exactly the
+     rows the gates already read:
+
+       mo_inventory_scopes             the inventories themselves
+       mo_user_inventory_scopes        who holds which inventory (soft-removed)
+       mo_user_duties                  the one equipment_custodian duty
+       mo_user_profiles.allowed_modules  Equipment and Kiosk module access
+
+     and every per-person change goes through planEquipmentAccess(), the same
+     rules PATCH /crew/:id/equipment-access applies. The gate on an actual asset
+     is still requireEquipment() + canManageEquipment() + assetScopeOk().
+
+     ADMIN ONLY, on the server, for the same reason as the per-person panel:
+     holding the custodian duty must not let you appoint a custodian.
+
+     REGISTERED BEFORE /equipment/:id, which would otherwise read "permissions"
+     and "inventories" as an asset id. */
+
+  /** The whole picture the popup draws: inventories, people, recent changes. */
+  async function equipmentPermissionsModel() {
+    const duty = await custodianDuty();
+    const [scopes, holders, dutyRows, crew, history] = await Promise.all([
+      pool.query(
+        `SELECT s.id, s.code, s.name, s.code_prefix, s.lends_to_students, s.is_active, s.archived_at,
+                (SELECT COUNT(*)::int FROM mo_equipment_items i
+                  WHERE i.scope_id = s.id AND i.deleted_at IS NULL AND i.retired_at IS NULL) AS assets,
+                EXISTS (SELECT 1 FROM mo_equipment_items i
+                         WHERE i.scope_id = s.id AND i.internal_code IS NOT NULL) AS codes_issued
+           FROM mo_inventory_scopes s
+          ORDER BY (s.is_active AND s.archived_at IS NULL) DESC, s.name`),
+      pool.query(
+        `SELECT a.scope_id, a.user_id, a.granted_at, gb.full_name AS granted_by_name
+           FROM mo_user_inventory_scopes a
+           LEFT JOIN users gb ON gb.id = a.granted_by
+          WHERE a.removed_at IS NULL
+          ORDER BY a.granted_at`),
+      pool.query(`SELECT user_id FROM mo_user_duties WHERE duty_flag_id=$1`, [duty.id]),
+      pool.query(
+        `SELECT u.id, u.full_name, u.email, u.role, u.team, COALESCE(u.status,'active') AS status,
+                p.allowed_modules, p.mo_role
+           FROM users u LEFT JOIN mo_user_profiles p ON p.user_id = u.id
+          WHERE u.team = 'media'
+          ORDER BY u.full_name`),
+      /* What changed, by whom, to whom. Read from the trail the endpoints
+         already write, so there is no second log to keep in step. The
+         occurred_at index serves the ORDER BY and stops after forty matches. */
+      pool.query(
+        `SELECT a.id, a.action, a.occurred_at, a.before, a.after, a.entity_type, a.entity_id, a.entity_uid,
+                ac.full_name AS actor_name, su.full_name AS subject_name, sc.name AS scope_name
+           FROM mo_audit_logs a
+           LEFT JOIN users ac ON ac.id = a.actor_id
+           LEFT JOIN users su ON su.id = a.entity_uid
+           LEFT JOIN mo_inventory_scopes sc ON a.entity_type = 'inventory_scopes' AND sc.id = a.entity_id
+          WHERE a.action = 'crew.equipment_access_changed'
+             OR a.entity_type = 'inventory_scopes'
+             OR (a.action IN ('user.duty_granted','user.duty_revoked') AND a.after->>'duty' = $1)
+          ORDER BY a.occurred_at DESC, a.id DESC
+          LIMIT 40`, [String(duty.id)]),
+    ]);
+
+    const custodians = new Set(dutyRows.rows.map((r) => String(r.user_id)));
+    const byScope = new Map<number, typeof holders.rows>();
+    const byUser = new Map<string, number[]>();
+    for (const h of holders.rows) {
+      const sid = Number(h.scope_id), uid = String(h.user_id);
+      byScope.set(sid, [...(byScope.get(sid) ?? []), h]);
+      byUser.set(uid, [...(byUser.get(uid) ?? []), sid]);
+    }
+
+    /* effectiveModules() is the one rule for "which modules does this person
+       reach"; calling it per person keeps it the one rule. A crew is tens of
+       people, and this is an Admin's popup, not a hot path. */
+    const people = (await Promise.all(crew.rows.map(async (r) => {
+      const asUser = { id: String(r.id), role: String(r.role), team: r.team ?? null } as CurrentUser;
+      const effective = await effectiveModules(asUser);
+      const id = String(r.id);
+      return {
+        id, full_name: r.full_name, email: r.email, role: r.role, mo_role: r.mo_role ?? null,
+        tier: moRoleOf(asUser), status: r.status,
+        /* An Admin reaches every module and every inventory by role. Their row
+           is shown so the picture is complete, and the popup does not offer
+           to edit what cannot take effect. */
+        is_admin: isMoAdmin(asUser),
+        modules_role_based: r.allowed_modules == null,
+        equipment: effective.includes(EQUIP_MODULE),
+        kiosk: effective.includes(KIOSK_MODULE),
+        custodian: custodians.has(id),
+        inventory_ids: byUser.get(id) ?? [],
+      };
+    })))
+      /* A removed member is listed only while they still hold something, so
+         offboarding can finish here; otherwise they are history, not crew. */
+      .filter((p) => p.status === "active" || p.custodian || p.inventory_ids.length);
+
+    const nameOf = new Map(crew.rows.map((r) => [String(r.id), String(r.full_name)]));
+    const statusOf = new Map(crew.rows.map((r) => [String(r.id), String(r.status)]));
+    return {
+      duty: { id: Number(duty.id), code: duty.code, name: duty.name, description: duty.description },
+      inventories: scopes.rows.map((s) => ({
+        id: Number(s.id), code: s.code, name: s.name, code_prefix: s.code_prefix,
+        lends_to_students: !!s.lends_to_students,
+        state: s.archived_at ? "archived" : s.is_active ? "active" : "disabled",
+        assets: Number(s.assets), codes_issued: !!s.codes_issued,
+        holders: (byScope.get(Number(s.id)) ?? []).map((h) => ({
+          user_id: String(h.user_id),
+          full_name: nameOf.get(String(h.user_id)) ?? String(h.user_id),
+          status: statusOf.get(String(h.user_id)) ?? "unknown",
+          /* The intersection that makes a custodian: this assignment AND the
+             duty. Without the duty they can see the inventory, not act on it. */
+          custodian: custodians.has(String(h.user_id)),
+          granted_at: h.granted_at, granted_by_name: h.granted_by_name ?? null,
+        })),
+      })),
+      people,
+      history: history.rows,
+    };
+  }
+
+  app.get(`${P}/equipment/permissions`, asyncHandler(async (_req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may view equipment permissions.");
+    res.json(await equipmentPermissionsModel());
+  }));
+
+  /* Save the matrix: many people, one transaction, all or nothing.
+
+     Body: { changes: [{ user_id, module_enabled?, kiosk_enabled?,
+                         equipment_custodian?, grant_inventory_ids?,
+                         revoke_inventory_ids? }] }
+
+     Inventories travel as a DELTA, not a list: the matrix knows which boxes the
+     Admin ticked, and a whole list computed from what the popup loaded would
+     silently undo an inventory another Admin granted in the meantime.
+
+     Every person is PLANNED before anything is written. One refusal refuses
+     the save and names the person, so the Admin never has to discover which
+     half of their changes landed. */
+  app.patch(`${P}/equipment/permissions`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may change equipment permissions.");
+    const raw = ((req.body ?? {}) as Record<string, unknown>).changes;
+    if (!Array.isArray(raw) || !raw.length) return sendError(res, 400, "Nothing to change.");
+    if (raw.length > 200) return sendError(res, 400, "Too many people in one save. Save in smaller batches.");
+    const changes = raw.map((c) => (c && typeof c === "object" ? c : {}) as Record<string, unknown>);
+    const ids = changes.map((c) => String(c.user_id ?? "").trim());
+    if (ids.some((x) => !x)) return sendError(res, 400, "Every change must name a person.");
+    if (new Set(ids).size !== ids.length) return sendError(res, 400, "A person appears twice in one save.");
+
+    const found = (await pool.query(
+      `SELECT id, full_name, email, role, team, COALESCE(status,'active') AS status
+         FROM users WHERE id = ANY($1::text[]) AND team = 'media'`, [ids])).rows;
+    const targets = new Map(found.map((t) => [String(t.id), t as AccessTarget]));
+    if (ids.some((x) => !targets.has(x))) return sendError(res, 404, "That member is not on the Media crew.");
+
+    const live = await liveInventoryIds();
+    const plans: AccessPlan[] = [];
+    for (let i = 0; i < changes.length; i++) {
+      const t = targets.get(ids[i])!;
+      const want = accessWantOf(changes[i]);
+      /* The matrix sends deltas only; a whole list belongs to the per-person
+         endpoint, which is the one place it means "exactly these". */
+      want.scopes = null;
+      if (wantIsEmpty(want)) continue;
+      const r = await planEquipmentAccess(u, t, want, live);
+      if ("status" in r) return sendError(res, r.status, `${t.full_name}: ${r.message}`);
+      if (!planIsNoop(r.plan)) plans.push(r.plan);
+    }
+
+    if (plans.length) {
+      /* ── ONE TRANSACTION (§7) for the whole save. Audit after release. */
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        for (const p of plans) await applyEquipmentAccess(client, u, p);
+        await client.query("COMMIT");
+      } catch (e) {
+        await client.query("ROLLBACK").catch(() => {});
+        client.release();
+        throw e;
+      }
+      client.release();
+      for (const p of plans)
+        await audit(u, "crew.equipment_access_changed", "user", null,
+                    accessShape(p.before), accessShape(await equipmentAccessOf(p.target)), req, p.target.id);
+    }
+    res.json({ applied: plans.length, ...(await equipmentPermissionsModel()) });
+  }));
+
+  /* ── The inventories themselves ──────────────────────────────────────────
+     Created and edited here rather than through the generic config engine,
+     because two of an inventory's settings — the asset-code prefix and whether
+     it lends to students — are not reference data, and the engine could not
+     express the rule that matters most about the prefix: once a label has been
+     printed with it, it cannot change.
+
+     The audit rows use entity_type 'inventory_scopes', the key the engine and
+     the custodian endpoints already write, so an inventory has ONE history. */
+  const INV_CODE_RE = /^[a-z0-9][a-z0-9_-]{1,39}$/;
+  const INV_PREFIX_RE = /^[A-Z][A-Z0-9]{1,7}$/;
+  const INV_PREFIX_MSG =
+    "The asset code prefix must be 2–8 capital letters or digits, starting with a letter — MC or PID, for example.";
+  const invPrefixOf = (v: unknown) => (v == null || String(v).trim() === "" ? null : String(v).trim().toUpperCase());
+  const invPublic = (r: Record<string, unknown>) => ({
+    name: r.name, code: r.code, code_prefix: r.code_prefix ?? null,
+    lends_to_students: !!r.lends_to_students, is_active: !!r.is_active, archived: r.archived_at != null,
+  });
+  /** A name another LIVE inventory already uses, compared the way people read it. */
+  async function inventoryNameTaken(name: string, exceptId: number | null) {
+    return (await pool.query(
+      `SELECT 1 FROM mo_inventory_scopes
+        WHERE lower(name) = lower($1) AND archived_at IS NULL AND ($2::bigint IS NULL OR id <> $2)`,
+      [name, exceptId])).rows.length > 0;
+  }
+  const inventoryClash = (e: unknown, prefix: string | null, code: string) =>
+    (e as { constraint?: string }).constraint === "uq_mo_scope_prefix"
+      ? `Another inventory already uses the prefix ${prefix}.`
+      : `Another inventory already uses the code ${code}.`;
+
+  app.post(`${P}/equipment/inventories`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may create an inventory.");
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const name = String(b.name ?? "").trim();
+    if (!name) return sendError(res, 400, "An inventory needs a name.");
+    if (name.length > 80) return sendError(res, 400, "Keep the name under 80 characters.");
+    /* `code` is the machine identifier filters and imports resolve by. It is
+       derived from the name unless given, and it never changes afterwards. */
+    const code = (b.code != null && String(b.code).trim() !== ""
+      ? String(b.code).trim().toLowerCase()
+      : name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40));
+    if (!INV_CODE_RE.test(code))
+      return sendError(res, 400, "The code may use lower-case letters, digits, - and _, 2 to 40 characters.");
+    const prefix = invPrefixOf(b.code_prefix);
+    if (prefix && !INV_PREFIX_RE.test(prefix)) return sendError(res, 400, INV_PREFIX_MSG);
+    if (b.lends_to_students != null && typeof b.lends_to_students !== "boolean")
+      return sendError(res, 400, "lends_to_students must be true or false.");
+    if (await inventoryNameTaken(name, null))
+      return sendError(res, 409, `An inventory called "${name}" already exists.`);
+
+    let row;
+    try {
+      row = (await pool.query(
+        `INSERT INTO mo_inventory_scopes (name, code, code_prefix, lends_to_students, created_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [name, code, prefix, b.lends_to_students === true, u.id])).rows[0];
+    } catch (e) {
+      if ((e as { code?: string }).code === "23505") return sendError(res, 409, inventoryClash(e, prefix, code));
+      throw e;
+    }
+    await audit(u, "inventory_scope.created", "inventory_scopes", Number(row.id), null, invPublic(row), req);
+    res.status(201).json({ inventory: { id: Number(row.id), ...invPublic(row) } });
+  }));
+
+  /* Rename, set the prefix, open or close it to students, archive or restore.
+     The code is not editable: it is what saved filters and imports name. */
+  app.patch(`${P}/equipment/inventories/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may change an inventory.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    if (!id) return sendError(res, 400, "An inventory id is required.");
+    const cur = (await pool.query(`SELECT * FROM mo_inventory_scopes WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Inventory not found.");
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    const set = (col: string, v: unknown) => { vals.push(v); sets.push(`${col}=$${vals.length}`); };
+
+    if (b.name !== undefined) {
+      const name = String(b.name ?? "").trim();
+      if (!name) return sendError(res, 400, "An inventory needs a name.");
+      if (name.length > 80) return sendError(res, 400, "Keep the name under 80 characters.");
+      if (name !== cur.name) {
+        if (await inventoryNameTaken(name, id))
+          return sendError(res, 409, `An inventory called "${name}" already exists.`);
+        set("name", name);
+      }
+    }
+    if (b.code_prefix !== undefined) {
+      const prefix = invPrefixOf(b.code_prefix);
+      if (prefix && !INV_PREFIX_RE.test(prefix)) return sendError(res, 400, INV_PREFIX_MSG);
+      if (prefix !== (cur.code_prefix ?? null)) {
+        /* A PRINTED LABEL OUTLIVES A SETTING. allocateInternalCode() numbers
+           from the highest code carrying the CURRENT prefix, so changing it
+           after MC-0045 exists would start a second series beside labels
+           already stuck on cameras. Refused, with the reason. */
+        const issued = (await pool.query(
+          `SELECT internal_code FROM mo_equipment_items
+            WHERE scope_id=$1 AND internal_code IS NOT NULL LIMIT 1`, [id])).rows[0];
+        if (issued)
+          return sendError(res, 409,
+            `Asset codes such as ${issued.internal_code} have already been issued in this inventory, so its prefix can no longer change.`);
+        set("code_prefix", prefix);
+      }
+    }
+    if (b.lends_to_students !== undefined) {
+      if (typeof b.lends_to_students !== "boolean")
+        return sendError(res, 400, "lends_to_students must be true or false.");
+      if (b.lends_to_students !== !!cur.lends_to_students) set("lends_to_students", b.lends_to_students);
+    }
+    if (b.is_active !== undefined) {
+      if (typeof b.is_active !== "boolean") return sendError(res, 400, "is_active must be true or false.");
+      if (b.is_active !== !!cur.is_active) set("is_active", b.is_active);
+    }
+    let lifecycle: "archived" | "restored" | null = null;
+    if (b.archived !== undefined) {
+      if (typeof b.archived !== "boolean") return sendError(res, 400, "archived must be true or false.");
+      if (b.archived && cur.archived_at == null) { sets.push("archived_at=NOW()"); lifecycle = "archived"; }
+      if (!b.archived && cur.archived_at != null) {
+        /* Restoring brings the name back into the live set, where it must be unique. */
+        if (await inventoryNameTaken(String(cur.name), id))
+          return sendError(res, 409, `Another live inventory is already called "${cur.name}". Rename one first.`);
+        sets.push("archived_at=NULL"); lifecycle = "restored";
+      }
+    }
+    if (!sets.length) return res.json({ inventory: { id, ...invPublic(cur) }, changed: false });
+
+    let row;
+    try {
+      row = (await pool.query(
+        `UPDATE mo_inventory_scopes SET ${sets.join(", ")}, updated_at=NOW()
+          WHERE id=$${vals.length + 1} RETURNING *`, [...vals, id])).rows[0];
+    } catch (e) {
+      if ((e as { code?: string }).code === "23505")
+        return sendError(res, 409, inventoryClash(e, invPrefixOf(b.code_prefix), String(cur.code)));
+      throw e;
+    }
+    await audit(u, lifecycle ? `inventory_scope.${lifecycle}` : "inventory_scope.updated",
+                "inventory_scopes", id, invPublic(cur), invPublic(row), req);
+    res.json({ inventory: { id, ...invPublic(row) }, changed: true });
+  }));
+
   /* ── Verification (Phase 17D) ───────────────────────────────────────────
      Whether an asset RECORD has been reviewed and accepted. It answers nothing
      about where the asset is: a camera can be pending verification and checked
@@ -6332,6 +6671,9 @@ async function allocateInternalCode(
     if (q.to && !to) return sendError(res, 400, "to must be a date, as YYYY-MM-DD.");
     if (from && to && to < from) return sendError(res, 400, "to must be on or after from.");
     const clause = where.join(" AND ");
+    /* The coverage count is current state and names no date, so it is handed
+       only the scope parameters: an unreferenced $n fails the whole read. */
+    const scopeParams = params.slice();
     const pFrom = from ? bind(from) : null, pTo = to ? bind(to) : null;
 
     /* ── 1. AVERAGE LOAN DURATION ────────────────────────────────────────
@@ -6468,7 +6810,7 @@ async function allocateInternalCode(
               COUNT(*) FILTER (WHERE EXISTS (
                 SELECT 1 FROM mo_asset_inspections s WHERE s.equipment_item_id = i.id))::int
                                                                                 AS ever_inspected
-         FROM mo_equipment_items i WHERE ${clause}`, params)).rows[0];
+         FROM mo_equipment_items i WHERE ${clause}`, scopeParams)).rows[0];
 
     const num = (v: unknown) => v == null ? null : Number(v);
     res.json({
@@ -7611,7 +7953,7 @@ async function allocateInternalCode(
       anomalies: {
         over_hours: overHours.rows.map((r) => `${r.full_name} logged ${(r.total_minutes / 60).toFixed(1)}h on ${String(r.report_date).slice(0, 10)} (above the 14h threshold)`),
         blocked: blocked.rows.map((r) => `${r.full_name}: "${String(r.description).slice(0, 60)}"`),
-        stalls: stalls.rows.map((r) => `${r.name} (${r.code}) — no logged activity in 21 days (AUTO-7)`),
+        stalls: stalls.rows.map((r) => `${r.name}: no work logged in 21 days`),
       },
       positive: fast.rows.map((r) => `${r.title} iterated through ${r.versions} versions`),
     });
@@ -10089,6 +10431,9 @@ async function allocateInternalCode(
      ADMIN ONLY, on the server. Granting somebody an inventory is a governance
      act, so holding the custodian duty must not let you grant it. */
   const EQUIP_MODULE = "equipment";
+  /* The kiosk is its own grantable module (the shell's Kiosk mode button), and
+     it is only ever reachable together with Equipment. */
+  const KIOSK_MODULE = "kiosk";
 
   /** The duty row this panel administers. Looked up, never hard-coded by id. */
   const custodianDuty = async () => (await pool.query(
@@ -10156,6 +10501,7 @@ async function allocateInternalCode(
         bypassed_by_role: isMoAdmin(asUser),
         effective_modules: effective,
       },
+      kiosk: { key: KIOSK_MODULE, enabled: effective.includes(KIOSK_MODULE) },
       inventories: inventories.map((r) => ({
         id: Number(r.id), code: r.code, name: r.name, code_prefix: r.code_prefix,
         assigned: r.assignment_id != null,
@@ -10180,115 +10526,185 @@ async function allocateInternalCode(
     res.json(await equipmentAccessOf(target));
   }));
 
-  /** Change it — all three layers, or none of them. Admin only. */
-  app.patch(`${P}/crew/:id/equipment-access`, asyncHandler(async (req, res) => {
-    const u = requireMedia(res); if (!u) return;
-    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may change equipment access.");
-    const id = getSingleParam(req.params.id);
-    const b = (req.body ?? {}) as Record<string, unknown>;
-    const target = (await pool.query(
-      `SELECT id, full_name, email, role, team, status FROM users WHERE id=$1`, [id])).rows[0];
-    if (!target) return sendError(res, 404, "That member does not exist.");
+  /* ── THE ACCESS RULES, DECIDED ONCE ──────────────────────────────────────
+     One person's change to the equipment layers is PLANNED here and WRITTEN by
+     applyEquipmentAccess(). Two screens use the pair: this per-person panel and
+     the Equipment → Permissions matrix (PATCH /equipment/permissions), which
+     saves many people at once. Before the matrix existed this logic lived inside
+     the handler below; it was lifted out unchanged so the two screens cannot
+     come to disagree about what a refusal is.
 
+     A plan is decided entirely from reads, so a caller can plan every person in
+     a batch, refuse the whole batch on the first refusal, and only then open a
+     transaction. */
+  type AccessTarget = { id: string; full_name: string; email: string;
+                        role: string; team: string | null; status: string };
+  type AccessWant = {
+    module: boolean | null; kiosk: boolean | null; duty: boolean | null;
+    /* Either the whole list (the per-person panel) or a delta (the matrix,
+       which only knows which cells were ticked and must not overwrite an
+       inventory another Admin granted a moment ago). */
+    scopes: number[] | null; grant: number[]; revoke: number[];
+  };
+  type AccessPlan = {
+    target: AccessTarget; before: Awaited<ReturnType<typeof equipmentAccessOf>>;
+    modulesToWrite: string[] | null; adding: number[]; dropping: number[];
+    dutyId: number; dutyChange: boolean | null;
+  };
+
+  async function liveInventoryIds(): Promise<Set<number>> {
+    return new Set((await pool.query(
+      `SELECT id FROM mo_inventory_scopes WHERE is_active AND archived_at IS NULL`)).rows
+      .map((r) => Number(r.id)));
+  }
+
+  async function planEquipmentAccess(actor: CurrentUser, target: AccessTarget, want: AccessWant,
+                                     liveIds?: Set<number>)
+    : Promise<{ plan: AccessPlan } | { status: number; message: string }> {
     const before = await equipmentAccessOf(target);
-    const wantModule = typeof b.module_enabled === "boolean" ? b.module_enabled : null;
-    const wantDuty = typeof b.equipment_custodian === "boolean" ? b.equipment_custodian : null;
-    const wantScopes = Array.isArray(b.inventory_scope_ids)
-      ? [...new Set((b.inventory_scope_ids as unknown[]).map((x) => Number(x)))].filter((n) => Number.isFinite(n) && n > 0)
-      : null;
-    if (wantModule === null && wantDuty === null && wantScopes === null)
-      return sendError(res, 400, "Nothing to change.");
-
-    /* ── REFUSALS, DECIDED BEFORE THE TRANSACTION OPENS ────────────────────
-       Every check here is a read, so it runs on the pool and not on a held
-       client. What the transaction below does is write. */
-
-    const live = (await pool.query(
-      `SELECT id, name, code FROM mo_inventory_scopes
-        WHERE is_active AND archived_at IS NULL`)).rows;
-    const liveIds = new Set(live.map((r) => Number(r.id)));
+    const live = liveIds ?? await liveInventoryIds();
     const currentIds = before.inventories.filter((i) => i.assigned).map((i) => i.id);
+    const wantScopes = want.scopes
+      ?? (want.grant.length || want.revoke.length
+        ? [...new Set([...currentIds, ...want.grant])].filter((n) => !want.revoke.includes(n))
+        : null);
     const adding = wantScopes ? wantScopes.filter((n) => !currentIds.includes(n)) : [];
     const dropping = wantScopes ? currentIds.filter((n) => !wantScopes.includes(n)) : [];
 
     for (const n of wantScopes ?? []) {
-      if (!liveIds.has(n)) {
+      if (!live.has(n)) {
         /* An archived or deactivated scope authorises nobody — inventoryScopeOf()
            filters it out — so an assignment to one would be silently inert.
            Same refusal the per-scope endpoint already gives. */
         const exists = (await pool.query(
           `SELECT 1 FROM mo_inventory_scopes WHERE id=$1`, [n])).rows.length > 0;
         return exists
-          ? sendError(res, 409, "An archived or inactive inventory cannot be assigned. Restore it first.")
-          : sendError(res, 404, "Inventory not found.");
+          ? { status: 409, message: "An archived or inactive inventory cannot be assigned. Restore it first." }
+          : { status: 404, message: "Inventory not found." };
       }
     }
     /* THE EXISTING SEPARATION, KEPT. POST /equipment/scopes/:id/custodians has
        always refused self-appointment: an Admin who needs an inventory has
-       another Admin grant it. This panel must not become the way around that. */
-    if (adding.length && target.id === u.id)
-      return sendError(res, 403, "An inventory cannot be granted to yourself. Ask another Admin.");
+       another Admin grant it. Neither screen may become the way around that. */
+    if (adding.length && target.id === actor.id)
+      return { status: 403, message: "An inventory cannot be granted to yourself. Ask another Admin." };
     /* Granting access to a removed account would be access nobody can use.
        Revoking from one is offboarding and stays allowed. */
-    if (target.status !== "active" && (adding.length || wantModule === true || wantDuty === true))
-      return sendError(res, 409, "That account is not active, so access cannot be granted to it.");
+    if (target.status !== "active"
+        && (adding.length || want.module === true || want.kiosk === true || want.duty === true))
+      return { status: 409, message: "That account is not active, so access cannot be granted to it." };
 
     /* The module list to write, if any. An explicit array is only written when
        the ANSWER has to change: enabling a module the group already grants
        leaves a role-based account role-based. */
-    let modulesToWrite: string[] | null = null;
-    if (wantModule !== null && wantModule !== before.module.enabled)
-      modulesToWrite = wantModule
-        ? [...before.module.effective_modules, EQUIP_MODULE]
-        : before.module.effective_modules.filter((m) => m !== EQUIP_MODULE);
+    let mods = [...before.module.effective_modules];
+    let modsChanged = false;
+    const flip = (key: string, on: boolean | null) => {
+      if (on === null || on === mods.includes(key)) return;
+      mods = on ? [...mods, key] : mods.filter((m) => m !== key);
+      modsChanged = true;
+    };
+    flip(EQUIP_MODULE, want.module);
+    flip(KIOSK_MODULE, want.kiosk);
 
-    const dutyId = before.custodian.duty_flag_id;
-    const dutyChanges = wantDuty !== null && wantDuty !== before.custodian.granted;
+    return { plan: {
+      target, before, modulesToWrite: modsChanged ? mods : null, adding, dropping,
+      dutyId: before.custodian.duty_flag_id,
+      dutyChange: want.duty !== null && want.duty !== before.custodian.granted ? want.duty : null,
+    } };
+  }
+
+  const planIsNoop = (p: AccessPlan) =>
+    !p.modulesToWrite && !p.adding.length && !p.dropping.length && p.dutyChange === null;
+
+  /* Writes ONE plan on a client the caller holds inside its own transaction.
+     Never audits — audit() writes through the pool, and asking the pool for a
+     connection while holding one is what deadlocked production once already. */
+  async function applyEquipmentAccess(
+    client: { query: (q: string, p?: unknown[]) => Promise<unknown> },
+    actor: CurrentUser, p: AccessPlan) {
+    if (p.modulesToWrite)
+      await client.query(
+        `INSERT INTO mo_user_profiles (user_id, allowed_modules) VALUES ($1,$2::jsonb)
+         ON CONFLICT (user_id) DO UPDATE SET allowed_modules=EXCLUDED.allowed_modules`,
+        [p.target.id, JSON.stringify(p.modulesToWrite)]);
+
+    for (const scopeId of p.adding)
+      /* A prior REVOKED row does not collide — idx_mo_uis_active is partial —
+         so this inserts a NEW record and the old one stays readable. That is
+         the whole reason the primary key is an id and not the pair. */
+      await client.query(
+        `INSERT INTO mo_user_inventory_scopes (user_id, scope_id, role, granted_by)
+         VALUES ($1,$2,'custodian',$3)
+         ON CONFLICT (user_id, scope_id) WHERE removed_at IS NULL DO NOTHING`,
+        [p.target.id, scopeId, actor.id]);
+    for (const scopeId of p.dropping)
+      /* SOFT. The record survives with who removed it and when (§8). */
+      await client.query(
+        `UPDATE mo_user_inventory_scopes SET removed_at=NOW(), removed_by=$3
+          WHERE user_id=$1 AND scope_id=$2 AND removed_at IS NULL`,
+        [p.target.id, scopeId, actor.id]);
+
+    if (p.dutyChange === true)
+      await client.query(
+        `INSERT INTO mo_user_duties (user_id, duty_flag_id, granted_by, granted_at)
+         VALUES ($1,$2,$3,CURRENT_DATE) ON CONFLICT (user_id, duty_flag_id) DO NOTHING`,
+        [p.target.id, p.dutyId, actor.id]);
+    else if (p.dutyChange === false)
+      await client.query(
+        `DELETE FROM mo_user_duties WHERE user_id=$1 AND duty_flag_id=$2`, [p.target.id, p.dutyId]);
+  }
+
+  /* ONE COHERENT ACCESS-CHANGE EVENT (§15) per person, whichever screen made
+     it: before and after say what it was and what it became, and entity_uid
+     carries the affected person so "every access change for them" is a query
+     rather than a JSON scan. */
+  const accessShape = (a: Awaited<ReturnType<typeof equipmentAccessOf>>) => ({
+    module_enabled: a.module.enabled,
+    kiosk_enabled: a.kiosk.enabled,
+    inventories: a.inventories.filter((i) => i.assigned).map((i) => i.code),
+    equipment_custodian: a.custodian.granted,
+  });
+
+  /** Read the access fields of a request body. Anything not a boolean is "leave it". */
+  function accessWantOf(b: Record<string, unknown>): AccessWant {
+    const bool = (v: unknown) => (typeof v === "boolean" ? v : null);
+    const ids = (v: unknown) => Array.isArray(v)
+      ? [...new Set((v as unknown[]).map((x) => Number(x)))].filter((n) => Number.isFinite(n) && n > 0)
+      : null;
+    return {
+      module: bool(b.module_enabled), kiosk: bool(b.kiosk_enabled), duty: bool(b.equipment_custodian),
+      scopes: ids(b.inventory_scope_ids),
+      grant: ids(b.grant_inventory_ids) ?? [], revoke: ids(b.revoke_inventory_ids) ?? [],
+    };
+  }
+  const wantIsEmpty = (w: AccessWant) =>
+    w.module === null && w.kiosk === null && w.duty === null && w.scopes === null
+    && !w.grant.length && !w.revoke.length;
+
+  /** Change it — all layers, or none of them. Admin only. */
+  app.patch(`${P}/crew/:id/equipment-access`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may change equipment access.");
+    const id = getSingleParam(req.params.id);
+    const target = (await pool.query(
+      `SELECT id, full_name, email, role, team, status FROM users WHERE id=$1`, [id])).rows[0];
+    if (!target) return sendError(res, 404, "That member does not exist.");
+
+    const want = accessWantOf((req.body ?? {}) as Record<string, unknown>);
+    if (wantIsEmpty(want)) return sendError(res, 400, "Nothing to change.");
+    const r = await planEquipmentAccess(u, target, want);
+    if ("status" in r) return sendError(res, r.status, r.message);
 
     /* ── ONE TRANSACTION (§7) ──────────────────────────────────────────────
        Module, inventories and duty commit together or not at all. A half-saved
        state here is an employee who can reach Equipment and see no inventory,
        or holds an inventory they cannot enter — configurations that look like
-       product bugs and are actually a failed save.
-
-       Every statement is on `client`; audit() runs after release, because
-       audit() writes through the pool and holding a connection while asking
-       for another is what deadlocked production once already. */
+       product bugs and are actually a failed save. */
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      if (modulesToWrite)
-        await client.query(
-          `INSERT INTO mo_user_profiles (user_id, allowed_modules) VALUES ($1,$2::jsonb)
-           ON CONFLICT (user_id) DO UPDATE SET allowed_modules=EXCLUDED.allowed_modules`,
-          [target.id, JSON.stringify(modulesToWrite)]);
-
-      for (const scopeId of adding)
-        /* A prior REVOKED row does not collide — idx_mo_uis_active is partial —
-           so this inserts a NEW record and the old one stays readable. That is
-           the whole reason the primary key is an id and not the pair. */
-        await client.query(
-          `INSERT INTO mo_user_inventory_scopes (user_id, scope_id, role, granted_by)
-           VALUES ($1,$2,'custodian',$3)
-           ON CONFLICT (user_id, scope_id) WHERE removed_at IS NULL DO NOTHING`,
-          [target.id, scopeId, u.id]);
-      for (const scopeId of dropping)
-        /* SOFT. The record survives with who removed it and when (§8). */
-        await client.query(
-          `UPDATE mo_user_inventory_scopes SET removed_at=NOW(), removed_by=$3
-            WHERE user_id=$1 AND scope_id=$2 AND removed_at IS NULL`,
-          [target.id, scopeId, u.id]);
-
-      if (dutyChanges) {
-        if (wantDuty)
-          await client.query(
-            `INSERT INTO mo_user_duties (user_id, duty_flag_id, granted_by, granted_at)
-             VALUES ($1,$2,$3,CURRENT_DATE) ON CONFLICT (user_id, duty_flag_id) DO NOTHING`,
-            [target.id, dutyId, u.id]);
-        else
-          await client.query(
-            `DELETE FROM mo_user_duties WHERE user_id=$1 AND duty_flag_id=$2`, [target.id, dutyId]);
-      }
+      await applyEquipmentAccess(client, u, r.plan);
       await client.query("COMMIT");
     } catch (e) {
       await client.query("ROLLBACK").catch(() => {});
@@ -10298,17 +10714,8 @@ async function allocateInternalCode(
     client.release();
 
     const after = await equipmentAccessOf(target);
-    /* ONE COHERENT ACCESS-CHANGE EVENT (§15), not three. An administrator
-       changed somebody's equipment access; before and after say what it was and
-       what it became, and entity_uid carries the affected person so "every
-       access change for them" is a query rather than a JSON scan. */
-    const shape = (a: typeof after) => ({
-      module_enabled: a.module.enabled,
-      inventories: a.inventories.filter((i) => i.assigned).map((i) => i.code),
-      equipment_custodian: a.custodian.granted,
-    });
     await audit(u, "crew.equipment_access_changed", "user", null,
-                shape(before), shape(after), req, target.id);
+                accessShape(r.plan.before), accessShape(after), req, target.id);
     res.json(after);
   }));
 

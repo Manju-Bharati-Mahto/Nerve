@@ -107,6 +107,39 @@ test.describe("modal shape", () => {
     expect(await page.locator("#modal-layer .mo-head .icon-btn").count(),
       "the task-log head has more than one close control").toBe(1);
   });
+
+  /* The layer is a grid; an auto row grows with its content, so a long form
+     (Add member, Equipment permissions) used to be as tall as its content and
+     pushed its own Save button below the screen, where nothing could scroll to
+     it. The body must scroll instead, under a footer that stays put. */
+  test("a long form keeps its footer on the screen and scrolls its body instead", async ({ page }) => {
+    await bootStaff(page, "employee");
+    for (const kind of ["full", "sheet"] as const) {
+      /* Closed with Back, as a person would: a modal closed in code pops its
+         history entry asynchronously, and that pop would close the next one. */
+      if (kind === "sheet") {
+        await page.goBack();
+        await expect(page.locator("#modal-layer")).not.toHaveClass(/\bon\b/);
+      }
+      await page.evaluate((k) => {
+        const w = window as unknown as { modal: (h: string) => void };
+        w.modal(`<div class="mo-head"><h2>Long</h2></div><div class="mo-body">${
+          '<p style="height:60px;margin:0">row</p>'.repeat(60)}${k === "full" ? "<input>" : ""}</div>
+          <div class="mo-foot"><button class="btn primary">Save</button></div>`);
+      }, kind);
+      await expect(page.locator("#modal-layer")).toHaveAttribute("data-mkind", kind);
+      /* A sheet slides up from below; measure where it comes to rest. */
+      await page.locator("#modal-layer .modal").evaluate((el) =>
+        Promise.all(el.getAnimations().map((a) => a.finished)));
+      const m = await page.evaluate(() => {
+        const foot = document.querySelector("#modal-layer .mo-foot")!.getBoundingClientRect();
+        const body = document.querySelector("#modal-layer .mo-body") as HTMLElement;
+        return { bottom: foot.bottom, vh: innerHeight, scrolls: body.scrollHeight > body.clientHeight };
+      });
+      expect(m.bottom, `${kind}: the footer is below the screen`).toBeLessThanOrEqual(m.vh + 0.5);
+      expect(m.scrolls, `${kind}: the body grew instead of scrolling`).toBe(true);
+    }
+  });
 });
 
 test("the Escape chain calls Back at most once (route unchanged)", async ({ page }) => {

@@ -360,8 +360,9 @@ async function boot(opts: { listStatus?: number; detailStatus?: number;
   return h;
 }
 
+/* Asset rows only: the catalog opens each category with a header row (.eq-grp). */
 const rows = (h: Harness) =>
-  h.dom.window.document.querySelectorAll("#page table.tbl tbody tr").length;
+  h.dom.window.document.querySelectorAll("#page table.tbl tbody tr:not(.eq-grp)").length;
 
 /* ══════════════════════════════════════════════════════════════════════════
    The property the migration exists for.
@@ -418,7 +419,7 @@ describe("the registry is a server read", () => {
       .map((n) => n.getAttribute("data-act"));
     expect(acts).toContain("checkout");
     // The row still links to the asset by its tag, as the catalog always has.
-    expect(h.dom.window.document.querySelector("#page tbody tr")?.getAttribute("data-go"))
+    expect(h.dom.window.document.querySelector("#page tbody tr:not(.eq-grp)")?.getAttribute("data-go"))
       .toBe("#/media/equipment/EQ-CAM-001");
   });
 
@@ -432,7 +433,7 @@ describe("the registry is a server read", () => {
     await h.render();
     expect(h.ev<string | null>("EQ_LIST.rows[0].holder_id")).toBeTruthy();
     expect(rows(h)).toBe(50);
-    const holderCells = [...h.dom.window.document.querySelectorAll("#page tbody tr")]
+    const holderCells = [...h.dom.window.document.querySelectorAll("#page tbody tr:not(.eq-grp)")]
       .filter((tr) => !(tr.children[4]?.textContent ?? "").includes("—"));
     expect(holderCells.length, "no holder was drawn without the transaction array")
       .toBeGreaterThan(0);

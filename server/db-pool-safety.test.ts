@@ -177,6 +177,15 @@ const ALLOWED: Record<string, string> = {
      Same signature property as allocateInternalCode and createEquipmentOn: it
      takes a connection and never sees `pool`, so it opens none of its own. */
   "server/mediaops-api.ts:policyClash": "receives the held client; opens no connection of its own",
+
+  /* Equipment → Permissions. applyEquipmentAccess() writes ONE person's
+     planned change — module list, inventory grants and revokes, the custodian
+     duty — and is called by both the per-person endpoint and the matrix, which
+     writes many people in one transaction. Everything it needs to READ was
+     decided beforehand by planEquipmentAccess() on the pool, before any client
+     was taken, so the function takes a connection, never sees `pool`, and opens
+     none of its own. The audit for each person runs after release. */
+  "server/mediaops-api.ts:applyEquipmentAccess": "receives the held client; opens no connection of its own",
 };
 
 describe("no handler holds a pooled connection while acquiring another", () => {
