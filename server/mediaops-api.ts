@@ -1767,6 +1767,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   app.post(`${P}/deliverables/:id/versions`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
+    const d = (await pool.query(`SELECT * FROM mo_deliverables WHERE id=$1 AND deleted_at IS NULL`, [id])).rows[0];
+    if (!d) return sendError(res, 404, "Deliverable not found.");
+    /* The work is submitted by the person doing it — or by the project's lead
+       or an Admin acting for them. Anybody else pushing a version into a
+       colleague's deliverable could put it in front of a reviewer, and make a
+       reviewer who owns it look eligible to approve it. */
+    if (!(String(d.owner_id ?? "") === u.id || await canReviewProject(u, Number(d.project_id))))
+      return sendError(res, 403, "Only the deliverable's owner, the project's Team Lead or an Admin may submit a version.");
     const url = String((req.body as Record<string, unknown>).drive_url ?? "").trim();
     if (!/^https:\/\/(drive|docs)\.google\.com\//.test(url)) return sendError(res, 400, "VR-4: must be a Google Drive/Docs link.");
     const last = await pool.query(`SELECT COALESCE(MAX(version_no),0) AS n FROM mo_deliverable_versions WHERE deliverable_id=$1`, [id]);
@@ -1777,38 +1785,79 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       [id, next, url, String((req.body as Record<string, unknown>).note ?? ""), u.id]);
     await pool.query(`UPDATE mo_deliverables SET status='in_review' WHERE id=$1`, [id]);
     await audit(u, "deliverable.version_submitted", "deliverable_version", ins.rows[0].id, null, { version_no: next }, req);
+    // The project's reviewer hears about it — one person, not every Team Lead.
+    for (const rid of await reviewerIdsFor(Number(d.project_id)))
+      if (rid !== u.id)
+        await pool.query(
+          `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+           VALUES ($1,'review',$2,$3,'deliverable',$4)`,
+          [rid, "Version submitted for review",
+            `${u.full_name ?? "A crew member"} submitted v${next} of “${d.title}”.`, id]).catch(() => {});
     res.status(201).json({ version: ins.rows[0] });
   }));
 
-  // Review latest version — BR-5: a version cannot be approved by its submitter.
+  /* ── THE review ────────────────────────────────────────────────────────────
+     One implementation of the reviewer's verdict on a deliverable's latest
+     version, behind both POST /review (the drawer) and the board's /status
+     drag. Before this there were two, with different rules: the board could
+     approve with no version at all, never queued dispatch, and only checked
+     who submitted the latest version — so an owner became eligible to approve
+     their own deliverable the moment somebody else pushed a version into it.
+
+       · reviewer: the project's Team Lead or an Admin — never another team's;
+       · never the deliverable's owner, and never the version's submitter
+         (Admins included: nobody signs off their own work);
+       · approving needs a version waiting for review; changes can be asked for
+         on a pending version or on one already approved (sent back);
+       · approval queues the deliverable for dispatch; changes pull it out. */
+  async function reviewDeliverable(u: CurrentUser, d: Record<string, any>, outcome: "approved" | "changes_requested",
+                                   comment: string, req: express.Request): Promise<{ status: number; message?: string }> {
+    if (!(await canReviewProject(u, Number(d.project_id))))
+      return { status: 403, message: "Only the project's Team Lead or an Admin may review this deliverable." };
+    if (String(d.owner_id ?? "") === u.id)
+      return { status: 403, message: "BR-5: you cannot review a deliverable you own." };
+    const v = (await pool.query(
+      `SELECT * FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [d.id])).rows[0];
+    if (!v) return { status: 400, message: "No version to review — the owner submits one first." };
+    if (v.submitted_by === u.id) return { status: 403, message: "BR-5: a version cannot be reviewed by its submitter." };
+    if (outcome === "approved" && v.review_status !== "pending")
+      return { status: 400, message: "There is no version waiting for review." };
+    await pool.query(`UPDATE mo_deliverable_versions SET review_status=$1, reviewed_by=$2, reviewed_at=NOW(), review_comment=$3 WHERE id=$4`,
+      [outcome, u.id, comment, v.id]);
+    await pool.query(`UPDATE mo_deliverables SET status=$1, updated_at=NOW() WHERE id=$2`, [outcome, d.id]);
+    // Approval is the creative verdict; it also hands the item to Operations.
+    if (outcome === "approved")
+      await pool.query(
+        `UPDATE mo_deliverables SET dispatch_status='queued', queued_at=NOW()
+          WHERE id=$1 AND dispatch_status='none'`, [d.id]);
+    // Changes requested on something already queued pulls it back out.
+    if (outcome === "changes_requested")
+      await pool.query(
+        `UPDATE mo_deliverables SET dispatch_status='none', queued_at=NULL
+          WHERE id=$1 AND dispatch_status='queued'`, [d.id]);
+    await audit(u, "deliverable.version_reviewed", "deliverable_version", v.id,
+      { review_status: v.review_status }, { review_status: outcome }, req);
+    if (d.owner_id && String(d.owner_id) !== u.id)
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'review',$2,$3,'deliverable',$4)`,
+        [d.owner_id, outcome === "approved" ? `Approved: ${d.title}` : `Changes requested on ${d.title}`,
+          `${u.full_name ?? "Your Team Lead"} ${outcome === "approved" ? "approved" : "asked for changes to"} v${v.version_no}.${comment ? " " + comment : ""}`,
+          d.id]).catch(() => {});
+    return { status: 200 };
+  }
+
+  // Review latest version — the drawer's Approve / Request changes.
   app.post(`${P}/deliverables/:id/review`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
     const outcome = String((req.body as Record<string, unknown>).outcome ?? ""); // 'approved' | 'changes_requested'
     const comment = String((req.body as Record<string, unknown>).comment ?? "");
-    const v = await pool.query(`SELECT * FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [id]);
-    if (!v.rows[0]) return sendError(res, 400, "No version to review.");
-    if (v.rows[0].submitted_by === u.id) return sendError(res, 403, "BR-5: a version cannot be reviewed by its submitter.");
-    const isPM = await pool.query(`SELECT 1 FROM mo_project_assignments a JOIN mo_deliverables d ON d.project_id=a.project_id
-      WHERE d.id=$1 AND a.user_id=$2 AND a.is_project_manager AND a.removed_at IS NULL`, [id, u.id]);
-    if (!(isMoAdmin(u) || isMoTL(u) || isPM.rows[0])) return sendError(res, 403, "BR-5: reviewer must be PM, Team Lead or Admin.");
-    if (!["approved", "changes_requested"].includes(outcome)) return sendError(res, 400, "Invalid outcome.");
-    await pool.query(`UPDATE mo_deliverable_versions SET review_status=$1, reviewed_by=$2, reviewed_at=NOW(), review_comment=$3 WHERE id=$4`,
-      [outcome, u.id, comment, v.rows[0].id]);
-    await pool.query(`UPDATE mo_deliverables SET status=$1 WHERE id=$2`, [outcome, id]);
-    // Approval is the creative verdict; it also hands the item to Operations.
-    // Queueing here is what makes "approved work appears in Ready for Dispatch"
-    // automatic — the coordinator never has to notice an approval happened.
-    if (outcome === "approved")
-      await pool.query(
-        `UPDATE mo_deliverables SET dispatch_status='queued', queued_at=NOW()
-          WHERE id=$1 AND dispatch_status='none'`, [id]);
-    // Changes requested on something already queued pulls it back out.
-    if (outcome === "changes_requested")
-      await pool.query(
-        `UPDATE mo_deliverables SET dispatch_status='none', queued_at=NULL
-          WHERE id=$1 AND dispatch_status='queued'`, [id]);
-    await audit(u, "deliverable.version_reviewed", "deliverable_version", v.rows[0].id, { review_status: "pending" }, { review_status: outcome }, req);
+    const d = (await pool.query(`SELECT * FROM mo_deliverables WHERE id=$1`, [id])).rows[0];
+    if (!d) return sendError(res, 404, "Deliverable not found.");
+    if (outcome !== "approved" && outcome !== "changes_requested") return sendError(res, 400, "Invalid outcome.");
+    const r = await reviewDeliverable(u, d, outcome, comment, req);
+    if (r.status !== 200) return sendError(res, r.status, r.message ?? "");
     res.json({ ok: true, status: outcome });
   }));
 
@@ -1818,6 +1867,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const id = parseInt(getSingleParam(req.params.id), 10);
     const d = await pool.query(`SELECT d.*, dt.review_exempt FROM mo_deliverables d JOIN mo_deliverable_types dt ON dt.id=d.deliverable_type_id WHERE d.id=$1`, [id]);
     if (!d.rows[0]) return sendError(res, 404, "Deliverable not found.");
+    if (!(String(d.rows[0].owner_id ?? "") === u.id || await canReviewProject(u, Number(d.rows[0].project_id))))
+      return sendError(res, 403, "Only the deliverable's owner, the project's Team Lead or an Admin may mark it delivered.");
     if (!d.rows[0].review_exempt) {
       const v = await pool.query(`SELECT review_status FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [id]);
       if (v.rows[0]?.review_status !== "approved") return sendError(res, 400, "BR-6: Delivered requires an approved latest version.");
@@ -8380,18 +8431,17 @@ async function allocateInternalCode(
   }));
 
   // Deliverable status change (Production Board drag) — persists + enforces the
-  // machine, BR-5 (submitter≠approver, reviewer must be PM/TL/Admin) and BR-6.
-  // changes_requested→approved is allowed for a PM/TL/Admin (#4).
+  // machine. The two verdicts on the board (approved, changes requested) are
+  // not status edits: they ARE the review, so they go through reviewDeliverable()
+  // and obey exactly the rules the drawer does.
   app.post(`${P}/deliverables/:id/status`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
     const to = String((req.body as Record<string, unknown>).status ?? "");
     const d = (await pool.query(`SELECT d.*, dt.review_exempt FROM mo_deliverables d JOIN mo_deliverable_types dt ON dt.id=d.deliverable_type_id WHERE d.id=$1`, [id])).rows[0];
     if (!d) return sendError(res, 404, "Deliverable not found.");
-    // Lifecycle (PRD §3): Assigned → In Progress → Delivered → Approved (optional).
-    // The owner delivers, then a reviewer approves via approval_status — so
-    // in_progress → delivered is a first-class transition. The older
-    // review-then-deliver path (in_review → approved → delivered) still works.
+    // Lifecycle (PRD §3): Assigned → In Progress → Submitted → Approved → Delivered.
+    // A review-exempt type skips the review and is delivered straight from work.
     const DELIV: Record<string, string[]> = {
       not_started: ["in_progress", "delivered", "not_required", "cancelled"],
       in_progress: ["in_review", "delivered", "not_required", "cancelled"],
@@ -8402,18 +8452,26 @@ async function allocateInternalCode(
       not_required: ["not_started"], cancelled: ["not_started"],
     };
     if (!(DELIV[d.status] ?? []).includes(to)) return sendError(res, 400, `BR-1: ${d.status} → ${to} is not a valid transition.`);
-    const isPMrow = (await pool.query(
-      `SELECT 1 FROM mo_project_assignments a WHERE a.project_id=$1 AND a.user_id=$2 AND a.is_project_manager AND a.removed_at IS NULL`,
-      [d.project_id, u.id])).rows[0];
-    // §7: an employee may drive their OWN deliverable only.
-    if (!isMoAdmin(u) && !isMoTL(u) && !isPMrow && String(d.owner_id) !== u.id)
-      return sendError(res, 403, "You can only update deliverables assigned to you.");
-    // Admin has full override (no review mandate — #4). Everyone else obeys BR-5.
-    if (!isMoAdmin(u) && to === "approved") {
-      const v = (await pool.query(`SELECT submitted_by FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [id])).rows[0];
-      if (v && v.submitted_by === u.id) return sendError(res, 403, "BR-5: a version cannot be approved by its submitter.");
-      if (!(isMoTL(u) || isPMrow)) return sendError(res, 403, "BR-5: reviewer must be the PM, a Team Lead or Admin.");
+
+    if (to === "approved" || to === "changes_requested") {
+      const r = await reviewDeliverable(u, d, to, "", req);
+      if (r.status !== 200) return sendError(res, r.status, r.message ?? "");
+      return res.json({ ok: true, status: to });
     }
+    /* Delivered is reached through review: an approved deliverable is delivered,
+       and only a review-exempt type is delivered straight from work. This was
+       the road round the reviewer — mark your own work delivered, skip review. */
+    if (to === "delivered" && d.status !== "approved" && !d.review_exempt)
+      return sendError(res, 400, "Submit a version for review — only an approved deliverable can be delivered.");
+    // The owner drives their own execution; scope changes (not required,
+    // cancelled, and back) are the project's to make.
+    const isOwner = String(d.owner_id ?? "") === u.id;
+    const manages = await canManageProject(u, Number(d.project_id));
+    const ownerMoves = ["in_progress", "in_review", "delivered"];
+    if (!(manages || (isOwner && ownerMoves.includes(to))))
+      return sendError(res, 403, isOwner
+        ? "Only the project's Team Lead or PM may change this deliverable's scope."
+        : "You can only update deliverables assigned to you.");
     // Delivering stamps who/when and re-opens the approval gate for the reviewer.
     const delivering = to === "delivered";
     await pool.query(
@@ -8425,37 +8483,33 @@ async function allocateInternalCode(
        WHERE id=$4`, [to, delivering, u.id, id]);
     await audit(u, "deliverable.status_changed", "deliverable", id,
       { status: d.status }, { status: to, delivered_by: delivering ? u.id : undefined }, req);
-    // Tell the reviewers there is something to review.
-    if (delivering) {
-      const reviewers = (await pool.query(
-        `SELECT DISTINCT t.lead_user_id AS id FROM mo_team_members tm
-           JOIN mo_teams t ON t.id=tm.team_id
-          WHERE tm.user_id=$1 AND t.is_active AND t.lead_user_id IS NOT NULL AND t.lead_user_id <> $1`, [u.id])).rows;
-      for (const r of reviewers)
-        await pool.query(
-          `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
-           VALUES ($1,'review',$2,$3,'deliverable',$4)`,
-          [r.id, "Deliverable delivered — needs review",
-            `${u.full_name ?? "A crew member"} marked “${d.title}” as delivered.`, id]).catch(() => {});
-    }
+    // Tell the project's reviewer there is something to look at.
+    if (delivering)
+      for (const rid of await reviewerIdsFor(Number(d.project_id)))
+        if (rid !== u.id)
+          await pool.query(
+            `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+             VALUES ($1,'review',$2,$3,'deliverable',$4)`,
+            [rid, "Deliverable delivered — needs review",
+              `${u.full_name ?? "A crew member"} marked “${d.title}” as delivered.`, id]).catch(() => {});
     res.json({ ok: true, status: to });
   }));
 
   // ── Approve / request changes on a DELIVERED output (PRD §3, §6) ─────────
-  // Separate from the version-review machinery: this is the reviewer's verdict
-  // on the deliverable itself, and it is what the employee sees straight back.
+  // The reviewer's sign-off on work that has already been delivered — a
+  // review-exempt type, or an approved one handed over. It is not a second way
+  // to approve: on anything not yet delivered it refuses, and points at review.
   app.post(`${P}/deliverables/:id/approval`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
     const d = (await pool.query(`SELECT * FROM mo_deliverables WHERE id=$1`, [id])).rows[0];
     if (!d) return sendError(res, 404, "Deliverable not found.");
-    const isPMrow = (await pool.query(
-      `SELECT 1 FROM mo_project_assignments a WHERE a.project_id=$1 AND a.user_id=$2 AND a.is_project_manager AND a.removed_at IS NULL`,
-      [d.project_id, u.id])).rows[0];
-    if (!(isMoAdmin(u) || isMoTL(u) || isPMrow))
-      return sendError(res, 403, "Only a Team Lead, Admin or the project PM may approve deliverables.");
-    if (String(d.owner_id) === u.id && !isMoAdmin(u))
+    if (!(await canReviewProject(u, Number(d.project_id))))
+      return sendError(res, 403, "Only the project's Team Lead or an Admin may approve deliverables.");
+    if (String(d.owner_id) === u.id)
       return sendError(res, 403, "BR-5: you cannot approve your own deliverable.");
+    if (d.status !== "delivered")
+      return sendError(res, 400, "This deliverable has not been delivered — review its submitted version instead.");
     const to = String((req.body as Record<string, unknown>).approval_status ?? "");
     if (!["approved", "changes_requested", "rejected", "pending"].includes(to))
       return sendError(res, 400, "approval_status must be approved, changes_requested, rejected or pending.");
@@ -8467,6 +8521,11 @@ async function allocateInternalCode(
          status = CASE WHEN $3 THEN 'changes_requested' ELSE status END,
          updated_at = NOW()
        WHERE id=$4 RETURNING *`, [to, u.id, backToWork, id]);
+    // Sent back after delivery: it is no longer ready to hand over.
+    if (backToWork)
+      await pool.query(
+        `UPDATE mo_deliverables SET dispatch_status='none', queued_at=NULL
+          WHERE id=$1 AND dispatch_status='queued'`, [id]);
     await audit(u, "deliverable.approval_changed", "deliverable", id,
       { approval_status: d.approval_status, status: d.status },
       { approval_status: to, approved_by: u.id, approved_by_role: moRoleOf(u), note }, req);

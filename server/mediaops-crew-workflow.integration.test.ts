@@ -365,18 +365,25 @@ maybe("submission — the owner submits, the project's lead hears about it", () 
   });
 
   it("16 — an employee who does not own it cannot", async () => {
-    expect((await as("empA2", "POST", `/deliverables/${did}/versions`, drive(2))).status).toBe(201);
-    expect((await as("empB1", "POST", `/deliverables/${did}/versions`, drive(3))).status).toBe(201);
-    expect((await as("coord", "POST", `/deliverables/${did}/versions`, drive(4))).status).toBe(201);
+    expect((await as("empA2", "POST", `/deliverables/${did}/versions`, drive(2))).status).toBe(403);
+    expect((await as("empB1", "POST", `/deliverables/${did}/versions`, drive(3))).status).toBe(403);
+    expect((await as("coord", "POST", `/deliverables/${did}/versions`, drive(4))).status).toBe(403);
+    expect((await as("leadB", "POST", `/deliverables/${did}/versions`, drive(5))).status).toBe(403);
+    const n = await one(`SELECT COUNT(*)::int c FROM mo_deliverable_versions WHERE deliverable_id=$1`, [did]);
+    expect(n.c).toBe(1);
   });
 
   it("17 — the submission reaches Team A's lead, and nobody else's", async () => {
-    expect((await notes(ACTORS.leadA.id, "deliverable", did)).length).toBe(0);
+    expect((await notes(ACTORS.leadA.id, "deliverable", did)).map((x) => x.title)).toEqual(["Version submitted for review"]);
     expect((await notes(ACTORS.leadB.id, "deliverable", did)).length).toBe(0);
   });
 
   it("18 — Team B's lead cannot review Team A's work", async () => {
-    expect((await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "changes_requested", comment: "x" })).status).toBe(200);
+    expect((await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "changes_requested", comment: "x" })).status).toBe(403);
+    expect((await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(403);
+    expect((await as("coord", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(403);
+    expect((await as("empA1", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(403);
+    expect((await deliv(did)).status).toBe("in_review");
   });
 });
 
@@ -390,10 +397,10 @@ maybe("review — Team A's lead decides, and approval queues dispatch", () => {
   });
 
   it("20 — Team B's lead is refused on every review path", async () => {
-    expect((await as("leadB", "POST", `/deliverables/${did}/status`, { status: "approved" })).status).toBe(200);
-    await pool.query(`UPDATE mo_deliverables SET status='in_review' WHERE id=$1`, [did]);
-    expect((await as("leadB", "POST", `/deliverables/${did}/approval`, { approval_status: "approved" })).status).toBe(200);
-    await pool.query(`UPDATE mo_deliverables SET approval_status='pending', approved_by=NULL WHERE id=$1`, [did]);
+    expect((await as("leadB", "POST", `/deliverables/${did}/status`, { status: "approved" })).status).toBe(403);
+    expect((await as("leadB", "POST", `/deliverables/${did}/approval`, { approval_status: "approved" })).status).toBe(403);
+    const d = await deliv(did);
+    expect([d.status, d.approval_status ?? "pending", d.dispatch_status]).toEqual(["in_review", "pending", "none"]);
   });
 
   it("22 — changes requested sends it back, and the owner resubmits", async () => {
@@ -401,7 +408,7 @@ maybe("review — Team A's lead decides, and approval queues dispatch", () => {
       { outcome: "changes_requested", comment: "tighten the edit" })).status).toBe(200);
     expect((await deliv(did)).status).toBe("changes_requested");
     expect((await notes(ACTORS.empA1.id, "deliverable", did)).map((n) => n.title))
-      .not.toContain("Changes requested on Edited Photos");
+      .toContain("Changes requested on Edited Photos");
     expect((await as("empA1", "POST", `/deliverables/${did}/versions`, drive("r2"))).status).toBe(201);
     expect((await deliv(did)).status).toBe("in_review");
   });
@@ -420,18 +427,23 @@ maybe("review — Team A's lead decides, and approval queues dispatch", () => {
     expect((await as("leadA", "POST", `/deliverables/${own.did}/review`, { outcome: "approved" })).status).toBe(403);
     // A version pushed by someone else used to make the owner eligible.
     expect((await as("admin", "POST", `/deliverables/${own.did}/versions`, drive("o2"))).status).toBe(201);
-    expect((await as("leadA", "POST", `/deliverables/${own.did}/review`, { outcome: "approved" })).status).toBe(200);
-    await pool.query(`UPDATE mo_deliverables SET status='in_review' WHERE id=$1`, [own.did]);
-    await as("admin", "POST", `/deliverables/${own.did}/versions`, drive("o3"));
-    expect((await as("leadA", "POST", `/deliverables/${own.did}/status`, { status: "approved" })).status).toBe(200);
+    expect((await as("leadA", "POST", `/deliverables/${own.did}/review`, { outcome: "approved" })).status).toBe(403);
+    expect((await as("leadA", "POST", `/deliverables/${own.did}/status`, { status: "approved" })).status).toBe(403);
     expect((await as("leadA", "POST", `/deliverables/${own.did}/approval`, { approval_status: "approved" })).status).toBe(403);
+    expect((await deliv(own.did)).status).toBe("in_review");
+    // Someone who is not the owner (an Admin) is who signs it off.
+    expect((await as("admin", "POST", `/deliverables/${own.did}/versions`, drive("o3"))).status).toBe(201);
+    await pool.query(`UPDATE mo_deliverable_versions SET submitted_by=$1 WHERE deliverable_id=$2`, [ACTORS.leadA.id, own.did]);
+    expect((await as("admin", "POST", `/deliverables/${own.did}/review`, { outcome: "approved" })).status).toBe(200);
   });
 
   it("21b — an Admin who owns a deliverable cannot approve it either", async () => {
     const own = await ownedBy("admin");
     await as("admin", "POST", `/deliverables/${own.did}/versions`, drive("a1"));
     await as("leadA", "POST", `/deliverables/${own.did}/versions`, drive("a2"));
-    expect((await as("admin", "POST", `/deliverables/${own.did}/review`, { outcome: "approved" })).status).toBe(200);
+    expect((await as("admin", "POST", `/deliverables/${own.did}/review`, { outcome: "approved" })).status).toBe(403);
+    expect((await as("leadA", "POST", `/deliverables/${own.did}/review`, { outcome: "approved" })).status).toBe(403); // submitted v2
+    expect((await deliv(own.did)).status).toBe("in_review");
   });
 });
 
@@ -446,7 +458,12 @@ maybe("approval bypass — there is one road to approved", () => {
 
   it("25 — an employee cannot skip review by marking their work delivered", async () => {
     const { did } = await ownedBy("empA1");
-    expect((await as("empA1", "POST", `/deliverables/${did}/status`, { status: "delivered" })).status).toBe(200);
+    expect((await as("empA1", "POST", `/deliverables/${did}/status`, { status: "delivered" })).status).toBe(400);
+    await as("empA1", "POST", `/deliverables/${did}/status`, { status: "in_progress" });
+    expect((await as("empA1", "POST", `/deliverables/${did}/status`, { status: "delivered" })).status).toBe(400);
+    expect((await as("empA1", "POST", `/deliverables/${did}/deliver`, {})).status).toBe(400);
+    expect((await as("empA2", "POST", `/deliverables/${did}/deliver`, {})).status).toBe(403);
+    expect((await deliv(did)).status).toBe("in_progress");
   });
 
   it("25b — a review-exempt type is still delivered directly by its owner", async () => {
@@ -459,17 +476,24 @@ maybe("approval bypass — there is one road to approved", () => {
   it("26 — the board's 'approved' is the same review: it needs a version, and it queues dispatch", async () => {
     const bare = await ownedBy("empA1");
     await pool.query(`UPDATE mo_deliverables SET status='in_review' WHERE id=$1`, [bare.did]);
-    expect((await as("leadA", "POST", `/deliverables/${bare.did}/status`, { status: "approved" })).status).toBe(200);
+    expect((await as("leadA", "POST", `/deliverables/${bare.did}/status`, { status: "approved" })).status).toBe(400);
 
     const real = await ownedBy("empA1");
     await as("empA1", "POST", `/deliverables/${real.did}/versions`, drive("b1"));
     expect((await as("leadA", "POST", `/deliverables/${real.did}/status`, { status: "approved" })).status).toBe(200);
-    expect((await deliv(real.did)).dispatch_status).toBe("none");
+    expect((await deliv(real.did)).dispatch_status).toBe("queued");
+    const v = await one(`SELECT review_status, reviewed_by FROM mo_deliverable_versions WHERE deliverable_id=$1`, [real.did]);
+    expect(v).toEqual({ review_status: "approved", reviewed_by: ACTORS.leadA.id });
+    // …and the board's "send back" pulls it out of the queue again, version and all.
+    expect((await as("leadA", "POST", `/deliverables/${real.did}/status`, { status: "changes_requested" })).status).toBe(200);
+    const back = await deliv(real.did);
+    expect([back.status, back.dispatch_status]).toEqual(["changes_requested", "none"]);
   });
 
   it("26b — post-delivery approval cannot stand in for review on undelivered work", async () => {
     const { did } = await ownedBy("empA1");
-    expect((await as("leadA", "POST", `/deliverables/${did}/approval`, { approval_status: "approved" })).status).toBe(200);
+    expect((await as("leadA", "POST", `/deliverables/${did}/approval`, { approval_status: "approved" })).status).toBe(400);
+    expect((await deliv(did)).approval_status ?? "pending").toBe("pending");
   });
 });
 
@@ -506,9 +530,8 @@ maybe("legacy projects, PMs, shoots and ad-hoc assignments", () => {
     const pid = Number((await deliv(did)).project_id);
     await pool.query(`UPDATE mo_projects SET team_id=NULL WHERE id=$1`, [pid]);
     await as("empA1", "POST", `/deliverables/${did}/versions`, drive("l1"));
-    expect((await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(200);
-    await pool.query(`UPDATE mo_deliverables SET status='in_review' WHERE id=$1`, [did]);
-    await as("empA1", "POST", `/deliverables/${did}/versions`, drive("l2"));
+    expect((await notes(ACTORS.leadA.id, "deliverable", did)).length).toBe(1);   // the owner-lead hears about it
+    expect((await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(403);
     expect((await as("leadA", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(200);
   });
 
@@ -522,7 +545,8 @@ maybe("legacy projects, PMs, shoots and ad-hoc assignments", () => {
       [pid, ACTORS.empA2.id]);
     expect((await as("empA2", "POST", `/deliverables/${did}/schedule`, { scheduled_date: "2026-10-04" })).status).toBe(200);
     await as("empA1", "POST", `/deliverables/${did}/versions`, drive("pm1"));
-    expect((await as("empA2", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(200);
+    expect((await as("empA2", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(403);
+    expect((await as("leadA", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(200);
   });
 
   it("shoot crew follows the same scope", async () => {
