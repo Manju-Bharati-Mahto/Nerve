@@ -402,9 +402,18 @@ maybe("scoping the read model did not narrow anything else", () => {
     /* Production history is departmental knowledge. A security fix that also
        emptied the project registry for employees would be a regression wearing
        a fix's clothes. */
-    const emp = await state("member"), adm = await state("admin");
-    for (const key of ["projects", "deliverables", "project_types", "task_categories",
-                       "teams", "duty_flags", "holidays", "equipment_categories"])
+    /* Other suites create and delete projects while this one runs, so two
+       snapshots taken a moment apart can differ for reasons that have nothing
+       to do with scoping. A real narrowing differs on EVERY attempt; churn
+       settles. Retry a few times, then assert on the last pair. */
+    const keys = ["projects", "deliverables", "project_types", "task_categories",
+                  "teams", "duty_flags", "holidays", "equipment_categories"];
+    let emp = await state("member"), adm = await state("admin");
+    for (let i = 0; i < 5 && keys.some((k) => emp.body[k]?.length !== adm.body[k]?.length); i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      [emp, adm] = await Promise.all([state("member"), state("admin")]);
+    }
+    for (const key of keys)
       expect(emp.body[key]?.length, `${key} shrank for an employee`)
         .toBe(adm.body[key]?.length);
   });
