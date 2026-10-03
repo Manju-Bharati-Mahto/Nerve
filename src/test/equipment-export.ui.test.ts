@@ -92,7 +92,7 @@ describe("the derived figures reach a screen", () => {
                            HTML.indexOf("function eqAnalytics()"));
 
   it("reads them from the server rather than deriving them in the browser", () => {
-    expect(HTML).toContain("MO_API.get('/equipment/insights')");
+    expect(HTML).toMatch(/MO_API\.get\('\/equipment\/insights'/);
     /* Nothing here averages, divides by a duration, or pairs a checkout with a
        check-in. The one arithmetic the panel does is a share of a total, and
        both numbers come from the same response. */

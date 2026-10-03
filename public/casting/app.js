@@ -2,7 +2,8 @@
    Deliberately standalone: no NERVE session, no admin bundle, nothing about the
    internal system is reachable from here. The only thing this page can do is
    read one campaign and submit one form — everything is authorised server-side
-   against an email address the server itself verified with a one-time code. */
+   against an email address the server itself verified with a one-time code,
+   unless the link was created with verification switched off. */
 const $ = s => document.querySelector(s);
 const app = $('#app');
 const TOKEN = (location.pathname.match(/\/casting\/register\/([A-Za-z0-9]+)/) || [])[1]
@@ -34,6 +35,11 @@ let campaign = null, identity = null, session = '', state = { languages: [], int
 const consentText = () => (campaign && campaign.consent && campaign.consent.text)
   || 'I consent to Parul University using my submitted information and media for official university purposes.';
 const consentVersion = () => (campaign && campaign.consent && campaign.consent.version) || null;
+/* Set per link by the Casting team. Off: no email or OTP step, any address, typed
+   straight into the form. Only an explicit false counts, so an older API that
+   never sends the flag keeps the verified flow. */
+const otpOff = () => !!(campaign && campaign.campaign && campaign.campaign.require_otp === false);
+const isEmail = v => v.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 
 /* Mirrors of the server rules, for the applicant's benefit only — the server
    re-runs every one of them and its answer is the one that counts. Each returns
@@ -58,9 +64,41 @@ const cleanInstagram = raw => {
 };
 const isDriveUrl = raw => /^https:\/\/(drive|docs)\.google\.com\/\S+$/i.test(String(raw || '').trim());
 
+/* The photo. When the server can put it in the Media Crew's Google Drive it
+   says so (photo_upload) and the form offers a file picker; otherwise the older
+   "paste a Drive link" field renders, so a server without Drive still works.
+   Limits mirror the server's — the server's answer is the one that counts. */
+const photoUpload = () => !!(campaign && campaign.photo_upload);
+const PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const PHOTO_MAX = 8 * 1024 * 1024;
+const fmtSize = n => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+let photo = { file: null, url: '' }, existingReq = null;
+
 const brand = `<div class="brand"><i>N</i><div><b>NERVE Media Ops</b><span>Parul University</span></div></div>`;
 const shell = inner => { app.innerHTML = brand + inner + `<div class="foot">Parul University · Media Crew</div>`; };
 const note = (kind, html) => `<div class="note ${kind}">${html}</div>`;
+
+/* Multipart, through XMLHttpRequest rather than fetch for one reason: upload
+   progress. On a phone network the photo IS the slow part of this form, and a
+   button that only says "Submitting…" for twenty seconds looks broken. */
+function apiUpload(path, body, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const fd = new FormData();
+    fd.append('payload', JSON.stringify(body));
+    fd.append('photo', file, file.name);
+    const x = new XMLHttpRequest();
+    x.open('POST', API + path);
+    x.responseType = 'json';
+    x.upload.onprogress = e => { if (e.lengthComputable && onProgress) onProgress(Math.round(e.loaded / e.total * 100)); };
+    x.onerror = () => reject(new Error('Nerve could not be reached. Check your connection and try again.'));
+    x.onload = () => {
+      const j = x.response || {};
+      if (x.status >= 200 && x.status < 300) resolve(j);
+      else reject(new Error(j.message || 'Something went wrong. Please try again.'));
+    };
+    x.send(fd);
+  });
+}
 
 async function api(path, body) {
   const r = await fetch(API + path, {
@@ -85,6 +123,7 @@ async function api(path, body) {
     <h1>Casting Registration</h1>
     <div class="campaign">◆ ${esc(campaign.campaign.name)}</div>
     <div class="card">${note('warn','<b>' + esc(campaign.message || 'This casting registration is currently closed.') + '</b><br>Existing submissions are unaffected.')}</div>`);
+  if (otpOff()) return renderForm(null);
   // A stored session means this tab already verified for THIS link; the server
   // still re-checks it on every call, so a stale or revoked one just drops back
   // to step 1 rather than pretending to be signed in.
@@ -251,12 +290,16 @@ function renderForm(existing) {
     <h1>Casting Registration</h1>
     <div class="campaign">◆ ${esc(campaign.campaign.name)}</div>
     ${existing ? note('warn', `<b>You already have a submission for this drive.</b><br>Request <span class="code">${esc(existing.request_id)}</span> — saving will update it.`) : ''}
-    <div class="card"><div class="who">✓ Email verified — ${esc(identity.email)}</div></div>
+    ${identity ? `<div class="card"><div class="who">✓ Email verified — ${esc(identity.email)}</div></div>` : ''}
+    ${!identity && campaign.campaign.description ? `<div class="card"><p style="margin:0;color:var(--text-2)">${esc(campaign.campaign.description)}</p></div>` : ''}
 
     <div class="card">
       <h2>About you</h2>
       <div class="field"><label>Full name <span class="req">*</span></label>
-        <input type="text" id="f-name" value="${esc(identity.name || '')}" autocomplete="name"></div>
+        <input type="text" id="f-name" value="${esc((identity && identity.name) || '')}" autocomplete="name"></div>
+      ${identity ? '' : `<div class="field"><label>Email <span class="req">*</span></label>
+        <input type="email" id="f-email" placeholder="you@example.com" autocomplete="email">
+        <div class="hint">So the Media Crew can reach you. Any email address works.</div></div>`}
       <div class="field"><label>What best describes you? <span class="req">*</span></label>
         ${chips('f-type', TYPES)}</div>
       <div class="field"><label>Department / institute ${campaign.campaign.require_department ? '<span class="req">*</span>' : ''}</label>
@@ -296,6 +339,12 @@ function renderForm(existing) {
 
     <div class="card">
       <h2>Photo</h2>
+      ${photoUpload() ? `
+      <div class="field"><label>Your photo ${existing && existing.has_photo ? '' : '<span class="req">*</span>'}</label>
+        <div class="up" id="up"></div>
+        <div class="hint">JPG, PNG or WEBP, up to 8 MB. It is saved straight to the Media Crew's
+          Google Drive under your request ID — no link or sharing settings needed.</div></div>`
+      : `
       <div class="field"><label>Photo — Google Drive link <span class="req">*</span></label>
         <input type="url" id="f-photo" placeholder="https://drive.google.com/..." autocomplete="off"
           inputmode="url" spellcheck="false">
@@ -303,7 +352,7 @@ function renderForm(existing) {
           Make sure the link can be accessed by the Media Crew.</div></div>
       <div class="note warn" style="margin:0">
         <b>Check the sharing setting.</b> A link we cannot open is the most common reason a
-        submission stalls — set it so anyone with the link can view, then paste it above.</div>
+        submission stalls — set it so anyone with the link can view, then paste it above.</div>`}
     </div>
 
     <div class="card">
@@ -326,8 +375,56 @@ function renderForm(existing) {
       c.classList.toggle('on');
     };
   });
+  existingReq = existing;
+  if (photo.url) URL.revokeObjectURL(photo.url);
+  photo = { file: null, url: '' };
+  paintPhoto();
   if (existing) prefill(existing);
   $('#submit').onclick = submit;
+}
+
+/* ---- the photo picker ----
+   A dashed box with one button until a file is chosen, then the thumbnail
+   with its name and size — what will be sent is on screen before Submit. The
+   native <input type=file> is hidden and driven by <label for>. */
+const fileInput = () => `<input type="file" id="f-file" accept="${PHOTO_TYPES.join(',')}">`;
+function paintPhoto() {
+  const box = $('#up'); if (!box) return;
+  const onFile = !!(existingReq && existingReq.has_photo);
+  if (!photo.file) {
+    box.className = 'up';
+    box.innerHTML = fileInput()
+      + `<p>${onFile ? 'A photo is already on file. Upload a new one only if you want to replace it.'
+                     : 'A clear, recent photo of yourself — a phone photo is fine.'}</p>`
+      + `<label class="btn primary sm" for="f-file" style="display:inline-flex">${onFile ? 'Replace photo' : 'Upload photo'}</label>`;
+  } else {
+    box.className = 'up has';
+    box.innerHTML = fileInput()
+      + `<img src="${photo.url}" alt="Your photo">`
+      + `<div class="meta"><b>${esc(photo.file.name)}</b><span>${fmtSize(photo.file.size)} · ready to upload</span>
+           <div class="acts"><label class="btn sm" for="f-file" style="display:inline-flex">Change</label>
+             <button type="button" class="btn sm" id="f-clear">Remove</button></div></div>`;
+    $('#f-clear').onclick = clearPhoto;
+  }
+  $('#f-file').onchange = e => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (f) setPhoto(f);
+  };
+}
+function setPhoto(f) {
+  const msg = $('#form-msg');
+  if (!PHOTO_TYPES.includes(f.type)) { msg.innerHTML = note('bad', 'Please choose a JPG, PNG or WEBP photo.'); return; }
+  if (f.size > PHOTO_MAX) { msg.innerHTML = note('bad', 'That photo is larger than 8 MB. Please choose a smaller one.'); return; }
+  if (photo.url) URL.revokeObjectURL(photo.url);
+  photo = { file: f, url: URL.createObjectURL(f) };
+  msg.innerHTML = '';
+  paintPhoto();
+}
+function clearPhoto() {
+  if (photo.url) URL.revokeObjectURL(photo.url);
+  photo = { file: null, url: '' };
+  paintPhoto();
 }
 function prefill(ex) { /* keeps an update from wiping what they typed last time */
   if (ex.applicant_name) $('#f-name').value = ex.applicant_name;
@@ -341,6 +438,9 @@ async function submit() {
   const type = picked('f-type')[0];
   const dept = ($('#f-dept').value || '').trim();
   if (!name) return fail('Please enter your full name.');
+  const email = identity ? '' : ($('#f-email').value || '').trim().toLowerCase();
+  if (!identity && !email) return fail('Please enter your email address.');
+  if (!identity && !isEmail(email)) return fail('Please enter a valid email address.');
   if (!type) return fail('Please tell us what best describes you.');
   if (campaign.campaign.require_department && !dept) return fail('Please enter your department or institute.');
 
@@ -348,9 +448,14 @@ async function submit() {
   if (!($('#f-phone').value || '').trim()) return fail('Please enter your mobile phone number.');
   if (!phone) return fail('Please enter a valid mobile number — 10 digits for an Indian number, or +country code.');
 
-  const photo = ($('#f-photo').value || '').trim();
-  if (!photo) return fail('Please add the Google Drive link to your photo.');
-  if (!isDriveUrl(photo)) return fail('Please enter a valid Google Drive link — it should start with https://drive.google.com/');
+  let photoLink = '';
+  if (photoUpload()) {
+    if (!photo.file && !(existingReq && existingReq.has_photo)) return fail('Please upload your photo.');
+  } else {
+    photoLink = ($('#f-photo').value || '').trim();
+    if (!photoLink) return fail('Please add the Google Drive link to your photo.');
+    if (!isDriveUrl(photoLink)) return fail('Please enter a valid Google Drive link — it should start with https://drive.google.com/');
+  }
 
   // Optional, so only a value that WAS typed and cannot be used is an error.
   const rawInsta = ($('#f-insta').value || '').trim();
@@ -361,8 +466,9 @@ async function submit() {
 
   btn.disabled = true; btn.textContent = 'Submitting…';
   try {
-    const r = await api('/submit', {
-      portal_session: session, name, applicant_type: type, department: dept,
+    const body = {
+      ...(identity ? { portal_session: session } : { email }),
+      name, applicant_type: type, department: dept,
       designation: ($('#f-desig').value || '').trim(),
       age_group: AGE_KEY[picked('f-age')[0]] || null,
       gender: ($('#f-gender').value || '').trim(),
@@ -374,9 +480,14 @@ async function submit() {
       mobile_phone: phone,
       enrolment_number: ($('#f-enrol').value || '').trim(),
       instagram_url: insta,
-      photo_url: photo,
+      ...(photoLink ? { photo_url: photoLink } : {}),
       consent: true, consent_version: consentVersion(),
-    });
+    };
+    const r = photo.file
+      ? await apiUpload('/submit', body, photo.file,
+          pct => { btn.textContent = pct >= 100 ? 'Saving…' : 'Uploading photo… ' + pct + '%'; })
+      : await api('/submit', body);
+    if (photo.url) URL.revokeObjectURL(photo.url);
     renderDone(r);
   } catch (e) {
     btn.disabled = false; btn.textContent = 'Submit casting request';

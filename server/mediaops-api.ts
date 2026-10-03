@@ -46,6 +46,23 @@ import { config } from "./config.js";
 import { normalizeRow, rowsFromRecords, type AssetRef, type CategoryRef,
          type ScopeRef, type SourceRow } from "./asset-import.js";
 import type { AiCapability, AiUserContext } from "./ai/types.js";
+/* Casting registration photos live in Google Drive; this is the one module
+   that knows where. The API only stores the ids it hands back and streams the
+   bytes on request. */
+import {
+  castingPhotosConfigured, castingPhotoSource, storeCastingPhoto, openCastingPhoto, driveFolderUrl,
+  resetCastingPhotoClient, CastingPhotosNotConfiguredError, CASTING_PHOTO_MIME, CASTING_PHOTO_MAX_BYTES,
+  type StoredCastingPhoto,
+} from "./casting-photos.js";
+/* The Google Drive an Admin connects in the app for those photos: the OAuth
+   dance, the folder, the status the dialog shows. Admin-only routes below. */
+import {
+  castingDriveStatus, castingDriveAuthUrl, completeCastingDriveConnect, saveCastingDriveClient,
+  useCastingDriveFolder, createCastingDriveFolder, checkCastingDrive, disconnectCastingDrive,
+  verifyDriveState, CastingDriveError,
+} from "./casting-drive.js";
+import { promises as fsp } from "node:fs";
+import { Readable } from "node:stream";
 
 type Handlers = {
   asyncHandler: (fn: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<unknown>) =>
@@ -67,6 +84,12 @@ type Handlers = {
      integration suites can mount the API without any upload machinery at all;
      a missing one degrades to a pass-through, exactly as the limiters do. */
   assetImportUpload?: RequestHandler;
+  /* The multer middleware that receives an applicant's photo on the public
+     casting form, staged in a private temp dir on its way to Google Drive.
+     Optional for the same reason as assetImportUpload: the server supplies it,
+     the integration suites may mount the API without any upload machinery, and
+     a plain JSON submit must keep working either way. */
+  castingPhotoUpload?: RequestHandler;
 };
 
 export interface CurrentUser { id: string; role: string; team: string | null; full_name?: string; email?: string; }
@@ -644,6 +667,94 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     return true;
   }
 
+  /* ── Project-scoped authority ─────────────────────────────────────────────
+     assignableMemberIds() answers WHO a lead may put on work. These answer the
+     other half: WHICH PROJECTS they may act on. Being a Team Lead somewhere is
+     not standing on a project routed to somebody else's team, so no
+     project-scoped route may stop at isMoTL().
+
+     A project belongs to the lead of its team. Projects created before
+     mo_projects.team_id existed have none, so for those the Team Lead who owns
+     the project stands in — owner_id has always carried the lead. Re-read on
+     every request, so a change of team lead takes effect immediately. */
+  async function isTeamLeadOfProject(actor: CurrentUser, projectId: number): Promise<boolean> {
+    if (!isMoTL(actor) || !projectId) return false;
+    const p = (await pool.query(`SELECT team_id, owner_id FROM mo_projects WHERE id=$1`, [projectId])).rows[0];
+    if (!p) return false;
+    if (p.team_id == null) return String(p.owner_id) === actor.id;
+    return !!(await pool.query(
+      `SELECT 1 FROM mo_teams WHERE id=$1 AND lead_user_id=$2 AND is_active AND archived_at IS NULL`,
+      [p.team_id, actor.id])).rows[0];
+  }
+
+  async function isProjectPM(actor: CurrentUser, projectId: number): Promise<boolean> {
+    return !!(await pool.query(
+      `SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND is_project_manager AND removed_at IS NULL`,
+      [projectId, actor.id])).rows[0];
+  }
+
+  /** Who may run a project day to day: Admin, its Team Lead, or its owner/PM.
+      A PM who is not the lead still schedules and allocates — but only inside
+      their own assignable scope, which assertAssignable() keeps. */
+  async function canManageProject(actor: CurrentUser, projectId: number): Promise<boolean> {
+    if (isMoAdmin(actor) || await isTeamLeadOfProject(actor, projectId)) return true;
+    const owner = (await pool.query(`SELECT owner_id FROM mo_projects WHERE id=$1`, [projectId])).rows[0]?.owner_id;
+    return String(owner ?? "") === actor.id || await isProjectPM(actor, projectId);
+  }
+
+  /** Who may review and approve a project's deliverables: Admin, or its Team Lead. */
+  async function canReviewProject(actor: CurrentUser, projectId: number): Promise<boolean> {
+    return isMoAdmin(actor) || await isTeamLeadOfProject(actor, projectId);
+  }
+
+  /** The person a submission should reach: the project team's lead, else (a
+      legacy project) its owner when they are a Team Lead, else the Admins. */
+  async function reviewerIdsFor(projectId: number): Promise<string[]> {
+    const r = (await pool.query(
+      `SELECT CASE WHEN p.team_id IS NOT NULL THEN t.lead_user_id
+                   WHEN o.role = 'sub_admin' AND o.team = 'media' THEN p.owner_id END AS lead
+         FROM mo_projects p
+         LEFT JOIN mo_teams t ON t.id = p.team_id AND t.is_active AND t.archived_at IS NULL
+         LEFT JOIN users o ON o.id = p.owner_id
+        WHERE p.id = $1`, [projectId])).rows[0];
+    if (r?.lead) return [String(r.lead)];
+    return (await pool.query(
+      `SELECT id FROM users WHERE team='media' AND role IN ('admin','super_admin')`)).rows.map((x) => String(x.id));
+  }
+
+  /* ── A deliverable's owner IS its crew assignment ──────────────────────────
+     mo_deliverables.owner_id is the one record of who executes a deliverable:
+     it is what My Day, workload, review and the board all read. Every path that
+     changes it ends here, so each one has the same consequences:
+
+       · the person joins the project's crew, which is what lets them open the
+         project and read its conversation (visibility follows crew);
+       · any crew row an earlier version of the drawer wrote into mo_assignments
+         for this deliverable is retired, so nothing else claims the work;
+       · the incoming person is told, and so is the one it was taken from. */
+  async function addToProjectCrew(projectId: number, userId: string, actorId: string) {
+    await pool.query(
+      `INSERT INTO mo_project_assignments (project_id, user_id, is_project_manager, assigned_by)
+       VALUES ($1,$2,false,$3)
+       ON CONFLICT (project_id, user_id) WHERE removed_at IS NULL DO NOTHING`, [projectId, userId, actorId]);
+  }
+
+  async function deliverableAssigned(actor: CurrentUser, d: { id: number; project_id: number; title: string },
+                                     from: string | null, to: string | null) {
+    if (from === to) return;
+    if (to) await addToProjectCrew(Number(d.project_id), to, actor.id);
+    await pool.query(
+      `UPDATE mo_assignments SET status='cancelled'
+        WHERE deliverable_id=$1 AND NOT is_smc AND status<>'cancelled'`, [d.id]);
+    const say = (uid: string, title: string, body: string) => pool.query(
+      `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+       VALUES ($1,'assignment',$2,$3,'deliverable',$4)`, [uid, title, body, d.id]).catch(() => {});
+    if (to && to !== actor.id)
+      await say(to, "New assignment", `${actor.full_name ?? "Your Team Lead"} assigned “${d.title}” to you.`);
+    if (from && from !== actor.id)
+      await say(from, "Assignment reassigned", `“${d.title}” is no longer assigned to you.`);
+  }
+
   // Per-user module access (allowed_modules). Admins bypass; NULL = unrestricted
   // (role-based). Backend defense-in-depth behind the client's nav/route gating.
   async function requireModule(res: express.Response, u: CurrentUser, key: string): Promise<boolean> {
@@ -1067,6 +1178,10 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         /* project_assignments is already filtered to removed_at IS NULL in the
            STATE query, so a past assignment does not keep a thread open. */
         for (const a of arr("project_assignments")) if (Number(a.user_id) === meInt) myProjects.add(Number(a.project_id));
+        /* Owning a deliverable is being on the work, crew row or not — an owner
+           assigned before assignment added them to the crew still needs the
+           thread their Team Lead's feedback lives in. */
+        for (const d of arr("deliverables")) if (Number(d.owner_id) === meInt && !d.deleted_at) myProjects.add(Number(d.project_id));
         const myDeliverables = new Set(arr("deliverables")
           .filter((d) => myProjects.has(Number(d.project_id))).map((d) => Number(d.id)));
         out.comments = arr("comments").filter((c) =>
@@ -1157,13 +1272,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   // FR-1.10 — Recent Activity for the Home dashboard, scoped per §16: admin sees the
   // department stream; others see their own actions + activity on projects they are
-  // assigned to (never department-wide).
+  // assigned to (never department-wide). before/after and entity_uid let the client
+  // name the person a row is about ("added Jay Thakkar to …") instead of "a crew member".
   app.get(`${P}/activity/recent`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     let rows;
     if (isMoAdmin(u)) {
       rows = (await pool.query(
-        `SELECT a.action, a.entity_type, a.entity_id, a.occurred_at, us.full_name AS actor
+        `SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor
            FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
           ORDER BY a.occurred_at DESC LIMIT 20`)).rows;
     } else {
@@ -1171,7 +1287,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         `WITH my_projects AS (
            SELECT p.id FROM mo_projects p WHERE p.deleted_at IS NULL AND (p.owner_id=$1
              OR EXISTS (SELECT 1 FROM mo_project_assignments a WHERE a.project_id=p.id AND a.user_id=$1 AND a.removed_at IS NULL)))
-         SELECT a.action, a.entity_type, a.entity_id, a.occurred_at, us.full_name AS actor
+         SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor
            FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
           WHERE a.actor_id=$1
              OR (a.entity_type='project' AND a.entity_id IN (SELECT id FROM my_projects))
@@ -1187,7 +1303,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
     const { rows } = await pool.query(
-      `SELECT a.action, a.entity_type, a.entity_id, a.before, a.after, a.occurred_at, us.full_name AS actor
+      `SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor
          FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
         WHERE (a.entity_type='project' AND a.entity_id=$1)
            OR (a.entity_type IN ('deliverable','shoot','assignment')
@@ -1198,6 +1314,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         ORDER BY a.occurred_at DESC LIMIT 60`, [id]);
     res.json({ activity: rows });
   }));
+
+  /* The real code is MC-2627-<100+id>, which needs the id, so the row goes in
+     under a placeholder and is renamed straight after. code is UNIQUE, so the
+     placeholder must be unique too: a shared literal made two projects created
+     in the same instant collide, and the second one 500'd. */
+  const PENDING_CODE = `'PENDING-' || md5(random()::text || clock_timestamp()::text)`;
 
   /* Create a project's deliverables from its type's active template. ONE
      implementation, shared by POST /projects and the coordinator's
@@ -1239,15 +1361,15 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   async function createProjectWithTemplate(o: {
     actor: CurrentUser; req: express.Request; name: string; description: string; typeId: number;
     unitId: number | null; priority: string; start: string | null; end: string | null;
-    ownerId: string | null; source: string; venue?: string | null;
+    ownerId: string | null; source: string; venue?: string | null; teamId?: number | null;
   }): Promise<{ id: number; deliverables: number }> {
     const ay = await pool.query(`SELECT id FROM mo_academic_years WHERE is_current LIMIT 1`);
     const ins = await pool.query(
       `INSERT INTO mo_projects (department_id, campus_id, academic_year_id, project_type_id, code, name, description,
-         academic_unit_id, status, priority, owner_id, created_by, start_date, end_date, type_meta, source, venue)
-       VALUES (1,1,$1,$2,'PENDING',$3,$4,$5,'planning',$6,$7,$8,$9,$10,'{}'::jsonb,$11,$12) RETURNING id`,
+         academic_unit_id, status, priority, owner_id, created_by, start_date, end_date, type_meta, source, venue, team_id)
+       VALUES (1,1,$1,$2,${PENDING_CODE},$3,$4,$5,'planning',$6,$7,$8,$9,$10,'{}'::jsonb,$11,$12,$13) RETURNING id`,
       [ay.rows[0]?.id ?? null, o.typeId, o.name, o.description, o.unitId, o.priority,
-       o.ownerId, o.actor.id, o.start, o.end, o.source, o.venue ?? null]);
+       o.ownerId, o.actor.id, o.start, o.end, o.source, o.venue ?? null, o.teamId ?? null]);
     const id = Number(ins.rows[0].id);
     await pool.query(`UPDATE mo_projects SET code=$1 WHERE id=$2`, [`MC-2627-${100 + id}`, id]);
     // Only the production owner is assigned as PM. The creator is NOT added —
@@ -1295,7 +1417,19 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        deliverable. Resolved server-side from the team id, so a forged
        lead_user_id from the browser cannot put work on someone who does not
        lead that team. */
-    const teamId = b.team_id ? Number(b.team_id) : null;
+    let teamId = b.team_id ? Number(b.team_id) : null;
+    /* A Team Lead raises work for their OWN team. Routing a project to another
+       team is the Coordinator's call (or an Admin's) — a lead naming someone
+       else's team would hand that lead work over their head. A lead who names
+       no team gets the one they lead. */
+    if (isMoTL(u)) {
+      const mine = (await pool.query(
+        `SELECT id FROM mo_teams WHERE lead_user_id=$1 AND is_active AND archived_at IS NULL ORDER BY id`, [u.id]))
+        .rows.map((r) => Number(r.id));
+      if (teamId && !mine.includes(teamId))
+        return sendError(res, 403, "A Team Lead can only create projects for their own team.");
+      if (!teamId && mine.length === 1) teamId = mine[0];
+    }
     let leadId: string | null = null, teamName: string | null = null;
     if (teamId) {
       const t = await resolveTeamLead(teamId);
@@ -1339,7 +1473,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const ins = await pool.query(
       `INSERT INTO mo_projects (department_id, campus_id, academic_year_id, project_type_id, code, name, description,
          academic_unit_id, status, priority, owner_id, created_by, start_date, end_date, type_meta, source, team_id)
-       VALUES (1,1,$1,$2,'PENDING',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'app',$13) RETURNING id`,
+       VALUES (1,1,$1,$2,${PENDING_CODE},$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'app',$13) RETURNING id`,
       [ay.rows[0]?.id ?? null, typeId, name, String(b.description ?? ""), unitId,
        gated ? "proposed" : "planning", (b.priority as string) || "normal", ownerId, u.id, start, end,
        JSON.stringify(b.type_meta ?? {}), teamId]);
@@ -1418,6 +1552,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       }
     }
 
+    // Anyone named on a deliverable joins the crew, as on every other assignment path.
+    for (const r of (await pool.query(
+      `SELECT DISTINCT owner_id FROM mo_deliverables WHERE project_id=$1 AND owner_id IS NOT NULL`, [id])).rows)
+      await addToProjectCrew(id, String(r.owner_id), u.id);
+
     await audit(u, "project.created", "project", id, null,
       { name, status: gated ? "proposed" : "planning", deliverables_created: made,
         team_id: teamId, team: teamName, owner_id: ownerId }, req);
@@ -1444,16 +1583,15 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const from = cur.rows[0].status as string;
     if (!(PROJ_TRANSITIONS[from] ?? []).includes(to))
       return sendError(res, 400, `BR-1: ${from} → ${to} is not a valid transition.`);
-    // §16: TL/Admin (or PM/owner) may move status; only Admin may archive.
-    const isOwnerPM = cur.rows[0].owner_id === u.id;
+    // §16: the project's own lead, Admin, or its owner/PM may move status; only Admin may archive.
     // BR-11 / FR-3.6 — the approval gate is its OWN capability: an employee may move
     // their own project through production states, but NEVER approve a proposal
     // (that would let them approve their own gated project — audit finding 9.1).
-    if (from === "proposed" && to === "approved" && !(isMoAdmin(u) || isMoTL(u)))
-      return sendError(res, 403, "BR-11: only a Team Lead or Admin may approve a proposed project.");
+    if (from === "proposed" && to === "approved" && !(isMoAdmin(u) || await isTeamLeadOfProject(u, id)))
+      return sendError(res, 403, "BR-11: only the project's Team Lead or an Admin may approve a proposed project.");
     if (to === "archived" && !isMoAdmin(u)) return sendError(res, 403, "Only Admin may archive (BR-1).");
     if (from === "archived" && !isMoAdmin(u)) return sendError(res, 403, "BR-12: only Admin may un-archive.");
-    if (!(isMoAdmin(u) || isMoTL(u) || isOwnerPM)) return sendError(res, 403, "You cannot change this project's status.");
+    if (!(await canManageProject(u, id))) return sendError(res, 403, "You cannot change this project's status.");
     await pool.query(
       `UPDATE mo_projects SET status=$1,
          archived_at=CASE WHEN $1='archived' THEN NOW() WHEN $3 THEN NULL ELSE archived_at END,
@@ -1465,8 +1603,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   app.post(`${P}/projects/:id/assignments`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may assign crew.");
     const id = parseInt(getSingleParam(req.params.id), 10);
+    if (!(isMoAdmin(u) || await isTeamLeadOfProject(u, id)))
+      return sendError(res, 403, "Only the project's Team Lead or an Admin may assign crew.");
     const b = req.body as Record<string, unknown>;
     // A4: clean 400s instead of FK-violation 500s.
     if (!b.user_id || typeof b.user_id !== "string") return sendError(res, 400, "user_id is required.");
@@ -1494,15 +1633,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   app.post(`${P}/projects/:id/deliverables`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const pid = parseInt(getSingleParam(req.params.id), 10);
-    // §16: "Create/edit deliverables — Employee: on own projects." Owner or PM only.
-    if (!(isMoAdmin(u) || isMoTL(u))) {
-      const own = await pool.query(
-        `SELECT 1 FROM mo_projects p WHERE p.id=$1 AND (p.owner_id=$2
-            OR EXISTS (SELECT 1 FROM mo_project_assignments a WHERE a.project_id=p.id AND a.user_id=$2 AND a.is_project_manager AND a.removed_at IS NULL))`,
-        [pid, u.id]);
-      if (!own.rows[0]) return sendError(res, 403, "§16: employees may create deliverables only on their own projects (owner or PM).");
-    }
+    // §16: "Create/edit deliverables" — the project's lead, Admin, or its owner/PM.
+    if (!(await canManageProject(u, pid)))
+      return sendError(res, 403, "§16: only the project's Team Lead, owner/PM or an Admin may add deliverables.");
     const b = req.body as Record<string, unknown>;
+    // Naming an owner is an assignment — same team scope as every other path.
+    if (b.owner_id && !(await assertAssignable(res, u, [String(b.owner_id)]))) return;
     const title = String(b.title ?? "").trim();
     if (!title) return sendError(res, 400, "Title is required.");
     const typeId = Number(b.deliverable_type_id);
@@ -1515,6 +1651,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // Robustness: the INSERT…SELECT yields no row when the type id doesn't exist —
     // answer 400, not a crash (found via a deleted lookup type).
     if (!ins.rows[0]) return sendError(res, 400, "Invalid deliverable type.");
+    await addToProjectCrew(pid, String(ins.rows[0].owner_id), u.id);
     // #7: optional Drive link attached to the new deliverable.
     const url = String(b.drive_url ?? "").trim();
     if (url && /^https:\/\/(drive|docs)\.google\.com\//.test(url))
@@ -1530,19 +1667,42 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const b = req.body as Record<string, unknown>;
     const cur = await pool.query(`SELECT * FROM mo_deliverables WHERE id=$1`, [id]);
     if (!cur.rows[0]) return sendError(res, 404, "Deliverable not found.");
+    const d = cur.rows[0];
+    /* approval_status is the reviewer's verdict and has exactly one writer,
+       POST /deliverables/:id/approval, which knows who may give it. A generic
+       edit setting it was how an employee approved their own work. */
+    if ("approval_status" in b)
+      return sendError(res, 400, "Approval is given through review, not by editing the deliverable.");
+    /* WHO MAY CHANGE WHAT.
+         the project's lead / Admin   everything below, due date included
+         the project's owner / PM     the plan: assignment, schedule, scope —
+                                      but a due date is the lead's (as /due-date)
+         the deliverable's owner      their execution: quantity, social, mail
+         the Coordinator              the hand-off side: social, mail */
+    const EXECUTION = ["quantity_delivered", "social_status", "social_post_url", "mail_status"];
+    const PLAN = ["title", "owner_id", "scheduled_date", "priority", "estimated_hours", "quantity_target", "spec_notes"];
+    const allowed = new Set<string>();
+    const pid = Number(d.project_id);
+    if (await canEditProjectDates(u, pid)) [...PLAN, ...EXECUTION, "due_date"].forEach((k) => allowed.add(k));
+    else if (await canManageProject(u, pid)) [...PLAN, ...EXECUTION].forEach((k) => allowed.add(k));
+    if (String(d.owner_id ?? "") === u.id) EXECUTION.forEach((k) => allowed.add(k));
+    if (await isCoordinator(u)) ["social_status", "social_post_url", "mail_status"].forEach((k) => allowed.add(k));
+    const asked = [...PLAN, ...EXECUTION, "due_date"].filter((k) => k in b);
+    const refused = asked.filter((k) => !allowed.has(k));
+    if (refused.length)
+      return sendError(res, 403, `You can't change ${refused.join(", ").replace(/_/g, " ")} on this deliverable.`);
     // Re-owning a deliverable is an assignment — same team scope as everything else.
-    if ("owner_id" in b && b.owner_id && String(b.owner_id) !== String(cur.rows[0].owner_id)
+    if ("owner_id" in b && b.owner_id && String(b.owner_id) !== String(d.owner_id)
         && !(await assertAssignable(res, u, [String(b.owner_id)]))) return;
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
-    for (const k of ["title", "owner_id", "due_date", "quantity_target", "quantity_delivered", "spec_notes",
-                     "social_status", "social_post_url", "mail_status",
-                     "scheduled_date", "priority", "estimated_hours", "approval_status"]) {
-      if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
-    }
-    if (!fields.length) return res.json({ deliverable: cur.rows[0] });
+    for (const k of asked) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
+    if (!fields.length) return res.json({ deliverable: d });
     vals.push(id);
     const { rows } = await pool.query(`UPDATE mo_deliverables SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals);
-    await audit(u, "deliverable.updated", "deliverable", id, cur.rows[0], rows[0], req);
+    if ("owner_id" in b)
+      await deliverableAssigned(u, rows[0], d.owner_id ? String(d.owner_id) : null,
+        rows[0].owner_id ? String(rows[0].owner_id) : null);
+    await audit(u, "deliverable.updated", "deliverable", id, d, rows[0], req);
     res.json({ deliverable: rows[0] });
   }));
 
@@ -1555,13 +1715,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const id = parseInt(getSingleParam(req.params.id), 10);
     const cur = (await pool.query(`SELECT * FROM mo_deliverables WHERE id=$1`, [id])).rows[0];
     if (!cur) return sendError(res, 404, "Deliverable not found.");
-    if (!(isMoAdmin(u) || isMoTL(u))) {
-      const own = await pool.query(
-        `SELECT 1 FROM mo_projects p WHERE p.id=$1 AND (p.owner_id=$2
-            OR EXISTS (SELECT 1 FROM mo_project_assignments a WHERE a.project_id=p.id AND a.user_id=$2 AND a.is_project_manager AND a.removed_at IS NULL))`,
-        [cur.project_id, u.id]);
-      if (!own.rows[0]) return sendError(res, 403, "Only a Team Lead, Admin, or the project owner/PM may schedule work.");
-    }
+    if (!(await canManageProject(u, Number(cur.project_id))))
+      return sendError(res, 403, "Only the project's Team Lead, owner/PM or an Admin may schedule work.");
     const b = req.body as Record<string, unknown>;
     const date = b.scheduled_date == null || b.scheduled_date === "" ? null : String(b.scheduled_date);
     if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return sendError(res, 400, "scheduled_date must be YYYY-MM-DD (or null to unschedule).");
@@ -1577,6 +1732,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       [date, b.owner_id ? String(b.owner_id) : null,
        b.estimated_hours != null && b.estimated_hours !== "" ? Number(b.estimated_hours) : null,
        b.priority ? String(b.priority) : null, id]);
+    if (b.owner_id)
+      await deliverableAssigned(u, rows[0], cur.owner_id ? String(cur.owner_id) : null, String(rows[0].owner_id));
     await audit(u, date ? "deliverable.scheduled" : "deliverable.unscheduled", "deliverable", id,
       { scheduled_date: cur.scheduled_date, owner_id: cur.owner_id },
       { scheduled_date: date, owner_id: rows[0].owner_id }, req);
@@ -1590,22 +1747,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   }));
 
   // ── Edit a deliverable's due date (PRD §4/§5/§7) ─────────────────────────
-  // Admin: any project. Team Lead: only projects whose crew are on a team they
-  // lead. Employee: read-only. A hand-picked date flips due_date_source to
-  // 'manual' so a later project-start change never overwrites it (§9).
+  // Admin: any project. Team Lead: only their own team's projects. Employee:
+  // read-only. A hand-picked date flips due_date_source to 'manual' so a later
+  // project-start change never overwrites it (§9).
   async function canEditProjectDates(actor: CurrentUser, projectId: number): Promise<boolean> {
-    if (isMoAdmin(actor)) return true;
-    if (!isMoTL(actor)) return false;                       // employees are read-only
-    const scope = await assignableMemberIds(actor);
-    const { rows } = await pool.query(
-      `SELECT p.owner_id, p.created_by,
-              COALESCE(ARRAY(SELECT a.user_id FROM mo_project_assignments a
-                              WHERE a.project_id=p.id AND a.removed_at IS NULL), '{}') AS crew
-         FROM mo_projects p WHERE p.id=$1`, [projectId]);
-    if (!rows[0]) return false;
-    const people = [String(rows[0].owner_id), String(rows[0].created_by), ...(rows[0].crew as string[]).map(String)];
-    // The project belongs to this lead if they own it or anyone on it is theirs.
-    return people.some((id) => scope.has(id));
+    return isMoAdmin(actor) || await isTeamLeadOfProject(actor, projectId);
   }
 
   app.patch(`${P}/deliverables/:id/due-date`, asyncHandler(async (req, res) => {
@@ -1648,6 +1794,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   app.post(`${P}/deliverables/:id/versions`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
+    const d = (await pool.query(`SELECT * FROM mo_deliverables WHERE id=$1 AND deleted_at IS NULL`, [id])).rows[0];
+    if (!d) return sendError(res, 404, "Deliverable not found.");
+    /* The work is submitted by the person doing it — or by the project's lead
+       or an Admin acting for them. Anybody else pushing a version into a
+       colleague's deliverable could put it in front of a reviewer, and make a
+       reviewer who owns it look eligible to approve it. */
+    if (!(String(d.owner_id ?? "") === u.id || await canReviewProject(u, Number(d.project_id))))
+      return sendError(res, 403, "Only the deliverable's owner, the project's Team Lead or an Admin may submit a version.");
     const url = String((req.body as Record<string, unknown>).drive_url ?? "").trim();
     if (!/^https:\/\/(drive|docs)\.google\.com\//.test(url)) return sendError(res, 400, "VR-4: must be a Google Drive/Docs link.");
     const last = await pool.query(`SELECT COALESCE(MAX(version_no),0) AS n FROM mo_deliverable_versions WHERE deliverable_id=$1`, [id]);
@@ -1658,38 +1812,79 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       [id, next, url, String((req.body as Record<string, unknown>).note ?? ""), u.id]);
     await pool.query(`UPDATE mo_deliverables SET status='in_review' WHERE id=$1`, [id]);
     await audit(u, "deliverable.version_submitted", "deliverable_version", ins.rows[0].id, null, { version_no: next }, req);
+    // The project's reviewer hears about it — one person, not every Team Lead.
+    for (const rid of await reviewerIdsFor(Number(d.project_id)))
+      if (rid !== u.id)
+        await pool.query(
+          `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+           VALUES ($1,'review',$2,$3,'deliverable',$4)`,
+          [rid, "Version submitted for review",
+            `${u.full_name ?? "A crew member"} submitted v${next} of “${d.title}”.`, id]).catch(() => {});
     res.status(201).json({ version: ins.rows[0] });
   }));
 
-  // Review latest version — BR-5: a version cannot be approved by its submitter.
+  /* ── THE review ────────────────────────────────────────────────────────────
+     One implementation of the reviewer's verdict on a deliverable's latest
+     version, behind both POST /review (the drawer) and the board's /status
+     drag. Before this there were two, with different rules: the board could
+     approve with no version at all, never queued dispatch, and only checked
+     who submitted the latest version — so an owner became eligible to approve
+     their own deliverable the moment somebody else pushed a version into it.
+
+       · reviewer: the project's Team Lead or an Admin — never another team's;
+       · never the deliverable's owner, and never the version's submitter
+         (Admins included: nobody signs off their own work);
+       · approving needs a version waiting for review; changes can be asked for
+         on a pending version or on one already approved (sent back);
+       · approval queues the deliverable for dispatch; changes pull it out. */
+  async function reviewDeliverable(u: CurrentUser, d: Record<string, unknown>, outcome: "approved" | "changes_requested",
+                                   comment: string, req: express.Request): Promise<{ status: number; message?: string }> {
+    if (!(await canReviewProject(u, Number(d.project_id))))
+      return { status: 403, message: "Only the project's Team Lead or an Admin may review this deliverable." };
+    if (String(d.owner_id ?? "") === u.id)
+      return { status: 403, message: "BR-5: you cannot review a deliverable you own." };
+    const v = (await pool.query(
+      `SELECT * FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [d.id])).rows[0];
+    if (!v) return { status: 400, message: "No version to review — the owner submits one first." };
+    if (v.submitted_by === u.id) return { status: 403, message: "BR-5: a version cannot be reviewed by its submitter." };
+    if (outcome === "approved" && v.review_status !== "pending")
+      return { status: 400, message: "There is no version waiting for review." };
+    await pool.query(`UPDATE mo_deliverable_versions SET review_status=$1, reviewed_by=$2, reviewed_at=NOW(), review_comment=$3 WHERE id=$4`,
+      [outcome, u.id, comment, v.id]);
+    await pool.query(`UPDATE mo_deliverables SET status=$1, updated_at=NOW() WHERE id=$2`, [outcome, d.id]);
+    // Approval is the creative verdict; it also hands the item to Operations.
+    if (outcome === "approved")
+      await pool.query(
+        `UPDATE mo_deliverables SET dispatch_status='queued', queued_at=NOW()
+          WHERE id=$1 AND dispatch_status='none'`, [d.id]);
+    // Changes requested on something already queued pulls it back out.
+    if (outcome === "changes_requested")
+      await pool.query(
+        `UPDATE mo_deliverables SET dispatch_status='none', queued_at=NULL
+          WHERE id=$1 AND dispatch_status='queued'`, [d.id]);
+    await audit(u, "deliverable.version_reviewed", "deliverable_version", v.id,
+      { review_status: v.review_status }, { review_status: outcome }, req);
+    if (d.owner_id && String(d.owner_id) !== u.id)
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'review',$2,$3,'deliverable',$4)`,
+        [d.owner_id, outcome === "approved" ? `Approved: ${d.title}` : `Changes requested on ${d.title}`,
+          `${u.full_name ?? "Your Team Lead"} ${outcome === "approved" ? "approved" : "asked for changes to"} v${v.version_no}.${comment ? " " + comment : ""}`,
+          d.id]).catch(() => {});
+    return { status: 200 };
+  }
+
+  // Review latest version — the drawer's Approve / Request changes.
   app.post(`${P}/deliverables/:id/review`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
     const outcome = String((req.body as Record<string, unknown>).outcome ?? ""); // 'approved' | 'changes_requested'
     const comment = String((req.body as Record<string, unknown>).comment ?? "");
-    const v = await pool.query(`SELECT * FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [id]);
-    if (!v.rows[0]) return sendError(res, 400, "No version to review.");
-    if (v.rows[0].submitted_by === u.id) return sendError(res, 403, "BR-5: a version cannot be reviewed by its submitter.");
-    const isPM = await pool.query(`SELECT 1 FROM mo_project_assignments a JOIN mo_deliverables d ON d.project_id=a.project_id
-      WHERE d.id=$1 AND a.user_id=$2 AND a.is_project_manager AND a.removed_at IS NULL`, [id, u.id]);
-    if (!(isMoAdmin(u) || isMoTL(u) || isPM.rows[0])) return sendError(res, 403, "BR-5: reviewer must be PM, Team Lead or Admin.");
-    if (!["approved", "changes_requested"].includes(outcome)) return sendError(res, 400, "Invalid outcome.");
-    await pool.query(`UPDATE mo_deliverable_versions SET review_status=$1, reviewed_by=$2, reviewed_at=NOW(), review_comment=$3 WHERE id=$4`,
-      [outcome, u.id, comment, v.rows[0].id]);
-    await pool.query(`UPDATE mo_deliverables SET status=$1 WHERE id=$2`, [outcome, id]);
-    // Approval is the creative verdict; it also hands the item to Operations.
-    // Queueing here is what makes "approved work appears in Ready for Dispatch"
-    // automatic — the coordinator never has to notice an approval happened.
-    if (outcome === "approved")
-      await pool.query(
-        `UPDATE mo_deliverables SET dispatch_status='queued', queued_at=NOW()
-          WHERE id=$1 AND dispatch_status='none'`, [id]);
-    // Changes requested on something already queued pulls it back out.
-    if (outcome === "changes_requested")
-      await pool.query(
-        `UPDATE mo_deliverables SET dispatch_status='none', queued_at=NULL
-          WHERE id=$1 AND dispatch_status='queued'`, [id]);
-    await audit(u, "deliverable.version_reviewed", "deliverable_version", v.rows[0].id, { review_status: "pending" }, { review_status: outcome }, req);
+    const d = (await pool.query(`SELECT * FROM mo_deliverables WHERE id=$1`, [id])).rows[0];
+    if (!d) return sendError(res, 404, "Deliverable not found.");
+    if (outcome !== "approved" && outcome !== "changes_requested") return sendError(res, 400, "Invalid outcome.");
+    const r = await reviewDeliverable(u, d, outcome, comment, req);
+    if (r.status !== 200) return sendError(res, r.status, r.message ?? "");
     res.json({ ok: true, status: outcome });
   }));
 
@@ -1699,6 +1894,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const id = parseInt(getSingleParam(req.params.id), 10);
     const d = await pool.query(`SELECT d.*, dt.review_exempt FROM mo_deliverables d JOIN mo_deliverable_types dt ON dt.id=d.deliverable_type_id WHERE d.id=$1`, [id]);
     if (!d.rows[0]) return sendError(res, 404, "Deliverable not found.");
+    if (!(String(d.rows[0].owner_id ?? "") === u.id || await canReviewProject(u, Number(d.rows[0].project_id))))
+      return sendError(res, 403, "Only the deliverable's owner, the project's Team Lead or an Admin may mark it delivered.");
     if (!d.rows[0].review_exempt) {
       const v = await pool.query(`SELECT review_status FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [id]);
       if (v.rows[0]?.review_status !== "approved") return sendError(res, 400, "BR-6: Delivered requires an approved latest version.");
@@ -1946,12 +2143,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const wt = (await pool.query(`SELECT * FROM mo_work_types WHERE id=$1`, [Number(b.work_type_id)])).rows[0];
     if (!wt) return sendError(res, 400, "Unknown work type.");
     if (!wt.is_active || wt.archived_at) return sendError(res, 400, "That work type is archived or disabled — pick an active one.");
-    // Both templates need assign rights; shoots additionally allow the PM.
-    const isPMrow = (await pool.query(
-      `SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND is_project_manager AND removed_at IS NULL`,
-      [pid, u.id])).rows[0];
-    if (!(isMoAdmin(u) || isMoTL(u) || isPMrow))
-      return sendError(res, 403, "Only a PM, Team Lead or Admin may assign work.");
+    // Assigning work is running the project: its lead, its owner/PM, or Admin.
+    if (!(await canManageProject(u, pid)))
+      return sendError(res, 403, "Only the project's Team Lead, PM or an Admin may assign work.");
 
     if (wt.form_template === "shoot") {
       if (!String(b.title ?? "").trim()) return sendError(res, 400, "Title is required.");
@@ -2019,11 +2213,18 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // POST /projects/:id/shoots endpoint was the second, divergent creation path
   // (no work type, no assignable-crew check, no attribution) and is gone.
 
-  // A2 — soft-delete a shoot (BR-13). TL/Admin.
+  /** A shoot is project work: Admin, or the lead of the project it belongs to. */
+  async function leadsShootProject(actor: CurrentUser, shootId: number): Promise<boolean> {
+    if (isMoAdmin(actor)) return true;
+    const s = (await pool.query(`SELECT project_id FROM mo_shoots WHERE id=$1`, [shootId])).rows[0];
+    return !!s && await isTeamLeadOfProject(actor, Number(s.project_id));
+  }
+
+  // A2 — soft-delete a shoot (BR-13). The project's lead or Admin.
   app.delete(`${P}/shoots/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may delete a shoot.");
     const id = parseInt(getSingleParam(req.params.id), 10);
+    if (!(await leadsShootProject(u, id))) return sendError(res, 403, "Only the project's Team Lead or an Admin may delete a shoot.");
     await pool.query(`UPDATE mo_shoots SET deleted_at=NOW(), status='cancelled' WHERE id=$1`, [id]);
     await audit(u, "shoot.deleted", "shoot", id, null, null, req);
     res.json({ ok: true });
@@ -2031,8 +2232,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   app.patch(`${P}/shoots/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may edit a shoot.");
     const id = parseInt(getSingleParam(req.params.id), 10);
+    if (!(await leadsShootProject(u, id))) return sendError(res, 403, "Only the project's Team Lead or an Admin may edit a shoot.");
     const b = req.body as Record<string, unknown>;
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
     for (const k of ["title", "shoot_date", "call_time", "end_time", "location", "notes", "status"])
@@ -4679,6 +4880,344 @@ async function allocateInternalCode(
     res.json({ revoked: gone, remaining_active: remaining, no_custodian: remaining === 0 });
   }));
 
+  /* ═══ EQUIPMENT → PERMISSIONS: EVERY EQUIPMENT GRANT, ONE SCREEN ══════════
+     The Equipment page's Permissions popup. Before it, "make Niraj the PID
+     custodian" meant Settings → Admin → Lookups → Inventory Scopes for the
+     inventory, the scope's Custodians tab for the assignment, and Team → Duty
+     flags for the duty — three screens, each organised differently, any of
+     which could be forgotten.
+
+     NOTHING NEW IS AUTHORISED HERE. These endpoints read and write exactly the
+     rows the gates already read:
+
+       mo_inventory_scopes             the inventories themselves
+       mo_user_inventory_scopes        who holds which inventory (soft-removed)
+       mo_user_duties                  the one equipment_custodian duty
+       mo_user_profiles.allowed_modules  Equipment and Kiosk module access
+
+     and every per-person change goes through planEquipmentAccess(), the same
+     rules PATCH /crew/:id/equipment-access applies. The gate on an actual asset
+     is still requireEquipment() + canManageEquipment() + assetScopeOk().
+
+     ADMIN ONLY, on the server, for the same reason as the per-person panel:
+     holding the custodian duty must not let you appoint a custodian.
+
+     REGISTERED BEFORE /equipment/:id, which would otherwise read "permissions"
+     and "inventories" as an asset id. */
+
+  /** The whole picture the popup draws: inventories, people, recent changes. */
+  async function equipmentPermissionsModel() {
+    const duty = await custodianDuty();
+    const [scopes, holders, dutyRows, crew, history] = await Promise.all([
+      pool.query(
+        `SELECT s.id, s.code, s.name, s.code_prefix, s.lends_to_students, s.is_active, s.archived_at,
+                (SELECT COUNT(*)::int FROM mo_equipment_items i
+                  WHERE i.scope_id = s.id AND i.deleted_at IS NULL AND i.retired_at IS NULL) AS assets,
+                EXISTS (SELECT 1 FROM mo_equipment_items i
+                         WHERE i.scope_id = s.id AND i.internal_code IS NOT NULL) AS codes_issued
+           FROM mo_inventory_scopes s
+          ORDER BY (s.is_active AND s.archived_at IS NULL) DESC, s.name`),
+      pool.query(
+        `SELECT a.scope_id, a.user_id, a.granted_at, gb.full_name AS granted_by_name
+           FROM mo_user_inventory_scopes a
+           LEFT JOIN users gb ON gb.id = a.granted_by
+          WHERE a.removed_at IS NULL
+          ORDER BY a.granted_at`),
+      pool.query(`SELECT user_id FROM mo_user_duties WHERE duty_flag_id=$1`, [duty.id]),
+      pool.query(
+        `SELECT u.id, u.full_name, u.email, u.role, u.team, COALESCE(u.status,'active') AS status,
+                p.allowed_modules, p.mo_role
+           FROM users u LEFT JOIN mo_user_profiles p ON p.user_id = u.id
+          WHERE u.team = 'media'
+          ORDER BY u.full_name`),
+      /* What changed, by whom, to whom. Read from the trail the endpoints
+         already write, so there is no second log to keep in step. The
+         occurred_at index serves the ORDER BY and stops after forty matches. */
+      pool.query(
+        `SELECT a.id, a.action, a.occurred_at, a.before, a.after, a.entity_type, a.entity_id, a.entity_uid,
+                ac.full_name AS actor_name, su.full_name AS subject_name, sc.name AS scope_name
+           FROM mo_audit_logs a
+           LEFT JOIN users ac ON ac.id = a.actor_id
+           LEFT JOIN users su ON su.id = a.entity_uid
+           LEFT JOIN mo_inventory_scopes sc ON a.entity_type = 'inventory_scopes' AND sc.id = a.entity_id
+          WHERE a.action = 'crew.equipment_access_changed'
+             OR a.entity_type = 'inventory_scopes'
+             OR (a.action IN ('user.duty_granted','user.duty_revoked') AND a.after->>'duty' = $1)
+          ORDER BY a.occurred_at DESC, a.id DESC
+          LIMIT 40`, [String(duty.id)]),
+    ]);
+
+    const custodians = new Set(dutyRows.rows.map((r) => String(r.user_id)));
+    const byScope = new Map<number, typeof holders.rows>();
+    const byUser = new Map<string, number[]>();
+    for (const h of holders.rows) {
+      const sid = Number(h.scope_id), uid = String(h.user_id);
+      byScope.set(sid, [...(byScope.get(sid) ?? []), h]);
+      byUser.set(uid, [...(byUser.get(uid) ?? []), sid]);
+    }
+
+    /* effectiveModules() is the one rule for "which modules does this person
+       reach"; calling it per person keeps it the one rule. A crew is tens of
+       people, and this is an Admin's popup, not a hot path. */
+    const people = (await Promise.all(crew.rows.map(async (r) => {
+      const asUser = { id: String(r.id), role: String(r.role), team: r.team ?? null } as CurrentUser;
+      const effective = await effectiveModules(asUser);
+      const id = String(r.id);
+      return {
+        id, full_name: r.full_name, email: r.email, role: r.role, mo_role: r.mo_role ?? null,
+        tier: moRoleOf(asUser), status: r.status,
+        /* An Admin reaches every module and every inventory by role. Their row
+           is shown so the picture is complete, and the popup does not offer
+           to edit what cannot take effect. */
+        is_admin: isMoAdmin(asUser),
+        modules_role_based: r.allowed_modules == null,
+        equipment: effective.includes(EQUIP_MODULE),
+        kiosk: effective.includes(KIOSK_MODULE),
+        custodian: custodians.has(id),
+        inventory_ids: byUser.get(id) ?? [],
+      };
+    })))
+      /* A removed member is listed only while they still hold something, so
+         offboarding can finish here; otherwise they are history, not crew. */
+      .filter((p) => p.status === "active" || p.custodian || p.inventory_ids.length);
+
+    const nameOf = new Map(crew.rows.map((r) => [String(r.id), String(r.full_name)]));
+    const statusOf = new Map(crew.rows.map((r) => [String(r.id), String(r.status)]));
+    return {
+      duty: { id: Number(duty.id), code: duty.code, name: duty.name, description: duty.description },
+      inventories: scopes.rows.map((s) => ({
+        id: Number(s.id), code: s.code, name: s.name, code_prefix: s.code_prefix,
+        lends_to_students: !!s.lends_to_students,
+        state: s.archived_at ? "archived" : s.is_active ? "active" : "disabled",
+        assets: Number(s.assets), codes_issued: !!s.codes_issued,
+        holders: (byScope.get(Number(s.id)) ?? []).map((h) => ({
+          user_id: String(h.user_id),
+          full_name: nameOf.get(String(h.user_id)) ?? String(h.user_id),
+          status: statusOf.get(String(h.user_id)) ?? "unknown",
+          /* The intersection that makes a custodian: this assignment AND the
+             duty. Without the duty they can see the inventory, not act on it. */
+          custodian: custodians.has(String(h.user_id)),
+          granted_at: h.granted_at, granted_by_name: h.granted_by_name ?? null,
+        })),
+      })),
+      people,
+      history: history.rows,
+    };
+  }
+
+  app.get(`${P}/equipment/permissions`, asyncHandler(async (_req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may view equipment permissions.");
+    res.json(await equipmentPermissionsModel());
+  }));
+
+  /* Save the matrix: many people, one transaction, all or nothing.
+
+     Body: { changes: [{ user_id, module_enabled?, kiosk_enabled?,
+                         equipment_custodian?, grant_inventory_ids?,
+                         revoke_inventory_ids? }] }
+
+     Inventories travel as a DELTA, not a list: the matrix knows which boxes the
+     Admin ticked, and a whole list computed from what the popup loaded would
+     silently undo an inventory another Admin granted in the meantime.
+
+     Every person is PLANNED before anything is written. One refusal refuses
+     the save and names the person, so the Admin never has to discover which
+     half of their changes landed. */
+  app.patch(`${P}/equipment/permissions`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may change equipment permissions.");
+    const raw = ((req.body ?? {}) as Record<string, unknown>).changes;
+    if (!Array.isArray(raw) || !raw.length) return sendError(res, 400, "Nothing to change.");
+    if (raw.length > 200) return sendError(res, 400, "Too many people in one save. Save in smaller batches.");
+    const changes = raw.map((c) => (c && typeof c === "object" ? c : {}) as Record<string, unknown>);
+    const ids = changes.map((c) => String(c.user_id ?? "").trim());
+    if (ids.some((x) => !x)) return sendError(res, 400, "Every change must name a person.");
+    if (new Set(ids).size !== ids.length) return sendError(res, 400, "A person appears twice in one save.");
+
+    const found = (await pool.query(
+      `SELECT id, full_name, email, role, team, COALESCE(status,'active') AS status
+         FROM users WHERE id = ANY($1::text[]) AND team = 'media'`, [ids])).rows;
+    const targets = new Map(found.map((t) => [String(t.id), t as AccessTarget]));
+    if (ids.some((x) => !targets.has(x))) return sendError(res, 404, "That member is not on the Media crew.");
+
+    const live = await liveInventoryIds();
+    const plans: AccessPlan[] = [];
+    for (let i = 0; i < changes.length; i++) {
+      const t = targets.get(ids[i])!;
+      const want = accessWantOf(changes[i]);
+      /* The matrix sends deltas only; a whole list belongs to the per-person
+         endpoint, which is the one place it means "exactly these". */
+      want.scopes = null;
+      if (wantIsEmpty(want)) continue;
+      const r = await planEquipmentAccess(u, t, want, live);
+      if ("status" in r) return sendError(res, r.status, `${t.full_name}: ${r.message}`);
+      if (!planIsNoop(r.plan)) plans.push(r.plan);
+    }
+
+    if (plans.length) {
+      /* ── ONE TRANSACTION (§7) for the whole save. Audit after release. */
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        for (const p of plans) await applyEquipmentAccess(client, u, p);
+        await client.query("COMMIT");
+      } catch (e) {
+        await client.query("ROLLBACK").catch(() => {});
+        client.release();
+        throw e;
+      }
+      client.release();
+      for (const p of plans)
+        await audit(u, "crew.equipment_access_changed", "user", null,
+                    accessShape(p.before), accessShape(await equipmentAccessOf(p.target)), req, p.target.id);
+    }
+    res.json({ applied: plans.length, ...(await equipmentPermissionsModel()) });
+  }));
+
+  /* ── The inventories themselves ──────────────────────────────────────────
+     Created and edited here rather than through the generic config engine,
+     because two of an inventory's settings — the asset-code prefix and whether
+     it lends to students — are not reference data, and the engine could not
+     express the rule that matters most about the prefix: once a label has been
+     printed with it, it cannot change.
+
+     The audit rows use entity_type 'inventory_scopes', the key the engine and
+     the custodian endpoints already write, so an inventory has ONE history. */
+  const INV_CODE_RE = /^[a-z0-9][a-z0-9_-]{1,39}$/;
+  const INV_PREFIX_RE = /^[A-Z][A-Z0-9]{1,7}$/;
+  const INV_PREFIX_MSG =
+    "The asset code prefix must be 2–8 capital letters or digits, starting with a letter — MC or PID, for example.";
+  const invPrefixOf = (v: unknown) => (v == null || String(v).trim() === "" ? null : String(v).trim().toUpperCase());
+  const invPublic = (r: Record<string, unknown>) => ({
+    name: r.name, code: r.code, code_prefix: r.code_prefix ?? null,
+    lends_to_students: !!r.lends_to_students, is_active: !!r.is_active, archived: r.archived_at != null,
+  });
+  /** A name another LIVE inventory already uses, compared the way people read it. */
+  async function inventoryNameTaken(name: string, exceptId: number | null) {
+    return (await pool.query(
+      `SELECT 1 FROM mo_inventory_scopes
+        WHERE lower(name) = lower($1) AND archived_at IS NULL AND ($2::bigint IS NULL OR id <> $2)`,
+      [name, exceptId])).rows.length > 0;
+  }
+  const inventoryClash = (e: unknown, prefix: string | null, code: string) =>
+    (e as { constraint?: string }).constraint === "uq_mo_scope_prefix"
+      ? `Another inventory already uses the prefix ${prefix}.`
+      : `Another inventory already uses the code ${code}.`;
+
+  app.post(`${P}/equipment/inventories`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may create an inventory.");
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const name = String(b.name ?? "").trim();
+    if (!name) return sendError(res, 400, "An inventory needs a name.");
+    if (name.length > 80) return sendError(res, 400, "Keep the name under 80 characters.");
+    /* `code` is the machine identifier filters and imports resolve by. It is
+       derived from the name unless given, and it never changes afterwards. */
+    const code = (b.code != null && String(b.code).trim() !== ""
+      ? String(b.code).trim().toLowerCase()
+      : name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40));
+    if (!INV_CODE_RE.test(code))
+      return sendError(res, 400, "The code may use lower-case letters, digits, - and _, 2 to 40 characters.");
+    const prefix = invPrefixOf(b.code_prefix);
+    if (prefix && !INV_PREFIX_RE.test(prefix)) return sendError(res, 400, INV_PREFIX_MSG);
+    if (b.lends_to_students != null && typeof b.lends_to_students !== "boolean")
+      return sendError(res, 400, "lends_to_students must be true or false.");
+    if (await inventoryNameTaken(name, null))
+      return sendError(res, 409, `An inventory called "${name}" already exists.`);
+
+    let row;
+    try {
+      row = (await pool.query(
+        `INSERT INTO mo_inventory_scopes (name, code, code_prefix, lends_to_students, created_by)
+         VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+        [name, code, prefix, b.lends_to_students === true, u.id])).rows[0];
+    } catch (e) {
+      if ((e as { code?: string }).code === "23505") return sendError(res, 409, inventoryClash(e, prefix, code));
+      throw e;
+    }
+    await audit(u, "inventory_scope.created", "inventory_scopes", Number(row.id), null, invPublic(row), req);
+    res.status(201).json({ inventory: { id: Number(row.id), ...invPublic(row) } });
+  }));
+
+  /* Rename, set the prefix, open or close it to students, archive or restore.
+     The code is not editable: it is what saved filters and imports name. */
+  app.patch(`${P}/equipment/inventories/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may change an inventory.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    if (!id) return sendError(res, 400, "An inventory id is required.");
+    const cur = (await pool.query(`SELECT * FROM mo_inventory_scopes WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Inventory not found.");
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    const set = (col: string, v: unknown) => { vals.push(v); sets.push(`${col}=$${vals.length}`); };
+
+    if (b.name !== undefined) {
+      const name = String(b.name ?? "").trim();
+      if (!name) return sendError(res, 400, "An inventory needs a name.");
+      if (name.length > 80) return sendError(res, 400, "Keep the name under 80 characters.");
+      if (name !== cur.name) {
+        if (await inventoryNameTaken(name, id))
+          return sendError(res, 409, `An inventory called "${name}" already exists.`);
+        set("name", name);
+      }
+    }
+    if (b.code_prefix !== undefined) {
+      const prefix = invPrefixOf(b.code_prefix);
+      if (prefix && !INV_PREFIX_RE.test(prefix)) return sendError(res, 400, INV_PREFIX_MSG);
+      if (prefix !== (cur.code_prefix ?? null)) {
+        /* A PRINTED LABEL OUTLIVES A SETTING. allocateInternalCode() numbers
+           from the highest code carrying the CURRENT prefix, so changing it
+           after MC-0045 exists would start a second series beside labels
+           already stuck on cameras. Refused, with the reason. */
+        const issued = (await pool.query(
+          `SELECT internal_code FROM mo_equipment_items
+            WHERE scope_id=$1 AND internal_code IS NOT NULL LIMIT 1`, [id])).rows[0];
+        if (issued)
+          return sendError(res, 409,
+            `Asset codes such as ${issued.internal_code} have already been issued in this inventory, so its prefix can no longer change.`);
+        set("code_prefix", prefix);
+      }
+    }
+    if (b.lends_to_students !== undefined) {
+      if (typeof b.lends_to_students !== "boolean")
+        return sendError(res, 400, "lends_to_students must be true or false.");
+      if (b.lends_to_students !== !!cur.lends_to_students) set("lends_to_students", b.lends_to_students);
+    }
+    if (b.is_active !== undefined) {
+      if (typeof b.is_active !== "boolean") return sendError(res, 400, "is_active must be true or false.");
+      if (b.is_active !== !!cur.is_active) set("is_active", b.is_active);
+    }
+    let lifecycle: "archived" | "restored" | null = null;
+    if (b.archived !== undefined) {
+      if (typeof b.archived !== "boolean") return sendError(res, 400, "archived must be true or false.");
+      if (b.archived && cur.archived_at == null) { sets.push("archived_at=NOW()"); lifecycle = "archived"; }
+      if (!b.archived && cur.archived_at != null) {
+        /* Restoring brings the name back into the live set, where it must be unique. */
+        if (await inventoryNameTaken(String(cur.name), id))
+          return sendError(res, 409, `Another live inventory is already called "${cur.name}". Rename one first.`);
+        sets.push("archived_at=NULL"); lifecycle = "restored";
+      }
+    }
+    if (!sets.length) return res.json({ inventory: { id, ...invPublic(cur) }, changed: false });
+
+    let row;
+    try {
+      row = (await pool.query(
+        `UPDATE mo_inventory_scopes SET ${sets.join(", ")}, updated_at=NOW()
+          WHERE id=$${vals.length + 1} RETURNING *`, [...vals, id])).rows[0];
+    } catch (e) {
+      if ((e as { code?: string }).code === "23505")
+        return sendError(res, 409, inventoryClash(e, invPrefixOf(b.code_prefix), String(cur.code)));
+      throw e;
+    }
+    await audit(u, lifecycle ? `inventory_scope.${lifecycle}` : "inventory_scope.updated",
+                "inventory_scopes", id, invPublic(cur), invPublic(row), req);
+    res.json({ inventory: { id, ...invPublic(row) }, changed: true });
+  }));
+
   /* ── Verification (Phase 17D) ───────────────────────────────────────────
      Whether an asset RECORD has been reviewed and accepted. It answers nothing
      about where the asset is: a camera can be pending verification and checked
@@ -6332,6 +6871,9 @@ async function allocateInternalCode(
     if (q.to && !to) return sendError(res, 400, "to must be a date, as YYYY-MM-DD.");
     if (from && to && to < from) return sendError(res, 400, "to must be on or after from.");
     const clause = where.join(" AND ");
+    /* The coverage count is current state and names no date, so it is handed
+       only the scope parameters: an unreferenced $n fails the whole read. */
+    const scopeParams = params.slice();
     const pFrom = from ? bind(from) : null, pTo = to ? bind(to) : null;
 
     /* ── 1. AVERAGE LOAN DURATION ────────────────────────────────────────
@@ -6468,7 +7010,7 @@ async function allocateInternalCode(
               COUNT(*) FILTER (WHERE EXISTS (
                 SELECT 1 FROM mo_asset_inspections s WHERE s.equipment_item_id = i.id))::int
                                                                                 AS ever_inspected
-         FROM mo_equipment_items i WHERE ${clause}`, params)).rows[0];
+         FROM mo_equipment_items i WHERE ${clause}`, scopeParams)).rows[0];
 
     const num = (v: unknown) => v == null ? null : Number(v);
     res.json({
@@ -7611,7 +8153,7 @@ async function allocateInternalCode(
       anomalies: {
         over_hours: overHours.rows.map((r) => `${r.full_name} logged ${(r.total_minutes / 60).toFixed(1)}h on ${String(r.report_date).slice(0, 10)} (above the 14h threshold)`),
         blocked: blocked.rows.map((r) => `${r.full_name}: "${String(r.description).slice(0, 60)}"`),
-        stalls: stalls.rows.map((r) => `${r.name} (${r.code}) — no logged activity in 21 days (AUTO-7)`),
+        stalls: stalls.rows.map((r) => `${r.name}: no work logged in 21 days`),
       },
       positive: fast.rows.map((r) => `${r.title} iterated through ${r.versions} versions`),
     });
@@ -7916,18 +8458,17 @@ async function allocateInternalCode(
   }));
 
   // Deliverable status change (Production Board drag) — persists + enforces the
-  // machine, BR-5 (submitter≠approver, reviewer must be PM/TL/Admin) and BR-6.
-  // changes_requested→approved is allowed for a PM/TL/Admin (#4).
+  // machine. The two verdicts on the board (approved, changes requested) are
+  // not status edits: they ARE the review, so they go through reviewDeliverable()
+  // and obey exactly the rules the drawer does.
   app.post(`${P}/deliverables/:id/status`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
     const to = String((req.body as Record<string, unknown>).status ?? "");
     const d = (await pool.query(`SELECT d.*, dt.review_exempt FROM mo_deliverables d JOIN mo_deliverable_types dt ON dt.id=d.deliverable_type_id WHERE d.id=$1`, [id])).rows[0];
     if (!d) return sendError(res, 404, "Deliverable not found.");
-    // Lifecycle (PRD §3): Assigned → In Progress → Delivered → Approved (optional).
-    // The owner delivers, then a reviewer approves via approval_status — so
-    // in_progress → delivered is a first-class transition. The older
-    // review-then-deliver path (in_review → approved → delivered) still works.
+    // Lifecycle (PRD §3): Assigned → In Progress → Submitted → Approved → Delivered.
+    // A review-exempt type skips the review and is delivered straight from work.
     const DELIV: Record<string, string[]> = {
       not_started: ["in_progress", "delivered", "not_required", "cancelled"],
       in_progress: ["in_review", "delivered", "not_required", "cancelled"],
@@ -7938,18 +8479,26 @@ async function allocateInternalCode(
       not_required: ["not_started"], cancelled: ["not_started"],
     };
     if (!(DELIV[d.status] ?? []).includes(to)) return sendError(res, 400, `BR-1: ${d.status} → ${to} is not a valid transition.`);
-    const isPMrow = (await pool.query(
-      `SELECT 1 FROM mo_project_assignments a WHERE a.project_id=$1 AND a.user_id=$2 AND a.is_project_manager AND a.removed_at IS NULL`,
-      [d.project_id, u.id])).rows[0];
-    // §7: an employee may drive their OWN deliverable only.
-    if (!isMoAdmin(u) && !isMoTL(u) && !isPMrow && String(d.owner_id) !== u.id)
-      return sendError(res, 403, "You can only update deliverables assigned to you.");
-    // Admin has full override (no review mandate — #4). Everyone else obeys BR-5.
-    if (!isMoAdmin(u) && to === "approved") {
-      const v = (await pool.query(`SELECT submitted_by FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [id])).rows[0];
-      if (v && v.submitted_by === u.id) return sendError(res, 403, "BR-5: a version cannot be approved by its submitter.");
-      if (!(isMoTL(u) || isPMrow)) return sendError(res, 403, "BR-5: reviewer must be the PM, a Team Lead or Admin.");
+
+    if (to === "approved" || to === "changes_requested") {
+      const r = await reviewDeliverable(u, d, to, "", req);
+      if (r.status !== 200) return sendError(res, r.status, r.message ?? "");
+      return res.json({ ok: true, status: to });
     }
+    /* Delivered is reached through review: an approved deliverable is delivered,
+       and only a review-exempt type is delivered straight from work. This was
+       the road round the reviewer — mark your own work delivered, skip review. */
+    if (to === "delivered" && d.status !== "approved" && !d.review_exempt)
+      return sendError(res, 400, "Submit a version for review — only an approved deliverable can be delivered.");
+    // The owner drives their own execution; scope changes (not required,
+    // cancelled, and back) are the project's to make.
+    const isOwner = String(d.owner_id ?? "") === u.id;
+    const manages = await canManageProject(u, Number(d.project_id));
+    const ownerMoves = ["in_progress", "in_review", "delivered"];
+    if (!(manages || (isOwner && ownerMoves.includes(to))))
+      return sendError(res, 403, isOwner
+        ? "Only the project's Team Lead or PM may change this deliverable's scope."
+        : "You can only update deliverables assigned to you.");
     // Delivering stamps who/when and re-opens the approval gate for the reviewer.
     const delivering = to === "delivered";
     await pool.query(
@@ -7961,37 +8510,33 @@ async function allocateInternalCode(
        WHERE id=$4`, [to, delivering, u.id, id]);
     await audit(u, "deliverable.status_changed", "deliverable", id,
       { status: d.status }, { status: to, delivered_by: delivering ? u.id : undefined }, req);
-    // Tell the reviewers there is something to review.
-    if (delivering) {
-      const reviewers = (await pool.query(
-        `SELECT DISTINCT t.lead_user_id AS id FROM mo_team_members tm
-           JOIN mo_teams t ON t.id=tm.team_id
-          WHERE tm.user_id=$1 AND t.is_active AND t.lead_user_id IS NOT NULL AND t.lead_user_id <> $1`, [u.id])).rows;
-      for (const r of reviewers)
-        await pool.query(
-          `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
-           VALUES ($1,'review',$2,$3,'deliverable',$4)`,
-          [r.id, "Deliverable delivered — needs review",
-            `${u.full_name ?? "A crew member"} marked “${d.title}” as delivered.`, id]).catch(() => {});
-    }
+    // Tell the project's reviewer there is something to look at.
+    if (delivering)
+      for (const rid of await reviewerIdsFor(Number(d.project_id)))
+        if (rid !== u.id)
+          await pool.query(
+            `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+             VALUES ($1,'review',$2,$3,'deliverable',$4)`,
+            [rid, "Deliverable delivered — needs review",
+              `${u.full_name ?? "A crew member"} marked “${d.title}” as delivered.`, id]).catch(() => {});
     res.json({ ok: true, status: to });
   }));
 
   // ── Approve / request changes on a DELIVERED output (PRD §3, §6) ─────────
-  // Separate from the version-review machinery: this is the reviewer's verdict
-  // on the deliverable itself, and it is what the employee sees straight back.
+  // The reviewer's sign-off on work that has already been delivered — a
+  // review-exempt type, or an approved one handed over. It is not a second way
+  // to approve: on anything not yet delivered it refuses, and points at review.
   app.post(`${P}/deliverables/:id/approval`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
     const d = (await pool.query(`SELECT * FROM mo_deliverables WHERE id=$1`, [id])).rows[0];
     if (!d) return sendError(res, 404, "Deliverable not found.");
-    const isPMrow = (await pool.query(
-      `SELECT 1 FROM mo_project_assignments a WHERE a.project_id=$1 AND a.user_id=$2 AND a.is_project_manager AND a.removed_at IS NULL`,
-      [d.project_id, u.id])).rows[0];
-    if (!(isMoAdmin(u) || isMoTL(u) || isPMrow))
-      return sendError(res, 403, "Only a Team Lead, Admin or the project PM may approve deliverables.");
-    if (String(d.owner_id) === u.id && !isMoAdmin(u))
+    if (!(await canReviewProject(u, Number(d.project_id))))
+      return sendError(res, 403, "Only the project's Team Lead or an Admin may approve deliverables.");
+    if (String(d.owner_id) === u.id)
       return sendError(res, 403, "BR-5: you cannot approve your own deliverable.");
+    if (d.status !== "delivered")
+      return sendError(res, 400, "This deliverable has not been delivered — review its submitted version instead.");
     const to = String((req.body as Record<string, unknown>).approval_status ?? "");
     if (!["approved", "changes_requested", "rejected", "pending"].includes(to))
       return sendError(res, 400, "approval_status must be approved, changes_requested, rejected or pending.");
@@ -8003,6 +8548,11 @@ async function allocateInternalCode(
          status = CASE WHEN $3 THEN 'changes_requested' ELSE status END,
          updated_at = NOW()
        WHERE id=$4 RETURNING *`, [to, u.id, backToWork, id]);
+    // Sent back after delivery: it is no longer ready to hand over.
+    if (backToWork)
+      await pool.query(
+        `UPDATE mo_deliverables SET dispatch_status='none', queued_at=NULL
+          WHERE id=$1 AND dispatch_status='queued'`, [id]);
     await audit(u, "deliverable.approval_changed", "deliverable", id,
       { approval_status: d.approval_status, status: d.status },
       { approval_status: to, approved_by: u.id, approved_by_role: moRoleOf(u), note }, req);
@@ -8018,8 +8568,9 @@ async function allocateInternalCode(
   // Delete a project (soft) — #11. TL/Admin.
   app.delete(`${P}/projects/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may delete a project.");
     const id = parseInt(getSingleParam(req.params.id), 10);
+    if (!(isMoAdmin(u) || await isTeamLeadOfProject(u, id)))
+      return sendError(res, 403, "Only the project's Team Lead or an Admin may delete a project.");
     // G1: cascade the soft-delete so no orphans pollute the Library/Workload.
     await pool.query(`UPDATE mo_projects SET deleted_at=NOW() WHERE id=$1`, [id]);
     await pool.query(`UPDATE mo_deliverables SET deleted_at=NOW() WHERE project_id=$1 AND deleted_at IS NULL`, [id]);
@@ -8518,6 +9069,154 @@ async function allocateInternalCode(
     res.json({ ok, checked_at: new Date().toISOString() });
   }));
 
+  /* ── The photo itself ──────────────────────────────────────────────────────
+     Streamed from Google Drive THROUGH Nerve, so the browser needs neither a
+     Google session nor a public sharing link — the Drive stays private to the
+     Casting Manager. Who may look is exactly who may see the row: a request's
+     photo goes to whoever may work the queue, a record's to whoever may see the
+     record (the Preview rule for the crew, everything for the manager). A row
+     the caller may not see is a 404, not a 403, so nothing is confirmed. */
+  async function streamCastingPhoto(res: express.Response, fileId: string, mime: string | null): Promise<void> {
+    try {
+      const upstream = await openCastingPhoto(fileId);
+      res.status(200);
+      res.setHeader("Content-Type", mime && CASTING_PHOTO_MIME[mime] ? mime : "application/octet-stream");
+      res.setHeader("Content-Disposition", "inline");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Cache-Control", "private, max-age=300");
+      const len = upstream.headers.get("content-length");
+      if (len) res.setHeader("Content-Length", len);
+      if (!upstream.body) { res.end(); return; }
+      Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]).pipe(res);
+    } catch (err) {
+      if (err instanceof CastingPhotosNotConfiguredError) return sendError(res, 503, "Photo storage is not configured.");
+      console.error("Casting photo stream failed", err);
+      return sendError(res, 502, "The photo could not be fetched from Google Drive.");
+    }
+  }
+  app.get(`${P}/casting-requests/:id/photo`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await castingAdmin(res, u))) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const r = (await pool.query(`SELECT photo_file_id, photo_mime FROM mo_casting_requests WHERE id=$1`, [id])).rows[0];
+    if (!r) return sendError(res, 404, "Casting request not found.");
+    if (!r.photo_file_id) return sendError(res, 404, "This request has no uploaded photo.");
+    await streamCastingPhoto(res, String(r.photo_file_id), (r.photo_mime as string | null) ?? null);
+  }));
+  app.get(`${P}/casting/:id/photo`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const manage = await canManageCasting(u);
+    const r = (await pool.query(
+      `SELECT photo_file_id, photo_mime FROM mo_casting_records WHERE id=$1${manage ? "" : ` AND ${PREVIEW_WHERE}`}`,
+      [id])).rows[0];
+    if (!r) return sendError(res, 404, "Casting record not found.");
+    if (!r.photo_file_id) return sendError(res, 404, "This casting record has no uploaded photo.");
+    await streamCastingPhoto(res, String(r.photo_file_id), (r.photo_mime as string | null) ?? null);
+  }));
+
+  /* ── Google Drive for casting photos — the Admin's button ──────────────────
+     One Drive for the whole intake, connected by signing in with Google from
+     Casting Management. Admin only (not the Casting Manager duty): this is a
+     credential for an outside account, and whoever holds it can see every
+     applicant photo. Everything that talks to Google lives in casting-drive.ts;
+     these routes only decide who may ask, and what the popup is told. */
+  const driveAdmin = async (res: express.Response, u: CurrentUser): Promise<boolean> => {
+    if (isMoAdmin(u)) return true;
+    sendError(res, 403, "Only an Admin may configure Google Drive for casting.");
+    return false;
+  };
+  const driveFailed = (res: express.Response, err: unknown) => {
+    if (err instanceof CastingDriveError) return sendError(res, err.status, err.message);
+    console.error("Casting Drive operation failed", err);
+    return sendError(res, 502, "Google Drive did not answer. Please try again.");
+  };
+  const driveStatusFor = async () => ({ ...(await castingDriveStatus()), source: await castingPhotoSource() });
+
+  app.get(`${P}/casting-drive`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await driveAdmin(res, u))) return;
+    res.json(await driveStatusFor());
+  }));
+  app.post(`${P}/casting-drive/client`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await driveAdmin(res, u))) return;
+    const b = req.body as Record<string, unknown>;
+    const id = String(b.client_id ?? "").trim(), secret = String(b.client_secret ?? "").trim();
+    if (!/^[\w.-]+\.apps\.googleusercontent\.com$/.test(id))
+      return sendError(res, 400, "That does not look like a Google OAuth client id (it ends in .apps.googleusercontent.com).");
+    if (secret.length < 8) return sendError(res, 400, "Paste the OAuth client secret as well.");
+    await saveCastingDriveClient(id, secret);
+    resetCastingPhotoClient();
+    await audit(u, "casting_drive.client_saved", "casting_drive", 1, null, { client_id: id }, req);
+    res.json(await driveStatusFor());
+  }));
+  app.post(`${P}/casting-drive/connect`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await driveAdmin(res, u))) return;
+    try { res.json({ url: await castingDriveAuthUrl(u.id) }); }
+    catch (err) { driveFailed(res, err); }
+  }));
+  /* Google sends the Admin's browser here, in the popup the dialog opened. The
+     answer is a small page that tells the opener what happened and closes;
+     nothing about the token ever reaches the browser. */
+  const htmlEsc = (v: string) => v.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
+  const drivePopup = (ok: boolean, message: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Google Drive — NERVE Media Ops</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#F7F9FC;color:#0F172A;font:15px/1.5 system-ui,sans-serif}
+.c{background:#fff;border:1px solid #E3E9F2;border-radius:12px;padding:26px 28px;max-width:440px;text-align:center}
+h1{font-size:18px;margin:0 0 8px}p{margin:0;color:#475569;font-size:14px}.ok{color:#15803D}.bad{color:#B91C1C}</style></head>
+<body><div class="c"><h1 class="${ok ? "ok" : "bad"}">${ok ? "Google Drive connected" : "Google Drive was not connected"}</h1>
+<p>${htmlEsc(message)}</p><p style="margin-top:14px">You can close this window.</p></div>
+<script>try{if(window.opener)window.opener.postMessage({type:'nerve-casting-drive',ok:${ok ? "true" : "false"},message:${JSON.stringify(message)}},'*');}catch(e){}
+${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></html>`;
+  app.get(`${P}/casting-drive/callback`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return void res.status(403).type("html").send(drivePopup(false, "Only an Admin may connect Google Drive."));
+    const q = req.query as Record<string, string | undefined>;
+    if (q.error) return void res.status(400).type("html").send(drivePopup(false, q.error === "access_denied"
+      ? "You cancelled the Google sign-in, or did not allow access to Drive." : `Google reported: ${q.error}`));
+    if (!q.code || !q.state || !verifyDriveState(String(q.state), u.id))
+      return void res.status(400).type("html").send(drivePopup(false, "This sign-in link is not valid or has expired. Close this window and press Connect again."));
+    try {
+      const out = await completeCastingDriveConnect(String(q.code), u.id);
+      resetCastingPhotoClient();
+      await audit(u, "casting_drive.connected", "casting_drive", 1, null, { account: out.email, folder: out.folder.name }, req);
+      res.type("html").send(drivePopup(true, `${out.email ? out.email + " — " : ""}photos will be saved to “${out.folder.name}”.`));
+    } catch (err) {
+      console.error("Casting Drive connect failed", err);
+      res.status(err instanceof CastingDriveError ? err.status : 502).type("html")
+        .send(drivePopup(false, err instanceof CastingDriveError ? err.message : "Google Drive did not answer. Please try again."));
+    }
+  }));
+  app.post(`${P}/casting-drive/folder`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await driveAdmin(res, u))) return;
+    const b = req.body as Record<string, unknown>;
+    try {
+      const folder = b.create !== undefined
+        ? await createCastingDriveFolder(String(b.create ?? ""))
+        : await useCastingDriveFolder(String(b.folder ?? ""));
+      resetCastingPhotoClient();
+      await audit(u, "casting_drive.folder_changed", "casting_drive", 1, null, { folder_id: folder.id, folder: folder.name }, req);
+      res.json(await driveStatusFor());
+    } catch (err) { driveFailed(res, err); }
+  }));
+  app.post(`${P}/casting-drive/check`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await driveAdmin(res, u))) return;
+    res.json(await checkCastingDrive());
+  }));
+  app.delete(`${P}/casting-drive`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(await driveAdmin(res, u))) return;
+    const before = await castingDriveStatus();
+    await disconnectCastingDrive();
+    resetCastingPhotoClient();
+    await audit(u, "casting_drive.disconnected", "casting_drive", 1, { account: before.account_email }, null, req);
+    res.json(await driveStatusFor());
+  }));
+
   // ── Casting requests ──────────────────────────────────────────────────────
   app.post(`${P}/casting-requests`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;               // anyone on the crew may ask
@@ -8737,11 +9436,16 @@ async function allocateInternalCode(
     const st = linkOpen(l);
     res.json({
       campaign: { name: l.name, description: l.description, allowed_domain: l.allowed_domain,
-        require_department: l.require_department },
+        require_department: l.require_department, require_otp: l.require_otp !== false },
       open: st.ok, message: st.why ?? null,
+      /* Whether the form should offer "Upload photo" (the server can put it in
+         Drive) or fall back to asking for a Drive link. Decided by the server's
+         configuration, never by the page. */
+      photo_upload: await castingPhotosConfigured(),
       // The applicant verifies an email address; there is no OAuth client to
-      // hand out and no NERVE account involved.
-      auth: "email_otp", otp_ttl_minutes: OTP_TTL_MINUTES,
+      // hand out and no NERVE account involved. A link with verification off
+      // takes the address as typed, from anyone.
+      auth: l.require_otp === false ? "none" : "email_otp", otp_ttl_minutes: OTP_TTL_MINUTES,
       resend_after_seconds: OTP_RESEND_COOLDOWN_SECONDS,
       /* The form renders the wording it is SERVED and echoes the version back on
          submit, so the text an applicant agreed to is never guessed from the
@@ -8768,6 +9472,9 @@ async function allocateInternalCode(
       if (!l) return sendError(res, 404, invalidMsg);
       const st = linkState(l);
       if (!st.ok) return sendError(res, 403, st.why!);
+      // Request portals have no such column, so only an explicit false counts.
+      if (l.require_otp === false)
+        return sendError(res, 400, "This registration does not need email verification.");
 
       const domain = String(l.allowed_domain).replace(/^@/, "");
       const email = String((req.body as Record<string, unknown>).email ?? "").trim().toLowerCase();
@@ -8823,30 +9530,84 @@ async function allocateInternalCode(
     if (!emailInDomain(who.email, String(l.allowed_domain)))
       return sendError(res, 403, `Please use your official @${String(l.allowed_domain).replace(/^@/, "")} email address.`);
     const ex = (await pool.query(
-      `SELECT request_id, status, created_at FROM mo_casting_requests
+      `SELECT request_id, status, created_at,
+              (photo_file_id IS NOT NULL OR photo_url IS NOT NULL) AS has_photo
+         FROM mo_casting_requests
         WHERE link_id=$1 AND lower(applicant_email)=lower($2)`, [l.id, who.email])).rows[0];
     res.json({ email: who.email, name: who.name, existing: ex ?? null });
   }));
 
   // ── PUBLIC: submit. Verified identity + domain + consent + dedupe, all here.
-  app.post(`/api/v1/public/casting/:token/submit`, asyncHandler(async (req, res) => {
+  /* The photo arrives as multipart/form-data — one `payload` field holding the
+     JSON the form always sent, plus the `photo` file — or, from a server
+     without Drive or an older page, as the plain JSON body. Multer's own
+     errors (too large, not an image) become 400s HERE: the global error
+     handler only knows how to say "Internal server error", which is the wrong
+     answer for a student filling in a form on a phone. */
+  type StagedPhoto = { path: string; mimetype: string; size: number };
+  const receiveCastingPhoto: RequestHandler = (req, res, next) => {
+    if (!h.castingPhotoUpload || !req.is("multipart/form-data")) return next();
+    h.castingPhotoUpload(req, res, (err?: unknown) => {
+      if (!err) return next();
+      const code = (err as { code?: string }).code;
+      sendError(res, 400, code === "LIMIT_FILE_SIZE"
+        ? `Your photo is larger than ${Math.round(CASTING_PHOTO_MAX_BYTES / 1024 / 1024)} MB. Please choose a smaller one.`
+        : (err instanceof Error && err.message) || "The photo could not be received. Please try again.");
+    });
+  };
+  const photoStoreFailed = (res: express.Response, err: unknown) => {
+    console.error("Casting photo could not be stored in Drive", err);
+    if (err instanceof CastingPhotosNotConfiguredError)
+      return sendError(res, 503, "Photo upload is not available right now. Please try again later.");
+    return sendError(res, 502, "Your photo could not be saved. Please try again.");
+  };
+  app.post(`/api/v1/public/casting/:token/submit`, receiveCastingPhoto, asyncHandler(async (req, res) => {
+    const staged = (req as express.Request & { file?: StagedPhoto }).file ?? null;
+    try {
+      await submitCastingRegistration(req, res, staged);
+    } finally {
+      // The staged copy goes whatever happened — Drive has it, or nobody does.
+      if (staged) await fsp.unlink(staged.path).catch(() => {});
+    }
+  }));
+  async function submitCastingRegistration(req: express.Request, res: express.Response, staged: StagedPhoto | null): Promise<unknown> {
     const token = getSingleParam(req.params.token);
     const l = (await pool.query(`SELECT * FROM mo_casting_links WHERE token=$1`, [token])).rows[0];
     if (!l) return sendError(res, 404, "This casting registration link is not valid.");
     const st = linkOpen(l);
     if (!st.ok) return sendError(res, 403, st.why!);
 
-    const b = req.body as Record<string, unknown>;
-    // The identity comes from the verified session, never from the body — the
-    // client cannot nominate whose submission this is (§6).
-    const who = await portalIdentity("casting", token, b);
-    if (!who) return sendError(res, 401, "Please verify your email address to continue.");
-    const domain = String(l.allowed_domain).replace(/^@/, "");
-    /* Domain is re-checked here even though /lookup checked it: the session is
-       the identity, and this endpoint must not depend on an earlier call having
-       run. emailInDomain() is main's shared helper — the OTP flow's rule, kept. */
-    if (!emailInDomain(who.email, domain))
-      return sendError(res, 403, `Please use your official @${domain} email address.`);
+    /* Multipart carries the form's JSON in one `payload` field, so every rule
+       below reads the same shape whichever way the page sent it. */
+    const raw = (req.body ?? {}) as Record<string, unknown>;
+    let b: Record<string, unknown>;
+    if (staged || typeof raw.payload === "string") {
+      try { b = JSON.parse(String(raw.payload ?? "{}")) as Record<string, unknown>; }
+      catch { return sendError(res, 400, "The form could not be read. Please reload the page and try again."); }
+      if (!b || typeof b !== "object" || Array.isArray(b)) b = {};
+    } else b = raw;
+    const verified = l.require_otp !== false;
+    let who: PortalIdentity | null;
+    if (verified) {
+      // The identity comes from the verified session, never from the body — the
+      // client cannot nominate whose submission this is (§6).
+      who = await portalIdentity("casting", token, b);
+      if (!who) return sendError(res, 401, "Please verify your email address to continue.");
+      const domain = String(l.allowed_domain).replace(/^@/, "");
+      /* Domain is re-checked here even though /lookup checked it: the session is
+         the identity, and this endpoint must not depend on an earlier call having
+         run. emailInDomain() is main's shared helper — the OTP flow's rule, kept. */
+      if (!emailInDomain(who.email, domain))
+        return sendError(res, 403, `Please use your official @${domain} email address.`);
+    } else {
+      /* Verification is off for this link: the address is a claim, any domain,
+         kept for contact and dedupe only — and marked unverified on the row. */
+      const email = String(b.email ?? "").trim().toLowerCase();
+      if (!email) return sendError(res, 400, "Please enter your email address.");
+      if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+        return sendError(res, 400, "Please enter a valid email address.");
+      who = { email, name: "", email_verified: false };
+    }
     /* Consent: the version the applicant was SHOWN is what gets recorded, so a
        reword between page load and submit cannot silently move the goalposts.
        An unknown version means the form is stale — say so rather than storing it. */
@@ -8872,10 +9633,18 @@ async function allocateInternalCode(
     if (!mobilePhone)
       return sendError(res, 400, "Please enter a valid mobile number — 10 digits for an Indian number, or +country code.");
 
+    /* The photo: an uploaded file when this server can put it in Drive, else
+       the applicant's own Drive link. A file wins; a link from a stale tab is
+       still accepted; a re-submission may keep the photo already on file —
+       decided below, once the earlier row is known. */
+    const uploads = await castingPhotosConfigured();
+    if (staged && !uploads)
+      return sendError(res, 503, "Photo upload is not available right now. Please reload the page and try again.");
+    if (staged && !CASTING_PHOTO_MIME[staged.mimetype])
+      return sendError(res, 400, "Please upload a JPG, PNG or WEBP photo.");
     const rawDrive = String(b.photo_url ?? "").trim();
-    if (!rawDrive) return sendError(res, 400, "Please add the Google Drive link to your photo.");
-    const driveUrl = normaliseDriveUrl(rawDrive);
-    if (!driveUrl)
+    const driveUrl = rawDrive ? normaliseDriveUrl(rawDrive) : null;
+    if (rawDrive && !driveUrl)
       return sendError(res, 400, "Please enter a valid Google Drive link (it should start with https://drive.google.com/ or https://docs.google.com/).");
 
     // Optional. Empty is a normal answer and must never block a submission —
@@ -8891,6 +9660,19 @@ async function allocateInternalCode(
     const ex = (await pool.query(
       `SELECT * FROM mo_casting_requests WHERE link_id=$1 AND lower(applicant_email)=lower($2)`,
       [l.id, who.email])).rows[0];
+    /* An unproven address cannot update anything: whoever typed it may not be
+       its owner, so it neither overwrites the earlier row nor learns its id. */
+    if (ex && !verified)
+      return res.status(409).json({ duplicate: true,
+        message: "This email address has already been used to register for this drive. Please contact the Media Crew if your details need to change." });
+    if (ex && ["approved", "rejected"].includes(String(ex.status)))
+      return res.status(200).json({ duplicate: true, request_id: ex.request_id, status: ex.status,
+        message: "You have already submitted a casting request for this drive." });
+    /* A first submission needs a photo. A re-submission may keep the one on
+       file — the form says it is there and asks only if they want to replace it. */
+    const photoOnFile = !!(ex && (ex.photo_file_id || ex.photo_url));
+    if (!staged && !driveUrl && !photoOnFile)
+      return sendError(res, 400, uploads ? "Please upload your photo." : "Please add the Google Drive link to your photo.");
     const payload = {
       applicant_name: name, applicant_type: type,
       department: String(b.department ?? "") || null, designation: String(b.designation ?? "") || null,
@@ -8902,23 +9684,37 @@ async function allocateInternalCode(
       location: String(b.location ?? "") || null,
       intro: String(b.intro ?? "") || null,
       mobile_phone: mobilePhone, enrolment_number: enrolment,
-      instagram_url: instagram, photo_url: driveUrl,
+      instagram_url: instagram,
       need: `${type} — ${name}`,
     };
     if (ex) {
-      if (["approved", "rejected"].includes(String(ex.status)))
-        return res.status(200).json({ duplicate: true, request_id: ex.request_id, status: ex.status,
-          message: "You have already submitted a casting request for this drive." });
+      /* The row exists, so its folder name is known: the new photo goes to
+         Drive first and the row only changes once Drive has it. A failure
+         leaves the earlier submission exactly as it was. */
+      let photo: StoredCastingPhoto | null = null;
+      if (staged) {
+        try { photo = await storeCastingPhoto({ requestCode: String(ex.request_id), localPath: staged.path, mimeType: staged.mimetype }); }
+        catch (err) { return photoStoreFailed(res, err); }
+      }
+      /* Photo columns move together, or not at all: a new upload sets all
+         four, a pasted link sets the url and clears the Drive ids, and neither
+         keeps what is on file. */
+      const setPhoto = !!(photo || driveUrl);
       await pool.query(
         `UPDATE mo_casting_requests SET applicant_name=$1, applicant_type=$2, department=$3, designation=$4,
            age_group=$5, gender=$6, languages=$7, category=$8, interests=$9, availability=$10, location=$11,
-           intro=$12, need=$13, mobile_phone=$14, enrolment_number=$15, instagram_url=$16, photo_url=$17,
-           consent_given=true, consent_at=NOW(), consent_version=$18, consent_text=$19,
-           updated_at=NOW() WHERE id=$20`,
+           intro=$12, need=$13, mobile_phone=$14, enrolment_number=$15, instagram_url=$16,
+           photo_url=CASE WHEN $17::boolean THEN $18 ELSE photo_url END,
+           photo_file_id=CASE WHEN $17::boolean THEN $19 ELSE photo_file_id END,
+           photo_folder_id=CASE WHEN $17::boolean THEN $20 ELSE photo_folder_id END,
+           photo_mime=CASE WHEN $17::boolean THEN $21 ELSE photo_mime END,
+           consent_given=true, consent_at=NOW(), consent_version=$22, consent_text=$23,
+           updated_at=NOW() WHERE id=$24`,
         [payload.applicant_name, payload.applicant_type, payload.department, payload.designation,
          payload.age_group, payload.gender, payload.languages, payload.category, payload.interests,
          payload.availability, payload.location, payload.intro, payload.need,
-         payload.mobile_phone, payload.enrolment_number, payload.instagram_url, payload.photo_url,
+         payload.mobile_phone, payload.enrolment_number, payload.instagram_url,
+         setPhoto, photo ? photo.webViewUrl : driveUrl, photo?.fileId ?? null, photo?.folderId ?? null, photo?.mimeType ?? null,
          consentVersion, consentText, ex.id]);
       return res.json({ updated: true, request_id: ex.request_id, status: ex.status });
     }
@@ -8930,15 +9726,35 @@ async function allocateInternalCode(
       `INSERT INTO mo_casting_requests (request_id, source, link_id, applicant_email, applicant_name, applicant_type,
          department, designation, age_group, gender, languages, category, interests, availability, location, intro,
          need, mobile_phone, enrolment_number, instagram_url, photo_url,
-         consent_given, consent_at, consent_version, consent_text, status, submitted_ip)
+         consent_given, consent_at, consent_version, consent_text, status, submitted_ip, email_verified)
        VALUES ($1,'external',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-               true,NOW(),$21,$22,'new',$23) RETURNING *`,
+               true,NOW(),$21,$22,'new',$23,$24) RETURNING *`,
       [code, l.id, who.email, payload.applicant_name, payload.applicant_type, payload.department,
        payload.designation, payload.age_group, payload.gender, payload.languages, payload.category,
        payload.interests, payload.availability, payload.location, payload.intro, payload.need,
-       payload.mobile_phone, payload.enrolment_number, payload.instagram_url, payload.photo_url,
+       payload.mobile_phone, payload.enrolment_number, payload.instagram_url, driveUrl,
        consentVersion, consentText,
-       (req.headers["x-forwarded-for"] as string) || req.ip || null]);
+       (req.headers["x-forwarded-for"] as string) || req.ip || null, verified]);
+
+    if (staged) {
+      /* Row first, Drive second. The row is what allocates the request code
+         the Drive folder is named after, and the unique index on request_id is
+         what catches two first-time submissions racing for the same number —
+         before anything is written to Drive under the wrong name. If Drive
+         then fails the row goes again, the applicant is told, and a retry is
+         a clean first submission. No transaction spans the upload: a pooled
+         client is never held while awaiting anything but that client
+         (db-pool-safety.test.ts). */
+      let photo: StoredCastingPhoto;
+      try { photo = await storeCastingPhoto({ requestCode: code, localPath: staged.path, mimeType: staged.mimetype }); }
+      catch (err) {
+        await pool.query(`DELETE FROM mo_casting_requests WHERE id=$1`, [ins.rows[0].id]);
+        return photoStoreFailed(res, err);
+      }
+      await pool.query(
+        `UPDATE mo_casting_requests SET photo_url=$1, photo_file_id=$2, photo_folder_id=$3, photo_mime=$4 WHERE id=$5`,
+        [photo.webViewUrl, photo.fileId, photo.folderId, photo.mimeType, ins.rows[0].id]);
+    }
 
     // Audited without a NERVE actor — the applicant has no account, by design (§7).
     await pool.query(
@@ -8947,7 +9763,8 @@ async function allocateInternalCode(
       // vocabulary mo_audit_logs already uses for non-user actors.
       `INSERT INTO mo_audit_logs (actor_id, actor_role, action, entity_type, entity_id, before, after, ip)
        VALUES (NULL,'system','casting_request.submitted','casting_request',$1,NULL,$2,$3)`,
-      [ins.rows[0].id, JSON.stringify({ request_id: code, campaign: l.name, applicant: who.email }),
+      [ins.rows[0].id, JSON.stringify({ request_id: code, campaign: l.name, applicant: who.email,
+                                        email_verified: verified }),
        (req.ip ?? null)]);
     // Tell whoever holds the casting duty.
     const managers = (await pool.query(
@@ -8957,8 +9774,8 @@ async function allocateInternalCode(
         `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
          VALUES ($1,'casting',$2,$3,'casting_request',$4)`,
         [m.user_id, "New casting registration", `${code} — ${name} (${type})`, ins.rows[0].id]);
-    res.status(201).json({ request_id: code });
-  }));
+    return res.status(201).json({ request_id: code });
+  }
 
   // ── Registration links (Casting Manager / Admin) ───────────────────────────
   app.post(`${P}/casting-links`, asyncHandler(async (req, res) => {
@@ -8971,14 +9788,19 @@ async function allocateInternalCode(
     const domain = String(b.allowed_domain ?? "paruluniversity.ac.in").replace(/^@/, "");
     if (domain !== "paruluniversity.ac.in" && !isMoAdmin(u))
       return sendError(res, 403, "Only an Admin may allow a domain other than the university's.");
+    // Off opens the link to any address, which is wider than any domain change.
+    const requireOtp = b.require_otp !== false;
+    if (!requireOtp && !isMoAdmin(u))
+      return sendError(res, 403, "Only an Admin may turn off email verification.");
     const token = randomUUID().replace(/-/g, "");
     const ins = await pool.query(
       `INSERT INTO mo_casting_links (token, name, description, allowed_domain, active_from, expires_on,
-         require_department, is_active, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8) RETURNING *`,
+         require_department, require_otp, is_active, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9) RETURNING *`,
       [token, name, String(b.description ?? ""), domain, (b.active_from as string) || null,
-       (b.expires_on as string) || null, !!b.require_department, u.id]);
-    await audit(u, "casting_link.created", "casting_link", ins.rows[0].id, null, { name, domain }, req);
+       (b.expires_on as string) || null, !!b.require_department, requireOtp, u.id]);
+    await audit(u, "casting_link.created", "casting_link", ins.rows[0].id, null,
+      { name, domain, require_otp: requireOtp }, req);
     res.status(201).json({ link: ins.rows[0] });
   }));
 
@@ -8994,11 +9816,17 @@ async function allocateInternalCode(
       if (b[c] !== undefined) { fields.push(`${c}=$${i++}`); vals.push(b[c] === "" ? null : b[c]); }
     if (b.is_active !== undefined) { fields.push(`is_active=$${i++}`); vals.push(!!b.is_active); }
     if (b.require_department !== undefined) { fields.push(`require_department=$${i++}`); vals.push(!!b.require_department); }
+    if (b.require_otp !== undefined) {
+      if (b.require_otp === false && !isMoAdmin(u))
+        return sendError(res, 403, "Only an Admin may turn off email verification.");
+      fields.push(`require_otp=$${i++}`); vals.push(b.require_otp !== false);
+    }
     if (!fields.length) return res.json({ link: cur });
     fields.push(`updated_at=NOW()`); vals.push(id);
     const l = (await pool.query(`UPDATE mo_casting_links SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals)).rows[0];
     await audit(u, b.is_active === false ? "casting_link.deactivated" : "casting_link.updated",
-      "casting_link", id, { is_active: cur.is_active }, { name: l.name, is_active: l.is_active }, req);
+      "casting_link", id, { is_active: cur.is_active, require_otp: cur.require_otp },
+      { name: l.name, is_active: l.is_active, require_otp: l.require_otp }, req);
     res.json({ link: l });
   }));
 
@@ -9034,8 +9862,8 @@ async function allocateInternalCode(
          actually opens, and check-drive can then probe it like any other. */
       `INSERT INTO mo_casting_records (cast_id, name, category, profession, age_group, gender, languages,
          campus_id, location, availability, consent_status, consent_date, notes, drive_url,
-         source, source_request_id, applicant_email, created_by, updated_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'confirmed',CURRENT_DATE,$11,$12,'external_registration',$13,$14,$15,$15)
+         source, source_request_id, applicant_email, created_by, updated_by, photo_file_id, photo_mime)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'confirmed',CURRENT_DATE,$11,$12,'external_registration',$13,$14,$15,$15,$16,$17)
        RETURNING *`,
       [castId, r.applicant_name ?? r.need, r.category ?? r.applicant_type ?? "Other", r.designation ?? null,
        r.age_group ?? null, r.gender ?? null, JSON.stringify(r.languages ?? []),
@@ -9043,8 +9871,11 @@ async function allocateInternalCode(
        ({ "Available regularly": "available", "Available occasionally": "limited",
           "Available with advance notice": "limited", "Currently unavailable": "unavailable" } as Record<string, string>)[String(r.availability)] ?? "available",
        [r.intro, r.department ? `Department: ${r.department}` : null].filter(Boolean).join("\n"),
-       r.photo_url ?? null,
-       id, r.applicant_email, u.id])).rows[0];
+       /* An uploaded photo makes the request's Drive FOLDER the record's link —
+          that is what a shoot day opens, and later media can sit beside the
+          photo. A pasted link is carried across as it is. */
+       r.photo_file_id && r.photo_folder_id && r.photo_url ? driveFolderUrl(String(r.photo_folder_id)) : (r.photo_url ?? null),
+       id, r.applicant_email, u.id, r.photo_file_id ?? null, r.photo_mime ?? null])).rows[0];
     await pool.query(
       `UPDATE mo_casting_requests SET status='approved', matched_record_id=$1, review_note=COALESCE($2, review_note),
          handled_by=$3, reviewed_at=NOW(), updated_at=NOW() WHERE id=$4`, [rec.id, note, u.id, id]);
@@ -9392,8 +10223,11 @@ async function allocateInternalCode(
       leadId = r.leadId;
     } else if (b.lead_user_id) leadId = String(toUid(b.lead_user_id));
     else if (r.lead_user_id) leadId = String(r.lead_user_id);
-    const start = (b.start_date as string) || r.event_date || null;
-    const end = (b.end_date as string) || r.end_date || r.event_date || null;
+    /* pg returns a DATE as a JS Date; the template's due-date arithmetic needs
+       YYYY-MM-DD, and a raw Date made every conversion without dates in the
+       body fail with "Invalid time value". */
+    const start = (b.start_date as string) || dOnly(r.event_date);
+    const end = (b.end_date as string) || dOnly(r.end_date) || dOnly(r.event_date);
 
     /* §2 — the coordinator creates the operational record; they are Created By and
        nothing more. Production ownership belongs to the Team Lead, and a project
@@ -9404,6 +10238,9 @@ async function allocateInternalCode(
       typeId, unitId: r.academic_unit_id ? Number(r.academic_unit_id) : null,
       priority: String(r.priority), start, end,
       ownerId: leadId, venue: (r.venue as string) || null,
+      // The team the Coordinator routed it to is part of the project — not
+      // something to recover from the request later.
+      teamId,
       source: "request",
     });
 
@@ -9777,8 +10614,9 @@ async function allocateInternalCode(
   // Remove a crew member from a project (#3). TL/Admin.
   app.delete(`${P}/projects/:id/assignments/:uid`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may change assignments.");
     const pid = parseInt(getSingleParam(req.params.id), 10);
+    if (!(isMoAdmin(u) || await isTeamLeadOfProject(u, pid)))
+      return sendError(res, 403, "Only the project's Team Lead or an Admin may change assignments.");
     const uid = getSingleParam(req.params.uid);
     await pool.query(`UPDATE mo_project_assignments SET removed_at=NOW() WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`, [pid, uid]);
     await audit(u, "project.assignment_removed", "project", pid, null, { user_id: uid }, req);
@@ -9788,8 +10626,8 @@ async function allocateInternalCode(
   // Remove a crew member from a shoot (#7).
   app.delete(`${P}/shoots/:id/crew/:uid`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may change shoot crew.");
     const sid = parseInt(getSingleParam(req.params.id), 10);
+    if (!(await leadsShootProject(u, sid))) return sendError(res, 403, "Only the project's Team Lead or an Admin may change shoot crew.");
     const uid = getSingleParam(req.params.uid);
     await pool.query(`DELETE FROM mo_shoot_crew WHERE shoot_id=$1 AND user_id=$2`, [sid, uid]);
     await audit(u, "shoot.crew_removed", "shoot", sid, null, { user_id: uid }, req);
@@ -9799,10 +10637,13 @@ async function allocateInternalCode(
   // Add crew to a shoot (#7).
   app.post(`${P}/shoots/:id/crew`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may assign shoot crew.");
     const sid = parseInt(getSingleParam(req.params.id), 10);
-    for (const raw of (Array.isArray((req.body as Record<string, unknown>).crew) ? (req.body as Record<string, unknown>).crew as unknown[] : []))
-      await pool.query(`INSERT INTO mo_shoot_crew (shoot_id, user_id, capacity_role_id) VALUES ($1,$2,2) ON CONFLICT DO NOTHING`, [sid, String(raw)]);
+    if (!(await leadsShootProject(u, sid))) return sendError(res, 403, "Only the project's Team Lead or an Admin may assign shoot crew.");
+    const crew = (Array.isArray((req.body as Record<string, unknown>).crew) ? (req.body as Record<string, unknown>).crew as unknown[] : []).map(String);
+    // Crewing a shoot is an assignment — the same team scope as every other path.
+    if (!(await assertAssignable(res, u, crew))) return;
+    for (const uid of crew)
+      await pool.query(`INSERT INTO mo_shoot_crew (shoot_id, user_id, capacity_role_id) VALUES ($1,$2,2) ON CONFLICT DO NOTHING`, [sid, uid]);
     await audit(u, "shoot.crew_added", "shoot", sid, null, null, req);
     res.status(201).json({ ok: true });
   }));
@@ -10089,6 +10930,9 @@ async function allocateInternalCode(
      ADMIN ONLY, on the server. Granting somebody an inventory is a governance
      act, so holding the custodian duty must not let you grant it. */
   const EQUIP_MODULE = "equipment";
+  /* The kiosk is its own grantable module (the shell's Kiosk mode button), and
+     it is only ever reachable together with Equipment. */
+  const KIOSK_MODULE = "kiosk";
 
   /** The duty row this panel administers. Looked up, never hard-coded by id. */
   const custodianDuty = async () => (await pool.query(
@@ -10156,6 +11000,7 @@ async function allocateInternalCode(
         bypassed_by_role: isMoAdmin(asUser),
         effective_modules: effective,
       },
+      kiosk: { key: KIOSK_MODULE, enabled: effective.includes(KIOSK_MODULE) },
       inventories: inventories.map((r) => ({
         id: Number(r.id), code: r.code, name: r.name, code_prefix: r.code_prefix,
         assigned: r.assignment_id != null,
@@ -10180,115 +11025,185 @@ async function allocateInternalCode(
     res.json(await equipmentAccessOf(target));
   }));
 
-  /** Change it — all three layers, or none of them. Admin only. */
-  app.patch(`${P}/crew/:id/equipment-access`, asyncHandler(async (req, res) => {
-    const u = requireMedia(res); if (!u) return;
-    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may change equipment access.");
-    const id = getSingleParam(req.params.id);
-    const b = (req.body ?? {}) as Record<string, unknown>;
-    const target = (await pool.query(
-      `SELECT id, full_name, email, role, team, status FROM users WHERE id=$1`, [id])).rows[0];
-    if (!target) return sendError(res, 404, "That member does not exist.");
+  /* ── THE ACCESS RULES, DECIDED ONCE ──────────────────────────────────────
+     One person's change to the equipment layers is PLANNED here and WRITTEN by
+     applyEquipmentAccess(). Two screens use the pair: this per-person panel and
+     the Equipment → Permissions matrix (PATCH /equipment/permissions), which
+     saves many people at once. Before the matrix existed this logic lived inside
+     the handler below; it was lifted out unchanged so the two screens cannot
+     come to disagree about what a refusal is.
 
+     A plan is decided entirely from reads, so a caller can plan every person in
+     a batch, refuse the whole batch on the first refusal, and only then open a
+     transaction. */
+  type AccessTarget = { id: string; full_name: string; email: string;
+                        role: string; team: string | null; status: string };
+  type AccessWant = {
+    module: boolean | null; kiosk: boolean | null; duty: boolean | null;
+    /* Either the whole list (the per-person panel) or a delta (the matrix,
+       which only knows which cells were ticked and must not overwrite an
+       inventory another Admin granted a moment ago). */
+    scopes: number[] | null; grant: number[]; revoke: number[];
+  };
+  type AccessPlan = {
+    target: AccessTarget; before: Awaited<ReturnType<typeof equipmentAccessOf>>;
+    modulesToWrite: string[] | null; adding: number[]; dropping: number[];
+    dutyId: number; dutyChange: boolean | null;
+  };
+
+  async function liveInventoryIds(): Promise<Set<number>> {
+    return new Set((await pool.query(
+      `SELECT id FROM mo_inventory_scopes WHERE is_active AND archived_at IS NULL`)).rows
+      .map((r) => Number(r.id)));
+  }
+
+  async function planEquipmentAccess(actor: CurrentUser, target: AccessTarget, want: AccessWant,
+                                     liveIds?: Set<number>)
+    : Promise<{ plan: AccessPlan } | { status: number; message: string }> {
     const before = await equipmentAccessOf(target);
-    const wantModule = typeof b.module_enabled === "boolean" ? b.module_enabled : null;
-    const wantDuty = typeof b.equipment_custodian === "boolean" ? b.equipment_custodian : null;
-    const wantScopes = Array.isArray(b.inventory_scope_ids)
-      ? [...new Set((b.inventory_scope_ids as unknown[]).map((x) => Number(x)))].filter((n) => Number.isFinite(n) && n > 0)
-      : null;
-    if (wantModule === null && wantDuty === null && wantScopes === null)
-      return sendError(res, 400, "Nothing to change.");
-
-    /* ── REFUSALS, DECIDED BEFORE THE TRANSACTION OPENS ────────────────────
-       Every check here is a read, so it runs on the pool and not on a held
-       client. What the transaction below does is write. */
-
-    const live = (await pool.query(
-      `SELECT id, name, code FROM mo_inventory_scopes
-        WHERE is_active AND archived_at IS NULL`)).rows;
-    const liveIds = new Set(live.map((r) => Number(r.id)));
+    const live = liveIds ?? await liveInventoryIds();
     const currentIds = before.inventories.filter((i) => i.assigned).map((i) => i.id);
+    const wantScopes = want.scopes
+      ?? (want.grant.length || want.revoke.length
+        ? [...new Set([...currentIds, ...want.grant])].filter((n) => !want.revoke.includes(n))
+        : null);
     const adding = wantScopes ? wantScopes.filter((n) => !currentIds.includes(n)) : [];
     const dropping = wantScopes ? currentIds.filter((n) => !wantScopes.includes(n)) : [];
 
     for (const n of wantScopes ?? []) {
-      if (!liveIds.has(n)) {
+      if (!live.has(n)) {
         /* An archived or deactivated scope authorises nobody — inventoryScopeOf()
            filters it out — so an assignment to one would be silently inert.
            Same refusal the per-scope endpoint already gives. */
         const exists = (await pool.query(
           `SELECT 1 FROM mo_inventory_scopes WHERE id=$1`, [n])).rows.length > 0;
         return exists
-          ? sendError(res, 409, "An archived or inactive inventory cannot be assigned. Restore it first.")
-          : sendError(res, 404, "Inventory not found.");
+          ? { status: 409, message: "An archived or inactive inventory cannot be assigned. Restore it first." }
+          : { status: 404, message: "Inventory not found." };
       }
     }
     /* THE EXISTING SEPARATION, KEPT. POST /equipment/scopes/:id/custodians has
        always refused self-appointment: an Admin who needs an inventory has
-       another Admin grant it. This panel must not become the way around that. */
-    if (adding.length && target.id === u.id)
-      return sendError(res, 403, "An inventory cannot be granted to yourself. Ask another Admin.");
+       another Admin grant it. Neither screen may become the way around that. */
+    if (adding.length && target.id === actor.id)
+      return { status: 403, message: "An inventory cannot be granted to yourself. Ask another Admin." };
     /* Granting access to a removed account would be access nobody can use.
        Revoking from one is offboarding and stays allowed. */
-    if (target.status !== "active" && (adding.length || wantModule === true || wantDuty === true))
-      return sendError(res, 409, "That account is not active, so access cannot be granted to it.");
+    if (target.status !== "active"
+        && (adding.length || want.module === true || want.kiosk === true || want.duty === true))
+      return { status: 409, message: "That account is not active, so access cannot be granted to it." };
 
     /* The module list to write, if any. An explicit array is only written when
        the ANSWER has to change: enabling a module the group already grants
        leaves a role-based account role-based. */
-    let modulesToWrite: string[] | null = null;
-    if (wantModule !== null && wantModule !== before.module.enabled)
-      modulesToWrite = wantModule
-        ? [...before.module.effective_modules, EQUIP_MODULE]
-        : before.module.effective_modules.filter((m) => m !== EQUIP_MODULE);
+    let mods = [...before.module.effective_modules];
+    let modsChanged = false;
+    const flip = (key: string, on: boolean | null) => {
+      if (on === null || on === mods.includes(key)) return;
+      mods = on ? [...mods, key] : mods.filter((m) => m !== key);
+      modsChanged = true;
+    };
+    flip(EQUIP_MODULE, want.module);
+    flip(KIOSK_MODULE, want.kiosk);
 
-    const dutyId = before.custodian.duty_flag_id;
-    const dutyChanges = wantDuty !== null && wantDuty !== before.custodian.granted;
+    return { plan: {
+      target, before, modulesToWrite: modsChanged ? mods : null, adding, dropping,
+      dutyId: before.custodian.duty_flag_id,
+      dutyChange: want.duty !== null && want.duty !== before.custodian.granted ? want.duty : null,
+    } };
+  }
+
+  const planIsNoop = (p: AccessPlan) =>
+    !p.modulesToWrite && !p.adding.length && !p.dropping.length && p.dutyChange === null;
+
+  /* Writes ONE plan on a client the caller holds inside its own transaction.
+     Never audits — audit() writes through the pool, and asking the pool for a
+     connection while holding one is what deadlocked production once already. */
+  async function applyEquipmentAccess(
+    client: { query: (q: string, p?: unknown[]) => Promise<unknown> },
+    actor: CurrentUser, p: AccessPlan) {
+    if (p.modulesToWrite)
+      await client.query(
+        `INSERT INTO mo_user_profiles (user_id, allowed_modules) VALUES ($1,$2::jsonb)
+         ON CONFLICT (user_id) DO UPDATE SET allowed_modules=EXCLUDED.allowed_modules`,
+        [p.target.id, JSON.stringify(p.modulesToWrite)]);
+
+    for (const scopeId of p.adding)
+      /* A prior REVOKED row does not collide — idx_mo_uis_active is partial —
+         so this inserts a NEW record and the old one stays readable. That is
+         the whole reason the primary key is an id and not the pair. */
+      await client.query(
+        `INSERT INTO mo_user_inventory_scopes (user_id, scope_id, role, granted_by)
+         VALUES ($1,$2,'custodian',$3)
+         ON CONFLICT (user_id, scope_id) WHERE removed_at IS NULL DO NOTHING`,
+        [p.target.id, scopeId, actor.id]);
+    for (const scopeId of p.dropping)
+      /* SOFT. The record survives with who removed it and when (§8). */
+      await client.query(
+        `UPDATE mo_user_inventory_scopes SET removed_at=NOW(), removed_by=$3
+          WHERE user_id=$1 AND scope_id=$2 AND removed_at IS NULL`,
+        [p.target.id, scopeId, actor.id]);
+
+    if (p.dutyChange === true)
+      await client.query(
+        `INSERT INTO mo_user_duties (user_id, duty_flag_id, granted_by, granted_at)
+         VALUES ($1,$2,$3,CURRENT_DATE) ON CONFLICT (user_id, duty_flag_id) DO NOTHING`,
+        [p.target.id, p.dutyId, actor.id]);
+    else if (p.dutyChange === false)
+      await client.query(
+        `DELETE FROM mo_user_duties WHERE user_id=$1 AND duty_flag_id=$2`, [p.target.id, p.dutyId]);
+  }
+
+  /* ONE COHERENT ACCESS-CHANGE EVENT (§15) per person, whichever screen made
+     it: before and after say what it was and what it became, and entity_uid
+     carries the affected person so "every access change for them" is a query
+     rather than a JSON scan. */
+  const accessShape = (a: Awaited<ReturnType<typeof equipmentAccessOf>>) => ({
+    module_enabled: a.module.enabled,
+    kiosk_enabled: a.kiosk.enabled,
+    inventories: a.inventories.filter((i) => i.assigned).map((i) => i.code),
+    equipment_custodian: a.custodian.granted,
+  });
+
+  /** Read the access fields of a request body. Anything not a boolean is "leave it". */
+  function accessWantOf(b: Record<string, unknown>): AccessWant {
+    const bool = (v: unknown) => (typeof v === "boolean" ? v : null);
+    const ids = (v: unknown) => Array.isArray(v)
+      ? [...new Set((v as unknown[]).map((x) => Number(x)))].filter((n) => Number.isFinite(n) && n > 0)
+      : null;
+    return {
+      module: bool(b.module_enabled), kiosk: bool(b.kiosk_enabled), duty: bool(b.equipment_custodian),
+      scopes: ids(b.inventory_scope_ids),
+      grant: ids(b.grant_inventory_ids) ?? [], revoke: ids(b.revoke_inventory_ids) ?? [],
+    };
+  }
+  const wantIsEmpty = (w: AccessWant) =>
+    w.module === null && w.kiosk === null && w.duty === null && w.scopes === null
+    && !w.grant.length && !w.revoke.length;
+
+  /** Change it — all layers, or none of them. Admin only. */
+  app.patch(`${P}/crew/:id/equipment-access`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may change equipment access.");
+    const id = getSingleParam(req.params.id);
+    const target = (await pool.query(
+      `SELECT id, full_name, email, role, team, status FROM users WHERE id=$1`, [id])).rows[0];
+    if (!target) return sendError(res, 404, "That member does not exist.");
+
+    const want = accessWantOf((req.body ?? {}) as Record<string, unknown>);
+    if (wantIsEmpty(want)) return sendError(res, 400, "Nothing to change.");
+    const r = await planEquipmentAccess(u, target, want);
+    if ("status" in r) return sendError(res, r.status, r.message);
 
     /* ── ONE TRANSACTION (§7) ──────────────────────────────────────────────
        Module, inventories and duty commit together or not at all. A half-saved
        state here is an employee who can reach Equipment and see no inventory,
        or holds an inventory they cannot enter — configurations that look like
-       product bugs and are actually a failed save.
-
-       Every statement is on `client`; audit() runs after release, because
-       audit() writes through the pool and holding a connection while asking
-       for another is what deadlocked production once already. */
+       product bugs and are actually a failed save. */
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      if (modulesToWrite)
-        await client.query(
-          `INSERT INTO mo_user_profiles (user_id, allowed_modules) VALUES ($1,$2::jsonb)
-           ON CONFLICT (user_id) DO UPDATE SET allowed_modules=EXCLUDED.allowed_modules`,
-          [target.id, JSON.stringify(modulesToWrite)]);
-
-      for (const scopeId of adding)
-        /* A prior REVOKED row does not collide — idx_mo_uis_active is partial —
-           so this inserts a NEW record and the old one stays readable. That is
-           the whole reason the primary key is an id and not the pair. */
-        await client.query(
-          `INSERT INTO mo_user_inventory_scopes (user_id, scope_id, role, granted_by)
-           VALUES ($1,$2,'custodian',$3)
-           ON CONFLICT (user_id, scope_id) WHERE removed_at IS NULL DO NOTHING`,
-          [target.id, scopeId, u.id]);
-      for (const scopeId of dropping)
-        /* SOFT. The record survives with who removed it and when (§8). */
-        await client.query(
-          `UPDATE mo_user_inventory_scopes SET removed_at=NOW(), removed_by=$3
-            WHERE user_id=$1 AND scope_id=$2 AND removed_at IS NULL`,
-          [target.id, scopeId, u.id]);
-
-      if (dutyChanges) {
-        if (wantDuty)
-          await client.query(
-            `INSERT INTO mo_user_duties (user_id, duty_flag_id, granted_by, granted_at)
-             VALUES ($1,$2,$3,CURRENT_DATE) ON CONFLICT (user_id, duty_flag_id) DO NOTHING`,
-            [target.id, dutyId, u.id]);
-        else
-          await client.query(
-            `DELETE FROM mo_user_duties WHERE user_id=$1 AND duty_flag_id=$2`, [target.id, dutyId]);
-      }
+      await applyEquipmentAccess(client, u, r.plan);
       await client.query("COMMIT");
     } catch (e) {
       await client.query("ROLLBACK").catch(() => {});
@@ -10298,17 +11213,8 @@ async function allocateInternalCode(
     client.release();
 
     const after = await equipmentAccessOf(target);
-    /* ONE COHERENT ACCESS-CHANGE EVENT (§15), not three. An administrator
-       changed somebody's equipment access; before and after say what it was and
-       what it became, and entity_uid carries the affected person so "every
-       access change for them" is a query rather than a JSON scan. */
-    const shape = (a: typeof after) => ({
-      module_enabled: a.module.enabled,
-      inventories: a.inventories.filter((i) => i.assigned).map((i) => i.code),
-      equipment_custodian: a.custodian.granted,
-    });
     await audit(u, "crew.equipment_access_changed", "user", null,
-                shape(before), shape(after), req, target.id);
+                accessShape(r.plan.before), accessShape(after), req, target.id);
     res.json(after);
   }));
 
@@ -10454,12 +11360,11 @@ async function allocateInternalCode(
     const id = parseInt(getSingleParam(req.params.id), 10);
     const cur = (await pool.query(`SELECT * FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [id])).rows[0];
     if (!cur) return sendError(res, 404, "Project not found.");
-    const isPM = await pool.query(`SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND is_project_manager AND removed_at IS NULL`, [id, u.id]);
     // The Coordinator owns the operational record — metadata and which team it
     // is routed to — without owning production.
     const isCoord = await isCoordinator(u);
-    if (!(isMoAdmin(u) || isMoTL(u) || isCoord || cur.owner_id === u.id || isPM.rows[0]))
-      return sendError(res, 403, "Only the owner/PM, a Team Lead, Coordinator or Admin may edit this project.");
+    if (!(isCoord || await canManageProject(u, id)))
+      return sendError(res, 403, "Only the project's Team Lead, owner/PM, the Coordinator or an Admin may edit this project.");
     const b = req.body as Record<string, unknown>;
     if (typeof b.name === "string" && (b.name.trim().length < 3 || b.name.trim().length > 120))
       return sendError(res, 400, "VR-6: name must be 3–120 characters.");
@@ -10476,6 +11381,10 @@ async function allocateInternalCode(
     /* Re-routing to another team moves production ownership with it — the lead
        is resolved from the team id server-side, never taken from the browser. */
     let newLead: string | null = null, newTeamName: string | null = null;
+    /* Routing is the Coordinator's (or an Admin's) decision. A lead does not hand
+       their project to another team, and nobody else moves it at all. */
+    if ("team_id" in b && Number(b.team_id ?? 0) !== Number(cur.team_id ?? 0) && !(isCoord || isMoAdmin(u)))
+      return sendError(res, 403, "Only the Coordinator or an Admin may change which team a project is routed to.");
     if ("team_id" in b && b.team_id != null && Number(b.team_id) !== Number(cur.team_id)) {
       const t = await resolveTeamLead(Number(b.team_id));
       if ("error" in t) return sendError(res, 400, t.error);
@@ -10641,8 +11550,9 @@ async function allocateInternalCode(
   // assignee's "Today's Assignments" when today ∈ [start_date, due_date].
   app.post(`${P}/projects/:id/tasks`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may assign tasks.");
     const pid = parseInt(getSingleParam(req.params.id), 10);
+    if (!(isMoAdmin(u) || await isTeamLeadOfProject(u, pid)))
+      return sendError(res, 403, "Only the project's Team Lead or an Admin may assign tasks.");
     const b = req.body as Record<string, unknown>;
     const title = String(b.title ?? "").trim();
     if (!title) return sendError(res, 400, "Task title is required.");
@@ -10670,8 +11580,15 @@ async function allocateInternalCode(
     const cur = (await pool.query(`SELECT * FROM mo_assignments WHERE id=$1`, [id])).rows[0];
     if (!cur) return sendError(res, 404, "Assignment not found.");
     const isAssignee = (await pool.query(`SELECT 1 FROM mo_assignment_users WHERE assignment_id=$1 AND user_id=$2`, [id, u.id])).rows[0];
-    const priv = isMoAdmin(u) || isMoTL(u) || cur.assigned_by === u.id;
+    /* Crew work on a project is managed by that project's lead (or Admin, or
+       whoever set it). SMC coverage keeps its own long-standing rule here — its
+       lifecycle lives under /smc/* and is not this route's to reshape. */
+    const priv = isMoAdmin(u) || cur.assigned_by === u.id || (cur.is_smc || cur.project_id == null
+      ? isMoTL(u) : await isTeamLeadOfProject(u, Number(cur.project_id)));
     if (!priv && !isAssignee) return sendError(res, 403, "You can't change this assignment.");
+    const b0 = req.body as Record<string, unknown>;
+    if (priv && !cur.is_smc && Array.isArray(b0.assignees)
+        && !(await assertAssignable(res, u, (b0.assignees as unknown[]).map(String)))) return;
     const b = req.body as Record<string, unknown>;
     // Assignees may only move the status; TL/Admin/creator may edit everything.
     const cols = priv ? ["title", "priority", "status", "start_date", "due_date", "start_time", "end_time", "notes"] : ["status"];
@@ -10689,8 +11606,11 @@ async function allocateInternalCode(
 
   app.delete(`${P}/assignments/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may delete an assignment.");
     const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT project_id, is_smc FROM mo_assignments WHERE id=$1`, [id])).rows[0];
+    const may = isMoAdmin(u) || (!cur || cur.is_smc || cur.project_id == null
+      ? isMoTL(u) : await isTeamLeadOfProject(u, Number(cur.project_id)));
+    if (!may) return sendError(res, 403, "Only the project's Team Lead or an Admin may delete an assignment.");
     await pool.query(`DELETE FROM mo_assignments WHERE id=$1`, [id]);
     await audit(u, "assignment.deleted", "assignment", id, null, null, req);
     res.json({ ok: true });
@@ -16744,15 +17664,20 @@ async function allocateInternalCode(
         LEFT JOIN mo_user_profiles p ON p.user_id = us.id
         LEFT JOIN mo_smc_profiles sp ON sp.user_id = us.id
         LEFT JOIN mo_academic_units un ON un.id = sp.academic_unit_id
-       WHERE a.deliverable_id = $1 AND a.status <> 'cancelled'
+       WHERE a.deliverable_id = $1 AND a.is_smc AND a.status <> 'cancelled'
          AND COALESCE(a.smc_status,'') <> 'cancelled'`, [did]);
-    const pick = (smc: boolean) => {
-      const r = rows.find((x) => !!x.is_smc === smc);
-      return r ? { assignment_id: r.id, user_id: r.user_id, full_name: r.full_name,
-                   designation: r.designation ?? null, institute: r.institute ?? null,
-                   status: smc ? r.smc_status : r.status } : null;
-    };
-    res.json({ crew: pick(false), smc: pick(true) });
+    const r = rows[0];
+    const smc = r ? { assignment_id: r.id, user_id: r.user_id, full_name: r.full_name,
+                      designation: r.designation ?? null, institute: r.institute ?? null, status: r.smc_status } : null;
+    // The crew assignee is the deliverable's owner — the one record of it.
+    const o = (await pool.query(
+      `SELECT d.owner_id, d.status, us.full_name, p.designation FROM mo_deliverables d
+         JOIN users us ON us.id = d.owner_id
+         LEFT JOIN mo_user_profiles p ON p.user_id = us.id
+        WHERE d.id = $1`, [did])).rows[0];
+    const crew = o ? { assignment_id: null, user_id: o.owner_id, full_name: o.full_name,
+                       designation: o.designation ?? null, institute: null, status: o.status } : null;
+    res.json({ crew, smc });
   }));
 
   /** Candidates for both pickers, from the existing rosters. */
@@ -16789,7 +17714,31 @@ async function allocateInternalCode(
       `SELECT d.*, p.name AS project_name FROM mo_deliverables d
          LEFT JOIN mo_projects p ON p.id = d.project_id WHERE d.id=$1`, [did])).rows[0];
     if (!d) return sendError(res, 404, "That deliverable could not be found.");
-    // Same gate the rest of the project surface uses: owner, PM, Team Lead or Admin.
+    /* ── Crew: the deliverable's owner IS the assignment ─────────────────────
+       A crew assignee used to be an mo_assignments row the rest of the product
+       never read: My Day showed nothing, and the employee could not move the
+       deliverable because /status checks owner_id. It is now owner_id, written
+       through the same deliverableAssigned() every other path uses, by the
+       same people who may run the project. */
+    if (kind === "crew") {
+      if (!(await canManageProject(u, Number(d.project_id))))
+        return sendError(res, 403, "Only the project's Team Lead, owner/PM or an Admin may assign this deliverable.");
+      if (!(await assertAssignable(res, u, [memberId]))) return;
+      const from = d.owner_id ? String(d.owner_id) : null;
+      if (from === memberId) return res.json({ ok: true, unchanged: true, kind });
+      const { rows } = await pool.query(
+        `UPDATE mo_deliverables SET owner_id=$1, updated_at=NOW() WHERE id=$2 RETURNING *`, [memberId, did]);
+      await deliverableAssigned(u, rows[0], from, memberId);
+      await audit(u, "deliverable.assigned", "deliverable", did, { owner_id: from },
+        { owner_id: memberId, kind }, req);
+      const who = (await pool.query(
+        `SELECT us.full_name, p.designation FROM users us LEFT JOIN mo_user_profiles p ON p.user_id=us.id
+          WHERE us.id=$1`, [memberId])).rows[0] ?? {};
+      return res.status(201).json({ ok: true, kind,
+        assignee: { user_id: memberId, full_name: who.full_name ?? null, designation: who.designation ?? null, institute: null } });
+    }
+
+    // SMC coverage keeps the gate it has always had: owner, PM, Team Lead or Admin.
     const pm = await pool.query(
       `SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2
          AND is_project_manager AND removed_at IS NULL`, [d.project_id, u.id]);
@@ -16798,9 +17747,7 @@ async function allocateInternalCode(
     if (!(isMoAdmin(u) || isMoTL(u) || owner === u.id || pm.rows[0]))
       return sendError(res, 403, "Only the owner/PM, a Team Lead or Admin may assign this deliverable.");
 
-    if (kind === "crew") {
-      if (!(await assertAssignable(res, u, [memberId]))) return;
-    } else {
+    {
       const sp = (await pool.query(
         `SELECT is_active FROM mo_smc_profiles WHERE user_id=$1`, [memberId])).rows[0];
       if (!sp) return sendError(res, 404, "That SMC member could not be found.");

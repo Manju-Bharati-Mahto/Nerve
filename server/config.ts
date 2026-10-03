@@ -82,6 +82,13 @@ export const config = {
     oauthClientId: process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() || "",
     oauthClientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim() || "",
     oauthRefreshToken: process.env.GOOGLE_OAUTH_REFRESH_TOKEN?.trim() || "",
+    /* Casting registration photos (server/casting-photos.ts). The SAME
+       credentials as above, beneath a folder of their own — the Casting
+       Manager's "Casting Registrations" folder — because the video root has a
+       documented sub-structure that applicant photos have no place in. With
+       this unset the public form falls back to asking for a Drive link, exactly
+       as it did before uploads existed. */
+    castingFolderId: process.env.GOOGLE_DRIVE_CASTING_FOLDER_ID?.trim() || "",
     /* Dev/test filesystem adapter. Ignored whenever real Google credentials are
        present, so it can never silently shadow production Drive. */
     localRoot: process.env.DRIVE_LOCAL_ROOT?.trim() || "",

@@ -7,8 +7,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 20,
-  "smallTaps": 10
+  "taps": 21,
+  "smallTaps": 2
  },
  {
   "who": "admin",
@@ -18,8 +18,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 20,
-  "smallTaps": 10
+  "taps": 21,
+  "smallTaps": 2
  },
  {
   "who": "admin",
@@ -29,8 +29,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 20,
-  "smallTaps": 10
+  "taps": 21,
+  "smallTaps": 2
  },
  {
   "who": "admin",
@@ -40,8 +40,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 20,
-  "smallTaps": 10
+  "taps": 21,
+  "smallTaps": 2
  },
  {
   "who": "admin",
@@ -51,8 +51,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 20,
-  "smallTaps": 10
+  "taps": 21,
+  "smallTaps": 2
  },
  {
   "who": "admin",
@@ -62,8 +62,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 20,
-  "smallTaps": 10
+  "taps": 21,
+  "smallTaps": 2
  },
  {
   "who": "admin",
@@ -73,8 +73,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 20,
-  "smallTaps": 10
+  "taps": 21,
+  "smallTaps": 2
  },
  {
   "who": "admin",
@@ -85,7 +85,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -96,7 +96,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -107,7 +107,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -118,7 +118,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -129,7 +129,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -140,7 +140,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -151,7 +151,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -162,7 +162,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 55
+  "smallTaps": 46
  },
  {
   "who": "admin",
@@ -173,7 +173,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "admin",
@@ -184,7 +184,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "admin",
@@ -195,7 +195,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "admin",
@@ -206,7 +206,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "admin",
@@ -217,7 +217,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "admin",
@@ -228,7 +228,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "admin",
@@ -239,7 +239,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -250,7 +250,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -261,7 +261,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -272,7 +272,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -283,7 +283,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -294,7 +294,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -305,7 +305,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -315,8 +315,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 20,
-  "smallTaps": 10
+  "taps": 21,
+  "smallTaps": 2
  },
  {
   "who": "admin",
@@ -326,8 +326,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 20,
-  "smallTaps": 10
+  "taps": 21,
+  "smallTaps": 2
  },
  {
   "who": "admin",
@@ -337,8 +337,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 20,
-  "smallTaps": 10
+  "taps": 21,
+  "smallTaps": 2
  },
  {
   "who": "admin",
@@ -348,8 +348,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 20,
-  "smallTaps": 10
+  "taps": 21,
+  "smallTaps": 2
  },
  {
   "who": "admin",
@@ -359,8 +359,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 20,
-  "smallTaps": 10
+  "taps": 21,
+  "smallTaps": 2
  },
  {
   "who": "admin",
@@ -370,8 +370,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 20,
-  "smallTaps": 10
+  "taps": 21,
+  "smallTaps": 2
  },
  {
   "who": "admin",
@@ -381,8 +381,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 20,
-  "smallTaps": 10
+  "taps": 21,
+  "smallTaps": 2
  },
  {
   "who": "admin",
@@ -393,7 +393,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "admin",
@@ -404,7 +404,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "admin",
@@ -415,7 +415,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "admin",
@@ -426,7 +426,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "admin",
@@ -437,7 +437,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "admin",
@@ -448,7 +448,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "admin",
@@ -459,7 +459,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "admin",
@@ -469,8 +469,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "admin",
@@ -480,8 +480,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "admin",
@@ -491,8 +491,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "admin",
@@ -502,8 +502,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "admin",
@@ -513,8 +513,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "admin",
@@ -524,8 +524,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "admin",
@@ -535,8 +535,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "admin",
@@ -547,7 +547,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -558,7 +558,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -569,7 +569,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -580,7 +580,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -591,7 +591,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -602,7 +602,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -613,7 +613,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -624,7 +624,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -635,7 +635,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -646,7 +646,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -657,7 +657,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -668,7 +668,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -679,7 +679,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -690,7 +690,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "admin",
@@ -700,8 +700,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "admin",
@@ -711,8 +711,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "admin",
@@ -722,8 +722,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "admin",
@@ -733,8 +733,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "admin",
@@ -744,8 +744,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "admin",
@@ -755,8 +755,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "admin",
@@ -766,8 +766,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "admin",
@@ -855,7 +855,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -866,7 +866,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -877,7 +877,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -888,7 +888,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -899,7 +899,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -910,7 +910,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -921,7 +921,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -932,7 +932,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -943,7 +943,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -954,7 +954,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -965,7 +965,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -976,7 +976,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -987,7 +987,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -998,7 +998,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1009,7 +1009,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "admin",
@@ -1020,7 +1020,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "admin",
@@ -1031,7 +1031,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "admin",
@@ -1042,7 +1042,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "admin",
@@ -1053,7 +1053,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "admin",
@@ -1064,7 +1064,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "admin",
@@ -1075,7 +1075,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "admin",
@@ -1086,7 +1086,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1097,7 +1097,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1108,7 +1108,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1119,7 +1119,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1130,7 +1130,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1141,7 +1141,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1152,7 +1152,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1163,7 +1163,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1174,7 +1174,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1185,7 +1185,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1196,7 +1196,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1207,7 +1207,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1218,7 +1218,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1229,7 +1229,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1240,7 +1240,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "admin",
@@ -1251,7 +1251,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "admin",
@@ -1262,7 +1262,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "admin",
@@ -1273,7 +1273,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "admin",
@@ -1284,7 +1284,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "admin",
@@ -1295,7 +1295,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "admin",
@@ -1306,7 +1306,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "admin",
@@ -1317,7 +1317,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1328,7 +1328,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1339,7 +1339,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1350,7 +1350,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1361,7 +1361,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1372,7 +1372,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1383,7 +1383,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1393,8 +1393,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1404,8 +1404,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1415,8 +1415,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1426,8 +1426,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1437,8 +1437,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1448,8 +1448,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1459,8 +1459,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1471,7 +1471,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1482,7 +1482,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1493,7 +1493,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1504,7 +1504,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1515,7 +1515,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1526,7 +1526,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1537,7 +1537,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 42,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "admin",
@@ -1624,8 +1624,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 34
  },
  {
   "who": "admin",
@@ -1635,8 +1635,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "admin",
@@ -1646,8 +1646,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "admin",
@@ -1657,8 +1657,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "admin",
@@ -1668,8 +1668,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "admin",
@@ -1679,8 +1679,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "admin",
@@ -1690,8 +1690,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "admin",
@@ -2009,7 +2009,7 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 27,
+  "taps": 28,
   "smallTaps": 1
  },
  {
@@ -2020,7 +2020,7 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 27,
+  "taps": 28,
   "smallTaps": 1
  },
  {
@@ -2031,7 +2031,7 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 27,
+  "taps": 28,
   "smallTaps": 1
  },
  {
@@ -2042,7 +2042,7 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 27,
+  "taps": 28,
   "smallTaps": 1
  },
  {
@@ -2053,7 +2053,7 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 27,
+  "taps": 28,
   "smallTaps": 1
  },
  {
@@ -2064,7 +2064,7 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 27,
+  "taps": 28,
   "smallTaps": 1
  },
  {
@@ -2075,7 +2075,7 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 27,
+  "taps": 28,
   "smallTaps": 1
  },
  {
@@ -2394,8 +2394,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "admin",
@@ -2405,8 +2405,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "admin",
@@ -2416,8 +2416,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "admin",
@@ -2427,8 +2427,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "admin",
@@ -2438,8 +2438,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "admin",
@@ -2449,8 +2449,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "admin",
@@ -2460,8 +2460,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "admin",
@@ -3781,7 +3781,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -3792,7 +3792,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -3803,7 +3803,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -3814,7 +3814,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -3825,7 +3825,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -3836,7 +3836,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -3847,7 +3847,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -3858,7 +3858,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -3869,7 +3869,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -3880,7 +3880,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -3891,7 +3891,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -3902,7 +3902,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -3913,7 +3913,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -3924,7 +3924,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -3935,7 +3935,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 55
+  "smallTaps": 46
  },
  {
   "who": "coordinator",
@@ -3946,7 +3946,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "coordinator",
@@ -3957,7 +3957,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "coordinator",
@@ -3968,7 +3968,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "coordinator",
@@ -3979,7 +3979,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "coordinator",
@@ -3990,7 +3990,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "coordinator",
@@ -4001,7 +4001,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "coordinator",
@@ -4012,7 +4012,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4023,7 +4023,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4034,7 +4034,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4045,7 +4045,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4056,7 +4056,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4067,7 +4067,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4078,7 +4078,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4089,7 +4089,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4100,7 +4100,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4111,7 +4111,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4122,7 +4122,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4133,7 +4133,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4144,7 +4144,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4155,7 +4155,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4166,7 +4166,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "coordinator",
@@ -4177,7 +4177,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "coordinator",
@@ -4188,7 +4188,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "coordinator",
@@ -4199,7 +4199,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "coordinator",
@@ -4210,7 +4210,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "coordinator",
@@ -4221,7 +4221,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "coordinator",
@@ -4232,7 +4232,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "coordinator",
@@ -4242,8 +4242,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "coordinator",
@@ -4253,8 +4253,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "coordinator",
@@ -4264,8 +4264,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "coordinator",
@@ -4275,8 +4275,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "coordinator",
@@ -4286,8 +4286,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "coordinator",
@@ -4297,8 +4297,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "coordinator",
@@ -4308,8 +4308,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "coordinator",
@@ -4320,7 +4320,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4331,7 +4331,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4342,7 +4342,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4353,7 +4353,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4364,7 +4364,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4375,7 +4375,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4386,7 +4386,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4397,7 +4397,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4408,7 +4408,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4419,7 +4419,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4430,7 +4430,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4441,7 +4441,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4452,7 +4452,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4463,7 +4463,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "coordinator",
@@ -4473,8 +4473,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "coordinator",
@@ -4484,8 +4484,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "coordinator",
@@ -4495,8 +4495,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "coordinator",
@@ -4506,8 +4506,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "coordinator",
@@ -4517,8 +4517,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "coordinator",
@@ -4528,8 +4528,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "coordinator",
@@ -4539,8 +4539,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "coordinator",
@@ -4628,7 +4628,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4639,7 +4639,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4650,7 +4650,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4661,7 +4661,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4672,7 +4672,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4683,7 +4683,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4694,7 +4694,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4705,7 +4705,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4716,7 +4716,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4727,7 +4727,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4738,7 +4738,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4749,7 +4749,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4760,7 +4760,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4771,7 +4771,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4782,7 +4782,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "coordinator",
@@ -4793,7 +4793,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "coordinator",
@@ -4804,7 +4804,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "coordinator",
@@ -4815,7 +4815,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "coordinator",
@@ -4826,7 +4826,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "coordinator",
@@ -4837,7 +4837,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "coordinator",
@@ -4848,7 +4848,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "coordinator",
@@ -4859,7 +4859,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4870,7 +4870,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4881,7 +4881,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4892,7 +4892,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4903,7 +4903,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4914,7 +4914,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4925,7 +4925,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4936,7 +4936,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4947,7 +4947,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4958,7 +4958,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4969,7 +4969,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4980,7 +4980,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -4991,7 +4991,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5002,7 +5002,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5013,7 +5013,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "coordinator",
@@ -5024,7 +5024,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "coordinator",
@@ -5035,7 +5035,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "coordinator",
@@ -5046,7 +5046,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "coordinator",
@@ -5057,7 +5057,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "coordinator",
@@ -5068,7 +5068,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "coordinator",
@@ -5079,7 +5079,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "coordinator",
@@ -5090,7 +5090,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5101,7 +5101,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5112,7 +5112,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5123,7 +5123,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5134,7 +5134,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5145,7 +5145,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5156,7 +5156,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5166,8 +5166,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5177,8 +5177,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5188,8 +5188,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5199,8 +5199,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5210,8 +5210,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5221,8 +5221,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5232,8 +5232,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5244,7 +5244,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5255,7 +5255,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5266,7 +5266,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5277,7 +5277,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5288,7 +5288,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5299,7 +5299,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5310,7 +5310,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 25,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -5397,8 +5397,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 34
  },
  {
   "who": "coordinator",
@@ -5408,8 +5408,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "coordinator",
@@ -5419,8 +5419,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "coordinator",
@@ -5430,8 +5430,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "coordinator",
@@ -5441,8 +5441,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "coordinator",
@@ -5452,8 +5452,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "coordinator",
@@ -5463,8 +5463,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "coordinator",
@@ -6167,8 +6167,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "coordinator",
@@ -6178,8 +6178,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "coordinator",
@@ -6189,8 +6189,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "coordinator",
@@ -6200,8 +6200,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "coordinator",
@@ -6211,8 +6211,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "coordinator",
@@ -6222,8 +6222,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "coordinator",
@@ -6233,8 +6233,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "coordinator",
@@ -6629,8 +6629,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 57,
-  "smallTaps": 16
+  "taps": 56,
+  "smallTaps": 15
  },
  {
   "who": "coordinator",
@@ -6640,8 +6640,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 57,
-  "smallTaps": 16
+  "taps": 56,
+  "smallTaps": 15
  },
  {
   "who": "coordinator",
@@ -6651,8 +6651,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 57,
-  "smallTaps": 16
+  "taps": 56,
+  "smallTaps": 15
  },
  {
   "who": "coordinator",
@@ -6662,8 +6662,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 57,
-  "smallTaps": 16
+  "taps": 56,
+  "smallTaps": 15
  },
  {
   "who": "coordinator",
@@ -6673,8 +6673,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 57,
-  "smallTaps": 16
+  "taps": 56,
+  "smallTaps": 15
  },
  {
   "who": "coordinator",
@@ -6684,8 +6684,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 57,
-  "smallTaps": 16
+  "taps": 56,
+  "smallTaps": 15
  },
  {
   "who": "coordinator",
@@ -6695,8 +6695,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 57,
-  "smallTaps": 16
+  "taps": 56,
+  "smallTaps": 15
  },
  {
   "who": "coordinator",
@@ -6706,8 +6706,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 22,
-  "smallTaps": 5
+  "taps": 21,
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -6717,8 +6717,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 22,
-  "smallTaps": 5
+  "taps": 21,
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -6728,8 +6728,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 22,
-  "smallTaps": 5
+  "taps": 21,
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -6739,8 +6739,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 22,
-  "smallTaps": 5
+  "taps": 21,
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -6750,8 +6750,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 22,
-  "smallTaps": 5
+  "taps": 21,
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -6761,8 +6761,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 22,
-  "smallTaps": 5
+  "taps": 21,
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -6772,8 +6772,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 22,
-  "smallTaps": 5
+  "taps": 21,
+  "smallTaps": 4
  },
  {
   "who": "coordinator",
@@ -6783,8 +6783,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 24,
-  "smallTaps": 6
+  "taps": 23,
+  "smallTaps": 5
  },
  {
   "who": "coordinator",
@@ -6794,8 +6794,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 24,
-  "smallTaps": 6
+  "taps": 23,
+  "smallTaps": 5
  },
  {
   "who": "coordinator",
@@ -6805,8 +6805,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 24,
-  "smallTaps": 6
+  "taps": 23,
+  "smallTaps": 5
  },
  {
   "who": "coordinator",
@@ -6816,8 +6816,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 24,
-  "smallTaps": 6
+  "taps": 23,
+  "smallTaps": 5
  },
  {
   "who": "coordinator",
@@ -6827,8 +6827,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 24,
-  "smallTaps": 6
+  "taps": 23,
+  "smallTaps": 5
  },
  {
   "who": "coordinator",
@@ -6838,8 +6838,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 24,
-  "smallTaps": 6
+  "taps": 23,
+  "smallTaps": 5
  },
  {
   "who": "coordinator",
@@ -6849,8 +6849,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 24,
-  "smallTaps": 6
+  "taps": 23,
+  "smallTaps": 5
  },
  {
   "who": "coordinator",
@@ -6860,8 +6860,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 35,
-  "smallTaps": 12
+  "taps": 33,
+  "smallTaps": 10
  },
  {
   "who": "coordinator",
@@ -6871,8 +6871,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 35,
-  "smallTaps": 12
+  "taps": 33,
+  "smallTaps": 10
  },
  {
   "who": "coordinator",
@@ -6882,8 +6882,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 35,
-  "smallTaps": 12
+  "taps": 33,
+  "smallTaps": 10
  },
  {
   "who": "coordinator",
@@ -6893,8 +6893,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 35,
-  "smallTaps": 12
+  "taps": 33,
+  "smallTaps": 10
  },
  {
   "who": "coordinator",
@@ -6904,8 +6904,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 35,
-  "smallTaps": 12
+  "taps": 33,
+  "smallTaps": 10
  },
  {
   "who": "coordinator",
@@ -6915,8 +6915,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 35,
-  "smallTaps": 12
+  "taps": 33,
+  "smallTaps": 10
  },
  {
   "who": "coordinator",
@@ -6926,8 +6926,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 35,
-  "smallTaps": 12
+  "taps": 33,
+  "smallTaps": 10
  },
  {
   "who": "coordinator",
@@ -6937,8 +6937,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 23,
-  "smallTaps": 6
+  "taps": 22,
+  "smallTaps": 5
  },
  {
   "who": "coordinator",
@@ -6948,8 +6948,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 23,
-  "smallTaps": 6
+  "taps": 22,
+  "smallTaps": 5
  },
  {
   "who": "coordinator",
@@ -6959,8 +6959,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 23,
-  "smallTaps": 6
+  "taps": 22,
+  "smallTaps": 5
  },
  {
   "who": "coordinator",
@@ -6970,8 +6970,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 23,
-  "smallTaps": 6
+  "taps": 22,
+  "smallTaps": 5
  },
  {
   "who": "coordinator",
@@ -6981,8 +6981,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 23,
-  "smallTaps": 6
+  "taps": 22,
+  "smallTaps": 5
  },
  {
   "who": "coordinator",
@@ -6992,8 +6992,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 23,
-  "smallTaps": 6
+  "taps": 22,
+  "smallTaps": 5
  },
  {
   "who": "coordinator",
@@ -7003,8 +7003,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 23,
-  "smallTaps": 6
+  "taps": 22,
+  "smallTaps": 5
  },
  {
   "who": "coordinator",
@@ -7014,8 +7014,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 38,
-  "smallTaps": 16
+  "taps": 37,
+  "smallTaps": 15
  },
  {
   "who": "coordinator",
@@ -7025,8 +7025,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 38,
-  "smallTaps": 16
+  "taps": 37,
+  "smallTaps": 15
  },
  {
   "who": "coordinator",
@@ -7036,8 +7036,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 38,
-  "smallTaps": 16
+  "taps": 37,
+  "smallTaps": 15
  },
  {
   "who": "coordinator",
@@ -7047,8 +7047,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 38,
-  "smallTaps": 16
+  "taps": 37,
+  "smallTaps": 15
  },
  {
   "who": "coordinator",
@@ -7058,8 +7058,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 38,
-  "smallTaps": 16
+  "taps": 37,
+  "smallTaps": 15
  },
  {
   "who": "coordinator",
@@ -7069,8 +7069,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 38,
-  "smallTaps": 16
+  "taps": 37,
+  "smallTaps": 15
  },
  {
   "who": "coordinator",
@@ -7080,8 +7080,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 38,
-  "smallTaps": 16
+  "taps": 37,
+  "smallTaps": 15
  },
  {
   "who": "coordinator",
@@ -10095,7 +10095,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10106,7 +10106,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10117,7 +10117,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10128,7 +10128,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10139,7 +10139,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10150,7 +10150,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10161,7 +10161,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10172,7 +10172,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10183,7 +10183,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10194,7 +10194,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10205,7 +10205,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10216,7 +10216,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10227,7 +10227,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10238,7 +10238,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10249,7 +10249,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 55
+  "smallTaps": 46
  },
  {
   "who": "employee",
@@ -10260,7 +10260,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "employee",
@@ -10271,7 +10271,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "employee",
@@ -10282,7 +10282,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "employee",
@@ -10293,7 +10293,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "employee",
@@ -10304,7 +10304,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "employee",
@@ -10315,7 +10315,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "employee",
@@ -10326,7 +10326,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10337,7 +10337,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10348,7 +10348,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10359,7 +10359,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10370,7 +10370,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10381,7 +10381,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10392,7 +10392,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10403,7 +10403,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10414,7 +10414,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10425,7 +10425,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10436,7 +10436,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10447,7 +10447,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10458,7 +10458,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10469,7 +10469,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10480,7 +10480,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "employee",
@@ -10491,7 +10491,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "employee",
@@ -10502,7 +10502,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "employee",
@@ -10513,7 +10513,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "employee",
@@ -10524,7 +10524,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "employee",
@@ -10535,7 +10535,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "employee",
@@ -10546,7 +10546,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "employee",
@@ -10556,8 +10556,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "employee",
@@ -10567,8 +10567,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "employee",
@@ -10578,8 +10578,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "employee",
@@ -10589,8 +10589,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "employee",
@@ -10600,8 +10600,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "employee",
@@ -10611,8 +10611,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "employee",
@@ -10622,8 +10622,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "employee",
@@ -10634,7 +10634,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10645,7 +10645,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10656,7 +10656,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10667,7 +10667,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10678,7 +10678,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10689,7 +10689,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10700,7 +10700,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10711,7 +10711,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10722,7 +10722,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10733,7 +10733,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10744,7 +10744,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10755,7 +10755,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10766,7 +10766,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10777,7 +10777,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "employee",
@@ -10787,8 +10787,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "employee",
@@ -10798,8 +10798,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "employee",
@@ -10809,8 +10809,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "employee",
@@ -10820,8 +10820,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "employee",
@@ -10831,8 +10831,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "employee",
@@ -10842,8 +10842,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "employee",
@@ -10853,8 +10853,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "employee",
@@ -11711,8 +11711,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 30,
-  "smallTaps": 19
+  "taps": 35,
+  "smallTaps": 23
  },
  {
   "who": "employee",
@@ -11722,8 +11722,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 30,
-  "smallTaps": 19
+  "taps": 35,
+  "smallTaps": 18
  },
  {
   "who": "employee",
@@ -11733,8 +11733,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 30,
-  "smallTaps": 19
+  "taps": 35,
+  "smallTaps": 18
  },
  {
   "who": "employee",
@@ -11744,8 +11744,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 30,
-  "smallTaps": 19
+  "taps": 35,
+  "smallTaps": 18
  },
  {
   "who": "employee",
@@ -11755,8 +11755,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 30,
-  "smallTaps": 19
+  "taps": 35,
+  "smallTaps": 18
  },
  {
   "who": "employee",
@@ -11766,8 +11766,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 30,
-  "smallTaps": 19
+  "taps": 35,
+  "smallTaps": 18
  },
  {
   "who": "employee",
@@ -11777,8 +11777,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 30,
-  "smallTaps": 19
+  "taps": 35,
+  "smallTaps": 18
  },
  {
   "who": "employee",
@@ -12481,8 +12481,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "employee",
@@ -12492,8 +12492,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "employee",
@@ -12503,8 +12503,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "employee",
@@ -12514,8 +12514,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "employee",
@@ -12525,8 +12525,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "employee",
@@ -12536,8 +12536,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "employee",
@@ -12547,8 +12547,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "employee",
@@ -12866,7 +12866,7 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 31,
+  "taps": 33,
   "smallTaps": 12
  },
  {
@@ -12877,7 +12877,7 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 31,
+  "taps": 33,
   "smallTaps": 12
  },
  {
@@ -12888,7 +12888,7 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 31,
+  "taps": 33,
   "smallTaps": 12
  },
  {
@@ -12899,7 +12899,7 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 31,
+  "taps": 33,
   "smallTaps": 12
  },
  {
@@ -12910,7 +12910,7 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 31,
+  "taps": 33,
   "smallTaps": 12
  },
  {
@@ -12921,7 +12921,7 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 31,
+  "taps": 33,
   "smallTaps": 12
  },
  {
@@ -12932,7 +12932,7 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 31,
+  "taps": 33,
   "smallTaps": 12
  },
  {
@@ -13868,7 +13868,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -13879,7 +13879,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -13890,7 +13890,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -13901,7 +13901,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -13912,7 +13912,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -13923,7 +13923,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -13934,7 +13934,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -13945,7 +13945,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -13956,7 +13956,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -13967,7 +13967,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -13978,7 +13978,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -13989,7 +13989,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14000,7 +14000,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14011,7 +14011,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 23,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14022,7 +14022,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 55
+  "smallTaps": 46
  },
  {
   "who": "team_lead",
@@ -14033,7 +14033,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "team_lead",
@@ -14044,7 +14044,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "team_lead",
@@ -14055,7 +14055,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "team_lead",
@@ -14066,7 +14066,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "team_lead",
@@ -14077,7 +14077,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "team_lead",
@@ -14088,7 +14088,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 66,
-  "smallTaps": 56
+  "smallTaps": 46
  },
  {
   "who": "team_lead",
@@ -14099,7 +14099,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14110,7 +14110,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14121,7 +14121,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14132,7 +14132,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14143,7 +14143,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14154,7 +14154,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14165,7 +14165,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14176,7 +14176,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14187,7 +14187,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14198,7 +14198,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14209,7 +14209,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14220,7 +14220,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14231,7 +14231,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14242,7 +14242,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14253,7 +14253,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "team_lead",
@@ -14264,7 +14264,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "team_lead",
@@ -14275,7 +14275,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "team_lead",
@@ -14286,7 +14286,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "team_lead",
@@ -14297,7 +14297,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "team_lead",
@@ -14308,7 +14308,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "team_lead",
@@ -14319,7 +14319,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 19,
-  "smallTaps": 9
+  "smallTaps": 0
  },
  {
   "who": "team_lead",
@@ -14329,8 +14329,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "team_lead",
@@ -14340,8 +14340,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "team_lead",
@@ -14351,8 +14351,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "team_lead",
@@ -14362,8 +14362,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "team_lead",
@@ -14373,8 +14373,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "team_lead",
@@ -14384,8 +14384,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "team_lead",
@@ -14395,8 +14395,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 25,
-  "smallTaps": 9
+  "taps": 19,
+  "smallTaps": 0
  },
  {
   "who": "team_lead",
@@ -14407,7 +14407,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14418,7 +14418,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14429,7 +14429,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14440,7 +14440,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14451,7 +14451,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14462,7 +14462,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14473,7 +14473,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14484,7 +14484,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14495,7 +14495,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14506,7 +14506,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14517,7 +14517,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14528,7 +14528,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14539,7 +14539,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14550,7 +14550,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 20,
-  "smallTaps": 10
+  "smallTaps": 1
  },
  {
   "who": "team_lead",
@@ -14560,8 +14560,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "team_lead",
@@ -14571,8 +14571,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "team_lead",
@@ -14582,8 +14582,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "team_lead",
@@ -14593,8 +14593,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "team_lead",
@@ -14604,8 +14604,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "team_lead",
@@ -14615,8 +14615,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "team_lead",
@@ -14626,8 +14626,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 110,
-  "smallTaps": 82
+  "taps": 92,
+  "smallTaps": 73
  },
  {
   "who": "team_lead",
@@ -14715,7 +14715,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14726,7 +14726,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14737,7 +14737,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14748,7 +14748,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14759,7 +14759,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14770,7 +14770,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14781,7 +14781,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14792,7 +14792,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14803,7 +14803,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14814,7 +14814,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14825,7 +14825,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14836,7 +14836,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14847,7 +14847,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14858,7 +14858,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14869,7 +14869,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "team_lead",
@@ -14880,7 +14880,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "team_lead",
@@ -14891,7 +14891,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "team_lead",
@@ -14902,7 +14902,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "team_lead",
@@ -14913,7 +14913,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "team_lead",
@@ -14924,7 +14924,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "team_lead",
@@ -14935,7 +14935,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "team_lead",
@@ -14946,7 +14946,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14957,7 +14957,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14968,7 +14968,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14979,7 +14979,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -14990,7 +14990,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15001,7 +15001,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15012,7 +15012,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15023,7 +15023,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15034,7 +15034,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15045,7 +15045,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15056,7 +15056,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15067,7 +15067,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15078,7 +15078,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15089,7 +15089,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 24,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15100,7 +15100,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "team_lead",
@@ -15111,7 +15111,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "team_lead",
@@ -15122,7 +15122,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "team_lead",
@@ -15133,7 +15133,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "team_lead",
@@ -15144,7 +15144,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "team_lead",
@@ -15155,7 +15155,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "team_lead",
@@ -15166,7 +15166,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 26,
-  "smallTaps": 14
+  "smallTaps": 6
  },
  {
   "who": "team_lead",
@@ -15177,7 +15177,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15188,7 +15188,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15199,7 +15199,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15210,7 +15210,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15221,7 +15221,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15232,7 +15232,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15243,7 +15243,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15253,8 +15253,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15264,8 +15264,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15275,8 +15275,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15286,8 +15286,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15297,8 +15297,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15308,8 +15308,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15319,8 +15319,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 52,
-  "smallTaps": 12
+  "taps": 48,
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15331,7 +15331,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15342,7 +15342,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15353,7 +15353,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15364,7 +15364,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15375,7 +15375,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15386,7 +15386,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15397,7 +15397,7 @@
   "offenders": 0,
   "worst": [],
   "taps": 35,
-  "smallTaps": 12
+  "smallTaps": 4
  },
  {
   "who": "team_lead",
@@ -15484,8 +15484,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 34
  },
  {
   "who": "team_lead",
@@ -15495,8 +15495,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "team_lead",
@@ -15506,8 +15506,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "team_lead",
@@ -15517,8 +15517,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "team_lead",
@@ -15528,8 +15528,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "team_lead",
@@ -15539,8 +15539,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "team_lead",
@@ -15550,8 +15550,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 37,
-  "smallTaps": 26
+  "taps": 48,
+  "smallTaps": 25
  },
  {
   "who": "team_lead",
@@ -16023,8 +16023,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 151,
-  "smallTaps": 53
+  "taps": 145,
+  "smallTaps": 50
  },
  {
   "who": "team_lead",
@@ -16034,8 +16034,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 151,
-  "smallTaps": 63
+  "taps": 145,
+  "smallTaps": 60
  },
  {
   "who": "team_lead",
@@ -16045,8 +16045,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 151,
-  "smallTaps": 63
+  "taps": 145,
+  "smallTaps": 60
  },
  {
   "who": "team_lead",
@@ -16056,8 +16056,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 151,
-  "smallTaps": 63
+  "taps": 145,
+  "smallTaps": 60
  },
  {
   "who": "team_lead",
@@ -16067,8 +16067,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 151,
-  "smallTaps": 63
+  "taps": 145,
+  "smallTaps": 60
  },
  {
   "who": "team_lead",
@@ -16078,8 +16078,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 151,
-  "smallTaps": 63
+  "taps": 145,
+  "smallTaps": 60
  },
  {
   "who": "team_lead",
@@ -16089,8 +16089,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 151,
-  "smallTaps": 63
+  "taps": 145,
+  "smallTaps": 60
  },
  {
   "who": "team_lead",
@@ -16254,8 +16254,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "team_lead",
@@ -16265,8 +16265,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "team_lead",
@@ -16276,8 +16276,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "team_lead",
@@ -16287,8 +16287,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "team_lead",
@@ -16298,8 +16298,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "team_lead",
@@ -16309,8 +16309,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "team_lead",
@@ -16320,8 +16320,8 @@
   "contentOverflow": 0,
   "offenders": 0,
   "worst": [],
-  "taps": 144,
-  "smallTaps": 62
+  "taps": 143,
+  "smallTaps": 61
  },
  {
   "who": "team_lead",

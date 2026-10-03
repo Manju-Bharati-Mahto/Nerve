@@ -551,7 +551,7 @@ describe("inspection and closure on the asset page", () => {
     await new Promise((r) => setTimeout(r, 150));
     const m = h.dom.window.document.getElementById("modal-layer")?.innerHTML ?? "";
     expect(m).toMatch(/Next service due/i);
-    expect(m).toMatch(/Internal — no vendor/i);
+    expect(m).toMatch(/Internal, no vendor/i);
     expect(m).toMatch(/only be updated while it is open/i);
     h.calls.length = 0;
     h.ev(`document.querySelector('#mt-cost').value='1200.75'`);

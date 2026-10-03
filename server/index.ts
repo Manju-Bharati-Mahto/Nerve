@@ -4,6 +4,7 @@ import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import multer from "multer";
 import path from "node:path";
+import os from "node:os";
 import fs from "node:fs";
 import { z } from "zod";
 import {
@@ -139,6 +140,7 @@ import {
 import * as designDb from "./design-db.js";
 import { bootstrapMediaOpsDatabase } from "./mediaops-db.js";
 import { registerMediaOpsApi, runMediaOpsAutomations, creatorStandingOf } from "./mediaops-api.js";
+import { CASTING_PHOTO_MIME, CASTING_PHOTO_MAX_BYTES } from "./casting-photos.js";
 import { registerOutreachVideoApi, VIDEO_MIME_ALLOWLIST, videoFileName } from "./outreach-video/routes.js";
 import { runCreatorNetworkAutomations } from "./creator-automations.js";
 
@@ -662,8 +664,30 @@ const assetImportUpload = multer({
   },
 }).single("file");
 
+/* External casting registration: the applicant's photo, on its way to Google
+   Drive, which is where it lives (server/casting-photos.ts). Staged in a
+   PRIVATE temp directory, deliberately not under uploads/: that tree is served
+   by the express.static mount above, and a photo someone submitted about
+   themselves must never be fetchable by URL, even for the seconds it sits
+   here. The handler unlinks it on every path. The type check is the first
+   pass; the extension comes from the validated MIME, never the filename. */
+const CASTING_PHOTO_STAGING_DIR = path.join(os.tmpdir(), "nerve-casting-photos");
+fs.mkdirSync(CASTING_PHOTO_STAGING_DIR, { recursive: true });
+const castingPhotoUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, CASTING_PHOTO_STAGING_DIR),
+    filename: (_req, file, cb) =>
+      cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${CASTING_PHOTO_MIME[file.mimetype] || ".bin"}`),
+  }),
+  limits: { fileSize: CASTING_PHOTO_MAX_BYTES, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (CASTING_PHOTO_MIME[file.mimetype]) return cb(null, true);
+    cb(new Error("Please upload a JPG, PNG or WEBP photo."));
+  },
+}).single("photo");
+
 registerMediaOpsApi(app, { asyncHandler, sendError, getSingleParam, otpSendLimiter, otpVerifyLimiter,
-                           kioskPinLimiter, assetImportUpload });
+                           kioskPinLimiter, assetImportUpload, castingPhotoUpload });
 registerOutreachVideoApi(app, { asyncHandler, sendError, getSingleParam, videoUpload });
 
 // ── App settings (super admin) ─────────────────────────────────────────────

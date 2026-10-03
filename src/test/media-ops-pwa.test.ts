@@ -159,9 +159,10 @@ describe("status icons", () => {
     expect(missing, "ic() falls back to a dots glyph for an unknown key, silently").toEqual([]);
   });
 
-  it("keeps the text glyph, because <option> cannot hold an icon", () => {
-    /* The role and status selects render `${m.i} ${m.l}` as plain text. */
-    expect(HTML).toMatch(/<option value="\$\{r\}"[^>]*>\$\{m\.i\}/);
+  it("keeps the status text glyph, but role options read as the bare role name", () => {
+    /* Role selects carry no glyph at all: "Team Lead", never "▲ Team Lead". */
+    expect(HTML).not.toMatch(/<option value="\$\{r\}"[^>]*>\$\{m\.i\}/);
+    expect(HTML).toMatch(/<option value="\$\{r\}"[^>]*>\$\{esc\(m\.l\)\}/);
     const entries = HTML.match(MAPS) ?? [];
     expect(entries.every((e) => /i:'[^']*'/.test(e))).toBe(true);
   });

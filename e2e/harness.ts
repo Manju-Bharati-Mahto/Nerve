@@ -88,6 +88,13 @@ async function ready(page: Page) {
      enough — its box changes size with the number of toasts, so the mask moves.
      Hidden outright; they are not what the desktop gate protects. */
   await page.addStyleTag({ content: "#toasts{display:none!important}" });
+  /* The top bar's pull cord drops in and swings on load, then settles onto one
+     fixed resting shape and marks itself idle. Wait for that, so neither the
+     fingerprint nor a screenshot catches the rope mid-swing. */
+  await page.waitForFunction(() => {
+    const c = document.querySelector(".pullcord");
+    return !c || c.getAttribute("data-idle") === "1";
+  }, null, { timeout: 10_000 });
 }
 
 /** Boot as Media Ops staff on the offline seed department. */

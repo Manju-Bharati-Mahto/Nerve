@@ -118,6 +118,7 @@ test.describe("on a desktop", () => {
     const col = kb.querySelector(".kb-col") as HTMLElement;
     return { switcher: !!document.querySelector("#page .kb-switch"),
              colW: Math.round(col.getBoundingClientRect().width),
+             fits: kb.scrollWidth <= kb.clientWidth,
              moveVisible: [...document.querySelectorAll("#page .kc-move")]
                .some((b) => (b as HTMLElement).offsetParent !== null),
              draggable: col.querySelector(".kb-card")?.getAttribute("draggable") };
@@ -128,7 +129,9 @@ test.describe("on a desktop", () => {
     await go(page, "#/media/pipeline");
     const s = await kbShape(page);
     expect(s.switcher, "a phone switcher was built on desktop").toBe(false);
-    expect(s.colW).toBe(286);
+    /* Columns share the track: all six pipeline columns fit at 1440, none squeezed below 168px. */
+    expect(s.fits, "a pipeline column is out of view at 1440").toBe(true);
+    expect(s.colW).toBeGreaterThanOrEqual(168);
     expect(s.moveVisible, "the phone move control is showing on desktop").toBe(false);
     expect(s.draggable).toBe("true");
   });
