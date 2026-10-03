@@ -3655,7 +3655,9 @@ function assignableTeams(){
   return activeTeams().filter(t=>{
     const lead=t.lead_user_id?user(t.lead_user_id):null;
     return !!lead&&lead.is_active!==false;
-  });
+  /* A Team Lead raises projects for their own team only — POST /projects refuses
+     any other — so they are offered nothing else. Coordinator and Admin route. */
+  }).filter(t=>!isTL()||t.lead_user_id===S.me);
 }
 
 function assignableMembers(uid=S.me){
@@ -3669,22 +3671,26 @@ function assignableMembers(uid=S.me){
   }
   return active.filter(x=>x.id===uid);
 }
-/* Who may schedule a deliverable into someone's day: TL/Admin, or the project
-   owner/PM. Mirrors POST /deliverables/:id/schedule. */
-function canScheduleWork(p){return isAdmin()||isTL()||(p&&(p.owner_id===S.me||isPMof(p.id)));}
-/* Who may edit a deliverable due date (PRD §5) — mirrors the server's
-   canEditProjectDates(). Admin: everything. Team Lead: only projects that touch
-   their own team. Employee: read-only. The server re-checks every write. */
-function canEditDueDates(p){
-  if(isAdmin())return true;
-  if(!isTL()||!p)return false;
-  const mine=new Set(assignableMembers().map(u=>u.id));
-  const crew=DB.project_assignments.filter(a=>a.project_id===p.id&&!a.removed_at).map(a=>a.user_id);
-  return [p.owner_id,p.created_by,...crew].some(id=>mine.has(id));
+/* The project's Team Lead — mirrors the server's isTeamLeadOfProject(): the lead
+   of the team the project is routed to, or, for a project from before teams were
+   recorded, the Team Lead who owns it. Being a lead somewhere else is not enough. */
+function leadsProject(p){
+  if(!p||!isTL())return false;
+  if(p.team_id==null)return p.owner_id===S.me;
+  return activeTeams().some(t=>String(t.id)===String(p.team_id)&&t.lead_user_id===S.me);
 }
+/* Who reviews and approves a project's deliverables — mirrors canReviewProject(). */
+function canReviewDeliverables(p){return isAdmin()||leadsProject(p);}
+/* Who may schedule or allocate a deliverable: Admin, the project's lead, or its
+   owner/PM. Mirrors canManageProject() behind /schedule and /assignee. */
+function canScheduleWork(p){return isAdmin()||leadsProject(p)||!!(p&&(p.owner_id===S.me||isPMof(p.id)));}
+/* Who may edit a deliverable due date (PRD §5) — mirrors the server's
+   canEditProjectDates(): Admin, or the project's own lead. The server re-checks. */
+function canEditDueDates(p){return isAdmin()||leadsProject(p);}
 const isPMof = (pid,uid=S.me)=>DB.project_assignments.some(a=>a.project_id===pid&&a.user_id===uid&&a.is_project_manager&&!a.removed_at);
-/* §16: projects on which the current user may CREATE deliverables (employee = owner/PM only). */
-const canOwnProjects=()=>visibleProjects().filter(p=>!['archived','cancelled','completed'].includes(p.status)&&(!isEmp()||p.owner_id===S.me||isPMof(p.id)));
+/* §16: projects on which the current user may CREATE deliverables — the ones they
+   run (Admin, the project's lead, its owner/PM), as POST /projects/:id/deliverables. */
+const canOwnProjects=()=>visibleProjects().filter(p=>!['archived','cancelled','completed'].includes(p.status)&&canScheduleWork(p));
 const isOnProject = (pid,uid=S.me)=>DB.project_assignments.some(a=>a.project_id===pid&&a.user_id===uid&&!a.removed_at);
 
 /* ---------- §16 PERMISSION MATRIX — server-side equivalent, deny by default ---------- */
@@ -3704,7 +3710,7 @@ const CAPS = {
   'project.archive':        {employee:'-',team_lead:'-',admin:'A'},
   'deliverable.edit':       {employee:'OWN',team_lead:'T',admin:'A'},
   'deliverable.submit':     {employee:'OWNER',team_lead:'A',admin:'A'},
-  'deliverable.approve':    {employee:'PM',team_lead:'A',admin:'A'},
+  'deliverable.approve':    {employee:'-',team_lead:'T',admin:'A'},
   'pipeline.view':          {employee:'S',team_lead:'T',admin:'A',coordinator:'A'},
   'boards.manage':          {employee:'-',team_lead:'A',admin:'A'},
   'equipment.book':         {employee:'S',team_lead:'S',admin:'S',coordinator:'S'},
@@ -3769,7 +3775,12 @@ function can(cap,ctx={}){
 /* Data scoping — mirrors what the API would return, not just what the UI hides */
 function visibleProjects(){
   const all=DB.projects.filter(p=>!p.deleted_at);
-  if(isEmp())return all.filter(p=>isOnProject(p.id)||p.owner_id===S.me);   /* #6: employees see only their assigned projects */
+  /* #6: employees see only their projects — owned, crewed on, or holding one of
+     its deliverables (the context they need to do that deliverable). */
+  if(isEmp()){
+    const mine=new Set(DB.deliverables.filter(d=>d.owner_id===S.me&&!d.deleted_at).map(d=>d.project_id));
+    return all.filter(p=>isOnProject(p.id)||p.owner_id===S.me||mine.has(p.id));
+  }
   return all;                                    /* §16 note (1): production history is departmental knowledge */
 }
 function visibleReports(){
@@ -6200,7 +6211,9 @@ function pendingVersionReviews(){
   return DB.deliverable_versions.filter(v=>v.review_status==='pending').map(v=>{
     const d=deliv(v.deliverable_id);if(!d)return null;
     return {v,d,age:D.diff(TODAY,v.submitted_at.slice(0,10))};}).filter(Boolean)
-    .filter(x=>isAdmin()||isTL()?true:isPMof(x.d.project_id))
+    /* The reviews that are MINE to give: projects I lead (or all, as Admin) —
+       never another team's, and never my own deliverable or version. */
+    .filter(x=>canReviewDeliverables(proj(x.d.project_id))&&x.d.owner_id!==S.me&&x.v.submitted_by!==S.me)
     .sort((a,b)=>b.age-a.age);
 }
 function flaggedReports(){return visibleReports().filter(r=>r.status==='flagged')
@@ -8258,9 +8271,8 @@ function viewDashboard(){
   const eq=eqSum2.data;
   const pctOut=eq&&eq.total?Math.round(eq.checked_out/eq.total*100):null;
   const dProj=active.length-lastMonth;
-  /* Same scope as the Pending Approvals widget: everyone above employee sees
-     the queue, an employee only the projects they manage. */
-  const reviews=pendingVersionReviews().filter(({d})=>!isEmp()||isPMof(d.project_id)).length;
+  /* Same scope as the Pending Approvals widget: the reviews that are mine to give. */
+  const reviews=pendingVersionReviews().length;
   const prog=dayProgress(S.me);
   const inProd=active.filter(p=>['in_production','in_review'].includes(p.status)).length;
   const preProd=active.length-inProd;
@@ -9663,7 +9675,7 @@ function filteredProjects(){
   if(f.unit.length)ps=ps.filter(p=>f.unit.includes(p.academic_unit_id));
   if(f.priority.length)ps=ps.filter(p=>f.priority.includes(p.priority));
   if(f.owner.length)ps=ps.filter(p=>f.owner.includes(p.owner_id));
-  if(f.mine)ps=ps.filter(p=>isOnProject(p.id)||p.owner_id===S.me);
+  if(f.mine)ps=ps.filter(p=>isOnProject(p.id)||p.owner_id===S.me||leadsProject(p));
   return ps;
 }
 function viewProjects(){
@@ -9705,7 +9717,7 @@ function viewProjects(){
         <button class="btn sm" data-menu="filterUnit">Academic unit${f.unit.length?` · ${f.unit.length}`:''} ▾</button>
         <button class="btn sm" data-menu="filterPriority">Priority${f.priority.length?` · ${f.priority.length}`:''} ▾</button>
         <button class="btn sm" data-menu="filterYear">${esc(ayear(f.year))} ▾</button>
-        <button class="btn sm ${f.mine?'primary':''}" data-act="projMine">Only mine</button>
+        <button class="btn sm ${f.mine?'primary':''}" data-act="projMine">${isTL()?'My team':'Only mine'}</button>
         ${(f.type.length||f.status.length||f.unit.length||f.priority.length||f.q||f.mine)?`<button class="btn sm ghost" data-act="projClear">Clear</button>`:''}
         <span class="ml-auto f gap2 ac">
           <span class="small mut3">${ps.length} of ${visibleProjects().length}</span>
@@ -9879,7 +9891,7 @@ function viewProject(id,tab){
       <div class="page-actions">
         <span class="f ac gap2"><span class="small mut3">Owner</span>${avatar(p.owner_id,'sm')}
           <span class="small b">${esc(user(p.owner_id).full_name)}</span></span>
-        ${(!isEmp()||p.owner_id===S.me||isPMof(p.id))?`<button class="btn sm" data-act="newDeliverable" data-pid="${p.id}">＋ Deliverable</button>`:""}
+        ${canScheduleWork(p)?`<button class="btn sm" data-act="newDeliverable" data-pid="${p.id}">＋ Deliverable</button>`:""}
         <button class="btn sm primary" data-act="assignWork" data-pid="${p.id}" ${can('project.assign')?'':'disabled'}>＋ Assign work</button>
         <button class="btn sm" data-menu="projMore" data-pid="${p.id}">⋯</button>
       </div></div>
@@ -10198,7 +10210,7 @@ function projDeliverablesTab(p,dls){
   return `<div class="card"><div class="card-head"><h3>Deliverables</h3>
       
       <div class="ca">
-        ${(!isEmp()||p.owner_id===S.me||isPMof(p.id))?`<button class="btn xs primary" data-act="newDeliverable" data-pid="${p.id}">＋ Deliverable</button>`:""}</div></div>
+        ${canScheduleWork(p)?`<button class="btn xs primary" data-act="newDeliverable" data-pid="${p.id}">＋ Deliverable</button>`:""}</div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl m-cards pj-cards">
       <thead><tr><th>Type</th><th>Title</th><th>Owner</th><th>Scheduled</th><th>Due</th><th>Qty</th><th>Versions</th>
         <th>Social</th><th>Mail</th><th>Status</th><th class="num">Actions</th></tr></thead>
@@ -10230,7 +10242,7 @@ function projDeliverablesTab(p,dls){
             ${d.status==='delivered'?(()=>{const ap=DELIV_APPROVAL[d.approval_status||'pending']||DELIV_APPROVAL.pending;
               return `<div class="t-sub"><span class="status ${ap.c}" style="font-size:10px"><span class="si">${sIco(ap)}</span>${ap.l}</span></div>`;})():''}</td>
           <td class="num nowrap" data-stop data-m="actions">
-            ${d.status==='delivered'&&(d.approval_status||'pending')==='pending'&&(isAdmin()||isTL()||isPMof(p.id))&&d.owner_id!==S.me?
+            ${d.status==='delivered'&&(d.approval_status||'pending')==='pending'&&canReviewDeliverables(p)&&d.owner_id!==S.me?
               `<button class="btn xs primary" data-act="reviewDelivered" data-did="${d.id}" data-v="approved">✔ Approve</button>
                <button class="btn xs" data-act="reviewDelivered" data-did="${d.id}" data-v="changes_requested">↩ Revise</button>`:''}
             ${DB.drive_links.filter(l=>l.entity_type==='deliverable'&&l.entity_id===d.id).length?
@@ -10250,17 +10262,18 @@ function projDeliverablesTab(p,dls){
    is offered their team, a Coordinator is offered nothing, and PATCH
    /deliverables/:id re-checks both server-side regardless of what is rendered. */
 function delivOwnerCell(p,d){
-  if(d.owner_id)return avatar(d.owner_id,'sm');
-  if(!canScheduleWork(p))
-    return '<span class="chip mut3" title="The Team Lead has not allocated this yet">No owner</span>';
-  const opts=assignableMembers();
-  if(!opts.length)return '<span class="chip mut3">No owner</span>';
+  const opts=canScheduleWork(p)?assignableMembers():[];
+  /* Reassigning stays in the lead's hands: an owner they could not have chosen
+     (someone outside their scope) is shown, not offered for change. */
+  if(d.owner_id&&!opts.some(u=>u.id===d.owner_id))return avatar(d.owner_id,'sm');
+  if(!opts.length)
+    return `<span class="chip mut3" title="The Team Lead has not allocated this yet">No owner</span>`;
   return `<select class="inp deliv-owner" data-did="${d.id}"
       onchange="ACTIONS.assignDeliverable({did:${d.id}},this)"
       style="height:26px;font-size:11.5px;width:132px;padding:0 6px"
-      title="Assign this deliverable to one of your team">
-    <option value="">Assign…</option>
-    ${opts.map(u=>`<option value="${u.id}">${esc(u.full_name)}</option>`).join('')}</select>`;
+      title="${d.owner_id?'Reassign this deliverable within your team':'Assign this deliverable to one of your team'}">
+    ${d.owner_id?'':'<option value="">Assign…</option>'}
+    ${opts.map(u=>`<option value="${u.id}" ${u.id===d.owner_id?'selected':''}>${esc(u.full_name)}</option>`).join('')}</select>`;
 }
 
 function projShootsTab(p,shoots){
@@ -18802,7 +18815,7 @@ function drawerDeliverable(id){
   const links=DB.drive_links.filter(l=>l.entity_type==='deliverable'&&l.entity_id===id);
   const cs=DB.comments.filter(c=>c.entity_type==='deliverable'&&c.entity_id===id);
   const over=d.due_date&&d.due_date<TODAY&&!['delivered','not_required','cancelled'].includes(d.status);
-  const canApprove=(isAdmin()||isTL()||isPMof(d.project_id))&&latest&&latest.submitted_by!==S.me;
+  const canApprove=canReviewDeliverables(proj(d.project_id))&&latest&&latest.submitted_by!==S.me&&d.owner_id!==S.me;
   /* Review follows the version, not the status: Pending Approvals lists every
      pending version, and the server reviews the latest whatever the status.
      Closed work is the exception: approving would set a delivered item back to
@@ -19137,7 +19150,7 @@ function openNewProject(){
       <div class="field"><label class="lbl">Description</label><textarea class="inp" id="np-desc" placeholder="Scope, constraints, who asked for it…"></textarea></div>
       <div class="field"><label class="lbl">Assigned team</label>
         <select class="inp" id="np-team">
-          <option value="">— Not assigned yet</option>
+          ${isTL()&&assignableTeams().length?'':'<option value="">— Not assigned yet</option>'}
           ${assignableTeams().map(t=>`<option value="${t.id}">${esc(t.name)} — ${esc(user(t.lead_user_id).full_name)}</option>`).join('')}
         </select>
         <div class="hint">The selected team lead will assign individual crew members to each deliverable.</div></div>
@@ -19171,7 +19184,7 @@ function openNewDeliverable(pid){
         <div class="field"><label class="lbl">Type <span class="req">*</span></label>
           <select class="inp" id="nd-type">${DB.deliverable_types.filter(t=>t.is_active).map(t=>`<option value="${t.id}">${t.icon} ${esc(t.name)}</option>`).join('')}</select></div>
         <div class="field"><label class="lbl">Owner <span class="req">*</span></label>
-          <select class="inp" id="nd-owner">${DB.users.filter(u=>u.is_active).map(u=>`<option value="${u.id}" ${u.id===S.me?'selected':''}>${esc(u.full_name)}</option>`).join('')}</select></div>
+          <select class="inp" id="nd-owner">${assignableMembers().map(u=>`<option value="${u.id}" ${u.id===S.me?'selected':''}>${esc(u.full_name)}</option>`).join('')}</select></div>
       </div>
       <div class="field"><label class="lbl">Title <span class="req">*</span></label><input class="inp" id="nd-title" placeholder="e.g. Edited Photos — Convocation 2026"></div>
       <div class="row">
@@ -20936,7 +20949,9 @@ const ACTIONS = {
     const dl=deliv(+d.did);
     const v=DB.deliverable_versions.filter(x=>x.deliverable_id===dl.id).sort((a,b)=>b.version_no-a.version_no)[0];
     if(v.submitted_by===S.me){toast('a version cannot be approved by its submitter','bad');return;}
-    if(!(isAdmin()||isTL()||isPMof(dl.project_id))){toast('403: reviewer must be the PM, a TL or Admin','bad');return;}
+    if(dl.owner_id===S.me){toast('you cannot approve your own deliverable','bad');return;}
+    if(!canReviewDeliverables(proj(dl.project_id))){toast("403: only the project's Team Lead or an Admin may review","bad");return;}
+    dl.dispatch_status=dl.dispatch_status==='none'||!dl.dispatch_status?'queued':dl.dispatch_status;
     v.review_status='approved';v.reviewed_by=S.me;v.reviewed_at=TODAY;
     dl.status='approved';
     audit(S.me,'deliverable.version_reviewed','deliverable_version',v.id,{review_status:'pending'},{review_status:'approved'});
@@ -24512,8 +24527,8 @@ const ACTIONS = {
   },
   reviewDelivered:(d)=>{
     const dl=DB.deliverables.find(x=>x.id===+d.did); if(!dl)return;
-    if(!(isAdmin()||isTL()||isPMof(dl.project_id))){toast('403: only a Team Lead, Admin or PM may review','bad');return;}
-    if(dl.owner_id===S.me&&!isAdmin()){toast('you cannot approve your own deliverable','bad');return;}
+    if(!canReviewDeliverables(proj(dl.project_id))){toast("403: only the project's Team Lead or an Admin may review","bad");return;}
+    if(dl.owner_id===S.me){toast('you cannot approve your own deliverable','bad');return;}
     const to=d.v;
     const before={approval_status:dl.approval_status,status:dl.status};
     dl.approval_status=to; dl.approved_by=S.me;
@@ -24872,14 +24887,19 @@ function applyDelivStatus(dl,s){
   const t=dtype(dl.deliverable_type_id);
   const vs=DB.deliverable_versions.filter(v=>v.deliverable_id===dl.id).sort((a,b)=>b.version_no-a.version_no);
   const latest=vs[0];
-  if(!isAdmin()){  /* Admin has full override — no review mandate (#4) */
-    if(s==='approved'&&latest&&latest.submitted_by===S.me){
-      toast('you submitted the latest version. Someone else must approve it','bad');return false;}
-    if(s==='approved'&&!(isTL()||isPMof(dl.project_id))){
-      toast('reviewer must be the project PM, a Team Lead or Admin','bad');return false;}
-    if(s==='delivered'&&!t.review_exempt&&(!latest||latest.review_status!=='approved')){
-      toast('Delivered requires an approved latest version','bad');return false;}
+  /* The board's verdicts ARE the review (the server sends them through the same
+     reviewDeliverable() as the drawer), so they obey the same rules — Admins too. */
+  if(s==='approved'||s==='changes_requested'){
+    if(!canReviewDeliverables(proj(dl.project_id))){
+      toast("only the project's Team Lead or an Admin may review it",'bad');return false;}
+    if(dl.owner_id===S.me){toast('you cannot review your own deliverable','bad');return false;}
+    if(latest&&latest.submitted_by===S.me){
+      toast('you submitted the latest version. Someone else must review it','bad');return false;}
+    if(s==='approved'&&(!latest||latest.review_status!=='pending')){
+      toast('there is no version waiting for review. The owner submits one first','bad');return false;}
   }
+  if(s==='delivered'&&!t.review_exempt&&dl.status!=='approved'){
+    toast('only an approved deliverable can be delivered','bad');return false;}
   const before=dl.status;dl.status=s;
   if(s==='delivered')dl.completed_at=TODAY;
   audit(S.me,'deliverable.status_changed','deliverable',dl.id,{status:before},{status:s});
@@ -25057,7 +25077,7 @@ function genNotifications(){
   const add=(kind,title,body,et,eid)=>notify(S.me,kind,title,body,et,eid,0);
   DB.deliverables.filter(d=>d.owner_id===S.me&&d.due_date&&d.due_date<TODAY&&!['delivered','not_required','cancelled'].includes(d.status))
     .slice(0,12).forEach(d=>add('overdue','Deliverable overdue','“'+d.title+'” was due '+D.fmt(d.due_date),'deliverable',d.id));
-  DB.deliverables.filter(d=>d.status==='in_review'&&(isAdmin()||isTL()||isPMof(d.project_id)))
+  DB.deliverables.filter(d=>d.status==='in_review'&&canReviewDeliverables(proj(d.project_id))&&d.owner_id!==S.me)
     .slice(0,12).forEach(d=>add('approval','Awaiting your review','“'+d.title+'” has a version pending','deliverable',d.id));
   if(!isEmp())DB.daily_reports.filter(r=>r.status==='flagged').slice(0,12)
     .forEach(r=>add('automation','Report flagged for review',user(r.user_id).full_name+' · '+r.report_date,'report',r.id));
@@ -25979,8 +25999,8 @@ function delivAssignSection(did){
       <dt>SMC member</dt><dd>${line(a.smc&&a.smc.full_name, a.smc&&a.smc.institute)}</dd>
     </dl>
     <div class="f gap2 wrap mb3">
-      <button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="crew">
-        ${a.crew?'Change team member':'Assign to team member'}</button>
+      ${(()=>{const dl=deliv(+did);return dl&&canScheduleWork(proj(dl.project_id))?`<button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="crew">
+        ${a.crew?'Change team member':'Assign to team member'}</button>`:'';})()}
       <button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="smc">
         ${a.smc?'Change SMC member':'Assign to SMC member'}</button>
     </div></div>`;
