@@ -215,3 +215,109 @@ Dev and tests: `DRIVE_LOCAL_ROOT=/some/dir` and nothing else — photos land in
    the configured root. Grouping by campaign is a one-line change if preferred.
 3. **Re-submissions keep history** (new file beside the old one) rather than
    replacing the file in Drive.
+
+---
+
+## Part 2 — connecting Google Drive from the app (added the same day)
+
+> Requested after Part 1: *"one dedicated button in Casting Management, only
+> for the admin … it will ask us to sign in to my Google account … I'll select
+> a Google Drive folder, or Drive can automatically create a folder."*
+
+### What changes
+
+An **Admin-only** button, **Google Drive**, beside *Add casting*, *Manage
+tags* and *Manage categories* in Casting Management. Its dialog:
+
+1. **Step 1 (once).** If no OAuth client is known, shows the four Cloud
+   Console steps with the exact redirect URI to register, and takes the client
+   id and secret. The environment's `GOOGLE_OAUTH_CLIENT_ID/_SECRET` are used
+   instead when set, and the step is skipped.
+2. **Step 2.** *Sign in with Google and connect Drive* opens a popup on
+   Google's consent screen. The callback stores the refresh token and the
+   account's email, then **creates "NERVE Casting Registrations" in that
+   account's My Drive** (or keeps the previously configured folder if the
+   account can see it). The popup tells the opener and closes; the dialog
+   redraws as *Connected as … · Folder …*.
+3. **Folder.** Paste a folder link to use one the Admin already has, or create
+   another by name. **Check connection** asks Google whether the folder is
+   still reachable. **Disconnect** revokes the token and forgets the account;
+   the folder and the client are kept so reconnecting is one click.
+
+The public form switches to *Upload photo* the moment a connection exists,
+with no restart. An app connection takes precedence over the environment
+(`GOOGLE_DRIVE_CASTING_FOLDER_ID`), which remains as the no-UI alternative.
+
+### Architecture
+
+```
+Admin ─click─▶ POST /casting-drive/connect ─▶ { url: accounts.google.com/…?state=<signed> }
+popup ─▶ Google consent ─▶ GET /casting-drive/callback?code&state
+          verify state (HMAC, this admin, 10 min) → exchange code → userinfo
+          → seal refresh token → mo_casting_drive → ensure folder → HTML popup
+          → window.opener.postMessage({type:'nerve-casting-drive'}) → dialog refresh
+casting-photos.ts resolve(): app connection → env → DRIVE_LOCAL_ROOT
+```
+
+**`server/casting-drive.ts`** — everything that talks to Google for this:
+`castingDriveStatus`, `saveCastingDriveClient`, `castingDriveAuthUrl`,
+`completeCastingDriveConnect`, `useCastingDriveFolder`,
+`createCastingDriveFolder`, `checkCastingDrive`, `disconnectCastingDrive`,
+`loadCastingDriveConnection` (what casting-photos needs), plus the pure parts
+`parseDriveFolderId`, `signDriveState`/`verifyDriveState`,
+`castingDriveRedirectUri`. Scope: `drive` + `userinfo.email` (`drive.file`
+could not see a folder the Admin already has).
+
+**`server/secret-box.ts`** — AES-256-GCM `sealSecret`/`openSecret`, key
+derived from `SESSION_SECRET` and a purpose string; `v1.iv.tag.ct`. Rotating
+`SESSION_SECRET` retires sealed values: `openSecret` returns null, the status
+reads "not connected", the Admin reconnects.
+
+**`mo_casting_drive`** — one row (`id = 1`): `oauth_client_id`,
+`oauth_client_secret_enc`, `refresh_token_enc`, `account_email`, `folder_id`,
+`folder_name`, `folder_url`, `connected_by`, `connected_at`, `updated_at`.
+
+**`GoogleDriveClient`** takes optional `OAuthCredentials` so the connected
+account's token is used instead of the environment's.
+
+**`casting-photos.ts`** — `castingPhotosConfigured()` and the resolver are now
+async; `castingPhotoSource()` reports `app | env | local | none`. A loader
+failure (database hiccup) is not memoised. `useCastingDriveLoader()` is the
+test seam.
+
+**Routes** (all `isMoAdmin`, 403 otherwise): `GET /casting-drive`,
+`POST /casting-drive/client`, `POST /casting-drive/connect`,
+`GET /casting-drive/callback` (HTML), `POST /casting-drive/folder`
+(`{folder}` or `{create}`), `POST /casting-drive/check`, `DELETE /casting-drive`.
+Audit actions: `casting_drive.client_saved`, `.connected`, `.folder_changed`,
+`.disconnected`.
+
+### Security
+
+- Admin only, not the Casting Manager duty: this is a credential for an outside
+  account, and whoever holds it can see every applicant photo.
+- `state` is HMAC-signed for the admin who pressed the button and expires in
+  ten minutes; the callback also requires that admin's session (the cookie is
+  `SameSite=Lax`, so Google's top-level redirect carries it).
+- The refresh token never reaches the browser; the popup page carries only
+  ok/message. Secrets are sealed at rest.
+- The OAuth client from the environment is never overwritten from the app.
+
+### Constraint to know
+
+Google registers redirect URIs only for `https://` domains (plus `http://localhost`),
+never a bare IP. `APP_BASE_URL` must be an https domain for the button to
+work in production; the environment-only path has no such requirement.
+
+### Testing
+
+- `server/casting-drive.test.ts` — folder-link parsing, state signing,
+  redirect URI, secret box.
+- `server/mediaops-casting-drive.integration.test.ts` — the full round trip
+  against a fake Google behind `globalThis.fetch`: authority, client saving,
+  sign-in URL, callback refusals (bad state, other admin, non-admin, cancelled,
+  bad code), successful connect with folder creation at My Drive root, upload
+  through the connected Drive and stream back, folder by link / by creation,
+  check, disconnect (revoke, folder kept) and reconnect (folder kept).
+- `server/casting-photos.test.ts` — app connection precedence, non-memoised
+  loader failure.
