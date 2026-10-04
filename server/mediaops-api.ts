@@ -1407,8 +1407,16 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        belong here — the client's capability table has always said so, and this
        gate refusing them is why the New project button appeared and then 403'd. */
     const isCoord = await isCoordinator(u);
-    if (!(isMoAdmin(u) || isMoTL(u) || isCoord))
-      return sendError(res, 403, "Only a Team Lead, Coordinator or Admin may create a project.");
+    /* A Media Crew employee may raise a project too — but only for themselves.
+       It is never routed to a team (routing is the Coordinator's, a lead's own
+       team the lead's): it stays team-less, owned by them, and the one person
+       they may name anywhere on it is themselves, which assertAssignable()
+       below already enforces. SMC members are not Media Crew and stay out. */
+    const isEmployee = !isMoAdmin(u) && !isMoTL(u) && !isCoord && u.team === "media";
+    if (!(isMoAdmin(u) || isMoTL(u) || isCoord || isEmployee))
+      return sendError(res, 403, "Only Media Crew may create a project.");
+    if (isEmployee && b.team_id)
+      return sendError(res, 403, "An employee's project is assigned to themselves — only the Coordinator routes a project to a team.");
 
     /* ── Team assignment ────────────────────────────────────────────────────
        The hierarchy is Coordinator/Admin → Team → Team Lead → Employee. A

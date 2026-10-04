@@ -221,6 +221,46 @@ maybe("project creation — the Coordinator routes to ONE team", () => {
   });
 });
 
+/* ── An EMPLOYEE's project is their own ────────────────────────────────────── */
+
+maybe("employee project creation — assigned to themselves, never to a team", () => {
+  const mine = (extra: Record<string, unknown> = {}) => as("empA1", "POST", "/projects", {
+    name: `${PX} my own project ${Math.random().toString(36).slice(2, 8)}`, project_type_id: projectTypeId,
+    start_date: "2026-10-01", end_date: "2026-10-10", ...extra });
+
+  it("an employee creates a project, and it is theirs: owner and PM, no team", async () => {
+    const r = await mine({ deliverables: [{ title: "Edited Photos", deliverable_type_id: dtype }] });
+    expect(r.status).toBe(201);
+    const p = r.body.project as Record<string, unknown>;
+    expect(p.owner_id).toBe(ACTORS.empA1.id);
+    expect(p.team_id).toBe(null);
+    const pm = await pool.query(
+      `SELECT user_id FROM mo_project_assignments WHERE project_id=$1 AND is_project_manager AND removed_at IS NULL`, [p.id]);
+    expect(pm.rows.map((x) => x.user_id)).toEqual([ACTORS.empA1.id]);
+  });
+
+  it("an employee cannot route their project to a team — their own or another", async () => {
+    expect((await mine({ team_id: teamA })).status).toBe(403);
+    expect((await mine({ team_id: teamB })).status).toBe(403);
+  });
+
+  it("an employee names nobody but themselves", async () => {
+    expect((await mine({ deliverables: [{ title: "x", deliverable_type_id: dtype, owner_id: ACTORS.empA2.id }] })).status).toBe(403);
+    expect((await mine({ assignees: [ACTORS.empA2.id] })).status).toBe(403);
+    const ok = await mine({ deliverables: [{ title: "Mine", deliverable_type_id: dtype, owner_id: ACTORS.empA1.id }] });
+    expect(ok.status).toBe(201);
+  });
+
+  it("a colleague cannot run an employee's project", async () => {
+    const r = await mine();
+    const pid = Number((r.body.project as Record<string, unknown>).id);
+    expect((await as("empA2", "PATCH", `/projects/${pid}`, { description: "mine now" })).status).toBe(403);
+    expect((await as("empA2", "POST", `/projects/${pid}/deliverables`,
+      { title: `${PX} x`, deliverable_type_id: dtype })).status).toBe(403);
+    expect((await as("leadB", "PATCH", `/projects/${pid}`, { description: "x" })).status).toBe(403);
+  });
+});
+
 /* ── TEAM LEAD (6–9) ──────────────────────────────────────────────────────── */
 
 maybe("team lead — allocates inside their own team, on their own team's projects", () => {

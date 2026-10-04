@@ -128,6 +128,17 @@ describe("Team Lead — their own team, their own team's projects", () => {
     expect(opts).toEqual(["", "9001", "9002"]);
   });
 
+  it("New project is offered to an employee, assigned to them, with no team to pick", async () => {
+    const h = await boot(902);
+    expect(h.ev<boolean>("can('project.create')")).toBe(true);
+    h.ev("openNewProject()");
+    expect(h.doc.querySelectorAll("#np-team option").length, "an employee was offered teams").toBe(0);
+    expect((h.doc.getElementById("np-team") as HTMLInputElement).value).toBe("");
+    const layer = h.doc.getElementById("modal-layer")!.innerHTML;
+    expect(layer).toContain("assigned to you");
+    expect(layer).not.toContain("Pending Approval");
+  });
+
   it("allocates a deliverable among their own team — and can reassign it", async () => {
     const h = await boot(901);
     const cell = h.ev<string>("delivOwnerCell(proj(7001),deliv(8003))");

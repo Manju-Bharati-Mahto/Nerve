@@ -3706,7 +3706,7 @@ const CAPS = {
   'report.view':            {employee:'S',team_lead:'T',admin:'A',coordinator:'S'},
   'report.review':          {employee:'-',team_lead:'T',admin:'A'},
   'report.unlock':          {employee:'-',team_lead:'T',admin:'A'},
-  'project.create':         {employee:'-',team_lead:'A',admin:'A',coordinator:'A'},
+  'project.create':         {employee:'A',team_lead:'A',admin:'A',coordinator:'A'},
   'project.approve':        {employee:'-',team_lead:'T',admin:'A'},
   'project.edit':           {employee:'OWN',team_lead:'T',admin:'A',coordinator:'A'},
   'project.status':         {employee:'OWN',team_lead:'T',admin:'A',coordinator:'A'},
@@ -19265,7 +19265,7 @@ function openNewProject(){
   modal(`<div class="mo-head"><div><h2>New project</h2>
       <p>${can('project.approve')?'You can create projects directly.'
         :isCoord()?'You allocate the project to a team. That team’s lead assigns the individual crew.'
-        :'As an employee, your project enters <b>Pending Approval</b> before it is reportable-against. Approval is one click for a TL and auto-reminds after 24h.'}</p></div>
+        :'The project is assigned to you. Only the Coordinator routes a project to a team.'}</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
     <div class="mo-body">
       <div class="field"><label class="lbl">Name <span class="req">*</span></label>
@@ -19291,12 +19291,17 @@ function openNewProject(){
         <div class="field"><label class="lbl">End date <span class="req">*</span></label><input class="inp" type="date" id="np-end" value="${D.add(rtoday(),7)}"></div>
       </div>
       <div class="field"><label class="lbl">Description</label><textarea class="inp" id="np-desc" placeholder="Scope, constraints, who asked for it…"></textarea></div>
-      <div class="field"><label class="lbl">Assigned team</label>
+      ${isEmp()
+        /* An employee's project is theirs — POST /projects refuses a team from them. */
+        ? `<div class="field"><label class="lbl">Assigned to</label>
+            <div class="chip">${esc((user(S.me)||{}).full_name||'You')}</div><input type="hidden" id="np-team" value="">
+            <div class="hint">Your project is assigned to you. Only the Coordinator routes a project to a team.</div></div>`
+        : `<div class="field"><label class="lbl">Assigned team</label>
         <select class="inp" id="np-team">
           ${isTL()&&assignableTeams().length?'':'<option value="">— Not assigned yet</option>'}
           ${assignableTeams().map(t=>`<option value="${t.id}">${esc(t.name)} — ${esc(user(t.lead_user_id).full_name)}</option>`).join('')}
         </select>
-        <div class="hint">The selected team lead will assign individual crew members to each deliverable.</div></div>
+        <div class="hint">The selected team lead will assign individual crew members to each deliverable.</div></div>`}
       <div class="field">
         <div class="between mb2"><label class="lbl" style="margin:0">Deliverables</label>
           <button type="button" class="btn xs" data-act="npAddDeliverable">＋ Add deliverable</button></div>
@@ -19305,7 +19310,7 @@ function openNewProject(){
     </div>
     <div class="mo-foot"><span class="left small mut3">Duplicate scan runs on create</span>
       <button class="btn" onclick="closeModal()">Cancel</button>
-      <button class="btn primary" data-act="createProject">${(can('project.approve')||isCoord())?'Create project':'Propose project'}</button></div>`,{size:'wide'});
+      <button class="btn primary" data-act="createProject">Create project</button></div>`,{size:'wide'});
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=e=>{e.stopPropagation();ACTIONS[n.dataset.act](n.dataset,n);});
   /* Autocomplete from what this crew has actually produced before — a hint
      drawn from real history, never a list the creator must pick from. */
@@ -20965,8 +20970,8 @@ const ACTIONS = {
     if(end<start){toast('end date must be on or after the start date','bad');return;}
     const tid=+$('#np-type').value;
     const id=Math.max(...DB.projects.map(p=>p.id))+1;
-    // The API creates every project active; only the copy differs by role.
-    const gated=!(can('project.approve')||isCoord());
+    // The API creates every project active, an employee's included — no proposal step.
+    const gated=false;
     const p={id,department_id:1,campus_id:1,academic_year_id:+$('#np-year').value,project_type_id:tid,
       code:'MC-2627-'+String(100+id),name,description:$('#np-desc').value.trim(),
       academic_unit_id:$('#np-unit').value?+$('#np-unit').value:null,status:gated?'proposed':'planning',priority:$('#np-pri').value,
