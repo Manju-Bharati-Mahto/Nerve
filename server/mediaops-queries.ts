@@ -262,7 +262,12 @@ export async function findOverdueDeliverables(
        LEFT JOIN users ow      ON ow.id = d.owner_id
       WHERE d.deleted_at IS NULL AND d.due_date < CURRENT_DATE
         AND d.status NOT IN ('delivered','not_required','cancelled')
-        AND d.owner_id IS NOT NULL${scopeSql}
+        AND d.owner_id IS NOT NULL
+        /* AUTO-2 / the overdue widget: skip deliverables whose PROJECT is no
+           longer being driven. A cancelled, on-hold or archived project does
+           not need its people chased, and reminders about work nobody owes
+           read as noise and tune the automation out. */
+        AND (p.status IS NULL OR p.status NOT IN ('cancelled','on_hold','archived'))${scopeSql}
       ORDER BY d.due_date ASC, d.id ASC${limitSql}`, vals);
 
   return rows.map((r) => ({

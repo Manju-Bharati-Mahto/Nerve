@@ -707,20 +707,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     return isMoAdmin(actor) || await isTeamLeadOfProject(actor, projectId);
   }
 
-  /** The person a submission should reach: the project team's lead, else (a
-      legacy project) its owner when they are a Team Lead, else the Admins. */
-  async function reviewerIdsFor(projectId: number): Promise<string[]> {
-    const r = (await pool.query(
-      `SELECT CASE WHEN p.team_id IS NOT NULL THEN t.lead_user_id
-                   WHEN o.role = 'sub_admin' AND o.team = 'media' THEN p.owner_id END AS lead
-         FROM mo_projects p
-         LEFT JOIN mo_teams t ON t.id = p.team_id AND t.is_active AND t.archived_at IS NULL
-         LEFT JOIN users o ON o.id = p.owner_id
-        WHERE p.id = $1`, [projectId])).rows[0];
-    if (r?.lead) return [String(r.lead)];
-    return (await pool.query(
-      `SELECT id FROM users WHERE team='media' AND role IN ('admin','super_admin')`)).rows.map((x) => String(x.id));
-  }
+  /** See the module-level reviewerIdsFor below — kept as an alias so routes
+      inside registerMediaOpsApi can keep calling the short name. */
+  const reviewerIdsFor = reviewerIdsForDb;
 
   /* ── A deliverable's owner IS its crew assignment ──────────────────────────
      mo_deliverables.owner_id is the one record of who executes a deliverable:
@@ -1457,9 +1446,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
           Array.isArray(c.owners) ? (c.owners as unknown[]).map(String) : [])
       : [];
     const named = [...wantAssignees, ...wantOwners, ...wantTemplateOwners, ...(b.owner_id ? [String(b.owner_id)] : [])];
-    if (isCoord && !isMoAdmin(u) && named.some((id) => id !== u.id))
+    /* A Coordinator routes work to a team; they never carry it. Naming anyone —
+       themselves included — would let them become the project's PM or a
+       deliverable's owner, which is the self-naming hole the audit flagged. */
+    if (isCoord && !isMoAdmin(u) && named.length)
       return sendError(res, 403,
-        "A Coordinator assigns the project to a team — the Team Lead assigns individual crew to each deliverable.");
+        "A Coordinator assigns the project to a team — individuals are the Team Lead's to allocate.");
     // Every id a Team Lead or Admin names must still be inside their own scope.
     if (!isCoord && !(await assertAssignable(res, u, named))) return;
     const gated = false;   // TL/Admin only ⇒ projects are created active
@@ -1659,7 +1651,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // Robustness: the INSERT…SELECT yields no row when the type id doesn't exist —
     // answer 400, not a crash (found via a deleted lookup type).
     if (!ins.rows[0]) return sendError(res, 400, "Invalid deliverable type.");
-    await addToProjectCrew(pid, String(ins.rows[0].owner_id), u.id);
+    /* Naming an owner HERE is an assignment, so it joins the project crew and
+       the owner is notified — same consequences every other assignment path
+       has. Before this call, adding a deliverable with an owner notified
+       nobody, so the person it was assigned to found out by accident. */
+    if (ins.rows[0].owner_id)
+      await deliverableAssigned(u, ins.rows[0], null, String(ins.rows[0].owner_id));
     // #7: optional Drive link attached to the new deliverable.
     const url = String(b.drive_url ?? "").trim();
     if (url && /^https:\/\/(drive|docs)\.google\.com\//.test(url))
@@ -1810,6 +1807,13 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        reviewer who owns it look eligible to approve it. */
     if (!(String(d.owner_id ?? "") === u.id || await canReviewProject(u, Number(d.project_id))))
       return sendError(res, 403, "Only the deliverable's owner, the project's Team Lead or an Admin may submit a version.");
+    /* A deliverable the lead has cancelled, marked not required, approved or
+       delivered is OUT of the production flow. Submitting a version onto one
+       of those statuses used to un-cancel scope and let an approved pending
+       version turn up again in the dispatch queue — audit P2. The owner takes
+       the scope change up through /status, which is where that lives. */
+    if (!["not_started", "in_progress", "in_review", "changes_requested"].includes(String(d.status)))
+      return sendError(res, 400, `This deliverable is ${String(d.status).replace("_", " ")}; a version cannot be submitted on it.`);
     const url = String((req.body as Record<string, unknown>).drive_url ?? "").trim();
     if (!/^https:\/\/(drive|docs)\.google\.com\//.test(url)) return sendError(res, 400, "VR-4: must be a Google Drive/Docs link.");
     const last = await pool.query(`SELECT COALESCE(MAX(version_no),0) AS n FROM mo_deliverable_versions WHERE deliverable_id=$1`, [id]);
@@ -1820,8 +1824,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       [id, next, url, String((req.body as Record<string, unknown>).note ?? ""), u.id]);
     await pool.query(`UPDATE mo_deliverables SET status='in_review' WHERE id=$1`, [id]);
     await audit(u, "deliverable.version_submitted", "deliverable_version", ins.rows[0].id, null, { version_no: next }, req);
-    // The project's reviewer hears about it — one person, not every Team Lead.
-    for (const rid of await reviewerIdsFor(Number(d.project_id)))
+    /* The project's reviewer hears about it — one person, not every Team Lead.
+       If the resolved reviewer is also the deliverable's owner (a lead who
+       assigned the work to themselves), they are ineligible to review their
+       own: tell the Admins instead so the item does not vanish into the
+       reviewer's own queue they cannot action. */
+    for (const rid of await reviewerIdsFor(Number(d.project_id), String(d.owner_id ?? "")))
       if (rid !== u.id)
         await pool.query(
           `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
@@ -1904,12 +1912,23 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!d.rows[0]) return sendError(res, 404, "Deliverable not found.");
     if (!(String(d.rows[0].owner_id ?? "") === u.id || await canReviewProject(u, Number(d.rows[0].project_id))))
       return sendError(res, 403, "Only the deliverable's owner, the project's Team Lead or an Admin may mark it delivered.");
+    /* Only an approved deliverable can be delivered (a review-exempt type reaches
+       delivered straight from work). Before this check, calling /deliver after
+       a reviewer's post-delivery send-back silently re-flipped status back to
+       delivered — the Phase 1 P1 "undo send-back" bypass. */
+    if (!(d.rows[0].status === "approved" || (d.rows[0].review_exempt && d.rows[0].status === "in_progress")))
+      return sendError(res, 400, "This deliverable is not ready to deliver. Submit a version for review first — a reviewer approves, then it is delivered.");
     if (!d.rows[0].review_exempt) {
       const v = await pool.query(`SELECT review_status FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [id]);
       if (v.rows[0]?.review_status !== "approved") return sendError(res, 400, "BR-6: Delivered requires an approved latest version.");
     }
+    /* approval_status was reset to 'pending' only when /status drove it to
+       delivered; this route left stale 'changes_requested' or 'approved' on
+       the row, which the Dispatch board reads. Reset it so the Operations
+       side's view of the hand-off starts clean. */
     await pool.query(`UPDATE mo_deliverables SET status='delivered', completed_at=CURRENT_DATE,
-      quantity_delivered=COALESCE(quantity_delivered, quantity_target) WHERE id=$1`, [id]);
+      delivered_by=$2, approval_status='pending',
+      quantity_delivered=COALESCE(quantity_delivered, quantity_target) WHERE id=$1`, [id, u.id]);
     await audit(u, "deliverable.delivered", "deliverable", id, { status: d.rows[0].status }, { status: "delivered" }, req);
     res.json({ ok: true });
   }));
@@ -10231,6 +10250,18 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       leadId = r.leadId;
     } else if (b.lead_user_id) leadId = String(toUid(b.lead_user_id));
     else if (r.lead_user_id) leadId = String(r.lead_user_id);
+    /* The lead must actually BE a Team Lead. Without this, naming any employee
+       (or the Coordinator themselves) in lead_user_id made them owner and PM
+       of the converted project — the self-naming hole the audit flagged on
+       both this route and /requests/:id/lead. */
+    if (leadId) {
+      const lrow = (await pool.query(
+        `SELECT u.role, u.team, u.status, pr.mo_role FROM users u
+           LEFT JOIN mo_user_profiles pr ON pr.user_id=u.id WHERE u.id=$1`, [leadId])).rows[0];
+      const standing = { id: leadId, role: String(lrow?.role ?? ""), team: lrow?.team ?? null } as CurrentUser;
+      if (!lrow || lrow.status === "removed" || moRoleOf(standing) !== "team_lead")
+        return sendError(res, 400, "A Team Lead must be named — the Coordinator and employees do not run production.");
+    }
     /* pg returns a DATE as a JS Date; the template's due-date arithmetic needs
        YYYY-MM-DD, and a raw Date made every conversion without dates in the
        body fail with "Invalid time value". */
@@ -10289,12 +10320,35 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     if (!r) return sendError(res, 404, "Request not found.");
     const leadId = String(toUid((req.body as Record<string, unknown>).lead_user_id) ?? "");
     if (!leadId) return sendError(res, 400, "lead_user_id is required.");
+    /* The chosen person must actually be a Team Lead — before this check, the
+       Coordinator could name themselves (or any employee) and become owner/PM.
+       That's the self-naming hole the audit flagged on this route. */
+    const lrow = (await pool.query(
+      `SELECT u.role, u.team, u.status, pr.mo_role FROM users u
+         LEFT JOIN mo_user_profiles pr ON pr.user_id=u.id WHERE u.id=$1`, [leadId])).rows[0];
+    const standing = { id: leadId, role: String(lrow?.role ?? ""), team: lrow?.team ?? null } as CurrentUser;
+    if (!lrow || lrow.status === "removed" || moRoleOf(standing) !== "team_lead")
+      return sendError(res, 400, "That person is not a Team Lead.");
     await pool.query(`UPDATE mo_requests SET lead_user_id=$1, updated_at=NOW() WHERE id=$2`, [leadId, id]);
     if (r.project_id) {
       await pool.query(`UPDATE mo_projects SET owner_id=$1 WHERE id=$2`, [leadId, r.project_id]);
+      /* Replace the PM: idx_mo_one_pm forbids two PMs; demoting the old one
+         first keeps the insert from throwing. The outgoing lead keeps their
+         non-PM row — their past work on the project is still their work. */
+      await pool.query(
+        `UPDATE mo_project_assignments SET is_project_manager=false
+          WHERE project_id=$1 AND user_id<>$2 AND is_project_manager AND removed_at IS NULL`, [r.project_id, leadId]);
       await pool.query(
         `INSERT INTO mo_project_assignments (project_id, user_id, is_project_manager, assigned_by)
-         VALUES ($1,$2,true,$3) ON CONFLICT DO NOTHING`, [r.project_id, leadId, u.id]);
+         VALUES ($1,$2,true,$3)
+         ON CONFLICT (project_id, user_id) WHERE removed_at IS NULL
+         DO UPDATE SET is_project_manager=true`, [r.project_id, leadId, u.id]);
+      if (leadId !== u.id)
+        await pool.query(
+          `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+           VALUES ($1,'assignment',$2,$3,'project',$4)`,
+          [leadId, "You are leading a project",
+           `A converted request was handed to you to run.`, r.project_id]).catch(() => {});
     }
     await audit(u, "project.lead_assigned", "request", id, { lead: r.lead_user_id }, { lead: leadId }, req);
     res.json({ ok: true });
@@ -10312,8 +10366,20 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const v = (await pool.query(
       `SELECT review_status, drive_url FROM mo_deliverable_versions WHERE deliverable_id=$1
         ORDER BY version_no DESC LIMIT 1`, [id])).rows[0];
+    /* Only work the reviewer currently stands behind can be dispatched. The
+       audit's P2 was that /dispatch checked ONLY the latest version's review
+       status: a reviewer could /approval reject or send a delivered item back
+       and the Operations side could still ship it, because the version was
+       still 'approved'. Approval queues it (dispatch_status='queued'); a
+       sent-back item is 'none' and no longer eligible. */
     if (v?.review_status !== "approved")
       return sendError(res, 400, "Only a deliverable whose latest version is approved can be dispatched.");
+    if (!["approved", "delivered"].includes(String(d.status)))
+      return sendError(res, 400, "This deliverable is not ready to dispatch. The reviewer must approve it first.");
+    if (!["queued", "none"].includes(String(d.dispatch_status)))
+      return sendError(res, 400, "This deliverable has already been dispatched or archived.");
+    if (["changes_requested", "rejected"].includes(String(d.approval_status)))
+      return sendError(res, 400, "The reviewer has asked for changes — the owner resubmits and the reviewer approves again before dispatch.");
     const b = req.body as Record<string, unknown>;
     const recipient = String(b.recipient ?? "").trim();
     if (!recipient) return sendError(res, 400, "A recipient is required to record the dispatch.");
@@ -10506,10 +10572,47 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     if (!fields.length) return res.json({ team: cur });
     vals.push(id);
     const t = (await pool.query(`UPDATE mo_teams SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals)).rows[0];
+    /* ── Replace the lead on every live project routed to this team ──────────
+       Without this, the old lead kept owner_id and the PM row and therefore
+       all of canManageProject() / canReviewProject() rights on projects whose
+       team they no longer led — a Phase 1 P1 the audit flagged. The server's
+       Team Lead authority is "lead of the project's team RIGHT NOW", and
+       owner_id/PM must track that. The outgoing lead keeps their non-PM
+       assignment row for history. */
+    const relOld = cur.lead_user_id ? String(cur.lead_user_id) : null;
+    const relNew = t.lead_user_id ? String(t.lead_user_id) : null;
+    const movedProjects: number[] = [];
+    if (relNew && relNew !== relOld) {
+      const touched = await pool.query(
+        `UPDATE mo_projects SET owner_id=$1
+          WHERE team_id=$2 AND deleted_at IS NULL
+            AND status NOT IN ('completed','archived','cancelled')
+            AND owner_id IS DISTINCT FROM $1 RETURNING id`, [relNew, id]);
+      touched.rows.forEach((r) => movedProjects.push(Number(r.id)));
+      for (const pid of movedProjects) {
+        await pool.query(
+          `UPDATE mo_project_assignments SET is_project_manager=false
+            WHERE project_id=$1 AND user_id<>$2 AND is_project_manager AND removed_at IS NULL`, [pid, relNew]);
+        await pool.query(
+          `INSERT INTO mo_project_assignments (project_id, user_id, is_project_manager, assigned_by)
+           VALUES ($1,$2,true,$3)
+           ON CONFLICT (project_id, user_id) WHERE removed_at IS NULL
+           DO UPDATE SET is_project_manager=true`, [pid, relNew, u.id]).catch(() => {});
+        await audit(u, "project.team_assigned", "project", pid,
+          { lead: relOld, trigger: "team.lead_changed" }, { lead: relNew, team_id: id, team: t.name }, req);
+      }
+      if (movedProjects.length && relNew !== u.id)
+        await pool.query(
+          `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+           VALUES ($1,'assignment',$2,$3,'team',$4)`,
+          [relNew, `You now lead ${t.name}`,
+           `${movedProjects.length} project(s) have been handed to you to run.`, id]).catch(() => {});
+    }
     await audit(u, "team.updated", "team", id,
       { name: cur.name, lead_user_id: cur.lead_user_id, archived_at: cur.archived_at },
-      { name: t.name, lead_user_id: t.lead_user_id, archived_at: t.archived_at }, req);
-    res.json({ team: t, promoted_lead: promoted });
+      { name: t.name, lead_user_id: t.lead_user_id, archived_at: t.archived_at,
+        projects_moved: movedProjects.length }, req);
+    res.json({ team: t, promoted_lead: promoted, projects_moved: movedProjects.length });
   }));
 
   // Delete a team. Members are NEVER silently dropped: the caller must say where
@@ -17885,6 +17988,27 @@ function addDays(iso: string, n: number): string {
 // server-persisted notification feed (AUTO-1/2/3 + review-pending). Idempotent —
 // notifications dedupe on (user, kind, entity) while unread, so re-runs never spam.
 // ═══════════════════════════════════════════════════════════════════════════
+/** The person a submission should reach: the project team's lead, else (a
+    legacy project) its owner when they are a Team Lead, else the Admins.
+    excludeUserId falls back to Admins when the resolved reviewer is also the
+    deliverable's owner — a lead cannot review their own, so routing them a
+    notification they cannot action is noise. Hoisted to module scope so the
+    automations in runMediaOpsAutomations() share one definition with the
+    request handlers; before this, AUTO-4 used mo_project_assignments.PM
+    instead and the two drifted after a team-lead change. */
+async function reviewerIdsForDb(projectId: number, excludeUserId: string = ""): Promise<string[]> {
+  const r = (await pool.query(
+    `SELECT CASE WHEN p.team_id IS NOT NULL THEN t.lead_user_id
+                 WHEN o.role = 'sub_admin' AND o.team = 'media' THEN p.owner_id END AS lead
+       FROM mo_projects p
+       LEFT JOIN mo_teams t ON t.id = p.team_id AND t.is_active AND t.archived_at IS NULL
+       LEFT JOIN users o ON o.id = p.owner_id
+      WHERE p.id = $1`, [projectId])).rows[0];
+  if (r?.lead && String(r.lead) !== excludeUserId) return [String(r.lead)];
+  return (await pool.query(
+    `SELECT id FROM users WHERE team='media' AND role IN ('admin','super_admin')`)).rows.map((x) => String(x.id));
+}
+
 export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; notified: number;
                                                           undeliverable: number }> {
   let notified = 0;
@@ -17952,12 +18076,29 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
     }
   }
 
-  // Review pending → the project PM (escalation family AUTO-4).
-  if (ruleOn("AUTO-4")) for (const d of (await pool.query(
-    `SELECT d.id, d.title, a.user_id AS pm FROM mo_deliverables d
-       JOIN mo_project_assignments a ON a.project_id=d.project_id AND a.is_project_manager AND a.removed_at IS NULL
-      WHERE d.status='in_review'`)).rows)
-    await notify(d.pm, "approval", "Awaiting your review", `“${d.title}” has a version pending`, "deliverable", d.id);
+  /* Review pending → the project's CURRENT Team Lead (AUTO-4).
+     Was aimed at mo_project_assignments.is_project_manager. The PM row is set
+     when the project is created or re-routed and stayed on the OLD lead when
+     an Admin changed the team's lead — so AUTO-4 kept reminding the person
+     who could no longer review, and the actual reviewer heard nothing. It
+     also fired for the deliverable's owner when they happened to BE the PM,
+     which notifyOnce dedupes with /versions but still records a wrong row.
+
+     Resolution now follows the same rule as /versions: the team's current
+     lead, with the deliverable's own owner excluded (a lead cannot review
+     their own; the fallback picks up Admins). Projects not being driven are
+     skipped — the overdue sweep already does. */
+  if (ruleOn("AUTO-4")) {
+    const rows = (await pool.query(
+      `SELECT d.id, d.title, d.project_id, d.owner_id
+         FROM mo_deliverables d
+         JOIN mo_projects p ON p.id = d.project_id
+        WHERE d.status='in_review' AND d.deleted_at IS NULL
+          AND p.deleted_at IS NULL AND p.status NOT IN ('cancelled','on_hold','archived')`)).rows;
+    for (const d of rows)
+      for (const rid of await reviewerIdsForDb(Number(d.project_id), String(d.owner_id ?? "")))
+        await notify(rid, "approval", "Awaiting your review", `“${d.title}” has a version pending`, "deliverable", d.id);
+  }
 
   /* AUTO-3 — overdue equipment. The seeded rule reads "Holder → +custodian on
      overdue → +TL/Admin at 3d", and the Equipment screen has been promising
