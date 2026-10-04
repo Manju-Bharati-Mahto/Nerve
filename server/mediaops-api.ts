@@ -1581,17 +1581,19 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const cur = await pool.query(`SELECT status, owner_id FROM mo_projects WHERE id=$1`, [id]);
     if (!cur.rows[0]) return sendError(res, 404, "Project not found.");
     const from = cur.rows[0].status as string;
-    if (!(PROJ_TRANSITIONS[from] ?? []).includes(to))
-      return sendError(res, 400, `BR-1: ${from} → ${to} is not a valid transition.`);
-    // §16: the project's own lead, Admin, or its owner/PM may move status; only Admin may archive.
-    // BR-11 / FR-3.6 — the approval gate is its OWN capability: an employee may move
-    // their own project through production states, but NEVER approve a proposal
-    // (that would let them approve their own gated project — audit finding 9.1).
+    /* Authorization BEFORE the transition check: a 400 "from → to is not valid"
+       with the project's current status in the body is an enumerable leak of
+       every project's state to any Media Crew member. §16: the project's own
+       lead, Admin, or its owner/PM may move status; only Admin may archive.
+       BR-11: an employee may move their own project through production states,
+       but NEVER approve a proposal (that would let them approve their own). */
+    if (!(await canManageProject(u, id))) return sendError(res, 403, "You cannot change this project's status.");
     if (from === "proposed" && to === "approved" && !(isMoAdmin(u) || await isTeamLeadOfProject(u, id)))
       return sendError(res, 403, "BR-11: only the project's Team Lead or an Admin may approve a proposed project.");
     if (to === "archived" && !isMoAdmin(u)) return sendError(res, 403, "Only Admin may archive (BR-1).");
     if (from === "archived" && !isMoAdmin(u)) return sendError(res, 403, "BR-12: only Admin may un-archive.");
-    if (!(await canManageProject(u, id))) return sendError(res, 403, "You cannot change this project's status.");
+    if (!(PROJ_TRANSITIONS[from] ?? []).includes(to))
+      return sendError(res, 400, `BR-1: ${from} → ${to} is not a valid transition.`);
     await pool.query(
       `UPDATE mo_projects SET status=$1,
          archived_at=CASE WHEN $1='archived' THEN NOW() WHEN $3 THEN NULL ELSE archived_at END,
@@ -9303,6 +9305,11 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
   app.post(`${P}/projects/:id/casting`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const pid = parseInt(getSingleParam(req.params.id), 10);
+    /* Linking a casting record TO a project is a change to that project —
+       same gate every other project-scoped write uses, so a Team Lead cannot
+       attach casting work to a team's project they do not lead. */
+    if (!(await canManageProject(u, pid)))
+      return sendError(res, 403, "Only the project's Team Lead, owner/PM or an Admin may link casting to this project.");
     const recId = Number((req.body as Record<string, unknown>).record_id);
     if (!recId) return sendError(res, 400, "record_id is required.");
     await pool.query(
@@ -9314,6 +9321,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
   app.delete(`${P}/projects/:id/casting/:recordId`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const pid = parseInt(getSingleParam(req.params.id), 10);
+    if (!(await canManageProject(u, pid)))
+      return sendError(res, 403, "Only the project's Team Lead, owner/PM or an Admin may unlink casting from this project.");
     const recId = parseInt(getSingleParam(req.params.recordId), 10);
     await pool.query(`DELETE FROM mo_project_casting WHERE project_id=$1 AND record_id=$2`, [pid, recId]);
     await audit(u, "casting.unlinked_from_project", "casting_record", recId, { project_id: pid }, null, req);

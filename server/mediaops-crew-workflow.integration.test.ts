@@ -677,6 +677,23 @@ maybe("Phase 2 — the self-naming, bypass and routing holes stay closed", () =>
   });
 });
 
+/* ── Phase 17 — no information leak through transition-first errors ────── */
+
+maybe("Phase 17 — authorization runs before the state machine", () => {
+  it("POST /projects/:id/status answers 403 before BR-1 for unauthorized callers", async () => {
+    const { pid } = await routed(teamA);
+    // Admin moves it into in_production
+    expect((await as("admin", "POST", `/projects/${pid}/status`, { status: "in_production" })).status).toBe(200);
+    // Unauthorized callers get 403 even on a no-op (in_production → in_production is not valid),
+    // so the project's current state is not leaked through the BR-1 message.
+    for (const who of ["leadB", "coord", "empA1", "empA2", "empB1"] as const) {
+      const r = await as(who, "POST", `/projects/${pid}/status`, { status: "in_production" });
+      expect(r.status, `${who} should be 403, got ${r.status}: ${JSON.stringify(r.body)}`).toBe(403);
+      expect(String(r.body.message)).not.toContain("in_production");
+    }
+  });
+});
+
 /* ── PROJECT CONVERSION (27) ──────────────────────────────────────────────── */
 
 maybe("conversion — a request becomes a project on the team it was routed to", () => {
