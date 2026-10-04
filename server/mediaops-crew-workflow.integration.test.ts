@@ -752,7 +752,7 @@ maybe("legacy projects, PMs, shoots and ad-hoc assignments", () => {
     expect((await as("leadA", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(200);
   });
 
-  it("shoot crew follows the same scope", async () => {
+  it("shoot crew follows the same scope and notifies each added member", async () => {
     const { pid } = await routed(teamA);
     const shoot = await one(
       `INSERT INTO mo_shoots (project_id, title, shoot_date, location, status, created_by)
@@ -760,8 +760,24 @@ maybe("legacy projects, PMs, shoots and ad-hoc assignments", () => {
     expect((await as("leadB", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empB1.id] })).status).toBe(403);
     expect((await as("leadA", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empB1.id] })).status).toBe(403);
     expect((await as("leadA", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empA1.id] })).status).toBe(201);
+    // The newly-added crew member is told, with the shoot's title and date in the body.
+    const n = await pool.query(
+      `SELECT title, body FROM mo_notifications WHERE user_id=$1 AND entity_type='shoot' AND entity_id=$2`,
+      [ACTORS.empA1.id, shoot.id]);
+    expect(n.rows.map((r) => r.title)).toContain("You are on a shoot");
+    expect(String(n.rows[0]?.body ?? "")).toContain("2026-10-05");
     expect((await as("leadB", "PATCH", `/shoots/${shoot.id}`, { notes: "x" })).status).toBe(403);
     expect((await as("leadA", "PATCH", `/shoots/${shoot.id}`, { notes: "x" })).status).toBe(200);
+  });
+
+  it("adding a crew member via /projects/:id/assignments notifies them", async () => {
+    const { pid } = await routed(teamA);
+    const r = await as("leadA", "POST", `/projects/${pid}/assignments`, { user_id: ACTORS.empA2.id });
+    expect(r.status).toBe(201);
+    const n = await pool.query(
+      `SELECT title FROM mo_notifications WHERE user_id=$1 AND entity_type='project' AND entity_id=$2`,
+      [ACTORS.empA2.id, pid]);
+    expect(n.rows.map((x) => x.title)).toContain("You are on a project");
   });
 
   it("an assignment's members cannot be replaced from outside its project's team", async () => {

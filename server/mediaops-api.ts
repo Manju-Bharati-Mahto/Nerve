@@ -1622,6 +1622,16 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
       [id, String(b.user_id), b.capacity_role_id ? Number(b.capacity_role_id) : null, !!b.is_project_manager, u.id]);
     await audit(u, "project.assignment_added", "project", id, null, { user_id: b.user_id }, req);
+    /* The new crew member learns they are on the project. The notification
+       opens the project directly (notifTarget maps entity_type='project'). */
+    if (String(b.user_id) !== u.id) {
+      const p = (await pool.query(`SELECT name FROM mo_projects WHERE id=$1`, [id])).rows[0];
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'assignment',$2,$3,'project',$4)`,
+        [String(b.user_id), b.is_project_manager ? "You are the PM on a project" : "You are on a project",
+         `${u.full_name ?? "Your Team Lead"} added you to “${p?.name ?? "a project"}”.`, id]).catch(() => {});
+    }
     res.status(201).json({ ok: true });
   }));
 
@@ -10762,9 +10772,20 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const crew = (Array.isArray((req.body as Record<string, unknown>).crew) ? (req.body as Record<string, unknown>).crew as unknown[] : []).map(String);
     // Crewing a shoot is an assignment — the same team scope as every other path.
     if (!(await assertAssignable(res, u, crew))) return;
-    for (const uid of crew)
+    /* Fetch the shoot's title and date once so each notification carries them —
+       without this the crew would learn about it only from AUTO-10's T-24h
+       reminder, which the Phase 1 review flagged (no time to raise a clash). */
+    const shoot = (await pool.query(`SELECT title, shoot_date FROM mo_shoots WHERE id=$1`, [sid])).rows[0];
+    for (const uid of crew) {
       await pool.query(`INSERT INTO mo_shoot_crew (shoot_id, user_id, capacity_role_id) VALUES ($1,$2,2) ON CONFLICT DO NOTHING`, [sid, uid]);
-    await audit(u, "shoot.crew_added", "shoot", sid, null, null, req);
+      if (uid !== u.id && shoot)
+        await pool.query(
+          `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+           VALUES ($1,'assignment',$2,$3,'shoot',$4)`,
+          [uid, "You are on a shoot",
+            `${u.full_name ?? "Your Team Lead"} added you to “${shoot.title}” on ${dOnly(shoot.shoot_date)}.`, sid]).catch(() => {});
+    }
+    await audit(u, "shoot.crew_added", "shoot", sid, null, { users: crew }, req);
     res.status(201).json({ ok: true });
   }));
 

@@ -164,6 +164,91 @@ describe("Team Lead — their own team, their own team's projects", () => {
   });
 });
 
+describe("Notifications — clickable, routed and segmented for leads", () => {
+  it("notifTarget routes every entity_type the server writes", async () => {
+    const h = await boot(901);
+    // Server-side entity_types we must route: project, deliverable, deliverable_version,
+    // shoot, equipment, maintenance, daily_report, report, leave_request, request,
+    // casting_request, assignment, team, kra, user.
+    const cases: Array<[string, number | null, string | ((t: string) => boolean)]> = [
+      ["project", 7001, "#/media/projects/7001"],
+      ["deliverable", 8001, (t) => t.includes("drawer")],
+      ["shoot", 1, (t) => t.includes("drawer")],
+      ["daily_report", 1, "#/media/reports"],
+      ["report", 1, "#/media/reports"],
+      ["leave_request", 1, "#/media/leave"],
+      ["request", 1, "#/media/requests"],
+      ["casting_request", 1, "#/media/casting"],
+      ["team", 9001, "#/media/team/9001"],
+      ["kra", 1, "#/media/performance"],
+      ["maintenance", 1, "#/media/equipment"],
+    ];
+    for (const [entity_type, entity_id, expected] of cases) {
+      const t = h.ev<Record<string, unknown> | null>(`notifTarget({entity_type:'${entity_type}',entity_id:${entity_id}})`);
+      expect(t, `${entity_type} returned no target`).toBeTruthy();
+      if (typeof expected === "string") expect(t!.hash).toBe(expected);
+      else expect(expected(Object.keys(t!).join(","))).toBe(true);
+    }
+  });
+
+  it("notifSource classifies notifications by role of their sender", async () => {
+    const h = await boot(901);
+    const assign = (nk: string, et: string) => h.ev<string>(`notifSource({kind:'${nk}',entity_type:'${et}'})`);
+    expect(assign("assignment", "project")).toBe("coord");
+    expect(assign("assignment", "team")).toBe("coord");
+    expect(assign("assignment", "deliverable")).toBe("team");  // from a teammate (the lead)
+    expect(assign("review", "deliverable")).toBe("team");
+    expect(assign("overdue", "deliverable")).toBe("auto");
+    expect(assign("reminder", "deliverable")).toBe("auto");
+    expect(assign("approval", "deliverable")).toBe("auto");
+    expect(assign("casting", "casting_request")).toBe("coord");
+    expect(assign("deliverable", "deliverable")).toBe("coord");  // dispatched
+  });
+
+  it("a Team Lead's notifications are segmented into Admin/Coordinator vs team vs automations", async () => {
+    const h = await boot(901);
+    // Seed three notifications for leadA, one in each source bucket.
+    h.ev(`DB.notifications=[
+      {id:1,user_id:901,kind:'assignment',entity_type:'project',entity_id:7001,title:'You are leading a new project',body:'routed to you',created_at:TODAY+'T09:00:00Z',is_read:false},
+      {id:2,user_id:901,kind:'review',entity_type:'deliverable',entity_id:8001,title:'Version submitted',body:'empA1 submitted v1',created_at:TODAY+'T10:00:00Z',is_read:false},
+      {id:3,user_id:901,kind:'overdue',entity_type:'deliverable',entity_id:8002,title:'Deliverable overdue',body:'Aftermovie was due',created_at:TODAY+'T11:00:00Z',is_read:false},
+    ];`);
+    const page = h.ev<string>("viewNotifications()");
+    expect(page).toContain("From Admin");    // ampersand is HTML-escaped as &amp; — match on the prefix
+    expect(page).toContain("Coordinator");
+    expect(page).toContain("From your team");
+    expect(page).toContain("Automations");
+    // The three cards each hold their own notification.
+    expect(page).toContain("You are leading a new project");
+    expect(page).toContain("Version submitted");
+    expect(page).toContain("Deliverable overdue");
+    // Today's brief line names the coord bucket's count.
+    expect(page).toContain("Today's brief");
+  });
+
+  it("employees see one list (no segmentation), because employees only receive one or two kinds", async () => {
+    const h = await boot(902);
+    h.ev(`DB.notifications=[
+      {id:9,user_id:902,kind:'assignment',entity_type:'deliverable',entity_id:8001,title:'New assignment',body:'Edited Photos was assigned to you',created_at:TODAY+'T09:00:00Z',is_read:false},
+    ];`);
+    const page = h.ev<string>("viewNotifications()");
+    expect(page).not.toContain("From Admin");
+    expect(page).toContain("New assignment");
+  });
+
+  it("clicking a notification marks it read and navigates", async () => {
+    const h = await boot(901);
+    h.ev(`DB.notifications=[
+      {id:1,user_id:901,kind:'assignment',entity_type:'project',entity_id:7001,title:'go',body:'',created_at:TODAY+'T09:00:00Z',is_read:false},
+    ];`);
+    h.ev(`ACTIONS.openNotif({nid:1})`);
+    expect(h.dom.window.location.hash).toBe("#/media/projects/7001");
+    expect(h.ev<boolean>("DB.notifications[0].is_read")).toBe(true);
+    // And one write back to the server.
+    expect(h.writes().some((c) => c.url.endsWith("/notifications/read"))).toBe(true);
+  });
+});
+
 describe("Review — the project's lead, never your own work", () => {
   it("each lead's queue holds their own team's submissions only", async () => {
     const h = await boot(901);
