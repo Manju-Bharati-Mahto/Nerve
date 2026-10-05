@@ -14,8 +14,9 @@ import {
   ensureDriveStructure, mutateWorkflow, readWorkflow, VIDEOS_FOLDER,
 } from "./drive-store.js";
 import { activityEntry, listActiveUsers } from "./users.js";
-import { assetFoldersFor, campaignAssetName, captionFileBody, getCampaign } from "./campaigns.js";
-import { notify } from "./notifications.js";
+import { assetFoldersFor, campaignAssetName, getCampaign } from "./campaigns.js";
+import { mirrorVideo } from "./drive-mirror.js";
+import { alreadyNotified, notify } from "./notifications.js";
 import type {
   LiveUrlPlatform, VideoRecord, VideoStatus, VideoUser, WorkflowStoreDoc,
 } from "./types.js";
@@ -156,55 +157,23 @@ export async function uploadVideo(input: UploadInput): Promise<VideoRecord> {
   if (!input.editorTitle.trim()) throw new Error("Video title is required.");
   if (!input.caption.trim()) throw new Error("Social media caption is required.");
 
-  let videoFolderId: string;
-  let captionFolderId: string;
-  if (campaignRecord) {
-    const folders = await assetFoldersFor(campaignRecord);
-    videoFolderId = folders.videos;
-    captionFolderId = folders.captions;
-  } else {
-    // §9.1 — the campaign folder is created on demand, before the upload.
-    const structure = await ensureDriveStructure();
-    videoFolderId = await client.ensureFolder(safeFileName(campaign), structure.videos);
-    captionFolderId = videoFolderId;
-  }
+  /* §9 — every upload is filed into its campaign's tree,
+     Social Media Campaigns/<campaign>/Videos, whether or not the campaign is a
+     record yet; and §10 — named "<campaign> - Video N". */
+  const folders = await assetFoldersFor(
+    campaignRecord ?? { name: campaign, driveFolders: null },
+  );
 
   const sequence = await reserveSequence(campaign);
-  const autoName = campaignRecord
-    ? campaignAssetName(campaign, sequence)
-    : campaignVideoName(campaign, sequence);
+  const autoName = campaignAssetName(campaign, sequence);
   const extension = input.originalName.includes(".")
     ? input.originalName.slice(input.originalName.lastIndexOf("."))
     : "";
 
   // §29 — the Drive upload has to succeed before any record claims it exists.
   const uploaded = await client.uploadBinaryFile(
-    safeFileName(autoName + extension), videoFolderId, input.localPath, input.mimeType,
+    safeFileName(autoName + extension), folders.videos, input.localPath, input.mimeType,
   );
-
-  // §9.1 — the caption file's name must match the video's exactly, so the two
-  // can never be paired up wrongly when read back off Drive by a human.
-  let captionFileId: string | null = null;
-  try {
-    /* §10 — a campaign's caption file carries the campaign, the number and
-       the page as well as the text, so it reads on its own in Drive. An older
-       campaign keeps the bare caption its existing files have. */
-    const body = campaignRecord
-      ? captionFileBody({
-          campaign, sequence, caption: input.caption,
-          // The pages when the editor named them, falling back to the platform.
-          platform: input.pageNames?.length ? input.pageNames.join(", ") : input.platform,
-        })
-      : input.caption;
-    const caption = await client.createTextFile(
-      safeFileName(`${autoName}.txt`), captionFolderId, body,
-    );
-    captionFileId = caption.id;
-  } catch {
-    // The caption's authoritative copy is on the record itself; a failed
-    // sidecar file must not cost the editor their upload.
-    captionFileId = null;
-  }
 
   const now = new Date().toISOString();
   const record: VideoRecord = {
@@ -214,13 +183,17 @@ export async function uploadVideo(input: UploadInput): Promise<VideoRecord> {
     client: campaign,
     campaignId: campaignRecord?.id ?? null,
     socialPageIds: input.socialPageIds ?? [],
+    socialPageNames: input.pageNames ?? [],
+    sequence,
+    driveFolders: folders,
     editorId: input.editor.id,
     caption: input.caption,
     status: "uploaded",
     currentVersion: 1,
     driveFileId: uploaded.id,
     driveFileName: uploaded.name,
-    captionFileId,
+    // Written by the mirror once the record exists — see below.
+    captionFileId: null,
     sizeBytes: input.sizeBytes,
     mimeType: input.mimeType,
     platform: input.platform?.trim() || null,
@@ -232,13 +205,106 @@ export async function uploadVideo(input: UploadInput): Promise<VideoRecord> {
     publishedBy: null,
     publishedAt: null,
     liveUrls: {},
-    activity: [activityEntry(input.editor, "video.uploaded", { newStatus: "draft" })],
+    activity: [activityEntry(input.editor, "video.uploaded", { newStatus: "uploaded" })],
   };
 
-  return mutateWorkflow<VideoRecord>(doc => {
+  const saved = await mutateWorkflow<VideoRecord>(doc => {
     doc.videos.push(record);
     return { doc, result: record };
   });
+  // §10 — the caption file beside it, carrying the description and remarks too.
+  return mirrorSafely(saved);
+}
+
+/**
+ * Brings Drive in line with a video after a workflow step, and returns the
+ * record as it now stands.
+ *
+ * Never throws. By the time this runs the step has happened and been saved;
+ * a Drive hiccup must not turn a successful approval into an error on
+ * screen. The next step, or "Sync everything to Drive", catches it up.
+ */
+async function mirrorSafely(video: VideoRecord, options: { relocate?: boolean } = {}): Promise<VideoRecord> {
+  try {
+    const update = await mirrorVideo(video, options);
+    if (!Object.keys(update).length) return video;
+    return await updateVideo(video.id, v => { Object.assign(v, update); return { ...v }; });
+  } catch (err) {
+    console.error(`Outreach video: could not mirror “${video.title}” to Drive`, err);
+    await reportDriveProblem(video, err);
+    return video;
+  }
+}
+
+/**
+ * §14 Admin — "major publishing/system issues". A Drive that cannot be
+ * written is exactly that: the workflow carries on, but what the team sees in
+ * Drive is falling behind. Once a day at most, whatever the number of
+ * failures — when Drive is down every step fails, and one notice says it.
+ */
+async function reportDriveProblem(video: VideoRecord, err: unknown): Promise<void> {
+  try {
+    const admins = (await listActiveUsers()).filter(u => u.role === "admin");
+    const reason = err instanceof Error ? err.message : String(err);
+    for (const a of admins) {
+      if (await alreadyNotified(a.id, "system_issue", "drive")) continue;
+      await notify([a.id], "system_issue", { type: "system", id: "drive" },
+        `Google Drive could not be updated (latest: “${video.title}” — ${reason.slice(0, 160)}). ` +
+        `Check Video Workflow → Google Drive, then use Sync now.`);
+    }
+  } catch { /* a notice about a failure must never become a failure of its own */ }
+}
+
+/**
+ * §14 Manager — "campaign completion". Raised by the publication that brings
+ * a campaign to its posting target, once: a campaign that overdelivers does
+ * not announce itself again with every extra post.
+ */
+async function announceIfCampaignComplete(video: VideoRecord): Promise<void> {
+  try {
+    const campaign = video.campaignId ? await getCampaign(video.campaignId) : null;
+    if (!campaign || campaign.requiredPosts <= 0) return;
+    const doc = await readWorkflow();
+    const published = doc.videos.filter(v => v.status === "published" && v.campaignId === campaign.id).length;
+    if (published !== campaign.requiredPosts) return;
+    const recipients = (await listActiveUsers())
+      .filter(u => u.role === "manager" || u.role === "admin" || u.id === campaign.campaignManagerId);
+    for (const r of recipients) {
+      if (await alreadyNotified(r.id, "campaign_completed", campaign.id, 24 * 365)) continue;
+      await notify([r.id], "campaign_completed", { type: "campaign", id: campaign.id },
+        `“${campaign.name}” has published all ${campaign.requiredPosts} of its required posts.`);
+    }
+  } catch { /* best effort, like every notice */ }
+}
+
+/**
+ * Re-mirrors every video: writes any missing details file, refreshes the
+ * rest, and puts each video file in the folder its status says it belongs
+ * in. For after connecting a Drive, or after a stretch when Drive was down.
+ */
+export async function resyncAllToDrive(): Promise<{ synced: number; failed: Array<{ title: string; error: string }> }> {
+  const doc = await readWorkflow();
+  let synced = 0;
+  const failed: Array<{ title: string; error: string }> = [];
+  for (const original of doc.videos) {
+    try {
+      let video = original;
+      // A record from before videos remembered their folders gets them now.
+      if (!video.driveFolders?.published) {
+        const campaign = video.campaignId ? await getCampaign(video.campaignId) : null;
+        const folders = await assetFoldersFor(campaign ?? { name: video.client, driveFolders: null });
+        video = await updateVideo(video.id, v => { v.driveFolders = folders; return { ...v }; });
+      }
+      const update = await mirrorVideo(video, { relocate: true });
+      if (Object.keys(update).length) {
+        await updateVideo(video.id, v => { Object.assign(v, update); return { ...v }; });
+      }
+      synced++;
+    } catch (err) {
+      failed.push({ title: original.title, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return { synced, failed };
 }
 
 /** Loads one video, or throws. */
@@ -291,17 +357,8 @@ export async function updateCaption(id: string, caption: string, actor: Pick<Vid
     return { ...video };
   });
 
-  // Keep the §9.1 sidecar in step. Best-effort: the record holds the real copy.
-  try {
-    const { client } = getDriveClient();
-    if (updated.captionFileId) {
-      const { revisionId } = await client.readTextFile(updated.captionFileId);
-      await client.updateTextFile(updated.captionFileId, caption, revisionId);
-    }
-  } catch {
-    // Sidecar drift is recoverable; failing the edit is not worth it.
-  }
-  return updated;
+  // The details file carries the caption, so it is rewritten with it.
+  return mirrorSafely(updated);
 }
 
 /**
@@ -328,7 +385,7 @@ export async function submitVideo(id: string, actor: Pick<VideoUser, "id" | "nam
   // §14 — the reviewers are the people who can approve: managers and admins.
   const reviewers = (await listActiveUsers()).filter(u => u.role === "manager" || u.role === "admin");
   await notify(reviewers.map(p => p.id), "video_submitted", { type: "video", id }, `“${video.title}”`);
-  return video;
+  return mirrorSafely(video);
 }
 
 /** §11 — everything waiting on a reviewer, oldest first. */
@@ -362,7 +419,7 @@ export async function approveVideo(
   await notify(publishers.map(p => p.id), "video_submitted", { type: "video", id }, `“${video.title}”`);
   // §14 Editor — "Video approved". The person who made it hears the outcome.
   await notify([video.editorId], "video_approved", { type: "video", id }, `“${video.title}”`);
-  return video;
+  return mirrorSafely(video);
 }
 
 /**
@@ -397,14 +454,14 @@ export async function rejectVideo(
   // §14 Editor — "Video rejected", with the reason attached.
   await notify([video.editorId], "video_rejected", { type: "video", id },
     `“${video.title}”: ${trimmed}`);
-  return video;
+  return mirrorSafely(video);
 }
 
 /** §11 — the editor picks rejected work back up. */
 export async function startRevision(
   id: string, actor: Pick<VideoUser, "id" | "name" | "email" | "role">,
 ): Promise<VideoRecord> {
-  return updateVideo(id, video => {
+  const video = await updateVideo(id, video => {
     if (video.editorId !== actor.id && actor.role !== "admin") throw new NotYourVideoError();
     if (!TRANSITIONS[video.status].includes("revision")) {
       throw new InvalidTransitionError(video.status, "revision");
@@ -416,6 +473,7 @@ export async function startRevision(
     }));
     return { ...video };
   });
+  return mirrorSafely(video);
 }
 
 /** §4 — the Publisher records when approved content is due to go out. */
@@ -425,7 +483,7 @@ export async function scheduleVideo(
   const at = new Date(when);
   if (Number.isNaN(at.getTime())) throw new Error("A valid posting date and time is required.");
 
-  return updateVideo(id, video => {
+  const video = await updateVideo(id, video => {
     /* Rescheduling something already scheduled is an edit, not a move, so it
        is allowed without the status having to change. */
     if (video.status !== "scheduled" && !TRANSITIONS[video.status].includes("scheduled")) {
@@ -440,6 +498,7 @@ export async function scheduleVideo(
     }));
     return { ...video };
   });
+  return mirrorSafely(video);
 }
 
 /**
@@ -463,8 +522,10 @@ export async function publishVideo(
   id: string,
   actor: Pick<VideoUser, "id" | "name" | "email" | "role">,
   liveUrls: Partial<Record<LiveUrlPlatform, string>> = {},
+  /** The publisher's own remark, recorded with the step and shown in Drive. */
+  remark = "",
 ): Promise<VideoRecord> {
-  return updateVideo(id, video => {
+  const video = await updateVideo(id, video => {
     if (!TRANSITIONS[video.status].includes("published")) {
       throw new InvalidTransitionError(video.status, "published");
     }
@@ -481,10 +542,16 @@ export async function publishVideo(
     video.activity.push(activityEntry(actor, "video.published", {
       previousStatus: from,
       newStatus: "published",
-      notes: Object.keys(cleaned).length ? `Live: ${Object.values(cleaned).join(", ")}` : null,
+      notes: [
+        remark.trim(),
+        Object.keys(cleaned).length ? `Live: ${Object.values(cleaned).join(", ")}` : "",
+      ].filter(Boolean).join(" · ") || null,
     }));
     return { ...video };
   });
+  const mirrored = await mirrorSafely(video);
+  await announceIfCampaignComplete(mirrored);
+  return mirrored;
 }
 
 /**
@@ -496,7 +563,7 @@ export async function setLiveUrls(
   actor: Pick<VideoUser, "id" | "name" | "email" | "role">,
   liveUrls: Partial<Record<LiveUrlPlatform, string>>,
 ): Promise<VideoRecord> {
-  return updateVideo(id, video => {
+  const video = await updateVideo(id, video => {
     const cleaned: Partial<Record<LiveUrlPlatform, string>> = { ...video.liveUrls };
     for (const [platform, url] of Object.entries(liveUrls)) {
       const trimmed = (url ?? "").trim();
@@ -507,4 +574,5 @@ export async function setLiveUrls(
     video.activity.push(activityEntry(actor, "video.live_url_updated"));
     return { ...video };
   });
+  return mirrorSafely(video);
 }

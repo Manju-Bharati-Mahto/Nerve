@@ -78,34 +78,46 @@ afterEach(async () => {
   resetStoreState();
 });
 
-describe("§9.1 campaign folder and auto-naming", () => {
-  it("creates the campaign folder under Videos/ and puts the file in it", async () => {
-    await upload(editor, "Client A");
-    const stat = await fs.stat(path.join(tmpRoot, VIDEOS_FOLDER, "Client A"));
-    expect(stat.isDirectory()).toBe(true);
+/** Where the PRD §9 tree puts a campaign's things, under the Drive root. */
+const tree = (campaign: string, sub: "Videos" | "Captions" | "Published") =>
+  path.join(tmpRoot, "Social Media Campaigns", campaign, sub);
+
+describe("§9/§10 campaign folders and naming", () => {
+  it("files the video under Social Media Campaigns/<campaign>/Videos", async () => {
+    const v = await upload(editor, "Client A");
+    const files = await fs.readdir(tree("Client A", "Videos"));
+    expect(files).toContain(`${v.title}.mp4`);
   });
 
-  it("names files sequentially per campaign", async () => {
+  it("creates the whole tree — Videos, Captions and Published", async () => {
+    await upload(editor, "Client A");
+    for (const sub of ["Videos", "Captions", "Published"] as const) {
+      expect((await fs.stat(tree("Client A", sub))).isDirectory(), sub).toBe(true);
+    }
+  });
+
+  it("names files the §10 way, sequentially per campaign", async () => {
     const first = await upload(editor, "Client A");
     const second = await upload(editor, "Client A");
-    expect(first.title).toBe("Client A Video 1");
-    expect(second.title).toBe("Client A Video 2");
+    expect(first.title).toBe("Client A - Video 1");
+    expect(second.title).toBe("Client A - Video 2");
+    expect(first.sequence).toBe(1);
   });
 
   it("numbers each campaign independently", async () => {
     await upload(editor, "Client A");
     const otherCampaign = await upload(editor, "Client B");
-    expect(otherCampaign.title).toBe("Client B Video 1");
+    expect(otherCampaign.title).toBe("Client B - Video 1");
   });
 
   it("stores the auto-generated name as the Title, keeping the editor's wording too", async () => {
     const v = await upload(editor, "Client A", "Diwali teaser cut 3");
-    expect(v.title).toBe("Client A Video 1");       // §9.1
-    expect(v.editorTitle).toBe("Diwali teaser cut 3"); // §9
+    expect(v.title).toBe("Client A - Video 1");
+    expect(v.editorTitle).toBe("Diwali teaser cut 3");
   });
 
   it("never hands out the same name twice under concurrent uploads to one campaign", async () => {
-    // The clash §9.1 forbids. Without atomic reservation these collide.
+    // The clash §10 forbids. Without atomic reservation these collide.
     const uploads = await Promise.all(
       Array.from({ length: 8 }, () => upload(editor, "Busy Client")),
     );
@@ -113,14 +125,28 @@ describe("§9.1 campaign folder and auto-naming", () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
-  it("writes a caption sidecar whose name matches the video's exactly", async () => {
+  it("creates exactly one campaign folder under concurrent uploads", async () => {
+    // Folder creation is find-then-create; on Google Drive two simultaneous
+    // creates would leave two "Busy Client" folders. Locally the filesystem
+    // would hide that, so the check is that every file landed in ONE folder.
+    await Promise.all(Array.from({ length: 6 }, () => upload(editor, "Busy Client")));
+    const campaigns = await fs.readdir(path.join(tmpRoot, "Social Media Campaigns"));
+    expect(campaigns.filter(c => c === "Busy Client")).toHaveLength(1);
+    expect((await fs.readdir(tree("Busy Client", "Videos"))).filter(f => f.endsWith(".mp4"))).toHaveLength(6);
+  });
+
+  it("writes the caption file into Captions/, named exactly like the video", async () => {
     const v = await upload(editor, "Client A", "t", "the caption text");
-    const captionPath = path.join(tmpRoot, VIDEOS_FOLDER, "Client A", `${v.title}.txt`);
-    expect(await fs.readFile(captionPath, "utf8")).toBe("the caption text");
+    const body = await fs.readFile(path.join(tree("Client A", "Captions"), `${v.title}.txt`), "utf8");
+    // §10: campaign, video number, platform/page and the complete caption.
+    expect(body).toContain("Campaign: Client A");
+    expect(body).toContain("Video Number: 1");
+    expect(body).toContain("Platform/Page:");
+    expect(body).toContain("the caption text");
     expect(v.captionFileId).toBeTruthy();
   });
 
-  it("builds names in the documented shape", () => {
+  it("still builds the older name shape, for records from before", () => {
     expect(campaignVideoName("Client A", 3)).toBe("Client A Video 3");
   });
 });
@@ -302,12 +328,14 @@ describe("ownership", () => {
 });
 
 describe("§17 captions", () => {
-  it("can be rewritten before submission, and updates the Drive sidecar", async () => {
+  it("can be rewritten before submission, and updates the Drive caption file", async () => {
     const v = await upload(editor, "Client A", "t", "first");
     await updateCaption(v.id, "second", editor);
     expect((await getVideo(v.id)).caption).toBe("second");
-    const captionPath = path.join(tmpRoot, VIDEOS_FOLDER, "Client A", `${v.title}.txt`);
-    expect(await fs.readFile(captionPath, "utf8")).toBe("second");
+    const body = await fs.readFile(
+      path.join(tmpRoot, "Social Media Campaigns", "Client A", "Captions", `${v.title}.txt`), "utf8");
+    expect(body).toContain("second");
+    expect(body).not.toContain("\nfirst\n");
   });
 
   it("is frozen once submitted — it is what the publisher is about to post", async () => {

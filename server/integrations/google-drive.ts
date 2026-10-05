@@ -68,12 +68,23 @@ export interface DriveClient {
   ensureFolder(name: string, parentId: string): Promise<string>;
   /** Finds a direct child by exact name, or null. */
   findChild(name: string, parentId: string): Promise<DriveFileMeta | null>;
-  /** Creates a text file with content, returning its metadata. */
-  createTextFile(name: string, parentId: string, content: string): Promise<DriveFileMeta>;
+  /**
+   * Creates a text file with content, returning its metadata. `mimeType`
+   * defaults to JSON, which is what the data stores are; a file meant for a
+   * person to open in Drive (a caption, say) passes "text/plain" so Drive
+   * shows it as text rather than as a JSON document.
+   */
+  createTextFile(name: string, parentId: string, content: string, mimeType?: string): Promise<DriveFileMeta>;
   /** Reads a file's text content together with the revision it was read at. */
   readTextFile(fileId: string): Promise<{ content: string; revisionId: string }>;
   /** Overwrites content, but only if the file is still at `expectedRevisionId`. */
-  updateTextFile(fileId: string, content: string, expectedRevisionId: string): Promise<DriveFileMeta>;
+  updateTextFile(fileId: string, content: string, expectedRevisionId: string, mimeType?: string): Promise<DriveFileMeta>;
+  /**
+   * Moves a file into another folder and returns its metadata afterwards.
+   * Callers must use the RETURNED id: on Google Drive a move keeps the id,
+   * but the local adapter's ids are paths, so moving one changes it.
+   */
+  moveFile(fileId: string, newParentId: string): Promise<DriveFileMeta>;
   /** Current metadata without transferring content — used to cheaply poll revisions. */
   getMeta(fileId: string): Promise<DriveFileMeta>;
   /** Uploads a local file (the editor's video) and returns its Drive metadata. */
@@ -223,13 +234,13 @@ export class GoogleDriveClient implements DriveClient {
     return json.id;
   }
 
-  async createTextFile(name: string, parentId: string, content: string): Promise<DriveFileMeta> {
+  async createTextFile(name: string, parentId: string, content: string, mimeType = "application/json"): Promise<DriveFileMeta> {
     // Multipart upload: metadata part, then the body, in one request.
     const boundary = `nerve-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const metadata = JSON.stringify({ name, parents: [parentId], mimeType: "application/json" });
+    const metadata = JSON.stringify({ name, parents: [parentId], mimeType });
     const body =
       `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n` +
-      `--${boundary}\r\nContent-Type: application/json\r\n\r\n${content}\r\n` +
+      `--${boundary}\r\nContent-Type: ${mimeType}; charset=UTF-8\r\n\r\n${content}\r\n` +
       `--${boundary}--`;
     const fields = encodeURIComponent("id,name,mimeType,headRevisionId,version,modifiedTime");
     const res = await this.api(`${DRIVE_UPLOAD_API}/files?uploadType=multipart&fields=${fields}&${SHARED_DRIVE_PARAMS}`, {
@@ -259,7 +270,7 @@ export class GoogleDriveClient implements DriveClient {
     return this.toMeta(await res.json() as Record<string, unknown>);
   }
 
-  async updateTextFile(fileId: string, content: string, expectedRevisionId: string): Promise<DriveFileMeta> {
+  async updateTextFile(fileId: string, content: string, expectedRevisionId: string, mimeType = "application/json"): Promise<DriveFileMeta> {
     // Drive has no reliable conditional-write header across file types, so the
     // guard is an explicit re-check immediately before the write. Combined with
     // the per-file serialisation in drive-store.ts (single API instance), this
@@ -270,10 +281,32 @@ export class GoogleDriveClient implements DriveClient {
     const fields = encodeURIComponent("id,name,mimeType,headRevisionId,version,modifiedTime");
     const res = await this.api(`${DRIVE_UPLOAD_API}/files/${fileId}?uploadType=media&fields=${fields}&${SHARED_DRIVE_PARAMS}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
+      // The body's type must match the file's, or Drive re-types the file.
+      headers: { "Content-Type": mimeType === "application/json" ? mimeType : `${mimeType}; charset=UTF-8` },
       body: content,
     });
     await this.expectOk(res, "file update");
+    return this.toMeta(await res.json() as Record<string, unknown>);
+  }
+
+  async moveFile(fileId: string, newParentId: string): Promise<DriveFileMeta> {
+    // Drive models a folder as a parent, so a move is "add this parent,
+    // remove the others" — which needs the current parents first.
+    const parentsRes = await this.api(`${DRIVE_API}/files/${fileId}?fields=parents&${SHARED_DRIVE_PARAMS}`);
+    await this.expectOk(parentsRes, "parent lookup");
+    const { parents = [] } = await parentsRes.json() as { parents?: string[] };
+    if (parents.length === 1 && parents[0] === newParentId) return this.getMeta(fileId);
+
+    const fields = encodeURIComponent("id,name,mimeType,headRevisionId,version,modifiedTime");
+    const remove = parents.filter(p => p !== newParentId).join(",");
+    const res = await this.api(
+      `${DRIVE_API}/files/${fileId}?addParents=${encodeURIComponent(newParentId)}` +
+      `${remove ? `&removeParents=${encodeURIComponent(remove)}` : ""}&fields=${fields}&${SHARED_DRIVE_PARAMS}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+    await this.expectOk(res, "file move");
     return this.toMeta(await res.json() as Record<string, unknown>);
   }
 
@@ -380,7 +413,7 @@ export class LocalDriveClient implements DriveClient {
     }
   }
 
-  async createTextFile(name: string, parentId: string, content: string): Promise<DriveFileMeta> {
+  async createTextFile(name: string, parentId: string, content: string, _mimeType?: string): Promise<DriveFileMeta> {
     const id = parentId === "root" ? name : path.join(parentId, name);
     await fs.mkdir(path.dirname(this.resolve(id)), { recursive: true });
     await fs.writeFile(this.resolve(id), content, "utf8");
@@ -397,11 +430,22 @@ export class LocalDriveClient implements DriveClient {
     return this.metaOf(fileId);
   }
 
-  async updateTextFile(fileId: string, content: string, expectedRevisionId: string): Promise<DriveFileMeta> {
+  async updateTextFile(fileId: string, content: string, expectedRevisionId: string, _mimeType?: string): Promise<DriveFileMeta> {
     if (await this.revisionOf(fileId) !== expectedRevisionId) throw new RevisionMismatchError(fileId);
     await fs.writeFile(this.resolve(fileId), content, "utf8");
     await this.bumpRevision(fileId);
     return this.metaOf(fileId);
+  }
+
+  async moveFile(fileId: string, newParentId: string): Promise<DriveFileMeta> {
+    const newId = newParentId === "root" ? path.basename(fileId) : path.join(newParentId, path.basename(fileId));
+    if (newId === fileId) return this.metaOf(fileId);
+    await fs.mkdir(path.dirname(this.resolve(newId)), { recursive: true });
+    await fs.rename(this.resolve(fileId), this.resolve(newId));
+    // The revision marker travels with the file, so a later conditional write
+    // against the moved file still has a revision to compare.
+    await fs.rename(this.revPath(fileId), this.revPath(newId)).catch(() => undefined);
+    return this.metaOf(newId);
   }
 
   async uploadBinaryFile(name: string, parentId: string, localPath: string, _mimeType: string): Promise<DriveFileMeta> {

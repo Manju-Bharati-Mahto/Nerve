@@ -121,6 +121,20 @@ export const api = {
       return payload as { user: AppUser; avatar_url: string }
     })
   },
+  /** PRD §6 — an administrator sets a team member's profile photo. */
+  uploadMemberAvatar: (userId: string, file: File) => {
+    const formData = new FormData()
+    formData.append("avatar", file)
+    return fetch(`${API_BASE_URL}/users/${encodeURIComponent(userId)}/avatar`, {
+      method: "POST",
+      credentials: "include",
+      body: formData,
+    }).then(async r => {
+      const payload = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(payload.message || "Photo upload failed.")
+      return payload as { user: AppUser; avatar_url: string }
+    })
+  },
   forgotPassword: (email: string) =>
     request<{ ok: boolean }>("/auth/forgot-password", {
       method: "POST",

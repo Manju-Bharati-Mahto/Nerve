@@ -28,6 +28,9 @@ export const NOTIFICATION_TEXT: Record<NotificationKind, string> = {
   video_rejected: "Your video needs changes.",
   posting_due: "Scheduled content is due to be posted.",
   campaign_deadline: "A campaign is approaching its end date.",
+  campaign_completed: "A campaign has reached its posting target.",
+  user_created: "A new member has joined the outreach team.",
+  system_issue: "Something in the video workflow needs attention.",
 };
 
 /**
@@ -52,7 +55,7 @@ export async function alreadyNotified(
 export async function notify(
   userIds: string | string[],
   kind: NotificationKind,
-  subject?: { type: "video" | "event" | "campaign"; id: string } | null,
+  subject?: { type: "video" | "event" | "campaign" | "system"; id: string } | null,
   detail?: string,
 ): Promise<void> {
   const targets = (Array.isArray(userIds) ? userIds : [userIds]).filter(Boolean);

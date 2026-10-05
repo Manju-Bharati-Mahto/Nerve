@@ -108,6 +108,9 @@ export const NOTIFICATION_KINDS = [
      a review, the publisher about work due, and the manager about a campaign
      running out of time. */
   "video_approved", "video_rejected", "posting_due", "campaign_deadline",
+  /* §14 Manager "campaign completion", and §14 Admin "new user creation and
+     major publishing/system issues". */
+  "campaign_completed", "user_created", "system_issue",
 ] as const;
 export type NotificationKind = typeof NOTIFICATION_KINDS[number];
 
@@ -128,7 +131,7 @@ export interface WorkflowNotification {
    * with no subject can never be deduplicated, which for anything raised on
    * a timer means it repeats forever.
    */
-  subject?: { type: "video" | "event" | "campaign"; id: string } | null;
+  subject?: { type: "video" | "event" | "campaign" | "system"; id: string } | null;
 }
 
 /** §6.2 / §4.2 — a registered user of the video workflow. */
@@ -246,6 +249,20 @@ export interface VideoRecord {
    * pages could be picked, and on an upload with no campaign to pick from.
    */
   socialPageIds?: string[];
+  /**
+   * Those pages' handles as they were at upload. A snapshot, like the names
+   * on activity entries, so the Drive details file can name the pages without
+   * this module reaching into Postgres every time it rewrites one.
+   */
+  socialPageNames?: string[];
+  /** §10 — this video's number within its campaign: the N in "Video N". */
+  sequence?: number | null;
+  /**
+   * §9 — the campaign folders this video's files were filed into. Recorded on
+   * the video so publishing knows where Published/ is without recomputing it,
+   * and so a record always says where its own files are.
+   */
+  driveFolders?: { videos: string; captions: string; published: string } | null;
   notes?: string | null;
   tags?: string[];
   createdAt: string;

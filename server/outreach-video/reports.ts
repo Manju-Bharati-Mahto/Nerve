@@ -32,6 +32,12 @@ export interface WorkflowKpis {
   needsEditorVideos: number;
   /** §12 Publisher — approved content waiting to go out, scheduled or not. */
   pendingPublishingVideos: number;
+  /** §5 "Pending content" — not yet through review: uploaded, under review, or back with the editor. */
+  pendingContentVideos: number;
+  /** §12 — posts for today (IST): scheduled for today, or published today. */
+  todaysPosts: number;
+  /** §12 Publisher — published today (IST). */
+  publishedToday: number;
   /** Hours, mean over videos that actually made the transition. Null when none have. */
   avgUploadedToSubmittedHours: number | null;
   avgSubmittedToPublishedHours: number | null;
@@ -74,6 +80,18 @@ export interface EditorVideoLog {
 function dayOf(iso: string): string {
   const d = new Date(iso);
   return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+/**
+ * The calendar day in India for an instant: "today" as the outreach team
+ * means it. The server runs in UTC, where "today" would turn over at 5:30 in
+ * the morning IST — so a post published at 2 AM would land on yesterday.
+ */
+const istFormat = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
+});
+export function istDay(d: Date | string): string {
+  return istFormat.format(new Date(d));
 }
 
 function hoursBetween(from: string, to: string): number {
@@ -140,6 +158,13 @@ export async function workflowKpis(now: Date = new Date()): Promise<WorkflowKpis
     inRevisionVideos: videos.filter(v => v.status === "revision").length,
     needsEditorVideos: videos.filter(v => v.status === "rejected" || v.status === "revision").length,
     pendingPublishingVideos: videos.filter(v => v.status === "approved" || v.status === "scheduled").length,
+    pendingContentVideos: videos.filter(v =>
+      v.status === "uploaded" || v.status === "under_review" || v.status === "rejected" || v.status === "revision").length,
+    todaysPosts: videos.filter(v =>
+      (v.status === "scheduled" && v.scheduledFor && istDay(v.scheduledFor) === istDay(now)) ||
+      (v.status === "published" && v.publishedAt && istDay(v.publishedAt) === istDay(now))).length,
+    publishedToday: videos.filter(v =>
+      v.status === "published" && v.publishedAt && istDay(v.publishedAt) === istDay(now)).length,
 
     avgUploadedToSubmittedHours: mean(
       videos.filter(v => v.submittedAt).map(v => hoursBetween(v.createdAt, v.submittedAt as string)),

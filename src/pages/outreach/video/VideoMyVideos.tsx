@@ -19,13 +19,28 @@ import {
  * having to ask for it; a manager or admin opening the same page sees the
  * department's, which is what §27 gives them under "All Videos".
  */
+/**
+ * §12's editor groups. Rejected includes Editor Revision, because both mean
+ * the work is back with the editor; Approved includes everything that passed
+ * review, scheduled and published alike.
+ */
+type EditorFilter = 'all' | 'under_review' | 'approved' | 'rejected' | 'not_submitted'
+const EDITOR_GROUPS: Record<Exclude<EditorFilter, 'all'>, VideoStatus[]> = {
+  under_review: ['under_review'],
+  approved: ['approved', 'scheduled', 'published'],
+  rejected: ['rejected', 'revision'],
+  not_submitted: ['uploaded'],
+}
+
 export default function VideoMyVideos() {
   const [videos, setVideos] = useState<VideoRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [driveReady, setDriveReady] = useState<boolean | null>(null)
   const [uploading, setUploading] = useState(false)
-  const [filter, setFilter] = useState<VideoStatus | 'all'>('all')
+  /* A filter is one of §12's groups rather than a raw status: "Approved" to
+     an editor means it passed review, whatever happened next. */
+  const [filter, setFilter] = useState<EditorFilter>('all')
 
   const refresh = useCallback(async () => {
     try {
@@ -46,18 +61,17 @@ export default function VideoMyVideos() {
     void refresh()
   }, [refresh])
 
+  /* §12 Editor — "My Uploads, Under Review, Approved, Rejected". */
   const counts = useMemo(() => ({
     total: videos.length,
-    uploaded: videos.filter(v => v.status === 'uploaded').length,
-    underReview: videos.filter(v => v.status === 'under_review').length,
-    published: videos.filter(v => v.status === 'published').length,
-    /* §12 Editor — "Rejected". Revision counts here too: both mean the work
-       is back with this editor and nobody else is waiting on anything. */
-    needsMe: videos.filter(v => v.status === 'rejected' || v.status === 'revision').length,
+    underReview: videos.filter(v => EDITOR_GROUPS.under_review.includes(v.status)).length,
+    approved: videos.filter(v => EDITOR_GROUPS.approved.includes(v.status)).length,
+    rejected: videos.filter(v => EDITOR_GROUPS.rejected.includes(v.status)).length,
+    notSubmitted: videos.filter(v => EDITOR_GROUPS.not_submitted.includes(v.status)).length,
   }), [videos])
 
   const shown = useMemo(
-    () => filter === 'all' ? videos : videos.filter(v => v.status === filter),
+    () => filter === 'all' ? videos : videos.filter(v => EDITOR_GROUPS[filter].includes(v.status)),
     [videos, filter],
   )
 
@@ -111,16 +125,16 @@ export default function VideoMyVideos() {
       )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Kpi label="Total videos" value={counts.total} onClick={() => setFilter('all')} active={filter === 'all'} />
-        <Kpi label="Uploaded" value={counts.uploaded} onClick={() => setFilter('uploaded')} active={filter === 'uploaded'} />
+        <Kpi label="My uploads" value={counts.total} onClick={() => setFilter('all')} active={filter === 'all'} />
         <Kpi label="Under review" value={counts.underReview} onClick={() => setFilter('under_review')} active={filter === 'under_review'} />
-        <Kpi label="Published" value={counts.published} onClick={() => setFilter('published')} active={filter === 'published'} />
+        <Kpi label="Approved" value={counts.approved} onClick={() => setFilter('approved')} active={filter === 'approved'} />
+        <Kpi label="Rejected" value={counts.rejected} onClick={() => setFilter('rejected')} active={filter === 'rejected'} />
       </div>
-      {counts.needsMe > 0 && (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <Kpi label="Needs your changes" value={counts.needsMe}
-            onClick={() => setFilter('rejected')} active={filter === 'rejected'} />
-        </div>
+      {counts.notSubmitted > 0 && (
+        <button onClick={() => setFilter('not_submitted')}
+          className="text-[12px] text-amber-700 hover:underline">
+          {counts.notSubmitted} video{counts.notSubmitted === 1 ? ' has' : 's have'} not been sent for review yet.
+        </button>
       )}
 
       {error && (
@@ -391,8 +405,12 @@ function UploadDialog({ onClose, onDone, uploading, setUploading }: {
                 </div>
               </div>
               <div>
-                <label className="hub-label">Notes</label>
-                <textarea className="hub-input" value={notes} onChange={e => setNotes(e.target.value)} />
+                {/* §2 Editor — "Add description/notes". It goes into the video's
+                    file in Google Drive, so it is worth writing for a reader. */}
+                <label className="hub-label">Description / notes</label>
+                <textarea className="hub-input min-h-20" value={notes} onChange={e => setNotes(e.target.value)}
+                  placeholder="What this video is, where it was shot, anything the reviewer and publisher should know" />
+                <p className="text-[11px] text-muted-foreground mt-1">Saved with the video, and in its file in Google Drive.</p>
               </div>
             </>
           )}

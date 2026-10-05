@@ -41,6 +41,29 @@ export default function VideoDashboard() {
         </div>
       </div>
 
+      {/* §5 Manager / §12 Admin — the campaign-level view first: it is what
+          the dashboard is for. */}
+      <section className="space-y-3">
+        <h2 className="text-[11px] uppercase tracking-widest text-muted-foreground">Campaigns</h2>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <Kpi label="Total campaigns" value={kpis.campaignsTotal ?? 0} to="/outreach/video/campaigns" />
+          <Kpi label="Running" value={kpis.campaignsRunning ?? 0} to="/outreach/video/campaigns" />
+          <Kpi label="Upcoming" value={kpis.campaignsUpcoming ?? 0} to="/outreach/video/campaigns" />
+          <Kpi label="Completed" value={kpis.campaignsCompleted ?? 0} to="/outreach/video/campaigns" />
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <Kpi label="Today's posts" value={kpis.todaysPosts} to="/outreach/video/scheduled" />
+          <Kpi label="Pending posts" value={kpis.pendingPublishingVideos} to="/outreach/video/queue" />
+          <Kpi label="Published posts" value={kpis.publishedVideos} to="/outreach/video/published" />
+          <Kpi label="Pending content" value={kpis.pendingContentVideos} to="/outreach/video/review" />
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <Kpi label="Total social media pages" text={kpis.totalSocialPages == null ? '—' : String(kpis.totalSocialPages)}
+            to="/outreach/video/social-pages" />
+          <Kpi label="Team members" value={kpis.totalUsers ?? 0} to="/outreach/video/users" />
+        </div>
+      </section>
+
       <section className="space-y-3">
         <h2 className="text-[11px] uppercase tracking-widest text-muted-foreground">Videos</h2>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

@@ -84,6 +84,7 @@ import VideoUsers from "@/pages/outreach/video/VideoUsers";
 import VideoReview from "@/pages/outreach/video/VideoReview";
 import VideoScheduled from "@/pages/outreach/video/VideoScheduled";
 import VideoCampaigns from "@/pages/outreach/video/VideoCampaigns";
+import VideoDrive from "@/pages/outreach/video/VideoDrive";
 import VideoActivity from "@/pages/outreach/video/VideoActivity";
 
 // BrandOps — the branding department's frame inventory and vendor work
@@ -476,6 +477,13 @@ const App = () => (
                 <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach"
                   anyCapability={['outreach:campaigns']}>
                   <VideoCampaigns />
+                </RoleGuard>
+              } />
+              {/* §9 — the outreach team connects its own Google Drive here.
+                  Administration, so role-only: there is no tab grant for it. */}
+              <Route path="/outreach/video/drive" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager']} team="outreach">
+                  <VideoDrive />
                 </RoleGuard>
               } />
               <Route path="/outreach/video/users" element={

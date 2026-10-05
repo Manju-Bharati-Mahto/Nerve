@@ -109,8 +109,16 @@ export default function VideoNotifications() {
   )
 }
 
-function subjectPath(subject: { type: 'video' | 'event'; id: string }): string {
-  return subject.type === 'video'
-    ? `/outreach/video/videos/${subject.id}`
-    : `/outreach/video/events/${subject.id}`
+/**
+ * Where a notification's subject lives. Every subject type needs a case:
+ * this used to send anything that was not a video to the event page, so a
+ * campaign notice linked to an event that did not exist.
+ */
+function subjectPath(subject: NonNullable<WorkflowNotification['subject']>): string {
+  switch (subject.type) {
+    case 'video': return `/outreach/video/videos/${subject.id}`
+    case 'event': return `/outreach/video/events/${subject.id}`
+    case 'campaign': return '/outreach/video/campaigns'
+    case 'system': return '/outreach/video/drive'
+  }
 }

@@ -26,6 +26,13 @@ export interface SearchQuery {
   editorId?: string;
   publisherId?: string;
   platform?: string;
+  /** §13 "Social Media Page" — videos posted to it, events planned for it. */
+  pageId?: string;
+  /**
+   * §13 "Content Type". Events carry one (Reel, Post, Story…); every workflow
+   * video is a "Video", so asking for "Video" finds the videos.
+   */
+  contentType?: string;
   /** Inclusive calendar-day range, YYYY-MM-DD. */
   from?: string;
   to?: string;
@@ -72,10 +79,12 @@ export async function search(query: SearchQuery, scope: SearchScope = {}): Promi
     .filter(v => !query.client || v.client === query.client)
     .filter(v => !query.publisherId || v.publishedBy === query.publisherId)
     .filter(v => !query.platform || (v.platform ?? "") === query.platform)
+    .filter(v => !query.pageId || (v.socialPageIds ?? []).includes(query.pageId))
+    .filter(v => !query.contentType || query.contentType.toLowerCase() === "video")
     .filter(v => inRange(dayOf(v.createdAt), query.from, query.to))
     .filter(v => !q || matches([
       v.title, v.editorTitle, v.client, v.id, v.status, v.caption,
-      v.notes, v.platform, names.get(v.editorId), ...(v.tags ?? []),
+      v.notes, v.platform, names.get(v.editorId), ...(v.tags ?? []), ...(v.socialPageNames ?? []),
     ], q))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
@@ -83,9 +92,11 @@ export async function search(query: SearchQuery, scope: SearchScope = {}): Promi
     .filter(e => !videoEditorId || e.assignedEditorId === videoEditorId)
     .filter(e => !query.eventStatus || e.status === query.eventStatus)
     .filter(e => !query.client || (e.client ?? "") === query.client)
+    .filter(e => !query.pageId || e.socialPageId === query.pageId)
+    .filter(e => !query.contentType || (e.contentType ?? "").toLowerCase() === query.contentType.toLowerCase())
     .filter(e => inRange(e.date, query.from, query.to))
     .filter(e => !q || matches([
-      e.title, e.description, e.client, e.id, e.status,
+      e.title, e.description, e.client, e.id, e.status, e.contentType,
       e.assignedEditorId ? names.get(e.assignedEditorId) : null,
     ], q))
     .sort((a, b) => b.date.localeCompare(a.date));
@@ -98,6 +109,9 @@ export async function filterOptions(): Promise<{
   clients: string[]; platforms: string[];
   editors: { id: string; name: string }[];
   publishers: { id: string; name: string }[];
+  /** §13 — the pages anything has been filed against, by id and handle. */
+  pages: { id: string; name: string }[];
+  contentTypes: string[];
 }> {
   const [workflow, eventsDoc, users] = await Promise.all([readWorkflow(), readEvents(), listAllUsers()]);
   const clients = new Set<string>();
@@ -105,6 +119,16 @@ export async function filterOptions(): Promise<{
   for (const e of eventsDoc.events) if (e.client) clients.add(e.client);
   const platforms = new Set<string>();
   for (const v of workflow.videos) if (v.platform) platforms.add(v.platform);
+
+  /* Pages are named from the videos' own snapshots, so the list needs no trip
+     to Postgres; an event's page shows by id until a video names it. */
+  const pages = new Map<string, string>();
+  for (const v of workflow.videos) {
+    (v.socialPageIds ?? []).forEach((id, i) => pages.set(id, v.socialPageNames?.[i] ?? pages.get(id) ?? id));
+  }
+  for (const e of eventsDoc.events) if (e.socialPageId && !pages.has(e.socialPageId)) pages.set(e.socialPageId, e.socialPageId);
+  const contentTypes = new Set<string>(workflow.videos.length ? ["Video"] : []);
+  for (const e of eventsDoc.events) if (e.contentType) contentTypes.add(e.contentType);
 
   // Deleted users stay listed: their historical videos are still filterable by
   // them, which is the whole point of the §4.6 tombstone.
@@ -118,5 +142,7 @@ export async function filterOptions(): Promise<{
     platforms: [...platforms].sort((a, b) => a.localeCompare(b)),
     editors: pick("editor"),
     publishers: pick("publisher"),
+    pages: [...pages].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name)),
+    contentTypes: [...contentTypes].sort((a, b) => a.localeCompare(b)),
   };
 }

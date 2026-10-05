@@ -19,6 +19,12 @@ import {
 } from "./drive-client.js";
 import { listUserCapabilities } from "../db.js";
 import {
+  completeOutreachDriveConnect, disconnectOutreachDrive, outreachDriveAuthUrl, outreachDriveStatus,
+  saveOutreachDriveClient, setExpectedAccount, useOutreachDriveFolder, verifyOutreachDriveState,
+  OutreachDriveError,
+} from "./drive-connection.js";
+import { resetForDriveChange } from "./drive-store.js";
+import {
   campaignProgress, createCampaign, deleteCampaign, getCampaign, listCampaigns, updateCampaign,
   CampaignExistsError, CampaignInUseError, CampaignNotFoundError, type CampaignInput,
 } from "./campaigns.js";
@@ -31,7 +37,7 @@ import {
 } from "./users.js";
 import {
   getVideo, listVideos, publishVideo, publishingQueue, setLiveUrls,
-  approveVideo, rejectVideo, startRevision, scheduleVideo, reviewQueue,
+  approveVideo, rejectVideo, startRevision, scheduleVideo, reviewQueue, resyncAllToDrive,
   submitVideo, updateCaption, uploadVideo,
   InvalidTransitionError, NotYourVideoError, VideoNotFoundError,
 } from "./videos.js";
@@ -40,7 +46,7 @@ import {
   assignEvent, completeEvent, createEvent, eventCounts, getEvent, listEvents,
   todoFor, updateEventDetails, EventNotFoundError, EventNotOpenError, NotYourEventError,
 } from "./events.js";
-import { listNotifications, markRead } from "./notifications.js";
+import { listNotifications, markRead, notify } from "./notifications.js";
 import { editorVideoLog, workflowKpis } from "./reports.js";
 import { filterOptions, search } from "./search.js";
 import { activityActors, activityFeed } from "./activity.js";
@@ -78,7 +84,7 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     if (!driveIsConfigured()) {
       /* Say who can fix it and where. "Ask an administrator" sent people
          looking for an outreach admin, who cannot reach the setting at all. */
-      sendError(res, 503, "The video workflow is not connected to Google Drive yet. A Super Admin can connect it in Media Ops → Casting Management → Google Drive — one Google sign-in covers both.");
+      sendError(res, 503, "The video workflow is not connected to Google Drive yet. An outreach Admin or Manager can connect it under Video Workflow → Google Drive.");
       return null;
     }
 
@@ -105,7 +111,10 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
        create accounts directly: before that, people were pre-registered in
        the workflow table and arrived with a record already waiting. */
     try {
-      return await addUser({ name: u.full_name ?? email, email, role });
+      const created = await addUser({ name: u.full_name ?? email, email, role });
+      // Someone whose account was made elsewhere has just joined the workflow.
+      await announceNewMember(created, null);
+      return created;
     } catch (err) {
       if (err instanceof UserExistsError) {
         const raced = await findUserByEmail(email);
@@ -113,6 +122,22 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
       }
       throw err;
     }
+  }
+
+  /**
+   * §14 Admin — "new user creation". Every Admin hears about a new member of
+   * the team, except whoever added them. Never fails the add.
+   */
+  async function announceNewMember(member: VideoUser, addedBy: VideoUser | null): Promise<void> {
+    try {
+      // Never the person who added them, and never the member themselves —
+      // an Admin's own first sign-in is not news to them.
+      const admins = (await listUsers()).filter(u =>
+        u.role === "admin" && u.active && !u.deletedAt && u.id !== addedBy?.id && u.id !== member.id);
+      const label = { admin: "Admin", manager: "Manager", editor: "Editor", publisher: "Publisher" }[member.role];
+      await notify(admins.map(a => a.id), "user_created", null,
+        addedBy ? `${member.name} (${label}) was added by ${addedBy.name}.` : `${member.name} (${label}) signed in for the first time.`);
+    } catch { /* a notice never fails the action it reports */ }
   }
 
   function requireRole(res: express.Response, user: VideoUser, allowed: VideoRole[]): boolean {
@@ -359,9 +384,10 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
   app.post(`${P}/videos/:id/publish`, asyncHandler(async (req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
     if (!requireRole(res, user, ["publisher", "admin"])) return;
-    const body = req.body as { live_urls?: Record<string, string> };
+    const body = req.body as { live_urls?: Record<string, string>; remark?: string };
     try {
-      const video = await publishVideo(getSingleParam(req.params.id), user, body.live_urls ?? {});
+      const video = await publishVideo(
+        getSingleParam(req.params.id), user, body.live_urls ?? {}, String(body.remark ?? ""));
       res.json({ video });
     } catch (err) { fail(res, err); }
   }));
@@ -538,6 +564,22 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
   }));
 
   /**
+   * §5 — the publishers an event can be assigned to. Separate from /users,
+   * which is the administration list: someone given only the calendar tab
+   * must be able to fill in the event form without seeing the whole team.
+   */
+  app.get(`${P}/publishers`, asyncHandler(async (_req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!await requireRoleOrGrant(res, user, ["admin", "manager"], "outreach:calendar")) return;
+    const users = await listUsers();
+    res.json({
+      publishers: users
+        .filter(u => u.active && !u.deletedAt && u.role === "publisher")
+        .map(u => ({ id: u.id, name: u.name, email: u.email })),
+    });
+  }));
+
+  /**
    * §4.3 — registers a user by email; §5 matches that email at sign-in.
    *
    * Managers administer their own team. The earlier specification confined
@@ -558,7 +600,9 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     if (!VIDEO_ROLES.includes(role)) return sendError(res, 400, "Pick one of Admin, Editor, Manager or Publisher.");
     if (!await managerMayActOn(res, user, null, role)) return;
     try {
-      res.status(201).json({ user: await addUser({ name, email, role, active: b.active !== false }) });
+      const created = await addUser({ name, email, role, active: b.active !== false });
+      await announceNewMember(created, user);
+      res.status(201).json({ user: created });
     } catch (err) { fail(res, err); }
   }));
 
@@ -599,6 +643,142 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     if (!await managerMayActOn(res, user, id, null)) return;
     if (!await deleteUser(id)) return sendError(res, 404, "That user was not found.");
     res.json({ deleted: true });
+  }));
+
+  // ── Google Drive connection (§9) ──────────────────────────────────────────
+  //
+  // The outreach team connects its own Drive here, from inside the video
+  // workflow. Admin or Manager: the outreach Manager administers outreach.
+  // These deliberately do NOT go through requireVideoUser, which refuses
+  // every request while Drive is unconnected — the one thing these exist to
+  // fix.
+
+  function requireDriveAdmin(res: express.Response): CurrentUser | null {
+    const u = res.locals.currentUser as CurrentUser;
+    const role = videoRoleForNerveRole(u?.role ?? "");
+    if (role !== "admin" && role !== "manager") {
+      sendError(res, 403, "Only an outreach Admin or Manager can set up Google Drive.");
+      return null;
+    }
+    return u;
+  }
+
+  function driveFailed(res: express.Response, err: unknown): void {
+    if (err instanceof OutreachDriveError) return sendError(res, err.status, err.message);
+    console.error("Outreach Drive operation failed", err);
+    sendError(res, 502, "Google Drive did not answer. Please try again.");
+  }
+
+  async function driveStatusPayload() {
+    await ensureDriveResolved();
+    return { ...(await outreachDriveStatus()), source: driveSource() };
+  }
+
+  /** Everything about a connection change that the rest of the module caches. */
+  function driveChanged(): void {
+    resetForDriveChange();
+  }
+
+  app.get(`${P}/drive`, asyncHandler(async (_req, res) => {
+    if (!requireDriveAdmin(res)) return;
+    res.json(await driveStatusPayload());
+  }));
+
+  app.post(`${P}/drive/client`, asyncHandler(async (req, res) => {
+    if (!requireDriveAdmin(res)) return;
+    const b = req.body as Record<string, unknown>;
+    try {
+      await saveOutreachDriveClient(String(b.client_id ?? ""), String(b.client_secret ?? ""));
+      driveChanged();
+      res.json(await driveStatusPayload());
+    } catch (err) { driveFailed(res, err); }
+  }));
+
+  /** Which Google account the Drive must belong to. */
+  app.post(`${P}/drive/account`, asyncHandler(async (req, res) => {
+    if (!requireDriveAdmin(res)) return;
+    try {
+      await setExpectedAccount(String((req.body as Record<string, unknown>).email ?? ""));
+      res.json(await driveStatusPayload());
+    } catch (err) { driveFailed(res, err); }
+  }));
+
+  app.post(`${P}/drive/connect`, asyncHandler(async (_req, res) => {
+    const u = requireDriveAdmin(res); if (!u) return;
+    try { res.json({ url: await outreachDriveAuthUrl(u.id) }); }
+    catch (err) { driveFailed(res, err); }
+  }));
+
+  /* Google sends the browser here, in the popup the page opened. The answer
+     is a small page that tells the opener what happened and closes; nothing
+     about the token ever reaches the browser. */
+  const htmlEsc = (v: string) => v.replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
+  const drivePopup = (ok: boolean, message: string) => `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Google Drive — Outreach</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#F7F9FC;color:#0F172A;font:15px/1.5 system-ui,sans-serif}
+.c{background:#fff;border:1px solid #E3E9F2;border-radius:12px;padding:26px 28px;max-width:440px;text-align:center}
+h1{font-size:18px;margin:0 0 8px}p{margin:0;color:#475569;font-size:14px}.ok{color:#15803D}.bad{color:#B91C1C}</style></head>
+<body><div class="c"><h1 class="${ok ? "ok" : "bad"}">${ok ? "Google Drive connected" : "Google Drive was not connected"}</h1>
+<p>${htmlEsc(message)}</p><p style="margin-top:14px">You can close this window.</p></div>
+<script>try{if(window.opener)window.opener.postMessage({type:'nerve-outreach-drive',ok:${ok ? "true" : "false"},message:${JSON.stringify(message)}},window.location.origin);}catch(e){}
+${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></html>`;
+
+  app.get(`${P}/drive/callback`, asyncHandler(async (req, res) => {
+    const u = res.locals.currentUser as CurrentUser;
+    const role = videoRoleForNerveRole(u?.role ?? "");
+    if (role !== "admin" && role !== "manager") {
+      return void res.status(403).type("html").send(drivePopup(false, "Only an outreach Admin or Manager can connect Google Drive."));
+    }
+    const q = req.query as Record<string, string | undefined>;
+    if (q.error) {
+      return void res.status(400).type("html").send(drivePopup(false, q.error === "access_denied"
+        ? "You cancelled the Google sign-in, or did not allow access to Drive." : `Google reported: ${q.error}`));
+    }
+    if (!q.code || !q.state || !verifyOutreachDriveState(String(q.state), u.id)) {
+      return void res.status(400).type("html").send(drivePopup(false,
+        "This sign-in link is not valid or has expired. Close this window and press Connect again."));
+    }
+    try {
+      const out = await completeOutreachDriveConnect(String(q.code), u.id);
+      driveChanged();
+      res.type("html").send(drivePopup(true, `${out.email} — videos will be kept in “${out.folder.name}”.`));
+    } catch (err) {
+      console.error("Outreach Drive connect failed", err);
+      res.status(err instanceof OutreachDriveError ? err.status : 502).type("html")
+        .send(drivePopup(false, err instanceof OutreachDriveError ? err.message : "Google Drive did not answer. Please try again."));
+    }
+  }));
+
+  /** Use a folder the connected account already has, by link or id. */
+  app.post(`${P}/drive/folder`, asyncHandler(async (req, res) => {
+    if (!requireDriveAdmin(res)) return;
+    try {
+      await useOutreachDriveFolder(String((req.body as Record<string, unknown>).folder ?? ""));
+      driveChanged();
+      res.json(await driveStatusPayload());
+    } catch (err) { driveFailed(res, err); }
+  }));
+
+  app.delete(`${P}/drive`, asyncHandler(async (_req, res) => {
+    if (!requireDriveAdmin(res)) return;
+    try {
+      await disconnectOutreachDrive();
+      driveChanged();
+      res.json(await driveStatusPayload());
+    } catch (err) { driveFailed(res, err); }
+  }));
+
+  /**
+   * Re-mirrors every video into Drive — missing details files written, the
+   * rest refreshed, each file in the folder its status says. For after
+   * connecting, or after a stretch when Drive was unreachable.
+   */
+  app.post(`${P}/drive/sync`, asyncHandler(async (_req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["admin", "manager"])) return;
+    try { res.json(await resyncAllToDrive()); }
+    catch (err) { fail(res, err); }
   }));
 
   // ── Campaigns (§7, §17) ──────────────────────────────────────────────────
@@ -692,6 +872,8 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
       editorId: q.editor_id || undefined,
       publisherId: q.publisher_id || undefined,
       platform: q.platform || undefined,
+      pageId: q.page_id || undefined,
+      contentType: q.content_type || undefined,
       from: q.from || undefined,
       to: q.to || undefined,
     }, scope));
@@ -737,7 +919,27 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
   app.get(`${P}/kpis`, asyncHandler(async (_req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
     if (!await requireRoleOrGrant(res, user, ["admin", "manager"], "outreach:video_dashboard")) return;
-    res.json({ kpis: await workflowKpis() });
+    const [kpis, campaigns, users] = await Promise.all([workflowKpis(), listCampaigns(), listUsers()]);
+    /* §5 "Total social media pages" — the ones still posted to. Read from
+       Postgres, so a database hiccup costs this one number, not the page. */
+    let totalSocialPages: number | null = null;
+    try {
+      const { listPages } = await import("../outreach-db.js");
+      totalSocialPages = (await listPages()).filter(pg => (pg as { status?: string }).status !== "inactive").length;
+    } catch { totalSocialPages = null; }
+    res.json({
+      kpis: {
+        ...kpis,
+        // §5 Manager and §12 Admin — campaign totals.
+        campaignsTotal: campaigns.length,
+        campaignsRunning: campaigns.filter(c => c.status === "running").length,
+        campaignsUpcoming: campaigns.filter(c => c.status === "upcoming").length,
+        campaignsCompleted: campaigns.filter(c => c.status === "completed").length,
+        totalSocialPages,
+        // §12 Admin — "Total Users": the workflow team, active members only.
+        totalUsers: users.filter(u => u.active && !u.deletedAt).length,
+      },
+    });
   }));
 
   /** §11.3 Manager and §14.1 Publisher both get the monthly editor log. */

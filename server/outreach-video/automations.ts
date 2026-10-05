@@ -59,7 +59,9 @@ export async function runOutreachVideoAutomations(now = new Date()): Promise<Aut
   for (const v of videos) {
     if (v.status !== "scheduled" || !v.scheduledFor) continue;
     if (new Date(v.scheduledFor).getTime() > now.getTime()) continue;
-    for (const p of publishers) {
+    /* The publishers act on it; §14 also has the Manager told about pending
+       posts, so they hear about one whose slot has passed too. */
+    for (const p of [...publishers, ...managers.filter(m => !publishers.some(x => x.id === m.id))]) {
       if (await alreadyNotified(p.id, "posting_due", v.id)) continue;
       await notify([p.id], "posting_due", { type: "video", id: v.id }, `“${v.title}”`);
       postingDue++;

@@ -18,7 +18,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { getDriveClient } from "./drive-client.js";
-import { ensureDriveStructure, mutateCampaigns, readCampaigns } from "./drive-store.js";
+import { mutateCampaigns, onDriveReset, readCampaigns } from "./drive-store.js";
 import { activityEntry } from "./users.js";
 import {
   CAMPAIGN_STATUSES,
@@ -105,16 +105,53 @@ function validate(input: CampaignInput): void {
  * record is the authority, and uploads fall back to the original layout when
  * `driveFolders` is null. So the caller treats this as best-effort.
  */
+/*
+ * Folder creation is find-then-create, which is not atomic: two uploads to the
+ * same campaign arriving together would each find nothing and each create a
+ * "VLF 2027" folder, and Google Drive happily keeps both. So every folder
+ * lookup goes through one queue, and a resolved tree is remembered for the
+ * life of the process. Nerve runs a single API container, so an in-process
+ * queue covers the real deployment.
+ */
+let folderQueue: Promise<unknown> = Promise.resolve();
+const folderCache = new Map<string, NonNullable<CampaignRecord["driveFolders"]>>();
+
+function serialised<T>(fn: () => Promise<T>): Promise<T> {
+  const run = folderQueue.then(fn, fn);
+  folderQueue = run.catch(() => undefined);
+  return run;
+}
+
+/** Drops remembered folder ids — the Drive they belong to has changed. */
+export function resetCampaignFolderCache(): void {
+  folderCache.clear();
+}
+onDriveReset(resetCampaignFolderCache);
+
+/**
+ * §9 — `Social Media Campaigns/<name>/{Videos, Captions, Published}`, created
+ * where missing and returned as three ids. Safe to call repeatedly.
+ */
 async function createCampaignFolders(
   name: string,
-): Promise<CampaignRecord["driveFolders"]> {
-  const { client, rootId } = getDriveClient();
-  const root = await client.ensureFolder(CAMPAIGNS_ROOT_FOLDER, rootId);
-  const campaignFolder = await client.ensureFolder(safeFolderName(name), root);
-  const [videos, captions, published] = await Promise.all(
-    CAMPAIGN_SUBFOLDERS.map(sub => client.ensureFolder(sub, campaignFolder)),
-  );
-  return { videos, captions, published };
+): Promise<NonNullable<CampaignRecord["driveFolders"]>> {
+  const key = normaliseName(name);
+  const known = folderCache.get(key);
+  if (known) return known;
+  return serialised(async () => {
+    const again = folderCache.get(key);
+    if (again) return again;
+    const { client, rootId } = getDriveClient();
+    const root = await client.ensureFolder(CAMPAIGNS_ROOT_FOLDER, rootId);
+    const campaignFolder = await client.ensureFolder(safeFolderName(name), root);
+    // One at a time, for the same reason as above.
+    const videos = await client.ensureFolder(CAMPAIGN_SUBFOLDERS[0], campaignFolder);
+    const captions = await client.ensureFolder(CAMPAIGN_SUBFOLDERS[1], campaignFolder);
+    const published = await client.ensureFolder(CAMPAIGN_SUBFOLDERS[2], campaignFolder);
+    const tree = { videos, captions, published };
+    folderCache.set(key, tree);
+    return tree;
+  });
 }
 
 export async function createCampaign(actor: VideoUser, input: CampaignInput): Promise<CampaignRecord> {
@@ -237,21 +274,20 @@ export async function deleteCampaign(actor: VideoUser, id: string, videoCount: n
 }
 
 /**
- * Where a campaign's assets belong in Drive.
+ * Where a campaign's assets belong in Drive: always the §9 tree.
  *
- * New campaigns carry their §9 folders. A campaign from before this existed,
- * or one whose folder creation failed, falls back to the original
- * `Videos/<campaign>/` location — which is where its files already are, so the
- * fallback is not a degraded path, it is the correct one for that campaign.
+ * Every upload goes here — a campaign record's own folders when it has them,
+ * otherwise the tree is created for the campaign's name. There used to be a
+ * second, older layout (`Videos/<campaign>/`) kept for files already filed
+ * that way, but the outreach Drive is a fresh one with nothing in the old
+ * layout, so keeping two layouts would only have meant new uploads landing in
+ * the wrong place.
  */
 export async function assetFoldersFor(
   campaign: Pick<CampaignRecord, "name" | "driveFolders">,
-): Promise<{ videos: string; captions: string; published: string | null }> {
-  if (campaign.driveFolders) return campaign.driveFolders;
-  const { client } = getDriveClient();
-  const folders = await ensureDriveStructure();
-  const legacy = await client.ensureFolder(safeFolderName(campaign.name), folders.videos);
-  return { videos: legacy, captions: legacy, published: null };
+): Promise<{ videos: string; captions: string; published: string }> {
+  if (campaign.driveFolders?.published) return campaign.driveFolders;
+  return createCampaignFolders(campaign.name);
 }
 
 /**
