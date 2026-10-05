@@ -1,6 +1,10 @@
 # Outreach video workflow — gap audit against the Campaign & Content Management PRD
 
 **Source document:** `Social_Media_Campaign_Management_PRD.pdf` (17 sections), supplied 2026-10-05.
+**Status:** audited, then implemented. See "Where each section stands now" at
+the foot of this document — the section-by-section audit below records the
+state *before* the work, and is kept as the record of what was decided and
+why.
 **Audited against:** `server/outreach-video/*`, `src/pages/outreach/video/*`, `server/outreach-db.ts`, `src/App.tsx`, `src/lib/capabilities.ts`.
 
 ---
@@ -199,3 +203,52 @@ those five fixed in the same change.
 One defect in already-merged work was found this way and fixed on this branch:
 `BoButton` had no `title` prop, so the tooltip explaining why "Remove" is
 disabled on the BrandOps Institutes page silently did nothing.
+
+
+---
+
+## Where each section stands now
+
+Implemented across four commits on `outreach-campaign-management`.
+
+| § | State | Notes |
+|---|---|---|
+| §1 Product overview | ✅ | Four roles, unchanged |
+| §2 Roles & permissions | ✅ | Manager now administers outreach; per-user tab permissions added |
+| §3 Editor upload workflow | ✅ | Campaign and page(s) are now chosen, not typed |
+| §4 Publisher | ✅ | Scheduling with a posting date/time added |
+| §5 Manager dashboard & calendar | ✅ | Campaign totals and per-campaign progress; events carry campaign, page, content type, posting time and publisher |
+| §6 Admin user management | ✅ | Creates a real login; mobile and department added; custom permissions are the tab switches |
+| §7 Campaign management | ✅ | A campaign is a record with all the §7 fields |
+| §8 Social media pages | ✅ | Link, contact person, status, assigned campaigns |
+| §9 Drive integration | ✅ | `Social Media Campaigns/<Campaign>/{Videos,Captions,Published}` for new campaigns |
+| §10 Naming | ✅ | `<Campaign> - Video N` plus a caption sidecar carrying campaign, number and page |
+| §11 Content status workflow | ✅ | The full flow, with a required rejection reason |
+| §12 Dashboard analytics | ✅ | Per-status counts, plus "needs the editor" and "awaiting publishing" |
+| §13 Search & filtering | ✅ | Status facet driven off the catalogue so it cannot fall behind |
+| §14 Notifications | ✅ | Review outcomes, posting due, campaign deadlines |
+| §15 Audit log | ✅ | Already exceeded the requirement |
+| §16 End-to-end flow | ✅ | Follows from the above |
+| §17 One campaign = one workspace | ✅ | The campaign is the thing everything hangs off |
+
+### Decisions taken along the way, worth knowing
+
+- **§9/§10 apply to new campaigns only.** Existing assets keep their folders
+  and names, because people hold links to them. `driveFolders: null` marks a
+  campaign from before, and the fallback it triggers is the correct path for
+  that campaign, not a degraded one.
+- **Old statuses are translated on read, not migrated.** Drive is the source
+  of truth and there is no table to migrate. A record keeps its old name on
+  disk until something writes it back, so deploying this read-only changes no
+  existing document. `submitted` becomes `under_review`, never `approved` —
+  treating already-submitted work as reviewed would skip the review step for
+  exactly the content that never had one.
+- **Approved can reach Published without being Scheduled.** §11 draws one
+  line, but §4 gives the Publisher scheduling and publishing as separate
+  abilities; requiring a schedule would make half of §4 unreachable.
+- **A tab grant opens reads, not writes.** Granting an editor the publishing
+  queue shows them the queue without making them a publisher. Who publishes,
+  assigns and administers stays a role question.
+- **A Manager cannot reach Admin.** They may not create or promote anyone to
+  Admin, and may not modify an existing Admin — the second rule matters
+  because without it the first is decoration.
