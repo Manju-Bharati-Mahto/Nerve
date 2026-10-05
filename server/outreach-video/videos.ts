@@ -14,6 +14,7 @@ import {
   ensureDriveStructure, mutateWorkflow, readWorkflow, VIDEOS_FOLDER,
 } from "./drive-store.js";
 import { activityEntry, listActiveUsers } from "./users.js";
+import { assetFoldersFor, campaignAssetName, captionFileBody, getCampaign } from "./campaigns.js";
 import { notify } from "./notifications.js";
 import type {
   LiveUrlPlatform, VideoRecord, VideoStatus, VideoUser, WorkflowStoreDoc,
@@ -94,6 +95,12 @@ export interface UploadInput {
   platform?: string | null;
   notes?: string | null;
   tags?: string[];
+  /**
+   * §17 — the campaign this belongs to, when the editor picked a real one.
+   * Absent for an upload that only carries a typed campaign name, which is
+   * how everything worked before campaigns were records.
+   */
+  campaignId?: string | null;
 }
 
 /**
@@ -107,33 +114,57 @@ export interface UploadInput {
  */
 export async function uploadVideo(input: UploadInput): Promise<VideoRecord> {
   const { client } = getDriveClient();
-  const folders = await ensureDriveStructure();
 
-  const campaign = input.client.trim();
+  /* A real campaign decides three things: its own name wins over whatever was
+     typed, its §9 folders receive the files, and its §10 naming is used. An
+     upload with no campaign record keeps every one of those as it was, which
+     is what makes older campaigns carry on unchanged. */
+  const campaignRecord = input.campaignId ? await getCampaign(input.campaignId) : null;
+  if (input.campaignId && !campaignRecord) throw new Error("That campaign was not found.");
+
+  const campaign = (campaignRecord?.name ?? input.client).trim();
   if (!campaign) throw new Error("Client / project name is required.");
   if (!input.editorTitle.trim()) throw new Error("Video title is required.");
   if (!input.caption.trim()) throw new Error("Social media caption is required.");
 
-  // §9.1 — the campaign folder is created on demand, before the upload.
-  const campaignFolderId = await client.ensureFolder(safeFileName(campaign), folders.videos);
+  let videoFolderId: string;
+  let captionFolderId: string;
+  if (campaignRecord) {
+    const folders = await assetFoldersFor(campaignRecord);
+    videoFolderId = folders.videos;
+    captionFolderId = folders.captions;
+  } else {
+    // §9.1 — the campaign folder is created on demand, before the upload.
+    const structure = await ensureDriveStructure();
+    videoFolderId = await client.ensureFolder(safeFileName(campaign), structure.videos);
+    captionFolderId = videoFolderId;
+  }
 
   const sequence = await reserveSequence(campaign);
-  const autoName = campaignVideoName(campaign, sequence);
+  const autoName = campaignRecord
+    ? campaignAssetName(campaign, sequence)
+    : campaignVideoName(campaign, sequence);
   const extension = input.originalName.includes(".")
     ? input.originalName.slice(input.originalName.lastIndexOf("."))
     : "";
 
   // §29 — the Drive upload has to succeed before any record claims it exists.
   const uploaded = await client.uploadBinaryFile(
-    safeFileName(autoName + extension), campaignFolderId, input.localPath, input.mimeType,
+    safeFileName(autoName + extension), videoFolderId, input.localPath, input.mimeType,
   );
 
   // §9.1 — the caption file's name must match the video's exactly, so the two
   // can never be paired up wrongly when read back off Drive by a human.
   let captionFileId: string | null = null;
   try {
+    /* §10 — a campaign's caption file carries the campaign, the number and
+       the page as well as the text, so it reads on its own in Drive. An older
+       campaign keeps the bare caption its existing files have. */
+    const body = campaignRecord
+      ? captionFileBody({ campaign, sequence, platform: input.platform, caption: input.caption })
+      : input.caption;
     const caption = await client.createTextFile(
-      safeFileName(`${autoName}.txt`), campaignFolderId, input.caption,
+      safeFileName(`${autoName}.txt`), captionFolderId, body,
     );
     captionFileId = caption.id;
   } catch {
@@ -148,6 +179,7 @@ export async function uploadVideo(input: UploadInput): Promise<VideoRecord> {
     title: autoName,
     editorTitle: input.editorTitle.trim(),
     client: campaign,
+    campaignId: campaignRecord?.id ?? null,
     editorId: input.editor.id,
     caption: input.caption,
     status: "draft",

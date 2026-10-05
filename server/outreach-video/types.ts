@@ -16,6 +16,16 @@
 export const VIDEO_STATUSES = ["draft", "submitted", "published"] as const;
 export type VideoStatus = typeof VIDEO_STATUSES[number];
 
+/**
+ * Campaign & Content Management PRD §7 — the campaign's own state.
+ *
+ * Explicit rather than derived from the dates. A campaign that has not started
+ * can be closed early, and one whose end date has passed is not finished until
+ * somebody says so — deriving this from a date would overrule both.
+ */
+export const CAMPAIGN_STATUSES = ["upcoming", "running", "completed"] as const;
+export type CampaignStatus = typeof CAMPAIGN_STATUSES[number];
+
 /** §22.2 — an event is Unassigned until a Manager picks an editor. */
 export const EVENT_STATUSES = ["unassigned", "open", "completed"] as const;
 export type EventStatus = typeof EVENT_STATUSES[number];
@@ -94,6 +104,49 @@ export interface VideoUser {
   notifications?: WorkflowNotification[];
 }
 
+/**
+ * Campaign & Content Management PRD §7 + §17.
+ *
+ * §17 is the reason this type exists: "One Campaign = One Centralized
+ * Workspace". A campaign used to be a free-text string on each video, which
+ * made the campaign a label rather than a thing — nothing could be counted
+ * against it, nothing could belong to it, and two spellings were two
+ * campaigns. Everything the PRD asks a Manager to monitor (§5) and the
+ * dashboards to total (§12) needs a campaign that exists on its own.
+ */
+export interface CampaignRecord {
+  id: string;
+  /** §7 — also the Drive folder name for this campaign's assets (§9). */
+  name: string;
+  description: string;
+  /** Calendar days, YYYY-MM-DD. */
+  startDate: string;
+  endDate: string;
+  /** §7 "Campaign Manager" — a VideoUser id, or null while unassigned. */
+  campaignManagerId?: string | null;
+  /** §7/§8 — the pages this campaign posts to. */
+  socialPageIds: string[];
+  status: CampaignStatus;
+  /**
+   * §7 "Posting Requirements" — how many posts this campaign owes in total.
+   * §5 counts published against it to show what remains, so 0 means "no
+   * target set" rather than "nothing to do".
+   */
+  requiredPosts: number;
+  notes: string;
+  /**
+   * §9 — where this campaign's assets live in Drive. Recorded per campaign
+   * because the layout introduced with campaigns applies only to new ones;
+   * everything uploaded before kept the folders and names it already had, and
+   * the links people hold still work. A campaign with no folders recorded is
+   * one from before, and falls back to the original layout.
+   */
+  driveFolders?: { videos: string; captions: string; published: string } | null;
+  createdAt: string;
+  updatedAt: string;
+  activity: ActivityEntry[];
+}
+
 /** §22.1 */
 export interface VideoRecord {
   id: string;
@@ -107,8 +160,20 @@ export interface VideoRecord {
   title: string;
   /** What the editor typed in the "Video Title" field (§9). Display only. */
   editorTitle: string;
-  /** §9.1 — the campaign; also the Drive sub-folder name under Videos/. */
+  /**
+   * §9.1 — the campaign's NAME, and the Drive sub-folder name under Videos/
+   * for anything uploaded before campaigns became records. Kept on the video
+   * so an older record still says which campaign it belongs to, and so the
+   * name displays without a second lookup.
+   */
   client: string;
+  /**
+   * Campaign & Content Management PRD §17 — the campaign this video belongs
+   * to, once campaigns are things rather than typed-in text. Null on every
+   * record from before, which is what makes those the "legacy" path: they
+   * have a campaign name and no campaign.
+   */
+  campaignId?: string | null;
   editorId: string;
   caption: string;
   status: VideoStatus;
@@ -173,7 +238,9 @@ export interface WorkflowStoreDoc {
   sequences?: Record<string, number>;
 }
 export interface EventStoreDoc { version: 1; events: EventRecord[] }
+export interface CampaignStoreDoc { version: 1; campaigns: CampaignRecord[] }
 
 export const EMPTY_USER_STORE: UserStoreDoc = { version: 1, users: [] };
 export const EMPTY_WORKFLOW_STORE: WorkflowStoreDoc = { version: 1, videos: [], sequences: {} };
 export const EMPTY_EVENT_STORE: EventStoreDoc = { version: 1, events: [] };
+export const EMPTY_CAMPAIGN_STORE: CampaignStoreDoc = { version: 1, campaigns: [] };

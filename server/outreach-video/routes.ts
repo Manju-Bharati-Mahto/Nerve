@@ -16,6 +16,10 @@ import { Readable } from "node:stream";
 
 import { driveIsConfigured, driveIsLocal, getDriveClient, DriveNotConfiguredError } from "./drive-client.js";
 import { listUserCapabilities } from "../db.js";
+import {
+  campaignProgress, createCampaign, deleteCampaign, getCampaign, listCampaigns, updateCampaign,
+  CampaignExistsError, CampaignInUseError, CampaignNotFoundError, type CampaignInput,
+} from "./campaigns.js";
 import type { OvCapability } from "../capabilities.js";
 import {
   addUser, deleteUser, findUserByEmail, findUserById, listActiveEditors, listUsers,
@@ -166,6 +170,9 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     if (err instanceof NotYourEventError) return sendError(res, 403, err.message);
     if (err instanceof EventNotOpenError) return sendError(res, 409, err.message);
     if (err instanceof UserExistsError) return sendError(res, 409, err.message);
+    if (err instanceof CampaignNotFoundError) return sendError(res, 404, err.message);
+    if (err instanceof CampaignExistsError) return sendError(res, 409, err.message);
+    if (err instanceof CampaignInUseError) return sendError(res, 409, err.message);
     if (err instanceof InvalidTransitionError) return sendError(res, 409, err.message);
     if (err instanceof DriveNotConfiguredError) return sendError(res, 503, err.message);
     const msg = err instanceof Error ? err.message : "Something went wrong.";
@@ -502,6 +509,82 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     if (!await managerMayActOn(res, user, id, null)) return;
     if (!await deleteUser(id)) return sendError(res, 404, "That user was not found.");
     res.json({ deleted: true });
+  }));
+
+  // ── Campaigns (§7, §17) ──────────────────────────────────────────────────
+
+  /**
+   * §5 — the list a Manager monitors, each campaign carrying its progress.
+   *
+   * Progress is computed here rather than stored, because the only honest
+   * source is the videos themselves: a stored counter drifts the moment
+   * anything is published, deleted or moved.
+   */
+  app.get(`${P}/campaigns`, asyncHandler(async (_req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    const [campaigns, videos] = await Promise.all([listCampaigns(), listVideos()]);
+    const publishedByCampaign = new Map<string, number>();
+    for (const v of videos) {
+      if (v.status !== "published") continue;
+      const key = v.campaignId ?? `name:${v.client.trim().toLowerCase()}`;
+      publishedByCampaign.set(key, (publishedByCampaign.get(key) ?? 0) + 1);
+    }
+    res.json({
+      campaigns: campaigns.map(c => ({
+        ...c,
+        /* Count by id, and fall back to the name so a campaign created for
+           work that predates it still shows the progress it actually made. */
+        progress: campaignProgress(c, publishedByCampaign.get(c.id)
+          ?? publishedByCampaign.get(`name:${c.name.trim().toLowerCase()}`) ?? 0),
+      })),
+    });
+  }));
+
+  app.get(`${P}/campaigns/:id`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    const campaign = await getCampaign(getSingleParam(req.params.id));
+    if (!campaign) return sendError(res, 404, "That campaign was not found.");
+    const videos = await listVideos();
+    const mine = videos.filter(v => v.campaignId === campaign.id
+      || (!v.campaignId && v.client.trim().toLowerCase() === campaign.name.trim().toLowerCase()));
+    res.json({
+      campaign,
+      progress: campaignProgress(campaign, mine.filter(v => v.status === "published").length),
+      videos: mine,
+    });
+  }));
+
+  app.post(`${P}/campaigns`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["admin", "manager"])) return;
+    try {
+      res.status(201).json({ campaign: await createCampaign(user, req.body as CampaignInput) });
+    } catch (err) { fail(res, err); }
+  }));
+
+  app.patch(`${P}/campaigns/:id`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["admin", "manager"])) return;
+    try {
+      const campaign = await updateCampaign(user, getSingleParam(req.params.id), req.body as CampaignInput);
+      res.json({ campaign });
+    } catch (err) { fail(res, err); }
+  }));
+
+  /** Refused while the campaign still owns videos — §17 would orphan them. */
+  app.delete(`${P}/campaigns/:id`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["admin", "manager"])) return;
+    const id = getSingleParam(req.params.id);
+    const campaign = await getCampaign(id);
+    if (!campaign) return sendError(res, 404, "That campaign was not found.");
+    const videos = await listVideos();
+    const owned = videos.filter(v => v.campaignId === id
+      || (!v.campaignId && v.client.trim().toLowerCase() === campaign.name.trim().toLowerCase())).length;
+    try {
+      await deleteCampaign(user, id, owned);
+      res.json({ deleted: true });
+    } catch (err) { fail(res, err); }
   }));
 
   // ── §18 Search & filtering ───────────────────────────────────────────────
