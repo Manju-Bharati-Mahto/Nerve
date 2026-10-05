@@ -23,7 +23,7 @@ import { alreadyNotified, notify } from "./notifications.js";
 import { listActiveUsers } from "./users.js";
 import { listCampaigns } from "./campaigns.js";
 import { listVideos } from "./videos.js";
-import { driveIsConfigured } from "./drive-client.js";
+import { driveIsConfigured, ensureDriveResolved } from "./drive-client.js";
 
 /** How close to its end date a campaign has to be before anyone is told. */
 const CAMPAIGN_DEADLINE_DAYS = 3;
@@ -42,6 +42,7 @@ function daysUntil(dateIso: string, now: Date): number {
 export async function runOutreachVideoAutomations(now = new Date()): Promise<AutomationResult> {
   // Drive is this module's database. With no Drive there is nothing to read,
   // and the tick should be quiet rather than noisy about it.
+  await ensureDriveResolved();
   if (!driveIsConfigured()) return { postingDue: 0, campaignDeadlines: 0, skipped: "drive not configured" };
 
   const [users, videos, campaigns] = await Promise.all([

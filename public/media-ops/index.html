@@ -7329,7 +7329,9 @@ function openCastDriveModal(d){
   const redirect=`<input class="inp mono mt2" value="${esc(d.redirect_uri||'')}" readonly onclick="this.select()" title="Authorised redirect URI">`;
   modal(`<div class="mo-head"><div><h2>Google Drive for casting photos</h2>
       <p>Applicants upload a photo on the registration form; Nerve saves it to a folder in a Google Drive you
-        connect, one sub-folder per request. Nerve keeps only the links.</p></div>
+        connect, one sub-folder per request. Nerve keeps only the links.</p>
+      <p class="small mut">The Outreach video workflow uses this same connection too, unless the server sets its own
+        Drive — it keeps its files in a separate <b>NERVE Agency Video Workflow</b> folder, never this one.</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
     <div class="mo-body">
       ${on?fallback.replace('Right now photos go','Photos used to go'):fallback}

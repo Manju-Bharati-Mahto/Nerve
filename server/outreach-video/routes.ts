@@ -14,7 +14,9 @@ import type express from "express";
 import type multer from "multer";
 import { Readable } from "node:stream";
 
-import { driveIsConfigured, driveIsLocal, getDriveClient, DriveNotConfiguredError } from "./drive-client.js";
+import {
+  driveIsConfigured, driveIsLocal, driveSource, ensureDriveResolved, getDriveClient, DriveNotConfiguredError,
+} from "./drive-client.js";
 import { listUserCapabilities } from "../db.js";
 import {
   campaignProgress, createCampaign, deleteCampaign, getCampaign, listCampaigns, updateCampaign,
@@ -71,8 +73,12 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     const u = res.locals.currentUser as CurrentUser;
     const role = videoRoleForNerveRole(u?.role ?? "");
     if (!role) { sendError(res, 403, "This area is for the video workflow team only."); return null; }
+    // Picks up a Drive an Admin connected in the app, if the env names none.
+    await ensureDriveResolved();
     if (!driveIsConfigured()) {
-      sendError(res, 503, "The video workflow is not connected to Google Drive yet. Ask an administrator to finish the Drive setup.");
+      /* Say who can fix it and where. "Ask an administrator" sent people
+         looking for an outreach admin, who cannot reach the setting at all. */
+      sendError(res, 503, "The video workflow is not connected to Google Drive yet. A Super Admin can connect it in Media Ops → Casting Management → Google Drive — one Google sign-in covers both.");
       return null;
     }
 
@@ -189,7 +195,8 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     const u = res.locals.currentUser as CurrentUser;
     const role = videoRoleForNerveRole(u?.role ?? "");
     if (!role) return sendError(res, 403, "This area is for the video workflow team only.");
-    res.json({ configured: driveIsConfigured(), local: driveIsLocal(), role });
+    await ensureDriveResolved();
+    res.json({ configured: driveIsConfigured(), local: driveIsLocal(), source: driveSource(), role });
   }));
 
   // ── Videos ───────────────────────────────────────────────────────────────
