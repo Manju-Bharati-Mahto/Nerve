@@ -23,7 +23,7 @@
  * The folder layout created on first use matches §6 exactly.
  */
 import {
-  getDriveClient, RevisionMismatchError, type DriveClient,
+  getDriveClient, resetAppDriveConnection, RevisionMismatchError, type DriveClient,
 } from "./drive-client.js";
 import {
   EMPTY_CAMPAIGN_STORE, EMPTY_EVENT_STORE, EMPTY_USER_STORE, EMPTY_WORKFLOW_STORE,
@@ -212,5 +212,21 @@ export const mutateEvents = <R>(fn: (d: EventStoreDoc) => { doc: EventStoreDoc; 
 export function resetStoreState(): void {
   cache.clear();
   writeQueues.clear();
+  folderIdsPromise = null;
+}
+
+/**
+ * Called when the Drive behind the workflow changes — an Admin connects,
+ * swaps or disconnects the app's Google account. The cached documents and
+ * folder ids belong to the old Drive and would point the new one at files it
+ * cannot see.
+ *
+ * Unlike the test seam above, the write queues are left alone: a write that
+ * is mid-flight must finish against the Drive it started on rather than have
+ * the next one interleave with it.
+ */
+export function resetForDriveChange(): void {
+  resetAppDriveConnection();
+  cache.clear();
   folderIdsPromise = null;
 }
