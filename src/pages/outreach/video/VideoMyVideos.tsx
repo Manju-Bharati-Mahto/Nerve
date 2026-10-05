@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  Film, Upload, Send, AlertCircle, Loader2, X, CheckCircle2, CloudOff,
+  Film, Upload, Send, AlertCircle, Loader2, X, CheckCircle2, CloudOff, RotateCcw,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
-  getVideoConfig, listVideos, uploadVideo, submitVideo,
+  getVideoConfig, listVideos, uploadVideo, submitVideo, startRevision,
   STATUS_STYLE, formatBytes, formatWhen,
   type VideoRecord, type VideoStatus,
 } from '@/lib/outreach-video-data'
@@ -47,9 +47,12 @@ export default function VideoMyVideos() {
 
   const counts = useMemo(() => ({
     total: videos.length,
-    draft: videos.filter(v => v.status === 'draft').length,
-    submitted: videos.filter(v => v.status === 'submitted').length,
+    uploaded: videos.filter(v => v.status === 'uploaded').length,
+    underReview: videos.filter(v => v.status === 'under_review').length,
     published: videos.filter(v => v.status === 'published').length,
+    /* §12 Editor — "Rejected". Revision counts here too: both mean the work
+       is back with this editor and nobody else is waiting on anything. */
+    needsMe: videos.filter(v => v.status === 'rejected' || v.status === 'revision').length,
   }), [videos])
 
   const shown = useMemo(
@@ -58,12 +61,23 @@ export default function VideoMyVideos() {
   )
 
   async function handleSubmit(video: VideoRecord) {
-    if (!confirm(`Submit "${video.title}" to the publisher? The caption can't be changed afterwards.`)) return
+    if (!confirm(`Send "${video.title}" for review? The caption can't be changed while it is being reviewed.`)) return
     try {
       await submitVideo(video.id)
       await refresh()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not submit.')
+    }
+  }
+
+  /** §11 — picking rejected work back up, which reopens the caption. */
+  async function handleRevise(video: VideoRecord) {
+    try {
+      await startRevision(video.id)
+      await refresh()
+      toast.success('Reopened for changes.')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not reopen that video.')
     }
   }
 
@@ -97,10 +111,16 @@ export default function VideoMyVideos() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Kpi label="Total videos" value={counts.total} onClick={() => setFilter('all')} active={filter === 'all'} />
-        <Kpi label="Draft" value={counts.draft} onClick={() => setFilter('draft')} active={filter === 'draft'} />
-        <Kpi label="Submitted" value={counts.submitted} onClick={() => setFilter('submitted')} active={filter === 'submitted'} />
+        <Kpi label="Uploaded" value={counts.uploaded} onClick={() => setFilter('uploaded')} active={filter === 'uploaded'} />
+        <Kpi label="Under review" value={counts.underReview} onClick={() => setFilter('under_review')} active={filter === 'under_review'} />
         <Kpi label="Published" value={counts.published} onClick={() => setFilter('published')} active={filter === 'published'} />
       </div>
+      {counts.needsMe > 0 && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <Kpi label="Needs your changes" value={counts.needsMe}
+            onClick={() => setFilter('rejected')} active={filter === 'rejected'} />
+        </div>
+      )}
 
       {error && (
         <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
@@ -146,10 +166,17 @@ export default function VideoMyVideos() {
                   {formatBytes(v.sizeBytes)}
                 </td>
                 <td className="px-3 py-2.5 text-right">
-                  {v.status === 'draft' && (
+                  {/* §11 — the same act from either side of a rejection. */}
+                  {(v.status === 'uploaded' || v.status === 'revision') && (
                     <button onClick={() => handleSubmit(v)}
                       className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1">
                       <Send className="w-3 h-3" /> Submit
+                    </button>
+                  )}
+                  {v.status === 'rejected' && (
+                    <button onClick={() => handleRevise(v)}
+                      className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1">
+                      <RotateCcw className="w-3 h-3" /> Start revision
                     </button>
                   )}
                 </td>

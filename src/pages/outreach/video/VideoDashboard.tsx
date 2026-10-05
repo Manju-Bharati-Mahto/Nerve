@@ -45,14 +45,21 @@ export default function VideoDashboard() {
         <h2 className="text-[11px] uppercase tracking-widest text-muted-foreground">Videos</h2>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <Kpi label="Total videos" value={kpis.totalVideos} icon={Film} to="/outreach/video/all" />
-          <Kpi label="Draft" value={kpis.draftVideos} icon={Clock} />
-          <Kpi label="Submitted" value={kpis.submittedVideos} icon={Send} to="/outreach/video/queue" />
+          <Kpi label="Uploaded" value={kpis.uploadedVideos} icon={Clock} />
+          <Kpi label="Under review" value={kpis.underReviewVideos} icon={Send} to="/outreach/video/review" />
           <Kpi label="Published" value={kpis.publishedVideos} icon={CheckCircle2} to="/outreach/video/published" />
+        </div>
+        {/* §11 — the three states that are somebody's turn right now. */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <Kpi label="Awaiting publishing" value={kpis.pendingPublishingVideos} to="/outreach/video/queue" />
+          <Kpi label="Scheduled" value={kpis.scheduledVideos} to="/outreach/video/scheduled" />
+          <Kpi label="Rejected" value={kpis.rejectedVideos} />
+          <Kpi label="Back with the editor" value={kpis.needsEditorVideos} />
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <Kpi label="Published this week" value={kpis.publishedThisWeek} />
           <Kpi label="Published this month" value={kpis.publishedThisMonth} />
-          <Kpi label="Avg. draft → submitted" text={formatHours(kpis.avgDraftToSubmittedHours)} />
+          <Kpi label="Avg. upload → submitted" text={formatHours(kpis.avgUploadedToSubmittedHours)} />
           <Kpi label="Avg. submitted → published" text={formatHours(kpis.avgSubmittedToPublishedHours)} />
         </div>
       </section>

@@ -169,3 +169,33 @@ Postgres.
 3. **The status machine** (**C1**, §11) and **Drive restructuring** (**C3**,
    §9/§10) are rewrites of working, tested behaviour with live data behind them.
    Each needs an explicit go-ahead and a migration plan.
+
+---
+
+## Separate finding: the frontend has not been typechecked
+
+`npm run typecheck` runs `tsc --noEmit -p tsconfig.json`, and `tsconfig.json`
+has `"files": []` with project references. That configuration compiles
+**nothing** — the command exits 0 without checking a single file. Only the
+second half of the script, `-p tsconfig.server.json`, does real work, so the
+server has been typechecked and the React app has not.
+
+Checking the app properly (`tsc --noEmit -p tsconfig.app.json`) reports errors
+in five files that predate this work:
+
+- `src/pages/AddEntry.tsx` — `priority: string` passed where a union is required
+- `src/pages/AdminUsers.tsx` — calls `updateRole`, which does not exist (it is `updateRoleAndTeam`)
+- `src/pages/SuperAdminUsers.tsx`
+- `src/pages/branding/BrandingUserDashboard.tsx` — missing `last_paused_at`
+- `src/pages/design/DesignUserDashboard.tsx` — the same
+
+The `AdminUsers` one is a real runtime bug: that call cannot succeed.
+
+The script is left alone here deliberately. Pointing it at `tsconfig.app.json`
+turns the build red immediately for five unrelated files, which is not a change
+to make in the middle of a feature branch. It is worth doing on its own, with
+those five fixed in the same change.
+
+One defect in already-merged work was found this way and fixed on this branch:
+`BoButton` had no `title` prop, so the tooltip explaining why "Remove" is
+disabled on the BrandOps Institutes page silently did nothing.

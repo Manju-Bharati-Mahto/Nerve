@@ -29,6 +29,7 @@ import {
 } from "./users.js";
 import {
   getVideo, listVideos, publishVideo, publishingQueue, setLiveUrls,
+  approveVideo, rejectVideo, startRevision, scheduleVideo, reviewQueue,
   submitVideo, updateCaption, uploadVideo,
   InvalidTransitionError, NotYourVideoError, VideoNotFoundError,
 } from "./videos.js";
@@ -231,6 +232,10 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
       const video = await uploadVideo({
         editor: user,
         client: body.client ?? "",
+        /* §17 — when the editor picks a real campaign, it decides the name,
+           the Drive folders and the file naming. Absent on an upload that
+           only carries typed-in text, which is the older path. */
+        campaignId: body.campaignId || null,
         editorTitle: body.title ?? "",
         caption: body.caption ?? "",
         localPath: file.path,
@@ -270,6 +275,55 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
   }));
 
   // ── Publishing (§14, §15) ────────────────────────────────────────────────
+
+  // ── §11 review loop ──────────────────────────────────────────────────────
+
+  /** Everything waiting on a reviewer. Managers and admins review. */
+  app.get(`${P}/review-queue`, asyncHandler(async (_req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!await requireRoleOrGrant(res, user, ["manager", "admin"], "outreach:review")) return;
+    res.json({ videos: await reviewQueue() });
+  }));
+
+  app.post(`${P}/videos/:id/approve`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["manager", "admin"])) return;
+    const note = String((req.body as Record<string, unknown>)?.note ?? "");
+    try {
+      res.json({ video: await approveVideo(getSingleParam(req.params.id), user, note) });
+    } catch (err) { fail(res, err); }
+  }));
+
+  /** §11 — the reason is required; an editor cannot act on silence. */
+  app.post(`${P}/videos/:id/reject`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["manager", "admin"])) return;
+    const reason = String((req.body as Record<string, unknown>)?.reason ?? "").trim();
+    if (!reason) return sendError(res, 400, "A reason is required when rejecting content.");
+    try {
+      res.json({ video: await rejectVideo(getSingleParam(req.params.id), user, reason) });
+    } catch (err) { fail(res, err); }
+  }));
+
+  /** §11 — the editor picks rejected work back up. */
+  app.post(`${P}/videos/:id/revise`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["editor", "admin"])) return;
+    try {
+      res.json({ video: await startRevision(getSingleParam(req.params.id), user) });
+    } catch (err) { fail(res, err); }
+  }));
+
+  /** §4 — the Publisher records when approved content is due to go out. */
+  app.post(`${P}/videos/:id/schedule`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["publisher", "admin"])) return;
+    const when = String((req.body as Record<string, unknown>)?.scheduledFor ?? "").trim();
+    if (!when) return sendError(res, 400, "A posting date and time is required.");
+    try {
+      res.json({ video: await scheduleVideo(getSingleParam(req.params.id), user, when) });
+    } catch (err) { fail(res, err); }
+  }));
 
   app.get(`${P}/queue`, asyncHandler(async (_req, res) => {
     const user = await requireVideoUser(res); if (!user) return;

@@ -81,6 +81,9 @@ import VideoDashboard from "@/pages/outreach/video/VideoDashboard";
 import VideoSearch from "@/pages/outreach/video/VideoSearch";
 import VideoEditorLog from "@/pages/outreach/video/VideoEditorLog";
 import VideoUsers from "@/pages/outreach/video/VideoUsers";
+import VideoReview from "@/pages/outreach/video/VideoReview";
+import VideoScheduled from "@/pages/outreach/video/VideoScheduled";
+import VideoCampaigns from "@/pages/outreach/video/VideoCampaigns";
 import VideoActivity from "@/pages/outreach/video/VideoActivity";
 
 // BrandOps — the branding department's frame inventory and vendor work
@@ -454,6 +457,25 @@ const App = () => (
                 <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_publisher']} team="outreach"
                   anyCapability={['outreach:editor_log']}>
                   <VideoEditorLog />
+                </RoleGuard>
+              } />
+              {/* §11 review loop and §4 scheduling, and §7 campaigns. */}
+              <Route path="/outreach/video/review" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager']} team="outreach"
+                  anyCapability={['outreach:review']}>
+                  <VideoReview />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/scheduled" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager', 'outreach_publisher']} team="outreach"
+                  anyCapability={['outreach:scheduled']}>
+                  <VideoScheduled />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/campaigns" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach"
+                  anyCapability={['outreach:campaigns']}>
+                  <VideoCampaigns />
                 </RoleGuard>
               } />
               <Route path="/outreach/video/users" element={

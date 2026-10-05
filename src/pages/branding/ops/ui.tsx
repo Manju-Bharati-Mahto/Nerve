@@ -130,10 +130,12 @@ export function BoCell({ children, strong, nowrap }: {
   )
 }
 
-export function BoButton({ onClick, children, variant = 'primary', disabled, type = 'button' }: {
+export function BoButton({ onClick, children, variant = 'primary', disabled, type = 'button', title }: {
   onClick?: () => void; children: React.ReactNode
   variant?: 'primary' | 'ghost' | 'danger' | 'success'; disabled?: boolean
   type?: 'button' | 'submit'
+  /** Hover text — the reason a disabled action is unavailable, usually. */
+  title?: string
 }) {
   const styles = {
     primary: 'bg-[#0047AB] text-white hover:opacity-90',
@@ -142,7 +144,7 @@ export function BoButton({ onClick, children, variant = 'primary', disabled, typ
     success: 'bg-emerald-600 text-white hover:opacity-90',
   }[variant]
   return (
-    <button type={type} onClick={onClick} disabled={disabled}
+    <button type={type} onClick={onClick} disabled={disabled} title={title}
       className={`text-xs px-3 py-1.5 rounded-lg font-medium disabled:opacity-40 inline-flex items-center gap-1.5 ${styles}`}>
       {children}
     </button>

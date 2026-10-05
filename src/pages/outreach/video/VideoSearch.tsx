@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { Search, AlertCircle, Film, Calendar, X } from 'lucide-react'
 import {
   searchWorkflow, getFilterOptions, formatWhen,
-  STATUS_STYLE, EVENT_STATUS_STYLE,
+  STATUS_STYLE, EVENT_STATUS_STYLE, VIDEO_STATUS_ORDER, VIDEO_STATUS_LABEL,
   type SearchParams, type FilterOptions, type VideoRecord, type EventRecord,
 } from '@/lib/outreach-video-data'
 import { useAuth } from '@/hooks/useAuth'
@@ -86,7 +86,9 @@ export default function VideoSearch() {
         <div className="flex flex-wrap items-center gap-2">
           <Select label="Video status" value={params.status ?? ''}
             onChange={v => set({ status: (v || undefined) as SearchParams['status'] })}
-            options={[['draft', 'Draft'], ['submitted', 'Submitted'], ['published', 'Published']]} />
+            /* §13 — driven off the status catalogue so a status added to the
+               workflow cannot go missing from the filter that searches it. */
+            options={VIDEO_STATUS_ORDER.map(st => [st, VIDEO_STATUS_LABEL[st]] as [string, string])} />
           <Select label="Event status" value={params.eventStatus ?? ''}
             onChange={v => set({ eventStatus: (v || undefined) as SearchParams['eventStatus'] })}
             options={[['unassigned', 'Unassigned'], ['open', 'Open'], ['completed', 'Completed']]} />

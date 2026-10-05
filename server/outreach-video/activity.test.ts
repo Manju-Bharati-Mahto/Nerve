@@ -18,7 +18,7 @@ import { config } from "../config.js";
 import { resetDriveClient } from "./drive-client.js";
 import { resetStoreState } from "./drive-store.js";
 import { addUser, deleteUser } from "./users.js";
-import { uploadVideo, submitVideo, publishVideo } from "./videos.js";
+import { uploadVideo, submitVideo, publishVideo, approveVideo } from "./videos.js";
 import { createEvent, assignEvent, completeEvent } from "./events.js";
 import { activityFeed, activityActors } from "./activity.js";
 import type { VideoUser } from "./types.js";
@@ -97,6 +97,7 @@ describe("§16 — the merged activity feed", () => {
   it("filters by who acted", async () => {
     const v = await upload(editorA, "Client A");
     await submitVideo(v.id, editorA);
+    await approveVideo(v.id, manager);
     await publishVideo(v.id, publisher, {});
 
     const byPublisher = await activityFeed({ userId: publisher.id });
@@ -119,8 +120,8 @@ describe("§16 — the merged activity feed", () => {
     await submitVideo(v.id, editorA);
 
     const submitted = (await activityFeed()).find(e => e.action.includes("submitted"));
-    expect(submitted?.previousStatus).toBe("draft");
-    expect(submitted?.newStatus).toBe("submitted");
+    expect(submitted?.previousStatus).toBe("uploaded");
+    expect(submitted?.newStatus).toBe("under_review");
   });
 
   it("caps the feed, and honours a smaller limit", async () => {
@@ -141,6 +142,7 @@ describe("§25 — an editor's scope", () => {
   it("still shows the publisher's action on the editor's own video", async () => {
     const v = await upload(editorA, "Client A");
     await submitVideo(v.id, editorA);
+    await approveVideo(v.id, manager);
     await publishVideo(v.id, publisher, {});
 
     const feed = await activityFeed({}, { onlyEditorId: editorA.id });
@@ -173,10 +175,13 @@ describe("§28 — history survives", () => {
   it("lists everyone who appears in the feed, deleted or not", async () => {
     const v = await upload(editorA, "Client A");
     await submitVideo(v.id, editorA);
+    await approveVideo(v.id, manager);
     await publishVideo(v.id, publisher, {});
     await deleteUser(editorA.id);
 
     const actors = await activityActors();
-    expect(actors.map(a => a.name)).toEqual(["Alice Editor", "Pat Publisher"]);
+    // The reviewer appears too: §11 made approval a step somebody takes, and
+    // the feed names everyone who acted — including the deleted editor.
+    expect(actors.map(a => a.name)).toEqual(["Alice Editor", "Pat Publisher", "The Manager"]);
   });
 });

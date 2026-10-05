@@ -12,9 +12,48 @@
  * actor's name/email at the time they acted.
  */
 
-/** §7 — the whole status set. There is deliberately no approval/revision state. */
-export const VIDEO_STATUSES = ["draft", "submitted", "published"] as const;
+/**
+ * Campaign & Content Management PRD §11 — the content status workflow.
+ *
+ *   Uploaded → Under Review → Approved → Scheduled → Published
+ *   Rejected → Editor Revision → Under Review
+ *
+ * This replaces the earlier three-state set (draft / submitted / published),
+ * which deliberately had no approval step. The review loop is the substance of
+ * §11: content is now checked before it can go out, and a rejection carries a
+ * reason the editor can read.
+ */
+export const VIDEO_STATUSES = [
+  "uploaded", "under_review", "approved", "scheduled", "published",
+  "rejected", "revision",
+] as const;
 export type VideoStatus = typeof VIDEO_STATUSES[number];
+
+/**
+ * What the three old statuses mean in the new set.
+ *
+ * Records already in Drive carry the old names, and Drive is the source of
+ * truth — there is no table to run a migration against. So they are translated
+ * as they are read, and a record keeps its old name on disk until something
+ * writes it back. Nothing is rewritten in bulk: a read-only deployment of this
+ * change leaves every existing document untouched and still correct.
+ *
+ * `submitted` becomes `under_review` rather than `approved`: the whole point
+ * of §11 is that nothing reaches a publisher unreviewed, and quietly treating
+ * a queue of already-submitted work as approved would skip the review step for
+ * exactly the content that never had one.
+ */
+export const LEGACY_VIDEO_STATUS: Record<string, VideoStatus> = {
+  draft: "uploaded",
+  submitted: "under_review",
+  published: "published",
+};
+
+/** Reads a stored status, translating the pre-§11 names. */
+export function normaliseVideoStatus(stored: string): VideoStatus {
+  if ((VIDEO_STATUSES as readonly string[]).includes(stored)) return stored as VideoStatus;
+  return LEGACY_VIDEO_STATUS[stored] ?? "uploaded";
+}
 
 /**
  * Campaign & Content Management PRD §7 — the campaign's own state.
@@ -197,6 +236,20 @@ export interface VideoRecord {
   createdAt: string;
   updatedAt: string;
   submittedAt?: string | null;
+  /** §11 — who approved it, and when. */
+  approvedBy?: string | null;
+  approvedAt?: string | null;
+  /**
+   * §11 — "Editors should be able to see the reason when content is
+   * rejected." Kept on the record rather than only in the activity log so the
+   * editor's own view can show it without reading the audit trail.
+   */
+  rejectionReason?: string | null;
+  rejectedBy?: string | null;
+  rejectedAt?: string | null;
+  /** §4 — the intended posting time a Publisher records when scheduling. */
+  scheduledFor?: string | null;
+  scheduledBy?: string | null;
   publishedBy?: string | null;
   publishedAt?: string | null;
   liveUrls?: Partial<Record<LiveUrlPlatform, string>>;
