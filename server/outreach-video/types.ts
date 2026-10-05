@@ -104,6 +104,10 @@ export interface ActivityEntry {
 /** §19 — the four in-app notifications the workflow raises. */
 export const NOTIFICATION_KINDS = [
   "video_submitted", "event_assigned", "event_reassigned", "event_completed",
+  /* Campaign & Content Management PRD §14. The editor is told the outcome of
+     a review, the publisher about work due, and the manager about a campaign
+     running out of time. */
+  "video_approved", "video_rejected", "posting_due", "campaign_deadline",
 ] as const;
 export type NotificationKind = typeof NOTIFICATION_KINDS[number];
 
@@ -118,8 +122,13 @@ export interface WorkflowNotification {
   message: string;
   createdAt: string;
   readAt?: string | null;
-  /** What the notification is about, so the UI can link straight to it. */
-  subject?: { type: "video" | "event"; id: string } | null;
+  /**
+   * What the notification is about, so the UI can link straight to it — and
+   * so a repeat of the same notice can be recognised as a repeat. A notice
+   * with no subject can never be deduplicated, which for anything raised on
+   * a timer means it repeats forever.
+   */
+  subject?: { type: "video" | "event" | "campaign"; id: string } | null;
 }
 
 /** §6.2 / §4.2 — a registered user of the video workflow. */
@@ -231,6 +240,12 @@ export interface VideoRecord {
   sizeBytes?: number | null;
   mimeType?: string | null;
   platform?: string | null;
+  /**
+   * §2/§3 — the social media pages this video is for, chosen by the editor at
+   * upload from the pages its campaign posts to. Empty on records from before
+   * pages could be picked, and on an upload with no campaign to pick from.
+   */
+  socialPageIds?: string[];
   notes?: string | null;
   tags?: string[];
   createdAt: string;
@@ -266,6 +281,20 @@ export interface EventRecord {
   client?: string | null;
   assignedEditorId?: string | null;
   assignedBy?: string | null;
+  /*
+   * Campaign & Content Management PRD §5 — what a calendar entry must show:
+   * "Campaign Name, Social Media Page, Content Type, Posting Date/Time,
+   * Assigned Publisher and Status". `date` and `status` were already here;
+   * these are the rest. All optional, because an event can be put in the
+   * calendar before any of it is decided — which is usually why it is there.
+   */
+  campaignId?: string | null;
+  socialPageId?: string | null;
+  /** Reel, Post, Story — free text, since the platforms keep inventing more. */
+  contentType?: string | null;
+  /** §5 "Posting Date/Time" — the time of day, where `date` is the day. */
+  postingAt?: string | null;
+  assignedPublisherId?: string | null;
   status: EventStatus;
   createdAt: string;
   updatedAt: string;

@@ -23,12 +23,36 @@ export const NOTIFICATION_TEXT: Record<NotificationKind, string> = {
   event_assigned: "A new event has been added to your To-Do List.",
   event_reassigned: "An event has been reassigned to you.",
   event_completed: "An assigned event has been marked Completed.",
+  // §14 — the review outcomes and the two deadline notices.
+  video_approved: "Your video was approved.",
+  video_rejected: "Your video needs changes.",
+  posting_due: "Scheduled content is due to be posted.",
+  campaign_deadline: "A campaign is approaching its end date.",
 };
+
+/**
+ * Whether this person has already been told this exact thing recently.
+ *
+ * The deadline notices are raised by a timer that runs every few minutes, so
+ * without this a campaign ending on Friday would notify its manager a few
+ * hundred times before Friday. Keyed on the subject rather than the text,
+ * because the text carries a changing day count.
+ */
+export async function alreadyNotified(
+  userId: string, kind: NotificationKind, subjectId: string, withinHours = 20,
+): Promise<boolean> {
+  const doc = await readUsers();
+  const user = doc.users.find(u => u.id === userId);
+  if (!user?.notifications?.length) return false;
+  const cutoff = Date.now() - withinHours * 60 * 60 * 1000;
+  return user.notifications.some(n =>
+    n.kind === kind && n.subject?.id === subjectId && new Date(n.createdAt).getTime() >= cutoff);
+}
 
 export async function notify(
   userIds: string | string[],
   kind: NotificationKind,
-  subject?: { type: "video" | "event"; id: string } | null,
+  subject?: { type: "video" | "event" | "campaign"; id: string } | null,
   detail?: string,
 ): Promise<void> {
   const targets = (Array.isArray(userIds) ? userIds : [userIds]).filter(Boolean);

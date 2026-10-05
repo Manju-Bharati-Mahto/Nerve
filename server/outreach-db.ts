@@ -78,6 +78,11 @@ export interface OutreachPage {
   // Facebook only — Meta's own numeric page id, cached after first resolution.
   // Null for Instagram pages and for a Facebook page not yet resolved.
   platform_page_id: string | null;
+  /* §8 — entered by a person, not synced. Empty until somebody fills them in. */
+  page_link: string;
+  contact_person: string;
+  /** Whether we still post here. Not the same as whether the sync can reach it. */
+  status: string;
 }
 
 // Creators share the same shape as pages — separate table so they don't show up
@@ -202,6 +207,19 @@ export async function bootstrapOutreach() {
   await pool.query(`ALTER TABLE outreach_pages ADD COLUMN IF NOT EXISTS content_types JSONB NOT NULL DEFAULT '[]'::JSONB`);
   // PRD 6.5 — page content preference/category. Existing rows default to [] ("Not Set").
   await pool.query(`ALTER TABLE outreach_pages ADD COLUMN IF NOT EXISTS content_preferences JSONB NOT NULL DEFAULT '[]'::JSONB`);
+
+  /* Campaign & Content Management PRD §8 — what a social media page record has
+     to carry beyond the sync's own fields. All three are entered by a person
+     rather than synced, so they default to empty and nothing requires them:
+     an existing page simply has none until somebody fills them in.
+
+     `status` is deliberately separate from whether the sync can reach the
+     page. A page can be perfectly reachable and still not somewhere we post
+     any more, and conflating the two would quietly resurrect retired pages
+     every time the sync ran. */
+  await pool.query(`ALTER TABLE outreach_pages ADD COLUMN IF NOT EXISTS page_link TEXT NOT NULL DEFAULT ''`);
+  await pool.query(`ALTER TABLE outreach_pages ADD COLUMN IF NOT EXISTS contact_person TEXT NOT NULL DEFAULT ''`);
+  await pool.query(`ALTER TABLE outreach_pages ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'`);
   // Platform split (Instagram / Facebook). Every pre-existing row is Instagram.
   await pool.query(`ALTER TABLE outreach_pages ADD COLUMN IF NOT EXISTS platform TEXT NOT NULL DEFAULT 'instagram'`);
   // The same handle may exist on BOTH platforms (an org's IG and FB page often
@@ -558,6 +576,10 @@ export interface CreatePageInput {
   inventory_posts: number;
   inventory_stories: number;
   notes?: string;
+  /* §8 — the human-maintained fields. */
+  page_link?: string;
+  contact_person?: string;
+  status?: string;
 }
 
 export async function listPages(): Promise<OutreachPage[]> {

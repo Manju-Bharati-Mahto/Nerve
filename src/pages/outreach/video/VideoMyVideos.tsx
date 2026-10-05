@@ -6,6 +6,7 @@ import {
 import { toast } from 'sonner'
 import {
   getVideoConfig, listVideos, uploadVideo, submitVideo, startRevision,
+  listCampaigns, listSocialPages, type Campaign,
   STATUS_STYLE, formatBytes, formatWhen,
   type VideoRecord, type VideoStatus,
 } from '@/lib/outreach-video-data'
@@ -234,6 +235,13 @@ function UploadDialog({ onClose, onDone, uploading, setUploading }: {
 }) {
   const [file, setFile] = useState<File | null>(null)
   const [client, setClient] = useState('')
+  /* §3 — the campaign and the pages it posts to. Campaigns are records now
+     (§17), so this is a choice rather than typing a name; the free-text box
+     below stays for work that belongs to no campaign. */
+  const [campaigns, setCampaigns] = useState<Campaign[]>([])
+  const [campaignId, setCampaignId] = useState('')
+  const [pageIds, setPageIds] = useState<string[]>([])
+  const [pages, setPages] = useState<Array<{ id: string; handle: string; platform: string }>>([])
   const [title, setTitle] = useState('')
   const [caption, setCaption] = useState('')
   const [platform, setPlatform] = useState('')
@@ -242,8 +250,21 @@ function UploadDialog({ onClose, onDone, uploading, setUploading }: {
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState<string | null>(null)
 
-  // §9 required fields — the optional ones below are genuinely optional.
-  const canSubmit = !!file && client.trim() && title.trim() && caption.trim() && !uploading
+  useEffect(() => {
+    void listCampaigns().then(r => setCampaigns(r.campaigns)).catch(() => setCampaigns([]))
+    void listSocialPages().then(r => setPages(r.pages)).catch(() => setPages([]))
+  }, [])
+
+  const chosenCampaign = campaigns.find(c => c.id === campaignId) ?? null
+  /* Only the pages this campaign posts to (§7/§8). A campaign that names none
+     offers all of them rather than nothing, because an empty list reads as a
+     broken form rather than as a campaign nobody has configured. */
+  const offeredPages = chosenCampaign?.socialPageIds.length
+    ? pages.filter(p => chosenCampaign.socialPageIds.includes(p.id))
+    : pages
+
+  // §9 required fields — either a chosen campaign or a typed name identifies it.
+  const canSubmit = !!file && (campaignId || client.trim()) && title.trim() && caption.trim() && !uploading
 
   async function submit() {
     if (!canSubmit || !file) return
@@ -253,6 +274,8 @@ function UploadDialog({ onClose, onDone, uploading, setUploading }: {
       const form = new FormData()
       form.append('video', file)
       form.append('client', client.trim())
+      if (campaignId) form.append('campaignId', campaignId)
+      if (pageIds.length) form.append('socialPageIds', pageIds.join(','))
       form.append('title', title.trim())
       form.append('caption', caption.trim())
       if (platform.trim()) form.append('platform', platform.trim())
@@ -301,13 +324,46 @@ function UploadDialog({ onClose, onDone, uploading, setUploading }: {
                 {file && <p className="text-[11px] text-muted-foreground mt-1">{formatBytes(file.size)}</p>}
               </div>
               <div>
-                <label className="hub-label">Client / project *</label>
-                <input className="hub-input" value={client} onChange={e => setClient(e.target.value)}
-                  placeholder="Diwali Campaign" />
+                <label className="hub-label">Campaign *</label>
+                <select className="hub-input" value={campaignId}
+                  onChange={e => { setCampaignId(e.target.value); setPageIds([]) }}>
+                  <option value="">— pick a campaign —</option>
+                  {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  Its Drive folder is created automatically if it doesn't exist.
+                  The campaign decides where the file is filed in Drive and what it is called.
                 </p>
               </div>
+              {!campaignId && (
+                <div>
+                  <label className="hub-label">…or type a client / project *</label>
+                  <input className="hub-input" value={client} onChange={e => setClient(e.target.value)}
+                    placeholder="Diwali Campaign" />
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    For work that belongs to no campaign. Its Drive folder is created if it doesn't exist.
+                  </p>
+                </div>
+              )}
+              {offeredPages.length > 0 && (
+                <div>
+                  <label className="hub-label">Social media page(s)</label>
+                  <div className="space-y-1 max-h-32 overflow-y-auto pr-1 mt-1">
+                    {offeredPages.map(pg => (
+                      <label key={pg.id}
+                        className="flex items-center gap-2 px-2 py-1.5 rounded-lg border border-border cursor-pointer hover:bg-accent/40">
+                        <input type="checkbox" checked={pageIds.includes(pg.id)}
+                          onChange={() => setPageIds(cur =>
+                            cur.includes(pg.id) ? cur.filter(x => x !== pg.id) : [...cur, pg.id])} />
+                        <span className="text-xs text-foreground">{pg.handle}</span>
+                        <span className="text-[11px] text-muted-foreground">{pg.platform}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    Named in the caption file that goes to Drive alongside the video.
+                  </p>
+                </div>
+              )}
               <div>
                 <label className="hub-label">Video title *</label>
                 <input className="hub-input" value={title} onChange={e => setTitle(e.target.value)}

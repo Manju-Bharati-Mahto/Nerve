@@ -115,6 +115,12 @@ export interface EditorVisiblePage {
   handle: string
   platform: string
   connected: boolean
+  /* §8 — present for everyone except an editor, whose projection is an
+     allowlist on purpose (§25) and carries none of these. */
+  page_link?: string
+  contact_person?: string
+  status?: string
+  assigned_campaigns?: string[]
 }
 
 // ── Calls ──────────────────────────────────────────────────────────────────
@@ -228,6 +234,17 @@ export const setLiveUrls = (id: string, liveUrls: Partial<Record<LiveUrlPlatform
 
 export const listSocialPages = () =>
   request<{ pages: EditorVisiblePage[]; analytics_visible: boolean }>('/social-pages')
+
+/**
+ * §8 — the details a person maintains on a page. Deliberately narrow: every
+ * other field comes from the sync, and editing those here would mean the next
+ * sync silently undid the edit.
+ */
+export const updateSocialPage = (
+  id: string, patch: { page_link?: string; contact_person?: string; status?: 'active' | 'inactive' },
+) => request<{ page: unknown }>(`/social-pages/${id}`, {
+  method: 'PATCH', body: JSON.stringify(patch),
+}).then(r => r.page)
 
 /** Streamed through the API so access is checked on the bytes themselves (§25). */
 export const videoStreamUrl = (id: string) => `${BASE}/videos/${id}/stream`

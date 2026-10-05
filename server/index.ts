@@ -145,6 +145,7 @@ import { registerOutreachVideoApi, VIDEO_MIME_ALLOWLIST, videoFileName } from ".
 import { bootstrapBrandOpsDatabase } from "./brandops-db.js";
 import { registerBrandOpsApi } from "./brandops-api.js";
 import { runCreatorNetworkAutomations } from "./creator-automations.js";
+import { runOutreachVideoAutomations } from "./outreach-video/automations.js";
 
 const app = express();
 const PgStore = connectPgSimple(session);
@@ -3054,6 +3055,12 @@ bootstrapDatabase()
       runMediaOpsAutomations()
         .then(r => { if (r.autoApproved || r.notified || r.undeliverable) console.log(`Media Ops automations: ${r.autoApproved} report(s) auto-approved, ${r.notified} notification(s) queued${r.undeliverable ? `, ${r.undeliverable} undeliverable` : ''}.`); })
         .catch(e => console.error('Media Ops automations failed:', e));
+      /* §14 — the outreach video workflow's deadline notices ride the same
+         tick. Each notice is raised at most once a day per subject, so a tick
+         every few minutes does not bury anyone. */
+      runOutreachVideoAutomations()
+        .then(r => { if (r.postingDue || r.campaignDeadlines) console.log(`Outreach video automations: ${r.postingDue} posting reminder(s), ${r.campaignDeadlines} campaign deadline notice(s).`); })
+        .catch(e => console.error('Outreach video automations failed:', e));
       // The Creator Network rides the same tick — Nerve has one clock.
       runCreatorNetworkAutomations()
         .then(r => { if (r.notified || r.failures.length) console.log(`Creator Network automations: ${r.notified} notification(s) queued${r.failures.length ? `, ${r.failures.length} rule(s) failed` : ''}.`); })

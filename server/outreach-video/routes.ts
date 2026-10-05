@@ -228,6 +228,20 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     if (!file) return sendError(res, 400, "A video file is required.");
 
     const body = req.body as Record<string, string>;
+
+    /* §3 — the pages the editor picked, sent as a comma-separated list
+       because the upload is multipart form data. Their handles are resolved
+       here so the §10 caption file can name them. */
+    const pageIds = body.socialPageIds
+      ? String(body.socialPageIds).split(",").map(x => x.trim()).filter(Boolean)
+      : [];
+    let pageNames: string[] = [];
+    if (pageIds.length) {
+      const { listPages } = await import("../outreach-db.js");
+      const byId = new Map((await listPages()).map(pg => [pg.id, pg.handle]));
+      pageNames = pageIds.map(id => byId.get(id)).filter((h): h is string => !!h);
+    }
+
     try {
       const video = await uploadVideo({
         editor: user,
@@ -236,6 +250,10 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
            the Drive folders and the file naming. Absent on an upload that
            only carries typed-in text, which is the older path. */
         campaignId: body.campaignId || null,
+        /* §3 — the pages the editor picked, sent as a comma-separated list
+           because the upload is multipart form data. */
+        socialPageIds: pageIds,
+        pageNames,
         editorTitle: body.title ?? "",
         caption: body.caption ?? "",
         localPath: file.path,
@@ -433,6 +451,12 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
       const event = await createEvent(user, {
         title: b.title ?? "", description: b.description ?? "",
         date: b.date ?? "", client: b.client ?? null,
+        // §5 — the rest of what a calendar entry shows.
+        campaignId: b.campaignId ?? null,
+        socialPageId: b.socialPageId ?? null,
+        contentType: b.contentType ?? null,
+        postingAt: b.postingAt ?? null,
+        assignedPublisherId: b.assignedPublisherId ?? null,
       });
       res.status(201).json({ event });
     } catch (err) { fail(res, err); }
@@ -448,6 +472,11 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
         description: b.description as string | undefined,
         date: b.date as string | undefined,
         client: b.client as string | null | undefined,
+        campaignId: b.campaignId as string | null | undefined,
+        socialPageId: b.socialPageId as string | null | undefined,
+        contentType: b.contentType as string | null | undefined,
+        postingAt: b.postingAt as string | null | undefined,
+        assignedPublisherId: b.assignedPublisherId as string | null | undefined,
       }) });
     } catch (err) { fail(res, err); }
   }));
@@ -726,8 +755,63 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
   app.get(`${P}/social-pages`, asyncHandler(async (_req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
     const { listPages } = await import("../outreach-db.js");
-    const { pages, analyticsVisible } = socialPagesForRole(await listPages(), user.role);
-    res.json({ pages, analytics_visible: analyticsVisible });
+    const all = await listPages();
+    const { pages, analyticsVisible } = socialPagesForRole(all, user.role);
+
+    /* §8 — which campaigns each page is assigned to. Built here rather than
+       stored on the page, because the campaign already names its pages and
+       keeping the reverse copy in step would be one more thing to get wrong.
+
+       Only for people who may see campaigns at all. The editor projection in
+       socialPagesForRole() is an allowlist on purpose (§25), so nothing is
+       attached to it here — a field added to a page must stay invisible to an
+       editor by default, and that includes this one. */
+    if (user.role === "editor") {
+      return res.json({ pages, analytics_visible: analyticsVisible });
+    }
+    const campaigns = await listCampaigns();
+    const byPage = new Map<string, string[]>();
+    for (const c of campaigns) {
+      for (const pageId of c.socialPageIds) {
+        byPage.set(pageId, [...(byPage.get(pageId) ?? []), c.name]);
+      }
+    }
+    res.json({
+      pages: (pages as Array<{ id: string }>).map(pg => ({
+        ...pg, assigned_campaigns: byPage.get(pg.id) ?? [],
+      })),
+      analytics_visible: analyticsVisible,
+    });
+  }));
+
+  /**
+   * §8 — the page details a person maintains: the link, who to contact, and
+   * whether we still post there.
+   *
+   * Deliberately narrow. Everything else on a page comes from the sync, and
+   * letting this edit those fields would mean the next sync silently undid
+   * the edit.
+   */
+  app.patch(`${P}/social-pages/:id`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["admin", "manager"])) return;
+    const b = req.body as Record<string, unknown>;
+    const patch: Record<string, string> = {};
+    if (b.page_link !== undefined) patch.page_link = String(b.page_link).trim();
+    if (b.contact_person !== undefined) patch.contact_person = String(b.contact_person).trim();
+    if (b.status !== undefined) {
+      const status = String(b.status);
+      if (status !== "active" && status !== "inactive") {
+        return sendError(res, 400, "A page is either active or inactive.");
+      }
+      patch.status = status;
+    }
+    if (!Object.keys(patch).length) return sendError(res, 400, "Nothing to change.");
+
+    const { updatePage } = await import("../outreach-db.js");
+    const updated = await updatePage(getSingleParam(req.params.id), patch);
+    if (!updated) return sendError(res, 404, "That page was not found.");
+    res.json({ page: updated });
   }));
 }
 

@@ -122,6 +122,14 @@ export interface UploadInput {
    * how everything worked before campaigns were records.
    */
   campaignId?: string | null;
+  /** §3 — the pages this video is destined for. */
+  socialPageIds?: string[];
+  /**
+   * §10 — those pages' handles, for the caption file's "Platform/Page" line.
+   * Resolved by the caller: this module's data lives in Drive, and reaching
+   * into Postgres for display text is not its job.
+   */
+  pageNames?: string[];
 }
 
 /**
@@ -182,7 +190,11 @@ export async function uploadVideo(input: UploadInput): Promise<VideoRecord> {
        the page as well as the text, so it reads on its own in Drive. An older
        campaign keeps the bare caption its existing files have. */
     const body = campaignRecord
-      ? captionFileBody({ campaign, sequence, platform: input.platform, caption: input.caption })
+      ? captionFileBody({
+          campaign, sequence, caption: input.caption,
+          // The pages when the editor named them, falling back to the platform.
+          platform: input.pageNames?.length ? input.pageNames.join(", ") : input.platform,
+        })
       : input.caption;
     const caption = await client.createTextFile(
       safeFileName(`${autoName}.txt`), captionFolderId, body,
@@ -201,6 +213,7 @@ export async function uploadVideo(input: UploadInput): Promise<VideoRecord> {
     editorTitle: input.editorTitle.trim(),
     client: campaign,
     campaignId: campaignRecord?.id ?? null,
+    socialPageIds: input.socialPageIds ?? [],
     editorId: input.editor.id,
     caption: input.caption,
     status: "uploaded",
@@ -347,6 +360,8 @@ export async function approveVideo(
 
   const publishers = (await listActiveUsers()).filter(u => u.role === "publisher");
   await notify(publishers.map(p => p.id), "video_submitted", { type: "video", id }, `“${video.title}”`);
+  // §14 Editor — "Video approved". The person who made it hears the outcome.
+  await notify([video.editorId], "video_approved", { type: "video", id }, `“${video.title}”`);
   return video;
 }
 
@@ -379,8 +394,9 @@ export async function rejectVideo(
     return { ...video };
   });
 
-  await notify([video.editorId], "video_submitted", { type: "video", id },
-    `“${video.title}” needs changes: ${trimmed}`);
+  // §14 Editor — "Video rejected", with the reason attached.
+  await notify([video.editorId], "video_rejected", { type: "video", id },
+    `“${video.title}”: ${trimmed}`);
   return video;
 }
 

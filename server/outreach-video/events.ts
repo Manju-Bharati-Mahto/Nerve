@@ -53,6 +53,8 @@ async function updateEvent<R>(id: string, apply: (event: EventRecord) => R): Pro
 /** §11.1 / §12 step 10 — the Manager creates an event on the calendar. */
 export async function createEvent(actor: Actor, input: {
   title: string; description?: string; date: string; client?: string | null;
+  campaignId?: string | null; socialPageId?: string | null; contentType?: string | null;
+  postingAt?: string | null; assignedPublisherId?: string | null;
 }): Promise<EventRecord> {
   const title = input.title.trim();
   if (!title) throw new Error("An event title is required.");
@@ -65,6 +67,12 @@ export async function createEvent(actor: Actor, input: {
     description: (input.description ?? "").trim(),
     date: input.date,
     client: input.client?.trim() || null,
+    // §5 — the detail a calendar entry carries; any of it may still be undecided.
+    campaignId: input.campaignId || null,
+    socialPageId: input.socialPageId || null,
+    contentType: input.contentType?.trim() || null,
+    postingAt: input.postingAt || null,
+    assignedPublisherId: input.assignedPublisherId || null,
     assignedEditorId: null,
     assignedBy: null,
     // §22.2 — an event starts Unassigned; assigning is what opens it.
@@ -147,6 +155,8 @@ export async function completeEvent(id: string, actor: Actor): Promise<EventReco
  */
 export async function updateEventDetails(id: string, actor: Actor, patch: {
   title?: string; description?: string; date?: string; client?: string | null;
+  campaignId?: string | null; socialPageId?: string | null; contentType?: string | null;
+  postingAt?: string | null; assignedPublisherId?: string | null;
 }): Promise<EventRecord> {
   return updateEvent(id, event => {
     if (patch.title !== undefined) {
@@ -160,6 +170,14 @@ export async function updateEventDetails(id: string, actor: Actor, patch: {
       event.date = patch.date;
     }
     if (patch.client !== undefined) event.client = patch.client?.trim() || null;
+    // §5 — each settable independently, because they are decided at different times.
+    if (patch.campaignId !== undefined) event.campaignId = patch.campaignId || null;
+    if (patch.socialPageId !== undefined) event.socialPageId = patch.socialPageId || null;
+    if (patch.contentType !== undefined) event.contentType = patch.contentType?.trim() || null;
+    if (patch.postingAt !== undefined) event.postingAt = patch.postingAt || null;
+    if (patch.assignedPublisherId !== undefined) {
+      event.assignedPublisherId = patch.assignedPublisherId || null;
+    }
     event.activity.push(activityEntry(actor, "event.updated", { relatedEventId: event.id }));
     return { ...event };
   });

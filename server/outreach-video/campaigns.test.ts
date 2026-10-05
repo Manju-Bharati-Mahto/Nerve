@@ -279,3 +279,43 @@ describe("an upload against a real campaign vs one from before", () => {
     })).rejects.toThrow(/campaign was not found/i);
   });
 });
+
+describe("§3 — the pages a video is for", () => {
+  const editor: VideoUser = {
+    id: "u-ed2", name: "Ed Two", email: "ed2@test.local", role: "editor",
+    active: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
+  };
+
+  async function fakeVideo(name: string): Promise<string> {
+    const p = path.join(tmpRoot, name);
+    await fs.writeFile(p, "not-really-a-video", "utf8");
+    return p;
+  }
+
+  it("records the pages the editor picked", async () => {
+    const campaign = await createCampaign(ACTOR, { ...base, name: "Pages Campaign" });
+    const v = await uploadVideo({
+      editor, client: "x", campaignId: campaign.id, editorTitle: "t", caption: "c",
+      socialPageIds: ["pg-a", "pg-b"], pageNames: ["@paruluniversity", "@parulsports"],
+      localPath: await fakeVideo("p.mp4"), originalName: "p.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+    expect(v.socialPageIds).toEqual(["pg-a", "pg-b"]);
+  });
+
+  it("names those pages in the §10 caption sidecar", () => {
+    const body = captionFileBody({
+      campaign: "Pages Campaign", sequence: 1,
+      platform: ["@paruluniversity", "@parulsports"].join(", "), caption: "hello",
+    });
+    expect(body).toContain("Platform/Page: @paruluniversity, @parulsports");
+  });
+
+  it("leaves the list empty when no page was picked", async () => {
+    const campaign = await createCampaign(ACTOR, { ...base, name: "No Pages Campaign" });
+    const v = await uploadVideo({
+      editor, client: "x", campaignId: campaign.id, editorTitle: "t", caption: "c",
+      localPath: await fakeVideo("q.mp4"), originalName: "q.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+    expect(v.socialPageIds).toEqual([]);
+  });
+});
