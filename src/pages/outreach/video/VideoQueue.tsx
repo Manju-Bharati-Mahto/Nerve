@@ -4,7 +4,7 @@ import {
   Send, Download, Copy, Check, AlertCircle, Loader2, X, Inbox, CalendarClock,
 } from 'lucide-react'
 import {
-  publishingQueue, publishVideo, scheduleVideo, videoDownloadUrl, videoStreamUrl,
+  publishingQueue, publishVideo, scheduleVideo, listVideos, localDay, videoDownloadUrl, videoStreamUrl,
   formatWhen, type VideoRecord, type LiveUrlPlatform,
 } from '@/lib/outreach-video-data'
 
@@ -26,11 +26,16 @@ export default function VideoQueue() {
   const [error, setError] = useState<string | null>(null)
   const [publishing, setPublishing] = useState<VideoRecord | null>(null)
   const [scheduling, setScheduling] = useState<VideoRecord | null>(null)
+  const [publishedToday, setPublishedToday] = useState(0)
 
   const refresh = useCallback(async () => {
     try {
-      const { videos } = await publishingQueue()
+      const [{ videos }, published] = await Promise.all([
+        publishingQueue(), listVideos({ status: 'published' }),
+      ])
       setVideos(videos)
+      const today = localDay()
+      setPublishedToday(published.videos.filter(v => v.publishedAt && localDay(new Date(v.publishedAt)) === today).length)
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load the queue.')
@@ -54,6 +59,16 @@ export default function VideoQueue() {
           </p>
         </div>
       </div>
+
+      {/* §12 Publisher — "Today's Posts, Pending Publishing, Published Today". */}
+      {!loading && (
+        <div className="grid grid-cols-3 gap-3">
+          <Stat label="Today's posts" value={
+            videos.filter(v => v.scheduledFor && localDay(new Date(v.scheduledFor)) === localDay()).length + publishedToday} />
+          <Stat label="Pending publishing" value={videos.length} />
+          <Stat label="Published today" value={publishedToday} />
+        </div>
+      )}
 
       {error && (
         <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
@@ -307,4 +322,13 @@ function toLocalInput(iso: string): string {
   const d = new Date(iso)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function Stat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="hub-card py-3">
+      <div className="text-2xl font-serif text-foreground leading-none">{value}</div>
+      <div className="text-[11px] text-muted-foreground mt-1">{label}</div>
+    </div>
+  )
 }

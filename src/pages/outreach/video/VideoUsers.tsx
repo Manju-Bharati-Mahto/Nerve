@@ -197,6 +197,7 @@ function AddUserDialog({ onClose, onDone }: { onClose: () => void; onDone: () =>
   const [department, setDepartment] = useState('')
   const [role, setRole] = useState<VideoRole>(roles.includes('editor') ? 'editor' : roles[0])
   const [capabilities, setCapabilities] = useState<string[]>([])
+  const [photo, setPhoto] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -223,6 +224,14 @@ function AddUserDialog({ onClose, onDone }: { onClose: () => void; onDone: () =>
       // Grants are a separate write, and only worth making when there are any.
       if (capabilities.length) await api.setUserCapabilities(created.id, capabilities)
 
+      /* §6 — the photo is optional, and the account already exists by now, so
+         a failed photo is reported without undoing the add. */
+      let photoError: string | null = null
+      if (photo) {
+        try { await api.uploadMemberAvatar(created.id, photo) }
+        catch (err) { photoError = err instanceof Error ? err.message : 'The photo did not upload.' }
+      }
+
       /* Register them in the workflow table too. The server would do this by
          itself on their first authenticated request, but "by itself, later"
          means the person the administrator just added is missing from the
@@ -235,6 +244,11 @@ function AddUserDialog({ onClose, onDone }: { onClose: () => void; onDone: () =>
         await addWorkflowUser({ name: name.trim(), email: email.trim(), role })
       } catch { /* provisioned on first sign-in instead */ }
 
+      if (photoError) {
+        setError(`${name.trim()} was added, but the photo did not upload: ${photoError}. You can try again from their profile.`)
+        setBusy(false)
+        return
+      }
       await onDone()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not add that user.')
@@ -268,6 +282,13 @@ function AddUserDialog({ onClose, onDone }: { onClose: () => void; onDone: () =>
           <div><label className="hub-label">Mobile number</label>
             <input className="hub-input" value={mobile} onChange={e => setMobile(e.target.value)}
               placeholder="Optional" /></div>
+        </div>
+        <div>
+          <label className="hub-label">Profile photo</label>
+          <input type="file" accept="image/jpeg,image/png,image/webp,image/gif"
+            className="hub-input py-1.5 text-xs"
+            onChange={e => setPhoto(e.target.files?.[0] ?? null)} />
+          <p className="text-[11px] text-muted-foreground mt-1">Optional. JPG, PNG, WEBP or GIF, up to 3 MB.</p>
         </div>
         <div><label className="hub-label">Role *</label>
           <select className="hub-input" value={role} onChange={e => setRole(e.target.value as VideoRole)}>

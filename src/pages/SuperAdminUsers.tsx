@@ -4,8 +4,8 @@ import type { TeamRecord, AppUser } from '@/lib/app-types'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
 import { getErrorMessage } from '@/lib/error-utils'
-import { Crown, Shield, UserCheck, User, Search, RefreshCw, Plus, Trash2, Layers, Megaphone, ClipboardList } from 'lucide-react'
-import type { AppRole } from '@/lib/constants'
+import { Crown, Shield, UserCheck, User, Search, RefreshCw, Plus, Trash2, Layers, Megaphone, ClipboardList, Film, Send, Boxes } from 'lucide-react'
+import { ROLES, type AppRole } from '@/lib/constants'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
@@ -20,6 +20,9 @@ const ROLE_CFG: Record<AppRole, { label: string; icon: React.ElementType; color:
   design_reports_admin: { label: 'Reports Admin', icon: ClipboardList, color: 'text-violet-600', bg: 'bg-violet-100' },
   task_owner: { label: 'Task Owner', icon: UserCheck, color: 'text-indigo-600', bg: 'bg-indigo-100' },
   task_manager: { label: 'Task Manager', icon: UserCheck, color: 'text-cyan-600', bg: 'bg-cyan-100' },
+  outreach_editor: { label: 'Outreach Editor', icon: Film, color: 'text-orange-600', bg: 'bg-orange-50' },
+  outreach_publisher: { label: 'Outreach Publisher', icon: Send, color: 'text-orange-700', bg: 'bg-orange-50' },
+  inventory_manager: { label: 'Inventory Manager', icon: Boxes, color: 'text-sky-700', bg: 'bg-sky-100' },
 }
 
 const BLANK_USER = { full_name: '', email: '', password: '', department: '' }
@@ -37,6 +40,18 @@ const CUSTOM_COLORS = [
 const ROLE_LABEL: Record<AppRole, string> = {
   super_admin: 'Super Admin', admin: 'Admin', sub_admin: 'Team Lead', user: 'Member', outreach_manager: 'Outreach Manager',
   branding_reports_admin: 'Reports Admin', design_reports_admin: 'Reports Admin', task_owner: 'Task Owner', task_manager: 'Task Manager',
+  outreach_editor: 'Outreach Editor', outreach_publisher: 'Outreach Publisher', inventory_manager: 'Inventory Manager',
+}
+
+/* Every role a Super Admin can assign here, from the role catalogue rather
+   than a hand-written list. A hand-written list stopped being complete the
+   moment a role was added: an outreach editor's dropdown then had no option
+   for their own role and displayed "Member" instead. Super Admin itself is
+   never offered — that is not granted from a row. */
+const ASSIGNABLE_ROLES = ROLES.filter(r => r !== 'super_admin')
+const ROLE_OPTION_LABEL: Partial<Record<AppRole, string>> = {
+  branding_reports_admin: 'Reports Admin (Branding)',
+  design_reports_admin: 'Reports Admin (Design)',
 }
 
 function UserRow({
@@ -79,12 +94,9 @@ function UserRow({
             value={u.role}
             onChange={e => onUpdate(u.id, e.target.value as AppRole, u.team)}
           >
-            <option value="user">Member</option>
-            <option value="sub_admin">Team Lead</option>
-            <option value="admin">Admin</option>
-            <option value="outreach_manager">Outreach Manager</option>
-            <option value="branding_reports_admin">Reports Admin (Branding)</option>
-            <option value="design_reports_admin">Reports Admin (Design)</option>
+            {ASSIGNABLE_ROLES.map(r => (
+              <option key={r} value={r}>{ROLE_OPTION_LABEL[r] ?? ROLE_LABEL[r]}</option>
+            ))}
           </select>
           <select
             className="hub-input text-xs py-1 w-32"

@@ -355,3 +355,55 @@ describe("§18 — search and filtering", () => {
     expect(options.publishers.map(p => p.name)).toEqual(["Pat Publisher"]);
   });
 });
+
+describe("§13 — page and content type", () => {
+  async function uploadTo(pages: string[], names: string[]) {
+    const p = path.join(scratch, `${Math.random().toString(36).slice(2)}.mp4`);
+    await fs.writeFile(p, "bytes", "utf8");
+    return uploadVideo({
+      editor: editorA, client: "Client A", editorTitle: "t", caption: "c",
+      socialPageIds: pages, pageNames: names,
+      localPath: p, originalName: "v.mp4", mimeType: "video/mp4", sizeBytes: 5,
+    });
+  }
+
+  it("finds the videos filed against a social media page", async () => {
+    const a = await uploadTo(["pg-uni"], ["@paruluniversity"]);
+    await uploadTo(["pg-sports"], ["@parulsports"]);
+    const r = await search({ pageId: "pg-uni" });
+    expect(r.videos.map(v => v.id)).toEqual([a.id]);
+  });
+
+  it("finds events planned for that page too", async () => {
+    await createEvent(manager, { title: "Reel shoot", date: "2027-02-01", socialPageId: "pg-uni", contentType: "Reel" });
+    await createEvent(manager, { title: "Other", date: "2027-02-02", socialPageId: "pg-sports" });
+    const r = await search({ pageId: "pg-uni" });
+    expect(r.events.map(e => e.title)).toEqual(["Reel shoot"]);
+  });
+
+  it("filters events by content type, case-insensitively", async () => {
+    await createEvent(manager, { title: "A reel", date: "2027-02-01", contentType: "Reel" });
+    await createEvent(manager, { title: "A story", date: "2027-02-01", contentType: "Story" });
+    const r = await search({ contentType: "reel" });
+    expect(r.events.map(e => e.title)).toEqual(["A reel"]);
+  });
+
+  it("treats every workflow video as content type Video", async () => {
+    await uploadTo([], []);
+    expect((await search({ contentType: "Video" })).videos).toHaveLength(1);
+    expect((await search({ contentType: "Reel" })).videos).toHaveLength(0);
+  });
+
+  it("offers the pages and content types that are actually in use", async () => {
+    await uploadTo(["pg-uni"], ["@paruluniversity"]);
+    await createEvent(manager, { title: "x", date: "2027-02-01", contentType: "Story" });
+    const o = await filterOptions();
+    expect(o.pages).toEqual([{ id: "pg-uni", name: "@paruluniversity" }]);
+    expect(o.contentTypes).toEqual(["Story", "Video"]);
+  });
+
+  it("finds a video by its page's handle in free text", async () => {
+    const a = await uploadTo(["pg-uni"], ["@paruluniversity"]);
+    expect((await search({ q: "paruluniversity" })).videos.map(v => v.id)).toEqual([a.id]);
+  });
+});

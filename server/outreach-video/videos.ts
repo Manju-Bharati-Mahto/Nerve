@@ -16,7 +16,7 @@ import {
 import { activityEntry, listActiveUsers } from "./users.js";
 import { assetFoldersFor, campaignAssetName, getCampaign } from "./campaigns.js";
 import { mirrorVideo } from "./drive-mirror.js";
-import { notify } from "./notifications.js";
+import { alreadyNotified, notify } from "./notifications.js";
 import type {
   LiveUrlPlatform, VideoRecord, VideoStatus, VideoUser, WorkflowStoreDoc,
 } from "./types.js";
@@ -231,8 +231,50 @@ async function mirrorSafely(video: VideoRecord, options: { relocate?: boolean } 
     return await updateVideo(video.id, v => { Object.assign(v, update); return { ...v }; });
   } catch (err) {
     console.error(`Outreach video: could not mirror “${video.title}” to Drive`, err);
+    await reportDriveProblem(video, err);
     return video;
   }
+}
+
+/**
+ * §14 Admin — "major publishing/system issues". A Drive that cannot be
+ * written is exactly that: the workflow carries on, but what the team sees in
+ * Drive is falling behind. Once a day at most, whatever the number of
+ * failures — when Drive is down every step fails, and one notice says it.
+ */
+async function reportDriveProblem(video: VideoRecord, err: unknown): Promise<void> {
+  try {
+    const admins = (await listActiveUsers()).filter(u => u.role === "admin");
+    const reason = err instanceof Error ? err.message : String(err);
+    for (const a of admins) {
+      if (await alreadyNotified(a.id, "system_issue", "drive")) continue;
+      await notify([a.id], "system_issue", { type: "system", id: "drive" },
+        `Google Drive could not be updated (latest: “${video.title}” — ${reason.slice(0, 160)}). ` +
+        `Check Video Workflow → Google Drive, then use Sync now.`);
+    }
+  } catch { /* a notice about a failure must never become a failure of its own */ }
+}
+
+/**
+ * §14 Manager — "campaign completion". Raised by the publication that brings
+ * a campaign to its posting target, once: a campaign that overdelivers does
+ * not announce itself again with every extra post.
+ */
+async function announceIfCampaignComplete(video: VideoRecord): Promise<void> {
+  try {
+    const campaign = video.campaignId ? await getCampaign(video.campaignId) : null;
+    if (!campaign || campaign.requiredPosts <= 0) return;
+    const doc = await readWorkflow();
+    const published = doc.videos.filter(v => v.status === "published" && v.campaignId === campaign.id).length;
+    if (published !== campaign.requiredPosts) return;
+    const recipients = (await listActiveUsers())
+      .filter(u => u.role === "manager" || u.role === "admin" || u.id === campaign.campaignManagerId);
+    for (const r of recipients) {
+      if (await alreadyNotified(r.id, "campaign_completed", campaign.id, 24 * 365)) continue;
+      await notify([r.id], "campaign_completed", { type: "campaign", id: campaign.id },
+        `“${campaign.name}” has published all ${campaign.requiredPosts} of its required posts.`);
+    }
+  } catch { /* best effort, like every notice */ }
 }
 
 /**
@@ -507,7 +549,9 @@ export async function publishVideo(
     }));
     return { ...video };
   });
-  return mirrorSafely(video);
+  const mirrored = await mirrorSafely(video);
+  await announceIfCampaignComplete(mirrored);
+  return mirrored;
 }
 
 /**

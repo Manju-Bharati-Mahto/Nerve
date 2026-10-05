@@ -108,6 +108,9 @@ export const NOTIFICATION_KINDS = [
      a review, the publisher about work due, and the manager about a campaign
      running out of time. */
   "video_approved", "video_rejected", "posting_due", "campaign_deadline",
+  /* §14 Manager "campaign completion", and §14 Admin "new user creation and
+     major publishing/system issues". */
+  "campaign_completed", "user_created", "system_issue",
 ] as const;
 export type NotificationKind = typeof NOTIFICATION_KINDS[number];
 
@@ -128,7 +131,7 @@ export interface WorkflowNotification {
    * with no subject can never be deduplicated, which for anything raised on
    * a timer means it repeats forever.
    */
-  subject?: { type: "video" | "event" | "campaign"; id: string } | null;
+  subject?: { type: "video" | "event" | "campaign" | "system"; id: string } | null;
 }
 
 /** §6.2 / §4.2 — a registered user of the video workflow. */

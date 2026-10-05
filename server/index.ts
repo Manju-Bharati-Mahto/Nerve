@@ -180,6 +180,22 @@ const avatarUpload = multer({
   fileFilter: imageFileFilter,
 });
 
+/**
+ * One image from the `avatar` field, answering a refused file (wrong type, too
+ * big) with a 400 and its reason. Left to the default, multer's refusal
+ * reaches the error handler as a 500 — a server fault, for what is really
+ * someone picking an SVG or a 10 MB photo.
+ */
+const avatarImage: express.RequestHandler = (req, res, next) => {
+  avatarUpload.single("avatar")(req, res, (err?: unknown) => {
+    if (!err) return next();
+    const message = err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE"
+      ? "That photo is larger than 3 MB."
+      : err instanceof Error ? err.message : "That file could not be uploaded.";
+    sendError(res, 400, message);
+  });
+};
+
 const designUpload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
@@ -910,13 +926,51 @@ app.patch("/api/users/me", asyncHandler(async (req, res) => {
 }));
 
 // ── Avatar upload: any logged-in user uploads their own photo ───────────────
-app.post("/api/users/me/avatar", avatarUpload.single("avatar"), asyncHandler(async (req, res) => {
+app.post("/api/users/me/avatar", avatarImage, asyncHandler(async (req, res) => {
   const currentUser = res.locals.currentUser;
   if (!req.file) return sendError(res, 400, "No file uploaded.");
   const avatarUrl = `/uploads/avatars/${req.file.filename}`;
   const updated = await updateUser(currentUser.id, { avatar_url: avatarUrl });
   if (!updated) return sendError(res, 404, "User not found.");
   res.json({ user: updated, avatar_url: avatarUrl });
+}));
+
+/**
+ * Whether `actor` may change `target`'s profile details as their team's
+ * administrator: a Super Admin anyone; an Admin their own team; an outreach
+ * Manager their own team except an Admin — the same ceiling as user creation
+ * and tab grants, so a photo cannot be a way round it.
+ */
+function mayManageMember(
+  actor: { role: string; team: string | null },
+  target: { role: string; team: string | null },
+): boolean {
+  if (actor.role === "super_admin") return true;
+  if (target.role === "super_admin") return false;
+  if (!actor.team || target.team !== actor.team) return false;
+  if (actor.role === "admin") return true;
+  if (actor.role === "outreach_manager") return target.role !== "admin";
+  return false;
+}
+
+/* PRD §6 "Profile Photo (optional)" — an administrator sets a member's photo
+   while adding them. Authorised BEFORE the upload middleware runs, so a
+   refused request never writes a file. Registered after /me/avatar so "me"
+   is never read as a user id. */
+app.post("/api/users/:id/avatar", asyncHandler(async (req, res, next) => {
+  const target = await getUserById(getSingleParam(req.params.id));
+  if (!target) return sendError(res, 404, "User not found.");
+  if (!mayManageMember(res.locals.currentUser, target)) {
+    return sendError(res, 403, "You can only set photos for members of your own team.");
+  }
+  res.locals.avatarTarget = target.id;
+  next();
+}), avatarImage, asyncHandler(async (req, res) => {
+  if (!req.file) return sendError(res, 400, "No file uploaded.");
+  const avatarUrl = `/uploads/avatars/${req.file.filename}`;
+  const updated = await updateUser(res.locals.avatarTarget, { avatar_url: avatarUrl });
+  if (!updated) return sendError(res, 404, "User not found.");
+  res.json({ user: { ...updated, password_hash: undefined }, avatar_url: avatarUrl });
 }));
 
 // Media Ops: upload an image and get its URL (used for add-member + profile photos).

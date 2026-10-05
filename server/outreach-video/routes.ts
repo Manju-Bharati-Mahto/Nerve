@@ -46,7 +46,7 @@ import {
   assignEvent, completeEvent, createEvent, eventCounts, getEvent, listEvents,
   todoFor, updateEventDetails, EventNotFoundError, EventNotOpenError, NotYourEventError,
 } from "./events.js";
-import { listNotifications, markRead } from "./notifications.js";
+import { listNotifications, markRead, notify } from "./notifications.js";
 import { editorVideoLog, workflowKpis } from "./reports.js";
 import { filterOptions, search } from "./search.js";
 import { activityActors, activityFeed } from "./activity.js";
@@ -111,7 +111,10 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
        create accounts directly: before that, people were pre-registered in
        the workflow table and arrived with a record already waiting. */
     try {
-      return await addUser({ name: u.full_name ?? email, email, role });
+      const created = await addUser({ name: u.full_name ?? email, email, role });
+      // Someone whose account was made elsewhere has just joined the workflow.
+      await announceNewMember(created, null);
+      return created;
     } catch (err) {
       if (err instanceof UserExistsError) {
         const raced = await findUserByEmail(email);
@@ -119,6 +122,22 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
       }
       throw err;
     }
+  }
+
+  /**
+   * §14 Admin — "new user creation". Every Admin hears about a new member of
+   * the team, except whoever added them. Never fails the add.
+   */
+  async function announceNewMember(member: VideoUser, addedBy: VideoUser | null): Promise<void> {
+    try {
+      // Never the person who added them, and never the member themselves —
+      // an Admin's own first sign-in is not news to them.
+      const admins = (await listUsers()).filter(u =>
+        u.role === "admin" && u.active && !u.deletedAt && u.id !== addedBy?.id && u.id !== member.id);
+      const label = { admin: "Admin", manager: "Manager", editor: "Editor", publisher: "Publisher" }[member.role];
+      await notify(admins.map(a => a.id), "user_created", null,
+        addedBy ? `${member.name} (${label}) was added by ${addedBy.name}.` : `${member.name} (${label}) signed in for the first time.`);
+    } catch { /* a notice never fails the action it reports */ }
   }
 
   function requireRole(res: express.Response, user: VideoUser, allowed: VideoRole[]): boolean {
@@ -545,6 +564,22 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
   }));
 
   /**
+   * §5 — the publishers an event can be assigned to. Separate from /users,
+   * which is the administration list: someone given only the calendar tab
+   * must be able to fill in the event form without seeing the whole team.
+   */
+  app.get(`${P}/publishers`, asyncHandler(async (_req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!await requireRoleOrGrant(res, user, ["admin", "manager"], "outreach:calendar")) return;
+    const users = await listUsers();
+    res.json({
+      publishers: users
+        .filter(u => u.active && !u.deletedAt && u.role === "publisher")
+        .map(u => ({ id: u.id, name: u.name, email: u.email })),
+    });
+  }));
+
+  /**
    * §4.3 — registers a user by email; §5 matches that email at sign-in.
    *
    * Managers administer their own team. The earlier specification confined
@@ -565,7 +600,9 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     if (!VIDEO_ROLES.includes(role)) return sendError(res, 400, "Pick one of Admin, Editor, Manager or Publisher.");
     if (!await managerMayActOn(res, user, null, role)) return;
     try {
-      res.status(201).json({ user: await addUser({ name, email, role, active: b.active !== false }) });
+      const created = await addUser({ name, email, role, active: b.active !== false });
+      await announceNewMember(created, user);
+      res.status(201).json({ user: created });
     } catch (err) { fail(res, err); }
   }));
 
@@ -835,6 +872,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       editorId: q.editor_id || undefined,
       publisherId: q.publisher_id || undefined,
       platform: q.platform || undefined,
+      pageId: q.page_id || undefined,
+      contentType: q.content_type || undefined,
       from: q.from || undefined,
       to: q.to || undefined,
     }, scope));
@@ -880,7 +919,27 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
   app.get(`${P}/kpis`, asyncHandler(async (_req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
     if (!await requireRoleOrGrant(res, user, ["admin", "manager"], "outreach:video_dashboard")) return;
-    res.json({ kpis: await workflowKpis() });
+    const [kpis, campaigns, users] = await Promise.all([workflowKpis(), listCampaigns(), listUsers()]);
+    /* §5 "Total social media pages" — the ones still posted to. Read from
+       Postgres, so a database hiccup costs this one number, not the page. */
+    let totalSocialPages: number | null = null;
+    try {
+      const { listPages } = await import("../outreach-db.js");
+      totalSocialPages = (await listPages()).filter(pg => (pg as { status?: string }).status !== "inactive").length;
+    } catch { totalSocialPages = null; }
+    res.json({
+      kpis: {
+        ...kpis,
+        // §5 Manager and §12 Admin — campaign totals.
+        campaignsTotal: campaigns.length,
+        campaignsRunning: campaigns.filter(c => c.status === "running").length,
+        campaignsUpcoming: campaigns.filter(c => c.status === "upcoming").length,
+        campaignsCompleted: campaigns.filter(c => c.status === "completed").length,
+        totalSocialPages,
+        // §12 Admin — "Total Users": the workflow team, active members only.
+        totalUsers: users.filter(u => u.active && !u.deletedAt).length,
+      },
+    });
   }));
 
   /** §11.3 Manager and §14.1 Publisher both get the monthly editor log. */

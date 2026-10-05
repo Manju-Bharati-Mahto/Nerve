@@ -92,7 +92,7 @@ export default function VideoSearch() {
           <Select label="Event status" value={params.eventStatus ?? ''}
             onChange={v => set({ eventStatus: (v || undefined) as SearchParams['eventStatus'] })}
             options={[['unassigned', 'Unassigned'], ['open', 'Open'], ['completed', 'Completed']]} />
-          <Select label="Client" value={params.client ?? ''} onChange={v => set({ client: v || undefined })}
+          <Select label="Campaign" value={params.client ?? ''} onChange={v => set({ client: v || undefined })}
             options={(options?.clients ?? []).map(c => [c, c] as [string, string])} />
           {/* An editor's results are pinned to them, so an editor picker here
               would be a control that does nothing. */}
@@ -107,6 +107,15 @@ export default function VideoSearch() {
           {(options?.platforms.length ?? 0) > 0 && (
             <Select label="Platform" value={params.platform ?? ''} onChange={v => set({ platform: v || undefined })}
               options={(options?.platforms ?? []).map(p => [p, p] as [string, string])} />
+          )}
+          {/* §13 — "Social Media Page" and "Content Type". */}
+          {(options?.pages?.length ?? 0) > 0 && (
+            <Select label="Page" value={params.pageId ?? ''} onChange={v => set({ pageId: v || undefined })}
+              options={(options?.pages ?? []).map(pg => [pg.id, pg.name] as [string, string])} />
+          )}
+          {(options?.contentTypes?.length ?? 0) > 0 && (
+            <Select label="Content type" value={params.contentType ?? ''} onChange={v => set({ contentType: v || undefined })}
+              options={(options?.contentTypes ?? []).map(t => [t, t] as [string, string])} />
           )}
           <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
             From

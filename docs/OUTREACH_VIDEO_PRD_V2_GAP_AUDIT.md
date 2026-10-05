@@ -209,27 +209,47 @@ disabled on the BrandOps Institutes page silently did nothing.
 
 ## Where each section stands now
 
-Implemented across four commits on `outreach-campaign-management`.
+**Correction.** An earlier version of this table, written when
+`outreach-campaign-management` merged, marked every section ✅. Four of those
+were not true:
+
+- **§9** — `Published/` was created and never used; uploads with no campaign
+  record still went to an older layout; and none of it could run in
+  production, because the workflow could only be connected to Drive through
+  the server's env file (and, after #103, through Media Ops).
+- **§5** — the calendar fields existed in the API but not on the calendar,
+  and the dashboard had no campaign totals.
+- **§6** — there was no profile photo.
+- **§12 / §14** — Today's Posts, Published Today, the Editor's Approved count,
+  Total Users, campaign completion and the Admin's new-user and system-issue
+  notices were all missing.
+
+The table below is the state after `outreach-drive-native`.
 
 | § | State | Notes |
 |---|---|---|
-| §1 Product overview | ✅ | Four roles, unchanged |
-| §2 Roles & permissions | ✅ | Manager now administers outreach; per-user tab permissions added |
-| §3 Editor upload workflow | ✅ | Campaign and page(s) are now chosen, not typed |
-| §4 Publisher | ✅ | Scheduling with a posting date/time added |
-| §5 Manager dashboard & calendar | ✅ | Campaign totals and per-campaign progress; events carry campaign, page, content type, posting time and publisher |
-| §6 Admin user management | ✅ | Creates a real login; mobile and department added; custom permissions are the tab switches |
-| §7 Campaign management | ✅ | A campaign is a record with all the §7 fields |
-| §8 Social media pages | ✅ | Link, contact person, status, assigned campaigns |
-| §9 Drive integration | ✅ | `Social Media Campaigns/<Campaign>/{Videos,Captions,Published}` for new campaigns |
-| §10 Naming | ✅ | `<Campaign> - Video N` plus a caption sidecar carrying campaign, number and page |
+| §1 Product overview | ✅ | Four roles |
+| §2 Roles & permissions | ✅ | The outreach Manager administers outreach; per-user tab permissions |
+| §3 Editor upload workflow | ✅ | Campaign and page(s) chosen at upload; description/notes field |
+| §4 Publisher | ✅ | Schedule / reschedule and mark published from the queue, with a remark |
+| §5 Manager dashboard & calendar | ✅ | All nine dashboard figures. The calendar shows events **and** campaign postings under Upcoming / Running-Scheduled / Pending / Completed, every entry with campaign, page, content type, posting time, publisher and status, plus campaign progress |
+| §6 Admin user management | ✅ | Real login; name, email, mobile, photo, department, role; tab permissions |
+| §7 Campaign management | ✅ | A campaign is a record with every §7 field |
+| §8 Social media pages | ✅ | Link, contact person, status, assigned campaigns. *Platforms are those the outreach sync reads (Instagram, Facebook); YouTube, X and LinkedIn — which §8 says "may" be included — would need sync support* |
+| §9 Drive integration | ✅ | Outreach connects its own Drive (outreach.socialintern@paruluniversity.ac.in) from Video Workflow → Google Drive. Every upload goes to `Social Media Campaigns/<Campaign>/Videos`, and moves to `Published/` when published |
+| §10 Naming | ✅ | `<Campaign> - Video N` for every upload; the caption file carries campaign, number, page and caption |
 | §11 Content status workflow | ✅ | The full flow, with a required rejection reason |
-| §12 Dashboard analytics | ✅ | Per-status counts, plus "needs the editor" and "awaiting publishing" |
-| §13 Search & filtering | ✅ | Status facet driven off the catalogue so it cannot fall behind |
-| §14 Notifications | ✅ | Review outcomes, posting due, campaign deadlines |
-| §15 Audit log | ✅ | Already exceeded the requirement |
-| §16 End-to-end flow | ✅ | Follows from the above |
-| §17 One campaign = one workspace | ✅ | The campaign is the thing everything hangs off |
+| §12 Dashboard analytics | ✅ | Admin, Manager, Publisher and Editor each get their PRD set |
+| §13 Search & filtering | ✅ | Campaign, date, page, status, user and platform |
+| §14 Notifications | ✅ | Editor: approved / rejected. Publisher: ready to publish, posting due. Manager: campaign deadlines, pending posts, campaign completed. Admin: new member, Drive problems |
+| §15 Audit log | ✅ | In the app, and now also in each video's file in Drive |
+| §16 End-to-end flow | ✅ | |
+| §17 One campaign = one workspace | ✅ | Drive mirrors the campaign: its videos, captions, remarks and published work in one folder |
+
+**Beyond the PRD, at the outreach team's request:** each video's file in
+`Captions/` carries the editor's description and every remark the workflow's
+users made on it — the reason for sending it back, the approval note, the
+schedule, the publisher's remark — rewritten at every step.
 
 ### Decisions taken along the way, worth knowing
 

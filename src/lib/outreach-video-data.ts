@@ -91,6 +91,11 @@ export interface VideoRecord {
   scheduledBy?: string | null
   /** §17 — the campaign this belongs to; null on records from before. */
   campaignId?: string | null
+  /** §3 — the pages chosen at upload, and their handles as they were then. */
+  socialPageIds?: string[]
+  socialPageNames?: string[]
+  /** §10 — the N in "<campaign> - Video N". */
+  sequence?: number | null
   liveUrls?: Partial<Record<LiveUrlPlatform, string>>
   activity: ActivityEntry[]
 }
@@ -339,11 +344,55 @@ export interface EventRecord {
   client?: string | null
   assignedEditorId?: string | null
   assignedBy?: string | null
+  /* §5 — what each calendar entry must show. All optional: an event goes in
+     the calendar before any of it is decided. */
+  campaignId?: string | null
+  socialPageId?: string | null
+  contentType?: string | null
+  /** ISO time of the planned posting; `date` is the day. */
+  postingAt?: string | null
+  assignedPublisherId?: string | null
   status: EventStatus
   createdAt: string
   updatedAt: string
   completedAt?: string | null
   activity: ActivityEntry[]
+}
+
+/** §5 — the content types a calendar entry offers. Free text is allowed too. */
+export const CONTENT_TYPES = ['Reel', 'Post', 'Story', 'Short', 'Carousel', 'Live'] as const
+
+/** §5 "Calendar statuses: Upcoming, Running/Scheduled, Pending, Completed." */
+export type CalendarStatus = 'upcoming' | 'scheduled' | 'pending' | 'completed'
+
+export const CALENDAR_STATUS: Record<CalendarStatus, { label: string; cls: string }> = {
+  upcoming:  { label: 'Upcoming',          cls: 'bg-sky-100 text-sky-800' },
+  scheduled: { label: 'Running/Scheduled', cls: 'bg-violet-100 text-violet-800' },
+  pending:   { label: 'Pending',           cls: 'bg-amber-100 text-amber-800' },
+  completed: { label: 'Completed',         cls: 'bg-emerald-100 text-emerald-700' },
+}
+
+/**
+ * Places an event or a posting on §5's four calendar statuses.
+ *
+ * The workflow's own statuses are finer than the calendar's, so this is the
+ * one place they are folded together. The rule that matters: anything whose
+ * date has passed without being done is PENDING — overdue — rather than
+ * still "upcoming", because a missed slot is what a manager looks at a
+ * calendar to find.
+ */
+export function calendarStatusOf(
+  entry:
+    | { kind: 'event'; status: EventStatus; date: string }
+    | { kind: 'posting'; status: VideoStatus; when: string },
+  now: Date = new Date(),
+): CalendarStatus {
+  if (entry.kind === 'event') {
+    if (entry.status === 'completed') return 'completed'
+    return entry.date < localDay(now) ? 'pending' : 'upcoming'
+  }
+  if (entry.status === 'published') return 'completed'
+  return new Date(entry.when).getTime() < now.getTime() ? 'pending' : 'scheduled'
 }
 
 export interface EventCounts {
@@ -370,10 +419,17 @@ export const getEvent = (id: string) => request<{ event: EventRecord }>(`/events
 
 export const eventCounts = () => request<{ counts: EventCounts }>('/events/counts')
 
-export const createEvent = (input: { title: string; description?: string; date: string; client?: string | null }) =>
+/** §5 — the calendar entry's own details. */
+export interface EventDetailsInput {
+  title: string; description?: string; date: string; client?: string | null
+  campaignId?: string | null; socialPageId?: string | null; contentType?: string | null
+  postingAt?: string | null; assignedPublisherId?: string | null
+}
+
+export const createEvent = (input: EventDetailsInput) =>
   request<{ event: EventRecord }>('/events', { method: 'POST', body: JSON.stringify(input) }).then(r => r.event)
 
-export const updateEvent = (id: string, patch: Partial<{ title: string; description: string; date: string; client: string | null }>) =>
+export const updateEvent = (id: string, patch: Partial<EventDetailsInput>) =>
   request<{ event: EventRecord }>(`/events/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }).then(r => r.event)
 
 export const assignEvent = (id: string, editorId: string) =>
@@ -386,15 +442,22 @@ export const completeEvent = (id: string) =>
 
 export const listEditors = () => request<{ editors: WorkflowUser[] }>('/editors')
 
+/** §5 — who an event can be assigned to publish. */
+export const listPublishers = () =>
+  request<{ publishers: Array<{ id: string; name: string; email: string }> }>('/publishers')
+
 // ── Notifications (§19) ────────────────────────────────────────────────────
 
 export interface WorkflowNotification {
   id: string
-  kind: 'video_submitted' | 'event_assigned' | 'event_reassigned' | 'event_completed'
+  kind:
+    | 'video_submitted' | 'event_assigned' | 'event_reassigned' | 'event_completed'
+    | 'video_approved' | 'video_rejected' | 'posting_due' | 'campaign_deadline'
+    | 'campaign_completed' | 'user_created' | 'system_issue'
   message: string
   createdAt: string
   readAt?: string | null
-  subject?: { type: 'video' | 'event'; id: string } | null
+  subject?: { type: 'video' | 'event' | 'campaign' | 'system'; id: string } | null
 }
 
 export const listNotifications = () =>
@@ -420,6 +483,10 @@ export interface SearchParams {
   editorId?: string
   publisherId?: string
   platform?: string
+  /** §13 — a social media page's id. */
+  pageId?: string
+  /** §13 — Reel, Post, Story… or "Video" for workflow videos. */
+  contentType?: string
   from?: string
   to?: string
 }
@@ -429,6 +496,8 @@ export interface FilterOptions {
   platforms: string[]
   editors: { id: string; name: string }[]
   publishers: { id: string; name: string }[]
+  pages?: { id: string; name: string }[]
+  contentTypes?: string[]
 }
 
 export const searchWorkflow = (params: SearchParams = {}) => {
@@ -436,7 +505,8 @@ export const searchWorkflow = (params: SearchParams = {}) => {
   const map: Record<string, string | undefined> = {
     q: params.q, status: params.status, event_status: params.eventStatus,
     client: params.client, editor_id: params.editorId, publisher_id: params.publisherId,
-    platform: params.platform, from: params.from, to: params.to,
+    platform: params.platform, page_id: params.pageId, content_type: params.contentType,
+    from: params.from, to: params.to,
   }
   for (const [key, value] of Object.entries(map)) if (value) q.set(key, value)
   const qs = q.toString()
@@ -460,6 +530,16 @@ export interface WorkflowKpis {
   needsEditorVideos: number
   pendingPublishingVideos: number
   publishedVideos: number
+  pendingContentVideos: number
+  todaysPosts: number
+  publishedToday: number
+  /* §5 / §12 — added by the route from the campaigns, pages and team. */
+  campaignsTotal?: number
+  campaignsRunning?: number
+  campaignsUpcoming?: number
+  campaignsCompleted?: number
+  totalSocialPages?: number | null
+  totalUsers?: number
   avgUploadedToSubmittedHours: number | null
   avgSubmittedToPublishedHours: number | null
   publishedThisWeek: number
