@@ -142,6 +142,8 @@ import { bootstrapMediaOpsDatabase } from "./mediaops-db.js";
 import { registerMediaOpsApi, runMediaOpsAutomations, creatorStandingOf } from "./mediaops-api.js";
 import { CASTING_PHOTO_MIME, CASTING_PHOTO_MAX_BYTES } from "./casting-photos.js";
 import { registerOutreachVideoApi, VIDEO_MIME_ALLOWLIST, videoFileName } from "./outreach-video/routes.js";
+import { bootstrapBrandOpsDatabase } from "./brandops-db.js";
+import { registerBrandOpsApi } from "./brandops-api.js";
 import { runCreatorNetworkAutomations } from "./creator-automations.js";
 
 const app = express();
@@ -192,6 +194,21 @@ const designUpload = multer({
    only ever holds in-flight uploads. */
 const VIDEO_STAGING_DIR = path.resolve("uploads/outreach-video");
 fs.mkdirSync(VIDEO_STAGING_DIR, { recursive: true });
+
+/* BrandOps keeps work-completion photos and material-delivery proof images on
+   disk and the path in Postgres, matching how branding already stores designs
+   — the prototype's base64-in-localStorage would not survive a real photo. */
+const BRANDOPS_UPLOADS_DIR = path.resolve("uploads/brandops");
+fs.mkdirSync(BRANDOPS_UPLOADS_DIR, { recursive: true });
+
+const brandOpsUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, BRANDOPS_UPLOADS_DIR),
+    filename: (_req, file, cb) => cb(null, safeImageName(file)),
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+  fileFilter: imageFileFilter,
+});
 
 const videoUpload = multer({
   storage: multer.diskStorage({
@@ -296,7 +313,7 @@ type SessionRequest = express.Request & {
 
 // task_manager mirrors task_owner exactly (same dashboard + lead powers); it
 // exists so the branding head can hand out the role under a distinct title.
-const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "outreach_editor", "outreach_publisher", "branding_reports_admin", "design_reports_admin", "task_owner", "task_manager"] as const;
+const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "outreach_editor", "outreach_publisher", "inventory_manager", "branding_reports_admin", "design_reports_admin", "task_owner", "task_manager"] as const;
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -689,6 +706,9 @@ const castingPhotoUpload = multer({
 registerMediaOpsApi(app, { asyncHandler, sendError, getSingleParam, otpSendLimiter, otpVerifyLimiter,
                            kioskPinLimiter, assetImportUpload, castingPhotoUpload });
 registerOutreachVideoApi(app, { asyncHandler, sendError, getSingleParam, videoUpload });
+
+registerBrandOpsApi(app, { asyncHandler, sendError, getSingleParam,
+  upload: brandOpsUpload, uploadsDir: BRANDOPS_UPLOADS_DIR });
 
 // ── App settings (super admin) ─────────────────────────────────────────────
 
@@ -2924,6 +2944,7 @@ app.post("/api/outreach/refresh-reach", asyncHandler(async (req, res) => {
 
 bootstrapDatabase()
   .then(() => bootstrapBrandingDatabase())
+  .then(() => bootstrapBrandOpsDatabase())
   .then(() => bootstrapSettingsDatabase())
   .then(() => bootstrapOutreach())
   .then(() => designDb.bootstrapDesignDatabase())
