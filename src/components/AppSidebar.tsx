@@ -249,7 +249,7 @@ export default function AppSidebar() {
   // (BrandingAdminShell wraps /branding/browse, /team and /admin/export via
   // MaybeBrandingAdminShell). Hide the global one for everyone on the
   // branding team so we never stack two sidebars.
-  if (team === 'branding' && (role === 'user' || role === 'sub_admin' || role === 'admin' || role === 'branding_reports_admin' || role === 'task_owner' || role === 'task_manager')) return null
+  if (team === 'branding' && (role === 'user' || role === 'sub_admin' || role === 'admin' || role === 'branding_reports_admin' || role === 'task_owner' || role === 'task_manager' || role === 'inventory_manager')) return null
   // Design-team pages own their own DesignAdminShell sidebar — hide the global one.
   if (team === 'design' && (role === 'user' || role === 'sub_admin' || role === 'admin' || role === 'design_reports_admin' || role === 'task_owner' || role === 'task_manager')) return null
 

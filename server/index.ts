@@ -142,6 +142,8 @@ import { bootstrapMediaOpsDatabase } from "./mediaops-db.js";
 import { registerMediaOpsApi, runMediaOpsAutomations, creatorStandingOf } from "./mediaops-api.js";
 import { CASTING_PHOTO_MIME, CASTING_PHOTO_MAX_BYTES } from "./casting-photos.js";
 import { registerOutreachVideoApi, VIDEO_MIME_ALLOWLIST, videoFileName } from "./outreach-video/routes.js";
+import { bootstrapBrandOpsDatabase } from "./brandops-db.js";
+import { registerBrandOpsApi } from "./brandops-api.js";
 import { runCreatorNetworkAutomations } from "./creator-automations.js";
 
 const app = express();
@@ -192,6 +194,21 @@ const designUpload = multer({
    only ever holds in-flight uploads. */
 const VIDEO_STAGING_DIR = path.resolve("uploads/outreach-video");
 fs.mkdirSync(VIDEO_STAGING_DIR, { recursive: true });
+
+/* BrandOps keeps work-completion photos and material-delivery proof images on
+   disk and the path in Postgres, matching how branding already stores designs
+   — the prototype's base64-in-localStorage would not survive a real photo. */
+const BRANDOPS_UPLOADS_DIR = path.resolve("uploads/brandops");
+fs.mkdirSync(BRANDOPS_UPLOADS_DIR, { recursive: true });
+
+const brandOpsUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, BRANDOPS_UPLOADS_DIR),
+    filename: (_req, file, cb) => cb(null, safeImageName(file)),
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+  fileFilter: imageFileFilter,
+});
 
 const videoUpload = multer({
   storage: multer.diskStorage({
@@ -296,7 +313,7 @@ type SessionRequest = express.Request & {
 
 // task_manager mirrors task_owner exactly (same dashboard + lead powers); it
 // exists so the branding head can hand out the role under a distinct title.
-const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "outreach_editor", "outreach_publisher", "branding_reports_admin", "design_reports_admin", "task_owner", "task_manager"] as const;
+const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "outreach_editor", "outreach_publisher", "inventory_manager", "branding_reports_admin", "design_reports_admin", "task_owner", "task_manager"] as const;
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -418,7 +435,10 @@ function canCreateManagedUser(
   if (!actor) return false;
   if (actor.role === "super_admin") return true;
   if (actor.role !== "admin") return false;
-  return actor.team !== null && payload.team === actor.team && ["sub_admin", "user", "task_owner", "task_manager"].includes(payload.role);
+  // inventory_manager is a branding-team role (BrandOps), so a branding admin
+  // can create one — which is the whole point of the module being theirs.
+  return actor.team !== null && payload.team === actor.team
+    && ["sub_admin", "user", "task_owner", "task_manager", "inventory_manager"].includes(payload.role);
 }
 
 app.get("/api/health", (_req, res) => {
@@ -466,10 +486,20 @@ app.post("/api/auth/login", loginLimiter, asyncHandler(async (req, res) => {
   }
 
   (req as SessionRequest).session.userId = user.id;
-  // Same standing as /auth/me, so the first navigation after signing in is
-  // decided on the same fact as every navigation after it.
-  const creator = await creatorStandingOf(user.id);
-  res.json({ user: { ...user, password_hash: undefined, creator } });
+  /* Same standing as /auth/me, so the first navigation after signing in is
+     decided on the same fact as every navigation after it.
+
+     Capabilities belong here for the same reason, and the omission was not
+     harmless: a role whose own landing page is capability-gated — an Inventory
+     Manager lands on the BrandOps dashboard — arrived with an empty capability
+     list, failed its own guard, and was redirected to the page it had just
+     been refused. That loop renders as a white screen on the first sign-in,
+     and clears only on a manual reload once /auth/me fills the gap. */
+  const [creator, capabilities] = await Promise.all([
+    creatorStandingOf(user.id),
+    listUserCapabilities(user.id),
+  ]);
+  res.json({ user: { ...user, password_hash: undefined, capabilities, creator } });
 }));
 
 app.post("/api/auth/logout", (req, res) => {
@@ -689,6 +719,9 @@ const castingPhotoUpload = multer({
 registerMediaOpsApi(app, { asyncHandler, sendError, getSingleParam, otpSendLimiter, otpVerifyLimiter,
                            kioskPinLimiter, assetImportUpload, castingPhotoUpload });
 registerOutreachVideoApi(app, { asyncHandler, sendError, getSingleParam, videoUpload });
+
+registerBrandOpsApi(app, { asyncHandler, sendError, getSingleParam,
+  upload: brandOpsUpload, uploadsDir: BRANDOPS_UPLOADS_DIR });
 
 // ── App settings (super admin) ─────────────────────────────────────────────
 
@@ -2924,6 +2957,7 @@ app.post("/api/outreach/refresh-reach", asyncHandler(async (req, res) => {
 
 bootstrapDatabase()
   .then(() => bootstrapBrandingDatabase())
+  .then(() => bootstrapBrandOpsDatabase())
   .then(() => bootstrapSettingsDatabase())
   .then(() => bootstrapOutreach())
   .then(() => designDb.bootstrapDesignDatabase())
