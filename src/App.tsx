@@ -83,6 +83,24 @@ import VideoEditorLog from "@/pages/outreach/video/VideoEditorLog";
 import VideoUsers from "@/pages/outreach/video/VideoUsers";
 import VideoActivity from "@/pages/outreach/video/VideoActivity";
 
+// BrandOps — the branding department's frame inventory and vendor work
+import BoDashboard from "@/pages/branding/ops/BoDashboard";
+import BoFrames from "@/pages/branding/ops/BoFrames";
+import BoInUse from "@/pages/branding/ops/BoInUse";
+import BoAllocate from "@/pages/branding/ops/BoAllocate";
+import BoReturn from "@/pages/branding/ops/BoReturn";
+import BoRequests from "@/pages/branding/ops/BoRequests";
+import BoQuotations from "@/pages/branding/ops/BoQuotations";
+import BoApprovals from "@/pages/branding/ops/BoApprovals";
+import BoWorkOrders from "@/pages/branding/ops/BoWorkOrders";
+import BoVisits from "@/pages/branding/ops/BoVisits";
+import BoCompletion from "@/pages/branding/ops/BoCompletion";
+import BoDeliveries from "@/pages/branding/ops/BoDeliveries";
+import BoVendors from "@/pages/branding/ops/BoVendors";
+import BoInstitutes from "@/pages/branding/ops/BoInstitutes";
+import BoReports from "@/pages/branding/ops/BoReports";
+import BoActivity from "@/pages/branding/ops/BoActivity";
+
 import NotFound from "./pages/NotFound.tsx";
 
 const queryClient = new QueryClient();
@@ -435,6 +453,140 @@ const App = () => (
                   <VideoActivity />
                 </RoleGuard>
               } />
+
+              {/* ── BrandOps (branding inventory & vendor work) ──
+                  Branding admins reach every tab by role. An Inventory Manager
+                  has no role-level access and gets in only on the capability
+                  their admin granted, which is the same key the API checks. */}
+              <Route path="/branding/ops/dashboard" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding"
+                  anyCapability={['brandops:dashboard']}>
+                  <MaybeBrandingAdminShell>
+                    <BoDashboard />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/ops/frames" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding"
+                  anyCapability={['brandops:frame_inventory']}>
+                  <MaybeBrandingAdminShell>
+                    <BoFrames />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/ops/in-use" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding"
+                  anyCapability={['brandops:in_use']}>
+                  <MaybeBrandingAdminShell>
+                    <BoInUse />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/ops/allocate" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding"
+                  anyCapability={['brandops:allocate']}>
+                  <MaybeBrandingAdminShell>
+                    <BoAllocate />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/ops/return" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding"
+                  anyCapability={['brandops:frame_return']}>
+                  <MaybeBrandingAdminShell>
+                    <BoReturn />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/ops/requests" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding"
+                  anyCapability={['brandops:requests']}>
+                  <MaybeBrandingAdminShell>
+                    <BoRequests />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/ops/quotations" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding"
+                  anyCapability={['brandops:quotations']}>
+                  <MaybeBrandingAdminShell>
+                    <BoQuotations />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/ops/approvals" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding"
+                  anyCapability={['brandops:approvals']}>
+                  <MaybeBrandingAdminShell>
+                    <BoApprovals />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/ops/work-orders" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding"
+                  anyCapability={['brandops:work_orders']}>
+                  <MaybeBrandingAdminShell>
+                    <BoWorkOrders />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/ops/visits" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding"
+                  anyCapability={['brandops:vendor_visits']}>
+                  <MaybeBrandingAdminShell>
+                    <BoVisits />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/ops/completion" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding"
+                  anyCapability={['brandops:completion']}>
+                  <MaybeBrandingAdminShell>
+                    <BoCompletion />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/ops/deliveries" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding"
+                  anyCapability={['brandops:material_delivery']}>
+                  <MaybeBrandingAdminShell>
+                    <BoDeliveries />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/ops/vendors" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding"
+                  anyCapability={['brandops:vendors']}>
+                  <MaybeBrandingAdminShell>
+                    <BoVendors />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/ops/institutes" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding"
+                  anyCapability={['brandops:institutes']}>
+                  <MaybeBrandingAdminShell>
+                    <BoInstitutes />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/ops/reports" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding"
+                  anyCapability={['brandops:reports']}>
+                  <MaybeBrandingAdminShell>
+                    <BoReports />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/ops/activity" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin']} team="branding"
+                  anyCapability={['brandops:activity']}>
+                  <MaybeBrandingAdminShell>
+                    <BoActivity />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/ops" element={<Navigate to="/branding/ops/dashboard" replace />} />
 
               {/* ── Shared admin tools ── */}
               <Route path="/admin/export" element={

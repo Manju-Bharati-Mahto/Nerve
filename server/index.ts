@@ -435,7 +435,10 @@ function canCreateManagedUser(
   if (!actor) return false;
   if (actor.role === "super_admin") return true;
   if (actor.role !== "admin") return false;
-  return actor.team !== null && payload.team === actor.team && ["sub_admin", "user", "task_owner", "task_manager"].includes(payload.role);
+  // inventory_manager is a branding-team role (BrandOps), so a branding admin
+  // can create one — which is the whole point of the module being theirs.
+  return actor.team !== null && payload.team === actor.team
+    && ["sub_admin", "user", "task_owner", "task_manager", "inventory_manager"].includes(payload.role);
 }
 
 app.get("/api/health", (_req, res) => {
@@ -483,10 +486,20 @@ app.post("/api/auth/login", loginLimiter, asyncHandler(async (req, res) => {
   }
 
   (req as SessionRequest).session.userId = user.id;
-  // Same standing as /auth/me, so the first navigation after signing in is
-  // decided on the same fact as every navigation after it.
-  const creator = await creatorStandingOf(user.id);
-  res.json({ user: { ...user, password_hash: undefined, creator } });
+  /* Same standing as /auth/me, so the first navigation after signing in is
+     decided on the same fact as every navigation after it.
+
+     Capabilities belong here for the same reason, and the omission was not
+     harmless: a role whose own landing page is capability-gated — an Inventory
+     Manager lands on the BrandOps dashboard — arrived with an empty capability
+     list, failed its own guard, and was redirected to the page it had just
+     been refused. That loop renders as a white screen on the first sign-in,
+     and clears only on a manual reload once /auth/me fills the gap. */
+  const [creator, capabilities] = await Promise.all([
+    creatorStandingOf(user.id),
+    listUserCapabilities(user.id),
+  ]);
+  res.json({ user: { ...user, password_hash: undefined, capabilities, creator } });
 }));
 
 app.post("/api/auth/logout", (req, res) => {

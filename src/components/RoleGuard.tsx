@@ -1,4 +1,4 @@
-import { Navigate } from 'react-router-dom'
+import { Navigate, useLocation } from 'react-router-dom'
 import { useAuth, getRoleDashboard } from '@/hooks/useAuth'
 import { isActiveCreator } from '@/lib/creator-access'
 import type { AppRole } from '@/lib/constants'
@@ -26,6 +26,7 @@ interface RoleGuardProps {
 
 export default function RoleGuard({ allowed, team, excludeTeam, anyCapability, allowActiveCreator, children }: RoleGuardProps) {
   const { role, team: userTeam, profile, loading } = useAuth()
+  const { pathname } = useLocation()
 
   if (loading) return null
 
@@ -45,7 +46,27 @@ export default function RoleGuard({ allowed, team, excludeTeam, anyCapability, a
   const access = ((roleOk && teamOk) || (capOk && teamOk) || creatorOk) && notExcluded
 
   if (!access) {
-    return <Navigate to={getRoleDashboard(role, userTeam, profile?.creator)} replace />
+    const home = getRoleDashboard(role, userTeam, profile?.creator)
+    /* Sending someone to the page that just refused them is an endless
+       redirect, which the browser renders as a white screen. It happens
+       whenever a role's own landing page is capability-gated and no
+       capability was granted — an Inventory Manager with no BrandOps tabs
+       ticked is exactly that, and the member dialog allows it on purpose.
+       Say so instead of looping. */
+    if (home === pathname) {
+      return (
+        <div className="min-h-screen flex items-center justify-center p-6">
+          <div className="max-w-sm text-center space-y-2">
+            <h1 className="text-sm font-semibold text-foreground">No modules yet</h1>
+            <p className="text-sm text-muted-foreground">
+              Your account is active, but no sections have been switched on for it yet.
+              Ask your team admin to grant access.
+            </p>
+          </div>
+        </div>
+      )
+    }
+    return <Navigate to={home} replace />
   }
 
   return <>{children}</>

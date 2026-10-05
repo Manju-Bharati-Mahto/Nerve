@@ -12,7 +12,9 @@ import {
   perDayElapsedSeconds, elapsedToTimeTaken,
 } from '@/lib/branding-types'
 import type { AppUser } from '@/lib/app-types'
-import { CAPABILITIES, CAPABILITY_META } from '@/lib/capabilities'
+import { CAPABILITIES, CAPABILITY_META, BO_CAPABILITIES } from '@/lib/capabilities'
+import { splitRoster, editableRole } from './team-roster'
+
 import {
   Users, FolderKanban, Plus, Pencil, Trash2, X, Check,
   CalendarDays, UserPlus, ChevronDown, ChevronUp,
@@ -41,7 +43,7 @@ interface MemberFormState {
   email: string
   password: string
   department: string
-  role: 'user' | 'sub_admin' | 'task_owner' | 'task_manager'
+  role: 'user' | 'sub_admin' | 'task_owner' | 'task_manager' | 'inventory_manager'
   capabilities: string[]
 }
 
@@ -91,9 +93,13 @@ function MemberDialog({ mode, initial, canManageCapabilities, onSave, onClose }:
   }
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-card border border-border rounded-xl shadow-xl w-full max-w-md mx-4">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 py-6">
+      {/* The BrandOps capability grid makes this dialog taller than a laptop
+          screen. Without a cap and a scroll it centres with the Save button
+          off the bottom of the window, unreachable. The header stays put so
+          the dialog still reads as one thing while the body scrolls. */}
+      <div className="bg-card border border-border rounded-xl shadow-xl w-full max-w-md mx-4 max-h-full flex flex-col">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
           <h2 className="text-sm font-semibold text-foreground">
             {mode === 'add' ? 'Add Team Member' : 'Edit Member'}
           </h2>
@@ -101,7 +107,7 @@ function MemberDialog({ mode, initial, canManageCapabilities, onSave, onClose }:
             <X className="w-4 h-4" />
           </button>
         </div>
-        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+        <form onSubmit={handleSubmit} className="p-5 space-y-4 overflow-y-auto">
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs font-medium text-muted-foreground block mb-1">Full Name *</label>
@@ -149,12 +155,13 @@ function MemberDialog({ mode, initial, canManageCapabilities, onSave, onClose }:
             <select
               className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
               value={form.role}
-              onChange={e => setForm(f => ({ ...f, role: e.target.value as 'user' | 'sub_admin' | 'task_owner' | 'task_manager' }))}
+              onChange={e => setForm(f => ({ ...f, role: e.target.value as 'user' | 'sub_admin' | 'task_owner' | 'task_manager' | 'inventory_manager' }))}
             >
               <option value="user">Designer</option>
               <option value="sub_admin">Team Lead</option>
               <option value="task_owner">Task Owner</option>
               <option value="task_manager">Task Manager</option>
+              <option value="inventory_manager">Inventory Manager (BrandOps)</option>
             </select>
           </div>
           {canManageCapabilities && (
@@ -184,6 +191,46 @@ function MemberDialog({ mode, initial, canManageCapabilities, onSave, onClose }:
                     </label>
                   )
                 })}
+              </div>
+
+              {/* BrandOps: one switch per tab. An Inventory Manager sees only
+                  what is ticked here, and the same keys gate the API. */}
+              <div className="mt-4">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    BrandOps tabs {form.role === 'inventory_manager' && <span className="text-red-500">*</span>}
+                  </label>
+                  <button type="button"
+                    onClick={() => setForm(f => ({
+                      ...f,
+                      capabilities: BO_CAPABILITIES.every(k => f.capabilities.includes(k))
+                        ? f.capabilities.filter(k => !(BO_CAPABILITIES as readonly string[]).includes(k))
+                        : [...new Set([...f.capabilities, ...BO_CAPABILITIES])],
+                    }))}
+                    className="text-[11px] font-semibold text-blue-700 hover:underline">
+                    {BO_CAPABILITIES.every(k => form.capabilities.includes(k)) ? 'Clear all' : 'Select all'}
+                  </button>
+                </div>
+                <p className="text-[11px] text-muted-foreground mb-2">
+                  Switch on the BrandOps tabs this person should see. An Inventory Manager with
+                  nothing ticked here can sign in but has no modules.
+                </p>
+                <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                  {BO_CAPABILITIES.map(key => {
+                    const meta = CAPABILITY_META[key]
+                    const checked = form.capabilities.includes(key)
+                    return (
+                      <label key={key} className="flex items-start gap-2 px-2.5 py-2 rounded-lg border border-border cursor-pointer hover:bg-accent/40">
+                        <input type="checkbox" className="mt-0.5" checked={checked}
+                          onChange={() => toggleCapability(key)} />
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-foreground">{meta.label}</p>
+                          <p className="text-[11px] text-muted-foreground">{meta.description}</p>
+                        </div>
+                      </label>
+                    )
+                  })}
+                </div>
               </div>
             </div>
           )}
@@ -346,7 +393,7 @@ function ProjectDialog({ mode, initial, members, onSave, onClose }: ProjectDialo
                     />
                     <span className="text-sm text-foreground">{m.full_name || m.email}</span>
                     <span className="ml-auto text-[11px] text-muted-foreground">
-                      {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : m.role === 'task_manager' ? 'Task Manager' : 'Member'}
+                      {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : m.role === 'task_manager' ? 'Task Manager' : m.role === 'inventory_manager' ? 'Inventory Manager' : 'Member'}
                     </span>
                   </label>
                 ))}
@@ -536,8 +583,7 @@ export default function BrandingTeamPanel() {
 
   // ── Render ─────────────────────────────────────────────────────────────
 
-  const teamLeads = members.filter(m => m.role === 'sub_admin' || m.role === 'task_owner' || m.role === 'task_manager')
-  const teamMembers = members.filter(m => m.role === 'user')
+  const { leads: teamLeads, rest: teamMembers } = splitRoster(members)
 
   return (
     <div className="animate-fade-in space-y-6">
@@ -718,7 +764,7 @@ export default function BrandingTeamPanel() {
             email: memberDialog.member.email,
             password: '',
             department: memberDialog.member.department,
-            role: memberDialog.member.role === 'sub_admin' ? 'sub_admin' : memberDialog.member.role === 'task_owner' ? 'task_owner' : memberDialog.member.role === 'task_manager' ? 'task_manager' : 'user',
+            role: editableRole(memberDialog.member.role),
             capabilities: memberDialog.member.capabilities ?? [],
           }}
           onSave={data => handleEditMember(data, memberDialog.member.id)}
@@ -1010,7 +1056,7 @@ function ProjectCard({
                   <Check className="w-3 h-3" style={{ color: 'hsl(var(--brand-700))' }} />
                   <span className="text-xs font-medium" style={{ color: 'hsl(var(--brand-700))' }}>{m.full_name || m.email}</span>
                   <span className="text-[10px]" style={{ color: 'hsl(var(--brand-400))' }}>
-                    {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : m.role === 'task_manager' ? 'Task Manager' : 'Member'}
+                    {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : m.role === 'task_manager' ? 'Task Manager' : m.role === 'inventory_manager' ? 'Inventory Manager' : 'Member'}
                   </span>
                 </div>
               ))}

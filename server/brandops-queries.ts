@@ -339,6 +339,9 @@ export async function allocateFrame(actor: Actor, input: {
   if (input.until < input.from) throw bad("The Until date cannot be before the From date.");
 
   const client = await pool.connect();
+  /* Captured inside the transaction, used after the connection goes back to
+     the pool — see the note on the post-commit block below. */
+  let committed = { frameId: "", assetId: "", institute: "" };
   try {
     await client.query("BEGIN");
     const f = await client.query<{ id: string; asset_id: string; status: FrameStatus }>(
@@ -360,12 +363,7 @@ export async function allocateFrame(actor: Actor, input: {
       `UPDATE bo_frames SET status = 'in_use', institute_id = $2, location = $3, updated_at = NOW() WHERE id = $1`,
       [frame.id, input.instituteId, location]);
     await client.query("COMMIT");
-
-    await logActivity(actor, "Frame Allocation", "Frame allocated",
-      `${frame.asset_id} → ${inst.rows[0].name} (${location}) ${input.from} to ${input.until}`,
-      { type: "frame", id: frame.id });
-    const [row] = await listAllocations({ frameId: frame.id, open: true });
-    return row;
+    committed = { frameId: frame.id, assetId: frame.asset_id, institute: inst.rows[0].name };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     if (err instanceof BoError) throw err;
@@ -374,12 +372,23 @@ export async function allocateFrame(actor: Actor, input: {
   } finally {
     client.release();
   }
+
+  /* After release, deliberately. The activity write and the read-back each take
+     a connection of their own, and asking for a second one while still holding
+     the transaction's client is how a busy pool deadlocks: every connection
+     held by a caller waiting for a connection nobody will free. */
+  await logActivity(actor, "Frame Allocation", "Frame allocated",
+    `${committed.assetId} → ${committed.institute} (${location}) ${input.from} to ${input.until}`,
+    { type: "frame", id: committed.frameId });
+  const [row] = await listAllocations({ frameId: committed.frameId, open: true });
+  return row;
 }
 
 export async function returnFrame(actor: Actor, input: {
   frameId: string; condition?: string; location?: string; remarks?: string; returnedAt?: string;
 }): Promise<void> {
   const client = await pool.connect();
+  let done = { frameId: "", assetId: "", instituteId: "", store: "", condition: "" };
   try {
     await client.query("BEGIN");
     const f = await client.query<{ id: string; asset_id: string; status: FrameStatus }>(
@@ -404,17 +413,20 @@ export async function returnFrame(actor: Actor, input: {
               condition = $3, updated_at = NOW() WHERE id = $1`,
       [frame.id, storeLocation, condition]);
     await client.query("COMMIT");
-
-    const inst = await pool.query<{ name: string }>(`SELECT name FROM bo_institutes WHERE id = $1`, [open.rows[0].institute_id]);
-    await logActivity(actor, "Frame Return", "Frame returned",
-      `${frame.asset_id} received back from ${inst.rows[0]?.name ?? "an institute"} → ${storeLocation} (${condition})`,
-      { type: "frame", id: frame.id });
+    done = { frameId: frame.id, assetId: frame.asset_id, instituteId: open.rows[0].institute_id,
+             store: storeLocation, condition };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     throw err;
   } finally {
     client.release();
   }
+
+  // After release — both of these take a connection of their own.
+  const inst = await pool.query<{ name: string }>(`SELECT name FROM bo_institutes WHERE id = $1`, [done.instituteId]);
+  await logActivity(actor, "Frame Return", "Frame returned",
+    `${done.assetId} received back from ${inst.rows[0]?.name ?? "an institute"} → ${done.store} (${done.condition})`,
+    { type: "frame", id: done.frameId });
 }
 
 // ── Branding requirements ──────────────────────────────────────────────────
@@ -551,6 +563,7 @@ export async function createQuotation(actor: Actor, input: {
  */
 export async function decideQuotation(actor: Actor, id: string, decision: "approved" | "rejected", note = ""): Promise<void> {
   const client = await pool.connect();
+  let decided = { reference: "", vendor: "", amount: "" };
   try {
     await client.query("BEGIN");
     const q = await client.query<{ reference: string; request_id: string; status: QuoteStatus; vendor: string; amount: string }>(
@@ -574,16 +587,18 @@ export async function decideQuotation(actor: Actor, id: string, decision: "appro
       await client.query(`UPDATE bo_requests SET status = 'approved', updated_at = NOW() WHERE id = $1`, [quote.request_id]);
     }
     await client.query("COMMIT");
-
-    await logActivity(actor, "Approvals", decision === "approved" ? "Quotation approved" : "Quotation rejected",
-      `${quote.reference} — ${quote.vendor} ₹${quote.amount}${note.trim() ? ` (${note.trim()})` : ""}`,
-      { type: "quotation", id });
+    decided = { reference: quote.reference, vendor: quote.vendor, amount: quote.amount };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     throw err;
   } finally {
     client.release();
   }
+
+  // After release — logActivity takes a connection of its own.
+  await logActivity(actor, "Approvals", decision === "approved" ? "Quotation approved" : "Quotation rejected",
+    `${decided.reference} — ${decided.vendor} ₹${decided.amount}${note.trim() ? ` (${note.trim()})` : ""}`,
+    { type: "quotation", id });
 }
 
 // ── Work orders ────────────────────────────────────────────────────────────

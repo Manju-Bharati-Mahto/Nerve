@@ -10,6 +10,9 @@ import { Link, useLocation } from 'react-router-dom'
 import {
   Palette, BarChart2, Award, CalendarOff, CalendarDays, Settings2, FolderPlus,
   Search, Users, Download, LogOut, User as UserIcon, Bell, X, ArrowLeft,
+  LayoutDashboard, Boxes, Radio, ArrowLeftRight, Undo2, ClipboardList,
+  IndianRupee, BadgeCheck, Hammer, LogIn, Camera, Package, Store, Building2,
+  FileBarChart, History,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import { brandingApi } from '@/lib/branding-api'
@@ -38,6 +41,31 @@ const MENU: NavLink[] = [
   { path: '/branding/leave-calendar', label: 'Leave Calendar', icon: CalendarDays, adminOnly: true, requiresCapability: ['branding:leave_calendar'] },
   { path: '/branding/categories', label: 'Manage Categories', icon: Settings2,    requiresCapability: ['branding:manage_categories'] },
   { path: '/branding/projects',   label: 'Assign Projects',   icon: FolderPlus,   requiresCapability: ['branding:assign_projects'] },
+]
+
+/**
+ * BrandOps. Every entry is gated on its own capability, so an Inventory
+ * Manager sees exactly the tabs their branding admin switched on, and a full
+ * admin sees all sixteen. The same keys gate the API, so hiding a tab here is
+ * never the only thing standing between a user and the data.
+ */
+const BRANDOPS: NavLink[] = [
+  { path: '/branding/ops/dashboard',   label: 'Dashboard',         icon: LayoutDashboard, requiresCapability: ['brandops:dashboard'] },
+  { path: '/branding/ops/frames',      label: 'Frame Inventory',   icon: Boxes,           requiresCapability: ['brandops:frame_inventory'] },
+  { path: '/branding/ops/in-use',      label: 'In Use Frames',     icon: Radio,           requiresCapability: ['brandops:in_use'] },
+  { path: '/branding/ops/allocate',    label: 'Allocate / Move',   icon: ArrowLeftRight,  requiresCapability: ['brandops:allocate'] },
+  { path: '/branding/ops/return',      label: 'Frame Return',      icon: Undo2,           requiresCapability: ['brandops:frame_return'] },
+  { path: '/branding/ops/requests',    label: 'Branding Requests', icon: ClipboardList,   requiresCapability: ['brandops:requests'] },
+  { path: '/branding/ops/quotations',  label: 'Quotations',        icon: IndianRupee,     requiresCapability: ['brandops:quotations'] },
+  { path: '/branding/ops/approvals',   label: 'Approvals',         icon: BadgeCheck,      requiresCapability: ['brandops:approvals'] },
+  { path: '/branding/ops/work-orders', label: 'Work Orders',       icon: Hammer,          requiresCapability: ['brandops:work_orders'] },
+  { path: '/branding/ops/visits',      label: 'Vendor Visits',     icon: LogIn,           requiresCapability: ['brandops:vendor_visits'] },
+  { path: '/branding/ops/completion',  label: 'Work Completion',   icon: Camera,          requiresCapability: ['brandops:completion'] },
+  { path: '/branding/ops/deliveries',  label: 'Material Delivery', icon: Package,         requiresCapability: ['brandops:material_delivery'] },
+  { path: '/branding/ops/vendors',     label: 'Vendors',           icon: Store,           requiresCapability: ['brandops:vendors'] },
+  { path: '/branding/ops/institutes',  label: 'Institutes',        icon: Building2,       requiresCapability: ['brandops:institutes'] },
+  { path: '/branding/ops/reports',     label: 'Reports',           icon: FileBarChart,    requiresCapability: ['brandops:reports'] },
+  { path: '/branding/ops/activity',    label: 'Activity Log',      icon: History,         requiresCapability: ['brandops:activity'] },
 ]
 
 const WORKSPACE: NavLink[] = [
@@ -71,9 +99,11 @@ export default function BrandingAdminShell({ children }: { children: React.React
     return !!item.requiresCapability?.some(c => userCaps.includes(c))
   }
 
-  const roleLabel = isReportsAdmin ? 'Reports Admin' : isFullAdmin ? 'Admin' : 'Granted access'
+  const roleLabel = isReportsAdmin ? 'Reports Admin' : isFullAdmin ? 'Admin'
+    : role === 'inventory_manager' ? 'Inventory Manager' : 'Granted access'
   const visibleMenu = MENU.filter(canSee)
   const visibleWorkspace = WORKSPACE.filter(canSee)
+  const visibleBrandOps = BRANDOPS.filter(canSee)
   const isActive = (p: string) => location.pathname === p
 
   return (
@@ -93,7 +123,7 @@ export default function BrandingAdminShell({ children }: { children: React.React
         <nav className="flex-1 px-3 py-4 space-y-0.5">
           {/* For capability-only users (not full admins) surface a back-link
              so they can return to their own dashboard without typing a URL. */}
-          {!isFullAdmin && (
+          {!isFullAdmin && role !== 'inventory_manager' && (
             <Link
               to="/branding/user"
               className="w-full flex items-center gap-2.5 px-3 py-2 mb-3 rounded-xl text-[12px] font-semibold text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition-colors"
@@ -110,6 +140,15 @@ export default function BrandingAdminShell({ children }: { children: React.React
             <div className="pt-4">
               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2">Workspace</p>
               {visibleWorkspace.map(item => (
+                <NavLinkButton key={item.path} item={item} active={isActive(item.path)} />
+              ))}
+            </div>
+          )}
+
+          {visibleBrandOps.length > 0 && (
+            <div className="pt-4">
+              <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest px-3 mb-2">BrandOps</p>
+              {visibleBrandOps.map(item => (
                 <NavLinkButton key={item.path} item={item} active={isActive(item.path)} />
               ))}
             </div>
@@ -311,6 +350,9 @@ function AdminTopHeader({
 export function MaybeBrandingAdminShell({ children }: { children: React.ReactNode }) {
   const { role, team } = useAuth()
   const isBrandingAdmin = team === 'branding' && (role === 'admin' || role === 'branding_reports_admin')
-  if (isBrandingAdmin) return <BrandingAdminShell>{children}</BrandingAdminShell>
+  // An Inventory Manager has no other home in Nerve — BrandOps is their whole
+  // workspace, so they always get this shell rather than bare pages.
+  const isInventoryManager = team === 'branding' && role === 'inventory_manager'
+  if (isBrandingAdmin || isInventoryManager) return <BrandingAdminShell>{children}</BrandingAdminShell>
   return <>{children}</>
 }
