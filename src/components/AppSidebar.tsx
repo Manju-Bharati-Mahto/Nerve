@@ -13,6 +13,7 @@ import {
 import ProfileModal from './ProfileModal'
 import { useOutreachData, computeOutreachAlerts } from '@/lib/outreach-data'
 import { listNotifications } from '@/lib/outreach-video-data'
+import { CAPABILITY_META, OV_CAPABILITY_ORDER } from '@/lib/capabilities'
 
 type NavItem =
   | { path: string; label: string; icon: React.ElementType; badge?: 'outreach-alerts' | 'video-notifications' }
@@ -34,6 +35,34 @@ function cfg(
   sections: SectionConfig[]
 ): RoleConfig {
   return { label, icon, iconColor, iconBg, sections }
+}
+
+
+/**
+ * Tabs this person was granted but their role's own menu does not list.
+ *
+ * The outreach manager switches tabs on per person (PRD §6), so a granted tab
+ * has to appear in the nav of someone whose role would never show it — an
+ * editor given the publishing queue, say. Entries already in the role's menu
+ * are skipped so nothing appears twice, and the order follows the capability
+ * catalogue rather than the order the grants happen to be stored in.
+ *
+ * This only ADDS. A tab the role already shows stays shown: capabilities widen
+ * access, they never narrow it, and the route guard says the same.
+ */
+function grantedOutreachItems(
+  capabilities: string[] | undefined,
+  sections: SectionConfig[],
+): NavItem[] {
+  if (!capabilities?.length) return []
+  const alreadyShown = new Set(
+    sections.flatMap(sec => sec.items.map(i => ('path' in i ? i.path : ''))),
+  )
+  return OV_CAPABILITY_ORDER
+    .filter(key => capabilities.includes(key))
+    .map(key => CAPABILITY_META[key])
+    .filter(meta => !alreadyShown.has(meta.route))
+    .map(meta => ({ path: meta.route, label: meta.sidebarLabel, icon: Film }))
 }
 
 // Sidebar config keyed by `${role}:${team}`
@@ -254,8 +283,18 @@ export default function AppSidebar() {
   if (team === 'design' && (role === 'user' || role === 'sub_admin' || role === 'admin' || role === 'design_reports_admin' || role === 'task_owner' || role === 'task_manager')) return null
 
   const key = `${role ?? ''}:${team ?? ''}`
-  const config = SIDEBAR[key]
+  const baseConfig = SIDEBAR[key]
     ?? (isActiveCreator(profile?.creator) ? CREATOR_SIDEBAR : FALLBACK)
+
+  /* Granted outreach tabs join the menu under their own heading, so it is
+     obvious they were switched on for this person rather than coming with
+     the role. */
+  const granted = team === 'outreach'
+    ? grantedOutreachItems(profile?.capabilities, baseConfig.sections)
+    : []
+  const config: RoleConfig = granted.length
+    ? { ...baseConfig, sections: [...baseConfig.sections, { heading: 'Granted access', items: granted }] }
+    : baseConfig
   const BadgeIcon = config.icon
 
   return (

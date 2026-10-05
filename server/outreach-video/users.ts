@@ -26,6 +26,34 @@ export function videoRoleForNerveRole(role: string): VideoRole | null {
   return null;
 }
 
+/**
+ * Roles a Manager may hand out (PRD §6). A Manager administers the outreach
+ * team — they staff it — but cannot create or promote anyone to Admin, which
+ * is the one grant that would let them hand away more authority than they
+ * hold.
+ */
+export const MANAGER_GRANTABLE_ROLES: VideoRole[] = ["editor", "manager", "publisher"];
+
+/** Whether `actor` may give somebody the role `target`. Admin is unrestricted. */
+export function mayAssignRole(actor: VideoRole, target: VideoRole): boolean {
+  if (actor === "admin") return true;
+  if (actor !== "manager") return false;
+  return MANAGER_GRANTABLE_ROLES.includes(target);
+}
+
+/**
+ * Whether `actor` may modify a user who currently holds `targetRole`.
+ *
+ * Separate from mayAssignRole, and both are needed. Capping what a Manager may
+ * ASSIGN is decoration on its own: without this, a Manager who cannot promote
+ * someone to Admin could still disable or delete the Admin instead.
+ */
+export function mayModifyUserWithRole(actor: VideoRole, targetRole: VideoRole): boolean {
+  if (actor === "admin") return true;
+  if (actor !== "manager") return false;
+  return targetRole !== "admin";
+}
+
 /** Everyone still on the active list — tombstones and disabled users excluded. */
 export async function listActiveUsers(): Promise<VideoUser[]> {
   const doc = await readUsers();

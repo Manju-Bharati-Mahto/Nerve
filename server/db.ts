@@ -71,6 +71,8 @@ export interface AppUser {
   managed_by: string | null;
   email_verified: boolean;
   avatar_url: string | null;
+  /** PRD §6 — optional everywhere; null when it was never given. */
+  mobile: string | null;
   created_at: string;
   updated_at: string;
   team_joined_at: string | null;
@@ -88,6 +90,8 @@ export interface CreateUserInput {
   role: AppRole;
   team: string | null;
   managed_by: string | null;
+  /** PRD §6 — optional. */
+  mobile?: string | null;
 }
 
 export interface UpdateUserInput {
@@ -99,6 +103,7 @@ export interface UpdateUserInput {
   team?: string | null;
   managed_by?: string | null;
   avatar_url?: string | null;
+  mobile?: string | null;
 }
 
 export interface CreateEntryInput {
@@ -144,6 +149,7 @@ interface UserRow {
   password_hash: string;
   email_verified: boolean;
   avatar_url: string | null;
+  mobile: string | null;
   created_at: string;
   updated_at: string;
   team_joined_at: string | null;
@@ -217,6 +223,7 @@ function mapUser(row: UserRow): AppUser {
     managed_by: row.managed_by,
     email_verified: row.email_verified ?? false,
     avatar_url: row.avatar_url ?? null,
+    mobile: row.mobile ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
     team_joined_at: row.team_joined_at ?? null,
@@ -298,6 +305,13 @@ export async function bootstrapDatabase() {
   // Add avatar_url column if it doesn't exist (safe migration)
   await pool.query(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT DEFAULT NULL
+  `);
+
+  /* Mobile number. Optional everywhere (Campaign & Content Management PRD §6
+     lists it as optional), so it is nullable with no default and nothing reads
+     it as required — an existing row simply has none. */
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile TEXT
   `);
 
   // Track when each user joined their current team. Used to clamp the KRA
@@ -500,8 +514,8 @@ export async function listUsers() {
 export async function createUser(input: CreateUserInput) {
   const passwordHash = await hashPassword(input.password);
   const result = await pool.query<UserRow>(
-    `INSERT INTO users (id, full_name, email, department, role, team, managed_by, password_hash, team_joined_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $6::text IS NULL THEN NULL ELSE NOW() END)
+    `INSERT INTO users (id, full_name, email, department, role, team, managed_by, password_hash, team_joined_at, mobile)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $6::text IS NULL THEN NULL ELSE NOW() END, $9)
      RETURNING *`,
     [
       generateId("u"),
@@ -512,6 +526,7 @@ export async function createUser(input: CreateUserInput) {
       input.team,
       input.role === "user" ? input.managed_by : null,
       passwordHash,
+      input.mobile?.trim() || null,
     ],
   );
   return mapUser(result.rows[0]);
@@ -529,6 +544,7 @@ export async function updateUser(id: string, input: UpdateUserInput) {
     : null;
 
   const avatarUrl = input.avatar_url !== undefined ? input.avatar_url : current.avatar_url;
+  const mobile = input.mobile !== undefined ? (input.mobile?.trim() || null) : current.mobile;
 
   // Re-stamp team_joined_at whenever the team actually changes (including
   // assignment from null → team, team → team', or team → null). Keep the
@@ -545,6 +561,7 @@ export async function updateUser(id: string, input: UpdateUserInput) {
          managed_by = $7,
          password_hash = $8,
          avatar_url = $9,
+         mobile = $11,
          team_joined_at = CASE
            WHEN $10::boolean THEN (CASE WHEN $6::text IS NULL THEN NULL ELSE NOW() END)
            ELSE team_joined_at
@@ -563,6 +580,7 @@ export async function updateUser(id: string, input: UpdateUserInput) {
       passwordHash,
       avatarUrl,
       teamChanged,
+      mobile,
     ],
   );
 

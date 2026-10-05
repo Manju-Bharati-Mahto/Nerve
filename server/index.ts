@@ -344,6 +344,8 @@ const createUserSchema = z.object({
   role: z.enum(roles),
   team: z.string().nullable(),
   managed_by: z.string().nullable(),
+  // PRD §6 — optional, and blank is the same as absent.
+  mobile: z.string().max(32).optional().nullable(),
 });
 
 const updateUserSchema = z.object({
@@ -354,6 +356,7 @@ const updateUserSchema = z.object({
   role: z.enum(roles).optional(),
   team: z.string().nullable().optional(),
   managed_by: z.string().nullable().optional(),
+  mobile: z.string().max(32).optional().nullable(),
 });
 
 const teamSchema = z.object({
@@ -434,11 +437,25 @@ function canCreateManagedUser(
 ) {
   if (!actor) return false;
   if (actor.role === "super_admin") return true;
+
+  /* An outreach manager administers the outreach team: they staff it, so they
+     create the three production roles on their own team and nothing else.
+     Notably absent is "admin" — a manager cannot mint someone who outranks
+     them, which is the grant that would let them hand away more authority
+     than they hold. The video workflow enforces the same boundary on its own
+     user registry (see managerMayActOn in outreach-video/routes.ts). */
+  if (actor.role === "outreach_manager") {
+    return actor.team === "outreach" && payload.team === "outreach"
+      && ["outreach_editor", "outreach_publisher", "outreach_manager"].includes(payload.role);
+  }
+
   if (actor.role !== "admin") return false;
   // inventory_manager is a branding-team role (BrandOps), so a branding admin
   // can create one — which is the whole point of the module being theirs.
+  // outreach_* are the outreach team's roles, for an admin sitting on it.
   return actor.team !== null && payload.team === actor.team
-    && ["sub_admin", "user", "task_owner", "task_manager", "inventory_manager"].includes(payload.role);
+    && ["sub_admin", "user", "task_owner", "task_manager", "inventory_manager",
+        "outreach_editor", "outreach_publisher", "outreach_manager"].includes(payload.role);
 }
 
 app.get("/api/health", (_req, res) => {
@@ -806,17 +823,43 @@ app.get("/api/users/:id/capabilities", asyncHandler(async (req, res) => {
   res.json({ capabilities: await listUserCapabilities(userId) });
 }));
 
+/**
+ * Which capability keys a team's administrator may hand out. A capability is
+ * useless outside the team that owns the module — every capability-gated route
+ * also checks team — so confining each administrator to their own team's keys
+ * takes nothing away. What it prevents is a grant that silently does nothing:
+ * a key the holder can never use, and a sidebar entry pointing at a door that
+ * will not open for them.
+ */
+const GRANTABLE_PREFIXES: Record<string, string[]> = {
+  branding: ["branding:", "brandops:"],
+  design: ["design:"],
+  outreach: ["outreach:"],
+};
+
 app.put("/api/users/:id/capabilities", asyncHandler(async (req, res) => {
   const currentUser = res.locals.currentUser;
   const isSuperAdmin = currentUser.role === "super_admin";
   const isBrandingAdmin = currentUser.role === "admin" && currentUser.team === "branding";
-  if (!isSuperAdmin && !isBrandingAdmin) return sendError(res, 403, "Admin access required.");
+  /* The outreach manager administers outreach, so they grant its tabs — the
+     same standing the branding admin has over BrandOps. An admin sitting on
+     the outreach team administers it too. */
+  const isOutreachAdmin = currentUser.team === "outreach"
+    && (currentUser.role === "admin" || currentUser.role === "outreach_manager");
+  if (!isSuperAdmin && !isBrandingAdmin && !isOutreachAdmin) {
+    return sendError(res, 403, "Admin access required.");
+  }
 
   const userId = getSingleParam(req.params.id);
   const target = await getUserById(userId);
   if (!target) return sendError(res, 404, "User not found.");
-  if (isBrandingAdmin && target.team !== "branding") {
+  if (!isSuperAdmin && target.team !== currentUser.team) {
     return sendError(res, 403, "You can only modify members of your own team.");
+  }
+  /* A manager must not be able to grant their way past their own standing by
+     editing the person who outranks them. */
+  if (isOutreachAdmin && currentUser.role === "outreach_manager" && target.role === "admin") {
+    return sendError(res, 403, "A Manager cannot modify an Admin account.");
   }
 
   const schema = z.object({ capabilities: z.array(z.string()).max(50) });
@@ -825,7 +868,11 @@ app.put("/api/users/:id/capabilities", asyncHandler(async (req, res) => {
 
   // Validate every key against the server-side catalog. Anything unknown is
   // dropped so the picker UI can evolve independently of the backend.
-  const valid = parsed.data.capabilities.filter(isValidCapability);
+  let valid = parsed.data.capabilities.filter(isValidCapability);
+  if (!isSuperAdmin) {
+    const allowed = GRANTABLE_PREFIXES[currentUser.team ?? ""] ?? [];
+    valid = valid.filter(k => allowed.some(prefix => k.startsWith(prefix)));
+  }
 
   const finalSet = await setUserCapabilities(userId, valid, currentUser.id);
   res.json({ capabilities: finalSet });
