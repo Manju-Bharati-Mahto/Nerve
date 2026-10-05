@@ -19,11 +19,21 @@ export interface CountRow { key: string; label: string; count: number }
 export interface WorkflowKpis {
   // §20 videos
   totalVideos: number;
-  draftVideos: number;
-  submittedVideos: number;
+  /* §11/§12 — one count per status, named for the status it counts. The old
+     draft/submitted pair is gone with the statuses it described. */
+  uploadedVideos: number;
+  underReviewVideos: number;
+  approvedVideos: number;
+  scheduledVideos: number;
   publishedVideos: number;
+  rejectedVideos: number;
+  inRevisionVideos: number;
+  /** §12 Editor — work that still needs them: rejected or being revised. */
+  needsEditorVideos: number;
+  /** §12 Publisher — approved content waiting to go out, scheduled or not. */
+  pendingPublishingVideos: number;
   /** Hours, mean over videos that actually made the transition. Null when none have. */
-  avgDraftToSubmittedHours: number | null;
+  avgUploadedToSubmittedHours: number | null;
   avgSubmittedToPublishedHours: number | null;
   publishedThisWeek: number;
   publishedThisMonth: number;
@@ -121,11 +131,17 @@ export async function workflowKpis(now: Date = new Date()): Promise<WorkflowKpis
 
   return {
     totalVideos: videos.length,
-    draftVideos: videos.filter(v => v.status === "draft").length,
-    submittedVideos: videos.filter(v => v.status === "submitted").length,
+    uploadedVideos: videos.filter(v => v.status === "uploaded").length,
+    underReviewVideos: videos.filter(v => v.status === "under_review").length,
+    approvedVideos: videos.filter(v => v.status === "approved").length,
+    scheduledVideos: videos.filter(v => v.status === "scheduled").length,
     publishedVideos: videos.filter(v => v.status === "published").length,
+    rejectedVideos: videos.filter(v => v.status === "rejected").length,
+    inRevisionVideos: videos.filter(v => v.status === "revision").length,
+    needsEditorVideos: videos.filter(v => v.status === "rejected" || v.status === "revision").length,
+    pendingPublishingVideos: videos.filter(v => v.status === "approved" || v.status === "scheduled").length,
 
-    avgDraftToSubmittedHours: mean(
+    avgUploadedToSubmittedHours: mean(
       videos.filter(v => v.submittedAt).map(v => hoursBetween(v.createdAt, v.submittedAt as string)),
     ),
     avgSubmittedToPublishedHours: mean(

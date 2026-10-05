@@ -17,7 +17,7 @@ import { config } from "../config.js";
 import { resetDriveClient } from "./drive-client.js";
 import { mutateWorkflow, resetStoreState } from "./drive-store.js";
 import { addUser, deleteUser } from "./users.js";
-import { uploadVideo, submitVideo, publishVideo } from "./videos.js";
+import { uploadVideo, submitVideo, publishVideo, approveVideo } from "./videos.js";
 import { createEvent, assignEvent, completeEvent } from "./events.js";
 import { workflowKpis, editorVideoLog } from "./reports.js";
 import { search, filterOptions } from "./search.js";
@@ -90,12 +90,13 @@ describe("§20 — video KPIs", () => {
     const c = await upload(editorB, "Client B");
     await submitVideo(b.id, editorA);
     await submitVideo(c.id, editorB);
+    await approveVideo(c.id, manager);
     await publishVideo(c.id, publisher, {});
 
     const k = await workflowKpis();
     expect(k.totalVideos).toBe(3);
-    expect(k.draftVideos).toBe(1);
-    expect(k.submittedVideos).toBe(1);
+    expect(k.uploadedVideos).toBe(1);
+    expect(k.underReviewVideos).toBe(1);
     expect(k.publishedVideos).toBe(1);
   });
 
@@ -106,7 +107,7 @@ describe("§20 — video KPIs", () => {
     await backdate(a.id, { createdAt: "2026-09-01T00:00:00.000Z", submittedAt: "2026-09-01T06:00:00.000Z" });
 
     const k = await workflowKpis();
-    expect(k.avgDraftToSubmittedHours).toBe(6);
+    expect(k.avgUploadedToSubmittedHours).toBe(6);
     // Nothing has been published, so there is no mean to report — not zero.
     expect(k.avgSubmittedToPublishedHours).toBeNull();
   });
@@ -119,7 +120,7 @@ describe("§20 — video KPIs", () => {
     await backdate(a.id, { createdAt: "2026-09-01T00:00:00.000Z", submittedAt: "2026-09-01T02:00:00.000Z" });
     await backdate(b.id, { createdAt: "2026-09-01T00:00:00.000Z", submittedAt: "2026-09-01T08:00:00.000Z" });
 
-    expect((await workflowKpis()).avgDraftToSubmittedHours).toBe(5);
+    expect((await workflowKpis()).avgUploadedToSubmittedHours).toBe(5);
   });
 
   it("counts this week from Monday, not from seven days ago", async () => {
@@ -129,7 +130,9 @@ describe("§20 — video KPIs", () => {
     const b = await upload(editorA, "Client A");
     await submitVideo(a.id, editorA);
     await submitVideo(b.id, editorA);
+    await approveVideo(a.id, manager);
     await publishVideo(a.id, publisher, {});
+    await approveVideo(b.id, manager);
     await publishVideo(b.id, publisher, {});
 
     // Monday of that week, and the Friday before it — both inside "last 7 days",
@@ -145,6 +148,7 @@ describe("§20 — video KPIs", () => {
   it("excludes last month from this month", async () => {
     const a = await upload(editorA, "Client A");
     await submitVideo(a.id, editorA);
+    await approveVideo(a.id, manager);
     await publishVideo(a.id, publisher, {});
     await backdate(a.id, { publishedAt: new Date(2026, 7, 30, 9, 0, 0).toISOString() });
 
@@ -238,7 +242,7 @@ describe("§11.3 / §14.1 — monthly editor video log", () => {
     const [row] = (await editorVideoLog()).entries;
     expect(row).toMatchObject({
       editorName: "Alice Editor", client: "Client A",
-      editorTitle: "My cut", status: "submitted",
+      editorTitle: "My cut", status: "under_review",
     });
     expect(row.title).toBe("Client A Video 1");
     expect(row.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
@@ -301,6 +305,7 @@ describe("§18 — search and filtering", () => {
     const a = await upload(editorA, "Client A");
     await upload(editorB, "Client B");
     await submitVideo(a.id, editorA);
+    await approveVideo(a.id, manager);
     await publishVideo(a.id, publisher, {});
 
     expect((await search({ status: "published" })).videos).toHaveLength(1);

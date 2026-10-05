@@ -27,6 +27,32 @@ export const BO_CAPABILITIES = [
 
 export type BoCapability = (typeof BO_CAPABILITIES)[number];
 
+/**
+ * Outreach video workflow modules — one key per tab (PRD §6 "Custom
+ * Permissions"). These are the switches the outreach manager flips when
+ * creating an Editor, Publisher or Manager, so the label and description here
+ * are what that manager reads while deciding.
+ */
+export const OV_CAPABILITIES = [
+  "outreach:video_dashboard",
+  "outreach:my_videos",
+  "outreach:all_videos",
+  "outreach:campaigns",
+  "outreach:review",
+  "outreach:queue",
+  "outreach:scheduled",
+  "outreach:published",
+  "outreach:calendar",
+  "outreach:social_pages",
+  "outreach:editor_log",
+  "outreach:todo",
+  "outreach:notifications",
+  "outreach:users",
+  "outreach:activity",
+] as const;
+
+export type OvCapability = (typeof OV_CAPABILITIES)[number];
+
 export const CAPABILITIES = [
   "branding:manage_categories",
   "branding:view_team_dashboard",
@@ -37,6 +63,7 @@ export const CAPABILITIES = [
   "design:assign_projects",
   "design:leave_calendar",
   ...BO_CAPABILITIES,
+  ...OV_CAPABILITIES,
 ] as const;
 
 export type CapabilityKey = (typeof CAPABILITIES)[number];
@@ -195,10 +222,103 @@ export const CAPABILITY_META: Record<CapabilityKey, {
     route: "/branding/ops/activity",
     sidebarLabel: "Activity Log",
   },
+  "outreach:video_dashboard": {
+    label: "Video dashboard",
+    description: "Workflow totals — videos by status, pending work and recent activity across the team.",
+    route: "/outreach/video/dashboard",
+    sidebarLabel: "Video Dashboard",
+  },
+  "outreach:my_videos": {
+    label: "My videos",
+    description: "An editor's own uploads and the status of each one.",
+    route: "/outreach/video/my-videos",
+    sidebarLabel: "My Videos",
+  },
+  "outreach:all_videos": {
+    label: "All videos (search)",
+    description: "Search and filter every video in the workflow by campaign, date, page, status, user or platform.",
+    route: "/outreach/video/all",
+    sidebarLabel: "All Videos",
+  },
+  "outreach:campaigns": {
+    label: "Campaigns",
+    description: "Create and monitor campaigns — dates, posting targets and how much of each is done.",
+    route: "/outreach/video/campaigns",
+    sidebarLabel: "Campaigns",
+  },
+  "outreach:review": {
+    label: "Review queue",
+    description: "Content waiting to be approved or sent back. Approving releases it to the publishers.",
+    route: "/outreach/video/review",
+    sidebarLabel: "Review Queue",
+  },
+  "outreach:scheduled": {
+    label: "Scheduled",
+    description: "Approved content with a posting time set, in the order it is due to go out.",
+    route: "/outreach/video/scheduled",
+    sidebarLabel: "Scheduled",
+  },
+  "outreach:queue": {
+    label: "Publishing queue",
+    description: "Content waiting to be published, with the caption and the video to download.",
+    route: "/outreach/video/queue",
+    sidebarLabel: "Publishing Queue",
+  },
+  "outreach:published": {
+    label: "Published",
+    description: "The publishing record — what went out, when, and by whom.",
+    route: "/outreach/video/published",
+    sidebarLabel: "Published",
+  },
+  "outreach:calendar": {
+    label: "Event calendar",
+    description: "The shooting and posting calendar, and which editor is assigned to each event.",
+    route: "/outreach/video/calendar",
+    sidebarLabel: "Event Calendar",
+  },
+  "outreach:social_pages": {
+    label: "Social media pages",
+    description: "The pages content is posted to. Editors see the page and platform only, never analytics.",
+    route: "/outreach/video/social-pages",
+    sidebarLabel: "Social Pages",
+  },
+  "outreach:editor_log": {
+    label: "Editor video log",
+    description: "Per-editor output over time — how much each editor has produced and delivered.",
+    route: "/outreach/video/editor-log",
+    sidebarLabel: "Editor Video Log",
+  },
+  "outreach:todo": {
+    label: "To-do",
+    description: "Events assigned to this person that still need a video.",
+    route: "/outreach/video/todo",
+    sidebarLabel: "To-Do",
+  },
+  "outreach:notifications": {
+    label: "Notifications",
+    description: "Workflow notices — assignments, submissions and completions.",
+    route: "/outreach/video/notifications",
+    sidebarLabel: "Notifications",
+  },
+  "outreach:users": {
+    label: "Workflow users (admin)",
+    description: "Add team members, set their role and choose the tabs each one can see. Grant with care — this is the administration tab.",
+    route: "/outreach/video/users",
+    sidebarLabel: "Users",
+  },
+  "outreach:activity": {
+    label: "Activity log",
+    description: "The audit trail — who uploaded, approved, scheduled or published each piece of content.",
+    route: "/outreach/video/activity",
+    sidebarLabel: "Activity Logs",
+  },
 };
 
 /** The BrandOps tabs in the order they appear in the sidebar. */
 export const BO_CAPABILITY_ORDER: BoCapability[] = [...BO_CAPABILITIES];
+
+/** The outreach video tabs in the order they appear in the sidebar. */
+export const OV_CAPABILITY_ORDER: OvCapability[] = [...OV_CAPABILITIES];
 
 export function isBoCapability(key: string): key is BoCapability {
   return (BO_CAPABILITIES as readonly string[]).includes(key);

@@ -65,7 +65,8 @@ export default function VideoDetail() {
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <span className={`hub-badge ${STATUS_STYLE[video.status].cls}`}>{STATUS_STYLE[video.status].label}</span>
-            {video.status === 'draft' && <SubmitButton video={video} onDone={refresh} />}
+            {/* §11 — submitting is the same act before review and after a rejection. */}
+            {(video.status === 'uploaded' || video.status === 'revision') && <SubmitButton video={video} onDone={refresh} />}
             <a href={videoDownloadUrl(video.id)}
               className="text-xs px-2.5 py-1.5 rounded-lg bg-blue-100 text-blue-700 hover:opacity-80 inline-flex items-center gap-1">
               <Download className="w-3 h-3" /> Download
@@ -224,7 +225,7 @@ function CaptionPanel({ video, onDone }: { video: VideoRecord; onDone: () => Pro
             {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
             {copied ? 'Copied' : 'Copy caption'}
           </button>
-          {video.status === 'draft' && !editing && (
+          {(video.status === 'uploaded' || video.status === 'revision') && !editing && (
             <button onClick={() => setEditing(true)}
               className="text-xs px-2.5 py-1.5 rounded-lg bg-violet-100 text-violet-700 hover:opacity-80 inline-flex items-center gap-1">
               <Pencil className="w-3 h-3" /> Edit
@@ -251,9 +252,9 @@ function CaptionPanel({ video, onDone }: { video: VideoRecord; onDone: () => Pro
       ) : (
         <>
           <p className="text-sm text-foreground whitespace-pre-wrap">{video.caption}</p>
-          {video.status !== 'draft' && (
+          {video.status !== 'uploaded' && video.status !== 'revision' && (
             <p className="text-[11px] text-muted-foreground mt-2">
-              Captions are locked once a video is submitted — this is what gets posted.
+              Captions are locked once a video is under review — this is what gets posted.
             </p>
           )}
         </>

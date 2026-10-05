@@ -15,13 +15,21 @@ import type multer from "multer";
 import { Readable } from "node:stream";
 
 import { driveIsConfigured, driveIsLocal, getDriveClient, DriveNotConfiguredError } from "./drive-client.js";
+import { listUserCapabilities } from "../db.js";
 import {
-  addUser, deleteUser, findUserByEmail, listActiveEditors, listUsers,
+  campaignProgress, createCampaign, deleteCampaign, getCampaign, listCampaigns, updateCampaign,
+  CampaignExistsError, CampaignInUseError, CampaignNotFoundError, type CampaignInput,
+} from "./campaigns.js";
+import type { OvCapability } from "../capabilities.js";
+import {
+  addUser, deleteUser, findUserByEmail, findUserById, listActiveEditors, listUsers,
+  mayAssignRole, mayModifyUserWithRole,
   setUserActive, setUserRole, touchLastActivity, videoRoleForNerveRole,
   UserExistsError,
 } from "./users.js";
 import {
   getVideo, listVideos, publishVideo, publishingQueue, setLiveUrls,
+  approveVideo, rejectVideo, startRevision, scheduleVideo, reviewQueue,
   submitVideo, updateCaption, uploadVideo,
   InvalidTransitionError, NotYourVideoError, VideoNotFoundError,
 } from "./videos.js";
@@ -80,14 +88,79 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
       void touchLastActivity(existing.id);
       return existing;
     }
-    const created = await addUser({ name: u.full_name ?? email, email, role });
-    return created;
+    /* First authenticated request for someone who has a Nerve account but no
+       workflow record yet. A page load fires several of these at once, and
+       they all reach this line together: each one looked, each one found
+       nothing, and each one now tries to create the same person. Exactly one
+       wins and the rest are told the user already exists — which is not an
+       error here, it is the answer. Re-read and carry on.
+
+       This became reachable in normal use once the outreach manager could
+       create accounts directly: before that, people were pre-registered in
+       the workflow table and arrived with a record already waiting. */
+    try {
+      return await addUser({ name: u.full_name ?? email, email, role });
+    } catch (err) {
+      if (err instanceof UserExistsError) {
+        const raced = await findUserByEmail(email);
+        if (raced) return raced;
+      }
+      throw err;
+    }
   }
 
   function requireRole(res: express.Response, user: VideoUser, allowed: VideoRole[]): boolean {
     if (allowed.includes(user.role)) return true;
     sendError(res, 403, "Your role cannot perform that action.");
     return false;
+  }
+
+  /**
+   * A role-gated READ that a granted tab also opens.
+   *
+   * The outreach manager switches tabs on per person (PRD §6), and a tab that
+   * opens in the browser while its data is refused by the API is not a
+   * permission — it is an empty screen. So the capability is checked here too,
+   * against the same key the route guard uses.
+   *
+   * Deliberately reads only. A tab grant says what someone may SEE; it does
+   * not say they may act. Who publishes, who assigns an event and who
+   * administers the team stay role questions, answered by requireRole as
+   * before — so granting an editor the publishing queue shows them the queue
+   * without making them a publisher.
+   */
+  async function requireRoleOrGrant(
+    res: express.Response, user: VideoUser, allowed: VideoRole[], capability: OvCapability,
+  ): Promise<boolean> {
+    if (allowed.includes(user.role)) return true;
+    const u = res.locals.currentUser as CurrentUser;
+    const held = await listUserCapabilities(u.id);
+    if (held.includes(capability)) return true;
+    sendError(res, 403, "Your role cannot perform that action.");
+    return false;
+  }
+
+  /**
+   * Applies the two escalation rules (mayAssignRole / mayModifyUserWithRole)
+   * to one request, answering with the right message when either refuses.
+   * Returns true when the action may proceed.
+   */
+  async function managerMayActOn(
+    res: express.Response, actor: VideoUser, targetId: string | null, targetRole: VideoRole | null,
+  ): Promise<boolean> {
+    if (actor.role === "admin") return true;
+    if (targetRole !== null && !mayAssignRole(actor.role, targetRole)) {
+      sendError(res, 403, "A Manager can assign Editor, Publisher or Manager — not Admin.");
+      return false;
+    }
+    if (targetId !== null) {
+      const target = await findUserById(targetId);
+      if (target && !mayModifyUserWithRole(actor.role, target.role)) {
+        sendError(res, 403, "A Manager cannot modify an Admin account.");
+        return false;
+      }
+    }
+    return true;
   }
 
   /** Maps a domain error onto the right status, so the UI can say something useful. */
@@ -98,6 +171,9 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     if (err instanceof NotYourEventError) return sendError(res, 403, err.message);
     if (err instanceof EventNotOpenError) return sendError(res, 409, err.message);
     if (err instanceof UserExistsError) return sendError(res, 409, err.message);
+    if (err instanceof CampaignNotFoundError) return sendError(res, 404, err.message);
+    if (err instanceof CampaignExistsError) return sendError(res, 409, err.message);
+    if (err instanceof CampaignInUseError) return sendError(res, 409, err.message);
     if (err instanceof InvalidTransitionError) return sendError(res, 409, err.message);
     if (err instanceof DriveNotConfiguredError) return sendError(res, 503, err.message);
     const msg = err instanceof Error ? err.message : "Something went wrong.";
@@ -152,10 +228,32 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     if (!file) return sendError(res, 400, "A video file is required.");
 
     const body = req.body as Record<string, string>;
+
+    /* §3 — the pages the editor picked, sent as a comma-separated list
+       because the upload is multipart form data. Their handles are resolved
+       here so the §10 caption file can name them. */
+    const pageIds = body.socialPageIds
+      ? String(body.socialPageIds).split(",").map(x => x.trim()).filter(Boolean)
+      : [];
+    let pageNames: string[] = [];
+    if (pageIds.length) {
+      const { listPages } = await import("../outreach-db.js");
+      const byId = new Map((await listPages()).map(pg => [pg.id, pg.handle]));
+      pageNames = pageIds.map(id => byId.get(id)).filter((h): h is string => !!h);
+    }
+
     try {
       const video = await uploadVideo({
         editor: user,
         client: body.client ?? "",
+        /* §17 — when the editor picks a real campaign, it decides the name,
+           the Drive folders and the file naming. Absent on an upload that
+           only carries typed-in text, which is the older path. */
+        campaignId: body.campaignId || null,
+        /* §3 — the pages the editor picked, sent as a comma-separated list
+           because the upload is multipart form data. */
+        socialPageIds: pageIds,
+        pageNames,
         editorTitle: body.title ?? "",
         caption: body.caption ?? "",
         localPath: file.path,
@@ -196,9 +294,58 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
 
   // ── Publishing (§14, §15) ────────────────────────────────────────────────
 
+  // ── §11 review loop ──────────────────────────────────────────────────────
+
+  /** Everything waiting on a reviewer. Managers and admins review. */
+  app.get(`${P}/review-queue`, asyncHandler(async (_req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!await requireRoleOrGrant(res, user, ["manager", "admin"], "outreach:review")) return;
+    res.json({ videos: await reviewQueue() });
+  }));
+
+  app.post(`${P}/videos/:id/approve`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["manager", "admin"])) return;
+    const note = String((req.body as Record<string, unknown>)?.note ?? "");
+    try {
+      res.json({ video: await approveVideo(getSingleParam(req.params.id), user, note) });
+    } catch (err) { fail(res, err); }
+  }));
+
+  /** §11 — the reason is required; an editor cannot act on silence. */
+  app.post(`${P}/videos/:id/reject`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["manager", "admin"])) return;
+    const reason = String((req.body as Record<string, unknown>)?.reason ?? "").trim();
+    if (!reason) return sendError(res, 400, "A reason is required when rejecting content.");
+    try {
+      res.json({ video: await rejectVideo(getSingleParam(req.params.id), user, reason) });
+    } catch (err) { fail(res, err); }
+  }));
+
+  /** §11 — the editor picks rejected work back up. */
+  app.post(`${P}/videos/:id/revise`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["editor", "admin"])) return;
+    try {
+      res.json({ video: await startRevision(getSingleParam(req.params.id), user) });
+    } catch (err) { fail(res, err); }
+  }));
+
+  /** §4 — the Publisher records when approved content is due to go out. */
+  app.post(`${P}/videos/:id/schedule`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["publisher", "admin"])) return;
+    const when = String((req.body as Record<string, unknown>)?.scheduledFor ?? "").trim();
+    if (!when) return sendError(res, 400, "A posting date and time is required.");
+    try {
+      res.json({ video: await scheduleVideo(getSingleParam(req.params.id), user, when) });
+    } catch (err) { fail(res, err); }
+  }));
+
   app.get(`${P}/queue`, asyncHandler(async (_req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
-    if (!requireRole(res, user, ["publisher", "manager", "admin"])) return;
+    if (!await requireRoleOrGrant(res, user, ["publisher", "manager", "admin"], "outreach:queue")) return;
     res.json({ videos: await publishingQueue() });
   }));
 
@@ -278,7 +425,7 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
 
   app.get(`${P}/events/counts`, asyncHandler(async (_req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
-    if (!requireRole(res, user, ["manager", "admin"])) return;
+    if (!await requireRoleOrGrant(res, user, ["manager", "admin"], "outreach:calendar")) return;
     // The calendar day in the viewer's own terms, not UTC's.
     const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
     res.json({ counts: await eventCounts(today) });
@@ -304,6 +451,12 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
       const event = await createEvent(user, {
         title: b.title ?? "", description: b.description ?? "",
         date: b.date ?? "", client: b.client ?? null,
+        // §5 — the rest of what a calendar entry shows.
+        campaignId: b.campaignId ?? null,
+        socialPageId: b.socialPageId ?? null,
+        contentType: b.contentType ?? null,
+        postingAt: b.postingAt ?? null,
+        assignedPublisherId: b.assignedPublisherId ?? null,
       });
       res.status(201).json({ event });
     } catch (err) { fail(res, err); }
@@ -319,6 +472,11 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
         description: b.description as string | undefined,
         date: b.date as string | undefined,
         client: b.client as string | null | undefined,
+        campaignId: b.campaignId as string | null | undefined,
+        socialPageId: b.socialPageId as string | null | undefined,
+        contentType: b.contentType as string | null | undefined,
+        postingAt: b.postingAt as string | null | undefined,
+        assignedPublisherId: b.assignedPublisherId as string | null | undefined,
       }) });
     } catch (err) { fail(res, err); }
   }));
@@ -361,25 +519,29 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
 
   app.get(`${P}/users`, asyncHandler(async (_req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
-    if (!requireRole(res, user, ["admin", "manager"])) return;
+    if (!await requireRoleOrGrant(res, user, ["admin", "manager"], "outreach:users")) return;
     res.json({ users: await listUsers() });
   }));
 
   /** §11.2 — the dropdown of active editors a Manager assigns events from. */
   app.get(`${P}/editors`, asyncHandler(async (_req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
-    if (!requireRole(res, user, ["admin", "manager"])) return;
+    if (!await requireRoleOrGrant(res, user, ["admin", "manager"], "outreach:calendar")) return;
     res.json({ editors: await listActiveEditors() });
   }));
 
   /**
-   * §4.3 — Admin registers a user by email; §5 matches that email at sign-in.
-   * Admin-only: §25 "Restrict Admin privileges to explicitly configured Admin
-   * accounts", so a Manager cannot reach any of the four writes below.
+   * §4.3 — registers a user by email; §5 matches that email at sign-in.
+   *
+   * Managers administer their own team. The earlier specification confined
+   * these writes to Admin, on the reading that administration is an Admin
+   * activity; the current one makes the outreach Manager the administrator of
+   * outreach, so a Manager reaches all four writes below — bounded by
+   * managerMayActOn(), which keeps them from creating an Admin or editing one.
    */
   app.post(`${P}/users`, asyncHandler(async (req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
-    if (!requireRole(res, user, ["admin"])) return;
+    if (!requireRole(res, user, ["admin", "manager"])) return;
     const b = req.body as Record<string, unknown>;
     const name = String(b.name ?? "").trim();
     const email = String(b.email ?? "").trim();
@@ -387,6 +549,7 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     if (!name) return sendError(res, 400, "A full name is required.");
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendError(res, 400, "A valid email address is required.");
     if (!VIDEO_ROLES.includes(role)) return sendError(res, 400, "Pick one of Admin, Editor, Manager or Publisher.");
+    if (!await managerMayActOn(res, user, null, role)) return;
     try {
       res.status(201).json({ user: await addUser({ name, email, role, active: b.active !== false }) });
     } catch (err) { fail(res, err); }
@@ -395,13 +558,15 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
   /** §4.4 — takes effect on the user's next authenticated session. */
   app.patch(`${P}/users/:id`, asyncHandler(async (req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
-    if (!requireRole(res, user, ["admin"])) return;
+    if (!requireRole(res, user, ["admin", "manager"])) return;
     const id = getSingleParam(req.params.id);
     const b = req.body as Record<string, unknown>;
+    if (!await managerMayActOn(res, user, id, null)) return;
     let updated = null;
     if (b.role !== undefined) {
       const role = String(b.role) as VideoRole;
       if (!VIDEO_ROLES.includes(role)) return sendError(res, 400, "Pick one of Admin, Editor, Manager or Publisher.");
+      if (!await managerMayActOn(res, user, id, role)) return;
       // §25 — an admin demoting themselves would lock the last door behind them.
       if (id === user.id && role !== "admin") return sendError(res, 400, "You cannot change your own role.");
       updated = await setUserRole(id, role);
@@ -421,11 +586,88 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
    */
   app.delete(`${P}/users/:id`, asyncHandler(async (req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
-    if (!requireRole(res, user, ["admin"])) return;
+    if (!requireRole(res, user, ["admin", "manager"])) return;
     const id = getSingleParam(req.params.id);
     if (id === user.id) return sendError(res, 400, "You cannot delete your own account.");
+    if (!await managerMayActOn(res, user, id, null)) return;
     if (!await deleteUser(id)) return sendError(res, 404, "That user was not found.");
     res.json({ deleted: true });
+  }));
+
+  // ── Campaigns (§7, §17) ──────────────────────────────────────────────────
+
+  /**
+   * §5 — the list a Manager monitors, each campaign carrying its progress.
+   *
+   * Progress is computed here rather than stored, because the only honest
+   * source is the videos themselves: a stored counter drifts the moment
+   * anything is published, deleted or moved.
+   */
+  app.get(`${P}/campaigns`, asyncHandler(async (_req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    const [campaigns, videos] = await Promise.all([listCampaigns(), listVideos()]);
+    const publishedByCampaign = new Map<string, number>();
+    for (const v of videos) {
+      if (v.status !== "published") continue;
+      const key = v.campaignId ?? `name:${v.client.trim().toLowerCase()}`;
+      publishedByCampaign.set(key, (publishedByCampaign.get(key) ?? 0) + 1);
+    }
+    res.json({
+      campaigns: campaigns.map(c => ({
+        ...c,
+        /* Count by id, and fall back to the name so a campaign created for
+           work that predates it still shows the progress it actually made. */
+        progress: campaignProgress(c, publishedByCampaign.get(c.id)
+          ?? publishedByCampaign.get(`name:${c.name.trim().toLowerCase()}`) ?? 0),
+      })),
+    });
+  }));
+
+  app.get(`${P}/campaigns/:id`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    const campaign = await getCampaign(getSingleParam(req.params.id));
+    if (!campaign) return sendError(res, 404, "That campaign was not found.");
+    const videos = await listVideos();
+    const mine = videos.filter(v => v.campaignId === campaign.id
+      || (!v.campaignId && v.client.trim().toLowerCase() === campaign.name.trim().toLowerCase()));
+    res.json({
+      campaign,
+      progress: campaignProgress(campaign, mine.filter(v => v.status === "published").length),
+      videos: mine,
+    });
+  }));
+
+  app.post(`${P}/campaigns`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["admin", "manager"])) return;
+    try {
+      res.status(201).json({ campaign: await createCampaign(user, req.body as CampaignInput) });
+    } catch (err) { fail(res, err); }
+  }));
+
+  app.patch(`${P}/campaigns/:id`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["admin", "manager"])) return;
+    try {
+      const campaign = await updateCampaign(user, getSingleParam(req.params.id), req.body as CampaignInput);
+      res.json({ campaign });
+    } catch (err) { fail(res, err); }
+  }));
+
+  /** Refused while the campaign still owns videos — §17 would orphan them. */
+  app.delete(`${P}/campaigns/:id`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["admin", "manager"])) return;
+    const id = getSingleParam(req.params.id);
+    const campaign = await getCampaign(id);
+    if (!campaign) return sendError(res, 404, "That campaign was not found.");
+    const videos = await listVideos();
+    const owned = videos.filter(v => v.campaignId === id
+      || (!v.campaignId && v.client.trim().toLowerCase() === campaign.name.trim().toLowerCase())).length;
+    try {
+      await deleteCampaign(user, id, owned);
+      res.json({ deleted: true });
+    } catch (err) { fail(res, err); }
   }));
 
   // ── §18 Search & filtering ───────────────────────────────────────────────
@@ -478,7 +720,7 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
 
   app.get(`${P}/activity/actors`, asyncHandler(async (_req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
-    if (!requireRole(res, user, ["admin", "manager", "publisher"])) return;
+    if (!await requireRoleOrGrant(res, user, ["admin", "manager", "publisher"], "outreach:activity")) return;
     res.json({ actors: await activityActors() });
   }));
 
@@ -487,14 +729,14 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
   /** §20 — "Admin and Manager should have access to overall workflow KPIs". */
   app.get(`${P}/kpis`, asyncHandler(async (_req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
-    if (!requireRole(res, user, ["admin", "manager"])) return;
+    if (!await requireRoleOrGrant(res, user, ["admin", "manager"], "outreach:video_dashboard")) return;
     res.json({ kpis: await workflowKpis() });
   }));
 
   /** §11.3 Manager and §14.1 Publisher both get the monthly editor log. */
   app.get(`${P}/editor-log`, asyncHandler(async (req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
-    if (!requireRole(res, user, ["admin", "manager", "publisher"])) return;
+    if (!await requireRoleOrGrant(res, user, ["admin", "manager", "publisher"], "outreach:editor_log")) return;
     const q = req.query as Record<string, string>;
     res.json({ log: await editorVideoLog(q.month || undefined, q.client || undefined) });
   }));
@@ -513,8 +755,63 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
   app.get(`${P}/social-pages`, asyncHandler(async (_req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
     const { listPages } = await import("../outreach-db.js");
-    const { pages, analyticsVisible } = socialPagesForRole(await listPages(), user.role);
-    res.json({ pages, analytics_visible: analyticsVisible });
+    const all = await listPages();
+    const { pages, analyticsVisible } = socialPagesForRole(all, user.role);
+
+    /* §8 — which campaigns each page is assigned to. Built here rather than
+       stored on the page, because the campaign already names its pages and
+       keeping the reverse copy in step would be one more thing to get wrong.
+
+       Only for people who may see campaigns at all. The editor projection in
+       socialPagesForRole() is an allowlist on purpose (§25), so nothing is
+       attached to it here — a field added to a page must stay invisible to an
+       editor by default, and that includes this one. */
+    if (user.role === "editor") {
+      return res.json({ pages, analytics_visible: analyticsVisible });
+    }
+    const campaigns = await listCampaigns();
+    const byPage = new Map<string, string[]>();
+    for (const c of campaigns) {
+      for (const pageId of c.socialPageIds) {
+        byPage.set(pageId, [...(byPage.get(pageId) ?? []), c.name]);
+      }
+    }
+    res.json({
+      pages: (pages as Array<{ id: string }>).map(pg => ({
+        ...pg, assigned_campaigns: byPage.get(pg.id) ?? [],
+      })),
+      analytics_visible: analyticsVisible,
+    });
+  }));
+
+  /**
+   * §8 — the page details a person maintains: the link, who to contact, and
+   * whether we still post there.
+   *
+   * Deliberately narrow. Everything else on a page comes from the sync, and
+   * letting this edit those fields would mean the next sync silently undid
+   * the edit.
+   */
+  app.patch(`${P}/social-pages/:id`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["admin", "manager"])) return;
+    const b = req.body as Record<string, unknown>;
+    const patch: Record<string, string> = {};
+    if (b.page_link !== undefined) patch.page_link = String(b.page_link).trim();
+    if (b.contact_person !== undefined) patch.contact_person = String(b.contact_person).trim();
+    if (b.status !== undefined) {
+      const status = String(b.status);
+      if (status !== "active" && status !== "inactive") {
+        return sendError(res, 400, "A page is either active or inactive.");
+      }
+      patch.status = status;
+    }
+    if (!Object.keys(patch).length) return sendError(res, 400, "Nothing to change.");
+
+    const { updatePage } = await import("../outreach-db.js");
+    const updated = await updatePage(getSingleParam(req.params.id), patch);
+    if (!updated) return sendError(res, 404, "That page was not found.");
+    res.json({ page: updated });
   }));
 }
 

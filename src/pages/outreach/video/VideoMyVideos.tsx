@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  Film, Upload, Send, AlertCircle, Loader2, X, CheckCircle2, CloudOff,
+  Film, Upload, Send, AlertCircle, Loader2, X, CheckCircle2, CloudOff, RotateCcw,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
-  getVideoConfig, listVideos, uploadVideo, submitVideo,
+  getVideoConfig, listVideos, uploadVideo, submitVideo, startRevision,
+  listCampaigns, listSocialPages, type Campaign,
   STATUS_STYLE, formatBytes, formatWhen,
   type VideoRecord, type VideoStatus,
 } from '@/lib/outreach-video-data'
@@ -47,9 +48,12 @@ export default function VideoMyVideos() {
 
   const counts = useMemo(() => ({
     total: videos.length,
-    draft: videos.filter(v => v.status === 'draft').length,
-    submitted: videos.filter(v => v.status === 'submitted').length,
+    uploaded: videos.filter(v => v.status === 'uploaded').length,
+    underReview: videos.filter(v => v.status === 'under_review').length,
     published: videos.filter(v => v.status === 'published').length,
+    /* §12 Editor — "Rejected". Revision counts here too: both mean the work
+       is back with this editor and nobody else is waiting on anything. */
+    needsMe: videos.filter(v => v.status === 'rejected' || v.status === 'revision').length,
   }), [videos])
 
   const shown = useMemo(
@@ -58,12 +62,23 @@ export default function VideoMyVideos() {
   )
 
   async function handleSubmit(video: VideoRecord) {
-    if (!confirm(`Submit "${video.title}" to the publisher? The caption can't be changed afterwards.`)) return
+    if (!confirm(`Send "${video.title}" for review? The caption can't be changed while it is being reviewed.`)) return
     try {
       await submitVideo(video.id)
       await refresh()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not submit.')
+    }
+  }
+
+  /** §11 — picking rejected work back up, which reopens the caption. */
+  async function handleRevise(video: VideoRecord) {
+    try {
+      await startRevision(video.id)
+      await refresh()
+      toast.success('Reopened for changes.')
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Could not reopen that video.')
     }
   }
 
@@ -97,10 +112,16 @@ export default function VideoMyVideos() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Kpi label="Total videos" value={counts.total} onClick={() => setFilter('all')} active={filter === 'all'} />
-        <Kpi label="Draft" value={counts.draft} onClick={() => setFilter('draft')} active={filter === 'draft'} />
-        <Kpi label="Submitted" value={counts.submitted} onClick={() => setFilter('submitted')} active={filter === 'submitted'} />
+        <Kpi label="Uploaded" value={counts.uploaded} onClick={() => setFilter('uploaded')} active={filter === 'uploaded'} />
+        <Kpi label="Under review" value={counts.underReview} onClick={() => setFilter('under_review')} active={filter === 'under_review'} />
         <Kpi label="Published" value={counts.published} onClick={() => setFilter('published')} active={filter === 'published'} />
       </div>
+      {counts.needsMe > 0 && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <Kpi label="Needs your changes" value={counts.needsMe}
+            onClick={() => setFilter('rejected')} active={filter === 'rejected'} />
+        </div>
+      )}
 
       {error && (
         <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
@@ -146,10 +167,17 @@ export default function VideoMyVideos() {
                   {formatBytes(v.sizeBytes)}
                 </td>
                 <td className="px-3 py-2.5 text-right">
-                  {v.status === 'draft' && (
+                  {/* §11 — the same act from either side of a rejection. */}
+                  {(v.status === 'uploaded' || v.status === 'revision') && (
                     <button onClick={() => handleSubmit(v)}
                       className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1">
                       <Send className="w-3 h-3" /> Submit
+                    </button>
+                  )}
+                  {v.status === 'rejected' && (
+                    <button onClick={() => handleRevise(v)}
+                      className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1">
+                      <RotateCcw className="w-3 h-3" /> Start revision
                     </button>
                   )}
                 </td>
@@ -207,6 +235,13 @@ function UploadDialog({ onClose, onDone, uploading, setUploading }: {
 }) {
   const [file, setFile] = useState<File | null>(null)
   const [client, setClient] = useState('')
+  /* §3 — the campaign and the pages it posts to. Campaigns are records now
+     (§17), so this is a choice rather than typing a name; the free-text box
+     below stays for work that belongs to no campaign. */
+  const [campaigns, setCampaigns] = useState<Campaign[]>([])
+  const [campaignId, setCampaignId] = useState('')
+  const [pageIds, setPageIds] = useState<string[]>([])
+  const [pages, setPages] = useState<Array<{ id: string; handle: string; platform: string }>>([])
   const [title, setTitle] = useState('')
   const [caption, setCaption] = useState('')
   const [platform, setPlatform] = useState('')
@@ -215,8 +250,21 @@ function UploadDialog({ onClose, onDone, uploading, setUploading }: {
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState<string | null>(null)
 
-  // §9 required fields — the optional ones below are genuinely optional.
-  const canSubmit = !!file && client.trim() && title.trim() && caption.trim() && !uploading
+  useEffect(() => {
+    void listCampaigns().then(r => setCampaigns(r.campaigns)).catch(() => setCampaigns([]))
+    void listSocialPages().then(r => setPages(r.pages)).catch(() => setPages([]))
+  }, [])
+
+  const chosenCampaign = campaigns.find(c => c.id === campaignId) ?? null
+  /* Only the pages this campaign posts to (§7/§8). A campaign that names none
+     offers all of them rather than nothing, because an empty list reads as a
+     broken form rather than as a campaign nobody has configured. */
+  const offeredPages = chosenCampaign?.socialPageIds.length
+    ? pages.filter(p => chosenCampaign.socialPageIds.includes(p.id))
+    : pages
+
+  // §9 required fields — either a chosen campaign or a typed name identifies it.
+  const canSubmit = !!file && (campaignId || client.trim()) && title.trim() && caption.trim() && !uploading
 
   async function submit() {
     if (!canSubmit || !file) return
@@ -226,6 +274,8 @@ function UploadDialog({ onClose, onDone, uploading, setUploading }: {
       const form = new FormData()
       form.append('video', file)
       form.append('client', client.trim())
+      if (campaignId) form.append('campaignId', campaignId)
+      if (pageIds.length) form.append('socialPageIds', pageIds.join(','))
       form.append('title', title.trim())
       form.append('caption', caption.trim())
       if (platform.trim()) form.append('platform', platform.trim())
@@ -274,13 +324,46 @@ function UploadDialog({ onClose, onDone, uploading, setUploading }: {
                 {file && <p className="text-[11px] text-muted-foreground mt-1">{formatBytes(file.size)}</p>}
               </div>
               <div>
-                <label className="hub-label">Client / project *</label>
-                <input className="hub-input" value={client} onChange={e => setClient(e.target.value)}
-                  placeholder="Diwali Campaign" />
+                <label className="hub-label">Campaign *</label>
+                <select className="hub-input" value={campaignId}
+                  onChange={e => { setCampaignId(e.target.value); setPageIds([]) }}>
+                  <option value="">— pick a campaign —</option>
+                  {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
                 <p className="text-[11px] text-muted-foreground mt-1">
-                  Its Drive folder is created automatically if it doesn't exist.
+                  The campaign decides where the file is filed in Drive and what it is called.
                 </p>
               </div>
+              {!campaignId && (
+                <div>
+                  <label className="hub-label">…or type a client / project *</label>
+                  <input className="hub-input" value={client} onChange={e => setClient(e.target.value)}
+                    placeholder="Diwali Campaign" />
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    For work that belongs to no campaign. Its Drive folder is created if it doesn't exist.
+                  </p>
+                </div>
+              )}
+              {offeredPages.length > 0 && (
+                <div>
+                  <label className="hub-label">Social media page(s)</label>
+                  <div className="space-y-1 max-h-32 overflow-y-auto pr-1 mt-1">
+                    {offeredPages.map(pg => (
+                      <label key={pg.id}
+                        className="flex items-center gap-2 px-2 py-1.5 rounded-lg border border-border cursor-pointer hover:bg-accent/40">
+                        <input type="checkbox" checked={pageIds.includes(pg.id)}
+                          onChange={() => setPageIds(cur =>
+                            cur.includes(pg.id) ? cur.filter(x => x !== pg.id) : [...cur, pg.id])} />
+                        <span className="text-xs text-foreground">{pg.handle}</span>
+                        <span className="text-[11px] text-muted-foreground">{pg.platform}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground mt-1">
+                    Named in the caption file that goes to Drive alongside the video.
+                  </p>
+                </div>
+              )}
               <div>
                 <label className="hub-label">Video title *</label>
                 <input className="hub-input" value={title} onChange={e => setTitle(e.target.value)}

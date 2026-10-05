@@ -81,6 +81,9 @@ import VideoDashboard from "@/pages/outreach/video/VideoDashboard";
 import VideoSearch from "@/pages/outreach/video/VideoSearch";
 import VideoEditorLog from "@/pages/outreach/video/VideoEditorLog";
 import VideoUsers from "@/pages/outreach/video/VideoUsers";
+import VideoReview from "@/pages/outreach/video/VideoReview";
+import VideoScheduled from "@/pages/outreach/video/VideoScheduled";
+import VideoCampaigns from "@/pages/outreach/video/VideoCampaigns";
 import VideoActivity from "@/pages/outreach/video/VideoActivity";
 
 // BrandOps — the branding department's frame inventory and vendor work
@@ -374,11 +377,17 @@ const App = () => (
                 </RoleGuard>
               } />
 
-              {/* ── Outreach video workflow (Media Agency Video Workflow PRD) ──
-                  Editors and publishers only reach their own areas; managers and
-                  super admins see everything, matching the §27 navigation. */}
+              {/* ── Outreach video workflow ──
+                  Two ways in, and a tab opens on either. By ROLE, as before:
+                  editors and publishers reach their own areas, managers and
+                  super admins see everything. Or by CAPABILITY: the outreach
+                  manager administers their team and switches tabs on per
+                  person, so someone can be given a tab their role alone would
+                  not open. The same key gates the API behind each tab — the
+                  nav is a convenience, never the control. */}
               <Route path="/outreach/video/my-videos" element={
-                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor']} team="outreach">
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor']} team="outreach"
+                  anyCapability={['outreach:my_videos']}>
                   <VideoMyVideos />
                 </RoleGuard>
               } />
@@ -388,29 +397,34 @@ const App = () => (
                 </RoleGuard>
               } />
               <Route path="/outreach/video/queue" element={
-                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_publisher']} team="outreach">
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_publisher']} team="outreach"
+                  anyCapability={['outreach:queue']}>
                   <VideoQueue />
                 </RoleGuard>
               } />
               <Route path="/outreach/video/published" element={
-                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach">
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach"
+                  anyCapability={['outreach:published']}>
                   <VideoPublished />
                 </RoleGuard>
               } />
               <Route path="/outreach/video/social-pages" element={
-                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor']} team="outreach">
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor']} team="outreach"
+                  anyCapability={['outreach:social_pages']}>
                   <VideoSocialPages />
                 </RoleGuard>
               } />
               {/* §11 events: the manager keeps the calendar, the editor sees
                   only the assignments on their own To-Do List. */}
               <Route path="/outreach/video/calendar" element={
-                <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach">
+                <RoleGuard allowed={['super_admin', 'outreach_manager']} team="outreach"
+                  anyCapability={['outreach:calendar']}>
                   <VideoCalendar />
                 </RoleGuard>
               } />
               <Route path="/outreach/video/todo" element={
-                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor']} team="outreach">
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor']} team="outreach"
+                  anyCapability={['outreach:todo']}>
                   <VideoTodo />
                 </RoleGuard>
               } />
@@ -420,36 +434,61 @@ const App = () => (
                 </RoleGuard>
               } />
               <Route path="/outreach/video/notifications" element={
-                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach">
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach"
+                  anyCapability={['outreach:notifications']}>
                   <VideoNotifications />
                 </RoleGuard>
               } />
               {/* §20 KPIs and §4.2 user management are Manager/Admin ground;
                   §18 search is scoped per role by the API. */}
               <Route path="/outreach/video/dashboard" element={
-                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager']} team="outreach">
+                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager']} team="outreach"
+                  anyCapability={['outreach:video_dashboard']}>
                   <VideoDashboard />
                 </RoleGuard>
               } />
               <Route path="/outreach/video/all" element={
-                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach">
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach"
+                  anyCapability={['outreach:all_videos']}>
                   <VideoSearch />
                 </RoleGuard>
               } />
               <Route path="/outreach/video/editor-log" element={
-                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_publisher']} team="outreach">
+                <RoleGuard allowed={['super_admin', 'outreach_manager', 'outreach_publisher']} team="outreach"
+                  anyCapability={['outreach:editor_log']}>
                   <VideoEditorLog />
                 </RoleGuard>
               } />
+              {/* §11 review loop and §4 scheduling, and §7 campaigns. */}
+              <Route path="/outreach/video/review" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager']} team="outreach"
+                  anyCapability={['outreach:review']}>
+                  <VideoReview />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/scheduled" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager', 'outreach_publisher']} team="outreach"
+                  anyCapability={['outreach:scheduled']}>
+                  <VideoScheduled />
+                </RoleGuard>
+              } />
+              <Route path="/outreach/video/campaigns" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach"
+                  anyCapability={['outreach:campaigns']}>
+                  <VideoCampaigns />
+                </RoleGuard>
+              } />
               <Route path="/outreach/video/users" element={
-                <RoleGuard allowed={['super_admin', 'admin']} team="outreach">
+                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager']} team="outreach"
+                  anyCapability={['outreach:users']}>
                   <VideoUsers />
                 </RoleGuard>
               } />
               {/* §16 — every role gets an Activity view; the API scopes an
                   editor's to their own videos and assigned events. */}
               <Route path="/outreach/video/activity" element={
-                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach">
+                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach"
+                  anyCapability={['outreach:activity']}>
                   <VideoActivity />
                 </RoleGuard>
               } />

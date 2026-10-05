@@ -23,7 +23,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 // ── Types (mirroring the server records) ───────────────────────────────────
 
-export type VideoStatus = 'draft' | 'submitted' | 'published'
+/** §11 — Uploaded → Under Review → Approved → Scheduled → Published,
+    with Rejected → Editor Revision → Under Review as the loop back. */
+export type VideoStatus =
+  | 'uploaded' | 'under_review' | 'approved' | 'scheduled' | 'published'
+  | 'rejected' | 'revision'
+
+/** How each status is written for a person, in the PRD's own words. */
+export const VIDEO_STATUS_LABEL: Record<VideoStatus, string> = {
+  uploaded: 'Uploaded',
+  under_review: 'Under Review',
+  approved: 'Approved',
+  scheduled: 'Scheduled',
+  published: 'Published',
+  rejected: 'Rejected',
+  revision: 'Editor Revision',
+}
+
+/** The order the statuses are worked through, for filters and counts. */
+export const VIDEO_STATUS_ORDER: VideoStatus[] = [
+  'uploaded', 'under_review', 'approved', 'scheduled', 'published', 'rejected', 'revision',
+]
 export type VideoRole = 'admin' | 'editor' | 'manager' | 'publisher'
 export type LiveUrlPlatform = 'instagram' | 'facebook'
 
@@ -60,6 +80,17 @@ export interface VideoRecord {
   submittedAt?: string | null
   publishedBy?: string | null
   publishedAt?: string | null
+  /** §11 — what the reviewer said, for the editor to act on. */
+  rejectionReason?: string | null
+  approvedBy?: string | null
+  approvedAt?: string | null
+  rejectedBy?: string | null
+  rejectedAt?: string | null
+  /** §4 — the intended posting time, ISO. */
+  scheduledFor?: string | null
+  scheduledBy?: string | null
+  /** §17 — the campaign this belongs to; null on records from before. */
+  campaignId?: string | null
   liveUrls?: Partial<Record<LiveUrlPlatform, string>>
   activity: ActivityEntry[]
 }
@@ -84,6 +115,12 @@ export interface EditorVisiblePage {
   handle: string
   platform: string
   connected: boolean
+  /* §8 — present for everyone except an editor, whose projection is an
+     allowlist on purpose (§25) and carries none of these. */
+  page_link?: string
+  contact_person?: string
+  status?: string
+  assigned_campaigns?: string[]
 }
 
 // ── Calls ──────────────────────────────────────────────────────────────────
@@ -119,6 +156,72 @@ export const submitVideo = (id: string) =>
 
 export const publishingQueue = () => request<{ videos: VideoRecord[] }>('/queue')
 
+// ── §11 review loop ────────────────────────────────────────────────────────
+
+export const reviewQueue = () => request<{ videos: VideoRecord[] }>('/review-queue')
+
+export const approveVideo = (id: string, note = '') =>
+  request<{ video: VideoRecord }>(`/videos/${id}/approve`, {
+    method: 'POST', body: JSON.stringify({ note }),
+  }).then(r => r.video)
+
+/** The reason is required — an editor cannot act on silence. */
+export const rejectVideo = (id: string, reason: string) =>
+  request<{ video: VideoRecord }>(`/videos/${id}/reject`, {
+    method: 'POST', body: JSON.stringify({ reason }),
+  }).then(r => r.video)
+
+export const startRevision = (id: string) =>
+  request<{ video: VideoRecord }>(`/videos/${id}/revise`, { method: 'POST' }).then(r => r.video)
+
+/** §4 — `scheduledFor` is an ISO datetime. */
+export const scheduleVideo = (id: string, scheduledFor: string) =>
+  request<{ video: VideoRecord }>(`/videos/${id}/schedule`, {
+    method: 'POST', body: JSON.stringify({ scheduledFor }),
+  }).then(r => r.video)
+
+// ── §7 campaigns ───────────────────────────────────────────────────────────
+
+export interface CampaignProgress { required: number; published: number; remaining: number }
+
+export interface Campaign {
+  id: string
+  name: string
+  description: string
+  startDate: string
+  endDate: string
+  campaignManagerId?: string | null
+  socialPageIds: string[]
+  status: 'upcoming' | 'running' | 'completed'
+  requiredPosts: number
+  notes: string
+  createdAt: string
+  updatedAt: string
+  progress?: CampaignProgress
+}
+
+export const CAMPAIGN_STATUS_LABEL: Record<Campaign['status'], string> = {
+  upcoming: 'Upcoming', running: 'Running', completed: 'Completed',
+}
+
+export const listCampaigns = () => request<{ campaigns: Campaign[] }>('/campaigns')
+
+export const getCampaign = (id: string) =>
+  request<{ campaign: Campaign; progress: CampaignProgress; videos: VideoRecord[] }>(`/campaigns/${id}`)
+
+export const createCampaign = (input: Partial<Campaign>) =>
+  request<{ campaign: Campaign }>('/campaigns', {
+    method: 'POST', body: JSON.stringify(input),
+  }).then(r => r.campaign)
+
+export const updateCampaign = (id: string, patch: Partial<Campaign>) =>
+  request<{ campaign: Campaign }>(`/campaigns/${id}`, {
+    method: 'PATCH', body: JSON.stringify(patch),
+  }).then(r => r.campaign)
+
+export const deleteCampaign = (id: string) =>
+  request<{ deleted: boolean }>(`/campaigns/${id}`, { method: 'DELETE' })
+
 export const publishVideo = (id: string, liveUrls: Partial<Record<LiveUrlPlatform, string>> = {}) =>
   request<{ video: VideoRecord }>(`/videos/${id}/publish`, {
     method: 'POST', body: JSON.stringify({ live_urls: liveUrls }),
@@ -132,16 +235,33 @@ export const setLiveUrls = (id: string, liveUrls: Partial<Record<LiveUrlPlatform
 export const listSocialPages = () =>
   request<{ pages: EditorVisiblePage[]; analytics_visible: boolean }>('/social-pages')
 
+/**
+ * §8 — the details a person maintains on a page. Deliberately narrow: every
+ * other field comes from the sync, and editing those here would mean the next
+ * sync silently undid the edit.
+ */
+export const updateSocialPage = (
+  id: string, patch: { page_link?: string; contact_person?: string; status?: 'active' | 'inactive' },
+) => request<{ page: unknown }>(`/social-pages/${id}`, {
+  method: 'PATCH', body: JSON.stringify(patch),
+}).then(r => r.page)
+
 /** Streamed through the API so access is checked on the bytes themselves (§25). */
 export const videoStreamUrl = (id: string) => `${BASE}/videos/${id}/stream`
 export const videoDownloadUrl = (id: string) => `${BASE}/videos/${id}/download`
 
 // ── Display helpers ────────────────────────────────────────────────────────
 
+/* §11 — one entry per status. Rejection and revision are rose and orange
+   because they are the two that ask somebody to do something. */
 export const STATUS_STYLE: Record<VideoStatus, { label: string; cls: string }> = {
-  draft:     { label: 'Draft',     cls: 'bg-slate-100 text-slate-700' },
-  submitted: { label: 'Submitted', cls: 'bg-amber-100 text-amber-800' },
-  published: { label: 'Published', cls: 'bg-emerald-100 text-emerald-700' },
+  uploaded:     { label: 'Uploaded',        cls: 'bg-slate-100 text-slate-700' },
+  under_review: { label: 'Under Review',    cls: 'bg-amber-100 text-amber-800' },
+  approved:     { label: 'Approved',        cls: 'bg-sky-100 text-sky-800' },
+  scheduled:    { label: 'Scheduled',       cls: 'bg-violet-100 text-violet-800' },
+  published:    { label: 'Published',       cls: 'bg-emerald-100 text-emerald-700' },
+  rejected:     { label: 'Rejected',        cls: 'bg-rose-100 text-rose-700' },
+  revision:     { label: 'Editor Revision', cls: 'bg-orange-100 text-orange-800' },
 }
 
 export function formatBytes(bytes?: number | null): string {
@@ -288,10 +408,16 @@ export interface CountRow { key: string; label: string; count: number }
 
 export interface WorkflowKpis {
   totalVideos: number
-  draftVideos: number
-  submittedVideos: number
+  uploadedVideos: number
+  underReviewVideos: number
+  approvedVideos: number
+  scheduledVideos: number
+  rejectedVideos: number
+  inRevisionVideos: number
+  needsEditorVideos: number
+  pendingPublishingVideos: number
   publishedVideos: number
-  avgDraftToSubmittedHours: number | null
+  avgUploadedToSubmittedHours: number | null
   avgSubmittedToPublishedHours: number | null
   publishedThisWeek: number
   publishedThisMonth: number

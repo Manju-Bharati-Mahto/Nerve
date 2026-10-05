@@ -12,9 +12,58 @@
  * actor's name/email at the time they acted.
  */
 
-/** §7 — the whole status set. There is deliberately no approval/revision state. */
-export const VIDEO_STATUSES = ["draft", "submitted", "published"] as const;
+/**
+ * Campaign & Content Management PRD §11 — the content status workflow.
+ *
+ *   Uploaded → Under Review → Approved → Scheduled → Published
+ *   Rejected → Editor Revision → Under Review
+ *
+ * This replaces the earlier three-state set (draft / submitted / published),
+ * which deliberately had no approval step. The review loop is the substance of
+ * §11: content is now checked before it can go out, and a rejection carries a
+ * reason the editor can read.
+ */
+export const VIDEO_STATUSES = [
+  "uploaded", "under_review", "approved", "scheduled", "published",
+  "rejected", "revision",
+] as const;
 export type VideoStatus = typeof VIDEO_STATUSES[number];
+
+/**
+ * What the three old statuses mean in the new set.
+ *
+ * Records already in Drive carry the old names, and Drive is the source of
+ * truth — there is no table to run a migration against. So they are translated
+ * as they are read, and a record keeps its old name on disk until something
+ * writes it back. Nothing is rewritten in bulk: a read-only deployment of this
+ * change leaves every existing document untouched and still correct.
+ *
+ * `submitted` becomes `under_review` rather than `approved`: the whole point
+ * of §11 is that nothing reaches a publisher unreviewed, and quietly treating
+ * a queue of already-submitted work as approved would skip the review step for
+ * exactly the content that never had one.
+ */
+export const LEGACY_VIDEO_STATUS: Record<string, VideoStatus> = {
+  draft: "uploaded",
+  submitted: "under_review",
+  published: "published",
+};
+
+/** Reads a stored status, translating the pre-§11 names. */
+export function normaliseVideoStatus(stored: string): VideoStatus {
+  if ((VIDEO_STATUSES as readonly string[]).includes(stored)) return stored as VideoStatus;
+  return LEGACY_VIDEO_STATUS[stored] ?? "uploaded";
+}
+
+/**
+ * Campaign & Content Management PRD §7 — the campaign's own state.
+ *
+ * Explicit rather than derived from the dates. A campaign that has not started
+ * can be closed early, and one whose end date has passed is not finished until
+ * somebody says so — deriving this from a date would overrule both.
+ */
+export const CAMPAIGN_STATUSES = ["upcoming", "running", "completed"] as const;
+export type CampaignStatus = typeof CAMPAIGN_STATUSES[number];
 
 /** §22.2 — an event is Unassigned until a Manager picks an editor. */
 export const EVENT_STATUSES = ["unassigned", "open", "completed"] as const;
@@ -55,6 +104,10 @@ export interface ActivityEntry {
 /** §19 — the four in-app notifications the workflow raises. */
 export const NOTIFICATION_KINDS = [
   "video_submitted", "event_assigned", "event_reassigned", "event_completed",
+  /* Campaign & Content Management PRD §14. The editor is told the outcome of
+     a review, the publisher about work due, and the manager about a campaign
+     running out of time. */
+  "video_approved", "video_rejected", "posting_due", "campaign_deadline",
 ] as const;
 export type NotificationKind = typeof NOTIFICATION_KINDS[number];
 
@@ -69,8 +122,13 @@ export interface WorkflowNotification {
   message: string;
   createdAt: string;
   readAt?: string | null;
-  /** What the notification is about, so the UI can link straight to it. */
-  subject?: { type: "video" | "event"; id: string } | null;
+  /**
+   * What the notification is about, so the UI can link straight to it — and
+   * so a repeat of the same notice can be recognised as a repeat. A notice
+   * with no subject can never be deduplicated, which for anything raised on
+   * a timer means it repeats forever.
+   */
+  subject?: { type: "video" | "event" | "campaign"; id: string } | null;
 }
 
 /** §6.2 / §4.2 — a registered user of the video workflow. */
@@ -94,6 +152,49 @@ export interface VideoUser {
   notifications?: WorkflowNotification[];
 }
 
+/**
+ * Campaign & Content Management PRD §7 + §17.
+ *
+ * §17 is the reason this type exists: "One Campaign = One Centralized
+ * Workspace". A campaign used to be a free-text string on each video, which
+ * made the campaign a label rather than a thing — nothing could be counted
+ * against it, nothing could belong to it, and two spellings were two
+ * campaigns. Everything the PRD asks a Manager to monitor (§5) and the
+ * dashboards to total (§12) needs a campaign that exists on its own.
+ */
+export interface CampaignRecord {
+  id: string;
+  /** §7 — also the Drive folder name for this campaign's assets (§9). */
+  name: string;
+  description: string;
+  /** Calendar days, YYYY-MM-DD. */
+  startDate: string;
+  endDate: string;
+  /** §7 "Campaign Manager" — a VideoUser id, or null while unassigned. */
+  campaignManagerId?: string | null;
+  /** §7/§8 — the pages this campaign posts to. */
+  socialPageIds: string[];
+  status: CampaignStatus;
+  /**
+   * §7 "Posting Requirements" — how many posts this campaign owes in total.
+   * §5 counts published against it to show what remains, so 0 means "no
+   * target set" rather than "nothing to do".
+   */
+  requiredPosts: number;
+  notes: string;
+  /**
+   * §9 — where this campaign's assets live in Drive. Recorded per campaign
+   * because the layout introduced with campaigns applies only to new ones;
+   * everything uploaded before kept the folders and names it already had, and
+   * the links people hold still work. A campaign with no folders recorded is
+   * one from before, and falls back to the original layout.
+   */
+  driveFolders?: { videos: string; captions: string; published: string } | null;
+  createdAt: string;
+  updatedAt: string;
+  activity: ActivityEntry[];
+}
+
 /** §22.1 */
 export interface VideoRecord {
   id: string;
@@ -107,8 +208,20 @@ export interface VideoRecord {
   title: string;
   /** What the editor typed in the "Video Title" field (§9). Display only. */
   editorTitle: string;
-  /** §9.1 — the campaign; also the Drive sub-folder name under Videos/. */
+  /**
+   * §9.1 — the campaign's NAME, and the Drive sub-folder name under Videos/
+   * for anything uploaded before campaigns became records. Kept on the video
+   * so an older record still says which campaign it belongs to, and so the
+   * name displays without a second lookup.
+   */
   client: string;
+  /**
+   * Campaign & Content Management PRD §17 — the campaign this video belongs
+   * to, once campaigns are things rather than typed-in text. Null on every
+   * record from before, which is what makes those the "legacy" path: they
+   * have a campaign name and no campaign.
+   */
+  campaignId?: string | null;
   editorId: string;
   caption: string;
   status: VideoStatus;
@@ -127,11 +240,31 @@ export interface VideoRecord {
   sizeBytes?: number | null;
   mimeType?: string | null;
   platform?: string | null;
+  /**
+   * §2/§3 — the social media pages this video is for, chosen by the editor at
+   * upload from the pages its campaign posts to. Empty on records from before
+   * pages could be picked, and on an upload with no campaign to pick from.
+   */
+  socialPageIds?: string[];
   notes?: string | null;
   tags?: string[];
   createdAt: string;
   updatedAt: string;
   submittedAt?: string | null;
+  /** §11 — who approved it, and when. */
+  approvedBy?: string | null;
+  approvedAt?: string | null;
+  /**
+   * §11 — "Editors should be able to see the reason when content is
+   * rejected." Kept on the record rather than only in the activity log so the
+   * editor's own view can show it without reading the audit trail.
+   */
+  rejectionReason?: string | null;
+  rejectedBy?: string | null;
+  rejectedAt?: string | null;
+  /** §4 — the intended posting time a Publisher records when scheduling. */
+  scheduledFor?: string | null;
+  scheduledBy?: string | null;
   publishedBy?: string | null;
   publishedAt?: string | null;
   liveUrls?: Partial<Record<LiveUrlPlatform, string>>;
@@ -148,6 +281,20 @@ export interface EventRecord {
   client?: string | null;
   assignedEditorId?: string | null;
   assignedBy?: string | null;
+  /*
+   * Campaign & Content Management PRD §5 — what a calendar entry must show:
+   * "Campaign Name, Social Media Page, Content Type, Posting Date/Time,
+   * Assigned Publisher and Status". `date` and `status` were already here;
+   * these are the rest. All optional, because an event can be put in the
+   * calendar before any of it is decided — which is usually why it is there.
+   */
+  campaignId?: string | null;
+  socialPageId?: string | null;
+  /** Reel, Post, Story — free text, since the platforms keep inventing more. */
+  contentType?: string | null;
+  /** §5 "Posting Date/Time" — the time of day, where `date` is the day. */
+  postingAt?: string | null;
+  assignedPublisherId?: string | null;
   status: EventStatus;
   createdAt: string;
   updatedAt: string;
@@ -173,7 +320,9 @@ export interface WorkflowStoreDoc {
   sequences?: Record<string, number>;
 }
 export interface EventStoreDoc { version: 1; events: EventRecord[] }
+export interface CampaignStoreDoc { version: 1; campaigns: CampaignRecord[] }
 
 export const EMPTY_USER_STORE: UserStoreDoc = { version: 1, users: [] };
 export const EMPTY_WORKFLOW_STORE: WorkflowStoreDoc = { version: 1, videos: [], sequences: {} };
 export const EMPTY_EVENT_STORE: EventStoreDoc = { version: 1, events: [] };
+export const EMPTY_CAMPAIGN_STORE: CampaignStoreDoc = { version: 1, campaigns: [] };
