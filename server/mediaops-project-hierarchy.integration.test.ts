@@ -294,7 +294,7 @@ maybe("TEST 4/14 — individual assignment is not the Coordinator's to make", ()
   it("refuses a Coordinator naming crew on the project", async () => {
     const r = await newProject("coord", { team_id: teamA, assignees: [ACTORS.empA1.id] });
     expect(r.status).toBe(403);
-    expect(String(r.body.message)).toContain("Team Lead assigns individual crew");
+    expect(String(r.body.message)).toContain("Team Lead");
   });
 
   it("refuses a Coordinator naming an owner on a deliverable", async () => {

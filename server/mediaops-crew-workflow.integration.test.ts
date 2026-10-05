@@ -221,6 +221,46 @@ maybe("project creation — the Coordinator routes to ONE team", () => {
   });
 });
 
+/* ── An EMPLOYEE's project is their own ────────────────────────────────────── */
+
+maybe("employee project creation — assigned to themselves, never to a team", () => {
+  const mine = (extra: Record<string, unknown> = {}) => as("empA1", "POST", "/projects", {
+    name: `${PX} my own project ${Math.random().toString(36).slice(2, 8)}`, project_type_id: projectTypeId,
+    start_date: "2026-10-01", end_date: "2026-10-10", ...extra });
+
+  it("an employee creates a project, and it is theirs: owner and PM, no team", async () => {
+    const r = await mine({ deliverables: [{ title: "Edited Photos", deliverable_type_id: dtype }] });
+    expect(r.status).toBe(201);
+    const p = r.body.project as Record<string, unknown>;
+    expect(p.owner_id).toBe(ACTORS.empA1.id);
+    expect(p.team_id).toBe(null);
+    const pm = await pool.query(
+      `SELECT user_id FROM mo_project_assignments WHERE project_id=$1 AND is_project_manager AND removed_at IS NULL`, [p.id]);
+    expect(pm.rows.map((x) => x.user_id)).toEqual([ACTORS.empA1.id]);
+  });
+
+  it("an employee cannot route their project to a team — their own or another", async () => {
+    expect((await mine({ team_id: teamA })).status).toBe(403);
+    expect((await mine({ team_id: teamB })).status).toBe(403);
+  });
+
+  it("an employee names nobody but themselves", async () => {
+    expect((await mine({ deliverables: [{ title: "x", deliverable_type_id: dtype, owner_id: ACTORS.empA2.id }] })).status).toBe(403);
+    expect((await mine({ assignees: [ACTORS.empA2.id] })).status).toBe(403);
+    const ok = await mine({ deliverables: [{ title: "Mine", deliverable_type_id: dtype, owner_id: ACTORS.empA1.id }] });
+    expect(ok.status).toBe(201);
+  });
+
+  it("a colleague cannot run an employee's project", async () => {
+    const r = await mine();
+    const pid = Number((r.body.project as Record<string, unknown>).id);
+    expect((await as("empA2", "PATCH", `/projects/${pid}`, { description: "mine now" })).status).toBe(403);
+    expect((await as("empA2", "POST", `/projects/${pid}/deliverables`,
+      { title: `${PX} x`, deliverable_type_id: dtype })).status).toBe(403);
+    expect((await as("leadB", "PATCH", `/projects/${pid}`, { description: "x" })).status).toBe(403);
+  });
+});
+
 /* ── TEAM LEAD (6–9) ──────────────────────────────────────────────────────── */
 
 maybe("team lead — allocates inside their own team, on their own team's projects", () => {
@@ -508,6 +548,152 @@ maybe("approval bypass — there is one road to approved", () => {
   });
 });
 
+/* ── Phase 2 review findings (self-naming, team re-leading, bypass holes) ─── */
+
+maybe("Phase 2 — the self-naming, bypass and routing holes stay closed", () => {
+  it("the Coordinator cannot name themselves (or any employee) as deliverable owner at creation", async () => {
+    const r = await as("coord", "POST", "/projects", {
+      name: `${PX} self ${Math.random().toString(36).slice(2, 7)}`, project_type_id: projectTypeId,
+      start_date: "2026-10-01", end_date: "2026-10-10", team_id: teamA,
+      deliverables: [{ title: "self", deliverable_type_id: dtype, owner_id: ACTORS.coord.id }] });
+    expect(r.status).toBe(403);
+    const r2 = await as("coord", "POST", "/projects", {
+      name: `${PX} emp ${Math.random().toString(36).slice(2, 7)}`, project_type_id: projectTypeId,
+      start_date: "2026-10-01", end_date: "2026-10-10", team_id: teamA,
+      deliverables: [{ title: "emp", deliverable_type_id: dtype, owner_id: ACTORS.empA1.id }] });
+    expect(r2.status).toBe(403);
+  });
+
+  it("POST /requests/:id/lead refuses the Coordinator naming themselves or an employee", async () => {
+    const r1 = await pool.query(
+      `INSERT INTO mo_requests (event_name, priority, status) VALUES ($1,'high','ready') RETURNING id`,
+      [`${PX} r1 ${Math.random().toString(36).slice(2, 7)}`]);
+    expect((await as("coord", "POST", `/requests/${r1.rows[0].id}/lead`, { lead_user_id: ACTORS.coord.id })).status).toBe(400);
+    expect((await as("coord", "POST", `/requests/${r1.rows[0].id}/lead`, { lead_user_id: ACTORS.empA1.id })).status).toBe(400);
+    expect((await as("coord", "POST", `/requests/${r1.rows[0].id}/lead`, { lead_user_id: ACTORS.leadA.id })).status).toBe(200);
+  });
+
+  it("convert's lead_user_id fallback must name a Team Lead, never the Coordinator", async () => {
+    const r = await pool.query(
+      `INSERT INTO mo_requests (event_name, priority, status) VALUES ($1,'high','ready') RETURNING id`,
+      [`${PX} r2 ${Math.random().toString(36).slice(2, 7)}`]);
+    const bad = await as("coord", "POST", `/requests/${r.rows[0].id}/convert`, {
+      project_type_id: projectTypeId, lead_user_id: ACTORS.coord.id,
+      start_date: "2026-10-01", end_date: "2026-10-10" });
+    expect(bad.status).toBe(400);
+    const ok = await as("coord", "POST", `/requests/${r.rows[0].id}/convert`, {
+      project_type_id: projectTypeId, lead_user_id: ACTORS.leadA.id,
+      start_date: "2026-10-01", end_date: "2026-10-10" });
+    expect(ok.status).toBe(201);
+    expect((await project(Number(ok.body.project_id))).owner_id).toBe(ACTORS.leadA.id);
+  });
+
+  it("changing a team's lead moves owner_id and the PM row to the new lead, and strips old-lead manage rights", async () => {
+    const { pid } = await routed(teamA);
+    const flip = await as("admin", "PATCH", `/teams/${teamA}`,
+      { lead_user_id: ACTORS.leadB.id, allow_multi_lead: true });
+    expect(flip.status).toBe(200);
+    const p = await project(pid);
+    expect(p.owner_id).toBe(ACTORS.leadB.id);
+    const pm = await pool.query(
+      `SELECT user_id FROM mo_project_assignments WHERE project_id=$1 AND is_project_manager AND removed_at IS NULL`, [pid]);
+    expect(pm.rows.map((r) => r.user_id)).toEqual([ACTORS.leadB.id]);
+    expect((await as("leadA", "PATCH", `/projects/${pid}`, { description: "stale" })).status).toBe(403);
+    expect((await as("leadB", "PATCH", `/projects/${pid}`, { description: "fresh" })).status).toBe(200);
+    // restore
+    await as("admin", "PATCH", `/teams/${teamA}`, { lead_user_id: ACTORS.leadA.id, allow_multi_lead: true });
+  });
+
+  it("/deliver cannot undo a reviewer's send-back, and refuses cancelled scope", async () => {
+    const { did } = await ownedBy("empA1");
+    await as("empA1", "POST", `/deliverables/${did}/versions`, drive("x1"));
+    await as("leadA", "POST", `/deliverables/${did}/review`, { outcome: "approved" });
+    await as("empA1", "POST", `/deliverables/${did}/deliver`, {});
+    await as("leadA", "POST", `/deliverables/${did}/approval`, { approval_status: "changes_requested", note: "revise" });
+    const back = await as("empA1", "POST", `/deliverables/${did}/deliver`, {});
+    expect(back.status).toBe(400);
+    expect((await deliv(did)).status).toBe("changes_requested");
+    const second = await ownedBy("empA1");
+    await pool.query(`UPDATE mo_deliverables SET status='cancelled' WHERE id=$1`, [second.did]);
+    expect((await as("empA1", "POST", `/deliverables/${second.did}/deliver`, {})).status).toBe(400);
+  });
+
+  it("/versions is refused on cancelled, not_required, approved and delivered deliverables", async () => {
+    const { did } = await ownedBy("empA1");
+    for (const bad of ["cancelled", "not_required", "approved", "delivered"]) {
+      await pool.query(`UPDATE mo_deliverables SET status=$1 WHERE id=$2`, [bad, did]);
+      const r = await as("empA1", "POST", `/deliverables/${did}/versions`, drive(bad));
+      expect(r.status, `/versions on ${bad}`).toBe(400);
+    }
+  });
+
+  it("/dispatch is refused after a send-back and when already dispatched", async () => {
+    const { did } = await ownedBy("empA1");
+    await as("empA1", "POST", `/deliverables/${did}/versions`, drive("v"));
+    await as("leadA", "POST", `/deliverables/${did}/review`, { outcome: "approved" });
+    await as("empA1", "POST", `/deliverables/${did}/deliver`, {});
+    await as("leadA", "POST", `/deliverables/${did}/approval`, { approval_status: "changes_requested" });
+    expect((await as("coord", "POST", `/deliverables/${did}/dispatch`, { recipient: "x" })).status).toBe(400);
+    // Already-dispatched items cannot be re-dispatched over the top.
+    await pool.query(`UPDATE mo_deliverables SET status='approved', approval_status='pending', dispatch_status='delivered'
+                      WHERE id=$1`, [did]);
+    expect((await as("coord", "POST", `/deliverables/${did}/dispatch`, { recipient: "x" })).status).toBe(400);
+  });
+
+  it("a lead-owned/submitted version notifies the Admins, not the lead's own queue", async () => {
+    const { pid } = await routed(teamA);
+    const own = await pool.query(
+      `UPDATE mo_deliverables SET owner_id=$1 WHERE project_id=$2 RETURNING id`,
+      [ACTORS.leadA.id, pid]);
+    const did = Number(own.rows[0].id);
+    await as("leadA", "POST", `/deliverables/${did}/versions`, drive("own"));
+    const admins = await pool.query(`SELECT id FROM users WHERE team='media' AND role IN ('admin','super_admin')`);
+    for (const a of admins.rows) {
+      const n = await pool.query(
+        `SELECT COUNT(*)::int c FROM mo_notifications WHERE user_id=$1 AND entity_type='deliverable' AND entity_id=$2`,
+        [a.id, did]);
+      expect(Number(n.rows[0].c), `admin ${a.id} not told`).toBeGreaterThanOrEqual(1);
+    }
+    const leadNotes = await pool.query(
+      `SELECT COUNT(*)::int c FROM mo_notifications WHERE user_id=$1 AND entity_type='deliverable' AND entity_id=$2`,
+      [ACTORS.leadA.id, did]);
+    expect(Number(leadNotes.rows[0].c)).toBe(0);
+  });
+
+  it("adding a deliverable with an owner notifies them, and they join the project crew", async () => {
+    const { pid } = await routed(teamA);
+    const r = await as("leadA", "POST", `/projects/${pid}/deliverables`,
+      { title: `${PX} new`, deliverable_type_id: dtype, owner_id: ACTORS.empA2.id });
+    expect(r.status).toBe(201);
+    const did = Number((r.body.deliverable as Record<string, unknown>).id);
+    const n = await pool.query(
+      `SELECT title FROM mo_notifications WHERE user_id=$1 AND entity_type='deliverable' AND entity_id=$2`,
+      [ACTORS.empA2.id, did]);
+    expect(n.rows.map((x) => x.title)).toContain("New assignment");
+    const crew = await pool.query(
+      `SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`,
+      [pid, ACTORS.empA2.id]);
+    expect(crew.rowCount).toBe(1);
+  });
+});
+
+/* ── Phase 17 — no information leak through transition-first errors ────── */
+
+maybe("Phase 17 — authorization runs before the state machine", () => {
+  it("POST /projects/:id/status answers 403 before BR-1 for unauthorized callers", async () => {
+    const { pid } = await routed(teamA);
+    // Admin moves it into in_production
+    expect((await as("admin", "POST", `/projects/${pid}/status`, { status: "in_production" })).status).toBe(200);
+    // Unauthorized callers get 403 even on a no-op (in_production → in_production is not valid),
+    // so the project's current state is not leaked through the BR-1 message.
+    for (const who of ["leadB", "coord", "empA1", "empA2", "empB1"] as const) {
+      const r = await as(who, "POST", `/projects/${pid}/status`, { status: "in_production" });
+      expect(r.status, `${who} should be 403, got ${r.status}: ${JSON.stringify(r.body)}`).toBe(403);
+      expect(String(r.body.message)).not.toContain("in_production");
+    }
+  });
+});
+
 /* ── PROJECT CONVERSION (27) ──────────────────────────────────────────────── */
 
 maybe("conversion — a request becomes a project on the team it was routed to", () => {
@@ -566,7 +752,7 @@ maybe("legacy projects, PMs, shoots and ad-hoc assignments", () => {
     expect((await as("leadA", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(200);
   });
 
-  it("shoot crew follows the same scope", async () => {
+  it("shoot crew follows the same scope and notifies each added member", async () => {
     const { pid } = await routed(teamA);
     const shoot = await one(
       `INSERT INTO mo_shoots (project_id, title, shoot_date, location, status, created_by)
@@ -574,8 +760,24 @@ maybe("legacy projects, PMs, shoots and ad-hoc assignments", () => {
     expect((await as("leadB", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empB1.id] })).status).toBe(403);
     expect((await as("leadA", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empB1.id] })).status).toBe(403);
     expect((await as("leadA", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empA1.id] })).status).toBe(201);
+    // The newly-added crew member is told, with the shoot's title and date in the body.
+    const n = await pool.query(
+      `SELECT title, body FROM mo_notifications WHERE user_id=$1 AND entity_type='shoot' AND entity_id=$2`,
+      [ACTORS.empA1.id, shoot.id]);
+    expect(n.rows.map((r) => r.title)).toContain("You are on a shoot");
+    expect(String(n.rows[0]?.body ?? "")).toContain("2026-10-05");
     expect((await as("leadB", "PATCH", `/shoots/${shoot.id}`, { notes: "x" })).status).toBe(403);
     expect((await as("leadA", "PATCH", `/shoots/${shoot.id}`, { notes: "x" })).status).toBe(200);
+  });
+
+  it("adding a crew member via /projects/:id/assignments notifies them", async () => {
+    const { pid } = await routed(teamA);
+    const r = await as("leadA", "POST", `/projects/${pid}/assignments`, { user_id: ACTORS.empA2.id });
+    expect(r.status).toBe(201);
+    const n = await pool.query(
+      `SELECT title FROM mo_notifications WHERE user_id=$1 AND entity_type='project' AND entity_id=$2`,
+      [ACTORS.empA2.id, pid]);
+    expect(n.rows.map((x) => x.title)).toContain("You are on a project");
   });
 
   it("an assignment's members cannot be replaced from outside its project's team", async () => {

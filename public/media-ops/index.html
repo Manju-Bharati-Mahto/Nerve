@@ -3706,7 +3706,7 @@ const CAPS = {
   'report.view':            {employee:'S',team_lead:'T',admin:'A',coordinator:'S'},
   'report.review':          {employee:'-',team_lead:'T',admin:'A'},
   'report.unlock':          {employee:'-',team_lead:'T',admin:'A'},
-  'project.create':         {employee:'-',team_lead:'A',admin:'A',coordinator:'A'},
+  'project.create':         {employee:'A',team_lead:'A',admin:'A',coordinator:'A'},
   'project.approve':        {employee:'-',team_lead:'T',admin:'A'},
   'project.edit':           {employee:'OWN',team_lead:'T',admin:'A',coordinator:'A'},
   'project.status':         {employee:'OWN',team_lead:'T',admin:'A',coordinator:'A'},
@@ -17754,26 +17754,125 @@ const NOTIF_KIND={
   creator_message:{l:'Message',ic:'mail'}, creator_overdue:{l:'Overdue',ic:'alert',c:'var(--danger)'}
 };
 const notifKind=k=>NOTIF_KIND[k]||{l:auditWords(k)||'Notice',ic:'bell'};
+/* Where a notification takes the reader when they tap it. Shared by the
+   bell-list, the drawer and the full page — any new entity_type goes HERE,
+   not re-implemented at each call site. Falls back to the Notifications page
+   if the server sent a kind the client has not caught up with. */
+function notifTarget(n){
+  const id=n.entity_id!=null?Number(n.entity_id):null;
+  switch(String(n.entity_type||'')){
+    case 'project':        return id?{hash:'#/media/projects/'+id}:null;
+    case 'deliverable':    return id?{drawer:()=>drawerDeliverable(id)}:null;
+    case 'deliverable_version': {
+      /* The version row's deliverable is what the reviewer wants to open; the
+         version itself has no page of its own. */
+      const dl=(DB.deliverable_versions||[]).find(v=>v.id===id);
+      return dl?{drawer:()=>drawerDeliverable(dl.deliverable_id)}:null;
+    }
+    case 'shoot':          return id?{drawer:()=>drawerShoot(id)}:null;
+    case 'equipment':      return id?{async:(cb)=>withAsset(id,(e)=>{ if(e&&e.asset_tag) cb('#/media/equipment/'+e.asset_tag); })}:null;
+    case 'maintenance':    return {hash:'#/media/equipment'};
+    case 'daily_report':
+    case 'report':         return {hash:'#/media/reports'};
+    case 'leave_request':  return {hash:'#/media/leave'};
+    case 'request':        return {hash:'#/media/requests'};
+    case 'casting_request':return {hash:'#/media/casting'};
+    case 'assignment': {
+      /* An mo_assignments row — jump to its project. The row itself is
+         rendered inside the project page, so taking the reader there puts
+         the right card in front of them. */
+      const a=(DB.assignments||[]).find(x=>x.id===id);
+      return a&&a.project_id?{hash:'#/media/projects/'+a.project_id}:{hash:'#/media/my-day'};
+    }
+    case 'team':           return id?{hash:'#/media/team/'+id}:{hash:'#/media/team'};
+    case 'kra':            return {hash:'#/media/performance'};
+    case 'user':           return id?{hash:'#/media/team/'+id}:null;
+    default:               return null;
+  }
+}
+/* Who sent this notification — classified by its (kind, entity_type), because
+   mo_notifications holds no actor column. Used to carve a Team Lead's inbox
+   into "From Admin & Coordinator" (routing decisions handed to them) vs. "From
+   your team" (versions submitted, work handed back) vs. the automation chatter. */
+function notifSource(n){
+  const k=String(n.kind||''), e=String(n.entity_type||'');
+  // A Coordinator or Admin routed a project / team to the Team Lead.
+  if(k==='assignment' && (e==='project' || e==='team')) return 'coord';
+  // A Coordinator intake / casting request / request-converted event.
+  if(k==='casting' || k==='request') return 'coord';
+  // Dispatch is the Coordinator telling an owner "your work went out".
+  if(k==='deliverable' && e==='deliverable') return 'coord';
+  // Automation chatter (overdue, reminder, approval queue, due-soon) is its own group.
+  if(['overdue','reminder','approval','automation','due','duplicate','digest'].includes(k)) return 'auto';
+  // Everything else (review verdicts, leave decisions, SMC) is from a human teammate.
+  return 'team';
+}
+const NOTIF_SOURCE={
+  coord:{l:'From Admin & Coordinator',sub:'Projects, routing and intake decisions handed to you'},
+  team: {l:'From your team',sub:'Reviews, submissions and crew replies'},
+  auto: {l:'Automations',sub:'Overdue, reminders and the review queue'},
+};
+/* Day-bucket for the "daily brief" grouping — a short English label so a
+   Team Lead can see at a glance what landed today and what came in earlier. */
+function notifDayBucket(n){
+  const d=String(n.created_at||'').slice(0,10); if(!d) return 'Earlier';
+  const t=rtoday();
+  if(d===t) return 'Today';
+  if(d===D.add(t,-1)) return 'Yesterday';
+  if(d>=D.add(t,-7)) return 'This week';
+  return 'Earlier';
+}
 function viewNotifications(){
   const mine=DB.notifications.filter(n=>n.user_id===S.me).sort((a,b)=>(D.at(b.created_at)||0)-(D.at(a.created_at)||0));
   const kinds=[...new Set(mine.map(n=>n.kind))];
+  /* Role-aware segmentation. A Team Lead sees three cards: the Coordinator /
+     Admin's work on top (what the user asked for — a "daily brief" surface),
+     then their team's traffic, then the automations. Everyone else sees one
+     list in time order; grouping them doesn't help a role that only receives
+     one or two kinds. */
+  const row=(n)=>`<button class="list-row" style="${n.is_read?'opacity:.62':''};text-align:left"
+      data-act="openNotif" data-nid="${n.id}" title="Open">
+    <span class="nk-ico" aria-hidden="true" style="color:${notifKind(n.kind).c||'var(--info)'}">${ic(notifKind(n.kind).ic)}</span>
+    <span class="lr-main"><b>${esc(n.title)}</b><span>${esc(n.body)}</span>
+      <span class="xsmall mut3">${esc(notifDayBucket(n))} · ${esc(D.since(n.created_at))}</span></span>
+    <span class="chip">${esc(notifKind(n.kind).l)}</span>
+    ${!n.is_read?'<span style="width:7px;height:7px;border-radius:50%;background:var(--brand-500)"></span>':''}
+  </button>`;
+  const empty=`<div class="empty" style="padding:40px"><div class="e-ico">◔</div><h4>Nothing new</h4></div>`;
+  let main;
+  if(isTL()){
+    const groups={coord:mine.filter(n=>notifSource(n)==='coord'),
+                  team:mine.filter(n=>notifSource(n)==='team'),
+                  auto:mine.filter(n=>notifSource(n)==='auto')};
+    /* A Team Lead's daily brief: the Coord/Admin card leads, with Today's items
+       and an "Earlier" fold. */
+    const todayCoord=groups.coord.filter(n=>notifDayBucket(n)==='Today');
+    main=`${['coord','team','auto'].map(k=>{
+      const list=groups[k], today=list.filter(n=>notifDayBucket(n)==='Today'),
+            rest=list.filter(n=>notifDayBucket(n)!=='Today');
+      const meta=NOTIF_SOURCE[k];
+      return `<div class="card"><div class="card-head"><h3>${esc(meta.l)}</h3>
+          <div class="ca"><span class="chip">${list.length}</span>${!list.length?'':
+            `<span class="xsmall mut3">${today.length} today</span>`}</div></div>
+        <div class="card-body"><p class="small mut3 mb3">${esc(meta.sub)}</p></div>
+        <div class="card-body flush">
+          ${list.length?[...today,...rest].map(row).join(''):`<div class="empty" style="padding:22px"><p>${
+            k==='coord'?'No new routing yet. Projects you are handed will land here.':
+            k==='team'?'No reviews or submissions waiting.':'Nothing to automate right now.'}</p></div>`}
+        </div></div>`;}).join('')}
+      ${todayCoord.length?`<p class="xsmall mut3 mb3">Today's brief: ${todayCoord.length} item(s) routed to you.</p>`:''}`;
+  } else {
+    main=`<div class="card"><div class="card-body flush">
+      ${mine.length?mine.map(row).join(''):empty}
+    </div></div>`;
+  }
   return `<div class="page-head">
       <div><div class="crumb">Notifications</div><h1 class="page-title">Notifications</h1>
       <div class="page-sub">Push notifications are held between 22:00 and 07:00 and delivered afterwards.</div></div>
-      <div class="page-actions"><button class="btn" data-act="markAllRead">Mark all read</button>
-        </div></div>
+      <div class="page-actions"><button class="btn" data-act="markAllRead">Mark all read</button></div></div>
 
     <div class="grid g21">
-      <div class="card"><div class="card-body flush">
-        ${mine.map(n=>`<div class="list-row" style="${n.is_read?'opacity:.62':''}" data-act="openNotif" data-nid="${n.id}">
-          <span class="nk-ico" aria-hidden="true" style="color:${notifKind(n.kind).c||'var(--info)'}">${ic(notifKind(n.kind).ic)}</span>
-          <span class="lr-main"><b>${esc(n.title)}</b><span>${esc(n.body)}</span></span>
-          <span class="chip">${esc(notifKind(n.kind).l)}</span>
-          <span class="xsmall mut3 nowrap" title="${esc(D.fmtAt(n.created_at))}">${esc(D.since(n.created_at))}</span>
-          ${!n.is_read?'<span style="width:7px;height:7px;border-radius:50%;background:var(--brand-500)"></span>':''}
-        </div>`).join('')||'<div class="empty" style="padding:40px"><div class="e-ico">◔</div><h4>Nothing new</h4></div>'}
-      </div></div>
-
+      <div class="fc gap4">${main}</div>
       <div class="fc gap4">
         <div class="card"><div class="card-head"><h3>Channels</h3></div>
           <div class="card-body">
@@ -19265,7 +19364,7 @@ function openNewProject(){
   modal(`<div class="mo-head"><div><h2>New project</h2>
       <p>${can('project.approve')?'You can create projects directly.'
         :isCoord()?'You allocate the project to a team. That team’s lead assigns the individual crew.'
-        :'As an employee, your project enters <b>Pending Approval</b> before it is reportable-against. Approval is one click for a TL and auto-reminds after 24h.'}</p></div>
+        :'The project is assigned to you. Only the Coordinator routes a project to a team.'}</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
     <div class="mo-body">
       <div class="field"><label class="lbl">Name <span class="req">*</span></label>
@@ -19291,12 +19390,17 @@ function openNewProject(){
         <div class="field"><label class="lbl">End date <span class="req">*</span></label><input class="inp" type="date" id="np-end" value="${D.add(rtoday(),7)}"></div>
       </div>
       <div class="field"><label class="lbl">Description</label><textarea class="inp" id="np-desc" placeholder="Scope, constraints, who asked for it…"></textarea></div>
-      <div class="field"><label class="lbl">Assigned team</label>
+      ${isEmp()
+        /* An employee's project is theirs — POST /projects refuses a team from them. */
+        ? `<div class="field"><label class="lbl">Assigned to</label>
+            <div class="chip">${esc((user(S.me)||{}).full_name||'You')}</div><input type="hidden" id="np-team" value="">
+            <div class="hint">Your project is assigned to you. Only the Coordinator routes a project to a team.</div></div>`
+        : `<div class="field"><label class="lbl">Assigned team</label>
         <select class="inp" id="np-team">
           ${isTL()&&assignableTeams().length?'':'<option value="">— Not assigned yet</option>'}
           ${assignableTeams().map(t=>`<option value="${t.id}">${esc(t.name)} — ${esc(user(t.lead_user_id).full_name)}</option>`).join('')}
         </select>
-        <div class="hint">The selected team lead will assign individual crew members to each deliverable.</div></div>
+        <div class="hint">The selected team lead will assign individual crew members to each deliverable.</div></div>`}
       <div class="field">
         <div class="between mb2"><label class="lbl" style="margin:0">Deliverables</label>
           <button type="button" class="btn xs" data-act="npAddDeliverable">＋ Add deliverable</button></div>
@@ -19305,7 +19409,7 @@ function openNewProject(){
     </div>
     <div class="mo-foot"><span class="left small mut3">Duplicate scan runs on create</span>
       <button class="btn" onclick="closeModal()">Cancel</button>
-      <button class="btn primary" data-act="createProject">${(can('project.approve')||isCoord())?'Create project':'Propose project'}</button></div>`,{size:'wide'});
+      <button class="btn primary" data-act="createProject">Create project</button></div>`,{size:'wide'});
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=e=>{e.stopPropagation();ACTIONS[n.dataset.act](n.dataset,n);});
   /* Autocomplete from what this crew has actually produced before — a hint
      drawn from real history, never a list the creator must pick from. */
@@ -20965,8 +21069,8 @@ const ACTIONS = {
     if(end<start){toast('end date must be on or after the start date','bad');return;}
     const tid=+$('#np-type').value;
     const id=Math.max(...DB.projects.map(p=>p.id))+1;
-    // The API creates every project active; only the copy differs by role.
-    const gated=!(can('project.approve')||isCoord());
+    // The API creates every project active, an employee's included — no proposal step.
+    const gated=false;
     const p={id,department_id:1,campus_id:1,academic_year_id:+$('#np-year').value,project_type_id:tid,
       code:'MC-2627-'+String(100+id),name,description:$('#np-desc').value.trim(),
       academic_unit_id:$('#np-unit').value?+$('#np-unit').value:null,status:gated?'proposed':'planning',priority:$('#np-pri').value,
@@ -24901,17 +25005,19 @@ const ACTIONS = {
   },
   markAllRead:()=>{DB.notifications.filter(n=>n.user_id===S.me).forEach(n=>n.is_read=true);render();toast('All marked read','ok');
     if(window.__MO_LIVE__)MO_API.post('/notifications/read',{}).catch(()=>{});},
-  openNotif:(d)=>{const n=DB.notifications.find(x=>x.id===+d.nid);if(!n)return;n.is_read=true;
+  openNotif:(d)=>{const n=DB.notifications.find(x=>x.id===+d.nid);if(!n)return;
+    n.is_read=true;
     if(window.__MO_LIVE__)MO_API.post('/notifications/read',{id:n.id}).catch(()=>{});
-    if(n.entity_type==='deliverable'&&n.entity_id)drawerDeliverable(n.entity_id);
-    else if(n.entity_type==='project'&&n.entity_id)location.hash='#/media/projects/'+n.entity_id;
-    else if(n.entity_type==='equipment'&&n.entity_id)
-      /* The boundary again: opening a notification is a user action, so the
-         asset is fetched here rather than kept in memory for every asset the
-         department owns on the off-chance a notification mentions one. */
-      withAsset(n.entity_id,(e)=>{ if(e&&e.asset_tag) location.hash='#/media/equipment/'+e.asset_tag; });
-    else if(n.entity_type==='shoot'&&n.entity_id)drawerShoot(n.entity_id);
-    else if(n.entity_type==='report')location.hash='#/media/reports';
+    /* Routing is in notifTarget() — one definition for the bell list, the full
+       page and anywhere else a notification can be tapped. */
+    const t=notifTarget(n);
+    if(t){
+      if(t.hash) location.hash=t.hash;
+      else if(t.drawer) t.drawer();
+      /* Boundary: opening a notification is a user action, so an equipment
+         asset is fetched on tap rather than kept in memory for every asset. */
+      else if(t.async) t.async((hash)=>{ location.hash=hash; });
+    }
     render();}
 };
 
