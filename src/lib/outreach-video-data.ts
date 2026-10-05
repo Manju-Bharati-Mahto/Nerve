@@ -180,6 +180,49 @@ export const scheduleVideo = (id: string, scheduledFor: string) =>
     method: 'POST', body: JSON.stringify({ scheduledFor }),
   }).then(r => r.video)
 
+// ── Google Drive connection (§9) ───────────────────────────────────────────
+
+/** Where the workflow's Drive is configured from, and how it stands. */
+export interface DriveStatus {
+  /** Where the Google OAuth client comes from. */
+  client: 'env' | 'app' | 'none'
+  client_id: string | null
+  /** What must be registered on the OAuth client in Google Cloud Console. */
+  redirect_uri: string
+  connected: boolean
+  account_email: string | null
+  /** The Google account the Drive must belong to. */
+  expected_email: string
+  folder: { id: string; name: string | null; url: string | null } | null
+  connected_at: string | null
+  connected_by_name: string | null
+  default_folder_name: string
+  /** env = set on the server (wins); app = connected here; local = dev folder. */
+  source: 'env' | 'app' | 'local' | 'none'
+}
+
+export const getDriveStatus = () => request<DriveStatus>('/drive')
+
+export const saveDriveClient = (clientId: string, clientSecret: string) =>
+  request<DriveStatus>('/drive/client', {
+    method: 'POST', body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+  })
+
+export const setDriveAccount = (email: string) =>
+  request<DriveStatus>('/drive/account', { method: 'POST', body: JSON.stringify({ email }) })
+
+/** Returns Google's sign-in URL, to open in a popup. */
+export const startDriveConnect = () =>
+  request<{ url: string }>('/drive/connect', { method: 'POST' }).then(r => r.url)
+
+export const chooseDriveFolder = (folder: string) =>
+  request<DriveStatus>('/drive/folder', { method: 'POST', body: JSON.stringify({ folder }) })
+
+export const disconnectDrive = () => request<DriveStatus>('/drive', { method: 'DELETE' })
+
+export const syncAllToDrive = () =>
+  request<{ synced: number; failed: Array<{ title: string; error: string }> }>('/drive/sync', { method: 'POST' })
+
 // ── §7 campaigns ───────────────────────────────────────────────────────────
 
 export interface CampaignProgress { required: number; published: number; remaining: number }
@@ -222,9 +265,9 @@ export const updateCampaign = (id: string, patch: Partial<Campaign>) =>
 export const deleteCampaign = (id: string) =>
   request<{ deleted: boolean }>(`/campaigns/${id}`, { method: 'DELETE' })
 
-export const publishVideo = (id: string, liveUrls: Partial<Record<LiveUrlPlatform, string>> = {}) =>
+export const publishVideo = (id: string, liveUrls: Partial<Record<LiveUrlPlatform, string>> = {}, remark = '') =>
   request<{ video: VideoRecord }>(`/videos/${id}/publish`, {
-    method: 'POST', body: JSON.stringify({ live_urls: liveUrls }),
+    method: 'POST', body: JSON.stringify({ live_urls: liveUrls, remark }),
   }).then(r => r.video)
 
 export const setLiveUrls = (id: string, liveUrls: Partial<Record<LiveUrlPlatform, string>>) =>

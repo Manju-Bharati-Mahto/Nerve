@@ -244,7 +244,7 @@ describe("§11.3 / §14.1 — monthly editor video log", () => {
       editorName: "Alice Editor", client: "Client A",
       editorTitle: "My cut", status: "under_review",
     });
-    expect(row.title).toBe("Client A Video 1");
+    expect(row.title).toBe("Client A - Video 1");
     expect(row.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 

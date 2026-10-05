@@ -2,62 +2,51 @@
 /**
  * Where the video workflow's Drive comes from.
  *
- * It used to come from the environment or nowhere, so connecting Drive with
- * the "Sign in with Google" button in Casting Management did nothing for the
- * video workflow — getting it working meant editing the server's env file and
- * minting a refresh token by hand, even with that same Drive already
- * connected in the app.
+ * The outreach team connects its own Google account from inside the video
+ * workflow (drive-connection.ts). It is NOT the Casting connection in Media
+ * Ops — those are different teams with different accounts, and the outreach
+ * workflow must never end up in the casting account's Drive.
  *
  * The rules being tested are about precedence, and each one protects
  * something specific:
  *
  *   - the ENVIRONMENT wins, because what a deployer set explicitly for this
  *     workflow must never be overridden from a dialog;
- *   - the APP CONNECTION beats DRIVE_LOCAL_ROOT, so a leftover dev setting can
- *     never redirect production onto the server's disk;
- *   - the workflow gets ITS OWN FOLDER, never the casting folder, which holds
- *     applicant photos;
- *   - that folder is remembered PER ACCOUNT, so reconnecting a different
- *     Google account does not reuse a folder the new account cannot see.
+ *   - the OUTREACH CONNECTION beats DRIVE_LOCAL_ROOT, so a leftover dev
+ *     setting can never redirect production onto the server's disk;
+ *   - the workflow's root is the folder chosen when the account connected.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-/* ── The app connection, as casting-drive.ts would return it ─────────────── */
+/* ── The outreach connection, as drive-connection.ts would return it ─────── */
 let connection: null | {
   clientId: string; clientSecret: string; refreshToken: string;
   folderId: string; accountEmail: string | null;
 } = null;
 let connectionReads = 0;
-vi.mock("../casting-drive.js", () => ({
-  loadCastingDriveConnection: async () => { connectionReads++; return connection; },
+vi.mock("./drive-connection.js", () => ({
+  loadOutreachDriveConnection: async () => { connectionReads++; return connection; },
 }));
 
-/* ── The settings table ──────────────────────────────────────────────────── */
-const settings = new Map<string, string>();
-vi.mock("../settings-db.js", () => ({
-  getSetting: async (k: string) => settings.get(k) ?? null,
-  setSetting: async (k: string, v: string) => { settings.set(k, v); },
-}));
+/* Proves the casting module is never consulted. */
+const castingRead = vi.fn();
+vi.mock("../casting-drive.js", () => ({ loadCastingDriveConnection: castingRead }));
 
-/* ── Google itself: record which folders get made, and where ─────────────── */
-const madeFolders: Array<{ name: string; parent: string; token: string }> = [];
+/* ── Google itself: which credentials each client was built with ────────── */
+const builtWith: string[] = [];
 vi.mock("../integrations/google-drive.js", async () => {
   const real = await vi.importActual<typeof import("../integrations/google-drive.js")>(
     "../integrations/google-drive.js");
   class FakeGoogleDriveClient {
-    constructor(readonly oauth?: { refreshToken: string }) {}
-    async ensureFolder(name: string, parent: string) {
-      madeFolders.push({ name, parent, token: this.oauth?.refreshToken ?? "env" });
-      return `folder-for-${this.oauth?.refreshToken ?? "env"}`;
-    }
+    constructor(readonly oauth?: { refreshToken: string }) { builtWith.push(oauth?.refreshToken ?? "env"); }
   }
   return { ...real, GoogleDriveClient: FakeGoogleDriveClient };
 });
 
 import { config } from "../config.js";
 import {
-  APP_CONNECTION_ROOT_FOLDER, driveIsConfigured, driveIsLocal, driveSource,
-  ensureDriveResolved, getDriveClient, resetAppDriveConnection, resetDriveClient,
+  driveIsConfigured, driveIsLocal, driveSource, ensureDriveResolved, getDriveClient,
+  resetAppDriveConnection, resetDriveClient,
 } from "./drive-client.js";
 
 const drive = config.drive as Record<string, string>;
@@ -69,17 +58,18 @@ function noEnv() {
   drive.localRoot = "";
 }
 
-const connected = (account: string, token = `rt-${account}`) => ({
+const OUTREACH = "outreach.socialintern@paruluniversity.ac.in";
+const connected = (account = OUTREACH, folderId = "OUTREACH-ROOT") => ({
   clientId: "cid.apps.googleusercontent.com", clientSecret: "secret",
-  refreshToken: token, folderId: "CASTING-FOLDER", accountEmail: account,
+  refreshToken: `rt-${account}`, folderId, accountEmail: account,
 });
 
 beforeEach(() => {
   noEnv();
   connection = null;
   connectionReads = 0;
-  settings.clear();
-  madeFolders.length = 0;
+  builtWith.length = 0;
+  castingRead.mockReset();
   resetDriveClient();
 });
 
@@ -92,65 +82,60 @@ describe("nothing configured", () => {
   });
 });
 
-describe("the app connection (the Casting 'Sign in with Google' button)", () => {
+describe("the outreach connection (Video Workflow → Google Drive)", () => {
   it("is used when the environment configures no Drive", async () => {
-    connection = connected("orm@paruluniversity.ac.in");
+    connection = connected();
     await ensureDriveResolved();
     expect(driveIsConfigured()).toBe(true);
     expect(driveSource()).toBe("app");
     expect(driveIsLocal()).toBe(false);
   });
 
-  it("gives the workflow its own folder in My Drive — never the casting folder", async () => {
-    connection = connected("orm@paruluniversity.ac.in");
+  it("uses the folder chosen when the account connected as the workflow's root", async () => {
+    connection = connected(OUTREACH, "OUTREACH-ROOT");
     await ensureDriveResolved();
-
-    expect(madeFolders).toEqual([
-      { name: APP_CONNECTION_ROOT_FOLDER, parent: "root", token: "rt-orm@paruluniversity.ac.in" },
-    ]);
-    const { rootId } = getDriveClient();
-    expect(rootId).not.toBe("CASTING-FOLDER");
-    expect(rootId).toBe("folder-for-rt-orm@paruluniversity.ac.in");
+    expect(getDriveClient().rootId).toBe("OUTREACH-ROOT");
   });
 
-  it("remembers that folder, so the next start does not go looking again", async () => {
-    connection = connected("orm@paruluniversity.ac.in");
+  it("acts as the connected outreach account", async () => {
+    connection = connected();
     await ensureDriveResolved();
-    resetAppDriveConnection();
-    madeFolders.length = 0;
-
-    await ensureDriveResolved();
-    expect(madeFolders).toEqual([]);
-    expect(getDriveClient().rootId).toBe("folder-for-rt-orm@paruluniversity.ac.in");
+    expect(builtWith).toEqual([`rt-${OUTREACH}`]);
   });
 
-  it("does not reuse one account's folder for a different account", async () => {
-    connection = connected("first@paruluniversity.ac.in");
+  it("never reads the Casting connection in Media Ops", async () => {
     await ensureDriveResolved();
-
-    connection = connected("second@paruluniversity.ac.in");
+    connection = connected();
     resetAppDriveConnection();
-    madeFolders.length = 0;
     await ensureDriveResolved();
-
-    expect(madeFolders).toHaveLength(1);
-    expect(getDriveClient().rootId).toBe("folder-for-rt-second@paruluniversity.ac.in");
+    expect(castingRead).not.toHaveBeenCalled();
   });
 
   it("beats DRIVE_LOCAL_ROOT, so a leftover dev setting cannot take production onto disk", async () => {
     drive.localRoot = "/tmp/leftover";
-    connection = connected("orm@paruluniversity.ac.in");
+    connection = connected();
     await ensureDriveResolved();
     expect(driveSource()).toBe("app");
     expect(driveIsLocal()).toBe(false);
   });
+
+  it("follows a reconnection to a different folder once reset", async () => {
+    connection = connected(OUTREACH, "FIRST");
+    await ensureDriveResolved();
+    expect(getDriveClient().rootId).toBe("FIRST");
+
+    connection = connected(OUTREACH, "SECOND");
+    resetAppDriveConnection();
+    await ensureDriveResolved();
+    expect(getDriveClient().rootId).toBe("SECOND");
+  });
 });
 
 describe("the environment", () => {
-  it("wins over the app connection, and the database is never consulted", async () => {
+  it("wins over the outreach connection, and the database is never consulted", async () => {
     drive.rootFolderId = "ENV-ROOT";
     drive.oauthClientId = "x"; drive.oauthClientSecret = "y"; drive.oauthRefreshToken = "z";
-    connection = connected("orm@paruluniversity.ac.in");
+    connection = connected();
 
     await ensureDriveResolved();
     expect(driveSource()).toBe("env");
@@ -175,7 +160,7 @@ describe("cost on every request", () => {
   });
 
   it("stops reading the database once a connection has been found", async () => {
-    connection = connected("orm@paruluniversity.ac.in");
+    connection = connected();
     await ensureDriveResolved();
     await ensureDriveResolved();
     await ensureDriveResolved();
@@ -183,31 +168,18 @@ describe("cost on every request", () => {
   });
 
   it("reads exactly once when many requests arrive together", async () => {
-    connection = connected("orm@paruluniversity.ac.in");
+    connection = connected();
     await Promise.all([ensureDriveResolved(), ensureDriveResolved(), ensureDriveResolved()]);
     expect(connectionReads).toBe(1);
-    expect(madeFolders).toHaveLength(1);
   });
 
   it("picks up a connection made later, once reset", async () => {
     await ensureDriveResolved();
     expect(driveIsConfigured()).toBe(false);
 
-    connection = connected("orm@paruluniversity.ac.in");
+    connection = connected();
     resetAppDriveConnection();
     await ensureDriveResolved();
     expect(driveIsConfigured()).toBe(true);
-  });
-});
-
-describe("when Drive misbehaves", () => {
-  it("never throws out of the check — the module just reports not connected", async () => {
-    connection = connected("orm@paruluniversity.ac.in");
-    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-    settings.set("outreach_video.drive_root", "{not json");
-    // An unreadable saved setting is recovered from by finding the folder again.
-    await expect(ensureDriveResolved()).resolves.toBeUndefined();
-    expect(driveIsConfigured()).toBe(true);
-    spy.mockRestore();
   });
 });

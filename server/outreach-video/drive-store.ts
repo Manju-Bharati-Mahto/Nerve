@@ -209,10 +209,21 @@ export const mutateEvents = <R>(fn: (d: EventStoreDoc) => { doc: EventStoreDoc; 
   mutateStore<EventStoreDoc, R>("events", fn);
 
 /** Test seam — clears cache, queues and the memoised folder bootstrap. */
+/*
+ * Other modules that remember Drive ids register here to be told when they
+ * go stale. A registry rather than an import, because those modules already
+ * import this one and importing them back would be a cycle.
+ */
+const resetHooks: Array<() => void> = [];
+export function onDriveReset(fn: () => void): void {
+  resetHooks.push(fn);
+}
+
 export function resetStoreState(): void {
   cache.clear();
   writeQueues.clear();
   folderIdsPromise = null;
+  for (const fn of resetHooks) fn();
 }
 
 /**
@@ -229,4 +240,5 @@ export function resetForDriveChange(): void {
   resetAppDriveConnection();
   cache.clear();
   folderIdsPromise = null;
+  for (const fn of resetHooks) fn();
 }

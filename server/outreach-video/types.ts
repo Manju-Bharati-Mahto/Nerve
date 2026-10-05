@@ -246,6 +246,20 @@ export interface VideoRecord {
    * pages could be picked, and on an upload with no campaign to pick from.
    */
   socialPageIds?: string[];
+  /**
+   * Those pages' handles as they were at upload. A snapshot, like the names
+   * on activity entries, so the Drive details file can name the pages without
+   * this module reaching into Postgres every time it rewrites one.
+   */
+  socialPageNames?: string[];
+  /** §10 — this video's number within its campaign: the N in "Video N". */
+  sequence?: number | null;
+  /**
+   * §9 — the campaign folders this video's files were filed into. Recorded on
+   * the video so publishing knows where Published/ is without recomputing it,
+   * and so a record always says where its own files are.
+   */
+  driveFolders?: { videos: string; captions: string; published: string } | null;
   notes?: string | null;
   tags?: string[];
   createdAt: string;

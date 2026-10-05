@@ -83,7 +83,7 @@ describe("§16 — the merged activity feed", () => {
   it("names the subject so the entry can be linked back to it", async () => {
     const v = await upload(editorA, "Client A");
     const [entry] = await activityFeed({ subjectType: "video" });
-    expect(entry.subject).toEqual({ type: "video", id: v.id, title: "Client A Video 1" });
+    expect(entry.subject).toEqual({ type: "video", id: v.id, title: "Client A - Video 1" });
   });
 
   it("can narrow to videos or to events", async () => {
@@ -136,7 +136,7 @@ describe("§25 — an editor's scope", () => {
     await upload(editorB, "Client B");
 
     const feed = await activityFeed({}, { onlyEditorId: editorA.id });
-    expect(feed.map(e => e.subject.title)).toEqual(["Client A Video 1"]);
+    expect(feed.map(e => e.subject.title)).toEqual(["Client A - Video 1"]);
   });
 
   it("still shows the publisher's action on the editor's own video", async () => {

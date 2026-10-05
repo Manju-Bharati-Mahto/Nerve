@@ -61,9 +61,6 @@ import {
   useCastingDriveFolder, createCastingDriveFolder, checkCastingDrive, disconnectCastingDrive,
   verifyDriveState, CastingDriveError,
 } from "./casting-drive.js";
-/* The outreach video workflow uses the same app Drive connection when the
-   environment configures none, so every change to it here resets that too. */
-import { resetForDriveChange } from "./outreach-video/drive-store.js";
 import { promises as fsp } from "node:fs";
 import { Readable } from "node:stream";
 
@@ -9189,7 +9186,7 @@ async function allocateInternalCode(
       return sendError(res, 400, "That does not look like a Google OAuth client id (it ends in .apps.googleusercontent.com).");
     if (secret.length < 8) return sendError(res, 400, "Paste the OAuth client secret as well.");
     await saveCastingDriveClient(id, secret);
-    resetCastingPhotoClient(); resetForDriveChange();
+    resetCastingPhotoClient();
     await audit(u, "casting_drive.client_saved", "casting_drive", 1, null, { client_id: id }, req);
     res.json(await driveStatusFor());
   }));
@@ -9222,7 +9219,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       return void res.status(400).type("html").send(drivePopup(false, "This sign-in link is not valid or has expired. Close this window and press Connect again."));
     try {
       const out = await completeCastingDriveConnect(String(q.code), u.id);
-      resetCastingPhotoClient(); resetForDriveChange();
+      resetCastingPhotoClient();
       await audit(u, "casting_drive.connected", "casting_drive", 1, null, { account: out.email, folder: out.folder.name }, req);
       res.type("html").send(drivePopup(true, `${out.email ? out.email + " — " : ""}photos will be saved to “${out.folder.name}”.`));
     } catch (err) {
@@ -9239,7 +9236,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       const folder = b.create !== undefined
         ? await createCastingDriveFolder(String(b.create ?? ""))
         : await useCastingDriveFolder(String(b.folder ?? ""));
-      resetCastingPhotoClient(); resetForDriveChange();
+      resetCastingPhotoClient();
       await audit(u, "casting_drive.folder_changed", "casting_drive", 1, null, { folder_id: folder.id, folder: folder.name }, req);
       res.json(await driveStatusFor());
     } catch (err) { driveFailed(res, err); }
@@ -9254,7 +9251,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     if (!(await driveAdmin(res, u))) return;
     const before = await castingDriveStatus();
     await disconnectCastingDrive();
-    resetCastingPhotoClient(); resetForDriveChange();
+    resetCastingPhotoClient();
     await audit(u, "casting_drive.disconnected", "casting_drive", 1, { account: before.account_email }, null, req);
     res.json(await driveStatusFor());
   }));

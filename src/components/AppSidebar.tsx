@@ -9,7 +9,7 @@ import {
   Megaphone, Send, Calendar, BarChart3, Sparkles,
   Award, CalendarOff, Settings2, AlertTriangle,
   Film, Inbox, Share2, CheckCircle2, ListChecks, Bell, ClipboardList, UserCog, History,
-  ShieldCheck,
+  ShieldCheck, HardDrive,
 } from 'lucide-react'
 import ProfileModal from './ProfileModal'
 import { useOutreachData, computeOutreachAlerts } from '@/lib/outreach-data'
@@ -82,6 +82,7 @@ const SIDEBAR: Record<string, RoleConfig> = {
     { heading: 'Video workflow', items: [
       { path: '/outreach/video/dashboard',  label: 'Video Dashboard',  icon: BarChart3 },
       { path: '/outreach/video/users',      label: 'Workflow Users',   icon: UserCog },
+      { path: '/outreach/video/drive',      label: 'Google Drive',     icon: HardDrive },
       { path: '/outreach/video/campaigns',  label: 'Campaigns',        icon: Film },
       { path: '/outreach/video/review',     label: 'Review Queue',     icon: Inbox },
       { path: '/outreach/video/all',        label: 'All Videos',       icon: Film },
@@ -101,6 +102,7 @@ const SIDEBAR: Record<string, RoleConfig> = {
     { items: [
       { path: '/outreach/video/dashboard',  label: 'Dashboard',        icon: LayoutDashboard },
       { path: '/outreach/video/users',      label: 'Users',            icon: UserCog },
+      { path: '/outreach/video/drive',      label: 'Google Drive',     icon: HardDrive },
       { path: '/outreach/video/campaigns',  label: 'Campaigns',        icon: Film },
       { path: '/outreach/video/review',     label: 'Review Queue',     icon: Inbox },
       { path: '/outreach/video/all',        label: 'All Videos',       icon: Film },
@@ -214,7 +216,8 @@ const SIDEBAR: Record<string, RoleConfig> = {
       /* The outreach manager administers the team (PRD §2/§6) and reviews
          its content (§11), so both tabs belong in their own menu. */
       { path: '/outreach/video/users',        label: 'Users',            icon: UserCog },
-      { path: '/outreach/video/campaigns',    label: 'Campaigns',        icon: Megaphone },
+      { path: '/outreach/video/drive',        label: 'Google Drive',     icon: HardDrive },
+      { path: '/outreach/video/campaigns',    label: 'Video Campaigns',  icon: Megaphone },
       { path: '/outreach/video/review',       label: 'Review Queue',     icon: ShieldCheck },
       { path: '/outreach/video/calendar',     label: 'Event Calendar',   icon: Calendar },
       { path: '/outreach/video/all',          label: 'All Videos',       icon: Film },

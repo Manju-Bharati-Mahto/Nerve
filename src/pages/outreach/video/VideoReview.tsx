@@ -41,11 +41,11 @@ export default function VideoReview() {
 
   useEffect(() => { void refresh() }, [refresh])
 
-  async function approve(video: VideoRecord) {
+  async function approve(video: VideoRecord, remark: string) {
     setBusyId(video.id)
     setError(null)
     try {
-      await approveVideo(video.id)
+      await approveVideo(video.id, remark.trim())
       await refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not approve that video.')
@@ -87,7 +87,7 @@ export default function VideoReview() {
         <div className="space-y-3">
           {videos.map(v => (
             <ReviewCard key={v.id} video={v} busy={busyId === v.id}
-              onApprove={() => approve(v)} onReject={() => setRejecting(v)} />
+              onApprove={remark => approve(v, remark)} onReject={() => setRejecting(v)} />
           ))}
         </div>
       )}
@@ -102,9 +102,10 @@ export default function VideoReview() {
 }
 
 function ReviewCard({ video, busy, onApprove, onReject }: {
-  video: VideoRecord; busy: boolean; onApprove: () => void; onReject: () => void
+  video: VideoRecord; busy: boolean; onApprove: (remark: string) => void; onReject: () => void
 }) {
   const [copied, setCopied] = useState(false)
+  const [remark, setRemark] = useState('')
 
   return (
     <div className="hub-card space-y-3">
@@ -128,7 +129,7 @@ function ReviewCard({ video, busy, onApprove, onReject }: {
             className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 disabled:opacity-40 inline-flex items-center gap-1">
             <ThumbsDown className="w-3 h-3" /> Send back
           </button>
-          <button onClick={onApprove} disabled={busy}
+          <button onClick={() => onApprove(remark)} disabled={busy}
             className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:opacity-90 disabled:opacity-40 inline-flex items-center gap-1">
             <ThumbsUp className="w-3 h-3" /> {busy ? 'Approving…' : 'Approve'}
           </button>
@@ -149,6 +150,22 @@ function ReviewCard({ video, busy, onApprove, onReject }: {
           </button>
         </div>
         <p className="text-sm text-foreground whitespace-pre-wrap">{video.caption}</p>
+      </div>
+
+      {video.notes && (
+        <div>
+          <p className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1">Editor's description</p>
+          <p className="text-sm text-foreground whitespace-pre-wrap">{video.notes}</p>
+        </div>
+      )}
+
+      <div>
+        <label className="hub-label">Remark on approval (optional)</label>
+        <input className="hub-input" value={remark} onChange={e => setRemark(e.target.value)}
+          placeholder="e.g. Use this one for the launch post" />
+        <p className="text-[11px] text-muted-foreground mt-1">
+          Saved with the video and in its file in Google Drive. Sending it back asks for a reason instead.
+        </p>
       </div>
     </div>
   )

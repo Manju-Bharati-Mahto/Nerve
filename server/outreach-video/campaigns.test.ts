@@ -188,14 +188,20 @@ describe("the Drive layout (§9)", () => {
     expect(await assetFoldersFor(c)).toEqual(c.driveFolders);
   });
 
-  it("falls back to the original location for a campaign from before", async () => {
-    /* driveFolders: null is a record predating §9. Its files are already under
-       Videos/<name>, so that is where to look — and `published` is null
-       because no such folder was ever created for it. */
+  it("builds the full §9 tree for a campaign that has no folders recorded", async () => {
+    /* There is one layout now. A name with no record (or a record whose
+       folder creation failed earlier) gets the same three folders as any
+       other campaign, rather than a second, older location. */
     const folders = await assetFoldersFor({ name: "Old Campaign", driveFolders: null });
-    expect(folders.videos).toBeTruthy();
-    expect(folders.captions).toBe(folders.videos);
-    expect(folders.published).toBeNull();
+    expect(folders.videos).toContain(path.join("Social Media Campaigns", "Old Campaign", "Videos"));
+    expect(folders.captions).toContain(path.join("Old Campaign", "Captions"));
+    expect(folders.published).toContain(path.join("Old Campaign", "Published"));
+  });
+
+  it("returns the same folders for the same campaign however it is typed", async () => {
+    const a = await assetFoldersFor({ name: "VLF 2027", driveFolders: null });
+    const b = await assetFoldersFor({ name: "vlf  2027", driveFolders: null });
+    expect(b).toEqual(a);
   });
 });
 
@@ -236,7 +242,7 @@ describe("campaign progress (§5)", () => {
   });
 });
 
-describe("an upload against a real campaign vs one from before", () => {
+describe("an upload with and without a campaign record", () => {
   const editor: VideoUser = {
     id: "u-editor", name: "Ed", email: "ed@test.local", role: "editor",
     active: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
@@ -261,15 +267,15 @@ describe("an upload against a real campaign vs one from before", () => {
     expect(v.campaignId).toBe(campaign.id);
   });
 
-  it("leaves an upload with no campaign record exactly as it was", async () => {
+  it("files and names an upload with no campaign record the same §9/§10 way", async () => {
     const v = await uploadVideo({
-      editor, client: "Old Campaign", editorTitle: "Legacy", caption: "Hello",
+      editor, client: "Typed Campaign", editorTitle: "No record", caption: "Hello",
       localPath: await fakeVideo("b.mp4"), originalName: "b.mp4", mimeType: "video/mp4", sizeBytes: 18,
     });
-
-    // The original naming, and no campaign — which is what marks it legacy.
-    expect(v.title).toBe("Old Campaign Video 1");
+    // Same naming and the same tree; only the link to a record is missing.
+    expect(v.title).toBe("Typed Campaign - Video 1");
     expect(v.campaignId).toBeNull();
+    expect(v.driveFolders?.videos).toContain(path.join("Social Media Campaigns", "Typed Campaign", "Videos"));
   });
 
   it("refuses an upload naming a campaign that does not exist", async () => {

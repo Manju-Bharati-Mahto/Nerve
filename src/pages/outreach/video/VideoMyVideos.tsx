@@ -391,8 +391,12 @@ function UploadDialog({ onClose, onDone, uploading, setUploading }: {
                 </div>
               </div>
               <div>
-                <label className="hub-label">Notes</label>
-                <textarea className="hub-input" value={notes} onChange={e => setNotes(e.target.value)} />
+                {/* §2 Editor — "Add description/notes". It goes into the video's
+                    file in Google Drive, so it is worth writing for a reader. */}
+                <label className="hub-label">Description / notes</label>
+                <textarea className="hub-input min-h-20" value={notes} onChange={e => setNotes(e.target.value)}
+                  placeholder="What this video is, where it was shot, anything the reviewer and publisher should know" />
+                <p className="text-[11px] text-muted-foreground mt-1">Saved with the video, and in its file in Google Drive.</p>
               </div>
             </>
           )}
