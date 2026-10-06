@@ -186,6 +186,15 @@ const ALLOWED: Record<string, string> = {
      was taken, so the function takes a connection, never sees `pool`, and opens
      none of its own. The audit for each person runs after release. */
   "server/mediaops-api.ts:applyEquipmentAccess": "receives the held client; opens no connection of its own",
+
+  /* BrandOps — a quotation for a requirement typed into the quotation form
+     creates the requirement and the quotation in ONE transaction, so a
+     failing quotation never leaves a stray requirement behind. Both inserts
+     take the transaction's client as `db` and run every statement on it —
+     including nextReference(), which is passed the same client — and neither
+     sees `pool`. Activity is logged after release, as everywhere else. */
+  "server/brandops-queries.ts:insertRequest": "receives the held client; opens no connection of its own",
+  "server/brandops-queries.ts:insertQuotation": "receives the held client; opens no connection of its own",
 };
 
 describe("no handler holds a pooled connection while acquiring another", () => {

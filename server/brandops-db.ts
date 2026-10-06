@@ -358,6 +358,53 @@ export async function bootstrapBrandOpsDatabase(): Promise<void> {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS bo_activity_created_idx ON bo_activity(created_at DESC)`);
 
+  /* ── Requirements and quotations, as the branding team asked (Oct 2026) ──
+     Additive only: every column has a default or is nullable, so the live
+     database gains them on the next start with nothing to backfill. */
+
+  // A size for each requirement — free text, so a new size can be typed.
+  await pool.query(`ALTER TABLE bo_requests ADD COLUMN IF NOT EXISTS size TEXT NOT NULL DEFAULT ''`);
+
+  /* "Completed" when the work is finished, recorded with who and when, so a
+     requirement can be closed off without running a work order through every
+     step. */
+  await pool.query(`ALTER TABLE bo_requests ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE bo_requests ADD COLUMN IF NOT EXISTS completed_by TEXT REFERENCES users(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE bo_requests ADD COLUMN IF NOT EXISTS completion_note TEXT NOT NULL DEFAULT ''`);
+
+  /* Removal is a soft delete. A removed requirement leaves every list and
+     count, but its row, its quotations and its history stay, with who removed
+     it and why. A hard delete would also break reference numbering: a
+     "REQ-0007" freed by a delete would be handed out again. */
+  await pool.query(`ALTER TABLE bo_requests ADD COLUMN IF NOT EXISTS removed_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE bo_requests ADD COLUMN IF NOT EXISTS removed_by TEXT REFERENCES users(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE bo_requests ADD COLUMN IF NOT EXISTS removal_reason TEXT NOT NULL DEFAULT ''`);
+
+  /* Quotation history: a quotation can be edited and removed, and nothing is
+     lost — each edit files the version it replaced in bo_quotation_revisions,
+     and a removed quotation is kept, so old and new prices can be compared. */
+  await pool.query(`ALTER TABLE bo_quotations ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1`);
+  await pool.query(`ALTER TABLE bo_quotations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE bo_quotations ADD COLUMN IF NOT EXISTS removed_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE bo_quotations ADD COLUMN IF NOT EXISTS removed_by TEXT REFERENCES users(id) ON DELETE SET NULL`);
+  await pool.query(`ALTER TABLE bo_quotations ADD COLUMN IF NOT EXISTS removal_reason TEXT NOT NULL DEFAULT ''`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bo_quotation_revisions (
+      id TEXT PRIMARY KEY,
+      quotation_id TEXT NOT NULL REFERENCES bo_quotations(id) ON DELETE CASCADE,
+      revision INTEGER NOT NULL,
+      vendor_id TEXT REFERENCES bo_vendors(id) ON DELETE SET NULL,
+      vendor_name TEXT NOT NULL DEFAULT '',
+      amount NUMERIC(12,2) NOT NULL,
+      quote_date DATE NOT NULL,
+      notes TEXT NOT NULL DEFAULT '',
+      replaced_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      replaced_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (quotation_id, revision)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS bo_quote_revisions_quote_idx ON bo_quotation_revisions(quotation_id)`);
+
   await seedInstitutes();
   await seedFrames();
 }

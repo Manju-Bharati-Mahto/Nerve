@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import { AlertCircle, X, Search } from 'lucide-react'
+import { boMe } from '@/lib/brandops-api'
 
 export function BoPage({ title, subtitle, icon: Icon, actions, children }: {
   title: string; subtitle?: string; icon?: React.ElementType
@@ -217,7 +218,50 @@ export function useBoData<T>(load: () => Promise<T>, deps: unknown[] = []) {
   }, [run])
 
   useEffect(() => { void refresh() }, [refresh])
+
+  /* Several tabs show the same rows — a requirement appears on Branding
+     Requests and on the Dashboard — so a change made in one browser tab must
+     show in another without a manual reload. Coming back to the page re-reads
+     it, quietly: no spinner, and a failed background read keeps what is on
+     screen rather than replacing it with an error. */
+  useEffect(() => {
+    let inFlight = false
+    const quietly = async () => {
+      if (inFlight || document.visibilityState !== 'visible') return
+      inFlight = true
+      try { setData(await run()) } catch { /* keep what is shown */ } finally { inFlight = false }
+    }
+    const onVisible = () => { void quietly() }
+    window.addEventListener('focus', onVisible)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      window.removeEventListener('focus', onVisible)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [run])
+
   return { data, error, loading, refresh, setError }
+}
+
+/**
+ * What the signed-in person may do in BrandOps, for showing or hiding an
+ * action. The API enforces the same capabilities on every write; this only
+ * keeps buttons off screens where pressing them would be refused.
+ */
+export function useBoAccess() {
+  const [access, setAccess] = useState<{ admin: boolean; capabilities: string[] } | null>(null)
+  useEffect(() => {
+    let live = true
+    boMe()
+      .then(a => { if (live) setAccess(a) })
+      .catch(() => { if (live) setAccess({ admin: false, capabilities: [] }) })
+    return () => { live = false }
+  }, [])
+  const can = useCallback(
+    (capability: string) => !!access && (access.admin || access.capabilities.includes(capability)),
+    [access],
+  )
+  return { ready: access !== null, can }
 }
 
 /** Runs a mutation, surfaces its error, and refreshes on success. */

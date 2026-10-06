@@ -25,8 +25,10 @@ import {
   listVendors, createVendor, updateVendor, deleteVendor,
   listFrames, getFrame, frameSizes, nextAssetId, createFrame, updateFrame, retireFrame,
   listAllocations, allocateFrame, returnFrame,
-  listRequests, createRequest, setRequestStatus,
-  listQuotations, createQuotation, decideQuotation,
+  listRequests, createRequest, setRequestStatus, updateRequest, completeRequest, reopenRequest,
+  removeRequest, requestSizes, type RequestInput,
+  listQuotations, createQuotation, createQuotationWithNewRequest, updateQuotation, removeQuotation,
+  quotationHistory, quoteSummaries, decideQuotation,
   listWorkOrders, getWorkOrder, createWorkOrder, setWorkOrderStatus,
   listVisits, checkIn, checkOut,
   listPhotos, addPhoto, deletePhoto,
@@ -86,6 +88,24 @@ export function registerBrandOpsApi(app: express.Express, deps: Deps): void {
     return u;
   }
 
+  /**
+   * Passes anyone holding ANY of the listed capabilities. For reads that more
+   * than one tab shows — a requirement's quotations appear behind the ⓘ on the
+   * Dashboard as well as on Requests, Quotations and Approvals, and someone
+   * given only the Dashboard must still be able to open it.
+   */
+  async function requireAny(res: express.Response, capabilities: BoCapability[]): Promise<CurrentUser | null> {
+    const u = await requireUser(res);
+    if (!u) return null;
+    if (isBrandOpsAdmin(u)) return u;
+    const held = await listUserCapabilities(u.id);
+    if (!capabilities.some(c => held.includes(c))) {
+      sendError(res, 403, "You don't have access to that part of BrandOps.");
+      return null;
+    }
+    return u;
+  }
+
   const actorOf = (u: CurrentUser): Actor => ({ id: u.id, full_name: u.full_name, email: u.email });
 
   function fail(res: express.Response, err: unknown): void {
@@ -123,9 +143,17 @@ export function registerBrandOpsApi(app: express.Express, deps: Deps): void {
       kpis(), sizeBreakdown(), listAllocations({ open: true, limit: 100 }),
       listRequests({}),
     ]);
+    /* Outstanding = work still ahead of it. Completed, closed and rejected
+       requirements are done one way or another; removed ones are already
+       excluded by listRequests. */
+    const outstanding = pending
+      .filter(r => r.status !== "closed" && r.status !== "rejected" && r.status !== "completed")
+      .slice(0, 50);
     res.json({
       kpis: k, sizes, allocations: open,
-      requests: pending.filter(r => r.status !== "closed" && r.status !== "rejected").slice(0, 50),
+      requests: outstanding,
+      // The quotations behind each row, for the amount and the ⓘ view.
+      quotes: await quoteSummaries(outstanding.map(r => r.id)),
     });
   }));
 
@@ -271,26 +299,83 @@ export function registerBrandOpsApi(app: express.Express, deps: Deps): void {
 
   // ── Branding requirements ────────────────────────────────────────────────
 
-  app.get(`${P}/requests`, handle("brandops:requests", async (_u, req, res) => {
-    const q = req.query as Record<string, string>;
-    res.json({ requests: await listRequests({
-      status: (q.status as never) || undefined,
-      instituteId: q.institute_id || undefined, q: q.q || undefined,
-    }) });
+  /** A requirement as the forms send it. */
+  const requestInput = (b: Record<string, unknown>): RequestInput => ({
+    instituteId: str(b.institute_id), requiredDate: str(b.required_date),
+    workType: str(b.work_type), priority: (str(b.priority, "normal") as never),
+    description: str(b.description), location: str(b.location), quantity: num(b.quantity, 1),
+    size: str(b.size),
+  });
+
+  /* Readable from Quotations as well as Requests: adding a quotation means
+     finding the requirement it is for, and someone given only the Quotations
+     tab must be able to search them. Changing a requirement still needs the
+     Requests capability — this is the list, read-only. */
+  app.get(`${P}/requests`, asyncHandler(async (req, res) => {
+    const u = await requireAny(res, ["brandops:requests", "brandops:quotations"]);
+    if (!u) return;
+    try {
+      const q = req.query as Record<string, string>;
+      const [requests, sizes] = await Promise.all([
+        listRequests({
+          status: (q.status as never) || undefined,
+          instituteId: q.institute_id || undefined, q: q.q || undefined,
+        }),
+        requestSizes(),
+      ]);
+      res.json({ requests, sizes });
+    } catch (err) { fail(res, err); }
   }));
 
   app.post(`${P}/requests`, handle("brandops:requests", async (u, req, res) => {
-    const b = body(req);
-    res.status(201).json({ request: await createRequest(actorOf(u), {
-      instituteId: str(b.institute_id), requiredDate: str(b.required_date),
-      workType: str(b.work_type), priority: (str(b.priority, "normal") as never),
-      description: str(b.description), location: str(b.location), quantity: num(b.quantity, 1),
-    }) });
+    res.status(201).json({ request: await createRequest(actorOf(u), requestInput(body(req))) });
   }));
 
+  /**
+   * Edits a requirement's details; or, sent `{ status }` alone, sets its
+   * status the way it always has.
+   */
   app.patch(`${P}/requests/:id`, handle("brandops:requests", async (u, req, res) => {
-    await setRequestStatus(actorOf(u), getSingleParam(req.params.id), str(body(req).status) as never);
+    const b = body(req);
+    const id = getSingleParam(req.params.id);
+    if (Object.keys(b).length === 1 && "status" in b) {
+      await setRequestStatus(actorOf(u), id, str(b.status) as never);
+      return void res.json({ ok: true });
+    }
+    res.json({ request: await updateRequest(actorOf(u), id, requestInput(b)) });
+  }));
+
+  /** Marks the work finished. */
+  app.post(`${P}/requests/:id/complete`, handle("brandops:requests", async (u, req, res) => {
+    await completeRequest(actorOf(u), getSingleParam(req.params.id), str(body(req).note));
     res.json({ ok: true });
+  }));
+
+  /** Undoes "Completed", for a requirement marked done by mistake. */
+  app.post(`${P}/requests/:id/reopen`, handle("brandops:requests", async (u, req, res) => {
+    res.json({ status: await reopenRequest(actorOf(u), getSingleParam(req.params.id)) });
+  }));
+
+  /**
+   * Removes a requirement — from Branding Requests and the Dashboard alike,
+   * since both read the same row. Requires the Requests capability wherever
+   * the button is pressed: being able to SEE the Dashboard is not the same as
+   * being allowed to delete work from it.
+   */
+  app.delete(`${P}/requests/:id`, handle("brandops:requests", async (u, req, res) => {
+    await removeRequest(actorOf(u), getSingleParam(req.params.id), str(body(req).reason));
+    res.json({ removed: true });
+  }));
+
+  /** A requirement's full quotation history — what the ⓘ view and comparison show. */
+  app.get(`${P}/requests/:id/quotations`, asyncHandler(async (req, res) => {
+    const u = await requireAny(res, ["brandops:dashboard", "brandops:requests", "brandops:quotations", "brandops:approvals"]);
+    if (!u) return;
+    try {
+      const history = await quotationHistory(getSingleParam(req.params.id));
+      if (!history.request && !history.quotations.length) return sendError(res, 404, "That requirement was not found.");
+      res.json(history);
+    } catch (err) { fail(res, err); }
   }));
 
   // ── Quotations ───────────────────────────────────────────────────────────
@@ -299,15 +384,49 @@ export function registerBrandOpsApi(app: express.Express, deps: Deps): void {
     const q = req.query as Record<string, string>;
     res.json({ quotations: await listQuotations({
       status: (q.status as never) || undefined, requestId: q.request_id || undefined,
+      includeRemoved: q.include_removed === "1" || q.include_removed === "true",
     }) });
   }));
 
+  /** The amount is required and must be a real number — a typo is not ₹0. */
+  const amountOf = (v: unknown): number => {
+    if (typeof v === "number") return v;
+    if (typeof v === "string" && v.trim() !== "") return Number(v);
+    return Number.NaN;
+  };
+
+  /**
+   * Adds a quotation, against a requirement picked from the list
+   * (`request_id`) or one typed into the form (`new_requirement`), which is
+   * created in the same step.
+   */
   app.post(`${P}/quotations`, handle("brandops:quotations", async (u, req, res) => {
     const b = body(req);
-    res.status(201).json({ quotation: await createQuotation(actorOf(u), {
-      requestId: str(b.request_id), vendorId: str(b.vendor_id), amount: num(b.amount),
-      quoteDate: str(b.quote_date), notes: str(b.notes),
+    const quote = { vendorId: str(b.vendor_id), amount: amountOf(b.amount), quoteDate: str(b.quote_date), notes: str(b.notes) };
+    const typed = b.new_requirement;
+    if (typed && typeof typed === "object" && !str(b.request_id)) {
+      return void res.status(201).json({
+        quotation: await createQuotationWithNewRequest(actorOf(u), requestInput(typed as Record<string, unknown>), quote),
+      });
+    }
+    res.status(201).json({ quotation: await createQuotation(actorOf(u), { ...quote, requestId: str(b.request_id) }) });
+  }));
+
+  /** Edits a quotation, keeping the version it replaces. */
+  app.patch(`${P}/quotations/:id`, handle("brandops:quotations", async (u, req, res) => {
+    const b = body(req);
+    res.json({ quotation: await updateQuotation(actorOf(u), getSingleParam(req.params.id), {
+      vendorId: "vendor_id" in b ? str(b.vendor_id) : undefined,
+      amount: "amount" in b ? amountOf(b.amount) : undefined,
+      quoteDate: "quote_date" in b ? str(b.quote_date) : undefined,
+      notes: "notes" in b ? str(b.notes) : undefined,
     }) });
+  }));
+
+  /** Removes a quotation from the lists; it stays in the requirement's history. */
+  app.delete(`${P}/quotations/:id`, handle("brandops:quotations", async (u, req, res) => {
+    await removeQuotation(actorOf(u), getSingleParam(req.params.id), str(body(req).reason));
+    res.json({ removed: true });
   }));
 
   // ── Approvals ────────────────────────────────────────────────────────────
