@@ -14,7 +14,7 @@ import {
 } from "../integrations/google-drive.js";
 
 export {
-  DRIVE_FOLDER_MIME, DriveNotConfiguredError, RevisionMismatchError,
+  DRIVE_FOLDER_MIME, DriveNotConfiguredError, RevisionMismatchError, DriveAuthError, DriveUnavailableError,
   GoogleDriveClient, LocalDriveClient, googleDriveCredentialsConfigured,
   type DriveFileMeta, type DriveClient,
 } from "../integrations/google-drive.js";

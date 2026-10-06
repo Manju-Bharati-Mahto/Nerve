@@ -13,7 +13,6 @@
  * else's would be a chicken-and-egg problem on first setup.
  */
 import type express from "express";
-import type multer from "multer";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 
@@ -31,8 +30,8 @@ import {
   quotationHistory, quoteSummaries, decideQuotation,
   listWorkOrders, getWorkOrder, createWorkOrder, setWorkOrderStatus,
   listVisits, checkIn, checkOut,
-  listPhotos, addPhoto, deletePhoto,
-  listDeliveries, createDelivery, addDeliveryImage, advanceDelivery, notifyDelivery,
+  listPhotos, addPhotos, deletePhoto,
+  listDeliveries, createDelivery, advanceDelivery, notifyDelivery,
   listActivity, clearActivity, kpis, sizeBreakdown,
 } from "./brandops-queries.js";
 
@@ -42,15 +41,16 @@ interface CurrentUser {
 }
 
 interface Deps {
-  asyncHandler: (fn: (req: express.Request, res: express.Response) => Promise<unknown>) => express.RequestHandler;
+  asyncHandler: (fn: (req: express.Request, res: express.Response, next: express.NextFunction) => Promise<unknown>) => express.RequestHandler;
   sendError: (res: express.Response, status: number, message: string) => void;
   getSingleParam: (value: string | string[]) => string;
-  upload: multer.Multer;
+  /** Receives up to `maxFiles` images from `field`, answering a refused file as JSON. */
+  uploadImages: (field: string, maxFiles: number) => express.RequestHandler;
   uploadsDir: string;
 }
 
 export function registerBrandOpsApi(app: express.Express, deps: Deps): void {
-  const { asyncHandler, sendError, getSingleParam, upload, uploadsDir } = deps;
+  const { asyncHandler, sendError, getSingleParam, uploadImages, uploadsDir } = deps;
   const P = "/api/brandops";
 
   /** A branding admin runs the department, so they hold every module. */
@@ -500,30 +500,46 @@ export function registerBrandOpsApi(app: express.Express, deps: Deps): void {
     res.json({ work_orders: orders.filter(w => w.status !== "closed") });
   }));
 
-  app.post(`${P}/work-orders/:id/photos`, upload.array("photos", 10),
+  /**
+   * Runs before multer, so someone without the capability is refused before a
+   * single byte of their photos is written to disk. The user it found rides
+   * along in res.locals for the handler after the upload.
+   */
+  const allowUpload = (cap: BoCapability) => asyncHandler(async (_req, res, next) => {
+    const u = await require(res, cap); if (!u) return;
+    res.locals.brandOpsUser = u;
+    next();
+  });
+
+  /** Every uploaded file goes once the request has failed: nothing points at it. */
+  const discard = (files: Express.Multer.File[]) =>
+    Promise.all(files.map(f => fsp.rm(f.path, { force: true }).catch(() => {})));
+
+  const uploaded = (req: express.Request) => (req.files as Express.Multer.File[] | undefined) ?? [];
+  const storedPath = (f: Express.Multer.File) => `/uploads/brandops/${path.basename(f.path)}`;
+
+  app.post(`${P}/work-orders/:id/photos`, allowUpload("brandops:completion"), uploadImages("photos", 10),
     asyncHandler(async (req, res) => {
-      const u = await require(res, "brandops:completion"); if (!u) return;
-      const files = (req.files as Express.Multer.File[] | undefined) ?? [];
-      if (!files.length) return sendError(res, 400, "Choose at least one photo to upload.");
-      const phase = String((req.body as Record<string, unknown>).phase ?? "after");
-      if (!["before", "during", "after"].includes(phase)) {
-        await Promise.all(files.map(f => fsp.rm(f.path, { force: true })));
-        return sendError(res, 400, "Phase must be before, during or after.");
-      }
+      const u = res.locals.brandOpsUser as CurrentUser;
+      const files = uploaded(req);
       try {
-        const id = getSingleParam(req.params.id);
-        const added = [];
-        for (const f of files) {
-          added.push(await addPhoto({ id: u.id, full_name: u.full_name, email: u.email }, {
-            workOrderId: id, phase: phase as never,
-            filePath: `/uploads/brandops/${path.basename(f.path)}`,
-            originalName: f.originalname,
-            caption: String((req.body as Record<string, unknown>).caption ?? ""),
-          }));
+        if (!files.length) return sendError(res, 400, "Choose at least one photo to upload.");
+        const b = (req.body ?? {}) as Record<string, unknown>;
+        const phase = String(b.phase ?? "after");
+        if (!["before", "during", "after"].includes(phase)) {
+          await discard(files);
+          return sendError(res, 400, "Phase must be before, during or after.");
         }
+        /* All the photos are recorded in one transaction, so a failure part
+           way through never leaves rows behind for the files deleted below. */
+        const added = await addPhotos(actorOf(u), {
+          workOrderId: getSingleParam(req.params.id), phase: phase as never,
+          caption: String(b.caption ?? ""),
+          files: files.map(f => ({ filePath: storedPath(f), originalName: f.originalname })),
+        });
         res.status(201).json({ photos: added });
       } catch (err) {
-        await Promise.all(files.map(f => fsp.rm(f.path, { force: true })));
+        await discard(files);
         fail(res, err);
       }
     }));
@@ -543,26 +559,26 @@ export function registerBrandOpsApi(app: express.Express, deps: Deps): void {
     }) });
   }));
 
-  app.post(`${P}/deliveries`, upload.array("images", 10), asyncHandler(async (req, res) => {
-    const u = await require(res, "brandops:material_delivery"); if (!u) return;
-    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
-    const b = (req.body ?? {}) as Record<string, string>;
-    try {
-      const delivery = await createDelivery({ id: u.id, full_name: u.full_name, email: u.email }, {
-        instituteId: b.institute_id ?? "", materialType: b.material_type ?? "",
-        description: b.description ?? "", quantity: Number(b.quantity) || 1,
-        vendorId: b.vendor_id || null, expectedDate: b.expected_date || null, remarks: b.remarks ?? "",
-      });
-      for (const f of files) {
-        await addDeliveryImage(delivery.id, `/uploads/brandops/${path.basename(f.path)}`, f.originalname);
+  app.post(`${P}/deliveries`, allowUpload("brandops:material_delivery"), uploadImages("images", 10),
+    asyncHandler(async (req, res) => {
+      const u = res.locals.brandOpsUser as CurrentUser;
+      const files = uploaded(req);
+      const b = (req.body ?? {}) as Record<string, string>;
+      try {
+        /* The delivery and its images are one transaction: if an image cannot
+           be recorded, no DEL-xxxx is left behind for a retry to duplicate. */
+        const delivery = await createDelivery(actorOf(u), {
+          instituteId: b.institute_id ?? "", materialType: b.material_type ?? "",
+          description: b.description ?? "", quantity: Number(b.quantity) || 1,
+          vendorId: b.vendor_id || null, expectedDate: b.expected_date || null, remarks: b.remarks ?? "",
+          images: files.map(f => ({ filePath: storedPath(f), originalName: f.originalname })),
+        });
+        res.status(201).json({ delivery });
+      } catch (err) {
+        await discard(files);
+        fail(res, err);
       }
-      const [fresh] = await listDeliveries({});
-      res.status(201).json({ delivery: fresh ?? delivery });
-    } catch (err) {
-      await Promise.all(files.map(f => fsp.rm(f.path, { force: true })));
-      fail(res, err);
-    }
-  }));
+    }));
 
   app.post(`${P}/deliveries/:id/received`, handle("brandops:material_delivery", async (u, req, res) => {
     await advanceDelivery(actorOf(u), getSingleParam(req.params.id), "ready");

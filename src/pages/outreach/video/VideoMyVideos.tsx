@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Film, Upload, Send, AlertCircle, Loader2, X, CheckCircle2, CloudOff, RotateCcw,
@@ -6,10 +6,16 @@ import {
 import { toast } from 'sonner'
 import {
   getVideoConfig, listVideos, uploadVideo, submitVideo, startRevision,
+  createUploadSession, completeUpload, cancelUpload, driveProblemOf,
+  loadPendingFinish, storePendingFinish, type PendingFinish,
   listCampaigns, listSocialPages, type Campaign,
   STATUS_STYLE, formatBytes, formatWhen,
-  type VideoRecord, type VideoStatus,
+  type VideoRecord, type VideoStatus, type VideoUploadFields, type DriveErrorCode,
 } from '@/lib/outreach-video-data'
+import { DirectUploadBlockedError, uploadToDrive } from '@/lib/drive-upload'
+import { HttpError } from '@/lib/http'
+import { useAuth } from '@/hooks/useAuth'
+import DriveProblemNotice from './DriveProblemNotice'
 
 /**
  * §8 — the editor's own work. KPI cards for Total / Draft / Submitted /
@@ -35,8 +41,12 @@ const EDITOR_GROUPS: Record<Exclude<EditorFilter, 'all'>, VideoStatus[]> = {
 export default function VideoMyVideos() {
   const [videos, setVideos] = useState<VideoRecord[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<{ message: string; code: DriveErrorCode | null } | null>(null)
   const [driveReady, setDriveReady] = useState<boolean | null>(null)
+  /* Whether this Drive can take a file straight from the browser. Learned
+     from the config; the upload dialog still falls back on its own if the
+     browser turns out not to be able to reach Google. */
+  const [directUpload, setDirectUpload] = useState(false)
   const [uploading, setUploading] = useState(false)
   /* A filter is one of §12's groups rather than a raw status: "Approved" to
      an editor means it passed review, whatever happened next. */
@@ -48,7 +58,7 @@ export default function VideoMyVideos() {
       setVideos(videos)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load videos.')
+      setError({ message: err instanceof Error ? err.message : 'Could not load videos.', code: driveProblemOf(err) })
     } finally {
       setLoading(false)
     }
@@ -56,7 +66,7 @@ export default function VideoMyVideos() {
 
   useEffect(() => {
     getVideoConfig()
-      .then(c => setDriveReady(c.configured))
+      .then(c => { setDriveReady(c.configured); setDirectUpload(c.directUpload === true) })
       .catch(() => setDriveReady(false))
     void refresh()
   }, [refresh])
@@ -111,7 +121,7 @@ export default function VideoMyVideos() {
           </div>
         </div>
         <UploadButton disabled={driveReady === false || uploading} onUploaded={refresh}
-          uploading={uploading} setUploading={setUploading} />
+          directUpload={directUpload} uploading={uploading} setUploading={setUploading} />
       </div>
 
       {driveReady === false && (
@@ -137,11 +147,7 @@ export default function VideoMyVideos() {
         </button>
       )}
 
-      {error && (
-        <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> <span>{error}</span>
-        </div>
-      )}
+      {error && <DriveProblemNotice message={error.message} code={error.code} />}
 
       <div className="hub-card p-0 overflow-x-auto">
         <table className="w-full text-sm">
@@ -160,7 +166,9 @@ export default function VideoMyVideos() {
               <tr><td colSpan={6} className="px-3 py-12 text-center text-sm text-muted-foreground">Loading…</td></tr>
             ) : shown.length === 0 ? (
               <tr><td colSpan={6} className="px-3 py-12 text-center text-sm text-muted-foreground">
-                {videos.length === 0 ? 'No videos yet — upload your first cut.' : 'No videos with that status.'}
+                {error && videos.length === 0
+                  ? 'The videos could not be loaded — see the message above.'
+                  : videos.length === 0 ? 'No videos yet — upload your first cut.' : 'No videos with that status.'}
               </td></tr>
             ) : shown.map(v => (
               <tr key={v.id} className="border-b border-border last:border-0 hover:bg-accent/40">
@@ -216,8 +224,51 @@ function Kpi({ label, value, onClick, active }: { label: string; value: number; 
 
 // ── §9 Upload ──────────────────────────────────────────────────────────────
 
-function UploadButton({ disabled, uploading, setUploading, onUploaded }: {
+/* The video types the server accepts, by extension and by type. Checked here
+   first so a wrong file is refused in a second rather than after minutes of
+   uploading. Both, because browsers report no type at all for .mkv or .mts,
+   and the extension is then the only thing to go on. */
+const VIDEO_TYPES: Record<string, string> = {
+  mp4: 'video/mp4', mov: 'video/quicktime', m4v: 'video/x-m4v', webm: 'video/webm',
+  avi: 'video/x-msvideo', mpeg: 'video/mpeg', mpg: 'video/mpeg', mkv: 'video/x-matroska',
+  '3gp': 'video/3gpp', mts: 'video/mp2t', m2ts: 'video/mp2t',
+}
+const VIDEO_MIME_TYPES = new Set(Object.values(VIDEO_TYPES))
+/** The server's limit, for both upload paths. */
+const MAX_VIDEO_BYTES = 2 * 1024 ** 3
+const ACCEPT = ['video/*', ...Object.keys(VIDEO_TYPES).map(ext => `.${ext}`)].join(',')
+
+/** The type to upload the file as, or null when it is not a video the workflow takes. */
+function videoMimeType(file: File): string | null {
+  if (VIDEO_MIME_TYPES.has(file.type)) return file.type
+  const dot = file.name.lastIndexOf('.')
+  const ext = dot >= 0 ? file.name.slice(dot + 1).toLowerCase() : ''
+  return VIDEO_TYPES[ext] ?? null
+}
+
+function checkVideoFile(file: File): string | null {
+  if (!videoMimeType(file)) {
+    return `"${file.name}" is not a video type the workflow accepts. Use MP4, MOV, M4V, WEBM, AVI, MPEG, MKV, 3GP or MTS.`
+  }
+  if (file.size === 0) return `"${file.name}" is empty.`
+  if (file.size > MAX_VIDEO_BYTES) {
+    return `"${file.name}" is ${formatBytes(file.size)}; the limit is 2 GB. Export a smaller file and try again.`
+  }
+  return null
+}
+
+const isAbort = (err: unknown) => err instanceof DOMException && err.name === 'AbortError'
+
+/** Where an upload has got to, for the progress line. */
+type Phase =
+  | { kind: 'idle' }
+  | { kind: 'starting' }
+  | { kind: 'drive' | 'nerve'; sent: number; total: number }
+  | { kind: 'finishing' }
+
+function UploadButton({ disabled, directUpload, uploading, setUploading, onUploaded }: {
   disabled: boolean
+  directUpload: boolean
   uploading: boolean
   setUploading: (v: boolean) => void
   onUploaded: () => Promise<void>
@@ -231,6 +282,7 @@ function UploadButton({ disabled, uploading, setUploading, onUploaded }: {
       </button>
       {open && (
         <UploadDialog
+          directUpload={directUpload}
           uploading={uploading}
           setUploading={setUploading}
           onClose={() => setOpen(false)}
@@ -241,9 +293,21 @@ function UploadButton({ disabled, uploading, setUploading, onUploaded }: {
   )
 }
 
-function UploadDialog({ onClose, onDone, uploading, setUploading }: {
+/**
+ * The §9 upload. The file goes from this browser straight into the
+ * campaign's Google Drive folder — Nerve only opens the upload and, once
+ * Google has every byte, records the video and writes its description and
+ * remarks onto the Drive file. Nothing of the video is stored in Nerve.
+ *
+ * Two fallbacks, both through Nerve's multipart upload: a Drive that cannot
+ * take direct uploads (the local development folder), and a browser that
+ * cannot reach Google at all — which is how a Content-Security-Policy that
+ * does not list googleapis.com shows up.
+ */
+function UploadDialog({ onClose, onDone, directUpload, uploading, setUploading }: {
   onClose: () => void
   onDone: () => Promise<void>
+  directUpload: boolean
   uploading: boolean
   setUploading: (v: boolean) => void
 }) {
@@ -263,11 +327,40 @@ function UploadDialog({ onClose, onDone, uploading, setUploading }: {
   const [tags, setTags] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState<string | null>(null)
+  const [phase, setPhase] = useState<Phase>({ kind: 'idle' })
+  /* Set when the browser could not reach Google and the file went through
+     Nerve instead, so the progress line says where it is really going. */
+  const [viaNerve, setViaNerve] = useState(false)
+  const { user } = useAuth()
+  const userId = user?.id ?? null
+  /* The file reached Drive but recording it failed. Trying again then only
+     finishes the record — the server keeps the session for a day and
+     answers a repeat with the same video — instead of uploading 2 GB again.
+     Remembered per user in sessionStorage, so reopening the dialog offers it. */
+  const [pendingFinish, setPendingFinishState] = useState<PendingFinish | null>(() => loadPendingFinish(userId))
+  const setPendingFinish = (pending: PendingFinish | null) => {
+    setPendingFinishState(pending)
+    storePendingFinish(userId, pending)
+  }
+  const abortRef = useRef<AbortController | null>(null)
+  /** The Drive session the bytes are going to, until they have all arrived. */
+  const sessionRef = useRef<string | null>(null)
 
   useEffect(() => {
     void listCampaigns().then(r => setCampaigns(r.campaigns)).catch(() => setCampaigns([]))
     void listSocialPages().then(r => setPages(r.pages)).catch(() => setPages([]))
   }, [])
+
+  /* Leaving the page mid-upload abandons it, so the browser asks first; and
+     if the dialog goes away regardless (navigating inside the app), the
+     upload is stopped rather than left running with nobody to finish it. */
+  useEffect(() => {
+    if (!uploading) return
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault() }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [uploading])
+  useEffect(() => () => abortRef.current?.abort(), [])
 
   const chosenCampaign = campaigns.find(c => c.id === campaignId) ?? null
   /* Only the pages this campaign posts to (§7/§8). A campaign that names none
@@ -277,34 +370,164 @@ function UploadDialog({ onClose, onDone, uploading, setUploading }: {
     ? pages.filter(p => chosenCampaign.socialPageIds.includes(p.id))
     : pages
 
-  // §9 required fields — either a chosen campaign or a typed name identifies it.
-  const canSubmit = !!file && (campaignId || client.trim()) && title.trim() && caption.trim() && !uploading
+  /* §9 required fields — either a chosen campaign or a typed name identifies
+     it. Finishing a file already in Drive needs none of them: they went with
+     it, and after a reopen the form is empty anyway. */
+  const canSubmit = !uploading
+    && (!!pendingFinish || (!!file && !!(campaignId || client.trim()) && !!title.trim() && !!caption.trim()))
+  const fileProblem = file ? checkVideoFile(file) : null
+
+  function onPickFile(picked: File | null) {
+    setFile(picked)
+    setError(null)
+  }
+
+  /** Bytes straight to Drive. Null when the browser cannot reach Google, so the caller falls back. */
+  async function sendDirect(
+    session: { sessionId: string; uploadUrl: string; chunkBytes: number }, chosen: File, signal: AbortSignal,
+  ): Promise<VideoRecord | null> {
+    sessionRef.current = session.sessionId
+    setPhase({ kind: 'drive', sent: 0, total: chosen.size })
+    let fileId: string
+    try {
+      fileId = await uploadToDrive({
+        file: chosen,
+        uploadUrl: session.uploadUrl,
+        chunkBytes: session.chunkBytes,
+        signal,
+        onProgress: (sent, total) => setPhase({ kind: 'drive', sent, total }),
+      })
+    } catch (err) {
+      if (!(err instanceof DirectUploadBlockedError)) throw err
+      sessionRef.current = null
+      void cancelUpload(session.sessionId).catch(() => { /* it expires on its own */ })
+      return null
+    }
+    sessionRef.current = null
+    setPendingFinish({ sessionId: session.sessionId, fileId, title: title.trim() })
+    setPhase({ kind: 'finishing' })
+    return completeUpload(session.sessionId, fileId)
+  }
+
+  /** The fallback: multipart through Nerve, which passes the file on to Drive. */
+  function sendThroughNerve(fields: VideoUploadFields, chosen: File, mimeType: string, signal: AbortSignal) {
+    const form = new FormData()
+    /* Re-typed when the browser left the type blank (.mkv, .mts), so the
+       server's type check sees a video. A File over the same bytes — nothing
+       is copied. */
+    form.append('video', chosen.type === mimeType ? chosen : new File([chosen], chosen.name, { type: mimeType }))
+    form.append('client', fields.client)
+    if (fields.campaignId) form.append('campaignId', fields.campaignId)
+    if (fields.socialPageIds.length) form.append('socialPageIds', fields.socialPageIds.join(','))
+    form.append('title', fields.title)
+    form.append('caption', fields.caption)
+    if (fields.platform) form.append('platform', fields.platform)
+    if (fields.notes) form.append('notes', fields.notes)
+    if (fields.tags.length) form.append('tags', fields.tags.join(','))
+    setPhase({ kind: 'nerve', sent: 0, total: chosen.size })
+    return uploadVideo(form, (sent, total) => setPhase({ kind: 'nerve', sent, total }), signal)
+  }
 
   async function submit() {
-    if (!canSubmit || !file) return
+    if (!canSubmit) return
+    if (pendingFinish) return finishPending(pendingFinish)
+    if (!file) return
+    const problem = checkVideoFile(file)
+    const mimeType = videoMimeType(file)
+    if (problem || !mimeType) { setError(problem); return }
+
+    const fields: VideoUploadFields = {
+      client: client.trim(),
+      campaignId: campaignId || null,
+      socialPageIds: pageIds,
+      title: title.trim(),
+      caption: caption.trim(),
+      platform: platform.trim() || null,
+      notes: notes.trim() || null,
+      tags: tags.split(',').map(t => t.trim()).filter(Boolean),
+    }
+    const controller = new AbortController()
+    abortRef.current = controller
     setUploading(true)
     setError(null)
     try {
-      const form = new FormData()
-      form.append('video', file)
-      form.append('client', client.trim())
-      if (campaignId) form.append('campaignId', campaignId)
-      if (pageIds.length) form.append('socialPageIds', pageIds.join(','))
-      form.append('title', title.trim())
-      form.append('caption', caption.trim())
-      if (platform.trim()) form.append('platform', platform.trim())
-      if (notes.trim()) form.append('notes', notes.trim())
-      if (tags.trim()) form.append('tags', tags.trim())
-      const video = await uploadVideo(form)
+      let video: VideoRecord | null = null
+      if (directUpload && !viaNerve) {
+        setPhase({ kind: 'starting' })
+        const session = await createUploadSession({
+          ...fields, fileName: file.name, mimeType, sizeBytes: file.size,
+        })
+        if (session.mode === 'direct') {
+          video = await sendDirect(session, file, controller.signal)
+          if (!video) setViaNerve(true)
+        }
+      }
+      if (!video) video = await sendThroughNerve(fields, file, mimeType, controller.signal)
+      setPendingFinish(null)
       // §9.1 — the name is assigned by the system, so show the editor what it
       // actually became rather than leaving them to guess.
       setSaved(video.title)
       await onDone()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed.')
+      /* A half-sent Drive upload is let go of, so the server is not left
+         holding a session nobody will finish. */
+      const openSession = sessionRef.current
+      sessionRef.current = null
+      if (openSession) void cancelUpload(openSession).catch(() => { /* it expires on its own */ })
+      dropPendingIfFinal(err)
+      setError(isAbort(err)
+        ? 'Upload cancelled. Nothing was saved.'
+        : err instanceof Error ? err.message : 'Upload failed.')
     } finally {
+      abortRef.current = null
+      setPhase({ kind: 'idle' })
       setUploading(false)
     }
+  }
+
+  /** "Finish saving": record a file that is already in Drive, without sending it again. */
+  async function finishPending(pending: PendingFinish) {
+    setUploading(true)
+    setError(null)
+    setPhase({ kind: 'finishing' })
+    try {
+      const video = await completeUpload(pending.sessionId, pending.fileId)
+      setPendingFinish(null)
+      setSaved(video.title)
+      await onDone()
+    } catch (err) {
+      dropPendingIfFinal(err)
+      setError(err instanceof Error ? err.message : 'Could not finish saving.')
+    } finally {
+      setPhase({ kind: 'idle' })
+      setUploading(false)
+    }
+  }
+
+  /* A file already in Drive is kept for "Finish saving" only while trying
+     again can help — a dropped connection, a Drive hiccup. When the server
+     says no outright (the session expired, the size did not match) the way
+     forward is a fresh upload. */
+  function dropPendingIfFinal(err: unknown) {
+    if (err instanceof HttpError && err.status >= 400 && err.status < 500
+      && ![401, 408, 429].includes(err.status)) {
+      setPendingFinish(null)
+    }
+  }
+
+  /* Stopping is allowed while bytes are moving; not once every byte has been
+     sent (the server or Google may already have the whole file, so "Nothing
+     was saved" would be untrue), nor while the record is being written. */
+  const finishing = phase.kind === 'finishing'
+    || ((phase.kind === 'nerve' || phase.kind === 'drive') && phase.total > 0 && phase.sent >= phase.total)
+
+  /* Closing with a file in Drive but not in the workflow leaves it for later
+     (it is remembered for "Finish saving"), but only once the editor has
+     said so. */
+  function close() {
+    if (pendingFinish && !saved
+      && !confirm('The video is already in Google Drive but not saved in the workflow yet. Close anyway?')) return
+    onClose()
   }
 
   return (
@@ -314,10 +537,13 @@ function UploadDialog({ onClose, onDone, uploading, setUploading }: {
           <div>
             <h2 className="text-base font-serif text-foreground">Upload video</h2>
             <p className="text-xs text-muted-foreground">
-              The file is stored in the campaign's Google Drive folder and named automatically.
+              {directUpload
+                ? 'The file goes straight from your computer to the campaign\'s Google Drive folder and is named automatically.'
+                : 'The file is stored in the campaign\'s Google Drive folder and named automatically.'}
+              {' '}Its caption, description and remarks are saved with the file in Drive.
             </p>
           </div>
-          <button onClick={onClose} disabled={uploading}
+          <button onClick={close} disabled={uploading} aria-label="Close"
             className="p-2 rounded-lg hover:bg-accent text-muted-foreground disabled:opacity-40">
             <X className="w-4 h-4" />
           </button>
@@ -330,12 +556,19 @@ function UploadDialog({ onClose, onDone, uploading, setUploading }: {
               <span>Saved to Drive as <strong>{saved}</strong>. It's a draft — you can still edit the caption before submitting.</span>
             </div>
           ) : (
-            <>
+            /* Locked while uploading, and once the file is in Drive: the
+               details were sent with it, so editing them now would be a
+               change that silently did not apply. */
+            <fieldset disabled={uploading || !!pendingFinish} className="space-y-3 disabled:opacity-70">
               <div>
                 <label className="hub-label">Video file *</label>
-                <input type="file" accept="video/*" className="hub-input"
-                  onChange={e => setFile(e.target.files?.[0] ?? null)} />
-                {file && <p className="text-[11px] text-muted-foreground mt-1">{formatBytes(file.size)}</p>}
+                <input type="file" accept={ACCEPT} className="hub-input"
+                  onChange={e => onPickFile(e.target.files?.[0] ?? null)} />
+                {file && (
+                  <p className={`text-[11px] mt-1 ${fileProblem ? 'text-rose-600' : 'text-muted-foreground'}`}>
+                    {fileProblem ?? `${formatBytes(file.size)} · up to 2 GB`}
+                  </p>
+                )}
               </div>
               <div>
                 <label className="hub-label">Campaign *</label>
@@ -405,14 +638,35 @@ function UploadDialog({ onClose, onDone, uploading, setUploading }: {
                 </div>
               </div>
               <div>
-                {/* §2 Editor — "Add description/notes". It goes into the video's
-                    file in Google Drive, so it is worth writing for a reader. */}
-                <label className="hub-label">Description / notes</label>
+                {/* §2 Editor — "Add description/notes". It is written onto the
+                    video's own file in Google Drive, so it is worth writing for
+                    a reader. */}
+                <label className="hub-label">Description / remarks</label>
                 <textarea className="hub-input min-h-20" value={notes} onChange={e => setNotes(e.target.value)}
                   placeholder="What this video is, where it was shot, anything the reviewer and publisher should know" />
-                <p className="text-[11px] text-muted-foreground mt-1">Saved with the video, and in its file in Google Drive.</p>
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Saved as the description of the video file in Google Drive, and in its caption file there.
+                </p>
               </div>
-            </>
+            </fieldset>
+          )}
+
+          {phase.kind !== 'idle' && <UploadProgress phase={phase} viaNerve={viaNerve} />}
+
+          {pendingFinish && !uploading && !saved && (
+            <p className="text-[11px] text-muted-foreground">
+              {pendingFinish.title ? <>“{pendingFinish.title}” is</> : 'The file is'} already in Google Drive.
+              {' '}<b>Finish saving</b> records it without uploading it again.
+              {' '}<button type="button" className="underline hover:text-foreground"
+                onClick={() => {
+                  if (confirm('Forget this file and start a new upload? It stays in Google Drive but will not be in the workflow.')) {
+                    setPendingFinish(null)
+                    setError(null)
+                  }
+                }}>
+                Start a new upload instead
+              </button>
+            </p>
           )}
 
           {error && (
@@ -423,19 +677,70 @@ function UploadDialog({ onClose, onDone, uploading, setUploading }: {
         </div>
 
         <div className="flex items-center justify-end gap-2 p-4 border-t border-border">
-          <button onClick={onClose} disabled={uploading}
-            className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent disabled:opacity-40">
-            {saved ? 'Done' : 'Cancel'}
-          </button>
+          {uploading ? (
+            <button onClick={() => abortRef.current?.abort()} disabled={finishing}
+              className="px-4 py-2 rounded-lg border border-rose-200 text-sm text-rose-600 hover:bg-rose-50 disabled:opacity-40">
+              Cancel upload
+            </button>
+          ) : (
+            <button onClick={close}
+              className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent">
+              {saved ? 'Done' : 'Close'}
+            </button>
+          )}
           {!saved && (
-            <button onClick={submit} disabled={!canSubmit}
+            <button onClick={submit} disabled={!canSubmit || !!fileProblem}
               className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 inline-flex items-center gap-2">
               {uploading && <Loader2 className="w-4 h-4 animate-spin" />}
-              {uploading ? 'Uploading to Drive…' : 'Upload'}
+              {uploading ? 'Uploading…' : pendingFinish ? 'Finish saving' : 'Upload'}
             </button>
           )}
         </div>
       </div>
+    </div>
+  )
+}
+
+function UploadProgress({ phase, viaNerve }: { phase: Phase; viaNerve: boolean }) {
+  let label: string
+  let pct: number | null = null
+  let detail: string | null = null
+  if (phase.kind === 'drive' || phase.kind === 'nerve') {
+    pct = phase.total ? Math.min(100, Math.floor((phase.sent / phase.total) * 100)) : 0
+    detail = `${pct}% · ${phase.sent ? formatBytes(phase.sent) : '0 MB'} of ${formatBytes(phase.total)}`
+    /* Through Nerve, the bar reaching the end only means Nerve has the file;
+       it still has to pass it on to Drive, which is a wait with no bar. */
+    if (phase.kind === 'nerve' && phase.sent >= phase.total) {
+      label = 'Sending to Google Drive…'
+      pct = null
+      detail = null
+    } else {
+      label = phase.kind === 'drive' ? 'Uploading to Google Drive…' : 'Uploading…'
+    }
+  } else if (phase.kind === 'starting') {
+    label = 'Preparing the Google Drive upload…'
+  } else {
+    label = 'Saving the details and remarks in Google Drive…'
+  }
+
+  return (
+    <div className="hub-card bg-orange-50 border-orange-200 space-y-2" role="status" aria-live="polite">
+      <div className="flex items-center justify-between gap-2 text-xs text-orange-900">
+        <span className="inline-flex items-center gap-1.5">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" /> {label}
+        </span>
+        {detail && <span className="font-mono tabular-nums">{detail}</span>}
+      </div>
+      <div className="h-2 rounded-full bg-orange-100 overflow-hidden">
+        {pct === null
+          ? <div className="h-full w-1/3 bg-orange-400 animate-pulse rounded-full" />
+          : <div className="h-full bg-orange-500 transition-[width] duration-300" style={{ width: `${pct}%` }} />}
+      </div>
+      {viaNerve && phase.kind === 'nerve' && (
+        <p className="text-[11px] text-orange-900/80">
+          This browser could not reach Google Drive directly, so the file is going through Nerve on its way there.
+        </p>
+      )}
     </div>
   )
 }

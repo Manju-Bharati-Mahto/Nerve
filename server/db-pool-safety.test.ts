@@ -195,6 +195,13 @@ const ALLOWED: Record<string, string> = {
      sees `pool`. Activity is logged after release, as everywhere else. */
   "server/brandops-queries.ts:insertRequest": "receives the held client; opens no connection of its own",
   "server/brandops-queries.ts:insertQuotation": "receives the held client; opens no connection of its own",
+
+  /* BrandOps — a material delivery and its proof images are written in ONE
+     transaction, so an image that fails to record never leaves a DEL-xxxx
+     behind for the uploader's retry to duplicate. insertDelivery() takes the
+     transaction's client as `db` (no `pool` default) and runs every statement
+     on it, nextReference() included; the activity row is logged after release. */
+  "server/brandops-queries.ts:insertDelivery": "receives the held client; opens no connection of its own",
 };
 
 describe("no handler holds a pooled connection while acquiring another", () => {

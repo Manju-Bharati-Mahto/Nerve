@@ -10,13 +10,24 @@
  */
 import { randomUUID } from "node:crypto";
 import { promises as fsp } from "node:fs";
+import path from "node:path";
 import type express from "express";
 import type multer from "multer";
 import { Readable } from "node:stream";
 
+import { config } from "../config.js";
 import {
-  driveIsConfigured, driveIsLocal, driveSource, ensureDriveResolved, getDriveClient, DriveNotConfiguredError,
+  driveIsConfigured, driveIsLocal, driveSource, ensureDriveResolved, getDriveClient,
+  resetAppDriveConnection, DriveAuthError,
 } from "./drive-client.js";
+import {
+  cachedDriveHealth, driveErrorResponse, probeDrive, resetDriveHealth,
+  DRIVE_NOT_CONNECTED_MESSAGE, UNKNOWN_HEALTH,
+} from "./drive-errors.js";
+import {
+  cancelDirectUpload, completeDirectUpload, startDirectUpload,
+  UploadSessionNotFoundError, UploadSessionNotYoursError, UploadVerificationError,
+} from "./upload-sessions.js";
 import { listUserCapabilities } from "../db.js";
 import {
   completeOutreachDriveConnect, disconnectOutreachDrive, outreachDriveAuthUrl, outreachDriveStatus,
@@ -38,8 +49,9 @@ import {
 import {
   getVideo, listVideos, publishVideo, publishingQueue, setLiveUrls,
   approveVideo, rejectVideo, startRevision, scheduleVideo, reviewQueue, resyncAllToDrive,
-  submitVideo, updateCaption, uploadVideo,
-  InvalidTransitionError, NotYourVideoError, VideoNotFoundError,
+  submitVideo, updateCaption, uploadVideo, acceptedVideoType, checkVideoFile,
+  InvalidTransitionError, NotYourVideoError, VideoNotFoundError, VideoFileRejectedError,
+  ACCEPTED_VIDEO_TYPES_LABEL, VIDEO_MIME_ALLOWLIST, type UploadDetails,
 } from "./videos.js";
 import { socialPagesForRole } from "./social-pages.js";
 import {
@@ -60,11 +72,36 @@ interface Handlers {
   sendError: (res: express.Response, status: number, message: string) => void;
   getSingleParam: (v: string | string[]) => string;
   videoUpload: multer.Multer;
+  /** Where multer stages videos; swept for leftovers. Defaults to index.ts's. */
+  videoStagingDir?: string;
 }
 
 export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
   const { asyncHandler, sendError, getSingleParam, videoUpload } = h;
   const P = "/api/outreach/video";
+  startStagingSweep(h.videoStagingDir ?? path.resolve("uploads/outreach-video"));
+
+  /**
+   * Answers a Drive failure with the JSON the client understands (see
+   * drive-errors.ts) and returns true; false when `err` is not one.
+   *
+   * A dead grant also drops the cached app connection and health, so the
+   * Drive dialog's next status check probes afresh and a reconnect is picked
+   * up at once rather than after the cache would have expired.
+   */
+  function sendDriveError(res: express.Response, err: unknown): boolean {
+    const answer = driveErrorResponse(err);
+    if (!answer) return false;
+    if (err instanceof DriveAuthError) {
+      console.error("Outreach video: Google refused the Drive credentials —", err.message);
+      resetAppDriveConnection();
+      resetDriveHealth();
+    } else if (answer.code === "drive_unavailable") {
+      console.error("Outreach video: Google Drive did not answer —", err instanceof Error ? err.message : err);
+    }
+    res.status(answer.status).json({ message: answer.message, code: answer.code });
+    return true;
+  }
 
   /**
    * Resolves the acting user's workflow identity (§5).
@@ -84,10 +121,24 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     if (!driveIsConfigured()) {
       /* Say who can fix it and where. "Ask an administrator" sent people
          looking for an outreach admin, who cannot reach the setting at all. */
-      sendError(res, 503, "The video workflow is not connected to Google Drive yet. An outreach Admin or Manager can connect it under Video Workflow → Google Drive.");
+      res.status(503).json({ message: DRIVE_NOT_CONNECTED_MESSAGE, code: "drive_not_connected" });
       return null;
     }
 
+    /* Everything below reads the users store, which lives in Drive. With a
+       dead refresh token this is where every request used to die with a bare
+       500 — so a Drive failure is answered here, saying what is wrong and who
+       can fix it, and the route goes no further. */
+    try {
+      return await resolveVideoUser(res, u, role);
+    } catch (err) {
+      if (sendDriveError(res, err)) return null;
+      throw err;
+    }
+  }
+
+  /** requireVideoUser's Drive half: find, refuse, or register the person. */
+  async function resolveVideoUser(res: express.Response, u: CurrentUser, role: VideoRole): Promise<VideoUser | null> {
     const email = (u.email ?? "").trim().toLowerCase();
     const existing = await findUserByEmail(email);
     if (existing?.deletedAt) { sendError(res, 403, "This account no longer has access to the video workflow."); return null; }
@@ -194,24 +245,47 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     return true;
   }
 
+  /**
+   * Answers one of this module's own errors — a Drive failure or a typed
+   * domain error — with its proper status and returns true; false for
+   * anything else. Shared by `fail` and the module's error middleware, so an
+   * error answers the same whether a handler caught it or it escaped.
+   */
+  function sendKnownError(res: express.Response, err: unknown): boolean {
+    if (sendDriveError(res, err)) return true;
+    const status = knownErrorStatus(err);
+    if (status === null) return false;
+    sendError(res, status, (err as Error).message);
+    return true;
+  }
+
   /** Maps a domain error onto the right status, so the UI can say something useful. */
   function fail(res: express.Response, err: unknown): void {
-    if (err instanceof VideoNotFoundError) return sendError(res, 404, err.message);
-    if (err instanceof NotYourVideoError) return sendError(res, 403, err.message);
-    if (err instanceof EventNotFoundError) return sendError(res, 404, err.message);
-    if (err instanceof NotYourEventError) return sendError(res, 403, err.message);
-    if (err instanceof EventNotOpenError) return sendError(res, 409, err.message);
-    if (err instanceof UserExistsError) return sendError(res, 409, err.message);
-    if (err instanceof CampaignNotFoundError) return sendError(res, 404, err.message);
-    if (err instanceof CampaignExistsError) return sendError(res, 409, err.message);
-    if (err instanceof CampaignInUseError) return sendError(res, 409, err.message);
-    if (err instanceof InvalidTransitionError) return sendError(res, 409, err.message);
-    if (err instanceof DriveNotConfiguredError) return sendError(res, 503, err.message);
+    if (sendKnownError(res, err)) return;
     const msg = err instanceof Error ? err.message : "Something went wrong.";
     // §29 — a Drive problem is temporary and retryable; say so rather than
     // reporting a generic failure the user can't act on.
     const isDrive = /drive|google|upload/i.test(msg);
     return sendError(res, isDrive ? 502 : 400, msg);
+  }
+
+  /** The status for one of this module's typed errors, or null. */
+  function knownErrorStatus(err: unknown): number | null {
+    if (err instanceof VideoFileRejectedError) return err.status;
+    if (err instanceof UploadSessionNotFoundError) return 404;
+    if (err instanceof UploadSessionNotYoursError) return 403;
+    if (err instanceof UploadVerificationError) return 400;
+    if (err instanceof VideoNotFoundError) return 404;
+    if (err instanceof NotYourVideoError) return 403;
+    if (err instanceof EventNotFoundError) return 404;
+    if (err instanceof NotYourEventError) return 403;
+    if (err instanceof EventNotOpenError) return 409;
+    if (err instanceof UserExistsError) return 409;
+    if (err instanceof CampaignNotFoundError) return 404;
+    if (err instanceof CampaignExistsError) return 409;
+    if (err instanceof CampaignInUseError) return 409;
+    if (err instanceof InvalidTransitionError) return 409;
+    return null;
   }
 
   // ── Setup state ──────────────────────────────────────────────────────────
@@ -221,7 +295,14 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     const role = videoRoleForNerveRole(u?.role ?? "");
     if (!role) return sendError(res, 403, "This area is for the video workflow team only.");
     await ensureDriveResolved();
-    res.json({ configured: driveIsConfigured(), local: driveIsLocal(), source: driveSource(), role });
+    const source = driveSource();
+    res.json({
+      configured: driveIsConfigured(), local: driveIsLocal(), source, role,
+      /* Real Google Drive can take the bytes from the browser directly (see
+         upload-sessions.ts); the local adapter has no URL a browser could
+         reach, so there the file goes through the server. */
+      directUpload: source === "env" || source === "app",
+    });
   }));
 
   // ── Videos ───────────────────────────────────────────────────────────────
@@ -251,59 +332,147 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     } catch (err) { fail(res, err); }
   }));
 
-  /** §9 — upload. Multipart: the file plus the required and optional fields. */
-  app.post(`${P}/videos`, videoUpload.single("video"), asyncHandler(async (req, res) => {
-    const user = await requireVideoUser(res); if (!user) return;
-    if (!requireRole(res, user, ["editor", "admin"])) return;
-
-    const file = req.file;
-    if (!file) return sendError(res, 400, "A video file is required.");
-
-    const body = req.body as Record<string, string>;
-
-    /* §3 — the pages the editor picked, sent as a comma-separated list
-       because the upload is multipart form data. Their handles are resolved
-       here so the §10 caption file can name them. */
-    const pageIds = body.socialPageIds
-      ? String(body.socialPageIds).split(",").map(x => x.trim()).filter(Boolean)
-      : [];
-    let pageNames: string[] = [];
-    if (pageIds.length) {
+  /**
+   * §3 — the handles of the pages the editor picked, so the §10 caption file
+   * can name them. Read from Postgres (the outreach department's own page
+   * list); a hiccup there costs the names, never the upload.
+   */
+  async function pageNamesFor(pageIds: string[]): Promise<string[]> {
+    if (!pageIds.length) return [];
+    try {
       const { listPages } = await import("../outreach-db.js");
       const byId = new Map((await listPages()).map(pg => [pg.id, pg.handle]));
-      pageNames = pageIds.map(id => byId.get(id)).filter((h): h is string => !!h);
+      return pageIds.map(id => byId.get(id)).filter((h): h is string => !!h);
+    } catch {
+      return [];
     }
+  }
 
-    try {
-      const video = await uploadVideo({
-        editor: user,
-        client: body.client ?? "",
-        /* §17 — when the editor picks a real campaign, it decides the name,
-           the Drive folders and the file naming. Absent on an upload that
-           only carries typed-in text, which is the older path. */
-        campaignId: body.campaignId || null,
-        /* §3 — the pages the editor picked, sent as a comma-separated list
-           because the upload is multipart form data. */
-        socialPageIds: pageIds,
-        pageNames,
-        editorTitle: body.title ?? "",
-        caption: body.caption ?? "",
-        localPath: file.path,
-        originalName: file.originalname,
-        mimeType: file.mimetype,
-        sizeBytes: file.size,
-        platform: body.platform ?? null,
-        notes: body.notes ?? null,
-        tags: body.tags ? String(body.tags).split(",").map(t => t.trim()).filter(Boolean) : [],
+  /** A list field: a JSON array, or the comma-separated text a multipart form sends. */
+  const listField = (v: unknown): string[] =>
+    (Array.isArray(v) ? v.map(String) : typeof v === "string" ? v.split(",") : [])
+      .map(x => x.trim()).filter(Boolean);
+  const textOrNull = (v: unknown): string | null => (v === undefined || v === null ? null : String(v));
+
+  /** The upload's details from a request body — the same fields for both paths. */
+  async function uploadDetailsFrom(
+    user: VideoUser, b: Record<string, unknown>,
+    file: { originalName: string; mimeType: string; sizeBytes: number },
+  ): Promise<UploadDetails> {
+    const socialPageIds = listField(b.socialPageIds);
+    return {
+      editor: user,
+      client: String(b.client ?? ""),
+      /* §17 — when the editor picks a real campaign, it decides the name,
+         the Drive folders and the file naming. Absent on an upload that
+         only carries typed-in text, which is the older path. */
+      campaignId: b.campaignId ? String(b.campaignId) : null,
+      socialPageIds,
+      pageNames: await pageNamesFor(socialPageIds),
+      editorTitle: String(b.title ?? ""),
+      caption: String(b.caption ?? ""),
+      originalName: file.originalName,
+      mimeType: file.mimeType,
+      sizeBytes: file.sizeBytes,
+      platform: textOrNull(b.platform),
+      notes: textOrNull(b.notes),
+      tags: listField(b.tags),
+    };
+  }
+
+  /**
+   * Runs multer for the one "video" field and answers its refusals as JSON:
+   * too large → 413, not a video → 400 naming what is accepted. Resolves true
+   * when the file (if any) is on disk and the route should carry on.
+   */
+  function receiveVideo(req: express.Request, res: express.Response): Promise<boolean> {
+    return new Promise(resolve => {
+      videoUpload.single("video")(req, res, (err?: unknown) => {
+        if (!err) return resolve(true);
+        const e = err as { name?: string; code?: string; message?: string };
+        if (e.code === "LIMIT_FILE_SIZE") sendError(res, 413, "That video is larger than 2 GB.");
+        else if (e.name === "MulterError") sendError(res, 400, e.message || "The upload could not be read.");
+        else if (/video/i.test(e.message ?? "")) {
+          sendError(res, 400, `That file is not a video we can accept. Upload ${ACCEPTED_VIDEO_TYPES_LABEL}.`);
+        } else sendError(res, 400, `The upload did not arrive complete (${e.message ?? "unknown error"}). Please try again.`);
+        resolve(false);
       });
+    });
+  }
+
+  /**
+   * §9 — upload through the server (the "proxy" path). Multipart: the file
+   * plus the required and optional fields. Used where Drive cannot take the
+   * bytes from the browser directly (local Drive, or a browser that could not
+   * reach Google); see upload-session below for the direct path.
+   *
+   * Who may upload is settled BEFORE the body is read: otherwise a publisher
+   * or a disconnected Drive would only be refused after a 2 GB file had
+   * streamed onto the server's disk. Until the file has been taken, refusals
+   * also close the connection, so the browser stops sending.
+   */
+  app.post(`${P}/videos`, asyncHandler(async (req, res) => {
+    res.setHeader("Connection", "close");
+    const release = holdCloseUntilDrained(req, res);
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["editor", "admin"])) return;
+    if (!await receiveVideo(req, res)) return;
+    release();
+    res.removeHeader("Connection");
+
+    const file = req.file;
+    try {
+      if (!file) return sendError(res, 400, "A video file is required.");
+      const details = await uploadDetailsFrom(user, req.body as Record<string, unknown>, {
+        originalName: file.originalname, mimeType: file.mimetype, sizeBytes: file.size,
+      });
+      const video = await uploadVideo({ ...details, localPath: file.path });
       res.status(201).json({ video });
     } catch (err) {
       fail(res, err);
     } finally {
       // The bytes now live in Drive (or the upload failed outright); either way
-      // the temp file has no further use.
-      await fsp.unlink(file.path).catch(() => {});
+      // the staged file has no further use, whichever way this ended.
+      if (file) await fsp.unlink(file.path).catch(() => {});
     }
+  }));
+
+  /**
+   * Direct upload, step 1 (see upload-sessions.ts): the browser describes the
+   * file; the answer is a Google upload URL to send it to, or `proxy` when
+   * this Drive cannot take it from the browser.
+   */
+  app.post(`${P}/videos/upload-session`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["editor", "admin"])) return;
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      const fileName = String(b.fileName ?? "");
+      const sizeBytes = Number(b.sizeBytes);
+      // Refused before anything is reserved, whichever path the file then takes.
+      const mimeType = checkVideoFile(fileName, String(b.mimeType ?? ""), sizeBytes);
+      const details = await uploadDetailsFrom(user, b, { originalName: fileName, mimeType, sizeBytes });
+      res.json(await startDirectUpload(details, uploadOrigin(req.headers.origin, config.appBaseUrl, process.env.NODE_ENV)));
+    } catch (err) { fail(res, err); }
+  }));
+
+  /** Direct upload, step 3: the bytes are in Drive; record the video. */
+  app.post(`${P}/videos/complete`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    if (!requireRole(res, user, ["editor", "admin"])) return;
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const sessionId = String(b.sessionId ?? "");
+    if (!sessionId) return sendError(res, 400, "The upload session is missing.");
+    try {
+      res.status(201).json({ video: await completeDirectUpload(sessionId, user.id, String(b.fileId ?? "")) });
+    } catch (err) { fail(res, err); }
+  }));
+
+  /** The browser gave up on a direct upload; forget it. */
+  app.post(`${P}/videos/upload-session/:sessionId/cancel`, asyncHandler(async (req, res) => {
+    const user = await requireVideoUser(res); if (!user) return;
+    cancelDirectUpload(getSingleParam(req.params.sessionId), user.id);
+    res.status(204).end();
   }));
 
   app.patch(`${P}/videos/:id/caption`, asyncHandler(async (req, res) => {
@@ -665,18 +834,31 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
 
   function driveFailed(res: express.Response, err: unknown): void {
     if (err instanceof OutreachDriveError) return sendError(res, err.status, err.message);
+    if (sendDriveError(res, err)) return;
     console.error("Outreach Drive operation failed", err);
     sendError(res, 502, "Google Drive did not answer. Please try again.");
   }
 
+  /**
+   * The Drive dialog's status: the stored connection, where Drive comes from,
+   * and whether Google actually still answers (drive-errors.ts) — "connected"
+   * alone used to stay true long after the token behind it had died.
+   */
   async function driveStatusPayload() {
     await ensureDriveResolved();
-    return { ...(await outreachDriveStatus()), source: driveSource() };
+    const source = driveSource();
+    let health = UNKNOWN_HEALTH;
+    if (source === "env" || source === "app") {
+      const { client, rootId } = getDriveClient();
+      health = await cachedDriveHealth(`${source}:${rootId}`, () => probeDrive(client, rootId));
+    }
+    return { ...(await outreachDriveStatus()), source, ...health };
   }
 
   /** Everything about a connection change that the rest of the module caches. */
   function driveChanged(): void {
     resetForDriveChange();
+    resetDriveHealth();
   }
 
   app.get(`${P}/drive`, asyncHandler(async (_req, res) => {
@@ -1022,12 +1204,165 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     if (!updated) return sendError(res, 404, "That page was not found.");
     res.json({ page: updated });
   }));
+
+  /*
+   * Last, so it sees every error the routes above pass on. A Drive failure
+   * or one of this module's typed errors that escaped a handler (a store read
+   * outside any try) is answered here, as the JSON the client understands.
+   * None of them may reach the global handler: it passes a 4xx through only
+   * for body-parser style errors, so a DriveAuthError (whose `status` is
+   * Google's, e.g. 400 for invalid_grant) would come out as a bare 500.
+   * Anything else — a real bug — carries on to that handler.
+   */
+  app.use(P, ((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (res.headersSent) return next(err);
+    if (sendKnownError(res, err)) return;
+    next(err);
+  }) as express.ErrorRequestHandler);
+}
+
+/** How much of a refused upload's body is read and discarded before closing. */
+export const REFUSAL_DRAIN_BYTES = 64 * 1024 * 1024;
+const REFUSAL_DRAIN_MS = 60_000;
+
+/**
+ * For a request refused before its body was read: lets the refusal reach the
+ * browser before the connection closes.
+ *
+ * With `Connection: close`, Node closes the socket as soon as the response is
+ * written. If the browser is still sending the file, the unread bytes make
+ * that close a TCP reset, and the browser reports a network error instead of
+ * the JSON it was sent. So until `release()` is called (once the body has
+ * been taken), ending the response is held back: the JSON is written at once,
+ * the rest of the body is read and thrown away — up to REFUSAL_DRAIN_BYTES,
+ * or REFUSAL_DRAIN_MS — and only then is the response ended and the socket
+ * closed. Past that bound the connection closes anyway; a browser sending
+ * gigabytes to a refusal is not worth holding a socket open for.
+ *
+ * In production this is moot: nginx buffers the whole request body before
+ * passing it on (proxy_request_buffering), so it — not the browser — is what
+ * Node's close cuts off, and nginx relays the JSON intact. It matters when
+ * Node is reached directly (local development, a misconfigured proxy).
+ */
+export function holdCloseUntilDrained(req: express.Request, res: express.Response): () => void {
+  const end = res.end.bind(res) as (...args: unknown[]) => express.Response;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    res.end = end as express.Response["end"];
+  };
+
+  res.end = ((...args: unknown[]) => {
+    release();
+    if (req.complete || req.readableEnded || req.destroyed) return end(...args);
+    // Express's send() ends with (chunk, encoding); write it now so the
+    // browser has the whole answer (Content-Length is already set).
+    const cb = typeof args[args.length - 1] === "function" ? args.pop() as () => void : undefined;
+    const [chunk, encoding] = args as [unknown, BufferEncoding | undefined];
+    if (chunk !== undefined && chunk !== null) res.write(chunk as Buffer | string, encoding ?? "utf8");
+    else res.flushHeaders();
+
+    let seen = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      if (timer === undefined) return;
+      clearTimeout(timer);
+      timer = undefined;
+      req.off("data", onData).off("end", finish).off("error", finish).off("close", finish);
+      end(cb);
+    };
+    const onData = (c: Buffer) => {
+      seen += c.length;
+      if (seen > REFUSAL_DRAIN_BYTES) finish();
+    };
+    timer = setTimeout(finish, REFUSAL_DRAIN_MS);
+    timer.unref?.();
+    req.on("data", onData).on("end", finish).on("error", finish).on("close", finish);
+    req.resume();
+    return res;
+  }) as express.Response["end"];
+
+  return release;
+}
+
+/**
+ * The origin a direct upload session is opened for. Google answers the
+ * browser's PUTs only from the origin the session names, so it must be the
+ * page's real origin — but it is taken from a request header, so only Nerve's
+ * own origin (APP_BASE_URL) is believed, plus localhost while developing.
+ * Anything else falls back to APP_BASE_URL's origin.
+ */
+export function uploadOrigin(originHeader: string | undefined, appBaseUrl: string, nodeEnv: string | undefined): string {
+  let base: string;
+  try { base = new URL(appBaseUrl).origin; } catch { base = appBaseUrl.replace(/\/+$/, ""); }
+  const origin = String(originHeader ?? "").trim();
+  if (origin && origin === base) return origin;
+  if (nodeEnv !== "production" && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return origin;
+  return base;
+}
+
+// ── The staging directory ──────────────────────────────────────────────────
+//
+// The through-the-server path stages each video on disk while it goes to
+// Drive, and the handler deletes it on every path. A process killed mid-upload
+// cannot, so whatever is left is swept: anything older than six hours is an
+// upload nobody is waiting for any more.
+
+const STAGING_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const STAGING_SWEEP_EVERY_MS = 60 * 60 * 1000;
+let stagingSweeper: ReturnType<typeof setInterval> | null = null;
+
+/** Deletes staged files older than `maxAgeMs`; returns how many. Never throws. */
+export async function sweepVideoStaging(dir: string, maxAgeMs = STAGING_MAX_AGE_MS, now = Date.now()): Promise<number> {
+  let removed = 0;
+  let names: string[];
+  try { names = await fsp.readdir(dir); } catch { return 0; }
+  for (const name of names) {
+    const full = path.join(dir, name);
+    try {
+      const stat = await fsp.stat(full);
+      if (stat.isFile() && now - stat.mtimeMs > maxAgeMs) {
+        await fsp.unlink(full);
+        removed++;
+      }
+    } catch { /* gone already, or not ours to remove */ }
+  }
+  return removed;
+}
+
+function startStagingSweep(dir: string): void {
+  if (stagingSweeper) return;
+  const sweep = () => {
+    void sweepVideoStaging(dir).then(n => {
+      if (n) console.log(`Outreach video: removed ${n} abandoned staged upload${n === 1 ? "" : "s"}.`);
+    });
+  };
+  sweep();
+  stagingSweeper = setInterval(sweep, STAGING_SWEEP_EVERY_MS);
+  stagingSweeper.unref?.();
+
+  // Staging used to live under uploads/outreach-video, which /uploads serves
+  // publicly. Anything a killed process left there is cleared once at start,
+  // whatever its age — nothing waits on that folder any more.
+  const legacy = path.resolve("uploads/outreach-video");
+  if (path.resolve(dir) !== legacy) {
+    void sweepVideoStaging(legacy, 0).then(n => {
+      if (n) console.log(`Outreach video: removed ${n} file${n === 1 ? "" : "s"} left in the old public staging folder.`);
+    });
+  }
 }
 
 /** Used by index.ts to build the multer instance with video-appropriate limits. */
-export const VIDEO_MIME_ALLOWLIST = [
-  "video/mp4", "video/quicktime", "video/x-m4v", "video/webm", "video/x-msvideo", "video/mpeg",
-];
+export { VIDEO_MIME_ALLOWLIST };
+
+/**
+ * For index.ts's multer fileFilter: a recognised video type, or a generic
+ * one (application/octet-stream, none) on a known video extension.
+ */
+export function isAcceptedVideoUpload(mimeType: string, originalName: string): boolean {
+  return acceptedVideoType(mimeType, originalName) !== null;
+}
 
 export function videoFileName(original: string): string {
   const dot = original.lastIndexOf(".");

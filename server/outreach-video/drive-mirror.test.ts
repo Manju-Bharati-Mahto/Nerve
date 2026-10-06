@@ -15,7 +15,6 @@ import os from "node:os";
 import path from "node:path";
 
 import { config } from "../config.js";
-import { resetDriveClient } from "./drive-client.js";
 import { resetStoreState, readWorkflow } from "./drive-store.js";
 import { addUser } from "./users.js";
 import { createCampaign } from "./campaigns.js";
@@ -23,8 +22,9 @@ import {
   approveVideo, getVideo, publishVideo, rejectVideo, resyncAllToDrive, scheduleVideo,
   startRevision, submitVideo, updateCaption, uploadVideo,
 } from "./videos.js";
-import { formatIst, videoDetailsBody, videoNumberOf } from "./drive-mirror.js";
-import type { VideoUser } from "./types.js";
+import { DRIVE_DESCRIPTION_LIMIT, formatIst, videoDetailsBody, videoDriveDescription, videoNumberOf } from "./drive-mirror.js";
+import { getDriveClient, resetDriveClient, type LocalDriveClient } from "./drive-client.js";
+import type { VideoRecord, VideoUser } from "./types.js";
 
 let tmpRoot: string;
 let editor: VideoUser;
@@ -304,5 +304,77 @@ describe("the details text itself", () => {
     const v = await uploadOne();
     const body = videoDetailsBody({ ...(await getVideo(v.id)), socialPageNames: [], platform: "Facebook" });
     expect(body.split("\n")[2]).toBe("Platform/Page: Facebook");
+  });
+});
+
+/*
+ * "With an additional description or remark for the upload in the drive
+ * folder itself": besides the details file in Captions/, the video file's own
+ * Drive description carries the story, so clicking the video in Videos/ shows
+ * it in Drive's details panel.
+ */
+describe("the video file's own Drive description", () => {
+  const descriptionOf = async (fileId: string) =>
+    (getDriveClient().client as LocalDriveClient).readDescription(fileId);
+
+  it("is set at upload with the title, campaign, editor, caption and notes", async () => {
+    const v = await uploadOne();
+    const text = await descriptionOf(v.driveFileId);
+    expect(text).toContain("VLF 2027 - Video 1");
+    expect(text).toContain("Title: Opening reel");
+    expect(text).toContain("Campaign: VLF 2027");
+    expect(text).toContain("Editor: Om Editor (om@a.com)");
+    expect(text).toContain("Join us at VLF 2027!");
+    expect(text).toContain("Opening reel for the festival, 30s cut.");
+  });
+
+  it("is rewritten with every remark, and follows the file into Published/", async () => {
+    const v = await uploadOne();
+    await submitVideo(v.id, editor);
+    await rejectVideo(v.id, manager, "Logo too small");
+    await startRevision(v.id, editor);
+    await submitVideo(v.id, editor);
+    await approveVideo(v.id, manager, "Great now");
+    const published = await publishVideo(v.id, publisher, { instagram: "https://instagram.com/p/x" }, "Posted at 6");
+    const text = await descriptionOf(published.driveFileId);
+    expect(text).toContain("Rahul Manager: Sent back for changes — “Logo too small”");
+    expect(text).toContain("Rahul Manager: Approved — “Great now”");
+    expect(text).toContain("Amit Publisher: Published — “Posted at 6");
+  });
+
+  const big = (over: Partial<VideoRecord> = {}): VideoRecord => ({
+    id: "v1", title: "VLF 2027 - Video 9", editorTitle: "Reel", client: "VLF 2027", campaignId: null,
+    socialPageIds: [], socialPageNames: [], sequence: 9, driveFolders: null, editorId: "e1",
+    caption: "Caption", status: "approved", currentVersion: 1, driveFileId: "f", driveFileName: "f.mp4",
+    captionFileId: null, sizeBytes: 1, mimeType: "video/mp4", platform: null, notes: "Notes", tags: [],
+    createdAt: "2027-01-01T00:00:00.000Z", updatedAt: "2027-01-01T00:00:00.000Z", submittedAt: null,
+    publishedBy: null, publishedAt: null, liveUrls: {},
+    activity: Array.from({ length: 300 }, (_, i) => ({
+      id: `a${i}`, timestamp: new Date(Date.UTC(2027, 0, 1, 0, i)).toISOString(), userId: "m", userName: "Rahul Manager",
+      userEmail: "rahul@a.com", action: i === 0 ? "video.uploaded" : "video.approved", notes: `remark number ${i}`,
+    })) as VideoRecord["activity"],
+    ...over,
+  } as VideoRecord);
+
+  it("stays under Drive's limit, keeping the newest remarks", () => {
+    const text = videoDriveDescription(big());
+    expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(DRIVE_DESCRIPTION_LIMIT);
+    expect(text).toContain("remark number 299");
+    expect(text).not.toContain("“remark number 1”");
+    expect(text).toMatch(/\(\d+ earlier remarks not shown\)/);
+    expect(text).toContain("Caption");
+  });
+
+  it("caps a huge caption and notes, measured in bytes, without breaking a character", () => {
+    const text = videoDriveDescription(big({ caption: "🎬".repeat(5000), notes: "ગુજરાતી ".repeat(2000), activity: big().activity.slice(0, 3) }));
+    expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(DRIVE_DESCRIPTION_LIMIT);
+    expect(text).not.toContain("�");
+    expect(text).toContain("remark number 2");
+  });
+
+  it("does not add the omitted line when everything fits", () => {
+    const text = videoDriveDescription(big({ activity: big().activity.slice(0, 4) }));
+    expect(text).not.toMatch(/earlier remark/);
+    expect(text).toContain("remark number 3");
   });
 });

@@ -380,6 +380,138 @@ describe("material delivery", () => {
     await q.notifyDelivery(ACTOR, d.id);
     expect((await q.listDeliveries()).find(x => x.id === d.id)?.notified_at).not.toBeNull();
   });
+
+  /* A delivery and its proof images are one transaction. Created first and
+     imaged second, a failed image left a DEL-xxxx behind while the person was
+     told it had failed, and their retry logged the same delivery twice. */
+  maybe()("leaves nothing behind when an image cannot be recorded, and does not burn the DEL number", async () => {
+    const before = await delivery();
+    const n = (ref: string) => Number(ref.replace(/^DEL-/, ""));
+    const marker = `TST-ATOMIC-${Date.now()}`;
+    await expect(q.createDelivery(ACTOR, {
+      instituteId: instituteA, materialType: "Certificate",
+      description: "Convocation certificates", quantity: 1, remarks: marker,
+      // file_path is NOT NULL: the second image insert fails inside the transaction.
+      images: [
+        { filePath: "/uploads/brandops/ok.jpg", originalName: "ok.jpg" },
+        { filePath: null as unknown as string, originalName: "broken.jpg" },
+      ],
+    })).rejects.toThrow();
+
+    const left = await pool.query(`SELECT id FROM bo_deliveries WHERE remarks = $1`, [marker]);
+    expect(left.rowCount).toBe(0);
+    const orphans = await pool.query(
+      `SELECT i.id FROM bo_delivery_images i LEFT JOIN bo_deliveries d ON d.id = i.delivery_id
+        WHERE d.id IS NULL OR i.file_path = '/uploads/brandops/ok.jpg'`);
+    expect(orphans.rowCount).toBe(0);
+
+    // The rolled-back delivery did not take a number: the next one is the one after `before`.
+    const after = await delivery();
+    expect(n(after.reference)).toBe(n(before.reference) + 1);
+  });
+
+  maybe()("records every image with the delivery when they all succeed", async () => {
+    const d = await q.createDelivery(ACTOR, {
+      instituteId: instituteA, materialType: "Certificate",
+      description: "Convocation certificates", quantity: 2,
+      images: [
+        { filePath: "/uploads/brandops/a.jpg", originalName: "a.jpg" },
+        { filePath: "/uploads/brandops/b.jpg", originalName: "b.jpg" },
+      ],
+    });
+    const { rows } = await pool.query<{ file_path: string }>(
+      `SELECT file_path FROM bo_delivery_images WHERE delivery_id = $1 ORDER BY file_path`, [d.id]);
+    expect(rows.map(r => r.file_path)).toEqual(["/uploads/brandops/a.jpg", "/uploads/brandops/b.jpg"]);
+  });
+});
+
+/* ── POST /api/brandops/deliveries through Express and multer ───────────────
+   The route's half of the promise: when the delivery cannot be created, the
+   images multer already wrote to disk are removed, because nothing points at
+   them. A real app with a real disk-storage multer in a temp directory; the
+   signed-in user is a super admin set straight into res.locals. */
+describe("logging a delivery over HTTP", () => {
+  let server: import("node:http").Server | null = null;
+  let base = "";
+  let dir = "";
+
+  beforeAll(async () => {
+    if (!dbUp) return;
+    const [{ default: express }, { default: multer }, fs, os, nodePath, api, guard] = await Promise.all([
+      import("express"), import("multer"), import("node:fs"), import("node:os"), import("node:path"),
+      import("./brandops-api.js"), import("./upload-guard.js"),
+    ]);
+    dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "nerve-bo-test-"));
+    const upload = multer({
+      storage: multer.diskStorage({
+        destination: (_req, _file, cb) => cb(null, dir),
+        filename: (_req, file, cb) => cb(null, guard.safeImageName(file)),
+      }),
+      limits: { fileSize: 1024 * 1024 },
+      fileFilter: guard.imageFileFilter,
+    });
+    const app = express();
+    app.use(express.json());
+    app.use((_req, res, next) => {
+      res.locals.currentUser = { id: null, role: "super_admin", team: null, full_name: "Test Actor", email: "t@test.local" };
+      next();
+    });
+    api.registerBrandOpsApi(app, {
+      asyncHandler: fn => (req, res, next) => { void fn(req, res, next).catch(next); },
+      sendError: (res, status, message) => { res.status(status).json({ message }); },
+      getSingleParam: v => (Array.isArray(v) ? v[0] : v),
+      uploadsDir: dir,
+      uploadImages: (field, maxFiles) =>
+        guard.acceptUpload(upload.array(field, maxFiles), { sizeLabel: "1 MB", maxFiles, field }),
+    });
+    app.use(guard.jsonErrorHandler);
+    await new Promise<void>(resolve => { server = app.listen(0, "127.0.0.1", () => resolve()); });
+    base = `http://127.0.0.1:${(server!.address() as import("node:net").AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    if (server) await new Promise<void>(resolve => server!.close(() => resolve()));
+    if (dir) (await import("node:fs")).rmSync(dir, { recursive: true, force: true });
+  });
+
+  function form(fields: Record<string, string>, images: number): FormData {
+    const fd = new FormData();
+    for (const [k, v] of Object.entries(fields)) fd.append(k, v);
+    for (let i = 0; i < images; i++) {
+      fd.append("images", new Blob([new Uint8Array([0xff, 0xd8, 0xff, i])], { type: "image/jpeg" }), `p${i}.jpg`);
+    }
+    return fd;
+  }
+
+  const files = async () => (await import("node:fs")).readdirSync(dir);
+
+  maybe()("deletes the uploaded images when the delivery cannot be created", async () => {
+    const marker = `TST-HTTP-${Date.now()}`;
+    const res = await fetch(`${base}/api/brandops/deliveries`, {
+      method: "POST",
+      body: form({
+        institute_id: "no-such-institute", material_type: "Certificate",
+        description: "Convocation certificates", remarks: marker,
+      }, 2),
+    });
+    expect(res.status).toBe(404);
+    expect(await files()).toEqual([]);
+    expect((await pool.query(`SELECT id FROM bo_deliveries WHERE remarks = $1`, [marker])).rowCount).toBe(0);
+  });
+
+  maybe()("keeps the images, and points at them, when it succeeds", async () => {
+    const res = await fetch(`${base}/api/brandops/deliveries`, {
+      method: "POST",
+      body: form({ institute_id: instituteA, material_type: "Certificate", description: "Convocation certificates" }, 2),
+    });
+    expect(res.status).toBe(201);
+    const { delivery } = await res.json() as { delivery: { id: string } };
+    const stored = await files();
+    expect(stored).toHaveLength(2);
+    const { rows } = await pool.query<{ file_path: string }>(
+      `SELECT file_path FROM bo_delivery_images WHERE delivery_id = $1`, [delivery.id]);
+    expect(rows.map(r => r.file_path.split("/").pop()).sort()).toEqual([...stored].sort());
+  });
 });
 
 describe("the activity log", () => {

@@ -7,17 +7,48 @@
  * it needs and refetches after it changes something, which keeps what's on
  * screen honest rather than quietly stale.
  */
+import { HttpError, NETWORK_ERROR_MESSAGE, errorFor, fetchOrExplain, readJson, statusMessage } from './http'
+
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 const BASE = `${API_BASE_URL}/outreach/video`
 
+/**
+ * Everything here keeps its data in Google Drive, so "it failed" has very
+ * different remedies: a revoked Drive sign-in needs an outreach Admin to
+ * reconnect, an unreachable Drive needs a retry, anything else is the
+ * request itself. The API says which with a `code` next to its message, and
+ * this carries it to the page alongside the HTTP status.
+ */
+export type DriveErrorCode = 'drive_reconnect' | 'drive_unavailable' | 'drive_not_connected'
+const DRIVE_ERROR_CODES: readonly string[] = ['drive_reconnect', 'drive_unavailable', 'drive_not_connected']
+
+export class VideoApiError extends HttpError {
+  constructor(message: string, status: number, readonly code: string | null = null) {
+    super(message, status)
+    this.name = 'VideoApiError'
+  }
+}
+
+/** The Drive problem behind a failed call, when that is what it was. */
+export function driveProblemOf(err: unknown): DriveErrorCode | null {
+  const code = err instanceof VideoApiError ? err.code : null
+  return code && DRIVE_ERROR_CODES.includes(code) ? code as DriveErrorCode : null
+}
+
+/** A failed response as a VideoApiError: the API's message and code, or one for the status. */
+function videoErrorFor(res: Response, payload: Record<string, unknown>, fallback: string): VideoApiError {
+  const err = errorFor(res, payload, fallback)
+  return new VideoApiError(err.message, err.status, typeof payload.code === 'string' ? payload.code : null)
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetchOrExplain(`${BASE}${path}`, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
     ...init,
+    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
   })
-  const payload = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error((payload as { message?: string }).message || 'Request failed.')
+  const payload = await readJson(res)
+  if (!res.ok) throw videoErrorFor(res, payload, 'Request failed.')
   return payload as T
 }
 
@@ -130,8 +161,17 @@ export interface EditorVisiblePage {
 
 // ── Calls ──────────────────────────────────────────────────────────────────
 
-export const getVideoConfig = () =>
-  request<{ configured: boolean; local: boolean; role: VideoRole }>('/config')
+export interface VideoConfig {
+  configured: boolean
+  local: boolean
+  source?: 'env' | 'app' | 'local' | 'none'
+  role: VideoRole
+  /** True when uploads can go from the browser straight into Google Drive.
+      Absent on an older server, which reads as "no". */
+  directUpload?: boolean
+}
+
+export const getVideoConfig = () => request<VideoConfig>('/config')
 
 export const listVideos = (params: { status?: VideoStatus; client?: string } = {}) => {
   const q = new URLSearchParams()
@@ -143,12 +183,117 @@ export const listVideos = (params: { status?: VideoStatus; client?: string } = {
 
 export const getVideo = (id: string) => request<{ video: VideoRecord }>(`/videos/${id}`)
 
-/** Multipart — deliberately not through `request`, which forces a JSON body. */
-export async function uploadVideo(form: FormData): Promise<VideoRecord> {
-  const res = await fetch(`${BASE}/videos`, { method: 'POST', credentials: 'include', body: form })
-  const payload = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error((payload as { message?: string }).message || 'Upload failed.')
-  return (payload as { video: VideoRecord }).video
+/** The upload form's fields, as both upload paths send them. */
+export interface VideoUploadFields {
+  client: string
+  campaignId: string | null
+  socialPageIds: string[]
+  title: string
+  caption: string
+  platform: string | null
+  notes: string | null
+  tags: string[]
+}
+
+/**
+ * Starts an upload. In 'direct' mode the server has opened a Google Drive
+ * resumable upload for the final file name in the campaign's folder, and the
+ * browser sends the bytes to `uploadUrl` itself — they never pass through
+ * Nerve. 'proxy' means this Drive cannot take that (the local development
+ * folder), so the multipart upload below is the way in.
+ */
+export type UploadSession =
+  | { mode: 'direct'; sessionId: string; uploadUrl: string; chunkBytes: number }
+  | { mode: 'proxy' }
+
+export const createUploadSession = (input: VideoUploadFields & {
+  fileName: string; mimeType: string; sizeBytes: number
+}) => request<UploadSession>('/videos/upload-session', { method: 'POST', body: JSON.stringify(input) })
+
+/** Records a video whose bytes are already in Drive. Safe to repeat. */
+export const completeUpload = (sessionId: string, fileId: string) =>
+  request<{ video: VideoRecord }>('/videos/complete', {
+    method: 'POST', body: JSON.stringify({ sessionId, fileId }),
+  }).then(r => r.video)
+
+export const cancelUpload = (sessionId: string) =>
+  request<unknown>(`/videos/upload-session/${encodeURIComponent(sessionId)}/cancel`, { method: 'POST' })
+
+/**
+ * A file that reached Drive but was not recorded in the workflow. Kept in
+ * sessionStorage, per user, so closing the dialog (or reloading) does not
+ * strand it: reopening the upload offers "Finish saving" for as long as the
+ * server keeps the session — a day.
+ */
+export interface PendingFinish { sessionId: string; fileId: string; title?: string }
+export const PENDING_TTL_MS = 24 * 60 * 60 * 1000
+const pendingKey = (userId: string) => `outreach-video:pending-finish:${userId}`
+
+export function loadPendingFinish(userId: string | null, now = Date.now()): PendingFinish | null {
+  if (!userId) return null
+  try {
+    const raw = window.sessionStorage.getItem(pendingKey(userId))
+    if (!raw) return null
+    const p = JSON.parse(raw) as Partial<PendingFinish & { at: number }>
+    if (typeof p.sessionId !== 'string' || typeof p.fileId !== 'string' || typeof p.at !== 'number'
+      || now - p.at > PENDING_TTL_MS) {
+      window.sessionStorage.removeItem(pendingKey(userId))
+      return null
+    }
+    return { sessionId: p.sessionId, fileId: p.fileId, title: typeof p.title === 'string' ? p.title : undefined }
+  } catch {
+    return null // storage blocked or unreadable: the dialog simply starts fresh
+  }
+}
+
+export function storePendingFinish(userId: string | null, pending: PendingFinish | null, now = Date.now()) {
+  if (!userId) return
+  try {
+    if (pending) window.sessionStorage.setItem(pendingKey(userId), JSON.stringify({ ...pending, at: now }))
+    else window.sessionStorage.removeItem(pendingKey(userId))
+  } catch { /* storage blocked: "Finish saving" still works until the dialog closes */ }
+}
+
+/**
+ * The fallback upload: multipart through Nerve, which stages the file briefly
+ * and passes it on to Drive. XMLHttpRequest rather than fetch, because fetch
+ * cannot report upload progress and a 2 GB file with no progress bar looks
+ * exactly like a hung page.
+ */
+export function uploadVideo(
+  form: FormData,
+  onProgress?: (sent: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<VideoRecord> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException('Upload cancelled.', 'AbortError'))
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${BASE}/videos`)
+    xhr.withCredentials = true
+    xhr.responseType = 'text'
+    if (onProgress) xhr.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded, e.total) }
+    const onAbort = () => xhr.abort()
+    signal?.addEventListener('abort', onAbort, { once: true })
+    const done = () => signal?.removeEventListener('abort', onAbort)
+    xhr.onabort = () => { done(); reject(new DOMException('Upload cancelled.', 'AbortError')) }
+    xhr.onerror = () => { done(); reject(new VideoApiError(NETWORK_ERROR_MESSAGE, 0)) }
+    xhr.onload = () => {
+      done()
+      let payload: Record<string, unknown> = {}
+      try {
+        const parsed: unknown = JSON.parse(xhr.responseText)
+        if (parsed && typeof parsed === 'object') payload = parsed as Record<string, unknown>
+      } catch { /* nginx's HTML error pages — the status says what happened */ }
+      if (xhr.status >= 200 && xhr.status < 300 && payload.video) {
+        return resolve(payload.video as VideoRecord)
+      }
+      const message = typeof payload.message === 'string' && payload.message.trim()
+        ? payload.message
+        : statusMessage(xhr.status, 'Upload failed.')
+      reject(new VideoApiError(message, xhr.status, typeof payload.code === 'string' ? payload.code : null))
+    }
+    xhr.send(form)
+  })
 }
 
 export const updateCaption = (id: string, caption: string) =>
@@ -204,6 +349,11 @@ export interface DriveStatus {
   default_folder_name: string
   /** env = set on the server (wins); app = connected here; local = dev folder. */
   source: 'env' | 'app' | 'local' | 'none'
+  /** Whether Google actually answered a check just now; null when not connected.
+      Optional only so an older server reads as "not checked". */
+  healthy?: boolean | null
+  problem?: 'expired' | 'folder_missing' | 'unreachable' | null
+  problemMessage?: string | null
 }
 
 export const getDriveStatus = () => request<DriveStatus>('/drive')

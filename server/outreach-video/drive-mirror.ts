@@ -122,6 +122,92 @@ export function videoDetailsBody(video: VideoRecord): string {
   return lines.join("\n");
 }
 
+// ── The video file's own Drive description ─────────────────────────────────
+//
+// The team asked for the description and remarks to be "in the Drive folder
+// itself". The details file in Captions/ does that, but it is a separate file
+// in a separate folder; whoever opens Videos/ and clicks on the video sees
+// nothing. Drive has a place for exactly this — a file's description, shown in
+// its details panel — so the same story is written there too.
+
+/**
+ * Drive caps a description at a few thousand characters (and counts bytes in
+ * places). 4000 UTF-8 bytes is under every limit, including for captions in
+ * Gujarati or full of emoji, where a character is three or four bytes.
+ */
+export const DRIVE_DESCRIPTION_LIMIT = 4000;
+
+const byteLength = (text: string): number => Buffer.byteLength(text, "utf8");
+
+/** Cuts `text` to at most `maxBytes`, on a character boundary, marking the cut. */
+function fitBytes(text: string, maxBytes: number): string {
+  if (byteLength(text) <= maxBytes) return text;
+  const chars = Array.from(text);
+  let out = "";
+  let used = byteLength("…");
+  for (const c of chars) {
+    const b = byteLength(c);
+    if (used + b > maxBytes) break;
+    out += c;
+    used += b;
+  }
+  return `${out}…`;
+}
+
+/**
+ * The text set as the video file's Drive description: title, campaign,
+ * editor, caption, the editor's description/notes, and every remark with who
+ * and when.
+ *
+ * Remarks are what grows, so they are what gives way: when everything does not
+ * fit, the NEWEST remarks are kept (they are what someone opening the file
+ * needs) and a line says where the full history is. The fixed part is capped
+ * first so a novel-length caption cannot crowd out every remark.
+ */
+export function videoDriveDescription(video: VideoRecord, limit = DRIVE_DESCRIPTION_LIMIT): string {
+  const uploaded = video.activity.find(e => e.action === "video.uploaded");
+  const editor = uploaded ? `${uploaded.userName}${uploaded.userEmail ? ` (${uploaded.userEmail})` : ""}` : "—";
+  const head = [
+    `${video.title} — ${STATUS_LABEL[video.status] ?? video.status}`,
+    `Title: ${video.editorTitle || "—"}`,
+    `Campaign: ${video.client}`,
+    `Editor: ${editor}`,
+    `Uploaded: ${formatIst(video.createdAt)}`,
+    "",
+    "Caption:",
+    fitBytes(video.caption.trim() || "—", Math.floor(limit * 0.3)),
+    "",
+    "Description / notes:",
+    fitBytes(video.notes?.trim() || "—", Math.floor(limit * 0.2)),
+  ];
+  const rejection = video.status === "rejected" || video.status === "revision" ? video.rejectionReason?.trim() : "";
+  if (rejection) head.push("", "Why it was sent back:", fitBytes(rejection, Math.floor(limit * 0.1)));
+  const top = `${head.join("\n")}\n\nRemarks:\n`;
+  const footer = "\n\nFull history: Captions/ beside this video. Kept up to date by NERVE.";
+
+  const lines = video.activity.map(remarkLine);
+  /* Room is held back for the "(N earlier remarks not shown)" line, so adding
+     it can never push the result over the limit. */
+  const omittedNote = (n: number) => `(${n} earlier remark${n === 1 ? "" : "s"} not shown)`;
+  const budget = limit - byteLength(top) - byteLength(footer) - byteLength(`${omittedNote(lines.length)}\n`);
+  const kept: string[] = [];
+  let used = 0;
+  // Newest first until the space runs out; shown oldest-first as everywhere else.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const cost = byteLength(lines[i]) + 1;
+    if (used + cost > budget) break;
+    kept.unshift(lines[i]);
+    used += cost;
+  }
+  const dropped = lines.length - kept.length;
+  const remarks = [
+    ...(dropped > 0 ? [omittedNote(dropped)] : []),
+    ...kept,
+    ...(lines.length ? [] : ["—"]),
+  ].join("\n");
+  return fitBytes(`${top}${remarks}${footer}`, limit);
+}
+
 /** What changed on the record because of mirroring, for the caller to save. */
 export interface MirrorUpdate {
   captionFileId?: string;
@@ -197,6 +283,17 @@ async function mirrorNow(video: VideoRecord, options: { relocate?: boolean }): P
   if (target && (video.status === "published" || options.relocate)) {
     const moved = await client.moveFile(video.driveFileId, target);
     if (moved.id !== video.driveFileId) update.driveFileId = moved.id;
+  }
+
+  // ── The video's own description ─────────────────────────────────────────
+  /* Last, and on its own: the details file and the move above are what the
+     workflow depends on, and a description that will not save must not undo
+     them or fail the step. Logged so a persistent failure is visible. */
+  const fileId = update.driveFileId ?? video.driveFileId;
+  try {
+    await client.setDescription(fileId, videoDriveDescription(video));
+  } catch (err) {
+    console.error(`Outreach video: could not set the Drive description of “${video.title}”`, err);
   }
   return update;
 }
