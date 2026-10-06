@@ -1,11 +1,21 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { LayoutDashboard, AlertTriangle } from 'lucide-react'
+import { LayoutDashboard, AlertTriangle, Trash2, CheckCircle2 } from 'lucide-react'
 import {
-  boDashboard, boIsOverdue, boMoney, FRAME_STATUS_STYLE, REQUEST_STATUS_STYLE, PRIORITY_STYLE,
+  boDashboard, boIsOverdue, boCompleteRequest, boRemoveRequest,
+  FRAME_STATUS_STYLE, REQUEST_STATUS_STYLE, PRIORITY_STYLE, type BrandingRequest, type RequestStatus,
 } from '@/lib/brandops-api'
 import {
-  BoPage, BoError, BoLoading, BoKpi, BoBadge, BoTable, BoRow, BoCell, useBoData,
+  BoPage, BoError, BoLoading, BoKpi, BoBadge, BoTable, BoRow, BoCell, BoButton,
+  useBoData, useBoAction, useBoAccess,
 } from './ui'
+import {
+  CompleteRequestDialog, QuotationHistoryDialog, QuoteAmount, QuoteInfoButton, RemoveRequestDialog,
+} from './requirements-ui'
+import { quoteSummaryTitle } from './requirements'
+
+// The states the server lets a requirement be marked Completed from.
+const COMPLETABLE: RequestStatus[] = ['pending', 'quoted', 'approved', 'in_progress']
 
 /**
  * The live view: what's deployed right now, what's overdue back, and what
@@ -13,12 +23,21 @@ import {
  * tables the other tabs edit, so it can't drift from them.
  */
 export default function BoDashboard() {
-  const { data, error, loading } = useBoData(() => boDashboard(), [])
+  const { data, error, loading, refresh, setError } = useBoData(() => boDashboard(), [])
+  const { busy, act } = useBoAction(refresh, setError)
+  const { can } = useBoAccess()
+  const canEdit = can('brandops:requests')
+  const [removing, setRemoving] = useState<BrandingRequest | null>(null)
+  const [completing, setCompleting] = useState<BrandingRequest | null>(null)
+  const [quotesOf, setQuotesOf] = useState<string | null>(null)
 
-  if (loading) return <BoLoading />
-  if (error) return <BoError message={error} />
-  if (!data) return null
-  const { kpis: k, sizes, allocations, requests } = data
+  // Only the first load blanks the page. Once there is a dashboard, a refresh
+  // after an action, or an action's error, must not take it off screen.
+  if (!data) {
+    if (loading) return <BoLoading />
+    return <BoError message={error ?? 'Could not load the dashboard.'} />
+  }
+  const { kpis: k, sizes, allocations, requests, quotes } = data
 
   return (
     <BoPage title="Dashboard" subtitle="Frames, branding work and vendor activity" icon={LayoutDashboard}>
@@ -83,17 +102,45 @@ export default function BoDashboard() {
           <h2 className="text-[11px] uppercase tracking-widest text-muted-foreground mb-2">
             Outstanding branding work
           </h2>
-          <BoTable head={['Ref', 'Institute', 'Work', 'Required', 'Priority', 'Status', 'Quotes']}
+          {/* An action's error shows here, beside the row it was about. */}
+          <div className="mb-2"><BoError message={error} /></div>
+          <BoTable head={['Ref', 'Institute', 'Work', 'Size', 'Required', 'Priority', 'Status', 'Quotation', '']}
             empty="No outstanding requirements.">
             {requests.map(r => (
               <BoRow key={r.id}>
                 <BoCell strong nowrap>{r.reference}</BoCell>
                 <BoCell>{r.institute_name}</BoCell>
                 <BoCell>{r.work_type}</BoCell>
+                <BoCell nowrap>{r.size || '—'}</BoCell>
                 <BoCell nowrap>{r.required_date}</BoCell>
                 <BoCell><BoBadge style={PRIORITY_STYLE[r.priority]} /></BoCell>
                 <BoCell><BoBadge style={REQUEST_STATUS_STYLE[r.status]} /></BoCell>
-                <BoCell nowrap>{r.quote_count}{r.approved_amount ? ` · ${boMoney(r.approved_amount)}` : ''}</BoCell>
+                <BoCell nowrap>
+                  <span className="inline-flex items-center gap-1">
+                    <QuoteAmount approved={r.approved_amount} lowest={r.lowest_amount} count={r.quote_count} />
+                    {/* The hover text already lists vendors and amounts; the click opens the full comparison. */}
+                    {r.quote_count > 0 && (
+                      <QuoteInfoButton title={quoteSummaryTitle(quotes[r.id])} onClick={() => setQuotesOf(r.id)} />
+                    )}
+                  </span>
+                </BoCell>
+                <BoCell nowrap>
+                  {canEdit && (
+                    <div className="flex gap-1.5">
+                      {COMPLETABLE.includes(r.status) && (
+                        // Icon-only: the table shares its row with Stock by size and has no room for labels.
+                        <BoButton variant="ghost" disabled={busy} title="Mark completed — the work is finished"
+                          onClick={() => setCompleting(r)}>
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                        </BoButton>
+                      )}
+                      <BoButton variant="danger" disabled={busy} title="Remove requirement"
+                        onClick={() => setRemoving(r)}>
+                        <Trash2 className="w-3 h-3" />
+                      </BoButton>
+                    </div>
+                  )}
+                </BoCell>
               </BoRow>
             ))}
           </BoTable>
@@ -121,6 +168,19 @@ export default function BoDashboard() {
           </div>
         </div>
       </div>
+
+      {/* The dialogs close whether or not the action went through: a refusal
+          (say, a work order still open) is shown above the table, which an
+          open dialog would cover. */}
+      {removing && (
+        <RemoveRequestDialog request={removing} busy={busy} onClose={() => setRemoving(null)}
+          onConfirm={async reason => { await act(() => boRemoveRequest(removing.id, reason)); setRemoving(null) }} />
+      )}
+      {completing && (
+        <CompleteRequestDialog request={completing} busy={busy} onClose={() => setCompleting(null)}
+          onConfirm={async note => { await act(() => boCompleteRequest(completing.id, note)); setCompleting(null) }} />
+      )}
+      {quotesOf && <QuotationHistoryDialog requestId={quotesOf} onClose={() => setQuotesOf(null)} />}
     </BoPage>
   )
 }

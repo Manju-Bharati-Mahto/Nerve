@@ -68,6 +68,8 @@ afterAll(async () => {
   await pool.query(`DELETE FROM bo_work_orders WHERE vendor_id IN (SELECT id FROM bo_vendors WHERE name LIKE 'TST Vendor%')`);
   await pool.query(`DELETE FROM bo_quotations WHERE vendor_id IN (SELECT id FROM bo_vendors WHERE name LIKE 'TST Vendor%')`);
   await pool.query(`DELETE FROM bo_requests WHERE created_by IS NULL AND work_type IN ('Gate branding','Signage')`);
+  // The requirement/quotation suites below tag their work type, removed rows included.
+  await pool.query(`DELETE FROM bo_requests WHERE created_by IS NULL AND work_type LIKE 'TST %'`);
   await pool.query(`DELETE FROM bo_deliveries WHERE description = 'Convocation certificates'`);
   await pool.query(`DELETE FROM bo_frames WHERE asset_id LIKE 'TST-%'`);
   await pool.query(`DELETE FROM bo_vendors WHERE name LIKE 'TST Vendor%'`);
@@ -416,5 +418,411 @@ describe("KPIs", () => {
       event: "", from: "2020-01-01", until: "2020-01-02",
     });
     expect((await q.kpis()).overdue).toBeGreaterThan(0);
+  });
+});
+
+/* ── Requirements and quotations, as the branding team asked (Oct 2026) ──
+   Size, Completed, soft removal and quotation history. Every requirement here
+   carries a "TST " work type so afterAll can find it, removed ones included. */
+
+const tag = () => Math.random().toString(36).slice(2, 9).toUpperCase();
+
+async function tstRequirement(extra: Partial<import("./brandops-queries.js").RequestInput> = {}) {
+  return q.createRequest(ACTOR, {
+    instituteId: instituteA, requiredDate: "2026-11-01", workType: "TST Work",
+    priority: "normal", description: "Test requirement", location: "Gate", quantity: 1, ...extra,
+  });
+}
+
+async function quote(requestId: string, amount: number, vendorId = vendorA) {
+  return q.createQuotation(ACTOR, { requestId, vendorId, amount, quoteDate: "2026-10-10" });
+}
+
+/** Approved quote, a work order, and the work order pushed to closed. */
+async function closeWorkOrder(workOrderId: string) {
+  await q.setWorkOrderStatus(ACTOR, workOrderId, "in_progress");
+  await q.setWorkOrderStatus(ACTOR, workOrderId, "completed");
+  await q.addPhoto(ACTOR, { workOrderId, phase: "after", filePath: "/uploads/brandops/t.png", originalName: "t.png" });
+  await q.setWorkOrderStatus(ACTOR, workOrderId, "verified");
+  await q.setWorkOrderStatus(ACTOR, workOrderId, "closed");
+}
+
+const refNumber = (ref: string) => Number(ref.replace(/^.*-/, ""));
+
+describe("requirement size", () => {
+  maybe()("is stored, listed, editable and offered as a suggestion beside the frame sizes", async () => {
+    const size = `12x8 ft TST-${tag()}`;
+    const r = await tstRequirement({ size: `  ${size}  ` });
+    expect(r.size).toBe(size);   // trimmed on the way in
+    expect((await q.listRequests()).find(x => x.id === r.id)?.size).toBe(size);
+    expect((await q.listRequests({ q: size.toLowerCase() })).map(x => x.id)).toContain(r.id);
+
+    const sizes = await q.requestSizes();
+    expect(sizes).toContain(size);
+    expect(sizes).toContain("10x10");   // a seeded frame size
+    expect(sizes).not.toContain("");
+
+    const edited = `TST-EDIT-${tag()}`;
+    const after = await q.updateRequest(ACTOR, r.id, {
+      instituteId: instituteA, requiredDate: "2026-11-01", workType: "TST Work",
+      priority: "normal", description: "Test requirement", size: edited,
+    });
+    expect(after.size).toBe(edited);
+    expect((await q.getRequest(r.id))?.size).toBe(edited);
+    expect(await q.requestSizes()).toContain(edited);
+  });
+
+  maybe()("stops suggesting a size once the only requirement using it is removed", async () => {
+    const size = `TST-GONE-${tag()}`;
+    const r = await tstRequirement({ size });
+    expect(await q.requestSizes()).toContain(size);
+    await q.removeRequest(ACTOR, r.id);
+    expect(await q.requestSizes()).not.toContain(size);
+  });
+});
+
+describe("removing a requirement", () => {
+  maybe()("takes it, and its quotations, off every list and count — but keeps the rows", async () => {
+    const r = await tstRequirement();
+    const q1 = await quote(r.id, 1000);
+    const q2 = await quote(r.id, 900, vendorB);
+    const before = await q.kpis();
+
+    await q.removeRequest(ACTOR, r.id, "Duplicate entry");
+
+    // Branding Requests and the Dashboard both read listRequests / getRequest.
+    expect((await q.listRequests()).find(x => x.id === r.id)).toBeUndefined();
+    expect(await q.getRequest(r.id)).toBeNull();
+
+    const after = await q.kpis();
+    expect(after.pendingRequests).toBe(before.pendingRequests - 1);
+    expect(after.openQuotations).toBe(before.openQuotations - 2);
+
+    // Quotations and Approvals must not offer a price for work nobody wants.
+    const ids = (list: { id: string }[]) => list.map(x => x.id);
+    expect(ids(await q.listQuotations())).not.toContain(q1.id);
+    expect(ids(await q.listQuotations({ status: "pending" }))).not.toContain(q1.id);
+    expect(ids(await q.listQuotations({ status: "pending" }))).not.toContain(q2.id);
+    expect(ids(await q.listQuotations({ includeRemoved: true }))).toEqual(expect.arrayContaining([q1.id, q2.id]));
+
+    await expect(q.decideQuotation(ACTOR, q1.id, "approved")).rejects.toMatchObject({ status: 404 });
+
+    const { rows } = await pool.query<{ removed_at: string | null; removal_reason: string }>(
+      `SELECT removed_at, removal_reason FROM bo_requests WHERE id = $1`, [r.id]);
+    expect(rows[0].removed_at).not.toBeNull();
+    expect(rows[0].removal_reason).toBe("Duplicate entry");
+  });
+
+  maybe()("is refused while a work order is open, allowed once it closes, and only once", async () => {
+    const r = await tstRequirement();
+    const qt = await quote(r.id, 5000);
+    await q.decideQuotation(ACTOR, qt.id, "approved");
+    const wo = await q.createWorkOrder(ACTOR, { requestId: r.id, assignedDate: "2026-10-15" });
+
+    await expect(q.removeRequest(ACTOR, r.id)).rejects.toMatchObject({ status: 409 });
+    await expect(q.removeRequest(ACTOR, r.id)).rejects.toThrow(/open work order/i);
+    expect(await q.getRequest(r.id)).not.toBeNull();
+
+    await closeWorkOrder(wo.id);
+    await q.removeRequest(ACTOR, r.id);
+    expect(await q.getRequest(r.id)).toBeNull();
+
+    await expect(q.removeRequest(ACTOR, r.id)).rejects.toMatchObject({ status: 404 });
+  });
+
+  maybe()("cannot be edited, completed or quoted once removed", async () => {
+    const r = await tstRequirement();
+    await q.removeRequest(ACTOR, r.id);
+    await expect(q.updateRequest(ACTOR, r.id, {
+      instituteId: instituteA, requiredDate: "2026-11-01", workType: "TST Work",
+      priority: "normal", description: "x",
+    })).rejects.toMatchObject({ status: 404 });
+    await expect(q.completeRequest(ACTOR, r.id)).rejects.toMatchObject({ status: 404 });
+    await expect(quote(r.id, 100)).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("requirement references", () => {
+  maybe()("never collide after a removal", async () => {
+    const made = [await tstRequirement(), await tstRequirement(), await tstRequirement()];
+    await q.removeRequest(ACTOR, made[1].id);
+    const next = await tstRequirement();
+
+    const { rows } = await pool.query<{ reference: string }>(
+      `SELECT reference FROM bo_requests WHERE id <> $1`, [next.id]);
+    expect(rows.map(x => x.reference)).not.toContain(next.reference);
+    expect(refNumber(next.reference)).toBeGreaterThan(Math.max(...rows.map(x => refNumber(x.reference))));
+  });
+
+  maybe()("keep counting past a gap left by a row that really was deleted", async () => {
+    // The old COUNT-based numbering handed out an existing reference here and
+    // the UNIQUE constraint then refused every creation that followed.
+    const first = await tstRequirement();
+    const second = await tstRequirement();
+    await pool.query(`DELETE FROM bo_requests WHERE id = $1`, [first.id]);
+    const third = await tstRequirement();
+    expect(refNumber(third.reference)).toBe(refNumber(second.reference) + 1);
+  });
+});
+
+describe("completing a requirement", () => {
+  maybe()("marks a quoted requirement completed, once, and refuses new quotations", async () => {
+    const r = await tstRequirement();
+    await quote(r.id, 700);
+    expect((await q.getRequest(r.id))?.status).toBe("quoted");
+
+    await q.completeRequest(ACTOR, r.id, "  Installed at the gate  ");
+    const done = await q.getRequest(r.id);
+    expect(done?.status).toBe("completed");
+    expect(done?.completed_at).not.toBeNull();
+    expect(done?.completion_note).toBe("Installed at the gate");
+
+    await expect(q.completeRequest(ACTOR, r.id)).rejects.toMatchObject({ status: 409 });
+    await expect(q.completeRequest(ACTOR, r.id)).rejects.toThrow(/already completed/i);
+    await expect(quote(r.id, 650)).rejects.toMatchObject({ status: 409 });
+    await expect(q.createQuotation(ACTOR, { requestId: r.id, vendorId: vendorB, amount: 1, quoteDate: "2026-10-10" }))
+      .rejects.toThrow(/can't take new quotations/i);
+  });
+
+  maybe()("reopens a requirement with no quotations to pending", async () => {
+    const r = await tstRequirement();
+    await q.completeRequest(ACTOR, r.id);
+    expect(await q.reopenRequest(ACTOR, r.id)).toBe("pending");
+    const back = await q.getRequest(r.id);
+    expect(back?.status).toBe("pending");
+    expect(back?.completed_at).toBeNull();
+    expect(back?.completion_note).toBe("");
+  });
+
+  maybe()("reopens a quoted requirement to quoted", async () => {
+    const r = await tstRequirement();
+    await quote(r.id, 400);
+    await q.completeRequest(ACTOR, r.id);
+    expect(await q.reopenRequest(ACTOR, r.id)).toBe("quoted");
+    expect((await q.getRequest(r.id))?.status).toBe("quoted");
+  });
+
+  maybe()("completes from approved and reopens to approved", async () => {
+    const r = await tstRequirement();
+    const qt = await quote(r.id, 400);
+    await q.decideQuotation(ACTOR, qt.id, "approved");
+    await q.completeRequest(ACTOR, r.id);
+    expect((await q.getRequest(r.id))?.status).toBe("completed");
+    expect(await q.reopenRequest(ACTOR, r.id)).toBe("approved");
+  });
+
+  maybe()("reopens to in progress while its work order is still open", async () => {
+    const r = await tstRequirement();
+    const qt = await quote(r.id, 400);
+    await q.decideQuotation(ACTOR, qt.id, "approved");
+    await q.createWorkOrder(ACTOR, { requestId: r.id, assignedDate: "2026-10-15" });
+    expect((await q.getRequest(r.id))?.status).toBe("in_progress");
+    await q.completeRequest(ACTOR, r.id);
+    expect(await q.reopenRequest(ACTOR, r.id)).toBe("in_progress");
+  });
+
+  maybe()("refuses to reopen a requirement that is not completed", async () => {
+    const r = await tstRequirement();
+    await expect(q.reopenRequest(ACTOR, r.id)).rejects.toMatchObject({ status: 409 });
+    await expect(q.reopenRequest(ACTOR, r.id)).rejects.toThrow(/not completed/i);
+  });
+});
+
+describe("editing a quotation", () => {
+  maybe()("files the old version as a revision and bumps the revision number", async () => {
+    const r = await tstRequirement();
+    const qt = await q.createQuotation(ACTOR, {
+      requestId: r.id, vendorId: vendorA, amount: 1000, quoteDate: "2026-10-10", notes: "First offer",
+    });
+    expect(qt.revision).toBe(1);
+
+    const edited = await q.updateQuotation(ACTOR, qt.id, { amount: 1200, vendorId: vendorB, notes: "Revised" });
+    expect(edited.revision).toBe(2);
+    expect(Number(edited.amount)).toBe(1200);
+    expect(edited.vendor_id).toBe(vendorB);
+    expect(edited.updated_at).not.toBeNull();
+
+    const { quotations } = await q.quotationHistory(r.id);
+    const h = quotations.find(x => x.id === qt.id);
+    expect(h?.revisions).toHaveLength(1);
+    // The revision holds what was REPLACED, not the new figure.
+    expect(h?.revisions[0].revision).toBe(1);
+    expect(Number(h?.revisions[0].amount)).toBe(1000);
+    expect(h?.revisions[0].vendor_name).toBe(qt.vendor_name);
+    expect(h?.revisions[0].notes).toBe("First offer");
+    expect(h?.revisions[0].quote_date).toBe("2026-10-10");
+  });
+
+  maybe()("creates no revision for an edit that changes nothing", async () => {
+    const r = await tstRequirement();
+    const qt = await quote(r.id, 1000);
+    const same = await q.updateQuotation(ACTOR, qt.id, { amount: 1000, quoteDate: "2026-10-10", vendorId: vendorA });
+    expect(same.revision).toBe(1);
+    const { quotations } = await q.quotationHistory(r.id);
+    expect(quotations.find(x => x.id === qt.id)?.revisions).toEqual([]);
+  });
+
+  maybe()("locks an approved quotation against edit and removal", async () => {
+    const r = await tstRequirement();
+    const qt = await quote(r.id, 1000);
+    await q.decideQuotation(ACTOR, qt.id, "approved");
+    await expect(q.updateQuotation(ACTOR, qt.id, { amount: 1 })).rejects.toMatchObject({ status: 409 });
+    await expect(q.removeQuotation(ACTOR, qt.id)).rejects.toMatchObject({ status: 409 });
+    const still = (await q.listQuotations({ requestId: r.id })).find(x => x.id === qt.id);
+    expect(Number(still?.amount)).toBe(1000);
+    expect(still?.removed_at).toBeNull();
+  });
+
+  maybe()("refuses to edit a removed quotation", async () => {
+    const r = await tstRequirement();
+    const qt = await quote(r.id, 1000);
+    await q.removeQuotation(ACTOR, qt.id);
+    await expect(q.updateQuotation(ACTOR, qt.id, { amount: 5 })).rejects.toMatchObject({ status: 404 });
+  });
+
+  maybe()("serialises two simultaneous edits into two sequential revisions", async () => {
+    // FOR UPDATE makes the second edit wait for the first and then read its
+    // result; without it both would file "revision 1" and one would hit the
+    // (quotation_id, revision) unique constraint.
+    const r = await tstRequirement();
+    const qt = await quote(r.id, 1000);
+    const results = await Promise.allSettled([
+      q.updateQuotation(ACTOR, qt.id, { amount: 2000 }),
+      q.updateQuotation(ACTOR, qt.id, { amount: 3000 }),
+    ]);
+    expect(results.map(x => x.status)).toEqual(["fulfilled", "fulfilled"]);
+
+    const { quotations } = await q.quotationHistory(r.id);
+    const h = quotations.find(x => x.id === qt.id);
+    expect(h?.revision).toBe(3);
+    const revs = h?.revisions.map(x => x.revision) ?? [];
+    expect(revs).toEqual([1, 2]);
+    expect(Number(h?.revisions[0].amount)).toBe(1000);
+    // Revision 2 is whichever edit landed first; the standing figure is the other.
+    expect([Number(h?.revisions[1].amount), Number(h?.amount)].sort()).toEqual([2000, 3000]);
+  });
+});
+
+describe("removing a quotation", () => {
+  maybe()("is soft: gone from the lists, still in the history with when and why", async () => {
+    const r = await tstRequirement();
+    const keep = await quote(r.id, 800);
+    const gone = await quote(r.id, 900, vendorB);
+    await q.removeQuotation(ACTOR, gone.id, "Vendor withdrew");
+
+    expect((await q.listQuotations({ requestId: r.id })).map(x => x.id)).toEqual([keep.id]);
+    const { quotations } = await q.quotationHistory(r.id);
+    const h = quotations.find(x => x.id === gone.id);
+    expect(h?.removed_at).not.toBeNull();
+    expect(h?.removal_reason).toBe("Vendor withdrew");
+    expect(quotations.map(x => x.id)).toEqual(expect.arrayContaining([keep.id, gone.id]));
+
+    // It no longer counts towards the requirement's quotes or lowest price.
+    const req = await q.getRequest(r.id);
+    expect(req?.quote_count).toBe(1);
+    expect(Number(req?.lowest_amount)).toBe(800);
+    expect(req?.status).toBe("quoted");
+
+    await expect(q.removeQuotation(ACTOR, gone.id)).rejects.toMatchObject({ status: 404 });
+  });
+
+  maybe()("returns a quoted requirement to pending when the last quotation goes", async () => {
+    const r = await tstRequirement();
+    const a = await quote(r.id, 800);
+    const b = await quote(r.id, 900, vendorB);
+    await q.removeQuotation(ACTOR, a.id);
+    expect((await q.getRequest(r.id))?.status).toBe("quoted");
+    await q.removeQuotation(ACTOR, b.id);
+    expect((await q.getRequest(r.id))?.status).toBe("pending");
+  });
+
+  maybe()("is left alone when a sibling is approved", async () => {
+    const r = await tstRequirement();
+    const win = await quote(r.id, 500);
+    const lose = await quote(r.id, 600, vendorB);
+    const removed = await quote(r.id, 700);
+    await q.removeQuotation(ACTOR, removed.id, "Withdrawn");
+
+    await q.decideQuotation(ACTOR, win.id, "approved");
+
+    const all = await q.listQuotations({ requestId: r.id, includeRemoved: true });
+    expect(all.find(x => x.id === win.id)?.status).toBe("approved");
+    expect(all.find(x => x.id === lose.id)?.status).toBe("rejected");
+    const untouched = all.find(x => x.id === removed.id);
+    expect(untouched?.status).toBe("pending");
+    expect(untouched?.decided_at).toBeNull();
+    expect(untouched?.removed_at).not.toBeNull();
+  });
+});
+
+describe("a quotation for a typed-in requirement", () => {
+  maybe()("creates the requirement and the quotation together", async () => {
+    const size = `TST-NEW-${tag()}`;
+    const made = await q.createQuotationWithNewRequest(ACTOR, {
+      instituteId: instituteB, requiredDate: "2026-12-01", workType: "TST Typed",
+      priority: "urgent", description: "Typed in the quotation form", size,
+    }, { vendorId: vendorA, amount: 4321, quoteDate: "2026-10-11", notes: "Below" });
+
+    expect(Number(made.amount)).toBe(4321);
+    expect(made.notes).toBe("Below");
+    expect(made.request_size).toBe(size);
+    expect(made.work_type).toBe("TST Typed");
+    const req = await q.getRequest(made.request_id);
+    expect(req?.status).toBe("quoted");
+    expect(req?.institute_id).toBe(instituteB);
+    expect(req?.reference).toBe(made.request_reference);
+    expect(req?.quote_count).toBe(1);
+  });
+
+  maybe()("leaves no requirement behind when the quotation fails", async () => {
+    const description = `Orphan check ${tag()}`;
+    const count = async () => Number((await pool.query<{ c: string }>(
+      `SELECT COUNT(*)::text AS c FROM bo_requests WHERE description = $1`, [description])).rows[0].c);
+
+    expect(await count()).toBe(0);
+    await expect(q.createQuotationWithNewRequest(ACTOR, {
+      instituteId: instituteA, requiredDate: "2026-12-01", workType: "TST Typed",
+      priority: "normal", description,
+    }, { vendorId: "no-such-vendor", amount: 100, quoteDate: "2026-10-11" })).rejects.toMatchObject({ status: 404 });
+    expect(await count()).toBe(0);
+  });
+});
+
+describe("quotation summaries for the Dashboard", () => {
+  maybe()("group the standing quotations by requirement, cheapest first", async () => {
+    const r1 = await tstRequirement();
+    const r2 = await tstRequirement();
+    const r3 = await tstRequirement();   // no quotations at all
+    const a = await quote(r1.id, 300);
+    const b = await quote(r1.id, 100, vendorB);
+    const c = await quote(r1.id, 50);
+    await q.removeQuotation(ACTOR, c.id);
+    const d = await quote(r2.id, 999);
+
+    const out = await q.quoteSummaries([r1.id, r2.id, r3.id]);
+    expect(out[r1.id].map(x => x.id)).toEqual([b.id, a.id]);
+    expect(out[r2.id].map(x => x.id)).toEqual([d.id]);
+    expect(out[r3.id]).toBeUndefined();
+    expect(out[r1.id][0]).toMatchObject({ reference: b.reference, vendor_name: b.vendor_name, status: "pending", revision: 1 });
+    expect(Number(out[r1.id][0].amount)).toBe(100);
+
+    expect(await q.quoteSummaries([])).toEqual({});
+  });
+});
+
+describe("quotation history", () => {
+  maybe()("lists every quotation a requirement has had, oldest first, for comparison", async () => {
+    // The comparison only means anything with two or more quotations, so this
+    // is the case the ⓘ view and the history dialog depend on.
+    const r = await tstRequirement();
+    const older = await quote(r.id, 1500);
+    const newer = await quote(r.id, 1400, vendorB);
+    await q.updateQuotation(ACTOR, newer.id, { amount: 1300 });
+
+    const { request, quotations } = await q.quotationHistory(r.id);
+    expect(request?.id).toBe(r.id);
+    expect(quotations.map(x => x.id)).toEqual([older.id, newer.id]);
+    expect(quotations[0].revisions).toEqual([]);
+    expect(quotations[1].revisions.map(x => Number(x.amount))).toEqual([1400]);
   });
 });

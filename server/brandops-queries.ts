@@ -431,74 +431,233 @@ export async function returnFrame(actor: Actor, input: {
 
 // ── Branding requirements ──────────────────────────────────────────────────
 
+/** Anything pool.query-shaped: the pool itself, or a client in a transaction. */
+type Queryable = Pick<typeof pool, "query">;
+
+/** A requirement's statuses that still have work ahead of them. */
+const OPEN_REQUEST_STATUSES: RequestStatus[] = ["pending", "quoted", "approved", "in_progress"];
+
+/** One quotation as the requirement's summary shows it. */
+export interface QuoteSummary {
+  id: string; reference: string; vendor_name: string; amount: string;
+  quote_date: string; status: QuoteStatus; revision: number;
+}
+
 export interface BrandingRequest {
   id: string; reference: string; institute_id: string; institute_name: string;
   required_date: string; work_type: string; priority: Priority; description: string;
-  location: string; quantity: number; status: RequestStatus; created_at: string;
-  quote_count: number; approved_amount: string | null;
+  location: string; quantity: number; size: string; status: RequestStatus; created_at: string;
+  completed_at: string | null; completion_note: string;
+  /** Quotations that have not been removed. */
+  quote_count: number;
+  approved_amount: string | null;
+  /** The cheapest quotation still standing — what the team compares against. */
+  lowest_amount: string | null;
 }
 
+/* Removed quotations are history: they are kept, but they no longer count
+   towards a requirement's quotes or its lowest price. */
 const REQ_SELECT = `
   SELECT r.id, r.reference, r.institute_id, i.name AS institute_name, r.required_date::text AS required_date,
-         r.work_type, r.priority, r.description, r.location, r.quantity, r.status, r.created_at,
-         COALESCE(q.c,0)::int AS quote_count, q.approved_amount
+         r.work_type, r.priority, r.description, r.location, r.quantity, r.size, r.status, r.created_at,
+         r.completed_at, r.completion_note,
+         COALESCE(q.c,0)::int AS quote_count, q.approved_amount, q.lowest_amount
     FROM bo_requests r
     JOIN bo_institutes i ON i.id = r.institute_id
     LEFT JOIN (
       SELECT request_id, COUNT(*) AS c,
-             MAX(CASE WHEN status='approved' THEN amount END)::text AS approved_amount
-        FROM bo_quotations GROUP BY request_id
+             MAX(CASE WHEN status='approved' THEN amount END)::text AS approved_amount,
+             MIN(CASE WHEN status <> 'rejected' THEN amount END)::text AS lowest_amount
+        FROM bo_quotations WHERE removed_at IS NULL GROUP BY request_id
     ) q ON q.request_id = r.id`;
 
 export async function listRequests(filter: { status?: RequestStatus; instituteId?: string; q?: string } = {}): Promise<BrandingRequest[]> {
-  const where: string[] = [];
+  // A removed requirement leaves every list. Its row stays for the record.
+  const where: string[] = ["r.removed_at IS NULL"];
   const args: unknown[] = [];
   if (filter.status) { args.push(filter.status); where.push(`r.status = $${args.length}`); }
   if (filter.instituteId) { args.push(filter.instituteId); where.push(`r.institute_id = $${args.length}`); }
   if (filter.q) {
     args.push(`%${filter.q.toLowerCase()}%`);
     where.push(`(LOWER(r.reference) LIKE $${args.length} OR LOWER(r.description) LIKE $${args.length}
-      OR LOWER(r.work_type) LIKE $${args.length} OR LOWER(i.name) LIKE $${args.length})`);
+      OR LOWER(r.work_type) LIKE $${args.length} OR LOWER(i.name) LIKE $${args.length}
+      OR LOWER(r.size) LIKE $${args.length} OR LOWER(r.location) LIKE $${args.length})`);
   }
   const { rows } = await pool.query<BrandingRequest>(
-    `${REQ_SELECT} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY r.created_at DESC`, args);
+    `${REQ_SELECT} WHERE ${where.join(" AND ")} ORDER BY r.created_at DESC`, args);
   return rows;
 }
 
-async function nextReference(table: string, prefix: string): Promise<string> {
-  const { rows } = await pool.query<{ c: string }>(`SELECT COUNT(*)::text AS c FROM ${table}`);
-  return `${prefix}-${String(Number(rows[0]?.c ?? "0") + 1).padStart(4, "0")}`;
+/**
+ * The next reference in a series ("REQ-0012").
+ *
+ * Taken from the highest number already issued, not from the row count. A
+ * count only works while rows are never removed: once one is, the count
+ * falls behind the highest reference and the next "new" number is one that
+ * already exists — and the UNIQUE constraint then refuses every creation from
+ * that point on.
+ */
+async function nextReference(table: string, prefix: string, db: Queryable = pool): Promise<string> {
+  const { rows } = await db.query<{ n: string | null }>(
+    `SELECT MAX(NULLIF(regexp_replace(reference, '^.*-', ''), '')::int)::text AS n
+       FROM ${table} WHERE reference ~ ('^' || $1 || '-[0-9]+$')`, [prefix]);
+  return `${prefix}-${String(Number(rows[0]?.n ?? "0") + 1).padStart(4, "0")}`;
 }
 
-export async function createRequest(actor: Actor, input: {
+export interface RequestInput {
   instituteId: string; requiredDate: string; workType: string; priority: Priority;
-  description: string; location?: string; quantity?: number;
-}): Promise<BrandingRequest> {
+  description: string; location?: string; quantity?: number; size?: string;
+}
+
+function validateRequest(input: RequestInput): void {
   if (!input.instituteId) throw bad("Pick an institute.");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.requiredDate)) throw bad("A required date is needed.");
   if (!input.workType.trim()) throw bad("Pick a work type.");
   if (!input.description.trim()) throw bad("Describe the branding work required.");
-  const inst = await pool.query<{ name: string }>(`SELECT name FROM bo_institutes WHERE id = $1`, [input.instituteId]);
-  if (!inst.rowCount) throw missing("That institute was not found.");
+  if (!["normal", "high", "urgent"].includes(input.priority)) throw bad("Pick a priority.");
+}
 
+/** Inserts a requirement on `db` and returns its id and reference. No logging. */
+async function insertRequest(db: Queryable, actor: Actor, input: RequestInput): Promise<{ id: string; reference: string; institute: string }> {
+  validateRequest(input);
+  const inst = await db.query<{ name: string }>(`SELECT name FROM bo_institutes WHERE id = $1`, [input.instituteId]);
+  if (!inst.rowCount) throw missing("That institute was not found.");
   const id = boId("req");
-  const reference = await nextReference("bo_requests", "REQ");
-  await pool.query(
-    `INSERT INTO bo_requests (id, reference, institute_id, required_date, work_type, priority, description, location, quantity, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+  const reference = await nextReference("bo_requests", "REQ", db);
+  await db.query(
+    `INSERT INTO bo_requests (id, reference, institute_id, required_date, work_type, priority, description, location, quantity, size, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
     [id, reference, input.instituteId, input.requiredDate, input.workType.trim(), input.priority,
-      input.description.trim(), input.location?.trim() ?? "", Math.max(1, input.quantity ?? 1), actor.id]);
+      input.description.trim(), input.location?.trim() ?? "", Math.max(1, input.quantity ?? 1),
+      input.size?.trim() ?? "", actor.id]);
+  return { id, reference, institute: inst.rows[0].name };
+}
+
+export async function getRequest(id: string): Promise<BrandingRequest | null> {
+  const { rows } = await pool.query<BrandingRequest>(`${REQ_SELECT} WHERE r.id = $1 AND r.removed_at IS NULL`, [id]);
+  return rows[0] ?? null;
+}
+
+export async function createRequest(actor: Actor, input: RequestInput): Promise<BrandingRequest> {
+  const made = await insertRequest(pool, actor, input);
   await logActivity(actor, "Branding Requests", "Requirement created",
-    `${reference} — ${input.workType.trim()} for ${inst.rows[0].name}`, { type: "request", id });
-  return (await listRequests()).find(r => r.id === id) as BrandingRequest;
+    `${made.reference} — ${input.workType.trim()}${input.size?.trim() ? ` (${input.size.trim()})` : ""} for ${made.institute}`,
+    { type: "request", id: made.id });
+  return (await getRequest(made.id)) as BrandingRequest;
+}
+
+/** Edits a requirement's details. Status is changed by its own actions, not here. */
+export async function updateRequest(actor: Actor, id: string, input: RequestInput): Promise<BrandingRequest> {
+  validateRequest(input);
+  const r = await pool.query<{ reference: string; removed_at: string | null }>(
+    `SELECT reference, removed_at FROM bo_requests WHERE id = $1`, [id]);
+  if (!r.rowCount || r.rows[0].removed_at) throw missing("That requirement was not found.");
+  const inst = await pool.query(`SELECT 1 FROM bo_institutes WHERE id = $1`, [input.instituteId]);
+  if (!inst.rowCount) throw missing("That institute was not found.");
+  await pool.query(
+    `UPDATE bo_requests SET institute_id = $2, required_date = $3, work_type = $4, priority = $5,
+            description = $6, location = $7, quantity = $8, size = $9, updated_at = NOW()
+      WHERE id = $1`,
+    [id, input.instituteId, input.requiredDate, input.workType.trim(), input.priority,
+      input.description.trim(), input.location?.trim() ?? "", Math.max(1, input.quantity ?? 1), input.size?.trim() ?? ""]);
+  await logActivity(actor, "Branding Requests", "Requirement edited", r.rows[0].reference, { type: "request", id });
+  return (await getRequest(id)) as BrandingRequest;
 }
 
 export async function setRequestStatus(actor: Actor, id: string, status: RequestStatus): Promise<void> {
-  const r = await pool.query<{ reference: string }>(`SELECT reference FROM bo_requests WHERE id = $1`, [id]);
-  if (!r.rowCount) throw missing("That requirement was not found.");
+  const r = await pool.query<{ reference: string; removed_at: string | null }>(
+    `SELECT reference, removed_at FROM bo_requests WHERE id = $1`, [id]);
+  if (!r.rowCount || r.rows[0].removed_at) throw missing("That requirement was not found.");
   await pool.query(`UPDATE bo_requests SET status = $2, updated_at = NOW() WHERE id = $1`, [id, status]);
   await logActivity(actor, "Branding Requests", "Requirement status changed",
     `${r.rows[0].reference} → ${status}`, { type: "request", id });
+}
+
+/**
+ * Marks a requirement Completed — the work is finished.
+ *
+ * Allowed from any status with work still ahead of it, not only once a work
+ * order has run its course: small jobs are often done without one, and the
+ * team needs a way to say "this one is done" either way. Recorded with who
+ * and when.
+ */
+export async function completeRequest(actor: Actor, id: string, note = ""): Promise<void> {
+  const r = await pool.query<{ reference: string; status: RequestStatus; removed_at: string | null }>(
+    `SELECT reference, status, removed_at FROM bo_requests WHERE id = $1`, [id]);
+  if (!r.rowCount || r.rows[0].removed_at) throw missing("That requirement was not found.");
+  const { reference, status } = r.rows[0];
+  if (status === "completed") throw conflict(`${reference} is already completed.`);
+  if (!OPEN_REQUEST_STATUSES.includes(status)) throw conflict(`${reference} is ${status} — it can't be marked completed.`);
+  await pool.query(
+    `UPDATE bo_requests SET status = 'completed', completed_at = NOW(), completed_by = $2,
+            completion_note = $3, updated_at = NOW() WHERE id = $1`,
+    [id, actor.id, note.trim()]);
+  await logActivity(actor, "Branding Requests", "Requirement completed",
+    `${reference}${note.trim() ? ` — ${note.trim()}` : ""}`, { type: "request", id });
+}
+
+/**
+ * Undoes "Completed" — for a requirement marked done by mistake. It returns
+ * to whatever its quotations and work order say it is.
+ */
+export async function reopenRequest(actor: Actor, id: string): Promise<RequestStatus> {
+  const r = await pool.query<{ reference: string; status: RequestStatus; removed_at: string | null }>(
+    `SELECT reference, status, removed_at FROM bo_requests WHERE id = $1`, [id]);
+  if (!r.rowCount || r.rows[0].removed_at) throw missing("That requirement was not found.");
+  if (r.rows[0].status !== "completed") throw conflict(`${r.rows[0].reference} is not completed.`);
+
+  const facts = await pool.query<{ wo_open: boolean; approved: boolean; quoted: boolean }>(
+    `SELECT EXISTS (SELECT 1 FROM bo_work_orders WHERE request_id = $1 AND status <> 'closed') AS wo_open,
+            EXISTS (SELECT 1 FROM bo_quotations WHERE request_id = $1 AND status = 'approved' AND removed_at IS NULL) AS approved,
+            EXISTS (SELECT 1 FROM bo_quotations WHERE request_id = $1 AND removed_at IS NULL) AS quoted`, [id]);
+  const f = facts.rows[0];
+  const back: RequestStatus = f.wo_open ? "in_progress" : f.approved ? "approved" : f.quoted ? "quoted" : "pending";
+  await pool.query(
+    `UPDATE bo_requests SET status = $2, completed_at = NULL, completed_by = NULL, completion_note = '', updated_at = NOW()
+      WHERE id = $1`, [id, back]);
+  await logActivity(actor, "Branding Requests", "Requirement reopened",
+    `${r.rows[0].reference} → ${back}`, { type: "request", id });
+  return back;
+}
+
+/**
+ * Removes a requirement from Branding Requests and the Dashboard alike —
+ * both read this same row, so removing it in one place removes it from both.
+ *
+ * Soft: the row, its quotations and its history stay. Refused while a work
+ * order on it is still open, because removing the requirement would leave a
+ * vendor's live job with nothing above it.
+ */
+export async function removeRequest(actor: Actor, id: string, reason = ""): Promise<void> {
+  const r = await pool.query<{ reference: string; removed_at: string | null }>(
+    `SELECT reference, removed_at FROM bo_requests WHERE id = $1`, [id]);
+  if (!r.rowCount || r.rows[0].removed_at) throw missing("That requirement was not found.");
+  const wo = await pool.query<{ reference: string; status: string }>(
+    `SELECT reference, status FROM bo_work_orders WHERE request_id = $1 AND status <> 'closed'`, [id]);
+  if (wo.rowCount) {
+    throw conflict(`${r.rows[0].reference} has an open work order (${wo.rows[0].reference}, ${wo.rows[0].status.replace("_", " ")}). Close the work order first.`);
+  }
+  // Guarded on removed_at so two simultaneous removals record one.
+  const done = await pool.query(
+    `UPDATE bo_requests SET removed_at = NOW(), removed_by = $2, removal_reason = $3, updated_at = NOW()
+      WHERE id = $1 AND removed_at IS NULL`, [id, actor.id, reason.trim()]);
+  if (!done.rowCount) throw missing("That requirement was not found.");
+  await logActivity(actor, "Branding Requests", "Requirement removed",
+    `${r.rows[0].reference}${reason.trim() ? ` — ${reason.trim()}` : ""}`, { type: "request", id });
+}
+
+/**
+ * Sizes to suggest when entering a requirement: every frame size, and every
+ * size typed on a requirement before. Free text is still accepted — this is a
+ * list to pick from, not a list to be limited to.
+ */
+export async function requestSizes(): Promise<string[]> {
+  const { rows } = await pool.query<{ size: string }>(
+    `SELECT DISTINCT size FROM (
+       SELECT size FROM bo_frames WHERE status <> 'retired'
+       UNION SELECT size FROM bo_requests WHERE removed_at IS NULL
+     ) s WHERE size <> '' ORDER BY size`);
+  return rows.map(r => r.size);
 }
 
 // ── Quotations and approvals ───────────────────────────────────────────────
@@ -508,19 +667,33 @@ export interface Quotation {
   institute_name: string; vendor_id: string; vendor_name: string; amount: string;
   quote_date: string; status: QuoteStatus; notes: string; decision_note: string;
   decided_at: string | null; created_at: string;
+  /** 1 for an unedited quotation; each edit adds one. */
+  revision: number; updated_at: string | null;
+  removed_at: string | null; removal_reason: string;
+  /** The requirement's work and size, so a list of quotations reads on its own. */
+  work_type: string; request_size: string;
+  /**
+   * Set when the REQUIREMENT was removed. Such quotations only appear in lists
+   * that ask for removed things, and can't be edited, removed or decided.
+   */
+  request_removed_at: string | null;
 }
 
 const QUOTE_SELECT = `
   SELECT q.id, q.reference, q.request_id, r.reference AS request_reference, i.name AS institute_name,
          q.vendor_id, v.name AS vendor_name, q.amount::text, q.quote_date::text AS quote_date, q.status, q.notes,
-         q.decision_note, q.decided_at, q.created_at
+         q.decision_note, q.decided_at, q.created_at, q.revision, q.updated_at, q.removed_at, q.removal_reason,
+         r.work_type, r.size AS request_size, r.removed_at AS request_removed_at
     FROM bo_quotations q
     JOIN bo_requests r ON r.id = q.request_id
     JOIN bo_institutes i ON i.id = r.institute_id
     JOIN bo_vendors v ON v.id = q.vendor_id`;
 
-export async function listQuotations(filter: { status?: QuoteStatus; requestId?: string } = {}): Promise<Quotation[]> {
-  const where: string[] = [];
+export async function listQuotations(filter: { status?: QuoteStatus; requestId?: string; includeRemoved?: boolean } = {}): Promise<Quotation[]> {
+  /* By default a list shows live quotations on live requirements: removing a
+     requirement must take its quotations off Quotations and Approvals too, or
+     someone could approve a price for work nobody wants any more. */
+  const where: string[] = filter.includeRemoved ? [] : ["q.removed_at IS NULL", "r.removed_at IS NULL"];
   const args: unknown[] = [];
   if (filter.status) { args.push(filter.status); where.push(`q.status = $${args.length}`); }
   if (filter.requestId) { args.push(filter.requestId); where.push(`q.request_id = $${args.length}`); }
@@ -529,31 +702,245 @@ export async function listQuotations(filter: { status?: QuoteStatus; requestId?:
   return rows;
 }
 
-export async function createQuotation(actor: Actor, input: {
-  requestId: string; vendorId: string; amount: number; quoteDate: string; notes?: string;
-}): Promise<Quotation> {
-  if (!(input.amount >= 0)) throw bad("Enter the quotation amount.");
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.quoteDate)) throw bad("A quotation date is required.");
-  const r = await pool.query<{ reference: string; status: RequestStatus }>(
-    `SELECT reference, status FROM bo_requests WHERE id = $1`, [input.requestId]);
-  if (!r.rowCount) throw missing("That requirement was not found.");
-  if (r.rows[0].status === "rejected" || r.rows[0].status === "closed") {
-    throw conflict(`${r.rows[0].reference} is ${r.rows[0].status} — it can't take new quotations.`);
-  }
-  const v = await pool.query<{ name: string }>(`SELECT name FROM bo_vendors WHERE id = $1`, [input.vendorId]);
-  if (!v.rowCount) throw missing("Pick a vendor.");
+export interface QuoteInput { vendorId: string; amount: number; quoteDate: string; notes?: string }
 
+function validateQuote(input: QuoteInput): void {
+  if (!(Number.isFinite(input.amount) && input.amount >= 0)) throw bad("Enter the quotation amount.");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.quoteDate)) throw bad("A quotation date is required.");
+  if (!input.vendorId) throw bad("Pick a vendor.");
+}
+
+/** A requirement that can still take a quotation, or the reason it can't. */
+async function quotableRequest(db: Queryable, requestId: string): Promise<{ reference: string }> {
+  const r = await db.query<{ reference: string; status: RequestStatus; removed_at: string | null }>(
+    `SELECT reference, status, removed_at FROM bo_requests WHERE id = $1`, [requestId]);
+  if (!r.rowCount || r.rows[0].removed_at) throw missing("That requirement was not found.");
+  const { reference, status } = r.rows[0];
+  if (status === "rejected" || status === "closed" || status === "completed") {
+    throw conflict(`${reference} is ${status} — it can't take new quotations.`);
+  }
+  return { reference };
+}
+
+async function insertQuotation(db: Queryable, actor: Actor, requestId: string, input: QuoteInput): Promise<{ id: string; reference: string; vendor: string }> {
+  const v = await db.query<{ name: string }>(`SELECT name FROM bo_vendors WHERE id = $1`, [input.vendorId]);
+  if (!v.rowCount) throw missing("Pick a vendor.");
   const id = boId("qt");
-  const reference = await nextReference("bo_quotations", "QT");
-  await pool.query(
+  const reference = await nextReference("bo_quotations", "QT", db);
+  await db.query(
     `INSERT INTO bo_quotations (id, reference, request_id, vendor_id, amount, quote_date, notes, created_by)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-    [id, reference, input.requestId, input.vendorId, input.amount, input.quoteDate, input.notes?.trim() ?? "", actor.id]);
+    [id, reference, requestId, input.vendorId, input.amount, input.quoteDate, input.notes?.trim() ?? "", actor.id]);
   // A requirement with a quotation on it is no longer merely pending.
-  await pool.query(`UPDATE bo_requests SET status = 'quoted', updated_at = NOW() WHERE id = $1 AND status = 'pending'`, [input.requestId]);
+  await db.query(`UPDATE bo_requests SET status = 'quoted', updated_at = NOW() WHERE id = $1 AND status = 'pending'`, [requestId]);
+  return { id, reference, vendor: v.rows[0].name };
+}
+
+export async function createQuotation(actor: Actor, input: QuoteInput & { requestId: string }): Promise<Quotation> {
+  validateQuote(input);
+  const req = await quotableRequest(pool, input.requestId);
+  const made = await insertQuotation(pool, actor, input.requestId, input);
   await logActivity(actor, "Quotations", "Quotation added",
-    `${reference} — ${v.rows[0].name} quoted ₹${input.amount} on ${r.rows[0].reference}`, { type: "quotation", id });
-  return (await listQuotations({ requestId: input.requestId })).find(q => q.id === id) as Quotation;
+    `${made.reference} — ${made.vendor} quoted ₹${input.amount} on ${req.reference}`, { type: "quotation", id: made.id });
+  return (await listQuotations({ requestId: input.requestId })).find(q => q.id === made.id) as Quotation;
+}
+
+/**
+ * Adds a quotation for a requirement typed into the quotation form rather
+ * than picked from the list — creating the requirement and the quotation
+ * together.
+ *
+ * One transaction, so a quotation that fails (an unknown vendor, say) never
+ * leaves behind a half-made requirement nobody asked for.
+ */
+export async function createQuotationWithNewRequest(
+  actor: Actor, request: RequestInput, quote: QuoteInput,
+): Promise<Quotation> {
+  validateRequest(request);
+  validateQuote(quote);
+  const client = await pool.connect();
+  let made = { requestId: "", requestRef: "", institute: "", quoteId: "", quoteRef: "", vendor: "" };
+  try {
+    await client.query("BEGIN");
+    const r = await insertRequest(client, actor, request);
+    const q = await insertQuotation(client, actor, r.id, quote);
+    await client.query("COMMIT");
+    made = { requestId: r.id, requestRef: r.reference, institute: r.institute, quoteId: q.id, quoteRef: q.reference, vendor: q.vendor };
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  // After release — logActivity takes a connection of its own.
+  await logActivity(actor, "Branding Requests", "Requirement created",
+    `${made.requestRef} — ${request.workType.trim()} for ${made.institute} (from a quotation)`, { type: "request", id: made.requestId });
+  await logActivity(actor, "Quotations", "Quotation added",
+    `${made.quoteRef} — ${made.vendor} quoted ₹${quote.amount} on ${made.requestRef}`, { type: "quotation", id: made.quoteId });
+  return (await listQuotations({ requestId: made.requestId })).find(q => q.id === made.quoteId) as Quotation;
+}
+
+/**
+ * Edits a quotation, keeping the version it replaces.
+ *
+ * The replaced vendor, amount, date and notes go into bo_quotation_revisions
+ * first, so every price a vendor ever gave stays on record and can be set
+ * beside the new one. An APPROVED quotation is locked: the decision and any
+ * work order were made on that figure, and quietly changing it afterwards
+ * would rewrite what was agreed.
+ */
+export async function updateQuotation(actor: Actor, id: string, patch: Partial<QuoteInput>): Promise<Quotation> {
+  const client = await pool.connect();
+  let summary = { reference: "", requestId: "", changes: [] as string[] };
+  try {
+    await client.query("BEGIN");
+    const cur = await client.query<{
+      reference: string; request_id: string; status: QuoteStatus; vendor_id: string; vendor: string;
+      amount: string; quote_date: string; notes: string; revision: number; removed_at: string | null; request_removed: string | null;
+    }>(
+      `SELECT q.reference, q.request_id, q.status, q.vendor_id, v.name AS vendor, q.amount::text AS amount,
+              q.quote_date::text AS quote_date, q.notes, q.revision, q.removed_at, r.removed_at AS request_removed
+         FROM bo_quotations q JOIN bo_vendors v ON v.id = q.vendor_id JOIN bo_requests r ON r.id = q.request_id
+        WHERE q.id = $1 FOR UPDATE OF q`, [id]);
+    if (!cur.rowCount || cur.rows[0].removed_at || cur.rows[0].request_removed) throw missing("That quotation was not found.");
+    const before = cur.rows[0];
+    if (before.status === "approved") {
+      throw conflict(`${before.reference} was approved — it is locked, because the decision was made on that figure.`);
+    }
+
+    const next = {
+      vendorId: patch.vendorId ?? before.vendor_id,
+      amount: patch.amount ?? Number(before.amount),
+      quoteDate: patch.quoteDate ?? before.quote_date,
+      notes: patch.notes ?? before.notes,
+    };
+    validateQuote(next);
+    let vendorName = before.vendor;
+    if (next.vendorId !== before.vendor_id) {
+      const v = await client.query<{ name: string }>(`SELECT name FROM bo_vendors WHERE id = $1`, [next.vendorId]);
+      if (!v.rowCount) throw missing("Pick a vendor.");
+      vendorName = v.rows[0].name;
+    }
+
+    const changes: string[] = [];
+    if (vendorName !== before.vendor) changes.push(`vendor ${before.vendor} → ${vendorName}`);
+    if (Number(before.amount) !== next.amount) changes.push(`₹${Number(before.amount)} → ₹${next.amount}`);
+    if (before.quote_date !== next.quoteDate) changes.push(`dated ${before.quote_date} → ${next.quoteDate}`);
+    if (before.notes.trim() !== next.notes.trim()) changes.push("notes edited");
+
+    if (changes.length) {
+      await client.query(
+        `INSERT INTO bo_quotation_revisions (id, quotation_id, revision, vendor_id, vendor_name, amount, quote_date, notes, replaced_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [boId("qrev"), id, before.revision, before.vendor_id, before.vendor, before.amount, before.quote_date, before.notes, actor.id]);
+      await client.query(
+        `UPDATE bo_quotations SET vendor_id = $2, amount = $3, quote_date = $4, notes = $5,
+                revision = revision + 1, updated_at = NOW() WHERE id = $1`,
+        [id, next.vendorId, next.amount, next.quoteDate, next.notes.trim()]);
+    }
+    await client.query("COMMIT");
+    summary = { reference: before.reference, requestId: before.request_id, changes };
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  if (summary.changes.length) {
+    await logActivity(actor, "Quotations", "Quotation edited",
+      `${summary.reference} — ${summary.changes.join("; ")}`, { type: "quotation", id });
+  }
+  return (await listQuotations({ requestId: summary.requestId })).find(q => q.id === id) as Quotation;
+}
+
+/**
+ * Removes a quotation from the lists. Soft, like a requirement: it stays in
+ * the requirement's quotation history, marked removed, so it can still be
+ * compared against. An approved quotation can't be removed, for the same
+ * reason it can't be edited.
+ */
+export async function removeQuotation(actor: Actor, id: string, reason = ""): Promise<void> {
+  const client = await pool.connect();
+  let removed = { reference: "", requestRef: "" };
+  try {
+    await client.query("BEGIN");
+    const cur = await client.query<{ reference: string; request_id: string; status: QuoteStatus; removed_at: string | null; request_ref: string }>(
+      `SELECT q.reference, q.request_id, q.status, q.removed_at, r.reference AS request_ref
+         FROM bo_quotations q JOIN bo_requests r ON r.id = q.request_id
+        WHERE q.id = $1 FOR UPDATE OF q`, [id]);
+    if (!cur.rowCount || cur.rows[0].removed_at) throw missing("That quotation was not found.");
+    const q = cur.rows[0];
+    if (q.status === "approved") {
+      throw conflict(`${q.reference} was approved — it can't be removed, because the decision was made on it.`);
+    }
+    await client.query(
+      `UPDATE bo_quotations SET removed_at = NOW(), removed_by = $2, removal_reason = $3 WHERE id = $1`,
+      [id, actor.id, reason.trim()]);
+    /* A requirement only counts as "quoted" while it has a quotation. If this
+       was the last one standing, it is back to waiting for one. */
+    await client.query(
+      `UPDATE bo_requests SET status = 'pending', updated_at = NOW()
+        WHERE id = $1 AND status = 'quoted'
+          AND NOT EXISTS (SELECT 1 FROM bo_quotations WHERE request_id = $1 AND removed_at IS NULL)`,
+      [q.request_id]);
+    await client.query("COMMIT");
+    removed = { reference: q.reference, requestRef: q.request_ref };
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  await logActivity(actor, "Quotations", "Quotation removed",
+    `${removed.reference} on ${removed.requestRef}${reason.trim() ? ` — ${reason.trim()}` : ""}`, { type: "quotation", id });
+}
+
+export interface QuotationRevision {
+  revision: number; vendor_name: string; amount: string; quote_date: string;
+  notes: string; replaced_at: string; replaced_by_name: string | null;
+}
+
+export interface QuotationWithHistory extends Quotation {
+  /** Earlier versions of this quotation, oldest first. */
+  revisions: QuotationRevision[];
+}
+
+/**
+ * Every quotation a requirement has had — standing, rejected and removed —
+ * each with the versions it replaced. What the ⓘ view and the comparison read.
+ */
+export async function quotationHistory(requestId: string): Promise<{ request: BrandingRequest | null; quotations: QuotationWithHistory[] }> {
+  const request = await getRequest(requestId);
+  const quotations = (await listQuotations({ requestId, includeRemoved: true }))
+    // pg returns TIMESTAMPTZ as a Date, not a string — compare the instants.
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  if (!quotations.length) return { request, quotations: [] };
+  const { rows } = await pool.query<QuotationRevision & { quotation_id: string }>(
+    `SELECT qr.quotation_id, qr.revision, qr.vendor_name, qr.amount::text AS amount, qr.quote_date::text AS quote_date,
+            qr.notes, qr.replaced_at, u.full_name AS replaced_by_name
+       FROM bo_quotation_revisions qr LEFT JOIN users u ON u.id = qr.replaced_by
+      WHERE qr.quotation_id = ANY($1::text[]) ORDER BY qr.revision ASC`,
+    [quotations.map(q => q.id)]);
+  const byQuote = new Map<string, QuotationRevision[]>();
+  for (const { quotation_id, ...rev } of rows) byQuote.set(quotation_id, [...(byQuote.get(quotation_id) ?? []), rev]);
+  return { request, quotations: quotations.map(q => ({ ...q, revisions: byQuote.get(q.id) ?? [] })) };
+}
+
+/**
+ * The quotations behind each listed requirement, for the Dashboard's ⓘ view
+ * — one query for all of them rather than one per row.
+ */
+export async function quoteSummaries(requestIds: string[]): Promise<Record<string, QuoteSummary[]>> {
+  if (!requestIds.length) return {};
+  const { rows } = await pool.query<QuoteSummary & { request_id: string }>(
+    `SELECT q.request_id, q.id, q.reference, v.name AS vendor_name, q.amount::text AS amount,
+            q.quote_date::text AS quote_date, q.status, q.revision
+       FROM bo_quotations q JOIN bo_vendors v ON v.id = q.vendor_id
+      WHERE q.request_id = ANY($1::text[]) AND q.removed_at IS NULL
+      ORDER BY q.amount ASC`, [requestIds]);
+  const out: Record<string, QuoteSummary[]> = {};
+  for (const { request_id, ...summary } of rows) (out[request_id] ??= []).push(summary);
+  return out;
 }
 
 /**
@@ -566,13 +953,21 @@ export async function decideQuotation(actor: Actor, id: string, decision: "appro
   let decided = { reference: "", vendor: "", amount: "" };
   try {
     await client.query("BEGIN");
-    const q = await client.query<{ reference: string; request_id: string; status: QuoteStatus; vendor: string; amount: string }>(
-      `SELECT q.reference, q.request_id, q.status, v.name AS vendor, q.amount::text AS amount
-         FROM bo_quotations q JOIN bo_vendors v ON v.id = q.vendor_id
+    const q = await client.query<{
+      reference: string; request_id: string; status: QuoteStatus; vendor: string; amount: string;
+      removed_at: string | null; request_removed: string | null; request_status: RequestStatus;
+    }>(
+      `SELECT q.reference, q.request_id, q.status, v.name AS vendor, q.amount::text AS amount,
+              q.removed_at, r.removed_at AS request_removed, r.status AS request_status
+         FROM bo_quotations q JOIN bo_vendors v ON v.id = q.vendor_id JOIN bo_requests r ON r.id = q.request_id
         WHERE q.id = $1 FOR UPDATE OF q`, [id]);
-    if (!q.rowCount) throw missing("That quotation was not found.");
+    // A removed quotation, or one on a removed requirement, is not there to decide.
+    if (!q.rowCount || q.rows[0].removed_at || q.rows[0].request_removed) throw missing("That quotation was not found.");
     const quote = q.rows[0];
     if (quote.status !== "pending") throw conflict(`That quotation has already been ${quote.status}.`);
+    if (decision === "approved" && (quote.request_status === "completed" || quote.request_status === "closed")) {
+      throw conflict(`That requirement is ${quote.request_status} — reopen it before approving a quotation.`);
+    }
 
     await client.query(
       `UPDATE bo_quotations SET status = $2, decided_by = $3, decided_at = NOW(), decision_note = $4 WHERE id = $1`,
@@ -582,7 +977,7 @@ export async function decideQuotation(actor: Actor, id: string, decision: "appro
       await client.query(
         `UPDATE bo_quotations SET status = 'rejected', decided_by = $2, decided_at = NOW(),
                 decision_note = 'Another quotation was approved for this requirement.'
-          WHERE request_id = $1 AND id <> $3 AND status = 'pending'`,
+          WHERE request_id = $1 AND id <> $3 AND status = 'pending' AND removed_at IS NULL`,
         [quote.request_id, actor.id, id]);
       await client.query(`UPDATE bo_requests SET status = 'approved', updated_at = NOW() WHERE id = $1`, [quote.request_id]);
     }
@@ -653,7 +1048,7 @@ export async function createWorkOrder(actor: Actor, input: { requestId: string; 
   const q = await pool.query<{ id: string; vendor_id: string; vendor: string; reference: string }>(
     `SELECT q.id, q.vendor_id, v.name AS vendor, r.reference
        FROM bo_quotations q JOIN bo_vendors v ON v.id = q.vendor_id JOIN bo_requests r ON r.id = q.request_id
-      WHERE q.request_id = $1 AND q.status = 'approved'`, [input.requestId]);
+      WHERE q.request_id = $1 AND q.status = 'approved' AND q.removed_at IS NULL AND r.removed_at IS NULL`, [input.requestId]);
   if (!q.rowCount) throw conflict("That requirement has no approved quotation yet. Approve one first.");
 
   const existing = await pool.query(`SELECT 1 FROM bo_work_orders WHERE request_id = $1`, [input.requestId]);
@@ -916,8 +1311,10 @@ export async function kpis(): Promise<Kpis> {
       (SELECT COUNT(DISTINCT size) FROM bo_frames WHERE status <> 'retired')              AS distinct_sizes,
       (SELECT COUNT(*) FROM bo_frame_allocations
         WHERE returned_at IS NULL AND until_date < CURRENT_DATE)                          AS overdue,
-      (SELECT COUNT(*) FROM bo_requests WHERE status IN ('pending','quoted'))             AS pending_requests,
-      (SELECT COUNT(*) FROM bo_quotations WHERE status = 'pending')                       AS open_quotations,
+      (SELECT COUNT(*) FROM bo_requests
+        WHERE status IN ('pending','quoted') AND removed_at IS NULL)                     AS pending_requests,
+      (SELECT COUNT(*) FROM bo_quotations q JOIN bo_requests r ON r.id = q.request_id
+        WHERE q.status = 'pending' AND q.removed_at IS NULL AND r.removed_at IS NULL)    AS open_quotations,
       (SELECT COUNT(*) FROM bo_work_orders WHERE status NOT IN ('closed'))                AS active_work_orders,
       (SELECT COUNT(*) FROM bo_vendor_visits WHERE check_out_at IS NULL)                  AS vendors_on_site,
       (SELECT COUNT(*) FROM bo_deliveries WHERE status = 'awaiting')                      AS deliveries_awaiting,
