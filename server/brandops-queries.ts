@@ -1171,16 +1171,53 @@ export async function listPhotos(workOrderId: string): Promise<WorkPhoto[]> {
 export async function addPhoto(actor: Actor, input: {
   workOrderId: string; phase: PhotoPhase; filePath: string; originalName: string; caption?: string;
 }): Promise<WorkPhoto> {
+  const [photo] = await addPhotos(actor, {
+    workOrderId: input.workOrderId, phase: input.phase, caption: input.caption,
+    files: [{ filePath: input.filePath, originalName: input.originalName }],
+  });
+  return photo;
+}
+
+/**
+ * Records one upload's photos together — all of them or none.
+ *
+ * One transaction because the HTTP layer deletes every uploaded file when this
+ * throws: inserting row by row, a failure on the third photo would leave the
+ * first two recorded against files that no longer exist, shown as broken
+ * images on the work order.
+ */
+export async function addPhotos(actor: Actor, input: {
+  workOrderId: string; phase: PhotoPhase; caption?: string;
+  files: { filePath: string; originalName: string }[];
+}): Promise<WorkPhoto[]> {
+  if (!input.files.length) throw bad("Choose at least one photo to upload.");
   const wo = await getWorkOrder(input.workOrderId);
   if (!wo) throw missing("That work order was not found.");
-  const id = boId("pho");
-  await pool.query(
-    `INSERT INTO bo_work_photos (id, work_order_id, phase, file_path, original_name, caption, uploaded_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-    [id, input.workOrderId, input.phase, input.filePath, input.originalName, input.caption?.trim() ?? "", actor.id]);
-  await logActivity(actor, "Work Completion", "Photo uploaded",
-    `${input.phase} photo on ${wo.reference}`, { type: "work_order", id: input.workOrderId });
-  return (await listPhotos(input.workOrderId)).find(p => p.id === id) as WorkPhoto;
+  const ids = input.files.map(() => boId("pho"));
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (let i = 0; i < input.files.length; i++) {
+      await client.query(
+        `INSERT INTO bo_work_photos (id, work_order_id, phase, file_path, original_name, caption, uploaded_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [ids[i], input.workOrderId, input.phase, input.files[i].filePath, input.files[i].originalName,
+          input.caption?.trim() ?? "", actor.id]);
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  // After release — logActivity takes a connection of its own.
+  for (let i = 0; i < ids.length; i++) {
+    await logActivity(actor, "Work Completion", "Photo uploaded",
+      `${input.phase} photo on ${wo.reference}`, { type: "work_order", id: input.workOrderId });
+  }
+  const wanted = new Set(ids);
+  return (await listPhotos(input.workOrderId)).filter(p => wanted.has(p.id));
 }
 
 export async function deletePhoto(actor: Actor, id: string): Promise<string | null> {
@@ -1223,33 +1260,60 @@ export async function listDeliveries(filter: { status?: DeliveryStatus; institut
   return rows;
 }
 
-export async function createDelivery(actor: Actor, input: {
+export interface DeliveryInput {
   instituteId: string; materialType: string; description: string; quantity: number;
   vendorId?: string | null; expectedDate?: string | null; remarks?: string;
-}): Promise<Delivery> {
+}
+
+/** Inserts a delivery on `db` and returns its id and reference. No logging. */
+async function insertDelivery(db: Queryable, actor: Actor, input: DeliveryInput): Promise<{ id: string; reference: string; institute: string }> {
   if (!input.instituteId) throw bad("Pick an institute.");
   if (!input.materialType.trim()) throw bad("Pick a material type.");
   if (!input.description.trim()) throw bad("Describe the material.");
-  const inst = await pool.query<{ name: string }>(`SELECT name FROM bo_institutes WHERE id = $1`, [input.instituteId]);
+  const inst = await db.query<{ name: string }>(`SELECT name FROM bo_institutes WHERE id = $1`, [input.instituteId]);
   if (!inst.rowCount) throw missing("That institute was not found.");
 
   const id = boId("del");
-  const reference = await nextReference("bo_deliveries", "DEL");
-  await pool.query(
+  const reference = await nextReference("bo_deliveries", "DEL", db);
+  await db.query(
     `INSERT INTO bo_deliveries (id, reference, institute_id, material_type, description, quantity, vendor_id, expected_date, remarks, created_by)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
     [id, reference, input.instituteId, input.materialType.trim(), input.description.trim(),
       Math.max(1, input.quantity || 1), input.vendorId || null, input.expectedDate || null,
       input.remarks?.trim() ?? "", actor.id]);
-  await logActivity(actor, "Material Delivery", "Delivery logged",
-    `${reference} — ${input.materialType.trim()} for ${inst.rows[0].name}`, { type: "delivery", id });
-  return (await listDeliveries()).find(d => d.id === id) as Delivery;
+  return { id, reference, institute: inst.rows[0].name };
 }
 
-export async function addDeliveryImage(deliveryId: string, filePath: string, originalName: string): Promise<void> {
-  await pool.query(
-    `INSERT INTO bo_delivery_images (id, delivery_id, file_path, original_name) VALUES ($1,$2,$3,$4)`,
-    [boId("dim"), deliveryId, filePath, originalName]);
+/**
+ * Logs a delivery together with its proof images — one transaction, so the
+ * delivery exists with all of its images or not at all. Created first and
+ * imaged second, a failed image left a DEL-xxxx behind while the person was
+ * told it had failed; their retry then logged the same delivery twice.
+ */
+export async function createDelivery(actor: Actor, input: DeliveryInput & {
+  images?: { filePath: string; originalName: string }[];
+}): Promise<Delivery> {
+  const client = await pool.connect();
+  let made = { id: "", reference: "", institute: "" };
+  try {
+    await client.query("BEGIN");
+    made = await insertDelivery(client, actor, input);
+    for (const im of input.images ?? []) {
+      await client.query(
+        `INSERT INTO bo_delivery_images (id, delivery_id, file_path, original_name) VALUES ($1,$2,$3,$4)`,
+        [boId("dim"), made.id, im.filePath, im.originalName]);
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  // After release — logActivity takes a connection of its own.
+  await logActivity(actor, "Material Delivery", "Delivery logged",
+    `${made.reference} — ${input.materialType.trim()} for ${made.institute}`, { type: "delivery", id: made.id });
+  return (await listDeliveries()).find(d => d.id === made.id) as Delivery;
 }
 
 const DELIVERY_FLOW: Record<DeliveryStatus, DeliveryStatus[]> = {

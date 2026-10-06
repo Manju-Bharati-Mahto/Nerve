@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Camera, Upload, Trash2, CheckCircle2 } from 'lucide-react'
 import {
   boCompletion, boWorkOrder, boUploadPhotos, boDeletePhoto, boSetWorkOrderStatus,
-  WO_STATUS_STYLE, WO_NEXT, boWhen, type WorkOrder, type WorkPhoto, type PhotoPhase,
+  boCheckPhotos, BO_PHOTO_ACCEPT, WO_STATUS_STYLE, WO_NEXT, boWhen, type WorkOrder, type WorkPhoto, type PhotoPhase,
 } from '@/lib/brandops-api'
 import {
   BoPage, BoError, BoLoading, BoEmpty, BoBadge, BoButton, BoDialog, BoField,
@@ -79,8 +79,16 @@ function PhotoDialog({ workOrder, onClose, onChanged, setError }: {
   const wo = data?.work_order ?? workOrder
   const photos = data?.photos ?? []
 
+  /** Picked photos are checked at once, so the reason shows before Upload. */
+  function pick(list: FileList | null) {
+    setFiles(list)
+    setLocalError(boCheckPhotos(list))
+  }
+
   async function upload() {
     if (!files?.length) return
+    const problem = boCheckPhotos(files)
+    if (problem) { setLocalError(problem); return }
     const form = new FormData()
     form.append('phase', phase)
     for (const f of Array.from(files)) form.append('photos', f)
@@ -130,9 +138,9 @@ function PhotoDialog({ workOrder, onClose, onChanged, setError }: {
               {PHASES.map(p => <option key={p} value={p}>{p[0].toUpperCase() + p.slice(1)}</option>)}
             </select>
           </BoField>
-          <input type="file" accept="image/*" multiple className="text-xs"
-            onChange={e => setFiles(e.target.files)} />
-          <BoButton disabled={!files?.length} onClick={upload}>
+          <input type="file" accept={BO_PHOTO_ACCEPT} multiple className="text-xs"
+            onChange={e => pick(e.target.files)} />
+          <BoButton disabled={!files?.length || boCheckPhotos(files) !== null} onClick={upload}>
             <Upload className="w-3.5 h-3.5" /> Upload
           </BoButton>
         </div>

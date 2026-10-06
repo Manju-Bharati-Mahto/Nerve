@@ -141,9 +141,10 @@ import * as designDb from "./design-db.js";
 import { bootstrapMediaOpsDatabase } from "./mediaops-db.js";
 import { registerMediaOpsApi, runMediaOpsAutomations, creatorStandingOf } from "./mediaops-api.js";
 import { CASTING_PHOTO_MIME, CASTING_PHOTO_MAX_BYTES } from "./casting-photos.js";
-import { registerOutreachVideoApi, VIDEO_MIME_ALLOWLIST, videoFileName } from "./outreach-video/routes.js";
+import { registerOutreachVideoApi, isAcceptedVideoUpload, videoFileName } from "./outreach-video/routes.js";
 import { bootstrapBrandOpsDatabase } from "./brandops-db.js";
 import { registerBrandOpsApi } from "./brandops-api.js";
+import { acceptUpload, imageFileFilter, safeImageName, jsonErrorHandler } from "./upload-guard.js";
 import { runCreatorNetworkAutomations } from "./creator-automations.js";
 import { runOutreachVideoAutomations } from "./outreach-video/automations.js";
 
@@ -157,20 +158,8 @@ fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 const AVATARS_DIR = path.resolve("uploads/avatars");
 fs.mkdirSync(AVATARS_DIR, { recursive: true });
 
-// Hardened image handling (security): allowlist RASTER image types only — `image/svg+xml`
-// is a stored-XSS vector when served same-origin — and derive the on-disk extension from
-// the validated MIME, never from the attacker-controlled originalname (which could carry
-// `.html`/`.svg` while claiming an image mimetype).
-const SAFE_IMAGE_EXT: Record<string, string> = {
-  "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif",
-};
-const imageFileFilter: NonNullable<multer.Options["fileFilter"]> = (_req, file, cb) => {
-  if (SAFE_IMAGE_EXT[file.mimetype]) cb(null, true);
-  else cb(new Error("Only JPG, PNG, WEBP or GIF images are allowed."));
-};
-const safeImageName = (file: Express.Multer.File) =>
-  `${Date.now()}-${Math.random().toString(36).slice(2)}${SAFE_IMAGE_EXT[file.mimetype] || ".bin"}`;
-
+/* Image types, the HEIC refusal and the on-disk name all live in
+   ./upload-guard.ts, with the wrapper that turns a refused upload into JSON. */
 const avatarUpload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, AVATARS_DIR),
@@ -182,19 +171,11 @@ const avatarUpload = multer({
 
 /**
  * One image from the `avatar` field, answering a refused file (wrong type, too
- * big) with a 400 and its reason. Left to the default, multer's refusal
+ * big) with JSON and its reason. Left to the default, multer's refusal
  * reaches the error handler as a 500 — a server fault, for what is really
  * someone picking an SVG or a 10 MB photo.
  */
-const avatarImage: express.RequestHandler = (req, res, next) => {
-  avatarUpload.single("avatar")(req, res, (err?: unknown) => {
-    if (!err) return next();
-    const message = err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE"
-      ? "That photo is larger than 3 MB."
-      : err instanceof Error ? err.message : "That file could not be uploaded.";
-    sendError(res, 400, message);
-  });
-};
+const avatarImage = acceptUpload(avatarUpload.single("avatar"), { sizeLabel: "3 MB", noun: "photo", field: "avatar" });
 
 const designUpload = multer({
   storage: multer.diskStorage({
@@ -208,8 +189,13 @@ const designUpload = multer({
 /* Outreach video workflow: a staging area for the editor's file on its way to
    Google Drive, which is where it actually lives (PRD §6). The temp file is
    removed as soon as the Drive upload resolves either way, so this directory
-   only ever holds in-flight uploads. */
-const VIDEO_STAGING_DIR = path.resolve("uploads/outreach-video");
+   only ever holds in-flight uploads.
+
+   It lives under the OS temp directory, NOT under uploads/: everything in
+   uploads/ is served publicly by express.static (and nginx), and a staged
+   video is someone's unreleased footage and must never be fetchable while
+   it is in flight, however unguessable its name. */
+const VIDEO_STAGING_DIR = path.join(os.tmpdir(), "nerve-outreach-video");
 fs.mkdirSync(VIDEO_STAGING_DIR, { recursive: true });
 
 /* BrandOps keeps work-completion photos and material-delivery proof images on
@@ -234,7 +220,11 @@ const videoUpload = multer({
   }),
   limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2 GB
   fileFilter: (_req, file, cb) => {
-    if (VIDEO_MIME_ALLOWLIST.includes(file.mimetype)) return cb(null, true);
+    /* Same rule the route applies: a known video type, or a generic one
+       (application/octet-stream — what several browsers send for .mov/.mkv)
+       on a known video extension. The bare allowlist refused those here
+       before the route ever saw them. */
+    if (isAcceptedVideoUpload(file.mimetype, file.originalname)) return cb(null, true);
     cb(new Error("Only video files can be uploaded here."));
   },
 });
@@ -719,14 +709,17 @@ const kioskPinLimiter = rateLimit({
    second copy of the department's inventory. The extension check here is a
    cheap first pass; the parse inside the endpoint is what actually decides
    whether this is a spreadsheet, because a filename is not evidence. */
-const assetImportUpload = multer({
+const assetImportUpload = acceptUpload(multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  /* Refused out loud: skipping the file silently (`cb(null, false)`) left the
+     handler to say "A spreadsheet file is required." to someone who had just
+     chosen one. */
   fileFilter: (_req, file, cb) => {
     if (/\.(csv|xlsx|xls)$/i.test(file.originalname)) return cb(null, true);
-    cb(null, false);
+    cb(new Error("Choose a .csv, .xlsx or .xls file."));
   },
-}).single("file");
+}).single("file"), { sizeLabel: "5 MB", field: "file" });
 
 /* External casting registration: the applicant's photo, on its way to Google
    Drive, which is where it lives (server/casting-photos.ts). Staged in a
@@ -752,10 +745,13 @@ const castingPhotoUpload = multer({
 
 registerMediaOpsApi(app, { asyncHandler, sendError, getSingleParam, otpSendLimiter, otpVerifyLimiter,
                            kioskPinLimiter, assetImportUpload, castingPhotoUpload });
-registerOutreachVideoApi(app, { asyncHandler, sendError, getSingleParam, videoUpload });
+registerOutreachVideoApi(app, { asyncHandler, sendError, getSingleParam, videoUpload, videoStagingDir: VIDEO_STAGING_DIR });
 
-registerBrandOpsApi(app, { asyncHandler, sendError, getSingleParam,
-  upload: brandOpsUpload, uploadsDir: BRANDOPS_UPLOADS_DIR });
+/* BrandOps takes up to ten photos per request; the factory gives it each field
+   already wrapped, so its refusals are JSON like everyone else's. */
+registerBrandOpsApi(app, { asyncHandler, sendError, getSingleParam, uploadsDir: BRANDOPS_UPLOADS_DIR,
+  uploadImages: (field, maxFiles) =>
+    acceptUpload(brandOpsUpload.array(field, maxFiles), { sizeLabel: "10 MB", maxFiles, field }) });
 
 // ── App settings (super admin) ─────────────────────────────────────────────
 
@@ -975,11 +971,13 @@ app.post("/api/users/:id/avatar", asyncHandler(async (req, res, next) => {
 
 // Media Ops: upload an image and get its URL (used for add-member + profile photos).
 // Returns the URL only — the caller decides where to attach it.
-app.post("/api/v1/media/upload-image", avatarUpload.single("image"), asyncHandler(async (req, res) => {
-  if (!res.locals.currentUser) return sendError(res, 401, "Not authenticated.");
-  if (!req.file) return sendError(res, 400, "No image uploaded.");
-  res.json({ url: `/uploads/avatars/${req.file.filename}` });
-}));
+app.post("/api/v1/media/upload-image",
+  acceptUpload(avatarUpload.single("image"), { sizeLabel: "3 MB", noun: "image", field: "image" }),
+  asyncHandler(async (req, res) => {
+    if (!res.locals.currentUser) return sendError(res, 401, "Not authenticated.");
+    if (!req.file) return sendError(res, 400, "No image uploaded.");
+    res.json({ url: `/uploads/avatars/${req.file.filename}` });
+  }));
 
 app.patch("/api/users/:id", asyncHandler(async (req, res) => {
   const userId = getSingleParam(req.params.id);
@@ -1130,11 +1128,13 @@ app.delete("/api/branding-rows/:id", asyncHandler(async (req, res) => {
   res.json({ ok: true });
 }));
 
-app.use(((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
-  if (res.headersSent) return next(error);
-  console.error("Unhandled API error", error);
-  return sendError(res, 500, "Internal server error.");
-}) as express.ErrorRequestHandler);
+/* The JSON error handler — status-aware, so a body that is too large or not
+   JSON answers 413/400 rather than "Internal server error.". Registered here
+   for the routes above AND again after the last route (see "Start server"),
+   because Express only hands an error to handlers registered AFTER the route
+   that raised it: the portal upload routes below used to fall through to
+   Express's own HTML 500 page, which the client cannot read. */
+app.use(jsonErrorHandler);
 
 // ── Branding Portal middleware ─────────────────────────────────────────────
 
@@ -1610,7 +1610,7 @@ app.post(
     if (!requireBranding(res)) return;
     next();
   },
-  designUpload.single("image"),
+  acceptUpload(designUpload.single("image"), { sizeLabel: "10 MB", field: "image" }),
   asyncHandler(async (req, res) => {
     const user = res.locals.currentUser;
     if (!req.file) return sendError(res, 400, "Image file is required.");
@@ -1623,6 +1623,9 @@ app.post(
     }
     const imageUrl = `/uploads/branding/${req.file.filename}`;
     const parsedTags = tags ? (tags as string).split(",").map((t: string) => t.trim()).filter(Boolean) : [];
+    /* A design that could not be recorded must not leave its image behind:
+       nothing would ever point at it, or delete it. */
+    const stored = req.file.path;
     const design = await createBrandingDesign(
       title.trim(),
       description?.trim() ?? "",
@@ -1631,7 +1634,7 @@ app.post(
       imageUrl,
       user.id,
       user.full_name || user.email
-    );
+    ).catch((err: unknown) => { fs.unlink(stored, () => {}); throw err; });
     res.status(201).json({ design });
   })
 );
@@ -2442,7 +2445,7 @@ app.post(
     if (!requireDesign(res)) return;
     next();
   },
-  designPortalUpload.single("image"),
+  acceptUpload(designPortalUpload.single("image"), { sizeLabel: "10 MB", field: "image" }),
   asyncHandler(async (req, res) => {
     const user = res.locals.currentUser;
     if (!req.file) return sendError(res, 400, "Image file is required.");
@@ -2455,6 +2458,9 @@ app.post(
     }
     const imageUrl = `/uploads/design/${req.file.filename}`;
     const parsedTags = tags ? (tags as string).split(",").map((t: string) => t.trim()).filter(Boolean) : [];
+    /* A design that could not be recorded must not leave its image behind:
+       nothing would ever point at it, or delete it. */
+    const stored = req.file.path;
     const design = await designDb.createDesignDesign(
       title.trim(),
       description?.trim() ?? "",
@@ -2463,7 +2469,7 @@ app.post(
       imageUrl,
       user.id,
       user.full_name || user.email
-    );
+    ).catch((err: unknown) => { fs.unlink(stored, () => {}); throw err; });
     res.status(201).json({ design });
   })
 );
@@ -3054,6 +3060,10 @@ app.post("/api/outreach/refresh-reach", asyncHandler(async (req, res) => {
     return sendError(res, 502, msg);
   }
 }));
+
+/* After every route, so nothing registered below the first handler falls
+   through to Express's HTML error page. Must stay the last app.use(). */
+app.use(jsonErrorHandler);
 
 // ── Start server ───────────────────────────────────────────────────────────
 

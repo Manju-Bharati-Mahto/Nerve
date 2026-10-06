@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Package, Plus, BellRing, PackageCheck } from 'lucide-react'
 import {
   boDeliveries, boAddDelivery, boDeliveryReceived, boDeliveryNotify, boDeliveryCollected,
-  boInstitutes, boVendors, DELIVERY_STATUS_STYLE, boWhen,
+  boInstitutes, boVendors, boCheckPhotos, BO_PHOTO_ACCEPT, DELIVERY_STATUS_STYLE, boWhen,
 } from '@/lib/brandops-api'
 import {
   BoPage, BoError, BoLoading, BoKpi, BoBadge, BoTable, BoRow, BoCell, BoButton,
@@ -133,9 +133,12 @@ function AddDeliveryDialog({ institutes, vendors, busy, onClose, onSave }: {
   const [remarks, setRemarks] = useState('')
   const [files, setFiles] = useState<FileList | null>(null)
 
-  const ready = instituteId && materialType && description.trim()
+  // Checked as they are picked, so a wrong photo is named before Add delivery.
+  const photoProblem = boCheckPhotos(files)
+  const ready = instituteId && materialType && description.trim() && !photoProblem
 
   function submit() {
+    if (photoProblem) return
     const form = new FormData()
     form.append('institute_id', instituteId)
     form.append('material_type', materialType)
@@ -188,9 +191,10 @@ function AddDeliveryDialog({ institutes, vendors, busy, onClose, onSave }: {
           <input type="date" className="hub-input" value={expected} onChange={e => setExpected(e.target.value)} />
         </BoField>
       </div>
-      <BoField label="Material image / proof" hint="Photos of what arrived. Multiple allowed.">
-        <input type="file" accept="image/*" multiple className="text-xs"
+      <BoField label="Material image / proof" hint="Photos of what arrived — JPG, PNG, WEBP or GIF, up to 10 photos of 10 MB each.">
+        <input type="file" accept={BO_PHOTO_ACCEPT} multiple className="text-xs"
           onChange={e => setFiles(e.target.files)} />
+        {photoProblem && <p className="text-xs text-rose-600 mt-1">{photoProblem}</p>}
       </BoField>
       <BoField label="Remarks">
         <textarea className="hub-input" value={remarks} onChange={e => setRemarks(e.target.value)} />

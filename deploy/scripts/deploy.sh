@@ -59,6 +59,24 @@ mkdir -p "$release_dir"
 rsync -a --delete dist/ "$release_dir"/
 ln -sfn "$release_dir" "$CURRENT_LINK"
 
+# Keep the live vhost's /api upload limits (else nginx answers any body over
+# 1 MB with an HTML 413 → "Upload failed.") and the CSP connect-src that lets
+# the browser PUT outreach videos straight to Google Drive. Idempotent and
+# self-validating (restores its backup if nginx -t fails), so a certbot rewrite
+# or a hand edit can never silently bring the old limits back. Non-fatal: the
+# release is already live at this point; a failure here must be loud, not abort.
+limits_rc=0
+sudo bash "$APP_ROOT/deploy/scripts/set-upload-limits.sh" || limits_rc=$?
+case "$limits_rc" in
+  0) ;;
+  2|3)
+    echo "⚠⚠ Upload limits are in place, but the Content-Security-Policy needs a hand edit (exit $limits_rc) — direct video uploads to Google Drive stay blocked until then."
+    echo "⚠⚠ The file and line (and the corrected line, where it can be computed) are printed above. After editing: sudo nginx -t && sudo systemctl reload nginx" ;;
+  *)
+    echo "⚠⚠ set-upload-limits.sh FAILED (exit $limits_rc) — uploads over 1 MB and direct video uploads to Google Drive may be blocked."
+    echo "⚠⚠ Read its output above, then re-run: sudo bash $APP_ROOT/deploy/scripts/set-upload-limits.sh" ;;
+esac
+
 sudo nginx -t
 sudo systemctl reload nginx
 

@@ -4,19 +4,25 @@
  * Mirrors the server's row shapes rather than re-modelling them, so a column
  * rename shows up as a type error here instead of an empty cell in the UI.
  */
+import { errorFor, fetchOrExplain, readJson } from './http'
+import { checkImageFile, IMAGE_ACCEPT } from './image-file'
+
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 const BASE = `${API_BASE_URL}/brandops`
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetchOrExplain(`${BASE}${path}`, {
     credentials: 'include',
     headers: init?.body instanceof FormData
       ? (init?.headers ?? {})
       : { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
     ...init,
   })
-  const payload = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error((payload as { message?: string }).message || 'Request failed.')
+  /* Photo uploads go through here too, and a body over nginx's limit comes
+     back as an HTML 413 — readJson/errorFor say "too large" instead of
+     "Request failed.". */
+  const payload = await readJson(res)
+  if (!res.ok) throw errorFor(res, payload, 'Request failed.')
   return payload as T
 }
 
@@ -242,6 +248,27 @@ export const boCheckIn = (workOrderId: string, notes = '') =>
   request<{ ok: true }>(`/work-orders/${workOrderId}/check-in`, { method: 'POST', body: JSON.stringify({ notes }) })
 export const boCheckOut = (workOrderId: string, notes = '') =>
   request<{ ok: true }>(`/work-orders/${workOrderId}/check-out`, { method: 'POST', body: JSON.stringify({ notes }) })
+
+/* ── Photo checks, before anything is sent ────────────────────────────────
+   The per-file rule is the one every image picker uses (./image-file.ts,
+   mirroring server/upload-guard.ts); BrandOps adds its own limits — 10 MB a
+   photo, ten at a time — and names the photo that is wrong. */
+
+/** The `accept` for BrandOps photo inputs; see IMAGE_ACCEPT for why it lists types. */
+export const BO_PHOTO_ACCEPT = IMAGE_ACCEPT
+export const BO_PHOTO_MAX_BYTES = 10 * 1024 * 1024
+export const BO_PHOTO_MAX_FILES = 10
+
+/** Why these photos cannot be uploaded, or null when they can. */
+export function boCheckPhotos(files: ArrayLike<File> | null | undefined): string | null {
+  const list = Array.from(files ?? [])
+  if (list.length > BO_PHOTO_MAX_FILES) return `Choose at most ${BO_PHOTO_MAX_FILES} photos at a time — ${list.length} are selected.`
+  for (const f of list) {
+    const problem = checkImageFile(f, BO_PHOTO_MAX_BYTES)
+    if (problem) return `${f.name}: ${problem}`
+  }
+  return null
+}
 
 export const boCompletion = () => request<{ work_orders: WorkOrder[] }>('/completion')
 export const boUploadPhotos = (workOrderId: string, form: FormData) =>

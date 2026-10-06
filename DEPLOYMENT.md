@@ -128,6 +128,67 @@ bash /srv/nerve/app/deploy/scripts/deploy.sh
 > public portals: it backs up, inserts, runs `nginx -t`, and restores the backup if
 > validation fails.
 
+### Upload limits and direct-to-Drive CSP (live vhost)
+
+nginx refuses any request body over 1 MB by default, with an HTML 413 that the
+app shows as "Request failed." / "Upload failed.". The live vhost's CSP also has
+no `connect-src`, so the browser may not send outreach videos straight to Google
+Drive. `deploy/scripts/set-upload-limits.sh` fixes both in the live file, in place:
+
+- every `/api` location gets `client_max_body_size 2100m`, `client_body_timeout 300s`,
+  `proxy_request_buffering on`, `proxy_send_timeout 300s`, `proxy_read_timeout 900s`
+  (existing values are replaced, never duplicated);
+- every `add_header Content-Security-Policy` line in the vhost, or in a file only
+  the vhost includes, gets `connect-src 'self' https://www.googleapis.com` —
+  nothing else in the policy changes;
+- a CSP it must not edit — set at http level (`nginx.conf`, `conf.d/`), in another
+  server block for the same `server_name`, or in a snippet another enabled site
+  also includes — is reported with its file, line and the corrected line, never
+  edited;
+- it warns if there is no `location /uploads/` block.
+
+It backs up to `/srv/nerve/backups/nginx/`, runs `nginx -t`, restores the backup
+if that fails, and reloads only when something changed. A second run is a no-op.
+
+**How it reaches the server.** `deploy.sh` deploys `main` only, so the script is
+not on the server until this branch is merged to `main`. After the merge, the next
+`deploy.sh` run applies it automatically — `deploy.sh` calls it after publishing
+the release, on every deploy — so there is nothing to run by hand. Deploy as usual:
+
+```bash
+bash /srv/nerve/app/deploy/scripts/deploy.sh
+```
+
+To re-run it on its own later (e.g. after a hand edit or a certbot rewrite of the
+vhost) — `/srv/nerve/app` holds whatever `main` the last deploy checked out:
+
+```bash
+sudo bash /srv/nerve/app/deploy/scripts/set-upload-limits.sh
+```
+
+Verify (run one at a time):
+
+```bash
+head -c 5000000 /dev/zero | curl -sS -o /dev/null -w '%{http_code}\n' -X POST --data-binary @- https://nerve.paruluniversity.ac.in/api/brandops/materials
+```
+
+```bash
+curl -sI https://nerve.paruluniversity.ac.in/ | grep -i content-security
+```
+
+The first must print `401` (anything but `413`); the second must show
+`connect-src 'self' https://www.googleapis.com`.
+
+Exit codes: `0` done; `1` failed, nothing changed (or restored from backup);
+`2` limits applied but a CSP line in the vhost is in a shape the script will not
+edit; `3` limits applied but the CSP is set outside the vhost. For `2` and `3` the
+output ends with the file and line (and, for `3`, the exact corrected line) —
+edit it by hand, then:
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
 What changed
 - Built the frontend and published it into `/srv/nerve/releases/current`.
 - Configured Nginx to serve the SPA and proxy `/api` to the local API container.
@@ -154,6 +215,8 @@ certbot --nginx -d your-domain.example
 Then set:
 - `APP_BASE_URL=https://your-domain.example`
 - `COOKIE_SECURE=true`
+
+`APP_BASE_URL` must be exactly the address people open Nerve on (same `https://` and host). Outreach videos upload straight from the browser to Google Drive, and Google only accepts the browser's upload from the origin Nerve names here — on any other address the upload quietly falls back to going through the server.
 
 Redeploy:
 

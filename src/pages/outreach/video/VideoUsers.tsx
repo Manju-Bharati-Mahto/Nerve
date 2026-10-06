@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { UserPlus, AlertCircle, Search, X, Trash2, Ban, RotateCcw } from 'lucide-react'
 import {
-  listWorkflowUsers, addWorkflowUser, updateWorkflowUser, deleteWorkflowUser,
-  formatWhen, ROLE_LABEL, type WorkflowUser, type VideoRole,
+  listWorkflowUsers, addWorkflowUser, updateWorkflowUser, deleteWorkflowUser, driveProblemOf,
+  formatWhen, ROLE_LABEL, type WorkflowUser, type VideoRole, type DriveErrorCode,
 } from '@/lib/outreach-video-data'
+import DriveProblemNotice from './DriveProblemNotice'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
 import { api } from '@/lib/api'
@@ -30,6 +32,12 @@ export default function VideoUsers() {
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  /* Kept apart from `error`, which is about a change that did not save: a
+     list that failed to load must never be shown as an empty list. */
+  const [loadError, setLoadError] = useState<{ message: string; code: DriveErrorCode | null } | null>(null)
+  /* An add that worked but left something to know about, said after the
+     dialog has closed. */
+  const [warning, setWarning] = useState<{ message: string; code: DriveErrorCode | null } | null>(null)
   const [adding, setAdding] = useState(false)
   const [confirming, setConfirming] = useState<WorkflowUser | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -38,9 +46,12 @@ export default function VideoUsers() {
     try {
       const { users } = await listWorkflowUsers()
       setUsers(users.filter(u => !u.deletedAt))
-      setError(null)
+      setLoadError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load users.')
+      setLoadError({
+        message: err instanceof Error ? err.message : 'Could not load users.',
+        code: driveProblemOf(err),
+      })
     } finally {
       setLoading(false)
     }
@@ -78,9 +89,26 @@ export default function VideoUsers() {
         </button>
       </div>
 
+      {loadError && <DriveProblemNotice message={loadError.message} code={loadError.code} />}
       {error && (
         <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
           <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> <span>{error}</span>
+        </div>
+      )}
+      {warning && (
+        <div className="hub-card bg-amber-50 border-amber-200 flex items-start gap-2 text-sm text-amber-900">
+          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+          <div className="flex-1 space-y-2">
+            <p>{warning.message}</p>
+            {warning.code && (
+              <Link to="/outreach/video/drive" className="text-xs font-semibold underline">
+                Open Video Workflow → Google Drive
+              </Link>
+            )}
+          </div>
+          <button onClick={() => setWarning(null)} className="p-1 rounded hover:bg-amber-100" aria-label="Dismiss">
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 
@@ -93,6 +121,10 @@ export default function VideoUsers() {
 
         {loading ? (
           <p className="text-sm text-muted-foreground text-center py-8">Loading…</p>
+        ) : loadError && users.length === 0 ? (
+          <p className="text-sm text-muted-foreground text-center py-8">
+            The user list could not be loaded — see the message above.
+          </p>
         ) : shown.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-8">
             {users.length === 0 ? 'No users registered yet.' : 'Nobody matches that search.'}
@@ -157,7 +189,7 @@ export default function VideoUsers() {
 
       {adding && (
         <AddUserDialog onClose={() => setAdding(false)}
-          onDone={async () => { setAdding(false); await refresh() }} />
+          onDone={async (notice) => { setAdding(false); setWarning(notice ?? null); await refresh() }} />
       )}
       {confirming && (
         <ConfirmDelete user={confirming} onClose={() => setConfirming(null)}
@@ -185,7 +217,10 @@ export default function VideoUsers() {
  * always did; a switch opens one more for this person alone. Both are checked
  * on the API, so a tab nobody switched on is not merely hidden.
  */
-function AddUserDialog({ onClose, onDone }: { onClose: () => void; onDone: () => Promise<void> }) {
+function AddUserDialog({ onClose, onDone }: {
+  onClose: () => void
+  onDone: (warning?: { message: string; code: DriveErrorCode | null }) => Promise<void>
+}) {
   const { role: actorRole } = useAuth()
   const { addUser } = useAppData()
   const roles = grantableVideoRoles(actorRole)
@@ -239,17 +274,29 @@ function AddUserDialog({ onClose, onDone }: { onClose: () => void; onDone: () =>
          tells the truth immediately. Matching role, so the two agree.
 
          Not fatal if it fails: the account exists and signing in provisions
-         the record anyway, so the add is reported as the success it was. */
+         the record anyway. But it is said, not swallowed — when the workflow
+         registry cannot be written (usually the Drive connection), the person
+         will not appear in this list, and the administrator needs to know
+         why rather than conclude the add did nothing. */
+      let registerProblem: { message: string; code: DriveErrorCode | null } | null = null
       try {
         await addWorkflowUser({ name: name.trim(), email: email.trim(), role })
-      } catch { /* provisioned on first sign-in instead */ }
+      } catch (err) {
+        const reason = (err instanceof Error ? err.message : 'the workflow registry could not be written')
+          .replace(/\.?\s*$/, '.')
+        registerProblem = {
+          message: `${name.trim()} was added and can sign in, but could not be registered in the video workflow yet: ${reason} They will be registered automatically when they first sign in.`,
+          code: driveProblemOf(err),
+        }
+      }
 
       if (photoError) {
-        setError(`${name.trim()} was added, but the photo did not upload: ${photoError}. You can try again from their profile.`)
+        setError(`${name.trim()} was added, but the photo did not upload: ${photoError}. You can try again from their profile.`
+          + (registerProblem ? ` ${registerProblem.message}` : ''))
         setBusy(false)
         return
       }
-      await onDone()
+      await onDone(registerProblem ?? undefined)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not add that user.')
       setBusy(false)

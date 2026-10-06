@@ -9,7 +9,7 @@
  * no half-made record behind.
  */
 import { randomUUID } from "node:crypto";
-import { getDriveClient } from "./drive-client.js";
+import { getDriveClient, type DriveFileMeta } from "./drive-client.js";
 import {
   ensureDriveStructure, mutateWorkflow, readWorkflow, VIDEOS_FOLDER,
 } from "./drive-store.js";
@@ -18,7 +18,7 @@ import { assetFoldersFor, campaignAssetName, getCampaign } from "./campaigns.js"
 import { mirrorVideo } from "./drive-mirror.js";
 import { alreadyNotified, notify } from "./notifications.js";
 import type {
-  LiveUrlPlatform, VideoRecord, VideoStatus, VideoUser, WorkflowStoreDoc,
+  CampaignRecord, LiveUrlPlatform, VideoRecord, VideoStatus, VideoUser, WorkflowStoreDoc,
 } from "./types.js";
 
 export class VideoNotFoundError extends Error {
@@ -102,14 +102,86 @@ function safeFileName(name: string): string {
   return name.replace(/[/\\:*?"<>|]/g, "-").trim();
 }
 
-export interface UploadInput {
+// ── What may be uploaded ──────────────────────────────────────────────────
+
+/** The largest video accepted, through either upload path. */
+export const MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024;
+
+/** Video types accepted as the browser reports them. */
+export const VIDEO_MIME_ALLOWLIST = [
+  "video/mp4", "video/quicktime", "video/x-m4v", "video/webm", "video/x-msvideo", "video/mpeg",
+  "video/3gpp", "video/3gpp2", "video/x-matroska", "video/avi", "video/mp2t",
+];
+
+/**
+ * The type each known video extension really is. Browsers often do not know:
+ * a .mkv or .mts on Windows, or a .mov from some phones, arrives as
+ * application/octet-stream or with no type at all. Refusing those refused real
+ * videos, so the extension decides instead — and Drive is told the proper
+ * type, so it still previews the file as a video.
+ */
+const VIDEO_EXTENSIONS: Record<string, string> = {
+  ".mp4": "video/mp4", ".m4v": "video/x-m4v", ".mov": "video/quicktime", ".qt": "video/quicktime",
+  ".webm": "video/webm", ".avi": "video/x-msvideo", ".mpg": "video/mpeg", ".mpeg": "video/mpeg",
+  ".3gp": "video/3gpp", ".3g2": "video/3gpp2", ".mkv": "video/x-matroska",
+  ".ts": "video/mp2t", ".mts": "video/mp2t", ".m2ts": "video/mp2t",
+};
+
+/** For refusal messages: what a person may pick instead. */
+export const ACCEPTED_VIDEO_TYPES_LABEL = "MP4, MOV, M4V, WEBM, AVI, MPEG, 3GP, MKV or MTS/TS";
+
+const extensionOf = (name: string): string => {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot).toLowerCase() : "";
+};
+
+/**
+ * The MIME type to store a file under, or null when it is not a video we
+ * accept. A recognised video type is kept as reported; an unknown or generic
+ * one is accepted only on a known video extension.
+ */
+export function acceptedVideoType(mimeType: string | null | undefined, fileName: string): string | null {
+  const type = String(mimeType ?? "").trim().toLowerCase();
+  if (VIDEO_MIME_ALLOWLIST.includes(type)) return type;
+  if (type === "" || type === "application/octet-stream" || type === "binary/octet-stream") {
+    return VIDEO_EXTENSIONS[extensionOf(fileName)] ?? null;
+  }
+  return null;
+}
+
+/** Thrown when a file is not an acceptable video; the route maps it to 400/413. */
+export class VideoFileRejectedError extends Error {
+  constructor(message: string, readonly status: 400 | 413 = 400) {
+    super(message);
+    this.name = "VideoFileRejectedError";
+  }
+}
+
+/** The type and size checks both upload paths share. Returns the Drive MIME type. */
+export function checkVideoFile(fileName: string, mimeType: string | null | undefined, sizeBytes: number): string {
+  const type = acceptedVideoType(mimeType, fileName);
+  if (!type) throw new VideoFileRejectedError(`That file is not a video we can accept. Upload ${ACCEPTED_VIDEO_TYPES_LABEL}.`);
+  /* The size comes from the browser on a direct upload, so it is a claim, not
+     a measurement: NaN, a fraction or a number past 2^53 would open a Drive
+     session nobody can complete (and make the size check at the end
+     meaningless). Only a whole, positive, exactly representable count passes. */
+  if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
+    throw new VideoFileRejectedError("That video file is empty or its size could not be read.");
+  }
+  if (sizeBytes > MAX_VIDEO_BYTES) throw new VideoFileRejectedError("That video is larger than 2 GB.", 413);
+  return type;
+}
+
+// ── Upload ─────────────────────────────────────────────────────────────────
+
+/** Everything about an upload except the bytes — what both paths start from. */
+export interface UploadDetails {
   editor: Pick<VideoUser, "id" | "name" | "email" | "role">;
   /** §9 required fields. */
   client: string;
   editorTitle: string;
   caption: string;
-  /** The multer temp file. */
-  localPath: string;
+  /** The name the file had on the editor's machine; only its extension is kept. */
   originalName: string;
   mimeType: string;
   sizeBytes: number;
@@ -133,29 +205,75 @@ export interface UploadInput {
   pageNames?: string[];
 }
 
+export interface UploadInput extends UploadDetails {
+  /** The multer temp file. */
+  localPath: string;
+}
+
 /**
- * §9 steps 1–7 plus §9.1: reserves the campaign number, ensures the campaign
- * folder, uploads the video under its auto-generated name, writes the matching
- * caption file, then records the video as a Draft.
- *
- * Lands in Draft rather than Submitted so §17 ("editor can update the caption
- * before it is submitted") and the §8 Draft KPI both have something to act on;
- * `submitVideo` performs step 8.
+ * An upload that has been checked and given its place: the campaign, its
+ * folders, its number and the file name it will have in Drive. Nothing has
+ * been sent yet.
  */
-export async function uploadVideo(input: UploadInput): Promise<VideoRecord> {
-  const { client } = getDriveClient();
+export interface PreparedUpload {
+  details: UploadDetails;
+  campaignId: string | null;
+  /** The campaign name the record carries. */
+  campaign: string;
+  folders: { videos: string; captions: string; published: string };
+  sequence: number;
+  /** "<Campaign> - Video N" — the record's title. */
+  title: string;
+  /** The Drive file name: the title plus the original extension. */
+  fileName: string;
+  /** The MIME type the file is stored under. */
+  mimeType: string;
+}
+
+/** What validateUploadFields settles: the type to store, and the campaign. */
+export interface ValidatedUpload {
+  mimeType: string;
+  campaignRecord: CampaignRecord | null;
+  /** The campaign name the record will carry. */
+  campaign: string;
+}
+
+/**
+ * Every check an upload must pass — the file's type and size, the campaign,
+ * title and caption — and nothing else: no folders created, no number
+ * reserved. So a caller that may not go on to upload (a direct-upload request
+ * that falls back to sending the file through the server) can still refuse a
+ * bad request up front, without leaving a gap in the numbering.
+ */
+export async function validateUploadFields(details: UploadDetails): Promise<ValidatedUpload> {
+  const mimeType = checkVideoFile(details.originalName, details.mimeType, details.sizeBytes);
 
   /* A real campaign decides three things: its own name wins over whatever was
      typed, its §9 folders receive the files, and its §10 naming is used. An
      upload with no campaign record keeps every one of those as it was, which
      is what makes older campaigns carry on unchanged. */
-  const campaignRecord = input.campaignId ? await getCampaign(input.campaignId) : null;
-  if (input.campaignId && !campaignRecord) throw new Error("That campaign was not found.");
+  const campaignRecord = details.campaignId ? await getCampaign(details.campaignId) : null;
+  if (details.campaignId && !campaignRecord) throw new Error("That campaign was not found.");
 
-  const campaign = (campaignRecord?.name ?? input.client).trim();
+  const campaign = (campaignRecord?.name ?? details.client ?? "").trim();
   if (!campaign) throw new Error("Client / project name is required.");
-  if (!input.editorTitle.trim()) throw new Error("Video title is required.");
-  if (!input.caption.trim()) throw new Error("Social media caption is required.");
+  if (!(details.editorTitle ?? "").trim()) throw new Error("Video title is required.");
+  if (!(details.caption ?? "").trim()) throw new Error("Social media caption is required.");
+  return { mimeType, campaignRecord, campaign };
+}
+
+/**
+ * Step one of an upload, shared by both paths (through the server, and
+ * straight from the browser to Drive): validates the fields and the file
+ * (validateUploadFields), ensures the campaign's §9 folders and reserves its
+ * §9.1 number.
+ *
+ * Reserving the number here, before any bytes move, is deliberate: a direct
+ * upload needs the final file name to open its Drive session. A reservation
+ * that is never used leaves a gap, which the PRD tolerates; a clash it forbids.
+ */
+export async function prepareUpload(details: UploadDetails): Promise<PreparedUpload> {
+  const { mimeType, campaignRecord, campaign } = await validateUploadFields(details);
 
   /* §9 — every upload is filed into its campaign's tree,
      Social Media Campaigns/<campaign>/Videos, whether or not the campaign is a
@@ -165,27 +283,42 @@ export async function uploadVideo(input: UploadInput): Promise<VideoRecord> {
   );
 
   const sequence = await reserveSequence(campaign);
-  const autoName = campaignAssetName(campaign, sequence);
-  const extension = input.originalName.includes(".")
-    ? input.originalName.slice(input.originalName.lastIndexOf("."))
+  const title = campaignAssetName(campaign, sequence);
+  const extension = details.originalName.includes(".")
+    ? details.originalName.slice(details.originalName.lastIndexOf("."))
     : "";
 
-  // §29 — the Drive upload has to succeed before any record claims it exists.
-  const uploaded = await client.uploadBinaryFile(
-    safeFileName(autoName + extension), folders.videos, input.localPath, input.mimeType,
-  );
+  return {
+    details: { ...details, mimeType },
+    campaignId: campaignRecord?.id ?? null,
+    campaign,
+    folders,
+    sequence,
+    title,
+    fileName: safeFileName(title + extension),
+    mimeType,
+  };
+}
 
+/**
+ * Step two, once the file exists in Drive: records the video as uploaded and
+ * writes its caption file and Drive description. The same for both paths, so
+ * a video that went straight from the browser is indistinguishable from one
+ * that came through the server.
+ */
+export async function recordUpload(prepared: PreparedUpload, uploaded: DriveFileMeta): Promise<VideoRecord> {
+  const input = prepared.details;
   const now = new Date().toISOString();
   const record: VideoRecord = {
     id: randomUUID(),
-    title: autoName,
+    title: prepared.title,
     editorTitle: input.editorTitle.trim(),
-    client: campaign,
-    campaignId: campaignRecord?.id ?? null,
+    client: prepared.campaign,
+    campaignId: prepared.campaignId,
     socialPageIds: input.socialPageIds ?? [],
     socialPageNames: input.pageNames ?? [],
-    sequence,
-    driveFolders: folders,
+    sequence: prepared.sequence,
+    driveFolders: prepared.folders,
     editorId: input.editor.id,
     caption: input.caption,
     status: "uploaded",
@@ -195,7 +328,7 @@ export async function uploadVideo(input: UploadInput): Promise<VideoRecord> {
     // Written by the mirror once the record exists — see below.
     captionFileId: null,
     sizeBytes: input.sizeBytes,
-    mimeType: input.mimeType,
+    mimeType: prepared.mimeType,
     platform: input.platform?.trim() || null,
     notes: input.notes?.trim() || null,
     tags: input.tags?.filter(Boolean) ?? [],
@@ -214,6 +347,28 @@ export async function uploadVideo(input: UploadInput): Promise<VideoRecord> {
   });
   // §10 — the caption file beside it, carrying the description and remarks too.
   return mirrorSafely(saved);
+}
+
+/**
+ * §9 steps 1–7 plus §9.1 through the server: prepare, send the staged file to
+ * Drive, record. Lands in Draft rather than Submitted so §17 ("editor can
+ * update the caption before it is submitted") and the §8 Draft KPI both have
+ * something to act on; `submitVideo` performs step 8.
+ */
+export async function uploadVideo(input: UploadInput): Promise<VideoRecord> {
+  const { client } = getDriveClient();
+  const prepared = await prepareUpload(input);
+  // §29 — the Drive upload has to succeed before any record claims it exists.
+  const uploaded = await client.uploadBinaryFile(
+    prepared.fileName, prepared.folders.videos, input.localPath, prepared.mimeType,
+  );
+  return recordUpload(prepared, uploaded);
+}
+
+/** True when a video record already points at this Drive file. */
+export async function videoForDriveFile(fileId: string): Promise<VideoRecord | null> {
+  const doc = await readWorkflow();
+  return doc.videos.find(v => v.driveFileId === fileId) ?? null;
 }
 
 /**

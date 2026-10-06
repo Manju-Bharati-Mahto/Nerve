@@ -21,6 +21,7 @@ import {
   listVideos, getVideo, publishingQueue, campaignVideoName,
   approveVideo, rejectVideo, startRevision, scheduleVideo, reviewQueue,
   InvalidTransitionError, NotYourVideoError, VideoNotFoundError,
+  checkVideoFile, validateUploadFields, VideoFileRejectedError,
 } from "./videos.js";
 import type { VideoUser } from "./types.js";
 
@@ -447,5 +448,33 @@ describe("store integrity", () => {
     await upload(editor, "Client A");
     const doc = await readWorkflow();
     expect(doc.sequences?.["client a"]).toBe(2);
+  });
+});
+
+describe("checking a video file's declared size", () => {
+  it("refuses a size that is not a whole, positive, exactly representable number", () => {
+    for (const size of [0, -1, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 2]) {
+      const err = (() => { try { checkVideoFile("v.mp4", "video/mp4", size); } catch (e) { return e; } })();
+      expect(err, String(size)).toBeInstanceOf(VideoFileRejectedError);
+      expect((err as VideoFileRejectedError).status).toBe(400);
+      expect((err as Error).message).toBe("That video file is empty or its size could not be read.");
+    }
+    expect(checkVideoFile("v.mp4", "video/mp4", 11)).toBe("video/mp4");
+  });
+});
+
+describe("validating upload fields without reserving anything", () => {
+  const fields = () => ({
+    editor, client: "VLF 2027", editorTitle: "Opening", caption: "Come along", originalName: "clip.mp4",
+    mimeType: "video/mp4", sizeBytes: 11,
+  });
+
+  it("refuses a missing campaign, title or caption, and reserves no number", async () => {
+    await expect(validateUploadFields({ ...fields(), campaignId: "nope" })).rejects.toThrow(/campaign was not found/);
+    await expect(validateUploadFields({ ...fields(), client: " " })).rejects.toThrow(/Client \/ project name/);
+    await expect(validateUploadFields({ ...fields(), editorTitle: "" })).rejects.toThrow(/title is required/);
+    await expect(validateUploadFields({ ...fields(), caption: " " })).rejects.toThrow(/caption is required/);
+    expect(await validateUploadFields(fields())).toMatchObject({ mimeType: "video/mp4", campaign: "VLF 2027", campaignRecord: null });
+    expect((await readWorkflow()).sequences ?? {}).toEqual({});
   });
 });

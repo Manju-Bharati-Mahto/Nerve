@@ -85,6 +85,8 @@ interface Row {
   folder_url: string | null;
   connected_by: string | null;
   connected_at: string | null;
+  /** The OAuth client the stored refresh token was issued to. */
+  token_client_id?: string | null;
   connected_by_name?: string | null;
 }
 
@@ -106,7 +108,11 @@ function ensureTable(): Promise<void> {
       connected_by            TEXT,
       connected_at            TIMESTAMPTZ,
       updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )`).then(() => undefined).catch(err => { tableReady = null; throw err; });
+    )`)
+    /* Added later, so existing installs gain it in place: which OAuth client
+       the stored token belongs to. See shouldRevokePrevious. */
+    .then(() => pool.query(`ALTER TABLE ov_drive_connection ADD COLUMN IF NOT EXISTS token_client_id TEXT`))
+    .then(() => undefined).catch(err => { tableReady = null; throw err; });
   return tableReady;
 }
 
@@ -261,6 +267,32 @@ async function googleJson<T>(res: Response, what: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/**
+ * Whether connecting again should revoke the token it replaces.
+ *
+ * Google treats a revoke as "withdraw this account's grant to this OAuth
+ * client" — not "retire this one token". A reconnect with the SAME account
+ * through the SAME client lands on the same grant, so revoking the old token
+ * also kills the one just issued: the reconnect reports success and the
+ * connection is dead on its first use. That is how reconnecting used to break
+ * the outreach Drive it was meant to fix.
+ *
+ * So the old token is revoked only when it is known to belong to a different
+ * grant — another account, or another OAuth client. When we cannot tell (a
+ * row from before the client id was recorded, with no account either), it is
+ * left alone: a stray grant is harmless, a revoked live one is an outage.
+ */
+export function shouldRevokePrevious(
+  previous: { email: string | null; clientId: string | null },
+  next: { email: string; clientId: string },
+): boolean {
+  const prevEmail = previous.email?.trim().toLowerCase() || null;
+  const nextEmail = next.email.trim().toLowerCase();
+  if (prevEmail && prevEmail !== nextEmail) return true;
+  if (previous.clientId && previous.clientId !== next.clientId) return true;
+  return false;
+}
+
 const revoke = (token: string) =>
   fetch(`${REVOKE_URL}?token=${encodeURIComponent(token)}`, { method: "POST" }).catch(() => undefined);
 
@@ -296,8 +328,13 @@ export async function completeOutreachDriveConnect(
      revoked so the grant does not linger on an account that was never meant
      to hold the workflow. */
   const expected = expectedOf(current);
+  const stored = { email: current?.account_email ?? null, clientId: current?.token_client_id ?? null };
   if (email !== expected) {
-    await revoke(tok.refresh_token);
+    /* Unless it is the very grant the stored connection uses (the expected
+       account was changed after connecting): revoking it would cut that off. */
+    if (!current?.refresh_token_enc || shouldRevokePrevious(stored, { email, clientId: client.clientId })) {
+      await revoke(tok.refresh_token);
+    }
     throw new OutreachDriveError(
       `You signed in as ${email || "an unknown account"}, but the outreach Drive is ${expected}. ` +
       `Press Connect again and choose ${expected} on Google's account screen.`, 403);
@@ -319,12 +356,15 @@ export async function completeOutreachDriveConnect(
   if (!folder) folder = { id: await drive.ensureFolder(DEFAULT_ROOT_FOLDER, "root"), name: DEFAULT_ROOT_FOLDER };
   const url = driveFolderLink(folder.id);
 
-  // An old token for a previous connection is no longer wanted.
+  // An old token for a different grant is no longer wanted (see shouldRevokePrevious).
   const previous = openSecret(current?.refresh_token_enc, SEAL);
-  if (previous && previous !== tok.refresh_token) await revoke(previous);
+  if (previous && previous !== tok.refresh_token && shouldRevokePrevious(stored, { email, clientId: client.clientId })) {
+    await revoke(previous);
+  }
 
   await upsert({
     refresh_token_enc: sealSecret(tok.refresh_token, SEAL),
+    token_client_id: client.clientId,
     account_email: email,
     connected_by: userId,
     connected_at: new Date().toISOString(),

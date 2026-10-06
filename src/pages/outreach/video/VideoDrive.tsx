@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
-  HardDrive, CheckCircle2, AlertCircle, Loader2, ExternalLink, RefreshCw, LogIn, Unplug, FolderOpen,
+  HardDrive, CheckCircle2, AlertCircle, Loader2, ExternalLink, RefreshCw, LogIn, Unplug, FolderOpen, XCircle,
 } from 'lucide-react'
 import {
   getDriveStatus, saveDriveClient, setDriveAccount, startDriveConnect, chooseDriveFolder,
@@ -103,6 +103,11 @@ export default function VideoDrive() {
 
   const envWins = status.source === 'env'
   const needsClient = status.client === 'none'
+  /* "Connected" only says a sign-in was saved once. `healthy` is the server
+     actually asking Google just now — a revoked or expired sign-in still
+     looks connected, and is exactly when every video screen breaks. */
+  const unhealthy = status.healthy === false
+  const canReconnect = !envWins && !needsClient
 
   return (
     <div className="animate-fade-in space-y-5 max-w-3xl">
@@ -112,8 +117,42 @@ export default function VideoDrive() {
       {notice && <Banner kind="ok">{notice}</Banner>}
 
       {/* ── Where things stand ─────────────────────────────────────────── */}
-      <div className="hub-card space-y-3">
-        {envWins ? (
+      <div className={`hub-card space-y-3 ${unhealthy ? 'border-rose-300 bg-rose-50' : ''}`}>
+        {unhealthy && (
+          <div className="space-y-3">
+            <div className="flex items-start gap-2 text-sm">
+              <XCircle className="w-5 h-5 mt-0.5 text-rose-600 shrink-0" />
+              <div className="space-y-1">
+                <p className="font-semibold text-rose-800">{PROBLEM_TITLE[status.problem ?? 'unreachable']}</p>
+                <p className="text-rose-900">
+                  {status.problemMessage ?? 'Google Drive did not answer the last check.'}
+                </p>
+                <p className="text-[12px] text-rose-800/80">
+                  {envWins
+                    ? 'This Drive is set up on the server, so the fix is on the server: its Google credentials need renewing.'
+                    : status.problem === 'folder_missing'
+                      ? 'Reconnect, or choose a folder this account can open under "Use a different folder" below. Until then the video workflow cannot read or store anything.'
+                      : 'Until it is reconnected, the video workflow cannot read or store anything — the users, videos and activity all live in this Drive.'}
+                </p>
+                {status.account_email && (
+                  <p className="text-[12px] text-rose-800/80">
+                    Last connected as <span className="font-mono">{status.account_email}</span>
+                    {status.connected_at && <> · {formatWhen(status.connected_at)}</>}
+                    {status.folder?.name && <> · folder <b>{status.folder.name}</b></>}
+                  </p>
+                )}
+              </div>
+            </div>
+            {canReconnect && (
+              <button onClick={connect} disabled={busy !== null}
+                className="ml-7 px-4 py-2 rounded-lg bg-rose-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 inline-flex items-center gap-2">
+                {busy === 'connect' ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />}
+                Reconnect with Google
+              </button>
+            )}
+          </div>
+        )}
+        {unhealthy ? null : envWins ? (
           <div className="flex items-start gap-2 text-sm">
             <CheckCircle2 className="w-4 h-4 mt-0.5 text-emerald-600 shrink-0" />
             <p className="text-foreground">
@@ -199,8 +238,8 @@ export default function VideoDrive() {
 
       {/* ── 3. Sign in ─────────────────────────────────────────────────── */}
       <div className="hub-card space-y-3">
-        <h2 className="text-sm font-semibold text-foreground">
-          {status.connected ? 'Reconnect' : 'Sign in with Google'}
+        <h2 className={`text-sm font-semibold ${unhealthy ? 'text-rose-700' : 'text-foreground'}`}>
+          {status.connected ? (unhealthy ? 'Reconnect — needed now' : 'Reconnect') : 'Sign in with Google'}
         </h2>
         <p className="text-[12px] text-muted-foreground">
           Sign in as <span className="font-mono text-foreground">{status.expected_email}</span>.
@@ -262,6 +301,13 @@ export default function VideoDrive() {
       )}
     </div>
   )
+}
+
+/** The red heading for each way a connected Drive can stop working. */
+const PROBLEM_TITLE: Record<NonNullable<DriveStatus['problem']>, string> = {
+  expired: 'Connection expired — reconnect',
+  folder_missing: 'Drive folder missing',
+  unreachable: 'Google Drive unreachable',
 }
 
 function Header() {
