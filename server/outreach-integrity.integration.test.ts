@@ -139,6 +139,16 @@ describe("planned posts name things that exist", () => {
 
     expect(await db.listPosts({ pageId: page.id })).toEqual([]);
   });
+
+  maybe()("a blank campaign id is checked like any other, not passed to the foreign key", async () => {
+    const page = await freshPage("blank");
+
+    await expect(db.createPostsBulk([
+      { page_id: page.id, campaign_id: "", date: "2026-10-08", type: "static", status: "draft" },
+    ])).rejects.toThrow(db.OutreachValidationError);
+
+    expect(await db.listPosts({ pageId: page.id })).toEqual([]);
+  });
 });
 
 describe("updateCreator", () => {

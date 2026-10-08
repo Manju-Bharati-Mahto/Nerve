@@ -3008,7 +3008,9 @@ app.get("/api/outreach/posts", asyncHandler(async (req, res) => {
 const outreachPlannedPostSchema = z.object({
   page_id: z.string().min(1).optional(),
   creator_id: z.string().min(1).optional(),
-  campaign_id: z.string().nullable().optional(),
+  /* No campaign is null. A blank string used to get through here and on to
+     the foreign key, which refused it with a 500. */
+  campaign_id: z.string().min(1).nullable().optional(),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   type: z.enum(OUTREACH_POST_TYPES),
   creative_variant: z.string().nullable().optional(),

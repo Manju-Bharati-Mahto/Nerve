@@ -629,7 +629,8 @@ async function missingIds(table: OutreachTable, ids: string[]): Promise<string[]
 async function assertAllExist(table: OutreachTable, ids: string[], noun: string): Promise<void> {
   const missing = await missingIds(table, ids);
   if (missing.length) {
-    throw new OutreachValidationError(`Unknown ${noun} id${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}.`);
+    const named = missing.map(id => id || '""');   // a blank id would otherwise print as nothing
+    throw new OutreachValidationError(`Unknown ${noun} id${missing.length === 1 ? "" : "s"}: ${named.join(", ")}.`);
   }
 }
 
@@ -1103,9 +1104,11 @@ export async function createPostsBulk(inputs: CreatePlannedPostInput[]): Promise
   if (inputs.length === 0) return [];
   /* A campaign, page or creator that doesn't exist used to fail its foreign
      key mid-loop: a 500, with the rows before it already saved. Name it up
-     front instead, and insert all-or-nothing. */
+     front instead, and insert all-or-nothing. Every id the insert will write
+     is checked, the blank string included: skipping falsy ids let "" past the
+     check and into the foreign key. */
   const idsOf = (key: "campaign_id" | "page_id" | "creator_id") =>
-    inputs.map(p => p[key]).filter((v): v is string => Boolean(v));
+    inputs.map(p => p[key]).filter((v): v is string => v != null);
   await assertAllExist("outreach_campaigns", idsOf("campaign_id"), "campaign");
   await assertAllExist("outreach_pages", idsOf("page_id"), "page");
   await assertAllExist("outreach_creators", idsOf("creator_id"), "creator");
