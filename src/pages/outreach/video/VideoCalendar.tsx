@@ -158,6 +158,10 @@ export default function VideoCalendar() {
   }, [entries])
 
   const running = campaigns.filter(c => c.status === 'running' || c.status === 'upcoming')
+  /* Counted from lists that were never read, the tiles would say "0 Pending"
+     over a notice saying nothing could be read — the same false "nothing
+     here" the empty states used to make. */
+  const known = !loading && !error
 
   return (
     <div className="animate-fade-in space-y-5">
@@ -185,10 +189,11 @@ export default function VideoCalendar() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {(Object.keys(CALENDAR_STATUS) as CalendarStatus[]).map(st => (
-          <Kpi key={st} label={CALENDAR_STATUS[st].label} value={tally[st]} accent={st === 'pending' && tally[st] > 0} />
+          <Kpi key={st} label={CALENDAR_STATUS[st].label} value={known ? tally[st] : null}
+            accent={known && st === 'pending' && tally[st] > 0} />
         ))}
       </div>
-      {counts && counts.unassigned > 0 && (
+      {known && counts && counts.unassigned > 0 && (
         <p className="text-[12px] text-amber-700">
           {counts.unassigned} event{counts.unassigned === 1 ? ' has' : 's have'} no editor yet.
         </p>
@@ -338,10 +343,11 @@ function ViewTab({ active, onClick, icon: Icon, label }: {
   )
 }
 
-function Kpi({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
+/** `null` is "not known": a dash, never a zero. */
+function Kpi({ label, value, accent }: { label: string; value: number | null; accent?: boolean }) {
   return (
     <div className={`hub-card py-3 ${accent ? 'border-amber-300 bg-amber-50/50' : ''}`}>
-      <div className="text-2xl font-serif text-foreground leading-none">{value}</div>
+      <div className="text-2xl font-serif text-foreground leading-none">{value ?? '—'}</div>
       <div className="text-[11px] text-muted-foreground mt-1">{label}</div>
     </div>
   )

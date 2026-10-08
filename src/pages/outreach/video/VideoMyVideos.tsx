@@ -88,6 +88,10 @@ export default function VideoMyVideos() {
     notSubmitted: videos.filter(v => EDITOR_GROUPS.not_submitted.includes(v.status)).length,
   }), [videos])
 
+  /* Counted from a list that was never read, the tiles would say "0 My
+     uploads" over a notice saying the list could not be read. */
+  const known = !loading && !error
+
   const shown = useMemo(
     () => filter === 'all' ? videos : videos.filter(v => EDITOR_GROUPS[filter].includes(v.status)),
     [videos, filter],
@@ -148,12 +152,12 @@ export default function VideoMyVideos() {
       )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Kpi label="My uploads" value={counts.total} onClick={() => setFilter('all')} active={filter === 'all'} />
-        <Kpi label="Under review" value={counts.underReview} onClick={() => setFilter('under_review')} active={filter === 'under_review'} />
-        <Kpi label="Approved" value={counts.approved} onClick={() => setFilter('approved')} active={filter === 'approved'} />
-        <Kpi label="Rejected" value={counts.rejected} onClick={() => setFilter('rejected')} active={filter === 'rejected'} />
+        <Kpi label="My uploads" value={known ? counts.total : null} onClick={() => setFilter('all')} active={filter === 'all'} />
+        <Kpi label="Under review" value={known ? counts.underReview : null} onClick={() => setFilter('under_review')} active={filter === 'under_review'} />
+        <Kpi label="Approved" value={known ? counts.approved : null} onClick={() => setFilter('approved')} active={filter === 'approved'} />
+        <Kpi label="Rejected" value={known ? counts.rejected : null} onClick={() => setFilter('rejected')} active={filter === 'rejected'} />
       </div>
-      {counts.notSubmitted > 0 && (
+      {known && counts.notSubmitted > 0 && (
         <button onClick={() => setFilter('not_submitted')}
           className="text-[12px] text-amber-700 hover:underline">
           {counts.notSubmitted} video{counts.notSubmitted === 1 ? ' has' : 's have'} not been sent for review yet.
@@ -227,11 +231,12 @@ export default function VideoMyVideos() {
   )
 }
 
-function Kpi({ label, value, onClick, active }: { label: string; value: number; onClick: () => void; active: boolean }) {
+/** `null` is "not known": a dash, never a zero. */
+function Kpi({ label, value, onClick, active }: { label: string; value: number | null; onClick: () => void; active: boolean }) {
   return (
     <button onClick={onClick}
       className={`hub-card text-left py-3 transition-colors ${active ? 'ring-2 ring-orange-400' : 'hover:bg-accent/40'}`}>
-      <div className="text-2xl font-serif text-foreground leading-none">{value}</div>
+      <div className="text-2xl font-serif text-foreground leading-none">{value ?? '—'}</div>
       <div className="text-[11px] text-muted-foreground mt-1">{label}</div>
     </button>
   )

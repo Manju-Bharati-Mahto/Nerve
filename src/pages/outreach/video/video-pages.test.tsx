@@ -15,6 +15,10 @@
    published on the queue and the upload form on My Videos, each ending in
    "Your role cannot perform that action."
 
+   The KPI tiles above those lists made the same claim in numbers — "0
+   Pending", "0 My uploads", "0 Open" — counted from lists that were never
+   read. While a load error stands they show a dash.
+
    AND TWO SMALLER ONES. A posting time in the activity log read
    "2026-10-20T05:00:00.000Z", and a published video's live links could
    never be added after the fact.
@@ -31,6 +35,7 @@ vi.mock('@/hooks/useAuth', async () => {
 
 import VideoActivity from './VideoActivity'
 import VideoCalendar from './VideoCalendar'
+import VideoCampaigns from './VideoCampaigns'
 import VideoDashboard from './VideoDashboard'
 import VideoEditorLog from './VideoEditorLog'
 import VideoMyVideos from './VideoMyVideos'
@@ -129,6 +134,44 @@ describe('every video page with no Google Drive connected', () => {
     handler = () => ({ status: 503, body: { message: 'The connection has expired.', code: 'drive_reconnect' } })
     mount(<VideoTodo />)
     expect(await screen.findByText('Ask an outreach Admin or Manager to reconnect Google Drive.')).toBeTruthy()
+  })
+})
+
+/* The figure on the tile captioned `label`, wherever that tile puts it. */
+function tileValue(label: string): string | null {
+  const caption = screen.getAllByText(label).find(el => el.previousElementSibling || el.nextElementSibling)
+  const figure = caption?.previousElementSibling ?? caption?.nextElementSibling
+  return figure?.textContent ?? null
+}
+
+describe('KPI tiles over a load that failed', () => {
+  const TILES: Array<[string, () => React.ReactNode, string[], string]> = [
+    ['Calendar', () => <VideoCalendar />, ['Upcoming', 'Running/Scheduled', 'Pending', 'Completed'], 'outreach_manager'],
+    ['My Videos', () => <VideoMyVideos />, ['My uploads', 'Under review', 'Approved', 'Rejected'], 'outreach_editor'],
+    ['To-Do List', () => <VideoTodo />, ['Open', 'Completed', 'Due today or overdue'], 'outreach_editor'],
+    ['Campaigns', () => <VideoCampaigns />, ['Total campaigns', 'Running', 'Upcoming', 'Completed'], 'outreach_manager'],
+  ]
+  for (const [name, page, labels, role] of TILES) {
+    it(`${name}: shows a dash, not a zero nobody counted`, async () => {
+      as(role)
+      mount(page())
+      await screen.findByText(NOT_CONNECTED)
+      for (const label of labels) expect(tileValue(label), label).toBe('—')
+    })
+  }
+
+  it('still counts once the list has been read', async () => {
+    as('outreach_editor')
+    handler = path => path.startsWith('/events')
+      ? { status: 200, body: { events: [
+        { id: 'e1', title: 'FIX shoot', date: '2000-01-01', status: 'open', client: 'FIX client' },
+        { id: 'e2', title: 'FIX done', date: '2000-01-02', status: 'completed', client: 'FIX client' },
+      ] } }
+      : undefined
+    mount(<VideoTodo />)
+    await screen.findByText('FIX shoot')
+    expect(tileValue('Open')).toBe('1')
+    expect(tileValue('Due today or overdue')).toBe('1')
   })
 })
 
