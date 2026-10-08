@@ -14,8 +14,10 @@ import path from "node:path";
 
 import { config } from "../config.js";
 import { resetDriveClient } from "./drive-client.js";
-import { resetStoreState, VIDEOS_FOLDER, readWorkflow } from "./drive-store.js";
+import { mutateWorkflow, resetStoreState, VIDEOS_FOLDER, readWorkflow } from "./drive-store.js";
 import { addUser } from "./users.js";
+import { createCampaign } from "./campaigns.js";
+import { listNotifications } from "./notifications.js";
 import {
   uploadVideo, submitVideo, publishVideo, updateCaption, setLiveUrls,
   listVideos, getVideo, publishingQueue, campaignVideoName,
@@ -448,6 +450,55 @@ describe("store integrity", () => {
     await upload(editor, "Client A");
     const doc = await readWorkflow();
     expect(doc.sequences?.["client a"]).toBe(2);
+  });
+
+  it("counts a campaign record by its id, carrying on from the numbers its videos already have", async () => {
+    /* A store written before numbering moved to campaign ids: the campaign's
+       videos reached Video 4 under its name key. Its next video must be 5 —
+       neither a second "Video 1" nor a repeat. */
+    const campaign = await createCampaign(manager, { name: "VLF 2027", startDate: "2027-01-01", endDate: "2027-03-31" });
+    const first = await uploadVideo({
+      editor, client: "", campaignId: campaign.id, editorTitle: "t", caption: "c",
+      localPath: await fakeVideoFile(`${randomName()}.mp4`), originalName: "clip.mp4", mimeType: "video/mp4", sizeBytes: 11,
+    });
+    await mutateWorkflow<void>(doc => {
+      doc.videos.find(v => v.id === first.id)!.sequence = 4;
+      doc.sequences = { "vlf 2027": 4 };
+      return { doc, result: undefined };
+    });
+    const next = await uploadVideo({
+      editor, client: "", campaignId: campaign.id, editorTitle: "t", caption: "c",
+      localPath: await fakeVideoFile(`${randomName()}.mp4`), originalName: "clip.mp4", mimeType: "video/mp4", sizeBytes: 11,
+    });
+    expect(next.title).toBe("VLF 2027 - Video 5");
+    expect((await readWorkflow()).sequences?.[`campaign:${campaign.id}`]).toBe(5);
+  });
+});
+
+describe("who is told about a submission", () => {
+  it("tells reviewers it is waiting for review, and publishers only once it is approved", async () => {
+    const v = await upload(editor, "Client A");
+    await submitVideo(v.id, editor);
+    // Reviewers used to be told "New video ready for publishing." at this point.
+    const [toReviewer] = await listNotifications(manager.id);
+    expect(toReviewer.kind).toBe("video_review_requested");
+    expect(toReviewer.message).toMatch(/^A video was submitted for review\./);
+    expect(await listNotifications(publisher.id)).toHaveLength(0);
+
+    await approveVideo(v.id, manager);
+    const [toPublisher] = await listNotifications(publisher.id);
+    expect(toPublisher.kind).toBe("video_submitted");
+    expect(toPublisher.message).toMatch(/^New video ready for publishing\./);
+  });
+});
+
+describe("the platform a video is for", () => {
+  it("is stored in lower case, so one platform is never two", async () => {
+    const v = await uploadVideo({
+      editor, client: "Client A", editorTitle: "t", caption: "c", platform: " Instagram ",
+      localPath: await fakeVideoFile(`${randomName()}.mp4`), originalName: "clip.mp4", mimeType: "video/mp4", sizeBytes: 11,
+    });
+    expect(v.platform).toBe("instagram");
   });
 });
 

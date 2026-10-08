@@ -20,7 +20,7 @@ import { addUser, setUserActive } from "./users.js";
 import { listNotifications, markRead, unreadCount, NOTIFICATION_TEXT } from "./notifications.js";
 import {
   createEvent, assignEvent, completeEvent, updateEventDetails, getEvent,
-  listEvents, todoFor, eventCounts, EventNotFoundError, NotYourEventError,
+  listEvents, todoFor, eventCounts, renameCampaignOnEvents, EventNotFoundError, NotYourEventError,
 } from "./events.js";
 import type { VideoUser } from "./types.js";
 
@@ -243,6 +243,43 @@ describe("editing an event", () => {
 
   it("raises a clear error for an event that doesn't exist", async () => {
     await expect(getEvent("nope")).rejects.toBeInstanceOf(EventNotFoundError);
+  });
+
+  it("moves the posting time with the date, keeping the time of day", async () => {
+    // 11:00 IST on the 15th. Moving the event to the 16th used to leave this
+    // on the 15th, so the calendar and the To-Do list showed different days.
+    const e = await createEvent(manager, {
+      title: "Posting day", date: "2026-10-15", postingAt: "2026-10-15T05:30:00.000Z",
+    });
+    const moved = await updateEventDetails(e.id, manager, { date: "2026-10-16" });
+    expect(moved.date).toBe("2026-10-16");
+    expect(moved.postingAt).toBe("2026-10-16T05:30:00.000Z");
+    const back = await updateEventDetails(e.id, manager, { date: "2026-09-30" });
+    expect(back.postingAt).toBe("2026-09-30T05:30:00.000Z");
+  });
+
+  it("keeps a posting time the caller sets alongside the date", async () => {
+    const e = await createEvent(manager, {
+      title: "Posting day", date: "2026-10-15", postingAt: "2026-10-15T05:30:00.000Z",
+    });
+    const moved = await updateEventDetails(e.id, manager, {
+      date: "2026-10-16", postingAt: "2026-10-16T12:30:00.000Z",
+    });
+    expect(moved.postingAt).toBe("2026-10-16T12:30:00.000Z");
+  });
+
+  it("follows a campaign rename on the events planned for it, and only those", async () => {
+    const planned = await createEvent(manager, { title: "Launch", date: "2026-10-15", client: "VLF 2027", campaignId: "c-1" });
+    const typed = await createEvent(manager, { title: "Other", date: "2026-10-15", client: "VLF 2027" });
+    expect(await renameCampaignOnEvents("c-1", "VLF 2027 old")).toBe(1);
+    expect((await getEvent(planned.id)).client).toBe("VLF 2027 old");
+    expect((await getEvent(typed.id)).client).toBe("VLF 2027");
+    expect(await renameCampaignOnEvents("c-1", "VLF 2027 old")).toBe(0);
+  });
+
+  it("leaves an event with no posting time without one", async () => {
+    const e = await shoot();
+    expect((await updateEventDetails(e.id, manager, { date: "2026-10-09" })).postingAt ?? null).toBeNull();
   });
 });
 

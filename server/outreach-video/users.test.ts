@@ -16,8 +16,9 @@ import { resetStoreState } from "./drive-store.js";
 import {
   addUser, deleteUser, findUserByEmail, findUserById, listActiveEditors,
   listActiveUsers, listUsers, setUserActive, setUserRole, touchLastActivity,
-  activityEntry, videoRoleForNerveRole, UserExistsError,
+  activityEntry, videoRoleForNerveRole, nerveRoleChangeRefusal, NERVE_ROLE_FOR_VIDEO_ROLE, UserExistsError,
 } from "./users.js";
+import { VIDEO_ROLES } from "./types.js";
 
 let tmpRoot: string;
 
@@ -49,6 +50,41 @@ describe("§3 role mapping", () => {
   it("returns null for roles with no place in this workflow", () => {
     expect(videoRoleForNerveRole("branding_reports_admin")).toBeNull();
     expect(videoRoleForNerveRole("user")).toBeNull();
+  });
+
+  it("gives each workflow role a Nerve role that maps straight back to it", () => {
+    // A role change writes this Nerve role; requireVideoUser reads it back.
+    for (const role of VIDEO_ROLES) expect(videoRoleForNerveRole(NERVE_ROLE_FOR_VIDEO_ROLE[role]), role).toBe(role);
+  });
+});
+
+describe("§4.4 who may change a Nerve role from the Users tab", () => {
+  const manager = { role: "outreach_manager", team: "outreach" };
+  const outreachAdmin = { role: "admin", team: "outreach" };
+  const superAdmin = { role: "super_admin", team: null };
+  const editor = { role: "outreach_editor", team: "outreach" };
+
+  it("lets a Manager or an outreach Admin move someone on their own team between production roles", () => {
+    for (const actor of [manager, outreachAdmin]) {
+      expect(nerveRoleChangeRefusal(actor, editor, "publisher")).toBeNull();
+      expect(nerveRoleChangeRefusal(actor, editor, "manager")).toBeNull();
+    }
+  });
+
+  it("refuses someone on another team", () => {
+    const designer = { role: "user", team: "branding" };
+    expect(nerveRoleChangeRefusal(manager, designer, "editor")).toMatch(/own team/);
+    expect(nerveRoleChangeRefusal(outreachAdmin, designer, "editor")).toMatch(/own team/);
+  });
+
+  it("leaves minting an Admin to a super admin, as Nerve's own user management does", () => {
+    expect(nerveRoleChangeRefusal(outreachAdmin, editor, "admin")).toMatch(/super admin/);
+    expect(nerveRoleChangeRefusal(superAdmin, editor, "admin")).toBeNull();
+  });
+
+  it("never changes a super admin's account from here", () => {
+    expect(nerveRoleChangeRefusal(superAdmin, superAdmin, "editor")).toMatch(/super admin/);
+    expect(nerveRoleChangeRefusal(outreachAdmin, superAdmin, "manager")).toMatch(/super admin/);
   });
 });
 

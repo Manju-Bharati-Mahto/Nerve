@@ -26,7 +26,22 @@ import path from "node:path";
 const hooks = vi.hoisted(() => ({
   findUser: null as null | (() => Promise<never>),
   getCampaign: null as null | (() => Promise<never>),
+  /** The Nerve accounts, by email, that the role-change route reads and writes. */
+  nerveAccounts: new Map<string, { id: string; role: string; team: string | null }>(),
 }));
+vi.mock("../db.js", async () => {
+  const real = await vi.importActual<typeof import("../db.js")>("../db.js");
+  return {
+    ...real,
+    getUserByEmail: async (email: string) => hooks.nerveAccounts.get(email.toLowerCase()) ?? null,
+    updateUser: async (id: string, input: { role?: string; team?: string | null }) => {
+      const account = [...hooks.nerveAccounts.values()].find(a => a.id === id);
+      if (!account) return null;
+      Object.assign(account, input);
+      return account;
+    },
+  };
+});
 vi.mock("./users.js", async () => {
   const real = await vi.importActual<typeof import("./users.js")>("./users.js");
   return { ...real, findUserByEmail: (email: string) => hooks.findUser ? hooks.findUser() : real.findUserByEmail(email) };
@@ -40,7 +55,7 @@ import { config } from "../config.js";
 import { DriveAuthError, DriveUnavailableError, resetDriveClient } from "./drive-client.js";
 import { resetStoreState } from "./drive-store.js";
 import { DRIVE_RECONNECT_MESSAGE } from "./drive-errors.js";
-import { VideoFileRejectedError } from "./videos.js";
+import { VideoFileRejectedError, listVideos, uploadVideo } from "./videos.js";
 import { UploadVerificationError } from "./upload-sessions.js";
 import { isAcceptedVideoUpload, registerOutreachVideoApi, sweepVideoStaging, uploadOrigin, videoFileName } from "./routes.js";
 
@@ -101,6 +116,7 @@ beforeEach(async () => {
   actingRole = "outreach_editor";
   hooks.findUser = null;
   hooks.getCampaign = null;
+  hooks.nerveAccounts.clear();
 });
 
 afterEach(async () => {
@@ -172,6 +188,94 @@ describe("a Drive failure on any endpoint", () => {
     const res = await get("/videos");
     expect(res.status).toBe(503);
     expect(await res.json()).toMatchObject({ code: "drive_not_connected", message: expect.stringContaining("Video Workflow → Google Drive") });
+  });
+});
+
+describe("changing someone's role in the Users tab", () => {
+  const patch = (p: string, body: unknown) => fetch(`${base}${p}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  async function addMember(email: string, nerve: { role: string; team: string | null }) {
+    hooks.nerveAccounts.set(email, { id: `n-${email}`, ...nerve });
+    const res = await post("/users", { name: "FIX member", email, role: "editor" });
+    return (await res.json()).user as { id: string };
+  }
+
+  it("changes the Nerve account, which is what the person actually is", async () => {
+    // It used to change only the workflow record, which requireVideoUser
+    // reset from the untouched Nerve role on the person's next request.
+    actingRole = "outreach_manager";
+    const member = await addMember("fix.member@a.com", { role: "outreach_editor", team: "outreach" });
+    const res = await patch(`/users/${member.id}`, { role: "publisher" });
+    expect(res.status).toBe(200);
+    expect((await res.json()).user.role).toBe("publisher");
+    expect(hooks.nerveAccounts.get("fix.member@a.com")).toMatchObject({ role: "outreach_publisher", team: "outreach" });
+  });
+
+  it("changes nothing anywhere when Nerve's rules refuse", async () => {
+    actingRole = "outreach_manager";
+    const member = await addMember("fix.designer@a.com", { role: "user", team: "branding" });
+    const res = await patch(`/users/${member.id}`, { role: "publisher" });
+    expect(res.status).toBe(403);
+    expect((await res.json()).message).toMatch(/own team/);
+    expect(hooks.nerveAccounts.get("fix.designer@a.com")?.role).toBe("user");
+    const listed = (await (await get("/users")).json()).users as Array<{ id: string; role: string }>;
+    expect(listed.find(u => u.id === member.id)?.role).toBe("editor");
+  });
+
+  it("still keeps a Manager from making anyone an Admin", async () => {
+    actingRole = "outreach_manager";
+    const member = await addMember("fix.climber@a.com", { role: "outreach_editor", team: "outreach" });
+    expect((await patch(`/users/${member.id}`, { role: "admin" })).status).toBe(403);
+    expect(hooks.nerveAccounts.get("fix.climber@a.com")?.role).toBe("outreach_editor");
+  });
+});
+
+describe("campaigns and the videos they hold", () => {
+  const patch = (p: string, body: unknown) => fetch(`${base}${p}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const editor = {
+    id: "u-fix-editor", name: "FIX editor", email: "fix.editor@a.com", role: "editor" as const,
+  };
+  async function uploadTo(campaignId: string) {
+    const file = path.join(tmpRoot, `${Math.random().toString(36).slice(2)}.mp4`);
+    await fs.writeFile(file, "video-bytes", "utf8");
+    return uploadVideo({
+      editor, client: "", campaignId, editorTitle: "t", caption: "c",
+      localPath: file, originalName: "clip.mp4", mimeType: "video/mp4", sizeBytes: 11,
+    });
+  }
+
+  it("lists how many videos each campaign holds, whatever their status", async () => {
+    actingRole = "outreach_manager";
+    const { campaign } = await (await post("/campaigns", {
+      name: "FIX campaign", startDate: "2027-01-01", endDate: "2027-03-31",
+    })).json();
+    await uploadTo(campaign.id);
+    const listed = (await (await get("/campaigns")).json()).campaigns as Array<{ id: string; videoCount: number; progress: { published: number } }>;
+    // Nothing published, so judging by progress alone said it could be deleted.
+    expect(listed.find(c => c.id === campaign.id)).toMatchObject({ videoCount: 1, progress: { published: 0 } });
+    const del = await fetch(`${base}/campaigns/${campaign.id}`, { method: "DELETE" });
+    expect(del.status).toBe(409);
+    expect((await del.json()).message).toMatch(/Set its status to Completed/);
+  });
+
+  it("refuses a campaign date that does not exist", async () => {
+    actingRole = "outreach_manager";
+    const res = await post("/campaigns", { name: "FIX bad date", startDate: "2026-02-31", endDate: "2026-03-05" });
+    expect(res.status).toBe(400);
+    expect((await res.json()).message).toBe("A valid start date is required.");
+  });
+
+  it("carries a rename onto the campaign's videos", async () => {
+    actingRole = "outreach_manager";
+    const { campaign } = await (await post("/campaigns", {
+      name: "FIX campaign", startDate: "2027-01-01", endDate: "2027-03-31",
+    })).json();
+    const video = await uploadTo(campaign.id);
+    expect((await patch(`/campaigns/${campaign.id}`, { name: "FIX campaign renamed" })).status).toBe(200);
+    expect((await listVideos()).find(v => v.id === video.id)?.client).toBe("FIX campaign renamed");
   });
 });
 

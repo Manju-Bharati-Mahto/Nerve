@@ -39,9 +39,16 @@ export class CampaignExistsError extends Error {
     this.name = "CampaignExistsError";
   }
 }
+/*
+ * The message used to say "Move or remove them first", but nothing in the app
+ * moves or removes a video — so a campaign that had received a single upload
+ * sent people looking for a button that does not exist. What they can do is
+ * close it, and the message says so.
+ */
 export class CampaignInUseError extends Error {
   constructor(name: string, count: number) {
-    super(`"${name}" still has ${count} video${count === 1 ? "" : "s"}. Move or remove them first.`);
+    super(`"${name}" holds ${count} video${count === 1 ? "" : "s"}, and a campaign that holds videos `
+      + "cannot be deleted. Set its status to Completed to close it instead.");
     this.name = "CampaignInUseError";
   }
 }
@@ -84,10 +91,24 @@ export interface CampaignInput {
   notes?: string;
 }
 
+/**
+ * Whether `value` is a YYYY-MM-DD date that exists on the calendar.
+ *
+ * The shape alone let "2026-02-31" through, and campaigns live as JSON in
+ * Drive, so no database column refuses it either: it was saved, shown, and
+ * compared as a string against real dates for status and progress. A date
+ * that does not exist does not survive a round trip through Date.
+ */
+export function isCalendarDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
 function validate(input: CampaignInput): void {
   if (!input.name.trim()) throw new Error("A campaign name is required.");
   for (const [label, value] of [["start", input.startDate], ["end", input.endDate]] as const) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error(`A valid ${label} date is required.`);
+    if (typeof value !== "string" || !isCalendarDate(value)) throw new Error(`A valid ${label} date is required.`);
   }
   if (input.endDate < input.startDate) throw new Error("The end date cannot be before the start date.");
   if (input.status && !CAMPAIGN_STATUSES.includes(input.status)) {
@@ -131,6 +152,10 @@ onDriveReset(resetCampaignFolderCache);
 /**
  * §9 — `Social Media Campaigns/<name>/{Videos, Captions, Published}`, created
  * where missing and returned as three ids. Safe to call repeatedly.
+ *
+ * Keyed on the folder NAME, so two callers asking for one name get one tree.
+ * Whether that tree is free for a particular campaign is foldersOwnedBy's
+ * question, not this one's.
  */
 async function createCampaignFolders(
   name: string,
@@ -154,6 +179,38 @@ async function createCampaignFolders(
   });
 }
 
+/** How many "<name> (n)" folder names to try before giving up. */
+const MAX_FOLDER_SUFFIX = 50;
+
+/**
+ * The §9 tree for campaign `campaignId`, never one another campaign already
+ * holds.
+ *
+ * A Drive folder is found by its name, and a rename leaves the renamed
+ * campaign's folder where it was (still under the old name — the Drive client
+ * has no rename). So a new campaign given that old name used to resolve to the
+ * same folder: two campaigns' videos mixed together, numbered as one. When the
+ * plain name's tree belongs to another campaign record, this files the new one
+ * under "<name> (2)", "<name> (3)"… instead.
+ *
+ * Folders that no campaign record holds are free to take: they are the work a
+ * typed-in campaign name collected before campaigns were records, and a
+ * campaign created for that name is meant to pick it up.
+ */
+async function foldersOwnedBy(
+  campaignId: string | null, name: string,
+): Promise<NonNullable<CampaignRecord["driveFolders"]>> {
+  const doc = await readCampaigns();
+  const taken = new Set(doc.campaigns
+    .filter(c => c.id !== campaignId && c.driveFolders?.videos)
+    .map(c => c.driveFolders!.videos));
+  for (let n = 1; n <= MAX_FOLDER_SUFFIX; n += 1) {
+    const tree = await createCampaignFolders(n === 1 ? name : `${name.trim()} (${n})`);
+    if (!taken.has(tree.videos)) return tree;
+  }
+  throw new Error(`Google Drive already holds too many folders named "${name.trim()}".`);
+}
+
 export async function createCampaign(actor: VideoUser, input: CampaignInput): Promise<CampaignRecord> {
   validate(input);
   const existing = await findCampaignByName(input.name);
@@ -161,7 +218,7 @@ export async function createCampaign(actor: VideoUser, input: CampaignInput): Pr
 
   let driveFolders: CampaignRecord["driveFolders"] = null;
   try {
-    driveFolders = await createCampaignFolders(input.name);
+    driveFolders = await foldersOwnedBy(null, input.name);
   } catch {
     // Recorded as "from before" and served by the original layout until an
     // upload or a later edit creates the tree.
@@ -284,9 +341,12 @@ export async function deleteCampaign(actor: VideoUser, id: string, videoCount: n
  * the wrong place.
  */
 export async function assetFoldersFor(
-  campaign: Pick<CampaignRecord, "name" | "driveFolders">,
+  campaign: Pick<CampaignRecord, "name" | "driveFolders"> & { id?: string },
 ): Promise<{ videos: string; captions: string; published: string }> {
   if (campaign.driveFolders?.published) return campaign.driveFolders;
+  // A record whose folders were never made must not borrow another
+  // campaign's tree just because the names match.
+  if (campaign.id) return foldersOwnedBy(campaign.id, campaign.name);
   return createCampaignFolders(campaign.name);
 }
 

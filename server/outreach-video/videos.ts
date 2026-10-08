@@ -82,11 +82,24 @@ export const PUBLISHABLE_STATUSES: VideoStatus[] = ["approved", "scheduled"];
  * fails to upload simply leaves a gap, which the PRD tolerates — a clash, which
  * it explicitly forbids, cannot happen.
  */
-async function reserveSequence(client: string): Promise<number> {
-  const key = client.trim().toLowerCase();
+async function reserveSequence(client: string, campaignId: string | null): Promise<number> {
+  /* A campaign record is counted by its id. Counting by the name text gave a
+     renamed campaign a second "Video 1" under its new name, and handed a NEW
+     campaign that took the old name the renamed one's numbering. Only an
+     upload with no campaign record — typed-in text, as before campaigns —
+     is still counted by name. The prefix keeps the two kinds of key apart. */
+  const key = campaignId ? `campaign:${campaignId}` : client.trim().toLowerCase();
   return mutateWorkflow<number>(doc => {
     const sequences = doc.sequences ?? (doc.sequences = {});
-    const next = (sequences[key] ?? 0) + 1;
+    /* A campaign's first id-keyed reservation picks up after the highest
+       number its videos already carry, so the switch from name keys neither
+       repeats a number nor restarts at 1. Reservations still in flight under
+       a name key are not lost by this: they live only in memory, and the
+       restart that brings this code in forgets them. */
+    const start = sequences[key] ?? (campaignId
+      ? Math.max(0, ...doc.videos.filter(v => v.campaignId === campaignId).map(v => v.sequence ?? 0))
+      : 0);
+    const next = start + 1;
     sequences[key] = next;
     return { doc, result: next };
   });
@@ -282,7 +295,7 @@ export async function prepareUpload(details: UploadDetails): Promise<PreparedUpl
     campaignRecord ?? { name: campaign, driveFolders: null },
   );
 
-  const sequence = await reserveSequence(campaign);
+  const sequence = await reserveSequence(campaign, campaignRecord?.id ?? null);
   const title = campaignAssetName(campaign, sequence);
   const extension = details.originalName.includes(".")
     ? details.originalName.slice(details.originalName.lastIndexOf("."))
@@ -329,7 +342,10 @@ export async function recordUpload(prepared: PreparedUpload, uploaded: DriveFile
     captionFileId: null,
     sizeBytes: input.sizeBytes,
     mimeType: prepared.mimeType,
-    platform: input.platform?.trim() || null,
+    // Lower-cased so "Instagram" and "instagram" are one platform: the upload
+    // dialog sends lower case, other callers did not, and the All Videos
+    // filter listed both and matched each to half the videos.
+    platform: input.platform?.trim().toLowerCase() || null,
     notes: input.notes?.trim() || null,
     tags: input.tags?.filter(Boolean) ?? [],
     createdAt: now,
@@ -494,6 +510,32 @@ async function updateVideo<R>(
 }
 
 /**
+ * Makes every video filed under `campaignId` carry the campaign's current
+ * name, and returns how many changed.
+ *
+ * `client` is what the dashboard's "Videos by client", the Campaign filter and
+ * the editor log group by. A rename used to leave it on the old text, so the
+ * renamed campaign's videos were reported under a name it no longer had — and
+ * under a NEW campaign's name once someone reused it. Only videos tied to the
+ * campaign by id move; a typed-in name with no record behind it is left alone.
+ *
+ * Reads first and writes only when something differs, so calling this after
+ * every campaign edit costs nothing when there was no rename, and a rename
+ * whose follow-up failed is put right by the next edit.
+ */
+export async function renameCampaignOnVideos(campaignId: string, name: string): Promise<number> {
+  const wanted = name.trim();
+  const stale = (doc: WorkflowStoreDoc) =>
+    doc.videos.filter(v => v.campaignId === campaignId && v.client !== wanted);
+  if (stale(await readWorkflow()).length === 0) return 0;
+  return mutateWorkflow<number>(doc => {
+    const videos = stale(doc);
+    for (const v of videos) v.client = wanted;
+    return { doc, result: videos.length };
+  });
+}
+
+/**
  * §17 — the caption can be rewritten while the video is still a Draft. Once
  * submitted it is what the Publisher is about to post, so it is frozen.
  */
@@ -539,7 +581,9 @@ export async function submitVideo(id: string, actor: Pick<VideoUser, "id" | "nam
 
   // §14 — the reviewers are the people who can approve: managers and admins.
   const reviewers = (await listActiveUsers()).filter(u => u.role === "manager" || u.role === "admin");
-  await notify(reviewers.map(p => p.id), "video_submitted", { type: "video", id }, `“${video.title}”`);
+  // Not video_submitted: that one tells publishers the work is ready to post,
+  // and a submission has not been approved by anyone yet.
+  await notify(reviewers.map(p => p.id), "video_review_requested", { type: "video", id }, `“${video.title}”`);
   return mirrorSafely(video);
 }
 

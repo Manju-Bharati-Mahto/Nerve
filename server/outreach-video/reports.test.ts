@@ -356,6 +356,23 @@ describe("§18 — search and filtering", () => {
   });
 });
 
+describe("§18 — the platform filter", () => {
+  it("offers one entry per platform and matches it whatever case a record was stored in", async () => {
+    const a = await upload(editorA, "Client A");
+    const b = await upload(editorA, "Client A");
+    // Records from before uploads lower-cased the platform.
+    await mutateWorkflow<void>(doc => {
+      doc.videos.find(v => v.id === a.id)!.platform = "instagram";
+      doc.videos.find(v => v.id === b.id)!.platform = "Instagram";
+      return { doc, result: undefined };
+    });
+    expect((await filterOptions()).platforms).toEqual(["instagram"]);
+    for (const asked of ["instagram", "Instagram"]) {
+      expect((await search({ platform: asked })).videos.map(v => v.id).sort(), asked).toEqual([a.id, b.id].sort());
+    }
+  });
+});
+
 describe("§13 — page and content type", () => {
   async function uploadTo(pages: string[], names: string[]) {
     const p = path.join(scratch, `${Math.random().toString(36).slice(2)}.mp4`);
