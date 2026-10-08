@@ -409,8 +409,12 @@ const App = () => (
                   <VideoPublished />
                 </RoleGuard>
               } />
+              {/* Every workflow role's sidebar lists this page and the API
+                  serves each its own projection of it, so the guard admits
+                  the publisher too — leaving them out bounced the
+                  publisher's "Social Media Pages" link back to the queue. */}
               <Route path="/outreach/video/social-pages" element={
-                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager', 'outreach_editor']} team="outreach"
+                <RoleGuard allowed={['super_admin', 'admin', 'outreach_manager', 'outreach_editor', 'outreach_publisher']} team="outreach"
                   anyCapability={['outreach:social_pages']}>
                   <VideoSocialPages />
                 </RoleGuard>

@@ -22,8 +22,8 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
-  ALL_VIDEO_ROLES, MANAGER_GRANTABLE_ROLES, NERVE_ROLE_FOR_VIDEO_ROLE,
-  grantableVideoRoles, mayAssignVideoRole,
+  ALL_VIDEO_ROLES, MANAGER_GRANTABLE_ROLES, NERVE_ROLE_FOR_VIDEO_ROLE, PUBLISH_ROLES, UPLOAD_ROLES,
+  grantableVideoRoles, mayAssignVideoRole, mayPublishVideos, mayUploadVideos, videoRoleOf,
 } from './workflow-roles'
 
 describe("what an outreach manager may hand out", () => {
@@ -85,6 +85,67 @@ describe("the workflow role a new account will actually sign in as", () => {
     const src = readFileSync('server/outreach-video/users.ts', 'utf8')
     for (const videoRole of ALL_VIDEO_ROLES) {
       expect(src).toContain(`"${NERVE_ROLE_FOR_VIDEO_ROLE[videoRole]}"`)
+    }
+  })
+})
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   The buttons a screen offers, against the roles the API accepts.
+
+   The publishing queue offered a Manager Schedule and Mark as published, and
+   My Videos offered a Manager the upload form, and every one of them ended in
+   "Your role cannot perform that action." The screens now hide what the
+   viewer cannot do — which is only right while their lists are the API's.
+   So these read requireRole straight out of routes.ts for each endpoint.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const ROUTES = readFileSync('server/outreach-video/routes.ts', 'utf8')
+
+/** The roles requireRole admits on `METHOD path`, read from the handler. */
+function rolesFor(method: string, path: string): string[] {
+  const at = ROUTES.indexOf(`app.${method}(\`\${P}${path}\``)
+  expect(at, `no ${method.toUpperCase()} ${path} in routes.ts`).toBeGreaterThan(-1)
+  const m = /requireRole\(res, user, \[([^\]]*)\]\)/.exec(ROUTES.slice(at, at + 800))
+  expect(m, `no requireRole in ${method.toUpperCase()} ${path}`).toBeTruthy()
+  return [...m![1].matchAll(/"([a-z]+)"/g)].map(x => x[1]).sort()
+}
+
+describe('who the UI lets act on a video', () => {
+  it('offers upload, caption, submit and revise to exactly the roles the API accepts', () => {
+    for (const [method, path] of [
+      ['post', '/videos'], ['post', '/videos/upload-session'], ['patch', '/videos/:id/caption'],
+      ['post', '/videos/:id/submit'], ['post', '/videos/:id/revise'],
+    ]) {
+      expect(rolesFor(method, path), `${method} ${path}`).toEqual([...UPLOAD_ROLES].sort())
+    }
+  })
+
+  it('offers schedule, publish and live links to exactly the roles the API accepts', () => {
+    for (const [method, path] of [
+      ['post', '/videos/:id/schedule'], ['post', '/videos/:id/publish'], ['patch', '/videos/:id/live-urls'],
+    ]) {
+      expect(rolesFor(method, path), `${method} ${path}`).toEqual([...PUBLISH_ROLES].sort())
+    }
+  })
+
+  it('reads every Nerve role as the server does', () => {
+    for (const videoRole of ALL_VIDEO_ROLES) {
+      expect(videoRoleOf(NERVE_ROLE_FOR_VIDEO_ROLE[videoRole])).toBe(videoRole)
+    }
+    expect(videoRoleOf('super_admin')).toBe('admin')
+    expect(videoRoleOf('user')).toBeNull()
+    expect(videoRoleOf(null)).toBeNull()
+  })
+
+  it('keeps a Manager off uploading and publishing, and an Admin on both', () => {
+    expect(mayUploadVideos('outreach_manager')).toBe(false)
+    expect(mayPublishVideos('outreach_manager')).toBe(false)
+    expect(mayUploadVideos('outreach_editor')).toBe(true)
+    expect(mayPublishVideos('outreach_editor')).toBe(false)
+    expect(mayPublishVideos('outreach_publisher')).toBe(true)
+    expect(mayUploadVideos('outreach_publisher')).toBe(false)
+    for (const r of ['admin', 'super_admin'] as const) {
+      expect(mayUploadVideos(r)).toBe(true)
+      expect(mayPublishVideos(r)).toBe(true)
     }
   })
 })

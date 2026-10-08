@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ListChecks, CheckCircle2, AlertCircle, Circle } from 'lucide-react'
+import { ListChecks, CheckCircle2, Circle } from 'lucide-react'
 import { toast } from 'sonner'
 import {
-  listEvents, completeEvent, localDay,
-  EVENT_STATUS_STYLE, type EventRecord,
+  listEvents, completeEvent, localDay, loadFailureOf,
+  EVENT_STATUS_STYLE, type EventRecord, type LoadFailure,
 } from '@/lib/outreach-video-data'
+import DriveProblemNotice from './DriveProblemNotice'
 
 /**
  * §8.1 — the editor's To-Do List: every event the Manager has assigned to them,
@@ -18,7 +19,7 @@ import {
 export default function VideoTodo() {
   const [events, setEvents] = useState<EventRecord[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LoadFailure | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
@@ -27,7 +28,7 @@ export default function VideoTodo() {
       setEvents(events)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load your To-Do List.')
+      setError(loadFailureOf(err, 'Could not load your To-Do List.'))
     } finally {
       setLoading(false)
     }
@@ -73,13 +74,11 @@ export default function VideoTodo() {
           accent={open.some(e => e.date <= today)} />
       </div>
 
-      {error && (
-        <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> <span>{error}</span>
-        </div>
-      )}
+      {error && <DriveProblemNotice message={error.message} code={error.code} />}
 
-      {loading ? (
+      {/* "Nothing assigned to you yet" over a list that was never read would
+          tell an editor they have no work when nobody knows. */}
+      {error ? null : loading ? (
         <div className="hub-card text-center py-12 text-sm text-muted-foreground">Loading…</div>
       ) : events.length === 0 ? (
         <div className="hub-card text-center py-12">

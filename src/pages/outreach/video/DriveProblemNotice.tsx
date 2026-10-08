@@ -33,10 +33,19 @@ export default function DriveProblemNotice({ message, code }: { message: string;
             <HardDrive className="w-3.5 h-3.5" /> Open Video Workflow → Google Drive
           </Link>
         )}
-        {code && !canReconnect && (
-          <p className="text-xs">Ask an outreach Admin or Manager to reconnect Google Drive.</p>
-        )}
+        {code && !canReconnect && <p className="text-xs">{whoToAsk(code)}</p>}
       </div>
     </div>
   )
+}
+
+/**
+ * What an editor or publisher should ask for. "Reconnect" is wrong for a
+ * Drive nobody has connected yet, and sends the Admin looking for a broken
+ * connection that does not exist.
+ */
+function whoToAsk(code: DriveErrorCode): string {
+  if (code === 'drive_not_connected') return 'Ask an outreach Admin or Manager to connect Google Drive.'
+  if (code === 'drive_unavailable') return 'Try again in a moment. If it keeps happening, ask an outreach Admin or Manager to reconnect Google Drive.'
+  return 'Ask an outreach Admin or Manager to reconnect Google Drive.'
 }

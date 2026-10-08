@@ -16,6 +16,7 @@ import { DirectUploadBlockedError, uploadToDrive } from '@/lib/drive-upload'
 import { HttpError } from '@/lib/http'
 import { useAuth } from '@/hooks/useAuth'
 import DriveProblemNotice from './DriveProblemNotice'
+import { mayUploadVideos } from './workflow-roles'
 
 /**
  * §8 — the editor's own work. KPI cards for Total / Draft / Submitted /
@@ -39,6 +40,13 @@ const EDITOR_GROUPS: Record<Exclude<EditorFilter, 'all'>, VideoStatus[]> = {
 }
 
 export default function VideoMyVideos() {
+  /* A Manager reaches this page as the department's list, and a tab grant
+     can open it to anyone — but only Editors and Admins may upload, submit
+     or start a revision (the API refuses everyone else). Offering those to
+     a Manager meant filling in the whole upload form to be told "Your role
+     cannot perform that action." */
+  const { role } = useAuth()
+  const canUpload = mayUploadVideos(role)
   const [videos, setVideos] = useState<VideoRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<{ message: string; code: DriveErrorCode | null } | null>(null)
@@ -120,16 +128,21 @@ export default function VideoMyVideos() {
             </p>
           </div>
         </div>
-        <UploadButton disabled={driveReady === false || uploading} onUploaded={refresh}
-          directUpload={directUpload} uploading={uploading} setUploading={setUploading} />
+        {canUpload && (
+          <UploadButton disabled={driveReady === false || uploading} onUploaded={refresh}
+            directUpload={directUpload} uploading={uploading} setUploading={setUploading} />
+        )}
       </div>
 
-      {driveReady === false && (
+      {/* When the list itself failed for a Drive reason, DriveProblemNotice
+          below already says what is wrong and who fixes it; a second banner
+          with different advice only contradicts it. */}
+      {canUpload && driveReady === false && !error?.code && (
         <div className="hub-card bg-amber-50 border-amber-200 flex items-start gap-2 text-sm text-amber-900">
           <CloudOff className="w-4 h-4 mt-0.5 shrink-0" />
           <span>
-            Google Drive isn't connected yet, so uploads are unavailable. An administrator
-            needs to finish the Drive setup before this workflow can be used.
+            Google Drive isn't connected yet, so uploads are unavailable. An outreach Admin or
+            Manager can connect it under Video Workflow → Google Drive.
           </span>
         </div>
       )}
@@ -168,7 +181,9 @@ export default function VideoMyVideos() {
               <tr><td colSpan={6} className="px-3 py-12 text-center text-sm text-muted-foreground">
                 {error && videos.length === 0
                   ? 'The videos could not be loaded — see the message above.'
-                  : videos.length === 0 ? 'No videos yet — upload your first cut.' : 'No videos with that status.'}
+                  : videos.length === 0
+                    ? (canUpload ? 'No videos yet — upload your first cut.' : 'No videos yet.')
+                    : 'No videos with that status.'}
               </td></tr>
             ) : shown.map(v => (
               <tr key={v.id} className="border-b border-border last:border-0 hover:bg-accent/40">
@@ -190,13 +205,13 @@ export default function VideoMyVideos() {
                 </td>
                 <td className="px-3 py-2.5 text-right">
                   {/* §11 — the same act from either side of a rejection. */}
-                  {(v.status === 'uploaded' || v.status === 'revision') && (
+                  {canUpload && (v.status === 'uploaded' || v.status === 'revision') && (
                     <button onClick={() => handleSubmit(v)}
                       className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1">
                       <Send className="w-3 h-3" /> Submit
                     </button>
                   )}
-                  {v.status === 'rejected' && (
+                  {canUpload && v.status === 'rejected' && (
                     <button onClick={() => handleRevise(v)}
                       className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1">
                       <RotateCcw className="w-3 h-3" /> Start revision

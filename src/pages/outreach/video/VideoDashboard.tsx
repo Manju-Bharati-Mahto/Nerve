@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { BarChart3, AlertCircle, Film, Send, CheckCircle2, Clock, Calendar, UserX } from 'lucide-react'
-import { getKpis, formatHours, type WorkflowKpis, type CountRow } from '@/lib/outreach-video-data'
+import { BarChart3, Film, Send, CheckCircle2, Clock, Calendar, UserX } from 'lucide-react'
+import {
+  getKpis, formatHours, loadFailureOf, type WorkflowKpis, type CountRow, type LoadFailure,
+} from '@/lib/outreach-video-data'
+import DriveProblemNotice from './DriveProblemNotice'
 
 /**
  * §20 — the workflow KPI dashboard, for Admin and Manager only (the API
@@ -13,33 +16,40 @@ import { getKpis, formatHours, type WorkflowKpis, type CountRow } from '@/lib/ou
  */
 export default function VideoDashboard() {
   const [kpis, setKpis] = useState<WorkflowKpis | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LoadFailure | null>(null)
 
   useEffect(() => {
-    getKpis().then(setKpis).catch(err =>
-      setError(err instanceof Error ? err.message : 'Could not load the dashboard.'))
+    getKpis().then(setKpis).catch(err => setError(loadFailureOf(err, 'Could not load the dashboard.')))
   }, [])
 
-  if (error) {
+  /* The heading stays up whatever happened, so a failed load still reads as
+     this page — and a Drive problem comes with the way to fix it. */
+  const header = (
+    <div className="flex items-center gap-3">
+      <div className="w-10 h-10 rounded-xl bg-orange-100 flex items-center justify-center">
+        <BarChart3 className="w-5 h-5 text-orange-600" />
+      </div>
+      <div>
+        <h1 className="text-2xl font-serif text-foreground">Workflow Dashboard</h1>
+        <p className="text-sm text-muted-foreground">Everything moving through video, at a glance.</p>
+      </div>
+    </div>
+  )
+
+  if (error || !kpis) {
     return (
-      <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
-        <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> <span>{error}</span>
+      <div className="animate-fade-in space-y-6">
+        {header}
+        {error
+          ? <DriveProblemNotice message={error.message} code={error.code} />
+          : <div className="hub-card text-center py-12 text-sm text-muted-foreground">Loading…</div>}
       </div>
     )
   }
-  if (!kpis) return <div className="hub-card text-center py-12 text-sm text-muted-foreground">Loading…</div>
 
   return (
     <div className="animate-fade-in space-y-6">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-orange-100 flex items-center justify-center">
-          <BarChart3 className="w-5 h-5 text-orange-600" />
-        </div>
-        <div>
-          <h1 className="text-2xl font-serif text-foreground">Workflow Dashboard</h1>
-          <p className="text-sm text-muted-foreground">Everything moving through video, at a glance.</p>
-        </div>
-      </div>
+      {header}
 
       {/* §5 Manager / §12 Admin — the campaign-level view first: it is what
           the dashboard is for. */}
