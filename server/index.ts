@@ -65,6 +65,7 @@ import {
   listCampaigns as listOutreachCampaigns,
   createCampaign as createOutreachCampaign,
   OutreachDuplicateError,
+  OutreachValidationError,
   updateCampaign as updateOutreachCampaign,
   deleteCampaign as deleteOutreachCampaign,
   listPosts as listOutreachPosts,
@@ -2820,11 +2821,26 @@ function payloadProblem(error: z.ZodError, what: string): string {
   return field ? `Invalid ${what}: ${field} — ${issue.message}.` : `Invalid ${what}: ${issue.message}.`;
 }
 
-/** Answers a real duplicate (same campaign name, same page or creator) as 409. */
-function duplicateAnswered(res: express.Response, err: unknown): boolean {
+/**
+ * Answers a real duplicate (same campaign name, same page or creator) as 409,
+ * and a reference to a campaign, page or creator that doesn't exist as 400.
+ */
+function outreachErrorAnswered(res: express.Response, err: unknown): boolean {
   if (err instanceof OutreachDuplicateError) { sendError(res, 409, err.message); return true; }
+  if (err instanceof OutreachValidationError) { sendError(res, 400, err.message); return true; }
   return false;
 }
+
+/* A whole number the INTEGER column it lands in can hold. Without an upper
+   bound, 3000000000 passed validation and overflowed the column — a 500
+   "Internal server error." that named no field. */
+const PG_INT_MAX = 2147483647;
+const wholeCount = (max = PG_INT_MAX) => z.number()
+  .int("must be a whole number")
+  .min(0, "can't be negative")
+  .max(max, `must be at most ${max}`);
+// A campaign budget is a count of posts/stories/reels; anything past this is a typo.
+const OUTREACH_BUDGET_MAX = 100000;
 
 const outreachPageSchema = z.object({
   handle: z.string().min(1),
@@ -2838,15 +2854,18 @@ const outreachPageSchema = z.object({
   // PRD 6.5 — page content preference/category. Kept permissive (string[]) so the
   // configurable list can grow UI-side without a server change.
   content_preferences: z.array(z.string()).optional(),
-  followers: z.number().int().nonnegative().optional(),
-  inventory_posts: z.number().int().nonnegative(),
-  inventory_stories: z.number().int().nonnegative(),
+  followers: wholeCount().optional(),
+  inventory_posts: wholeCount(),
+  inventory_stories: wholeCount(),
   notes: z.string().optional(),
 });
 
-// Creators share the page payload shape today; defined separately so they can
-// diverge later without rippling through the page schema.
-const outreachCreatorSchema = outreachPageSchema;
+/* Creators used to BE the page schema, which accepts `platform` and
+   `content_preferences` — columns outreach_creators doesn't have — so a PATCH
+   carrying either passed validation and crashed in SQL. A creator is an
+   Instagram account with no content preference; strict() turns those keys
+   into a 400 that names them instead of quietly dropping them. */
+const outreachCreatorSchema = outreachPageSchema.omit({ platform: true, content_preferences: true }).strict();
 
 const outreachCampaignSchema = z.object({
   name: z.string().min(1),
@@ -2856,9 +2875,9 @@ const outreachCampaignSchema = z.object({
   state: z.string().optional(),
   goal: z.string().optional(),
   status: z.enum(OUTREACH_CAMPAIGN_STATUSES),
-  budget_posts: z.number().int().nonnegative(),
-  budget_stories: z.number().int().nonnegative(),
-  budget_reels: z.number().int().nonnegative(),
+  budget_posts: wholeCount(OUTREACH_BUDGET_MAX),
+  budget_stories: wholeCount(OUTREACH_BUDGET_MAX),
+  budget_reels: wholeCount(OUTREACH_BUDGET_MAX),
   approvers: z.array(z.string()),
   creative_variants: z.array(z.string()),
   assigned_page_ids: z.array(z.string()),
@@ -2880,7 +2899,7 @@ app.post("/api/outreach/pages", asyncHandler(async (req, res) => {
     const page = await createOutreachPage(parsed.data);
     res.status(201).json({ page });
   } catch (err) {
-    if (duplicateAnswered(res, err)) return;
+    if (outreachErrorAnswered(res, err)) return;
     throw err;
   }
 }));
@@ -2888,7 +2907,7 @@ app.post("/api/outreach/pages", asyncHandler(async (req, res) => {
 app.patch("/api/outreach/pages/:id", asyncHandler(async (req, res) => {
   if (!requireOutreach(res)) return;
   const parsed = outreachPageSchema.partial().safeParse(req.body);
-  if (!parsed.success) return sendError(res, 400, "Invalid patch payload.");
+  if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "page"));
   const page = await updateOutreachPage(getSingleParam(req.params.id), parsed.data);
   if (!page) return sendError(res, 404, "Page not found.");
   res.json({ page });
@@ -2916,7 +2935,7 @@ app.post("/api/outreach/creators", asyncHandler(async (req, res) => {
     const creator = await createOutreachCreator(parsed.data);
     res.status(201).json({ creator });
   } catch (err) {
-    if (duplicateAnswered(res, err)) return;
+    if (outreachErrorAnswered(res, err)) return;
     throw err;
   }
 }));
@@ -2924,7 +2943,7 @@ app.post("/api/outreach/creators", asyncHandler(async (req, res) => {
 app.patch("/api/outreach/creators/:id", asyncHandler(async (req, res) => {
   if (!requireOutreach(res)) return;
   const parsed = outreachCreatorSchema.partial().safeParse(req.body);
-  if (!parsed.success) return sendError(res, 400, "Invalid patch payload.");
+  if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "creator"));
   const creator = await updateOutreachCreator(getSingleParam(req.params.id), parsed.data);
   if (!creator) return sendError(res, 404, "Creator not found.");
   res.json({ creator });
@@ -2951,7 +2970,7 @@ app.post("/api/outreach/campaigns", asyncHandler(async (req, res) => {
     const campaign = await createOutreachCampaign(parsed.data);
     res.status(201).json({ campaign });
   } catch (err) {
-    if (duplicateAnswered(res, err)) return;
+    if (outreachErrorAnswered(res, err)) return;
     throw err;
   }
 }));
@@ -2959,10 +2978,15 @@ app.post("/api/outreach/campaigns", asyncHandler(async (req, res) => {
 app.patch("/api/outreach/campaigns/:id", asyncHandler(async (req, res) => {
   if (!requireOutreach(res)) return;
   const parsed = outreachCampaignSchema.partial().safeParse(req.body);
-  if (!parsed.success) return sendError(res, 400, "Invalid patch payload.");
-  const campaign = await updateOutreachCampaign(getSingleParam(req.params.id), parsed.data);
-  if (!campaign) return sendError(res, 404, "Campaign not found.");
-  res.json({ campaign });
+  if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "campaign"));
+  try {
+    const campaign = await updateOutreachCampaign(getSingleParam(req.params.id), parsed.data);
+    if (!campaign) return sendError(res, 404, "Campaign not found.");
+    res.json({ campaign });
+  } catch (err) {
+    if (outreachErrorAnswered(res, err)) return;
+    throw err;
+  }
 }));
 
 app.delete("/api/outreach/campaigns/:id", asyncHandler(async (req, res) => {
@@ -2998,9 +3022,14 @@ const outreachPlannedPostSchema = z.object({
 app.post("/api/outreach/posts", asyncHandler(async (req, res) => {
   if (!requireOutreach(res)) return;
   const parsed = z.object({ posts: z.array(outreachPlannedPostSchema).min(1) }).safeParse(req.body);
-  if (!parsed.success) return sendError(res, 400, "Invalid posts payload.");
-  const created = await createOutreachPostsBulk(parsed.data.posts);
-  res.status(201).json({ posts: created });
+  if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "posts"));
+  try {
+    const created = await createOutreachPostsBulk(parsed.data.posts);
+    res.status(201).json({ posts: created });
+  } catch (err) {
+    if (outreachErrorAnswered(res, err)) return;
+    throw err;
+  }
 }));
 
 app.delete("/api/outreach/posts/:id", asyncHandler(async (req, res) => {
@@ -3039,9 +3068,11 @@ app.post("/api/outreach/posts/fetch-by-urls", asyncHandler(async (req, res) => {
     res.json(result);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Failed to fetch posts.";
-    // Treat validation errors (campaign / page / creator / membership) as 400;
-    // Apify or network errors bubble up as 502.
-    const status = /not found|not assigned|required|exactly one/i.test(msg) ? 400 : 502;
+    // Treat validation errors (campaign / page / creator / membership / variant)
+    // as 400; Apify or network errors bubble up as 502. "is not in this
+    // campaign" and "requires a campaign" (the creative-variant checks) used
+    // to miss this list and read as an upstream failure.
+    const status = /not found|not assigned|required|requires a campaign|not in this campaign|exactly one/i.test(msg) ? 400 : 502;
     return sendError(res, status, msg);
   }
 }));
