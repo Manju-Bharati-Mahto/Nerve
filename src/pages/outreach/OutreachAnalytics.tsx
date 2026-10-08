@@ -10,7 +10,7 @@ import {
 } from 'recharts'
 import {
   useOutreachData, pageMetrics, campaignMetrics, addPage, updatePage,
-  parseInstagramHandle, profileUrlForPage,
+  parseInstagramHandle, profileUrlForPage, outreachStates, sameState, toCsv, INDIAN_STATES,
   PAGE_TYPES, FOLLOWER_TIERS, PAGE_CONTENT_TYPES, PAGE_CONTENT_PREFERENCES, PLATFORMS,
   type PageType, type FollowerTier, type PageContentType, type OutreachPage, type Post, type Platform,
 } from '@/lib/outreach-data'
@@ -95,7 +95,7 @@ function PagesPerformance() {
   const [to, setTo] = useState('')
   const [creating, setCreating] = useState(false)
 
-  const states = useMemo(() => Array.from(new Set(pages.map(p => p.state).filter(Boolean))).sort(), [pages])
+  const states = useMemo(() => outreachStates(pages, []), [pages])
 
   const pagesByCampaign = useMemo(() => {
     if (!campaignFilter) return null
@@ -117,7 +117,7 @@ function PagesPerformance() {
       .filter(({ page, m }) => {
         if (statusFilter !== 'all' && m.status !== statusFilter) return false
         if (pagesByCampaign && !pagesByCampaign.has(page.id)) return false
-        if (stateFilter && page.state !== stateFilter) return false
+        if (stateFilter && !sameState(page.state, stateFilter)) return false
         return true
       })
       .sort((a, b) => b.range.reach - a.range.reach)
@@ -128,8 +128,8 @@ function PagesPerformance() {
     const lines = rows.map(({ page, m, range }) => [
       page.handle, page.geography, page.state, page.type,
       range.posts, range.reach, range.likes, range.comments, range.engRate.toFixed(1), m.status,
-    ].join(','))
-    const csv = [header.join(','), ...lines].join('\n')
+    ])
+    const csv = toCsv([header, ...lines])
     download(csv, `outreach-pages-${new Date().toISOString().slice(0, 10)}.csv`)
   }
 
@@ -676,7 +676,12 @@ export function AddPageModal({ onClose, defaultPlatform = 'instagram' }: { onClo
             </div>
             <div>
               <label className="hub-label">State *</label>
-              <input className="hub-input" value={form.state} onChange={e => setForm(f => ({ ...f, state: e.target.value }))} placeholder="Gujarat" />
+              {/* Suggest the canonical names so new pages match campaign states;
+                  free text still works for a state not on the list. */}
+              <input className="hub-input" list="outreach-add-page-states" value={form.state} onChange={e => setForm(f => ({ ...f, state: e.target.value }))} placeholder="Gujarat" />
+              <datalist id="outreach-add-page-states">
+                {INDIAN_STATES.map(s => <option key={s} value={s} />)}
+              </datalist>
             </div>
           </div>
           <div>

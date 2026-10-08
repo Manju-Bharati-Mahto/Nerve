@@ -127,6 +127,9 @@ interface OutreachDB {
   creators: OutreachCreator[]
   campaigns: Campaign[]
   posts: Post[]
+  /** Alert ids this browser has dismissed. Lives in the store so dismissing
+   *  re-renders every alert consumer (Dashboard, Alerts page, sidebar badge). */
+  dismissedAlertIds: Set<string>
   loaded: boolean
   loading: boolean
   error: string | null
@@ -140,7 +143,7 @@ function toPage(p: ServerOutreachPage): OutreachPage {
     handle: p.handle,
     platform: p.platform === 'facebook' ? 'facebook' : 'instagram',
     geography: p.geography,
-    state: p.state,
+    state: normaliseState(p.state),
     type: p.type,
     followerTier: p.follower_tier,
     contentTypes: Array.isArray(p.content_types) ? p.content_types : [],
@@ -158,7 +161,7 @@ function fromPage(p: Omit<OutreachPage, 'id' | 'lastSyncedAt'> & Partial<Pick<Ou
     handle: p.handle,
     platform: p.platform,
     geography: p.geography,
-    state: p.state,
+    state: normaliseState(p.state),
     type: p.type,
     follower_tier: p.followerTier,
     content_types: p.contentTypes,
@@ -175,7 +178,7 @@ function toCreator(c: ServerOutreachCreator): OutreachCreator {
     id: c.id,
     handle: c.handle,
     geography: c.geography,
-    state: c.state,
+    state: normaliseState(c.state),
     type: c.type,
     followerTier: c.follower_tier,
     contentTypes: Array.isArray(c.content_types) ? c.content_types : [],
@@ -191,7 +194,7 @@ function fromCreator(c: Omit<OutreachCreator, 'id' | 'lastSyncedAt'> & Partial<P
   return {
     handle: c.handle,
     geography: c.geography,
-    state: c.state,
+    state: normaliseState(c.state),
     type: c.type,
     follower_tier: c.followerTier,
     content_types: c.contentTypes,
@@ -208,7 +211,7 @@ function toCampaign(c: ServerOutreachCampaign): Campaign {
     name: c.name,
     startDate: c.start_date,
     endDate: c.end_date,
-    state: c.state ?? '',
+    state: normaliseState(c.state),
     goal: c.goal,
     status: c.status,
     budgetPosts: c.budget_posts,
@@ -228,7 +231,7 @@ function fromCampaign(c: Omit<Campaign, 'id'> & Partial<Pick<Campaign, 'id'>>): 
     name: c.name,
     start_date: c.startDate,
     end_date: c.endDate,
-    state: c.state,
+    state: normaliseState(c.state),
     goal: c.goal,
     status: c.status,
     budget_posts: c.budgetPosts,
@@ -264,10 +267,49 @@ function toPost(p: ServerOutreachPost): Post {
   }
 }
 
+// ── Dismissed alerts (client-only, persisted per browser) ──────────────────
+// Alerts are derived (recomputed each render), so "dismiss" is a local
+// acknowledgement stored in localStorage keyed by the alert's stable id
+// (`${campaignId}:${subjectId}`). Adding the missing post still auto-clears the
+// alert regardless of dismissal, since it drops out of computeOutreachAlerts.
+const DISMISSED_ALERTS_KEY = 'outreach.dismissedAlerts'
+
+export function getDismissedAlertIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DISMISSED_ALERTS_KEY)
+    return new Set(raw ? (JSON.parse(raw) as string[]) : [])
+  } catch { return new Set() }
+}
+
+/**
+ * Marks an alert dismissed and returns the updated set (for React state).
+ *
+ * The set is also pushed into the store. It used to live only in the
+ * Dashboard's own state, so the Alerts page and the sidebar badge never heard
+ * about a dismissal and kept counting the alert.
+ */
+export function dismissAlert(id: string): Set<string> {
+  const ids = getDismissedAlertIds()
+  ids.add(id)
+  try { localStorage.setItem(DISMISSED_ALERTS_KEY, JSON.stringify([...ids])) } catch { /* storage unavailable */ }
+  setStore({ dismissedAlertIds: ids })
+  return ids
+}
+
 // ── In-memory store with subscribers ───────────────────────────────────────
 
-let store: OutreachDB = { pages: [], creators: [], campaigns: [], posts: [], loaded: false, loading: false, error: null }
+let store: OutreachDB = {
+  pages: [], creators: [], campaigns: [], posts: [], dismissedAlertIds: getDismissedAlertIds(),
+  loaded: false, loading: false, error: null,
+}
 const listeners = new Set<() => void>()
+
+// A dismissal in another tab only reaches this one through the storage event.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', e => {
+    if (e.key === DISMISSED_ALERTS_KEY) setStore({ dismissedAlertIds: getDismissedAlertIds() })
+  })
+}
 
 function setStore(patch: Partial<OutreachDB>) {
   store = { ...store, ...patch }
@@ -339,7 +381,7 @@ export async function updatePage(id: string, patch: Partial<Omit<OutreachPage, '
   const serverPatch: Partial<ServerOutreachPage> = {}
   if (patch.handle !== undefined) serverPatch.handle = patch.handle
   if (patch.geography !== undefined) serverPatch.geography = patch.geography
-  if (patch.state !== undefined) serverPatch.state = patch.state
+  if (patch.state !== undefined) serverPatch.state = normaliseState(patch.state)
   if (patch.type !== undefined) serverPatch.type = patch.type
   if (patch.followerTier !== undefined) serverPatch.follower_tier = patch.followerTier
   if (patch.contentTypes !== undefined) serverPatch.content_types = patch.contentTypes
@@ -382,7 +424,7 @@ export async function updateCampaign(id: string, patch: Partial<Campaign>) {
   if (patch.name !== undefined) serverPatch.name = patch.name
   if (patch.startDate !== undefined) serverPatch.start_date = patch.startDate
   if (patch.endDate !== undefined) serverPatch.end_date = patch.endDate
-  if (patch.state !== undefined) serverPatch.state = patch.state
+  if (patch.state !== undefined) serverPatch.state = normaliseState(patch.state)
   if (patch.goal !== undefined) serverPatch.goal = patch.goal
   if (patch.status !== undefined) serverPatch.status = patch.status
   if (patch.budgetPosts !== undefined) serverPatch.budget_posts = patch.budgetPosts
@@ -408,7 +450,7 @@ export async function updateCreator(id: string, patch: Partial<Omit<OutreachCrea
   const serverPatch: Partial<ServerOutreachCreator> = {}
   if (patch.handle !== undefined) serverPatch.handle = patch.handle
   if (patch.geography !== undefined) serverPatch.geography = patch.geography
-  if (patch.state !== undefined) serverPatch.state = patch.state
+  if (patch.state !== undefined) serverPatch.state = normaliseState(patch.state)
   if (patch.type !== undefined) serverPatch.type = patch.type
   if (patch.followerTier !== undefined) serverPatch.follower_tier = patch.followerTier
   if (patch.contentTypes !== undefined) serverPatch.content_types = patch.contentTypes
@@ -475,28 +517,6 @@ export function profileUrlForPage(page: Pick<OutreachPage, 'handle' | 'platform'
   return page.platform === 'facebook'
     ? `https://www.facebook.com/${page.handle.trim().replace(/^@/, '')}`
     : instagramUrlForHandle(page.handle)
-}
-
-// ── Dismissed alerts (client-only, persisted per browser) ──────────────────
-// Alerts are derived (recomputed each render), so "dismiss" is a local
-// acknowledgement stored in localStorage keyed by the alert's stable id
-// (`${campaignId}:${subjectId}`). Adding the missing post still auto-clears the
-// alert regardless of dismissal, since it drops out of computeOutreachAlerts.
-const DISMISSED_ALERTS_KEY = 'outreach.dismissedAlerts'
-
-export function getDismissedAlertIds(): Set<string> {
-  try {
-    const raw = localStorage.getItem(DISMISSED_ALERTS_KEY)
-    return new Set(raw ? (JSON.parse(raw) as string[]) : [])
-  } catch { return new Set() }
-}
-
-/** Marks an alert dismissed and returns the updated set (for React state). */
-export function dismissAlert(id: string): Set<string> {
-  const ids = getDismissedAlertIds()
-  ids.add(id)
-  try { localStorage.setItem(DISMISSED_ALERTS_KEY, JSON.stringify([...ids])) } catch { /* storage unavailable */ }
-  return ids
 }
 
 /**
@@ -603,10 +623,15 @@ export function suggestedMonthlyUsage(page: OutreachPage, posts: Post[]): number
   // Suggestion is for posts only — stories are excluded from the pacing target.
   if (page.inventoryPosts <= 0) return 0
   const m = pageMetrics(page, posts)
+  // The pace is set from the full inventory, but it can never ask for more
+  // slots than are left. It used to ignore consumption, so a page with every
+  // post slot used still showed "1 per month" — advice to overbook it.
+  const remaining = Math.max(0, page.inventoryPosts - m.postsDone)
+  if (remaining === 0) return 0
   let pace = page.inventoryPosts / 12
   if (m.avgEngagement >= 4000) pace *= 1.2
   else if (m.avgEngagement > 0 && m.avgEngagement < 500) pace *= 0.7
-  return Math.max(1, Math.round(pace))
+  return Math.min(remaining, Math.max(1, Math.round(pace)))
 }
 
 // ── Smart page recommendation (PRD 6.4) ────────────────────────────────────
@@ -643,7 +668,7 @@ export function recommendPages(
     const pp = posts.filter(p => p.pageId === page.id && p.addedAsLive)
     const avgReach = pp.length ? Math.round(pp.reduce((s, p) => s + p.views, 0) / pp.length) : 0
     const avgEngagement = pp.length ? Math.round(pp.reduce((s, p) => s + p.likes + p.comments, 0) / pp.length) : 0
-    const stateMatch = !!opts.campaignState && page.state === opts.campaignState
+    const stateMatch = !!opts.campaignState && sameState(page.state, opts.campaignState)
     const prefMatch = !!opts.preference && page.contentPreferences.includes(opts.preference)
     // Tiered score: state match dominates, then preference match, then measured
     // performance. The large constants keep the tiers from bleeding into each other.
@@ -731,8 +756,126 @@ export function analyzePostPerformance(
   return { underperforming: true, enoughData: true, pageAvgReach, reasons, alternate }
 }
 
+// ── AI Suggestions: matching + predicted reach ─────────────────────────────
+
+/**
+ * True for a post whose metrics were actually measured: added live by the
+ * team, or published on the page (synced). Draft / scheduled posts carry zero
+ * metrics, and counting them dragged every average and median down.
+ */
+export function isMeasuredPost(p: Post): boolean {
+  return p.addedAsLive || p.status === 'published'
+}
+
+function postEngagement(p: Post): number {
+  return p.likes + p.comments + p.saves + p.shares
+}
+
+function median(xs: number[]): number {
+  if (xs.length === 0) return 0
+  const s = [...xs].sort((a, b) => a - b)
+  const mid = Math.floor(s.length / 2)
+  return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2
+}
+
+export interface PostTypeMatch {
+  page: OutreachPage
+  avgEngagement: number
+  samples: number
+  /** The page is in the selected campaign's state. */
+  stateMatch: boolean
+  /** The page is already assigned to the selected campaign. */
+  assigned: boolean
+}
+
+/**
+ * Ranks pages for a post of `type` by their measured average engagement on
+ * that format. With a campaign selected, pages in the campaign's state rank
+ * first (the same tier PRD 6.4 uses for recommendPages) — the campaign picker
+ * used to be stored and never read, so every choice gave the same table.
+ */
+export function matchPagesForPostType(
+  pages: OutreachPage[],
+  posts: Post[],
+  type: PostType,
+  campaign: Campaign | null = null,
+  limit = 10,
+): PostTypeMatch[] {
+  const assignedIds = new Set(campaign?.assignedPageIds ?? [])
+  return pages
+    .map(page => {
+      const hist = posts.filter(p => p.pageId === page.id && p.type === type && isMeasuredPost(p))
+      const avgEngagement = hist.length ? hist.reduce((s, p) => s + postEngagement(p), 0) / hist.length : 0
+      return {
+        page,
+        avgEngagement,
+        samples: hist.length,
+        stateMatch: !!campaign?.state && sameState(page.state, campaign.state),
+        assigned: assignedIds.has(page.id),
+      }
+    })
+    .filter(r => r.samples > 0)
+    .sort((a, b) => Number(b.stateMatch) - Number(a.stateMatch) || b.avgEngagement - a.avgEngagement)
+    .slice(0, limit)
+}
+
+/** Below this many samples a reach prediction is flagged as low-confidence. */
+export const REACH_PREDICTION_MIN_SAMPLES = 10
+
+export interface ReachPrediction {
+  samples: number
+  medianReach: number
+  avgReach: number
+  medianEngagement: number
+  /** Median engagement of every measured post of this format, across all pages. */
+  benchmarkEngagement: number
+  /** How many pages the benchmark is drawn from. */
+  benchmarkPages: number
+  /** Share of this page's posts of this format that reached the benchmark. */
+  successProb: number
+}
+
+/**
+ * Predicts reach for a post of `type` on a page from its measured history.
+ *
+ * Success probability is the share of the page's posts that reach the
+ * cross-page median engagement for the format. It used to be the share above
+ * the page's OWN median, which is ~50% for any page by construction and 0%
+ * whenever its posts performed alike — it said nothing about the page.
+ */
+export function predictReach(pageId: string, type: PostType, posts: Post[]): ReachPrediction | null {
+  const measured = posts.filter(p => p.pageId && p.type === type && isMeasuredPost(p))
+  const hist = measured.filter(p => p.pageId === pageId)
+  if (hist.length === 0) return null
+  const benchmarkEngagement = median(measured.map(postEngagement))
+  const reach = hist.map(p => p.views)
+  return {
+    samples: hist.length,
+    medianReach: Math.round(median(reach)),
+    avgReach: Math.round(reach.reduce((s, x) => s + x, 0) / reach.length),
+    medianEngagement: Math.round(median(hist.map(postEngagement))),
+    benchmarkEngagement: Math.round(benchmarkEngagement),
+    benchmarkPages: new Set(measured.map(p => p.pageId)).size,
+    successProb: hist.filter(p => postEngagement(p) >= benchmarkEngagement).length / hist.length,
+  }
+}
+
 export function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60)
+}
+
+/**
+ * Builds CSV text, quoting any cell that holds a comma, quote or line break
+ * (RFC 4180). Free-text fields such as geography ("Vadodara, Gujarat") used to
+ * be joined raw, which split them across columns and shifted the rest of the row.
+ */
+export function toCsv(rows: (string | number | null | undefined)[][]): string {
+  return rows.map(r => r.map(csvCell).join(',')).join('\n')
+}
+
+function csvCell(v: string | number | null | undefined): string {
+  const s = v == null ? '' : String(v)
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
 }
 
 /**
@@ -792,12 +935,40 @@ export const INDIAN_STATES = [
   'Jharkhand', 'Chhattisgarh', 'Uttarakhand', 'Himachal Pradesh',
 ] as const
 
-/** Distinct, sorted list of states actually in use across pages + campaigns. */
+const CANONICAL_STATE = new Map<string, string>(INDIAN_STATES.map(s => [s.toLowerCase(), s]))
+
+/** Case- and whitespace-insensitive key for comparing two state names. */
+export function stateKey(state: string | null | undefined): string {
+  return (state ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+/**
+ * Canonical spelling of a state: a case-insensitive match against
+ * INDIAN_STATES returns the listed name ("gujarat" → "Gujarat"); anything else
+ * comes back trimmed. Pages and creators take free-text state while campaigns
+ * pick from INDIAN_STATES, so without this "gujarat" and "Gujarat" were two
+ * states — two dropdown entries, and a filter on either dropped the other's
+ * pages, posts and campaigns.
+ */
+export function normaliseState(state: string | null | undefined): string {
+  const s = (state ?? '').trim().replace(/\s+/g, ' ')
+  return CANONICAL_STATE.get(s.toLowerCase()) ?? s
+}
+
+/** True when two state names refer to the same state (see stateKey). */
+export function sameState(a: string | null | undefined, b: string | null | undefined): boolean {
+  return stateKey(a) === stateKey(b)
+}
+
+/** Distinct, sorted list of states actually in use across pages + campaigns,
+ *  one entry per state whatever its capitalisation on the records. */
 export function outreachStates(pages: OutreachPage[], campaigns: Campaign[]): string[] {
-  const set = new Set<string>()
-  for (const p of pages) if (p.state) set.add(p.state)
-  for (const c of campaigns) if (c.state) set.add(c.state)
-  return Array.from(set).sort()
+  const byKey = new Map<string, string>()
+  for (const s of [...pages.map(p => p.state), ...campaigns.map(c => c.state)]) {
+    const key = stateKey(s)
+    if (key && !byKey.has(key)) byKey.set(key, normaliseState(s))
+  }
+  return Array.from(byKey.values()).sort()
 }
 
 /** Returns the state a post should be attributed to — its page's state, or its
@@ -838,6 +1009,35 @@ export function aggregateTotals(posts: Post[]): OutreachTotals {
   return { reach: views, views, likes, comments, shares, engagement: likes + comments, posts: posts.length }
 }
 
+export interface DailyTrendPoint {
+  /** Local calendar day, YYYY-MM-DD. */
+  date: string
+  /** Axis label, D/M. */
+  day: string
+  posts: number
+  reach: number
+}
+
+/**
+ * One point per local calendar day for the `days` days ending on `ref`.
+ * Bucket key and label both come from the local day: the key used to come
+ * from toISOString (UTC), so between 00:00 and 05:30 IST every bucket held
+ * the previous day's posts under today's label.
+ */
+export function dailyTrend(posts: Post[], days: number, ref = new Date()): DailyTrendPoint[] {
+  return Array.from({ length: days }, (_, i) => {
+    const d = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - (days - 1 - i))
+    const date = formatLocalDate(d)
+    const same = posts.filter(p => p.date === date)
+    return {
+      date,
+      day: `${d.getDate()}/${d.getMonth() + 1}`,
+      posts: same.length,
+      reach: same.reduce((s, p) => s + p.views, 0),
+    }
+  })
+}
+
 // ── Campaign date status (Calendar colour-coding) ──────────────────────────
 
 export type CampaignDateStatus = 'upcoming' | 'active' | 'completed'
@@ -853,6 +1053,18 @@ export function campaignDateStatus(c: Campaign, ref = new Date()): CampaignDateS
   if (c.startDate && today < c.startDate) return 'upcoming'
   if (c.endDate && today > c.endDate) return 'completed'
   return 'active'
+}
+
+/**
+ * Moves the calendar cursor one month or one week. A month step lands on the
+ * 1st: stepping with setMonth kept today's day-of-month, so from Oct 31 "next"
+ * asked for Nov 31, rolled over to Dec 1 and November could not be reached.
+ */
+export function shiftCalendarCursor(cursor: Date, view: 'month' | 'week', dir: -1 | 1): Date {
+  if (view === 'month') return new Date(cursor.getFullYear(), cursor.getMonth() + dir, 1)
+  const d = new Date(cursor)
+  d.setDate(d.getDate() + dir * 7)
+  return d
 }
 
 /** Set of every page id assigned to at least one campaign (inventory "in use"). */
@@ -881,6 +1093,12 @@ export interface OutreachAlert {
  * than 24h in the past, each assigned page/creator that still has no live post
  * attributed to that campaign is overdue. Resolves automatically once a post
  * link is added for that subject. Completed campaigns are excluded.
+ *
+ * Alerts the user dismissed are left out here, in the one helper every alert
+ * consumer calls. Only the Dashboard used to filter them, so the Alerts page
+ * and the sidebar badge kept counting alerts the user had already dismissed.
+ * `dismissed` defaults to the store's set; pass it explicitly from a memo so
+ * the memo re-runs on a dismissal.
  */
 export function computeOutreachAlerts(
   campaigns: Campaign[],
@@ -888,6 +1106,7 @@ export function computeOutreachAlerts(
   creators: OutreachCreator[],
   posts: Post[],
   ref = new Date(),
+  dismissed: ReadonlySet<string> = store.dismissedAlertIds,
 ): OutreachAlert[] {
   const out: OutreachAlert[] = []
   const now = ref.getTime()
@@ -912,5 +1131,5 @@ export function computeOutreachAlerts(
       if (!posted) out.push({ id: `${c.id}:${cid}`, campaignId: c.id, campaignName: c.name, subjectId: cid, subjectKind: 'creator', handle: creator.handle, hoursOverdue })
     }
   }
-  return out.sort((a, b) => b.hoursOverdue - a.hoursOverdue)
+  return out.filter(a => !dismissed.has(a.id)).sort((a, b) => b.hoursOverdue - a.hoursOverdue)
 }

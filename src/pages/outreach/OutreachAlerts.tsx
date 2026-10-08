@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AlertTriangle, MapPin, Link as LinkIcon, ExternalLink, CheckCircle2 } from 'lucide-react'
 import {
-  useOutreachData, computeOutreachAlerts, outreachStates,
+  useOutreachData, computeOutreachAlerts, outreachStates, sameState,
   type Campaign,
 } from '@/lib/outreach-data'
 import AddLivePostsDialog from './AddLivePostsDialog'
@@ -15,18 +15,20 @@ function fmtOverdue(hours: number): string {
 }
 
 export default function OutreachAlerts() {
-  const { campaigns, pages, creators, posts } = useOutreachData()
+  const { campaigns, pages, creators, posts, dismissedAlertIds } = useOutreachData()
   const [stateFilter, setStateFilter] = useState('')
   const [resolveFor, setResolveFor] = useState<Campaign | null>(null)
 
   const states = useMemo(() => outreachStates(pages, campaigns), [pages, campaigns])
   const campaignById = useMemo(() => new Map(campaigns.map(c => [c.id, c])), [campaigns])
 
+  // Alerts dismissed on the Dashboard stay dismissed here: computeOutreachAlerts
+  // leaves them out. This page used to list them all and count them as pending.
   const alerts = useMemo(() => {
-    const all = computeOutreachAlerts(campaigns, pages, creators, posts)
+    const all = computeOutreachAlerts(campaigns, pages, creators, posts, new Date(), dismissedAlertIds)
     if (!stateFilter) return all
-    return all.filter(a => campaignById.get(a.campaignId)?.state === stateFilter)
-  }, [campaigns, pages, creators, posts, stateFilter, campaignById])
+    return all.filter(a => sameState(campaignById.get(a.campaignId)?.state, stateFilter))
+  }, [campaigns, pages, creators, posts, stateFilter, campaignById, dismissedAlertIds])
 
   return (
     <div className="animate-fade-in space-y-5">
