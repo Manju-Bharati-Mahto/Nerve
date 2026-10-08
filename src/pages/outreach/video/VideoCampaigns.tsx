@@ -4,9 +4,10 @@ import {
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
 import {
-  listCampaigns, createCampaign, updateCampaign, deleteCampaign,
-  CAMPAIGN_STATUS_LABEL, type Campaign,
+  listCampaigns, createCampaign, updateCampaign, deleteCampaign, driveProblemOf,
+  CAMPAIGN_STATUS_LABEL, type Campaign, type DriveErrorCode,
 } from '@/lib/outreach-video-data'
+import DriveProblemNotice from './DriveProblemNotice'
 
 /**
  * §7 campaign management and the §5 progress a Manager monitors.
@@ -27,6 +28,11 @@ export default function VideoCampaigns() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  /* Set when the list could not be read because Google Drive is missing or
+     broken. Video campaigns are STORED in Drive, so without it there is
+     nothing to list and nowhere to save one — the page says so, links to the
+     fix, and stops offering a form that can only fail at the last step. */
+  const [driveProblem, setDriveProblem] = useState<DriveErrorCode | null>(null)
   const [editing, setEditing] = useState<Campaign | 'new' | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
 
@@ -35,8 +41,10 @@ export default function VideoCampaigns() {
       const { campaigns } = await listCampaigns()
       setCampaigns(campaigns)
       setError(null)
+      setDriveProblem(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load campaigns.')
+      setDriveProblem(driveProblemOf(err))
     } finally {
       setLoading(false)
     }
@@ -79,7 +87,7 @@ export default function VideoCampaigns() {
             </p>
           </div>
         </div>
-        {canManage && (
+        {canManage && !driveProblem && (
           <button onClick={() => setEditing('new')}
             className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 inline-flex items-center gap-2">
             <Plus className="w-4 h-4" /> New campaign
@@ -94,13 +102,16 @@ export default function VideoCampaigns() {
         <Stat label="Completed" value={totals.completed} />
       </div>
 
-      {error && (
+      {error && driveProblem && <DriveProblemNotice message={error} code={driveProblem} />}
+      {error && !driveProblem && (
         <div className="hub-card flex items-start gap-2 text-sm text-rose-600">
           <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> {error}
         </div>
       )}
 
-      {loading ? (
+      {/* With a Drive problem there is no list to show — "No campaigns yet"
+          under it would claim something nobody knows. */}
+      {driveProblem ? null : loading ? (
         <div className="hub-card text-center py-12 text-sm text-muted-foreground">
           <Loader2 className="w-4 h-4 animate-spin inline mr-2" /> Loading…
         </div>
@@ -218,6 +229,7 @@ function CampaignDialog({ campaign, onClose, onDone }: {
   const [notes, setNotes] = useState(campaign?.notes ?? '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [driveProblem, setDriveProblem] = useState<DriveErrorCode | null>(null)
 
   async function save() {
     setBusy(true)
@@ -234,6 +246,7 @@ function CampaignDialog({ campaign, onClose, onDone }: {
       await onDone()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save that campaign.')
+      setDriveProblem(driveProblemOf(err))
       setBusy(false)
     }
   }
@@ -300,7 +313,8 @@ function CampaignDialog({ campaign, onClose, onDone }: {
             <textarea className="hub-input min-h-16" value={notes}
               onChange={e => setNotes(e.target.value)} />
           </div>
-          {error && <p className="text-xs text-rose-600">{error}</p>}
+          {error && driveProblem && <DriveProblemNotice message={error} code={driveProblem} />}
+          {error && !driveProblem && <p className="text-xs text-rose-600">{error}</p>}
         </div>
         <div className="flex items-center justify-end gap-2 p-4 border-t border-border shrink-0">
           <button onClick={onClose} disabled={busy}

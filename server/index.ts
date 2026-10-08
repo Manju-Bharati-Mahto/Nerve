@@ -64,6 +64,7 @@ import {
   deleteCreator as deleteOutreachCreator,
   listCampaigns as listOutreachCampaigns,
   createCampaign as createOutreachCampaign,
+  OutreachDuplicateError,
   updateCampaign as updateOutreachCampaign,
   deleteCampaign as deleteOutreachCampaign,
   listPosts as listOutreachPosts,
@@ -2811,6 +2812,20 @@ function requireOutreach(res: express.Response): boolean {
   return false;
 }
 
+/** The first thing wrong with a request body, in words — not "Invalid payload". */
+function payloadProblem(error: z.ZodError, what: string): string {
+  const issue = error.issues[0];
+  if (!issue) return `Invalid ${what}.`;
+  const field = issue.path.join(".").replace(/_/g, " ");
+  return field ? `Invalid ${what}: ${field} — ${issue.message}.` : `Invalid ${what}: ${issue.message}.`;
+}
+
+/** Answers a real duplicate (same campaign name, same page or creator) as 409. */
+function duplicateAnswered(res: express.Response, err: unknown): boolean {
+  if (err instanceof OutreachDuplicateError) { sendError(res, 409, err.message); return true; }
+  return false;
+}
+
 const outreachPageSchema = z.object({
   handle: z.string().min(1),
   // Instagram (default) or Facebook.
@@ -2860,9 +2875,14 @@ app.get("/api/outreach/pages", asyncHandler(async (_req, res) => {
 app.post("/api/outreach/pages", asyncHandler(async (req, res) => {
   if (!requireOutreach(res)) return;
   const parsed = outreachPageSchema.safeParse(req.body);
-  if (!parsed.success) return sendError(res, 400, "Invalid page payload.");
-  const page = await createOutreachPage(parsed.data);
-  res.status(201).json({ page });
+  if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "page"));
+  try {
+    const page = await createOutreachPage(parsed.data);
+    res.status(201).json({ page });
+  } catch (err) {
+    if (duplicateAnswered(res, err)) return;
+    throw err;
+  }
 }));
 
 app.patch("/api/outreach/pages/:id", asyncHandler(async (req, res) => {
@@ -2891,9 +2911,14 @@ app.get("/api/outreach/creators", asyncHandler(async (_req, res) => {
 app.post("/api/outreach/creators", asyncHandler(async (req, res) => {
   if (!requireOutreach(res)) return;
   const parsed = outreachCreatorSchema.safeParse(req.body);
-  if (!parsed.success) return sendError(res, 400, "Invalid creator payload.");
-  const creator = await createOutreachCreator(parsed.data);
-  res.status(201).json({ creator });
+  if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "creator"));
+  try {
+    const creator = await createOutreachCreator(parsed.data);
+    res.status(201).json({ creator });
+  } catch (err) {
+    if (duplicateAnswered(res, err)) return;
+    throw err;
+  }
 }));
 
 app.patch("/api/outreach/creators/:id", asyncHandler(async (req, res) => {
@@ -2921,9 +2946,14 @@ app.get("/api/outreach/campaigns", asyncHandler(async (_req, res) => {
 app.post("/api/outreach/campaigns", asyncHandler(async (req, res) => {
   if (!requireOutreach(res)) return;
   const parsed = outreachCampaignSchema.safeParse(req.body);
-  if (!parsed.success) return sendError(res, 400, "Invalid campaign payload.");
-  const campaign = await createOutreachCampaign(parsed.data);
-  res.status(201).json({ campaign });
+  if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "campaign"));
+  try {
+    const campaign = await createOutreachCampaign(parsed.data);
+    res.status(201).json({ campaign });
+  } catch (err) {
+    if (duplicateAnswered(res, err)) return;
+    throw err;
+  }
 }));
 
 app.patch("/api/outreach/campaigns/:id", asyncHandler(async (req, res) => {

@@ -561,6 +561,43 @@ function newId(prefix: string): string {
   return `${prefix}-${randomBytes(6).toString("hex")}`;
 }
 
+/**
+ * A real duplicate — the same campaign name, or a page or creator already in
+ * the ledger — reported in words the person can act on. Routes answer it 409.
+ */
+export class OutreachDuplicateError extends Error {
+  constructor(message: string) { super(message); this.name = "OutreachDuplicateError"; }
+}
+
+const isUniqueViolation = (err: unknown) => (err as { code?: string } | null)?.code === "23505";
+
+/**
+ * Inserts a row whose primary key is derived from a name, without letting the
+ * derivation collide.
+ *
+ * Ids are slugs, and a slug throws information away: "Diwali!" and "diwali"
+ * share one, "a.b" and "a_b" share one, and a renamed row keeps the slug of
+ * its OLD name forever. Every such collision used to reach the user as a bare
+ * "Internal server error." with nothing created — which is what "I am unable
+ * to create a campaign" looked like from outside. On a key collision this
+ * tries again with a short random suffix; any other failure is the caller's.
+ */
+async function insertWithFreeId<T>(base: string, insert: (id: string) => Promise<T>): Promise<T> {
+  let id = base;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      return await insert(id);
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      id = `${base}-${randomBytes(3).toString("hex")}`;
+    }
+  }
+  throw new Error("Could not allocate an id after several attempts.");
+}
+
+/** Handles compared the way a person reads them: case-insensitive, without a leading @. */
+const sameHandleSql = `lower(regexp_replace(handle, '^@+', '')) = lower(regexp_replace($1, '^@+', ''))`;
+
 // ── Page CRUD ──────────────────────────────────────────────────────────────
 
 export interface CreatePageInput {
@@ -591,20 +628,27 @@ export async function createPage(input: CreatePageInput): Promise<OutreachPage> 
   // Prefix Facebook page ids so an FB page can coexist with an IG page that
   // shares the same handle (the id is a slug of the handle).
   const platform = input.platform ?? "instagram";
-  const base = slug(input.handle) || newId("page");
-  const id = platform === "facebook" ? `fb-${base}` : base;
-  const { rows } = await pool.query<OutreachPage>(
+  const handle = input.handle.trim();
+
+  // The same account twice is a real duplicate; say so instead of failing.
+  const dup = await pool.query(
+    `SELECT handle FROM outreach_pages WHERE platform = $2 AND ${sameHandleSql} LIMIT 1`, [handle, platform]);
+  if (dup.rowCount) throw new OutreachDuplicateError(`@${dup.rows[0].handle} is already in the ledger.`);
+
+  const slugBase = slug(handle) || newId("page");
+  const base = platform === "facebook" ? `fb-${slugBase}` : slugBase;
+  const row = await insertWithFreeId(base, async id => (await pool.query<OutreachPage>(
     `INSERT INTO outreach_pages (id, handle, platform, geography, state, type, follower_tier, content_types, content_preferences, followers, inventory_posts, inventory_stories, notes)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12, $13)
      RETURNING *`,
     [
-      id, input.handle.trim(), platform, input.geography, input.state, input.type, input.follower_tier,
+      id, handle, platform, input.geography, input.state, input.type, input.follower_tier,
       JSON.stringify(input.content_types ?? []),
       JSON.stringify(input.content_preferences ?? []),
       input.followers ?? 0, input.inventory_posts, input.inventory_stories, input.notes ?? "",
     ],
-  );
-  return mapPageRow(rows[0]);
+  )).rows[0]);
+  return mapPageRow(row);
 }
 
 export async function updatePage(id: string, patch: Partial<CreatePageInput> & { last_synced_at?: string; platform_page_id?: string }): Promise<OutreachPage | null> {
@@ -632,6 +676,28 @@ export async function updatePage(id: string, patch: Partial<CreatePageInput> & {
     values,
   );
   return rows[0] ? mapPageRow(rows[0]) : null;
+}
+
+/**
+ * A DATE column as the calendar day it holds, "YYYY-MM-DD".
+ *
+ * node-postgres turns a DATE into a JS Date at LOCAL midnight. Reading it back
+ * with toISOString() converts to UTC first, and anywhere east of Greenwich —
+ * the server runs on Asia/Kolkata — local midnight is the previous day in UTC.
+ * That is how every outreach campaign and post came back one day early: a
+ * campaign starting on the 8th showed the 7th, drew on the wrong calendar day,
+ * and raised an "overdue" alert on its own launch day.
+ *
+ * The local getters read the day the driver actually built, which is the day
+ * stored, in any server timezone.
+ */
+function dayOf(value: unknown): string {
+  if (value == null || value === "") return "";
+  if (typeof value === "string") return value.slice(0, 10);
+  const d = value instanceof Date ? value : new Date(value as string | number);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 function mapPageRow(row: OutreachPage): OutreachPage {
@@ -670,18 +736,22 @@ export async function listCreators(): Promise<OutreachCreator[]> {
 }
 
 export async function createCreator(input: CreateCreatorInput): Promise<OutreachCreator> {
-  const id = `creator-${slug(input.handle) || randomBytes(6).toString("hex")}`;
-  const { rows } = await pool.query<OutreachCreator>(
+  const handle = input.handle.trim();
+  const dup = await pool.query(`SELECT handle FROM outreach_creators WHERE ${sameHandleSql} LIMIT 1`, [handle]);
+  if (dup.rowCount) throw new OutreachDuplicateError(`@${dup.rows[0].handle} is already a creator.`);
+
+  const base = `creator-${slug(handle) || randomBytes(6).toString("hex")}`;
+  const row = await insertWithFreeId(base, async id => (await pool.query<OutreachCreator>(
     `INSERT INTO outreach_creators (id, handle, geography, state, type, follower_tier, content_types, followers, inventory_posts, inventory_stories, notes)
      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11)
      RETURNING *`,
     [
-      id, input.handle.trim(), input.geography, input.state, input.type, input.follower_tier,
+      id, handle, input.geography, input.state, input.type, input.follower_tier,
       JSON.stringify(input.content_types ?? []),
       input.followers ?? 0, input.inventory_posts, input.inventory_stories, input.notes ?? "",
     ],
-  );
-  return mapCreatorRow(rows[0]);
+  )).rows[0]);
+  return mapCreatorRow(row);
 }
 
 export async function updateCreator(id: string, patch: Partial<CreateCreatorInput> & { last_synced_at?: string }): Promise<OutreachCreator | null> {
@@ -771,8 +841,16 @@ export async function getPage(id: string): Promise<OutreachPage | null> {
 }
 
 export async function createCampaign(input: CreateCampaignInput): Promise<OutreachCampaign> {
-  const id = slug(input.name) || newId("c");
-  const { rows } = await pool.query<OutreachCampaign>(
+  const name = input.name.trim();
+  /* Two campaigns with the same name are almost always one created twice, and
+     every dashboard and filter would show them as indistinguishable. Names
+     that merely slug alike — "Diwali!" and "Diwali" — are different names and
+     are allowed; insertWithFreeId keeps their ids apart. */
+  const dup = await pool.query(
+    `SELECT name FROM outreach_campaigns WHERE lower(trim(name)) = lower($1) LIMIT 1`, [name]);
+  if (dup.rowCount) throw new OutreachDuplicateError(`A campaign called “${dup.rows[0].name}” already exists.`);
+
+  const row = await insertWithFreeId(slug(name) || newId("c"), async id => (await pool.query<OutreachCampaign>(
     `INSERT INTO outreach_campaigns
        (id, name, start_date, end_date, state, goal, status,
         budget_posts, budget_stories, budget_reels,
@@ -780,13 +858,13 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Outrea
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING *`,
     [
-      id, input.name.trim(), input.start_date, input.end_date || null, input.state ?? "", input.goal ?? "", input.status,
+      id, name, input.start_date, input.end_date || null, input.state ?? "", input.goal ?? "", input.status,
       input.budget_posts, input.budget_stories, input.budget_reels,
       JSON.stringify(input.approvers), JSON.stringify(input.creative_variants),
       JSON.stringify(input.assigned_page_ids), JSON.stringify(input.assigned_creator_ids ?? []),
     ],
-  );
-  return mapCampaignRow(rows[0]);
+  )).rows[0]);
+  return mapCampaignRow(row);
 }
 
 export async function updateCampaign(id: string, patch: Partial<CreateCampaignInput>): Promise<OutreachCampaign | null> {
@@ -833,9 +911,9 @@ function mapCampaignRow(row: OutreachCampaign): OutreachCampaign {
     creative_variants: Array.isArray(row.creative_variants) ? row.creative_variants : safeJson(row.creative_variants, []),
     assigned_page_ids: Array.isArray(row.assigned_page_ids) ? row.assigned_page_ids : safeJson(row.assigned_page_ids, []),
     assigned_creator_ids: Array.isArray(row.assigned_creator_ids) ? row.assigned_creator_ids : safeJson(row.assigned_creator_ids, []),
-    start_date: typeof row.start_date === "string" ? row.start_date : new Date(row.start_date).toISOString().slice(0, 10),
+    start_date: dayOf(row.start_date),
     // NULL end_date (open-ended campaign) maps to '' for the client.
-    end_date: row.end_date == null ? "" : typeof row.end_date === "string" ? row.end_date : new Date(row.end_date).toISOString().slice(0, 10),
+    end_date: dayOf(row.end_date),
   };
 }
 
@@ -1038,7 +1116,7 @@ export async function deletePost(id: string): Promise<void> {
 function mapPostRow(row: OutreachPost): OutreachPost {
   return {
     ...row,
-    date: typeof row.date === "string" ? row.date : new Date(row.date).toISOString().slice(0, 10),
+    date: dayOf(row.date),
   };
 }
 

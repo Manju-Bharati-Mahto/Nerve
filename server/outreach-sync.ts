@@ -40,6 +40,24 @@ import {
   type ApifyFacebookPost,
 } from "./integrations/apify.js";
 
+/**
+ * The calendar day, in India, of an instant. Instagram and Facebook report
+ * when a post went out as a UTC timestamp; cutting that to its first ten
+ * characters gives the UTC date, which before 05:30 IST is still yesterday —
+ * so a post published at 1 a.m. was filed under the previous day.
+ *
+ * Fixed to Asia/Kolkata rather than the server's own zone: the calendar that
+ * matters is the team's, and a container's zone is whatever its image says.
+ */
+const IST_DAY = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
+});
+function istDay(instant?: string | null): string {
+  const d = instant ? new Date(instant) : new Date();
+  return IST_DAY.format(Number.isNaN(d.getTime()) ? new Date() : d);
+}
+
+
 export interface SyncResult {
   ok: true;
   synced_pages: number;
@@ -164,7 +182,7 @@ export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> 
 
       touchedPageIds.add(page.id);
       if (item.ownerId && !page.platform_page_id) ownerIdByPageId.set(page.id, item.ownerId);
-      const date = item.publishedAt ? item.publishedAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
+      const date = istDay(item.publishedAt);
       const attribution = attributePostToCampaign(page.id, date, item.caption, campaigns);
       await upsertPostByInstagramId({
         instagram_id: `fb:${item.ref}`,
@@ -520,7 +538,7 @@ async function addFacebookLivePosts(ctx: {
       platform: "facebook",
       page_id: ctx.page.id,
       campaign_id: ctx.campaign?.id ?? null,
-      date: s.publishedAt ? s.publishedAt.slice(0, 10) : new Date().toISOString().slice(0, 10),
+      date: istDay(s.publishedAt),
       type: s.mediaType ?? ref.type,
       creative_variant: forceVariant,
       caption: s.caption,

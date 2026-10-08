@@ -79,11 +79,23 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/browse',       label: 'Browse all',  icon: Search },
       { path: '/admin/export', label: 'Export data', icon: Download },
     ]},
+    /* Influencer outreach. Without these, the only "Campaigns" in this menu
+       was the video workflow's — Drive-backed, so it cannot work until Google
+       Drive is connected — and the influencer campaigns had no way in at all. */
+    { heading: 'Outreach', items: [
+      { path: '/outreach/dashboard', label: 'Outreach Dashboard', icon: LayoutDashboard },
+      { path: '/outreach/campaigns', label: 'Campaigns',          icon: Send },
+      { path: '/outreach/calendar',  label: 'Calendar',           icon: Calendar },
+      { path: '/outreach/analytics', label: 'Analytics',          icon: BarChart3 },
+      { path: '/outreach/alerts',    label: 'Alerts',             icon: AlertTriangle, badge: 'outreach-alerts' },
+      { path: '/outreach/pages',     label: 'All Pages',          icon: FileText },
+      { path: '/outreach/creators',  label: 'Creators',           icon: Users },
+    ]},
     { heading: 'Video workflow', items: [
       { path: '/outreach/video/dashboard',  label: 'Video Dashboard',  icon: BarChart3 },
       { path: '/outreach/video/users',      label: 'Workflow Users',   icon: UserCog },
       { path: '/outreach/video/drive',      label: 'Google Drive',     icon: HardDrive },
-      { path: '/outreach/video/campaigns',  label: 'Campaigns',        icon: Film },
+      { path: '/outreach/video/campaigns',  label: 'Video Campaigns',  icon: Film },
       { path: '/outreach/video/review',     label: 'Review Queue',     icon: Inbox },
       { path: '/outreach/video/all',        label: 'All Videos',       icon: Film },
       { path: '/outreach/video/calendar',   label: 'Event Calendar',   icon: Calendar },
@@ -103,7 +115,7 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/outreach/video/dashboard',  label: 'Dashboard',        icon: LayoutDashboard },
       { path: '/outreach/video/users',      label: 'Users',            icon: UserCog },
       { path: '/outreach/video/drive',      label: 'Google Drive',     icon: HardDrive },
-      { path: '/outreach/video/campaigns',  label: 'Campaigns',        icon: Film },
+      { path: '/outreach/video/campaigns',  label: 'Video Campaigns',  icon: Film },
       { path: '/outreach/video/review',     label: 'Review Queue',     icon: Inbox },
       { path: '/outreach/video/all',        label: 'All Videos',       icon: Film },
       { path: '/outreach/video/calendar',   label: 'Event Calendar',   icon: Calendar },
