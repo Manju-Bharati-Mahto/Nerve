@@ -533,8 +533,9 @@ export async function addLivePostsByUrl(args: {
 export interface PageMetrics {
   /** All-time count of posts (non-story) the team has placed on this page. */
   postsDone: number
-  /** All-time count of stories placed on this page. */
+  /** All-time count of stories placed on this page. Reported, not consumed — see pctConsumed. */
   storiesDone: number
+  /** Share of the page's POST inventory used: postsDone / inventoryPosts. Stories are not counted. */
   pctConsumed: number
   avgEngagement: number
   lastPostDate: string | null
@@ -553,9 +554,14 @@ export function pageMetrics(page: OutreachPage, posts: Post[]): PageMetrics {
   const pagePosts = posts.filter(p => p.pageId === page.id && p.addedAsLive)
   const postsCount = pagePosts.filter(p => p.type !== 'story').length
   const storyCount = pagePosts.filter(p => p.type === 'story').length
-  const pctPosts = page.inventoryPosts ? postsCount / page.inventoryPosts : 0
-  const pctStories = page.inventoryStories ? storyCount / page.inventoryStories : 0
-  const pctConsumed = (pctPosts + pctStories) / 2
+  /* Consumed inventory is POSTS ONLY. Stories are still counted (storiesDone)
+     but do not draw down inventory.
+
+     This used to average the post and story percentages, which mis-stated
+     every page whose two inventories were used at different rates — and made
+     any page with no story inventory look half-empty: 10 of 10 posts used read
+     as 50% and "on-track" rather than full and "over-used". */
+  const pctConsumed = page.inventoryPosts ? postsCount / page.inventoryPosts : 0
   // Apify can't read saves/shares, so engagement here is likes + comments only.
   const totalEng = pagePosts.reduce((s, p) => s + p.likes + p.comments, 0)
   const avgEngagement = pagePosts.length ? Math.round(totalEng / pagePosts.length) : 0

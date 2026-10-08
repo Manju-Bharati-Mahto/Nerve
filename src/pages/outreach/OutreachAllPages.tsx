@@ -65,7 +65,8 @@ export default function OutreachAllPages() {
     const enriched = pages.map(p => {
       const m = pageMetrics(p, posts)
       const total = p.inventoryPosts + p.inventoryStories
-      const consumed = m.postsDone + m.storiesDone
+      // Consumed inventory is posts only — stories do not draw it down.
+      const consumed = m.postsDone
       return { page: p, m, total, consumed, suggested: suggestedMonthlyUsage(p, posts) }
     })
     const filtered = enriched.filter(({ page, m }) => {
@@ -264,9 +265,9 @@ export default function OutreachAllPages() {
                   <span className="text-muted-foreground"> & </span>
                   {page.inventoryStories} <span className="text-[10px] text-muted-foreground">(Stories)</span>
                 </td>
-                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground">
-                  {consumed}
-                  <span className="text-[10px] text-muted-foreground"> ({Math.round(m.pctConsumed * 100)}%)</span>
+                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground whitespace-nowrap">
+                  {consumed} <span className="text-[10px] text-muted-foreground">(Posts)</span>
+                  <span className="text-[10px] text-muted-foreground"> · {Math.round(m.pctConsumed * 100)}%</span>
                 </td>
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-1.5">
