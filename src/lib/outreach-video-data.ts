@@ -35,6 +35,18 @@ export function driveProblemOf(err: unknown): DriveErrorCode | null {
   return code && DRIVE_ERROR_CODES.includes(code) ? code as DriveErrorCode : null
 }
 
+/**
+ * A page load that failed, with the Drive problem behind it when there was
+ * one, for DriveProblemNotice. A page keeps this instead of the bare message
+ * so it can offer the way to the fix — and so it knows not to draw "nothing
+ * here yet" under a list it never managed to read.
+ */
+export interface LoadFailure { message: string; code: DriveErrorCode | null }
+
+export function loadFailureOf(err: unknown, fallback: string): LoadFailure {
+  return { message: err instanceof Error ? err.message : fallback, code: driveProblemOf(err) }
+}
+
 /** A failed response as a VideoApiError: the API's message and code, or one for the status. */
 function videoErrorFor(res: Response, payload: Record<string, unknown>, fallback: string): VideoApiError {
   const err = errorFor(res, payload, fallback)
@@ -474,6 +486,23 @@ export function formatWhen(iso?: string | null): string {
   return new Date(iso).toLocaleString(undefined, {
     day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
   })
+}
+
+/**
+ * An activity entry's note as a person should read it.
+ *
+ * Scheduling records the posting time as an ISO instant (videos.ts,
+ * scheduleVideo), which is right for storage and unreadable on screen:
+ * "2026-10-20T05:00:00.000Z" is 10:30 in Gujarat, and nobody should have to
+ * work that out. Every other note is free text and is shown as written.
+ */
+export function activityNote(entry: Pick<ActivityEntry, 'action' | 'notes'>): string | null {
+  if (!entry.notes) return null
+  if (entry.action === 'video.scheduled' || entry.action === 'video.rescheduled') {
+    const at = new Date(entry.notes)
+    if (!Number.isNaN(at.getTime())) return `For ${formatWhen(entry.notes)}`
+  }
+  return entry.notes
 }
 
 /** Turns "video.caption_updated" into "Caption updated" for the §16 timeline. */

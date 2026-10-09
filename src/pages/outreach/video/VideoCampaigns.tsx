@@ -59,6 +59,11 @@ export default function VideoCampaigns() {
     completed: campaigns.filter(c => c.status === 'completed').length,
   }), [campaigns])
 
+  /* Counted from a list that was never read, the tiles would say "0 Running"
+     over a notice saying the campaigns could not be read. Only the load sets
+     driveProblem, so a failed delete (which also sets error) keeps them. */
+  const known = !loading && !driveProblem && !(error && campaigns.length === 0)
+
   async function remove(c: Campaign) {
     if (!confirm(`Delete “${c.name}”? This is only possible while it has no videos.`)) return
     setBusyId(c.id)
@@ -96,10 +101,10 @@ export default function VideoCampaigns() {
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Stat label="Total campaigns" value={totals.total} />
-        <Stat label="Running" value={totals.running} />
-        <Stat label="Upcoming" value={totals.upcoming} />
-        <Stat label="Completed" value={totals.completed} />
+        <Stat label="Total campaigns" value={known ? totals.total : null} />
+        <Stat label="Running" value={known ? totals.running : null} />
+        <Stat label="Upcoming" value={known ? totals.upcoming : null} />
+        <Stat label="Completed" value={known ? totals.completed : null} />
       </div>
 
       {error && driveProblem && <DriveProblemNotice message={error} code={driveProblem} />}
@@ -182,11 +187,12 @@ export default function VideoCampaigns() {
   )
 }
 
-function Stat({ label, value }: { label: string; value: number }) {
+/** `null` is "not known": a dash, never a zero. */
+function Stat({ label, value }: { label: string; value: number | null }) {
   return (
     <div className="hub-card">
       <p className="text-[11px] uppercase tracking-widest text-muted-foreground">{label}</p>
-      <p className="text-2xl font-serif text-foreground mt-1">{value}</p>
+      <p className="text-2xl font-serif text-foreground mt-1">{value ?? '—'}</p>
     </div>
   )
 }

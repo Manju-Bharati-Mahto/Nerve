@@ -5,8 +5,11 @@ import {
 } from 'lucide-react'
 import {
   publishingQueue, publishVideo, scheduleVideo, listVideos, localDay, videoDownloadUrl, videoStreamUrl,
-  formatWhen, type VideoRecord, type LiveUrlPlatform,
+  formatWhen, loadFailureOf, type VideoRecord, type LiveUrlPlatform, type LoadFailure,
 } from '@/lib/outreach-video-data'
+import { useAuth } from '@/hooks/useAuth'
+import DriveProblemNotice from './DriveProblemNotice'
+import { mayPublishVideos } from './workflow-roles'
 
 /**
  * §4/§11 — the Publisher's queue: approved videos, scheduled or not. (Before
@@ -19,11 +22,18 @@ import {
  * Publishing is what removes a video from this queue (§28), so the list is
  * refetched after each one rather than patched locally — with several people
  * working the same queue, what's on screen should be what's actually left.
+ *
+ * A Manager (or anyone granted the tab) watches this queue too, but the API
+ * leaves scheduling and publishing to Publishers and Admins. For everyone
+ * else the queue is read-only rather than a set of buttons that each end in
+ * "Your role cannot perform that action."
  */
 export default function VideoQueue() {
+  const { role } = useAuth()
+  const canPublish = mayPublishVideos(role)
   const [videos, setVideos] = useState<VideoRecord[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LoadFailure | null>(null)
   const [publishing, setPublishing] = useState<VideoRecord | null>(null)
   const [scheduling, setScheduling] = useState<VideoRecord | null>(null)
   const [publishedToday, setPublishedToday] = useState(0)
@@ -38,7 +48,7 @@ export default function VideoQueue() {
       setPublishedToday(published.videos.filter(v => v.publishedAt && localDay(new Date(v.publishedAt)) === today).length)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load the queue.')
+      setError(loadFailureOf(err, 'Could not load the queue.'))
     } finally {
       setLoading(false)
     }
@@ -55,13 +65,15 @@ export default function VideoQueue() {
         <div>
           <h1 className="text-2xl font-serif text-foreground">Publishing Queue</h1>
           <p className="text-sm text-muted-foreground">
-            Approved videos waiting to go live — schedule a posting time, or mark one as published.
+            {canPublish
+              ? 'Approved videos waiting to go live — schedule a posting time, or mark one as published.'
+              : 'Approved videos waiting to go live. The publishers schedule and post them.'}
           </p>
         </div>
       </div>
 
       {/* §12 Publisher — "Today's Posts, Pending Publishing, Published Today". */}
-      {!loading && (
+      {!loading && !error && (
         <div className="grid grid-cols-3 gap-3">
           <Stat label="Today's posts" value={
             videos.filter(v => v.scheduledFor && localDay(new Date(v.scheduledFor)) === localDay()).length + publishedToday} />
@@ -70,13 +82,11 @@ export default function VideoQueue() {
         </div>
       )}
 
-      {error && (
-        <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> <span>{error}</span>
-        </div>
-      )}
+      {error && <DriveProblemNotice message={error.message} code={error.code} />}
 
-      {loading ? (
+      {/* "Nothing waiting" over a queue that was never read would tell a
+          publisher the day's work is done. */}
+      {error ? null : loading ? (
         <div className="hub-card text-center py-12 text-sm text-muted-foreground">Loading…</div>
       ) : videos.length === 0 ? (
         <div className="hub-card text-center py-12">
@@ -87,7 +97,7 @@ export default function VideoQueue() {
       ) : (
         <div className="space-y-4">
           {videos.map(v => (
-            <QueueCard key={v.id} video={v}
+            <QueueCard key={v.id} video={v} canPublish={canPublish}
               onPublish={() => setPublishing(v)} onSchedule={() => setScheduling(v)} />
           ))}
         </div>
@@ -112,8 +122,8 @@ export default function VideoQueue() {
   )
 }
 
-function QueueCard({ video, onPublish, onSchedule }: {
-  video: VideoRecord; onPublish: () => void; onSchedule: () => void
+function QueueCard({ video, canPublish, onPublish, onSchedule }: {
+  video: VideoRecord; canPublish: boolean; onPublish: () => void; onSchedule: () => void
 }) {
   const [copied, setCopied] = useState(false)
   return (
@@ -149,14 +159,18 @@ function QueueCard({ video, onPublish, onSchedule }: {
                 className="text-xs px-2.5 py-1.5 rounded-lg bg-blue-100 text-blue-700 hover:opacity-80 inline-flex items-center gap-1">
                 <Download className="w-3 h-3" /> Download
               </a>
-              <button onClick={onSchedule}
-                className="text-xs px-2.5 py-1.5 rounded-lg bg-violet-100 text-violet-700 hover:opacity-80 inline-flex items-center gap-1">
-                <CalendarClock className="w-3 h-3" /> {video.scheduledFor ? 'Reschedule' : 'Schedule'}
-              </button>
-              <button onClick={onPublish}
-                className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:opacity-90 inline-flex items-center gap-1">
-                <Send className="w-3 h-3" /> Mark as published
-              </button>
+              {canPublish && (
+                <>
+                  <button onClick={onSchedule}
+                    className="text-xs px-2.5 py-1.5 rounded-lg bg-violet-100 text-violet-700 hover:opacity-80 inline-flex items-center gap-1">
+                    <CalendarClock className="w-3 h-3" /> {video.scheduledFor ? 'Reschedule' : 'Schedule'}
+                  </button>
+                  <button onClick={onPublish}
+                    className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:opacity-90 inline-flex items-center gap-1">
+                    <Send className="w-3 h-3" /> Mark as published
+                  </button>
+                </>
+              )}
             </div>
           </div>
           <p className="text-xs text-foreground whitespace-pre-wrap bg-muted/40 rounded-lg p-2.5 max-h-32 overflow-y-auto">

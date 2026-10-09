@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
-  ArrowLeft, Send, Download, Copy, Check, AlertCircle, ExternalLink, Pencil,
+  ArrowLeft, Send, Download, Copy, Check, ExternalLink, Pencil, Link2,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   getVideo, submitVideo, updateCaption, videoStreamUrl, videoDownloadUrl,
-  STATUS_STYLE, formatBytes, formatWhen, describeAction,
-  type VideoRecord,
+  STATUS_STYLE, formatBytes, formatWhen, describeAction, activityNote, loadFailureOf,
+  type VideoRecord, type LoadFailure,
 } from '@/lib/outreach-video-data'
+import { useAuth } from '@/hooks/useAuth'
+import DriveProblemNotice from './DriveProblemNotice'
+import LiveLinksDialog from './LiveLinksDialog'
+import { mayPublishVideos, mayUploadVideos } from './workflow-roles'
 
 /**
  * §10 — "the video detail page should show the video player, client, title,
@@ -16,12 +20,20 @@ import {
  *
  * The player streams through the API rather than a Drive link, so access is
  * checked on the bytes themselves (§25).
+ *
+ * Every role reaches this page, but submitting and editing the caption are
+ * an Editor's (or Admin's) and live links a Publisher's (or Admin's), so each
+ * control shows only for the roles the API will let through.
  */
 export default function VideoDetail() {
   const { videoId } = useParams<{ videoId: string }>()
+  const { role } = useAuth()
+  const canUpload = mayUploadVideos(role)
+  const canPublish = mayPublishVideos(role)
   const [video, setVideo] = useState<VideoRecord | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LoadFailure | null>(null)
   const [loading, setLoading] = useState(true)
+  const [editingLinks, setEditingLinks] = useState(false)
 
   const refresh = useCallback(async () => {
     if (!videoId) return
@@ -30,7 +42,7 @@ export default function VideoDetail() {
       setVideo(video)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load this video.')
+      setError(loadFailureOf(err, 'Could not load this video.'))
     } finally {
       setLoading(false)
     }
@@ -43,9 +55,7 @@ export default function VideoDetail() {
     return (
       <div className="animate-fade-in space-y-4">
         <BackLink />
-        <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> <span>{error ?? 'Not found.'}</span>
-        </div>
+        <DriveProblemNotice message={error?.message ?? 'Not found.'} code={error?.code ?? null} />
       </div>
     )
   }
@@ -66,7 +76,9 @@ export default function VideoDetail() {
           <div className="flex items-center gap-2 flex-wrap">
             <span className={`hub-badge ${STATUS_STYLE[video.status].cls}`}>{STATUS_STYLE[video.status].label}</span>
             {/* §11 — submitting is the same act before review and after a rejection. */}
-            {(video.status === 'uploaded' || video.status === 'revision') && <SubmitButton video={video} onDone={refresh} />}
+            {canUpload && (video.status === 'uploaded' || video.status === 'revision') && (
+              <SubmitButton video={video} onDone={refresh} />
+            )}
             <a href={videoDownloadUrl(video.id)}
               className="text-xs px-2.5 py-1.5 rounded-lg bg-blue-100 text-blue-700 hover:opacity-80 inline-flex items-center gap-1">
               <Download className="w-3 h-3" /> Download
@@ -88,7 +100,7 @@ export default function VideoDetail() {
             />
           </div>
 
-          <CaptionPanel video={video} onDone={refresh} />
+          <CaptionPanel video={video} canEdit={canUpload} onDone={refresh} />
         </div>
 
         <div className="space-y-5">
@@ -108,9 +120,21 @@ export default function VideoDetail() {
             </dl>
           </div>
 
-          {!!Object.keys(video.liveUrls ?? {}).length && (
+          {(!!Object.keys(video.liveUrls ?? {}).length || (canPublish && video.status === 'published')) && (
             <div className="hub-card">
-              <h2 className="text-sm font-semibold text-foreground mb-3">Live links</h2>
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <h2 className="text-sm font-semibold text-foreground">Live links</h2>
+                {canPublish && video.status === 'published' && (
+                  <button onClick={() => setEditingLinks(true)}
+                    className="text-xs px-2 py-1 rounded-lg border border-border text-muted-foreground hover:bg-accent inline-flex items-center gap-1">
+                    <Link2 className="w-3 h-3" />
+                    {Object.keys(video.liveUrls ?? {}).length ? 'Edit' : 'Add'}
+                  </button>
+                )}
+              </div>
+              {!Object.keys(video.liveUrls ?? {}).length && (
+                <p className="text-xs text-muted-foreground">No link recorded.</p>
+              )}
               <div className="space-y-1.5">
                 {Object.entries(video.liveUrls ?? {}).map(([platform, url]) => (
                   <a key={platform} href={url} target="_blank" rel="noreferrer"
@@ -138,7 +162,7 @@ export default function VideoDetail() {
                     {a.previousStatus && a.newStatus && (
                       <p className="text-[11px] text-muted-foreground">{a.previousStatus} → {a.newStatus}</p>
                     )}
-                    {a.notes && <p className="text-[11px] text-muted-foreground">{a.notes}</p>}
+                    {a.notes && <p className="text-[11px] text-muted-foreground">{activityNote(a)}</p>}
                   </div>
                 </li>
               ))}
@@ -146,6 +170,12 @@ export default function VideoDetail() {
           </div>
         </div>
       </div>
+
+      {editingLinks && (
+        <LiveLinksDialog video={video}
+          onClose={() => setEditingLinks(false)}
+          onDone={async () => { setEditingLinks(false); await refresh() }} />
+      )}
     </div>
   )
 }
@@ -187,7 +217,9 @@ function SubmitButton({ video, onDone }: { video: VideoRecord; onDone: () => Pro
 }
 
 /** §17 — editable while draft, and copyable by the publisher afterwards. */
-function CaptionPanel({ video, onDone }: { video: VideoRecord; onDone: () => Promise<void> }) {
+function CaptionPanel({ video, canEdit, onDone }: {
+  video: VideoRecord; canEdit: boolean; onDone: () => Promise<void>
+}) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(video.caption)
   const [busy, setBusy] = useState(false)
@@ -225,7 +257,7 @@ function CaptionPanel({ video, onDone }: { video: VideoRecord; onDone: () => Pro
             {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
             {copied ? 'Copied' : 'Copy caption'}
           </button>
-          {(video.status === 'uploaded' || video.status === 'revision') && !editing && (
+          {canEdit && (video.status === 'uploaded' || video.status === 'revision') && !editing && (
             <button onClick={() => setEditing(true)}
               className="text-xs px-2.5 py-1.5 rounded-lg bg-violet-100 text-violet-700 hover:opacity-80 inline-flex items-center gap-1">
               <Pencil className="w-3 h-3" /> Edit
