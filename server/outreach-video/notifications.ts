@@ -31,6 +31,7 @@ export const NOTIFICATION_TEXT: Record<NotificationKind, string> = {
   campaign_completed: "A campaign has reached its posting target.",
   user_created: "A new member has joined the outreach team.",
   system_issue: "Something in the video workflow needs attention.",
+  video_review_requested: "A video was submitted for review.",
 };
 
 /**

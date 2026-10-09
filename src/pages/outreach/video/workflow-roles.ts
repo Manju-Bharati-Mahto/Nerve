@@ -55,3 +55,38 @@ export function grantableVideoRoles(actorNerveRole: AppRole | null): VideoRole[]
 export function mayAssignVideoRole(actorNerveRole: AppRole | null, target: VideoRole): boolean {
   return grantableVideoRoles(actorNerveRole).includes(target)
 }
+
+/* ── Who may do what to a video ─────────────────────────────────────────────
+   The PRD gives uploading to Editors and publishing to Publishers, with an
+   Admin able to do either. The API enforces exactly that (requireRole in
+   outreach-video/routes.ts). Several screens are nonetheless open to more
+   roles than may act on them — a Manager watches the publishing queue, and
+   reaches My Videos as the department's list — and those screens used to
+   offer every button regardless, so a Manager filled in a whole upload form
+   or a schedule only to be told "Your role cannot perform that action."
+   These are the same lists as the API's, stated once for the UI, so a screen
+   hides what its viewer cannot do instead of letting it fail. */
+
+/** The workflow role the server reads a Nerve role as (videoRoleForNerveRole). */
+export function videoRoleOf(nerveRole: AppRole | null): VideoRole | null {
+  if (nerveRole === 'super_admin' || nerveRole === 'admin') return 'admin'
+  if (nerveRole === 'outreach_manager') return 'manager'
+  if (nerveRole === 'outreach_editor') return 'editor'
+  if (nerveRole === 'outreach_publisher') return 'publisher'
+  return null
+}
+
+/** Upload, edit a caption, submit for review, start a revision. */
+export const UPLOAD_ROLES: VideoRole[] = ['editor', 'admin']
+/** Schedule, mark as published, record live links. */
+export const PUBLISH_ROLES: VideoRole[] = ['publisher', 'admin']
+
+export function mayUploadVideos(nerveRole: AppRole | null): boolean {
+  const role = videoRoleOf(nerveRole)
+  return !!role && UPLOAD_ROLES.includes(role)
+}
+
+export function mayPublishVideos(nerveRole: AppRole | null): boolean {
+  const role = videoRoleOf(nerveRole)
+  return !!role && PUBLISH_ROLES.includes(role)
+}

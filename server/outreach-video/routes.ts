@@ -28,7 +28,7 @@ import {
   cancelDirectUpload, completeDirectUpload, startDirectUpload,
   UploadSessionNotFoundError, UploadSessionNotYoursError, UploadVerificationError,
 } from "./upload-sessions.js";
-import { listUserCapabilities } from "../db.js";
+import { getUserByEmail, listUserCapabilities, updateUser } from "../db.js";
 import {
   completeOutreachDriveConnect, disconnectOutreachDrive, outreachDriveAuthUrl, outreachDriveStatus,
   saveOutreachDriveClient, setExpectedAccount, useOutreachDriveFolder, verifyOutreachDriveState,
@@ -42,21 +42,22 @@ import {
 import type { OvCapability } from "../capabilities.js";
 import {
   addUser, deleteUser, findUserByEmail, findUserById, listActiveEditors, listUsers,
-  mayAssignRole, mayModifyUserWithRole,
+  mayAssignRole, mayModifyUserWithRole, nerveRoleChangeRefusal, NERVE_ROLE_FOR_VIDEO_ROLE,
   setUserActive, setUserRole, touchLastActivity, videoRoleForNerveRole,
   UserExistsError,
 } from "./users.js";
 import {
   getVideo, listVideos, publishVideo, publishingQueue, setLiveUrls,
   approveVideo, rejectVideo, startRevision, scheduleVideo, reviewQueue, resyncAllToDrive,
-  submitVideo, updateCaption, uploadVideo, acceptedVideoType, checkVideoFile,
-  InvalidTransitionError, NotYourVideoError, VideoNotFoundError, VideoFileRejectedError,
+  submitVideo, updateCaption, uploadVideo, acceptedVideoType, checkVideoFile, renameCampaignOnVideos,
+  claimNameOnlyVideos, InvalidTransitionError, NotYourVideoError, VideoNotFoundError, VideoFileRejectedError,
   ACCEPTED_VIDEO_TYPES_LABEL, VIDEO_MIME_ALLOWLIST, type UploadDetails,
 } from "./videos.js";
 import { socialPagesForRole } from "./social-pages.js";
 import {
   assignEvent, completeEvent, createEvent, eventCounts, getEvent, listEvents,
-  todoFor, updateEventDetails, EventNotFoundError, EventNotOpenError, NotYourEventError,
+  todoFor, updateEventDetails, renameCampaignOnEvents, claimNameOnlyEvents,
+  EventNotFoundError, EventNotOpenError, NotYourEventError,
 } from "./events.js";
 import { listNotifications, markRead, notify } from "./notifications.js";
 import { editorVideoLog, workflowKpis } from "./reports.js";
@@ -775,7 +776,15 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
     } catch (err) { fail(res, err); }
   }));
 
-  /** §4.4 — takes effect on the user's next authenticated session. */
+  /**
+   * §4.4 — takes effect on the user's next authenticated session.
+   *
+   * A role change goes to the person's Nerve account, because that is what
+   * they are: requireVideoUser derives the workflow role from the Nerve role
+   * on every request. Writing only the workflow record made the change show
+   * in the Users table and then quietly come undone at the person's next
+   * request, while their sidebar, route guards and API checks never moved.
+   */
   app.patch(`${P}/users/:id`, asyncHandler(async (req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
     if (!requireRole(res, user, ["admin", "manager"])) return;
@@ -789,6 +798,17 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
       if (!await managerMayActOn(res, user, id, role)) return;
       // §25 — an admin demoting themselves would lock the last door behind them.
       if (id === user.id && role !== "admin") return sendError(res, 400, "You cannot change your own role.");
+      const target = await findUserById(id);
+      if (!target || target.deletedAt) return sendError(res, 404, "That user was not found.");
+      /* Nerve first: if it refuses or fails, nothing has changed anywhere.
+         Someone registered here with no Nerve account yet has only the
+         workflow record to change — their account, when it is made, decides. */
+      const account = await getUserByEmail(target.email);
+      if (account && videoRoleForNerveRole(account.role) !== role) {
+        const refusal = nerveRoleChangeRefusal(res.locals.currentUser as CurrentUser, account, role);
+        if (refusal) return sendError(res, 403, refusal);
+        await updateUser(account.id, { role: NERVE_ROLE_FOR_VIDEO_ROLE[role], team: "outreach" });
+      }
       updated = await setUserRole(id, role);
     }
     if (b.active !== undefined) {
@@ -966,6 +986,20 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
   // ── Campaigns (§7, §17) ──────────────────────────────────────────────────
 
   /**
+   * The videos a campaign holds: those filed under it by id, and — for a
+   * campaign created for work that predates it — those carrying its name and
+   * no campaign at all. The list, the detail page and delete all count
+   * through this, so they cannot disagree about what a campaign owns.
+   */
+  function videosOfCampaign<V extends { campaignId?: string | null; client: string }>(
+    campaign: { id: string; name: string }, videos: V[],
+  ): V[] {
+    const name = campaign.name.trim().toLowerCase();
+    return videos.filter(v => v.campaignId === campaign.id
+      || (!v.campaignId && v.client.trim().toLowerCase() === name));
+  }
+
+  /**
    * §5 — the list a Manager monitors, each campaign carrying its progress.
    *
    * Progress is computed here rather than stored, because the only honest
@@ -975,20 +1009,19 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
   app.get(`${P}/campaigns`, asyncHandler(async (_req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
     const [campaigns, videos] = await Promise.all([listCampaigns(), listVideos()]);
-    const publishedByCampaign = new Map<string, number>();
-    for (const v of videos) {
-      if (v.status !== "published") continue;
-      const key = v.campaignId ?? `name:${v.client.trim().toLowerCase()}`;
-      publishedByCampaign.set(key, (publishedByCampaign.get(key) ?? 0) + 1);
-    }
     res.json({
-      campaigns: campaigns.map(c => ({
-        ...c,
-        /* Count by id, and fall back to the name so a campaign created for
-           work that predates it still shows the progress it actually made. */
-        progress: campaignProgress(c, publishedByCampaign.get(c.id)
-          ?? publishedByCampaign.get(`name:${c.name.trim().toLowerCase()}`) ?? 0),
-      })),
+      campaigns: campaigns.map(c => {
+        const mine = videosOfCampaign(c, videos);
+        return {
+          ...c,
+          progress: campaignProgress(c, mine.filter(v => v.status === "published").length),
+          /* Every video the campaign holds, whatever its status. Delete is
+             refused while this is above zero, so the list can say so up front
+             instead of after the confirmation — judging by published videos
+             alone missed every upload still in review. */
+          videoCount: mine.length,
+        };
+      }),
     });
   }));
 
@@ -996,9 +1029,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const user = await requireVideoUser(res); if (!user) return;
     const campaign = await getCampaign(getSingleParam(req.params.id));
     if (!campaign) return sendError(res, 404, "That campaign was not found.");
-    const videos = await listVideos();
-    const mine = videos.filter(v => v.campaignId === campaign.id
-      || (!v.campaignId && v.client.trim().toLowerCase() === campaign.name.trim().toLowerCase()));
+    const mine = videosOfCampaign(campaign, await listVideos());
     res.json({
       campaign,
       progress: campaignProgress(campaign, mine.filter(v => v.status === "published").length),
@@ -1018,7 +1049,24 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const user = await requireVideoUser(res); if (!user) return;
     if (!requireRole(res, user, ["admin", "manager"])) return;
     try {
-      const campaign = await updateCampaign(user, getSingleParam(req.params.id), req.body as CampaignInput);
+      const id = getSingleParam(req.params.id);
+      /* Typed-in videos and events the campaign owns only by its name are tied
+         to it by id first, under the name it has now, so a rename takes them
+         along. Left to the name, they dropped out of the renamed campaign and
+         a new campaign given the old name took them over. Done before the
+         update, so a failure here leaves the old name still owning them. */
+      const before = await getCampaign(id);
+      if (before) {
+        await claimNameOnlyVideos(before.id, before.name);
+        await claimNameOnlyEvents(before.id, before.name);
+      }
+      const campaign = await updateCampaign(user, id, req.body as CampaignInput);
+      /* A rename reaches the videos and events filed under the campaign, which
+         the reports and filters group by name. Run on every edit, not only a
+         rename: it writes nothing when the names already agree, and it puts
+         right a rename whose follow-up failed last time. */
+      await renameCampaignOnVideos(campaign.id, campaign.name);
+      await renameCampaignOnEvents(campaign.id, campaign.name);
       res.json({ campaign });
     } catch (err) { fail(res, err); }
   }));
@@ -1030,9 +1078,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const id = getSingleParam(req.params.id);
     const campaign = await getCampaign(id);
     if (!campaign) return sendError(res, 404, "That campaign was not found.");
-    const videos = await listVideos();
-    const owned = videos.filter(v => v.campaignId === id
-      || (!v.campaignId && v.client.trim().toLowerCase() === campaign.name.trim().toLowerCase())).length;
+    const owned = videosOfCampaign(campaign, await listVideos()).length;
     try {
       await deleteCampaign(user, id, owned);
       res.json({ deleted: true });

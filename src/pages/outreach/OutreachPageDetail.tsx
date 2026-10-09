@@ -7,7 +7,7 @@ import {
 import {
   LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
-import { useOutreachData, pageMetrics, removePage, instagramUrlForHandle, isValidInstagramHandle, formatLocalDate, refreshOutreach, analyzePostPerformance } from '@/lib/outreach-data'
+import { useOutreachData, pageMetrics, removePage, profileUrlForPage, isValidInstagramHandle, formatLocalDate, refreshOutreach, analyzePostPerformance } from '@/lib/outreach-data'
 import { api } from '@/lib/api'
 import AddLivePostsDialog from './AddLivePostsDialog'
 import { EditPageModal } from './OutreachAnalytics'
@@ -130,11 +130,13 @@ export default function OutreachPageDetail() {
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h1 className="text-xl font-serif text-foreground">@{page.handle}</h1>
-                {isValidInstagramHandle(page.handle) && (
-                  <a href={instagramUrlForHandle(page.handle)} target="_blank" rel="noreferrer"
-                    title={`Open @${page.handle} on Instagram`}
+                {/* Same rule as the All Pages row: a Facebook page links to Facebook.
+                    This used to send every page to instagram.com/<handle>. */}
+                {(page.platform === 'facebook' || isValidInstagramHandle(page.handle)) && (
+                  <a href={profileUrlForPage(page)} target="_blank" rel="noreferrer"
+                    title={`Open @${page.handle} on ${page.platform === 'facebook' ? 'Facebook' : 'Instagram'}`}
                     className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80">
-                    <ExternalLink className="w-3 h-3" /> Open on Instagram
+                    <ExternalLink className="w-3 h-3" /> Open on {page.platform === 'facebook' ? 'Facebook' : 'Instagram'}
                   </a>
                 )}
               </div>
@@ -235,7 +237,7 @@ export default function OutreachPageDetail() {
                       <td className="px-3 py-2 text-xs text-foreground">
                         {p.permalink ? (
                           <a href={p.permalink} target="_blank" rel="noreferrer"
-                            title="Open on Instagram"
+                            title={`Open on ${p.platform === 'facebook' ? 'Facebook' : 'Instagram'}`}
                             className="inline-flex items-center gap-1 text-orange-600 hover:underline">
                             {p.date}
                             <ExternalLink className="w-3 h-3" />

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { History, AlertCircle, Film, Calendar, Search, X } from 'lucide-react'
+import { History, Film, Calendar, Search, X } from 'lucide-react'
 import {
-  listActivity, listActivityActors, formatWhen, describeAction,
-  type FeedEntry, type ActivityActor,
+  listActivity, listActivityActors, formatWhen, describeAction, activityNote, loadFailureOf,
+  type FeedEntry, type ActivityActor, type LoadFailure,
 } from '@/lib/outreach-video-data'
+import DriveProblemNotice from './DriveProblemNotice'
 import { useAuth } from '@/hooks/useAuth'
 
 /**
@@ -26,7 +27,7 @@ export default function VideoActivity() {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LoadFailure | null>(null)
 
   useEffect(() => {
     if (isEditor) return
@@ -46,7 +47,7 @@ export default function VideoActivity() {
       setEntries(r.entries)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load the activity log.')
+      setError(loadFailureOf(err, 'Could not load the activity log.'))
     } finally {
       setLoading(false)
     }
@@ -113,13 +114,11 @@ export default function VideoActivity() {
         </div>
       </div>
 
-      {error && (
-        <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> <span>{error}</span>
-        </div>
-      )}
+      {error && <DriveProblemNotice message={error.message} code={error.code} />}
 
-      {loading ? (
+      {/* "No activity recorded yet" would be a claim about a log that was
+          never read. */}
+      {error ? null : loading ? (
         <div className="hub-card text-center py-12 text-sm text-muted-foreground">Loading…</div>
       ) : entries.length === 0 ? (
         <div className="hub-card text-center py-12">
@@ -157,7 +156,7 @@ export default function VideoActivity() {
                     </Link>
                     {' · '}{formatWhen(entry.timestamp)}
                   </p>
-                  {entry.notes && <p className="text-xs text-muted-foreground mt-0.5">{entry.notes}</p>}
+                  {entry.notes && <p className="text-xs text-muted-foreground mt-0.5">{activityNote(entry)}</p>}
                 </div>
                 <span className="text-[11px] text-muted-foreground shrink-0 capitalize">{entry.userRole}</span>
               </li>

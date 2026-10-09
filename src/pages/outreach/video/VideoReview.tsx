@@ -5,8 +5,9 @@ import {
 } from 'lucide-react'
 import {
   reviewQueue, approveVideo, rejectVideo, videoDownloadUrl, videoStreamUrl,
-  formatWhen, type VideoRecord,
+  formatWhen, loadFailureOf, type VideoRecord, type LoadFailure,
 } from '@/lib/outreach-video-data'
+import DriveProblemNotice from './DriveProblemNotice'
 
 /**
  * §11 — the review step: content waiting to be approved or sent back.
@@ -23,6 +24,10 @@ import {
 export default function VideoReview() {
   const [videos, setVideos] = useState<VideoRecord[]>([])
   const [loading, setLoading] = useState(true)
+  /* A queue that could not be read is not an empty queue: "Nothing is
+     waiting for review" over a Drive failure tells the reviewer they are done
+     when nobody knows. Kept apart from `error`, an approval that failed. */
+  const [loadError, setLoadError] = useState<LoadFailure | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [rejecting, setRejecting] = useState<VideoRecord | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -31,9 +36,9 @@ export default function VideoReview() {
     try {
       const { videos } = await reviewQueue()
       setVideos(videos)
-      setError(null)
+      setLoadError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load the review queue.')
+      setLoadError(loadFailureOf(err, 'Could not load the review queue.'))
     } finally {
       setLoading(false)
     }
@@ -68,13 +73,14 @@ export default function VideoReview() {
         </div>
       </div>
 
+      {loadError && <DriveProblemNotice message={loadError.message} code={loadError.code} />}
       {error && (
         <div className="hub-card flex items-start gap-2 text-sm text-rose-600">
           <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> {error}
         </div>
       )}
 
-      {loading ? (
+      {loadError ? null : loading ? (
         <div className="hub-card text-center py-12 text-sm text-muted-foreground">
           <Loader2 className="w-4 h-4 animate-spin inline mr-2" /> Loading…
         </div>

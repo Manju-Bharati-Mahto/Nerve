@@ -111,6 +111,11 @@ export const NOTIFICATION_KINDS = [
   /* §14 Manager "campaign completion", and §14 Admin "new user creation and
      major publishing/system issues". */
   "campaign_completed", "user_created", "system_issue",
+  /* §11 — a reviewer asked to look at a submission. Separate from
+     video_submitted, whose wording is the publisher's ("ready for
+     publishing"): reviewers were being told that about work nobody had
+     approved yet. */
+  "video_review_requested",
 ] as const;
 export type NotificationKind = typeof NOTIFICATION_KINDS[number];
 

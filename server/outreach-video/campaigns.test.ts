@@ -20,7 +20,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { uploadVideo } from "./videos.js";
+import { claimNameOnlyVideos, listVideos, renameCampaignOnVideos, uploadVideo } from "./videos.js";
 
 import { config } from "../config.js";
 import { resetDriveClient } from "./drive-client.js";
@@ -28,7 +28,7 @@ import { resetStoreState } from "./drive-store.js";
 import {
   CAMPAIGN_SUBFOLDERS, CampaignExistsError, CampaignInUseError, CampaignNotFoundError,
   assetFoldersFor, campaignAssetName, campaignProgress, captionFileBody,
-  createCampaign, deleteCampaign, findCampaignByName, getCampaign, listCampaigns, updateCampaign,
+  createCampaign, deleteCampaign, findCampaignByName, getCampaign, isCalendarDate, listCampaigns, updateCampaign,
 } from "./campaigns.js";
 import type { VideoUser } from "./types.js";
 
@@ -118,6 +118,24 @@ describe("what a campaign will not accept", () => {
       .rejects.toThrow(/valid start date/i);
   });
 
+  it("refuses a date that does not exist on the calendar", async () => {
+    // Shaped like a date, so the old check let it through and it was saved.
+    await expect(createCampaign(ACTOR, { name: "X", startDate: "2026-02-31", endDate: "2026-03-05" }))
+      .rejects.toThrow(/valid start date/i);
+    await expect(createCampaign(ACTOR, { name: "X", startDate: "2026-01-01", endDate: "2026-13-01" }))
+      .rejects.toThrow(/valid end date/i);
+    const c = await createCampaign(ACTOR, { ...base, name: "Real" });
+    await expect(updateCampaign(ACTOR, c.id, { endDate: "2027-04-31" })).rejects.toThrow(/valid end date/i);
+  });
+
+  it("knows which dates exist", () => {
+    expect(isCalendarDate("2028-02-29")).toBe(true);
+    expect(isCalendarDate("2027-02-29")).toBe(false);
+    expect(isCalendarDate("2026-04-31")).toBe(false);
+    expect(isCalendarDate("2026-00-10")).toBe(false);
+    expect(isCalendarDate("2026-1-10")).toBe(false);
+  });
+
   it("refuses a backwards date range", async () => {
     await expect(createCampaign(ACTOR, { name: "X", startDate: "2027-03-31", endDate: "2027-01-01" }))
       .rejects.toThrow(/cannot be before/i);
@@ -173,6 +191,16 @@ describe("deleting a campaign", () => {
     await expect(deleteCampaign(ACTOR, c.id, 3)).rejects.toThrow(CampaignInUseError);
     expect(await getCampaign(c.id)).not.toBeNull();
   });
+
+  it("says what can be done instead, not something the app cannot do", async () => {
+    // It used to say "Move or remove them first", and nothing moves or removes a video.
+    const c = await createCampaign(ACTOR, { ...base, name: "Busy" });
+    const refusal = await deleteCampaign(ACTOR, c.id, 1).catch((err: Error) => err.message);
+    expect(refusal).toMatch(/holds 1 video,/);
+    expect(refusal).toMatch(/cannot be deleted/i);
+    expect(refusal).toMatch(/Completed/);
+    expect(refusal).not.toMatch(/move or remove/i);
+  });
 });
 
 describe("the Drive layout (§9)", () => {
@@ -196,6 +224,28 @@ describe("the Drive layout (§9)", () => {
     expect(folders.videos).toContain(path.join("Social Media Campaigns", "Old Campaign", "Videos"));
     expect(folders.captions).toContain(path.join("Old Campaign", "Captions"));
     expect(folders.published).toContain(path.join("Old Campaign", "Published"));
+  });
+
+  it("never files a new campaign into a folder another campaign holds", async () => {
+    /* A rename leaves the folder under the old name, so a new campaign
+       given that name used to land in the same folder as the renamed one. */
+    const first = await createCampaign(ACTOR, { ...base, name: "VLF 2027" });
+    await updateCampaign(ACTOR, first.id, { name: "VLF 2027 old" });
+    const second = await createCampaign(ACTOR, { ...base, name: "VLF 2027" });
+    expect(second.driveFolders?.videos).not.toBe(first.driveFolders?.videos);
+    expect(second.driveFolders?.videos).toContain(path.join("Social Media Campaigns", "VLF 2027 (2)", "Videos"));
+    // The renamed campaign keeps the folder its files are already in.
+    expect((await getCampaign(first.id))?.driveFolders).toEqual(first.driveFolders);
+  });
+
+  it("does not lend a campaign with no folders recorded another campaign's tree", async () => {
+    const holder = await createCampaign(ACTOR, { ...base, name: "VLF 2027" });
+    await updateCampaign(ACTOR, holder.id, { name: "Renamed" });
+    const folders = await assetFoldersFor({ id: "another-campaign", name: "VLF 2027", driveFolders: null });
+    expect(folders.videos).not.toBe(holder.driveFolders?.videos);
+    // …while the campaign itself still resolves to its own.
+    expect(await assetFoldersFor({ id: holder.id, name: "VLF 2027", driveFolders: null }))
+      .toEqual(holder.driveFolders);
   });
 
   it("returns the same folders for the same campaign however it is typed", async () => {
@@ -276,6 +326,118 @@ describe("an upload with and without a campaign record", () => {
     expect(v.title).toBe("Typed Campaign - Video 1");
     expect(v.campaignId).toBeNull();
     expect(v.driveFolders?.videos).toContain(path.join("Social Media Campaigns", "Typed Campaign", "Videos"));
+  });
+
+  it("keeps numbering a campaign by its id across a rename, and starts a new one with the old name at 1", async () => {
+    const original = await createCampaign(ACTOR, { ...base, name: "VLF 2027" });
+    const upload = async (campaignId: string, file: string) => uploadVideo({
+      editor, client: "", campaignId, editorTitle: "t", caption: "c",
+      localPath: await fakeVideo(file), originalName: "a.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+
+    expect((await upload(original.id, "1.mp4")).title).toBe("VLF 2027 - Video 1");
+    await updateCampaign(ACTOR, original.id, { name: "VLF 2027 old" });
+    const reused = await createCampaign(ACTOR, { ...base, name: "VLF 2027" });
+
+    // Used to be "VLF 2027 - Video 2", carrying on the renamed campaign's count…
+    const fresh = await upload(reused.id, "2.mp4");
+    expect(fresh.title).toBe("VLF 2027 - Video 1");
+    // …and the renamed campaign started again at a second "Video 1".
+    const next = await upload(original.id, "3.mp4");
+    expect(next.title).toBe("VLF 2027 old - Video 2");
+    // Two campaigns, two folders.
+    expect(fresh.driveFolders?.videos).not.toBe(next.driveFolders?.videos);
+  });
+
+  it("carries a rename onto the campaign's videos, and only its own", async () => {
+    const campaign = await createCampaign(ACTOR, { ...base, name: "VLF 2027" });
+    const mine = await uploadVideo({
+      editor, client: "", campaignId: campaign.id, editorTitle: "t", caption: "c",
+      localPath: await fakeVideo("m.mp4"), originalName: "m.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+    /* Typed as a name no campaign has. (Typing the campaign's own name now
+       files the upload under the campaign, so it would follow too.) */
+    const typed = await uploadVideo({
+      editor, client: "VLF 2028", editorTitle: "t", caption: "c",
+      localPath: await fakeVideo("t.mp4"), originalName: "t.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+    const renamed = await updateCampaign(ACTOR, campaign.id, { name: "VLF 2027 old" });
+    expect(await renameCampaignOnVideos(renamed.id, renamed.name)).toBe(1);
+    const byId = new Map((await listVideos()).map(v => [v.id, v]));
+    expect(byId.get(mine.id)?.client).toBe("VLF 2027 old");
+    // A typed-in name has no campaign behind it to follow.
+    expect(byId.get(typed.id)?.client).toBe("VLF 2028");
+    // Nothing left to change, so nothing is written.
+    expect(await renameCampaignOnVideos(renamed.id, renamed.name)).toBe(0);
+  });
+
+  it("numbers typed-in work, then the campaign made for it, as one sequence in one folder", async () => {
+    const typed = async (file: string, client = "FIXR legacy") => uploadVideo({
+      editor, client, editorTitle: "t", caption: "c",
+      localPath: await fakeVideo(file), originalName: "a.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+    const picked = async (campaignId: string, file: string) => uploadVideo({
+      editor, client: "", campaignId, editorTitle: "t", caption: "c",
+      localPath: await fakeVideo(file), originalName: "a.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+
+    expect((await typed("1.mp4")).title).toBe("FIXR legacy - Video 1");
+    expect((await typed("2.mp4")).title).toBe("FIXR legacy - Video 2");
+    const campaign = await createCampaign(ACTOR, { ...base, name: "FIXR legacy" });
+
+    /* Used to be a second "Video 1", written over the typed-in Video 1's file
+       in the same folder; then typed and picked uploads each kept their own
+       count, so 3 and 2 came round twice more. */
+    const third = await picked(campaign.id, "3.mp4");
+    expect(third.title).toBe("FIXR legacy - Video 3");
+    const fourth = await typed("4.mp4", "fixr  LEGACY");
+    expect(fourth.title).toBe("FIXR legacy - Video 4");
+    // Typing the campaign's name files the upload under the campaign itself.
+    expect(fourth.campaignId).toBe(campaign.id);
+    expect((await picked(campaign.id, "5.mp4")).title).toBe("FIXR legacy - Video 5");
+
+    const all = await listVideos();
+    expect(all.map(v => v.sequence).sort()).toEqual([1, 2, 3, 4, 5]);
+    expect(new Set(all.map(v => v.driveFileId)).size).toBe(5);
+    expect(new Set(all.map(v => v.driveFolders?.videos)).size).toBe(1);
+  });
+
+  it("never files a typed-in name into the folder a renamed campaign still holds under it", async () => {
+    const campaign = await createCampaign(ACTOR, { ...base, name: "VLF 2027" });
+    const mine = await uploadVideo({
+      editor, client: "", campaignId: campaign.id, editorTitle: "t", caption: "c",
+      localPath: await fakeVideo("m.mp4"), originalName: "m.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+    await updateCampaign(ACTOR, campaign.id, { name: "VLF 2027 old" });
+    // No campaign is called this any more; the renamed one's folder still is.
+    const typed = await uploadVideo({
+      editor, client: "VLF 2027", editorTitle: "t", caption: "c",
+      localPath: await fakeVideo("t.mp4"), originalName: "t.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+    expect(typed.campaignId).toBeNull();
+    expect(typed.driveFolders?.videos).not.toBe(mine.driveFolders?.videos);
+    expect(typed.driveFileId).not.toBe(mine.driveFileId);
+  });
+
+  it("ties typed-in videos a campaign owns by name to it, so a rename takes them along", async () => {
+    const typed = await uploadVideo({
+      editor, client: "VLF 2027", editorTitle: "t", caption: "c",
+      localPath: await fakeVideo("t.mp4"), originalName: "t.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+    const other = await uploadVideo({
+      editor, client: "VLF 2028", editorTitle: "t", caption: "c",
+      localPath: await fakeVideo("o.mp4"), originalName: "o.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+    const campaign = await createCampaign(ACTOR, { ...base, name: "VLF 2027" });
+    expect(await claimNameOnlyVideos(campaign.id, campaign.name)).toBe(1);
+    const renamed = await updateCampaign(ACTOR, campaign.id, { name: "VLF 2027 old" });
+    await renameCampaignOnVideos(renamed.id, renamed.name);
+
+    const byId = new Map((await listVideos()).map(v => [v.id, v]));
+    expect(byId.get(typed.id)).toMatchObject({ campaignId: campaign.id, client: "VLF 2027 old" });
+    // Another name's typed-in work is not the campaign's.
+    expect(byId.get(other.id)).toMatchObject({ campaignId: null, client: "VLF 2028" });
+    expect(await claimNameOnlyVideos(campaign.id, "VLF 2027")).toBe(0);
   });
 
   it("refuses an upload naming a campaign that does not exist", async () => {

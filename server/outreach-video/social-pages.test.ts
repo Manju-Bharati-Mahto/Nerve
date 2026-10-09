@@ -72,11 +72,21 @@ describe("§25 editors and analytics", () => {
     expect(JSON.stringify(pages)).not.toContain("99");
   });
 
-  it("passes pages through untouched for roles that may see analytics", () => {
+  it("passes every page field through for roles that may see analytics", () => {
     for (const role of ["manager", "publisher", "admin"] as const) {
       const { pages, analyticsVisible } = socialPagesForRole([page], role);
       expect(analyticsVisible).toBe(true);
-      expect(pages[0]).toEqual(page);
+      expect(pages[0]).toEqual({ ...page, connected: true });
+    }
+  });
+
+  it("reports the same connected status to every role", () => {
+    // The shared Social Pages screen once told managers and admins every page
+    // was "Not synced", because only the editor shape carried `connected`.
+    for (const synced of [page, { ...page, last_synced_at: null }]) {
+      const answers = (["editor", "manager", "publisher", "admin"] as const).map(role =>
+        (socialPagesForRole([synced], role).pages[0] as { connected: boolean }).connected);
+      expect(new Set(answers)).toEqual(new Set([!!synced.last_synced_at]));
     }
   });
 });

@@ -16,6 +16,7 @@ import { DirectUploadBlockedError, uploadToDrive } from '@/lib/drive-upload'
 import { HttpError } from '@/lib/http'
 import { useAuth } from '@/hooks/useAuth'
 import DriveProblemNotice from './DriveProblemNotice'
+import { mayUploadVideos } from './workflow-roles'
 
 /**
  * §8 — the editor's own work. KPI cards for Total / Draft / Submitted /
@@ -39,6 +40,13 @@ const EDITOR_GROUPS: Record<Exclude<EditorFilter, 'all'>, VideoStatus[]> = {
 }
 
 export default function VideoMyVideos() {
+  /* A Manager reaches this page as the department's list, and a tab grant
+     can open it to anyone — but only Editors and Admins may upload, submit
+     or start a revision (the API refuses everyone else). Offering those to
+     a Manager meant filling in the whole upload form to be told "Your role
+     cannot perform that action." */
+  const { role } = useAuth()
+  const canUpload = mayUploadVideos(role)
   const [videos, setVideos] = useState<VideoRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<{ message: string; code: DriveErrorCode | null } | null>(null)
@@ -80,6 +88,10 @@ export default function VideoMyVideos() {
     notSubmitted: videos.filter(v => EDITOR_GROUPS.not_submitted.includes(v.status)).length,
   }), [videos])
 
+  /* Counted from a list that was never read, the tiles would say "0 My
+     uploads" over a notice saying the list could not be read. */
+  const known = !loading && !error
+
   const shown = useMemo(
     () => filter === 'all' ? videos : videos.filter(v => EDITOR_GROUPS[filter].includes(v.status)),
     [videos, filter],
@@ -120,27 +132,32 @@ export default function VideoMyVideos() {
             </p>
           </div>
         </div>
-        <UploadButton disabled={driveReady === false || uploading} onUploaded={refresh}
-          directUpload={directUpload} uploading={uploading} setUploading={setUploading} />
+        {canUpload && (
+          <UploadButton disabled={driveReady === false || uploading} onUploaded={refresh}
+            directUpload={directUpload} uploading={uploading} setUploading={setUploading} />
+        )}
       </div>
 
-      {driveReady === false && (
+      {/* When the list itself failed for a Drive reason, DriveProblemNotice
+          below already says what is wrong and who fixes it; a second banner
+          with different advice only contradicts it. */}
+      {canUpload && driveReady === false && !error?.code && (
         <div className="hub-card bg-amber-50 border-amber-200 flex items-start gap-2 text-sm text-amber-900">
           <CloudOff className="w-4 h-4 mt-0.5 shrink-0" />
           <span>
-            Google Drive isn't connected yet, so uploads are unavailable. An administrator
-            needs to finish the Drive setup before this workflow can be used.
+            Google Drive isn't connected yet, so uploads are unavailable. An outreach Admin or
+            Manager can connect it under Video Workflow → Google Drive.
           </span>
         </div>
       )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Kpi label="My uploads" value={counts.total} onClick={() => setFilter('all')} active={filter === 'all'} />
-        <Kpi label="Under review" value={counts.underReview} onClick={() => setFilter('under_review')} active={filter === 'under_review'} />
-        <Kpi label="Approved" value={counts.approved} onClick={() => setFilter('approved')} active={filter === 'approved'} />
-        <Kpi label="Rejected" value={counts.rejected} onClick={() => setFilter('rejected')} active={filter === 'rejected'} />
+        <Kpi label="My uploads" value={known ? counts.total : null} onClick={() => setFilter('all')} active={filter === 'all'} />
+        <Kpi label="Under review" value={known ? counts.underReview : null} onClick={() => setFilter('under_review')} active={filter === 'under_review'} />
+        <Kpi label="Approved" value={known ? counts.approved : null} onClick={() => setFilter('approved')} active={filter === 'approved'} />
+        <Kpi label="Rejected" value={known ? counts.rejected : null} onClick={() => setFilter('rejected')} active={filter === 'rejected'} />
       </div>
-      {counts.notSubmitted > 0 && (
+      {known && counts.notSubmitted > 0 && (
         <button onClick={() => setFilter('not_submitted')}
           className="text-[12px] text-amber-700 hover:underline">
           {counts.notSubmitted} video{counts.notSubmitted === 1 ? ' has' : 's have'} not been sent for review yet.
@@ -168,7 +185,9 @@ export default function VideoMyVideos() {
               <tr><td colSpan={6} className="px-3 py-12 text-center text-sm text-muted-foreground">
                 {error && videos.length === 0
                   ? 'The videos could not be loaded — see the message above.'
-                  : videos.length === 0 ? 'No videos yet — upload your first cut.' : 'No videos with that status.'}
+                  : videos.length === 0
+                    ? (canUpload ? 'No videos yet — upload your first cut.' : 'No videos yet.')
+                    : 'No videos with that status.'}
               </td></tr>
             ) : shown.map(v => (
               <tr key={v.id} className="border-b border-border last:border-0 hover:bg-accent/40">
@@ -190,13 +209,13 @@ export default function VideoMyVideos() {
                 </td>
                 <td className="px-3 py-2.5 text-right">
                   {/* §11 — the same act from either side of a rejection. */}
-                  {(v.status === 'uploaded' || v.status === 'revision') && (
+                  {canUpload && (v.status === 'uploaded' || v.status === 'revision') && (
                     <button onClick={() => handleSubmit(v)}
                       className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1">
                       <Send className="w-3 h-3" /> Submit
                     </button>
                   )}
-                  {v.status === 'rejected' && (
+                  {canUpload && v.status === 'rejected' && (
                     <button onClick={() => handleRevise(v)}
                       className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1">
                       <RotateCcw className="w-3 h-3" /> Start revision
@@ -212,11 +231,12 @@ export default function VideoMyVideos() {
   )
 }
 
-function Kpi({ label, value, onClick, active }: { label: string; value: number; onClick: () => void; active: boolean }) {
+/** `null` is "not known": a dash, never a zero. */
+function Kpi({ label, value, onClick, active }: { label: string; value: number | null; onClick: () => void; active: boolean }) {
   return (
     <button onClick={onClick}
       className={`hub-card text-left py-3 transition-colors ${active ? 'ring-2 ring-orange-400' : 'hover:bg-accent/40'}`}>
-      <div className="text-2xl font-serif text-foreground leading-none">{value}</div>
+      <div className="text-2xl font-serif text-foreground leading-none">{value ?? '—'}</div>
       <div className="text-[11px] text-muted-foreground mt-1">{label}</div>
     </button>
   )

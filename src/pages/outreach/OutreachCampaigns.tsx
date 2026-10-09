@@ -3,12 +3,16 @@ import { Link, useNavigate } from 'react-router-dom'
 import { Send, Plus, Search, X, ChevronRight, Filter as FilterIcon, Trash2, Upload, CheckCircle, AlertCircle, ArrowDown } from 'lucide-react'
 import {
   useOutreachData, addCampaign, updateCampaign, removeCampaign, campaignMetrics,
-  addPage, addLivePostsByUrl, slug,
+  addLivePostsByUrl, refreshOutreach, formatLocalDate,
   INDIAN_STATES,
   type Campaign, type CampaignStatus,
 } from '@/lib/outreach-data'
 import { parseCampaignSheet } from '@/lib/outreach-import'
 import AddLivePostsDialog from './AddLivePostsDialog'
+import {
+  MAX_BUDGET, toBudget, budgetProblem, isRealIsoDate,
+  ensureInstagramPage, instagramPageIndex, handleKey, PageNeedsPlaceError,
+} from './import-pages'
 
 const STATUS_CFG: Record<CampaignStatus, { label: string; cls: string }> = {
   planning:  { label: 'Planning',  cls: 'bg-blue-100 text-blue-700' },
@@ -394,10 +398,13 @@ function CreateCampaignModal({
     }
   }
 
-  const canStep1 = !!form.name && !!form.startDate
+  // Trimmed, because submit sends the trimmed name: "   " used to pass this
+  // step and fail only on the last one with "Invalid campaign payload.".
+  const canStep1 = !!form.name.trim() && !!form.startDate
   const canStep2 = form.budgetPosts + form.budgetStories + form.budgetReels > 0
-  // Need at least one assignee — page OR creator — to advance past step 3.
-  const canStep3 = form.pageIds.length + form.creatorIds.length > 0
+  // No step-3 gate: the server accepts a campaign with nobody assigned and
+  // Edit can add pages later. Requiring a tick left a fresh setup — no pages
+  // or creators yet — with a greyed-out Next and no reason given.
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-fade-in">
@@ -454,28 +461,36 @@ function CreateCampaignModal({
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="hub-label">Posts</label>
-                  <input type="number" min={0} className="hub-input" value={form.budgetPosts}
-                    onChange={e => setForm(f => ({ ...f, budgetPosts: Number(e.target.value) || 0 }))} />
+                  <input type="number" min={0} max={MAX_BUDGET} step={1} className="hub-input" value={form.budgetPosts}
+                    onChange={e => setForm(f => ({ ...f, budgetPosts: toBudget(e.target.value) }))} />
                 </div>
                 <div>
                   <label className="hub-label">Stories</label>
-                  <input type="number" min={0} className="hub-input" value={form.budgetStories}
-                    onChange={e => setForm(f => ({ ...f, budgetStories: Number(e.target.value) || 0 }))} />
+                  <input type="number" min={0} max={MAX_BUDGET} step={1} className="hub-input" value={form.budgetStories}
+                    onChange={e => setForm(f => ({ ...f, budgetStories: toBudget(e.target.value) }))} />
                 </div>
                 <div>
                   <label className="hub-label">Reels</label>
-                  <input type="number" min={0} className="hub-input" value={form.budgetReels}
-                    onChange={e => setForm(f => ({ ...f, budgetReels: Number(e.target.value) || 0 }))} />
+                  <input type="number" min={0} max={MAX_BUDGET} step={1} className="hub-input" value={form.budgetReels}
+                    onChange={e => setForm(f => ({ ...f, budgetReels: toBudget(e.target.value) }))} />
                 </div>
               </div>
               <div className="hub-card bg-orange-50 border-orange-200 text-xs text-orange-900 py-2">
                 Total budget: <strong>{form.budgetPosts + form.budgetStories + form.budgetReels}</strong> units across {form.pageIds.length + form.creatorIds.length || '—'} pages + creators
               </div>
+              {!canStep2 && (
+                <p className="text-[11px] text-muted-foreground">Enter at least one post, story or reel to continue (whole numbers, up to {MAX_BUDGET.toLocaleString('en-IN')} each).</p>
+              )}
             </>
           )}
 
           {step === 3 && (
             <>
+              {form.pageIds.length + form.creatorIds.length === 0 && (
+                <p className="text-[11px] text-muted-foreground">
+                  Nothing selected yet — that's fine; you can assign pages and creators later from the campaign's Edit.
+                </p>
+              )}
               {/* Pages section */}
               <div>
                 <div className="flex items-center justify-between mb-2">
@@ -561,7 +576,7 @@ function CreateCampaignModal({
           </button>
           {step < 4 ? (
             <button onClick={() => setStep(step + 1)}
-              disabled={(step === 1 && !canStep1) || (step === 2 && !canStep2) || (step === 3 && !canStep3)}
+              disabled={(step === 1 && !canStep1) || (step === 2 && !canStep2)}
               className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">
               Next
             </button>
@@ -618,43 +633,65 @@ function ImportCampaignsModal({ onClose }: { onClose: () => void }) {
 
       // Local indexes, updated as we create things so later groups see them.
       const campaignByName = new Map(campaigns.map(c => [c.name.trim().toLowerCase(), c]))
-      const pageIdByHandle = new Map(pages.map(p => [p.handle.trim().toLowerCase().replace(/^@/, ''), p.id]))
+      const pageIdByHandle = instagramPageIndex(pages)
 
       for (const g of groups) {
         try {
+          const existing = campaignByName.get(g.name.trim().toLowerCase())
+
+          // 0) Cells the server would refuse — checked before any page is
+          //    created, so a campaign that cannot be saved leaves nothing
+          //    half-made behind. An impossible date ("31/02/2026") used to
+          //    reach Postgres and come back as "Internal server error.".
+          const problems: string[] = []
+          const badDate = !!g.startDate && !isRealIsoDate(g.startDate)
+          if (badDate && !existing) problems.push(`start date ${g.startDate} is not a real date`)
+          for (const [label, n] of [['Posts', g.budgetPosts], ['Stories', g.budgetStories], ['Reels', g.budgetReels]] as const) {
+            const p = budgetProblem(label, n)
+            if (p) problems.push(p)
+          }
+          if (problems.length > 0) {
+            outcome.skipped.push(`"${g.name}" — not imported: ${problems.join('; ')}. Fix the sheet and upload it again.`)
+            continue
+          }
+          if (badDate) outcome.skipped.push(`"${g.name}" — start date ${g.startDate} is not a real date; kept the campaign's current start date.`)
+
           // 1) Resolve this group's pages, creating any the DB doesn't have.
-          //    Created ids are deterministic (slug of the handle — the same
-          //    derivation the server uses), so no refetch round-trip is needed.
+          //    The id is whatever the server answers with — it is not always
+          //    slug(handle), since a taken id gets a suffix. A page that cannot
+          //    be created is reported on its own and the campaign still saves
+          //    with the rest; one missing State used to drop the whole campaign.
           const rows: { pageId: string; handle: string; variant: string; links: string[] }[] = []
           for (const row of g.pages) {
-            const key = row.handle.toLowerCase()
-            let pid = pageIdByHandle.get(key)
-            if (!pid) {
-              setProgress(`"${g.name}" — creating page @${row.handle}…`)
-              await addPage({
-                handle: row.handle, platform: 'instagram', geography: g.state, state: g.state,
-                type: 'state', followerTier: '3', contentTypes: [], contentPreferences: [],
-                followers: 0, inventoryPosts: 0, inventoryStories: 0,
+            try {
+              if (!pageIdByHandle.has(handleKey(row.handle))) {
+                setProgress(`"${g.name}" — creating page @${row.handle}…`)
+              }
+              const { id, created } = await ensureInstagramPage({
+                handle: row.handle, geography: g.state, state: g.state,
+                type: 'state', followerTier: '3',
+                inventoryPosts: 0, inventoryStories: 0,
                 notes: `Created by campaign import (${g.name})`,
-              })
-              pid = slug(row.handle)
-              pageIdByHandle.set(key, pid)
-              outcome.pagesCreated++
+              }, pageIdByHandle)
+              if (created) outcome.pagesCreated++
+              rows.push({ pageId: id, handle: row.handle, variant: row.variant, links: row.links })
+            } catch (err) {
+              outcome.skipped.push(err instanceof PageNeedsPlaceError
+                ? `"${g.name}" — @${err.handle} not added: it is a new page and the sheet gives this campaign no State. Add a State column (or add the page on All Pages) and upload again — the campaign is updated, not duplicated.`
+                : `"${g.name}" — @${row.handle} not added: ${err instanceof Error ? err.message : 'failed'}`)
             }
-            rows.push({ pageId: pid, handle: row.handle, variant: row.variant, links: row.links })
           }
 
           // 2) Create the campaign — or update it when the name already
           //    exists (pages/variants merge in; non-empty sheet values win).
           setProgress(`"${g.name}" — saving campaign…`)
-          const existing = campaignByName.get(g.name.trim().toLowerCase())
           let campaign: Campaign
           if (existing) {
             const patch: Partial<Campaign> = {
               assignedPageIds: Array.from(new Set([...existing.assignedPageIds, ...rows.map(r => r.pageId)])),
               creativeVariants: Array.from(new Set([...existing.creativeVariants, ...g.variants])),
             }
-            if (g.startDate) patch.startDate = g.startDate
+            if (g.startDate && !badDate) patch.startDate = g.startDate
             if (g.state) patch.state = g.state
             if (g.goal) patch.goal = g.goal
             if (g.budgetPosts) patch.budgetPosts = g.budgetPosts
@@ -664,7 +701,8 @@ function ImportCampaignsModal({ onClose }: { onClose: () => void }) {
             campaign = { ...existing, ...patch }
             outcome.campaignsUpdated++
           } else {
-            const startDate = g.startDate || new Date().toISOString().slice(0, 10)
+            // Local day, not toISOString's UTC day — before 05:30 IST that is yesterday.
+            const startDate = g.startDate || formatLocalDate(new Date())
             campaign = await addCampaign({
               name: g.name, startDate, endDate: '',
               state: g.state, goal: g.goal, status: 'planning',
@@ -697,6 +735,9 @@ function ImportCampaignsModal({ onClose }: { onClose: () => void }) {
           outcome.skipped.push(`"${g.name}" — ${err instanceof Error ? err.message : 'failed'}`)
         }
       }
+      // Pages were created straight through the API; campaigns refetch on
+      // save, but a sheet whose campaigns all failed would leave them unseen.
+      if (outcome.pagesCreated > 0) await refreshOutreach().catch(() => {})
       setDone(outcome)
     } catch (err) {
       outcome.skipped.push(err instanceof Error ? err.message : 'Could not read the file.')

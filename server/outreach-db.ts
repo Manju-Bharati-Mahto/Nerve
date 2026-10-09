@@ -15,7 +15,7 @@
  * is empty); campaigns and posts are user-created or sync-derived.
  */
 import { randomBytes } from "node:crypto";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { config } from "./config.js";
 
 const pool = new Pool({ connectionString: config.databaseUrl });
@@ -295,6 +295,25 @@ export async function bootstrapOutreach() {
   await pool.query(`ALTER TABLE outreach_campaigns ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT ''`);
   // Campaigns are open-ended: end_date became optional (empty = no end date).
   await pool.query(`ALTER TABLE outreach_campaigns ALTER COLUMN end_date DROP NOT NULL`);
+  /* Deleting a page or creator used to leave its id in every campaign's
+     assignment array (the arrays aren't foreign keys), and such a ghost can't
+     be unticked from the UI. deletePage/deleteCreator now clear it; this
+     clears the ones already stored. Idempotent: no ghosts, no rows touched. */
+  for (const [column, table] of [["assigned_page_ids", "outreach_pages"], ["assigned_creator_ids", "outreach_creators"]] as const) {
+    await pool.query(`
+      UPDATE outreach_campaigns c
+         SET ${column} = COALESCE((
+               SELECT jsonb_agg(e.id ORDER BY e.n)
+                 FROM jsonb_array_elements_text(c.${column}) WITH ORDINALITY AS e(id, n)
+                WHERE EXISTS (SELECT 1 FROM ${table} t WHERE t.id = e.id)
+             ), '[]'::jsonb)
+       WHERE jsonb_typeof(c.${column}) = 'array'
+         AND EXISTS (
+               SELECT 1 FROM jsonb_array_elements_text(c.${column}) AS g(id)
+                WHERE NOT EXISTS (SELECT 1 FROM ${table} t WHERE t.id = g.id)
+             )
+    `);
+  }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS outreach_posts (
@@ -569,7 +588,61 @@ export class OutreachDuplicateError extends Error {
   constructor(message: string) { super(message); this.name = "OutreachDuplicateError"; }
 }
 
+/**
+ * A request that names something that isn't there — a campaign, page or
+ * creator id with no row. Routes answer it 400. Without it these reached the
+ * database and failed a foreign key (a bare 500 "Internal server error."), or
+ * worse, were stored as references to nothing.
+ */
+export class OutreachValidationError extends Error {
+  constructor(message: string) { super(message); this.name = "OutreachValidationError"; }
+}
+
 const isUniqueViolation = (err: unknown) => (err as { code?: string } | null)?.code === "23505";
+
+async function inTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await work(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+type OutreachTable = "outreach_pages" | "outreach_creators" | "outreach_campaigns";
+
+/** The ids in `ids` that have no row in `table`, de-duplicated, in the order given. */
+async function missingIds(table: OutreachTable, ids: string[]): Promise<string[]> {
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return [];
+  const { rows } = await pool.query<{ id: string }>(`SELECT id FROM ${table} WHERE id = ANY($1::text[])`, [unique]);
+  const found = new Set(rows.map(r => r.id));
+  return unique.filter(id => !found.has(id));
+}
+
+async function assertAllExist(table: OutreachTable, ids: string[], noun: string): Promise<void> {
+  const missing = await missingIds(table, ids);
+  if (missing.length) {
+    const named = missing.map(id => id || '""');   // a blank id would otherwise print as nothing
+    throw new OutreachValidationError(`Unknown ${noun} id${missing.length === 1 ? "" : "s"}: ${named.join(", ")}.`);
+  }
+}
+
+/**
+ * A campaign's assignments are JSONB arrays, not foreign keys, so nothing but
+ * this stops a ghost id being stored — and a ghost counts in the campaign's
+ * "N pages" while having no row the Edit modal could untick.
+ */
+async function assertMembersExist(pageIds: string[] | undefined, creatorIds: string[] | undefined): Promise<void> {
+  await assertAllExist("outreach_pages", pageIds ?? [], "page");
+  await assertAllExist("outreach_creators", creatorIds ?? [], "creator");
+}
 
 /**
  * Inserts a row whose primary key is derived from a name, without letting the
@@ -711,8 +784,21 @@ function mapPageRow(row: OutreachPage): OutreachPage {
   };
 }
 
+/**
+ * Deletes a page and takes it out of every campaign it was assigned to.
+ * The assignment is a JSONB array rather than a foreign key, so the row's
+ * CASCADE never reached it: the campaign kept the id, went on saying
+ * "1 pages" over an empty delivery table, and offered no row to untick.
+ */
 export async function deletePage(id: string): Promise<void> {
-  await pool.query(`DELETE FROM outreach_pages WHERE id = $1`, [id]);
+  await inTransaction(async client => {
+    await client.query(
+      `UPDATE outreach_campaigns SET assigned_page_ids = assigned_page_ids - $1::text, updated_at = NOW()
+        WHERE assigned_page_ids ? $1::text`,
+      [id],
+    );
+    await client.query(`DELETE FROM outreach_pages WHERE id = $1`, [id]);
+  });
 }
 
 // ── Creator CRUD ───────────────────────────────────────────────────────────
@@ -754,12 +840,21 @@ export async function createCreator(input: CreateCreatorInput): Promise<Outreach
   return mapCreatorRow(row);
 }
 
+/* The columns outreach_creators actually has. The creator payload used to be
+   the page payload, so `platform` and `content_preferences` arrived here and
+   were written into an UPDATE on columns that don't exist — a 500. A key
+   outside this list is never a column name. */
+const CREATOR_COLUMNS = new Set([
+  "handle", "geography", "state", "type", "follower_tier", "content_types",
+  "followers", "inventory_posts", "inventory_stories", "notes", "last_synced_at",
+]);
+
 export async function updateCreator(id: string, patch: Partial<CreateCreatorInput> & { last_synced_at?: string }): Promise<OutreachCreator | null> {
   const fields: string[] = [];
   const values: unknown[] = [];
   let i = 1;
   for (const [k, v] of Object.entries(patch)) {
-    if (v === undefined) continue;
+    if (v === undefined || !CREATOR_COLUMNS.has(k)) continue;
     if (k === "content_types") {
       fields.push(`${k} = $${i++}::jsonb`);
       values.push(JSON.stringify(v));
@@ -781,8 +876,16 @@ export async function updateCreator(id: string, patch: Partial<CreateCreatorInpu
   return rows[0] ? mapCreatorRow(rows[0]) : null;
 }
 
+/** Deletes a creator and takes it out of every campaign — see deletePage. */
 export async function deleteCreator(id: string): Promise<void> {
-  await pool.query(`DELETE FROM outreach_creators WHERE id = $1`, [id]);
+  await inTransaction(async client => {
+    await client.query(
+      `UPDATE outreach_campaigns SET assigned_creator_ids = assigned_creator_ids - $1::text, updated_at = NOW()
+        WHERE assigned_creator_ids ? $1::text`,
+      [id],
+    );
+    await client.query(`DELETE FROM outreach_creators WHERE id = $1`, [id]);
+  });
 }
 
 export async function getCreator(id: string): Promise<OutreachCreator | null> {
@@ -849,6 +952,7 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Outrea
   const dup = await pool.query(
     `SELECT name FROM outreach_campaigns WHERE lower(trim(name)) = lower($1) LIMIT 1`, [name]);
   if (dup.rowCount) throw new OutreachDuplicateError(`A campaign called “${dup.rows[0].name}” already exists.`);
+  await assertMembersExist(input.assigned_page_ids, input.assigned_creator_ids);
 
   const row = await insertWithFreeId(slug(name) || newId("c"), async id => (await pool.query<OutreachCampaign>(
     `INSERT INTO outreach_campaigns
@@ -868,6 +972,7 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Outrea
 }
 
 export async function updateCampaign(id: string, patch: Partial<CreateCampaignInput>): Promise<OutreachCampaign | null> {
+  await assertMembersExist(patch.assigned_page_ids, patch.assigned_creator_ids);
   const fields: string[] = [];
   const values: unknown[] = [];
   let i = 1;
@@ -997,10 +1102,24 @@ export interface CreatePlannedPostInput {
  */
 export async function createPostsBulk(inputs: CreatePlannedPostInput[]): Promise<OutreachPost[]> {
   if (inputs.length === 0) return [];
+  /* A campaign, page or creator that doesn't exist used to fail its foreign
+     key mid-loop: a 500, with the rows before it already saved. Name it up
+     front instead, and insert all-or-nothing. Every id the insert will write
+     is checked, the blank string included: skipping falsy ids let "" past the
+     check and into the foreign key. */
+  const idsOf = (key: "campaign_id" | "page_id" | "creator_id") =>
+    inputs.map(p => p[key]).filter((v): v is string => v != null);
+  await assertAllExist("outreach_campaigns", idsOf("campaign_id"), "campaign");
+  await assertAllExist("outreach_pages", idsOf("page_id"), "page");
+  await assertAllExist("outreach_creators", idsOf("creator_id"), "creator");
+  return inTransaction(client => insertPlannedPosts(client, inputs));
+}
+
+async function insertPlannedPosts(client: PoolClient, inputs: CreatePlannedPostInput[]): Promise<OutreachPost[]> {
   const created: OutreachPost[] = [];
   for (const input of inputs) {
     const id = newId("post");
-    const { rows } = await pool.query<OutreachPost>(
+    const { rows } = await client.query<OutreachPost>(
       `INSERT INTO outreach_posts
          (id, instagram_id, page_id, creator_id, campaign_id, date, type, creative_variant, caption,
           status, likes, comments, views, saves, shares)

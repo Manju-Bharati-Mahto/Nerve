@@ -5,10 +5,11 @@ import {
 } from 'lucide-react'
 import {
   listEvents, createEvent, eventCounts, listVideos, listCampaigns, listSocialPages, listPublishers,
-  localDay, formatWhen, calendarStatusOf,
+  localDay, formatWhen, calendarStatusOf, loadFailureOf,
   CALENDAR_STATUS, CONTENT_TYPES,
-  type EventRecord, type EventCounts, type VideoRecord, type Campaign, type CalendarStatus,
+  type EventRecord, type EventCounts, type VideoRecord, type Campaign, type CalendarStatus, type LoadFailure,
 } from '@/lib/outreach-video-data'
+import DriveProblemNotice from './DriveProblemNotice'
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
@@ -53,7 +54,7 @@ export default function VideoCalendar() {
   const [view, setView] = useState<'month' | 'list'>('month')
   const [cursor, setCursor] = useState(() => new Date())
   const [creating, setCreating] = useState<string | null>(null)   // the clicked day
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LoadFailure | null>(null)
   const [loading, setLoading] = useState(true)
 
   const refresh = useCallback(async () => {
@@ -66,7 +67,7 @@ export default function VideoCalendar() {
       setVideos(videos)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load the calendar.')
+      setError(loadFailureOf(err, 'Could not load the calendar.'))
     } finally {
       setLoading(false)
     }
@@ -157,6 +158,10 @@ export default function VideoCalendar() {
   }, [entries])
 
   const running = campaigns.filter(c => c.status === 'running' || c.status === 'upcoming')
+  /* Counted from lists that were never read, the tiles would say "0 Pending"
+     over a notice saying nothing could be read — the same false "nothing
+     here" the empty states used to make. */
+  const known = !loading && !error
 
   return (
     <div className="animate-fade-in space-y-5">
@@ -172,18 +177,23 @@ export default function VideoCalendar() {
             </p>
           </div>
         </div>
-        <button onClick={() => setCreating(today)}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-orange-600 text-white hover:opacity-90">
-          <Plus className="w-4 h-4" /> New event
-        </button>
+        {/* Events are stored in Drive too, so with Drive down the form could
+            only fail at the last step. */}
+        {!error?.code && (
+          <button onClick={() => setCreating(today)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-orange-600 text-white hover:opacity-90">
+            <Plus className="w-4 h-4" /> New event
+          </button>
+        )}
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {(Object.keys(CALENDAR_STATUS) as CalendarStatus[]).map(st => (
-          <Kpi key={st} label={CALENDAR_STATUS[st].label} value={tally[st]} accent={st === 'pending' && tally[st] > 0} />
+          <Kpi key={st} label={CALENDAR_STATUS[st].label} value={known ? tally[st] : null}
+            accent={known && st === 'pending' && tally[st] > 0} />
         ))}
       </div>
-      {counts && counts.unassigned > 0 && (
+      {known && counts && counts.unassigned > 0 && (
         <p className="text-[12px] text-amber-700">
           {counts.unassigned} event{counts.unassigned === 1 ? ' has' : 's have'} no editor yet.
         </p>
@@ -200,36 +210,35 @@ export default function VideoCalendar() {
         </div>
       )}
 
-      {error && (
-        <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> <span>{error}</span>
+      {error && <DriveProblemNotice message={error.message} code={error.code} />}
+
+      {/* An empty month grid under a failed load reads as an empty month. */}
+      {!error && (
+        <div className="hub-card py-3 flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1">
+            <button onClick={() => setCursor(new Date(year, month - 1, 1))}
+              className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground"><ChevronLeft className="w-4 h-4" /></button>
+            <span className="text-sm font-medium text-foreground min-w-[150px] text-center">
+              {cursor.toLocaleString(undefined, { month: 'long', year: 'numeric' })}
+            </span>
+            <button onClick={() => setCursor(new Date(year, month + 1, 1))}
+              className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground"><ChevronRight className="w-4 h-4" /></button>
+          </div>
+          <button onClick={() => setCursor(new Date())}
+            className="text-xs px-2.5 py-1.5 rounded-lg border border-border hover:bg-accent">Today</button>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {(Object.keys(CALENDAR_STATUS) as CalendarStatus[]).map(st => (
+              <span key={st} className={`hub-badge text-[10px] ${CALENDAR_STATUS[st].cls}`}>{CALENDAR_STATUS[st].label}</span>
+            ))}
+          </div>
+          <div className="ml-auto flex items-center gap-1">
+            <ViewTab active={view === 'month'} onClick={() => setView('month')} icon={Grid3x3} label="Month" />
+            <ViewTab active={view === 'list'} onClick={() => setView('list')} icon={List} label="List" />
+          </div>
         </div>
       )}
 
-      <div className="hub-card py-3 flex items-center gap-2 flex-wrap">
-        <div className="flex items-center gap-1">
-          <button onClick={() => setCursor(new Date(year, month - 1, 1))}
-            className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground"><ChevronLeft className="w-4 h-4" /></button>
-          <span className="text-sm font-medium text-foreground min-w-[150px] text-center">
-            {cursor.toLocaleString(undefined, { month: 'long', year: 'numeric' })}
-          </span>
-          <button onClick={() => setCursor(new Date(year, month + 1, 1))}
-            className="p-1.5 rounded-lg hover:bg-accent text-muted-foreground"><ChevronRight className="w-4 h-4" /></button>
-        </div>
-        <button onClick={() => setCursor(new Date())}
-          className="text-xs px-2.5 py-1.5 rounded-lg border border-border hover:bg-accent">Today</button>
-        <div className="flex items-center gap-1.5 flex-wrap">
-          {(Object.keys(CALENDAR_STATUS) as CalendarStatus[]).map(st => (
-            <span key={st} className={`hub-badge text-[10px] ${CALENDAR_STATUS[st].cls}`}>{CALENDAR_STATUS[st].label}</span>
-          ))}
-        </div>
-        <div className="ml-auto flex items-center gap-1">
-          <ViewTab active={view === 'month'} onClick={() => setView('month')} icon={Grid3x3} label="Month" />
-          <ViewTab active={view === 'list'} onClick={() => setView('list')} icon={List} label="List" />
-        </div>
-      </div>
-
-      {loading ? (
+      {error ? null : loading ? (
         <div className="hub-card text-center py-12 text-sm text-muted-foreground">Loading…</div>
       ) : view === 'month' ? (
         <div className="hub-card">
@@ -334,10 +343,11 @@ function ViewTab({ active, onClick, icon: Icon, label }: {
   )
 }
 
-function Kpi({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
+/** `null` is "not known": a dash, never a zero. */
+function Kpi({ label, value, accent }: { label: string; value: number | null; accent?: boolean }) {
   return (
     <div className={`hub-card py-3 ${accent ? 'border-amber-300 bg-amber-50/50' : ''}`}>
-      <div className="text-2xl font-serif text-foreground leading-none">{value}</div>
+      <div className="text-2xl font-serif text-foreground leading-none">{value ?? '—'}</div>
       <div className="text-[11px] text-muted-foreground mt-1">{label}</div>
     </div>
   )

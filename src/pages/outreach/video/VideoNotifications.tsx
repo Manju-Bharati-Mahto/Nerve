@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Bell, AlertCircle, CheckCheck } from 'lucide-react'
+import { Bell, CheckCheck } from 'lucide-react'
 import {
-  listNotifications, markNotificationsRead, formatWhen,
-  type WorkflowNotification,
+  listNotifications, markNotificationsRead, formatWhen, loadFailureOf,
+  type WorkflowNotification, type LoadFailure,
 } from '@/lib/outreach-video-data'
+import DriveProblemNotice from './DriveProblemNotice'
 
 /**
  * §19 — the four in-app notifications, newest first. Opening the page doesn't
@@ -16,7 +17,7 @@ export default function VideoNotifications() {
   const [items, setItems] = useState<WorkflowNotification[]>([])
   const [unread, setUnread] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LoadFailure | null>(null)
   const [busy, setBusy] = useState(false)
 
   const refresh = useCallback(async () => {
@@ -26,7 +27,7 @@ export default function VideoNotifications() {
       setUnread(r.unread)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load notifications.')
+      setError(loadFailureOf(err, 'Could not load notifications.'))
     } finally {
       setLoading(false)
     }
@@ -54,9 +55,12 @@ export default function VideoNotifications() {
           </div>
           <div>
             <h1 className="text-2xl font-serif text-foreground">Notifications</h1>
-            <p className="text-sm text-muted-foreground">
-              {unread > 0 ? `${unread} unread` : 'Nothing unread.'}
-            </p>
+            {/* Unread counts are only known once the list has been read. */}
+            {!error && (
+              <p className="text-sm text-muted-foreground">
+                {unread > 0 ? `${unread} unread` : 'Nothing unread.'}
+              </p>
+            )}
           </div>
         </div>
         {unread > 0 && (
@@ -67,13 +71,9 @@ export default function VideoNotifications() {
         )}
       </div>
 
-      {error && (
-        <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> <span>{error}</span>
-        </div>
-      )}
+      {error && <DriveProblemNotice message={error.message} code={error.code} />}
 
-      {loading ? (
+      {error ? null : loading ? (
         <div className="hub-card text-center py-12 text-sm text-muted-foreground">Loading…</div>
       ) : items.length === 0 ? (
         <div className="hub-card text-center py-12">

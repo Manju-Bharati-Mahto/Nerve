@@ -14,6 +14,7 @@
  * they acted, so history stays readable even after the account is gone.
  */
 import { randomUUID } from "node:crypto";
+import type { AppRole } from "../db.js";
 import { mutateUsers, readUsers } from "./drive-store.js";
 import type { ActivityEntry, VideoRole, VideoUser } from "./types.js";
 
@@ -23,6 +24,44 @@ export function videoRoleForNerveRole(role: string): VideoRole | null {
   if (role === "outreach_manager") return "manager";
   if (role === "outreach_editor") return "editor";
   if (role === "outreach_publisher") return "publisher";
+  return null;
+}
+
+/**
+ * The Nerve role that makes someone each workflow role — the inverse of
+ * videoRoleForNerveRole, and the same table as NERVE_ROLE_FOR_VIDEO_ROLE in
+ * src/pages/outreach/video/workflow-roles.ts, which the Add user dialog uses.
+ * Admin is the asymmetric case: both super_admin and admin read as Admin, and
+ * admin is the one that can be handed out.
+ */
+export const NERVE_ROLE_FOR_VIDEO_ROLE: Record<VideoRole, AppRole> = {
+  admin: "admin",
+  manager: "outreach_manager",
+  editor: "outreach_editor",
+  publisher: "outreach_publisher",
+};
+
+/**
+ * Why `actor` may not give `target` the Nerve role behind workflow role
+ * `next`, or null when they may. The checks the workflow's own
+ * mayAssignRole / mayModifyUserWithRole make still apply before this; these
+ * are the ones Nerve's user management makes, so the Users tab is not a way
+ * around them now that a role change there reaches the Nerve account.
+ */
+export function nerveRoleChangeRefusal(
+  actor: { role: string; team: string | null },
+  target: { role: string; team: string | null },
+  next: VideoRole,
+): string | null {
+  if (target.role === "super_admin") {
+    return "That person is a super admin. Their role is changed from Nerve's user management, not here.";
+  }
+  if (actor.role === "super_admin") return null;
+  if (!actor.team || target.team !== actor.team) {
+    return "You can only change the role of someone on your own team.";
+  }
+  // Nerve lets only a super admin create an admin (canCreateManagedUser).
+  if (next === "admin") return "Only a super admin can make someone an Admin.";
   return null;
 }
 

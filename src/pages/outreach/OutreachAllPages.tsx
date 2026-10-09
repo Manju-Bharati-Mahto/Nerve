@@ -7,7 +7,7 @@ import {
 } from 'lucide-react'
 import {
   useOutreachData, pageMetrics, suggestedMonthlyUsage, removePage,
-  profileUrlForPage, isValidInstagramHandle, assignedPageIdSet,
+  profileUrlForPage, isValidInstagramHandle, assignedPageIdSet, toCsv,
   PAGE_CONTENT_TYPES, FOLLOWER_TIERS, type FollowerTier, type PageContentType, type OutreachPage, type Platform,
 } from '@/lib/outreach-data'
 import ImportPagesDialog from './ImportPagesDialog'
@@ -123,8 +123,8 @@ export default function OutreachAllPages() {
     const lines = rows.map(({ page, total, consumed, suggested, m }) => [
       page.handle, page.platform, page.followerTier, page.geography, page.state, total, consumed, suggested, m.status,
       assigned.has(page.id) ? 'assigned' : 'available',
-    ].join(','))
-    const csv = [header.join(','), ...lines].join('\n')
+    ])
+    const csv = toCsv([header, ...lines])
     const blob = new Blob([csv], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -291,9 +291,13 @@ export default function OutreachAllPages() {
                 </td>
                 <td className="px-3 py-2.5 text-xs text-foreground">{page.geography}</td>
                 <td className="px-3 py-2.5 text-right">
-                  <span className="inline-flex items-center gap-1 text-xs font-mono tabular-nums text-foreground">
+                  <span className="inline-flex items-center gap-1 text-xs font-mono tabular-nums text-foreground"
+                    title={suggested === 0 && page.inventoryPosts > 0 ? 'No post slots left — top up this page’s inventory' : undefined}>
                     <Sparkles className="w-3 h-3 text-amber-500" /> {suggested}
                   </span>
+                  {suggested === 0 && page.inventoryPosts > 0 && (
+                    <div className="text-[10px] text-muted-foreground">Inventory used up</div>
+                  )}
                 </td>
                 <td className="px-3 py-2.5"><StatusBadge status={m.status} /></td>
                 <td className="px-3 py-2.5">

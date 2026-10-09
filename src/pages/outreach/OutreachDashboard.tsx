@@ -12,8 +12,8 @@ import {
 import { useAuth } from '@/hooks/useAuth'
 import {
   useOutreachData, pageMetrics, campaignMetrics, syncNow, refreshReachNow,
-  aggregateTotals, outreachStates, buildPostStateLookup,
-  computeOutreachAlerts, getDismissedAlertIds, dismissAlert,
+  aggregateTotals, outreachStates, buildPostStateLookup, sameState,
+  computeOutreachAlerts, dismissAlert, dailyTrend, formatLocalDate,
 } from '@/lib/outreach-data'
 import { buildDashboardReport, exportDashboardReportPdf } from '@/lib/outreach-export'
 
@@ -29,21 +29,20 @@ function rangeStart(range: Range): Date | null {
 
 export default function OutreachDashboard() {
   const { profile } = useAuth()
-  const { pages, creators, campaigns, posts } = useOutreachData()
+  const { pages, creators, campaigns, posts, dismissedAlertIds } = useOutreachData()
   const [range, setRange] = useState<Range>('30d')
   const [stateFilter, setStateFilter] = useState('')
   const [syncing, setSyncing] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [syncErr, setSyncErr] = useState<string | null>(null)
   const [syncMsg, setSyncMsg] = useState<string | null>(null)
-  const [dismissed, setDismissed] = useState<Set<string>>(() => getDismissedAlertIds())
 
   // State-wise filter (spec 1.1): when a state is selected every number on the
   // dashboard narrows to data from pages/campaigns in that state.
   const states = useMemo(() => outreachStates(pages, campaigns), [pages, campaigns])
   const stateOf = useMemo(() => buildPostStateLookup(pages, creators), [pages, creators])
-  const statePages = useMemo(() => stateFilter ? pages.filter(p => p.state === stateFilter) : pages, [pages, stateFilter])
-  const stateCampaigns = useMemo(() => stateFilter ? campaigns.filter(c => c.state === stateFilter) : campaigns, [campaigns, stateFilter])
+  const statePages = useMemo(() => stateFilter ? pages.filter(p => sameState(p.state, stateFilter)) : pages, [pages, stateFilter])
+  const stateCampaigns = useMemo(() => stateFilter ? campaigns.filter(c => sameState(c.state, stateFilter)) : campaigns, [campaigns, stateFilter])
 
   const mostRecentSync = useMemo(() => {
     const ts = pages
@@ -90,7 +89,7 @@ export default function OutreachDashboard() {
   }
 
   function onDismissAlert(id: string) {
-    setDismissed(dismissAlert(id))
+    dismissAlert(id)
   }
 
   // PRD 6.3 — one-click last-30-days PDF. Uses the latest synced data and honours
@@ -106,12 +105,15 @@ export default function OutreachDashboard() {
   // every downstream calculation honest without per-call gymnastics.
   const livePosts = useMemo(() => {
     const live = posts.filter(p => p.addedAsLive)
-    return stateFilter ? live.filter(p => stateOf(p) === stateFilter) : live
+    return stateFilter ? live.filter(p => sameState(stateOf(p), stateFilter)) : live
   }, [posts, stateFilter, stateOf])
 
   const filteredPosts = useMemo(() => {
+    // post.date is a local calendar day. Compare it as one: new Date(p.date)
+    // parses as UTC midnight (05:30 IST), which moved posts across the edge.
     const start = rangeStart(range)
-    return start ? livePosts.filter(p => new Date(p.date) >= start) : livePosts
+    const startDay = start ? formatLocalDate(start) : null
+    return startDay ? livePosts.filter(p => p.date >= startDay) : livePosts
   }, [livePosts, range])
 
   // Five headline totals (spec 1.1 summary cards). Reach is proxied by post
@@ -160,32 +162,17 @@ export default function OutreachDashboard() {
   // Standing alerts (spec 1.4): pages/creators assigned to a campaign that
   // haven't posted within 24h of the campaign start. Scoped to the selected
   // state via the campaign's state.
-  const alerts = useMemo(() => {
-    const all = computeOutreachAlerts(campaigns, pages, creators, posts)
+  // Dismissed alerts (localStorage-backed, per browser) are already left out
+  // by computeOutreachAlerts, so this count matches the Alerts page and badge.
+  const visibleAlerts = useMemo(() => {
+    const all = computeOutreachAlerts(campaigns, pages, creators, posts, new Date(), dismissedAlertIds)
     return stateFilter ? all.filter(a => {
       const c = campaigns.find(cc => cc.id === a.campaignId)
-      return c?.state === stateFilter
+      return sameState(c?.state, stateFilter)
     }) : all
-  }, [campaigns, pages, creators, posts, stateFilter])
+  }, [campaigns, pages, creators, posts, stateFilter, dismissedAlertIds])
 
-  // Hide alerts the user has dismissed (localStorage-backed, per browser).
-  const visibleAlerts = useMemo(() => alerts.filter(a => !dismissed.has(a.id)), [alerts, dismissed])
-
-  const trendData = useMemo(() => {
-    const days = 14
-    const today = new Date()
-    return Array.from({ length: days }, (_, i) => {
-      const d = new Date(today)
-      d.setDate(today.getDate() - (days - 1 - i))
-      const iso = d.toISOString().slice(0, 10)
-      const same = livePosts.filter(p => p.date === iso)
-      return {
-        day: `${d.getDate()}/${d.getMonth() + 1}`,
-        posts: same.length,
-        reach: same.reduce((s, p) => s + p.views, 0),
-      }
-    })
-  }, [livePosts])
+  const trendData = useMemo(() => dailyTrend(livePosts, 14), [livePosts])
 
   // Page inventory usage (PRD 6.2) — total slots consumed vs available across the
   // (state-filtered) page set. Reflects instantly when a page's inventory is

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { CalendarClock, AlertCircle, Loader2, Clock } from 'lucide-react'
+import { CalendarClock, Loader2, Clock } from 'lucide-react'
 import {
-  publishingQueue, formatWhen, STATUS_STYLE, type VideoRecord,
+  publishingQueue, formatWhen, loadFailureOf, STATUS_STYLE, type VideoRecord, type LoadFailure,
 } from '@/lib/outreach-video-data'
+import DriveProblemNotice from './DriveProblemNotice'
 
 /**
  * §4 — approved content with a posting time set, in the order it is due.
@@ -17,7 +18,7 @@ import {
 export default function VideoScheduled() {
   const [videos, setVideos] = useState<VideoRecord[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LoadFailure | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -25,7 +26,7 @@ export default function VideoScheduled() {
       setVideos(videos)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load the schedule.')
+      setError(loadFailureOf(err, 'Could not load the schedule.'))
     } finally {
       setLoading(false)
     }
@@ -55,13 +56,10 @@ export default function VideoScheduled() {
         </div>
       </div>
 
-      {error && (
-        <div className="hub-card flex items-start gap-2 text-sm text-rose-600">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> {error}
-        </div>
-      )}
+      {error && <DriveProblemNotice message={error.message} code={error.code} />}
 
-      {loading ? (
+      {/* "Nothing is scheduled" is the wrong answer to a schedule nobody read. */}
+      {error ? null : loading ? (
         <div className="hub-card text-center py-12 text-sm text-muted-foreground">
           <Loader2 className="w-4 h-4 animate-spin inline mr-2" /> Loading…
         </div>
