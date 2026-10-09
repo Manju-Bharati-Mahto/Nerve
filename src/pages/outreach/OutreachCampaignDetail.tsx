@@ -16,6 +16,14 @@ import {
   type Campaign, type CampaignStatus, type OutreachPage, type OutreachCreator, type Post, type Platform,
 } from '@/lib/outreach-data'
 
+// The server refuses budgets outside 0..100000 (whole numbers only).
+const BUDGET_MAX = 100000
+
+/** A typed budget as the whole, in-range number the server will accept. */
+function toBudget(raw: string): number {
+  return Math.min(BUDGET_MAX, Math.max(0, Math.floor(Number(raw) || 0)))
+}
+
 const STATUS_CFG: Record<CampaignStatus, { label: string; cls: string }> = {
   planning:  { label: 'Planning',  cls: 'bg-blue-100 text-blue-700' },
   active:    { label: 'Active',    cls: 'bg-emerald-100 text-emerald-700' },
@@ -60,8 +68,11 @@ export default function OutreachCampaignDetail() {
   async function handleDelete() {
     if (!campaign) return
     const linked = posts.filter(p => p.campaignId === campaign.id).length
+    // The posts go with it: outreach_posts.campaign_id is ON DELETE CASCADE
+    // (deliberately, so a deleted campaign's posts stop counting on its pages).
+    // This used to promise they'd be "kept but unattributed".
     const msg = linked > 0
-      ? `Delete "${campaign.name}"? ${linked} post${linked === 1 ? '' : 's'} attributed to it will be kept but unattributed. This cannot be undone.`
+      ? `Delete "${campaign.name}"? This will also delete the ${linked} post${linked === 1 ? '' : 's'} attributed to it. This cannot be undone.`
       : `Delete "${campaign.name}"? This cannot be undone.`
     if (!window.confirm(msg)) return
     setDeleting(true)
@@ -523,18 +534,18 @@ function EditCampaignModal({ campaign, pages, creators, posts, onClose }: {
             <div className="grid grid-cols-3 gap-3">
               <div>
                 <label className="hub-label">Posts</label>
-                <input type="number" min={0} className="hub-input" value={budgetPosts}
-                  onChange={e => setBudgetPosts(Number(e.target.value) || 0)} />
+                <input type="number" min={0} max={BUDGET_MAX} step={1} className="hub-input" value={budgetPosts}
+                  onChange={e => setBudgetPosts(toBudget(e.target.value))} />
               </div>
               <div>
                 <label className="hub-label">Stories</label>
-                <input type="number" min={0} className="hub-input" value={budgetStories}
-                  onChange={e => setBudgetStories(Number(e.target.value) || 0)} />
+                <input type="number" min={0} max={BUDGET_MAX} step={1} className="hub-input" value={budgetStories}
+                  onChange={e => setBudgetStories(toBudget(e.target.value))} />
               </div>
               <div>
                 <label className="hub-label">Reels</label>
-                <input type="number" min={0} className="hub-input" value={budgetReels}
-                  onChange={e => setBudgetReels(Number(e.target.value) || 0)} />
+                <input type="number" min={0} max={BUDGET_MAX} step={1} className="hub-input" value={budgetReels}
+                  onChange={e => setBudgetReels(toBudget(e.target.value))} />
               </div>
             </div>
           </div>
