@@ -17,6 +17,8 @@
 import { randomBytes } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { config } from "./config.js";
+import { canonicalGeography, canonicalState, isCanonicalState, tidyText } from "./outreach-states.js";
+import type { OutreachScope } from "./outreach-scope.js";
 
 const pool = new Pool({ connectionString: config.databaseUrl });
 
@@ -568,6 +570,197 @@ export async function bootstrapOutreach() {
       await importSeedHandles();
     }
   }
+
+  /* bootstrapOutreach is one link in the startup chain every department
+     shares: anything it throws exits the process and takes branding, design
+     and media down with outreach. The two steps below are new, so neither is
+     allowed to: each logs and lets the server start. If the state table is
+     missing, scope reads fail and State Users get an error (fail closed);
+     everyone with full access never reads it. If the migration fails, it
+     simply runs again on the next start. */
+  try {
+    await bootstrapOutreachStateAccess();
+  } catch (err) {
+    console.error("Outreach: could not create outreach_user_states — State Users will be refused until it exists:", err);
+  }
+  try {
+    await migrateOutreachStates();
+  } catch (err) {
+    console.error("Outreach: the state/geography migration failed and will retry on the next start:", err);
+  }
+}
+
+/**
+ * Which states each State User may see (PRD 6.3). Its own table rather than a
+ * column on users: the users table and its mapping are shared by every
+ * department, and one person can hold several states. `state` holds the
+ * canonical name from outreach-states.ts — the same text outreach_pages.state
+ * holds after the migration below — so scoping is a plain equality.
+ *
+ * ON DELETE CASCADE / SET NULL matter: Nerve hard-deletes users, and a
+ * foreign key without them would make deleting a State User, or the manager
+ * who granted their states, fail for whoever tried it.
+ */
+async function bootstrapOutreachStateAccess() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS outreach_user_states (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      state TEXT NOT NULL,
+      granted_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, state)
+    )
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS outreach_user_states_state_idx ON outreach_user_states(state)`);
+}
+
+/** The canonical states assigned to one user, sorted. Read per request — never cached. */
+export async function listUserStates(userId: string): Promise<string[]> {
+  const { rows } = await pool.query<{ state: string }>(
+    `SELECT state FROM outreach_user_states WHERE user_id = $1 ORDER BY state`, [userId]);
+  return rows.map(r => r.state);
+}
+
+// ── One-time state / geography clean-up (PRD 6.4) ──────────────────────────
+
+/* The tables and columns this migration may touch, named one by one. Media
+   Ops has its own `state` column (mo_asset_import_rows); matching on column
+   name would rewrite another department's data. The archive tables are
+   forensic copies of deleted rows and stay exactly as they were. */
+const STATE_MIGRATION_TARGETS = [
+  { table: "outreach_pages", column: "state", kind: "state" },
+  { table: "outreach_creators", column: "state", kind: "state" },
+  { table: "outreach_campaigns", column: "state", kind: "state" },
+  { table: "outreach_pages", column: "geography", kind: "geography" },
+  { table: "outreach_creators", column: "geography", kind: "geography" },
+] as const;
+
+export type StateMigrationOutcome = "merged" | "tidied" | "unmatched";
+
+export interface StateMigrationChange {
+  table: string;
+  column: string;
+  from: string;
+  to: string;
+  outcome: StateMigrationOutcome;
+  rows: number;
+}
+
+export interface StateMigrationSummary {
+  /** True when another process held the lock, so this one changed nothing. */
+  skipped: boolean;
+  runId: string;
+  changes: StateMigrationChange[];
+  /** Values that match no state — left exactly as they are. */
+  unmatched: StateMigrationChange[];
+}
+
+/** What a stored value should become, or null to leave it alone. */
+function plannedStateValue(kind: "state" | "geography", value: string): { to: string; outcome: StateMigrationOutcome } | null {
+  if (kind === "geography") {
+    const to = canonicalGeography(value);
+    if (to === value) return null;
+    return { to, outcome: isCanonicalState(to) && tidyText(value) !== to ? "merged" : "tidied" };
+  }
+  const canonical = canonicalState(value);
+  if (canonical === null) return { to: value, outcome: "unmatched" };
+  if (canonical === value) return null;
+  // "   " → "" is tidying; "gujarat" → "Gujarat" is a merge into a listed state.
+  return { to: canonical, outcome: canonical === "" ? "tidied" : "merged" };
+}
+
+/**
+ * Rewrites every outreach state to its canonical name ("  gujarat  ",
+ * "gujarat" → "Gujarat", "ladakh" → "Ladakh") and every geography that is a
+ * state name to that state's spelling (other geographies are only trimmed and
+ * have their spaces collapsed).
+ *
+ * - Idempotent: canonical values map to themselves, so a second run changes
+ *   nothing. Runs at every start, so rows an older process wrote raw during a
+ *   deploy are cleaned on the next one.
+ * - Never guesses and never deletes: a value matching nothing ("Guj", "efef")
+ *   is left as it is and recorded as unmatched. No row is removed, posts are
+ *   not touched (they reach their page by id), and updated_at is left alone —
+ *   so no analytics or inventory moves.
+ * - One transaction, under a try-lock with short timeouts, so two processes
+ *   starting together cannot both run it and neither can hold up the shared
+ *   startup chain waiting for the other.
+ * - Every changed row is written to outreach_state_migration_log with its old
+ *   value and this run's id. To undo one run:
+ *     UPDATE <table> t SET <column> = l.old_value
+ *       FROM outreach_state_migration_log l
+ *      WHERE l.run_id = '<run>' AND l.table_name = '<table>' AND l.column_name = '<column>'
+ *        AND l.row_id = t.id AND l.outcome <> 'unmatched' AND t.<column> = l.new_value;
+ *   (the last condition leaves alone any row somebody has edited since).
+ */
+export async function migrateOutreachStates(): Promise<StateMigrationSummary> {
+  const runId = `${new Date().toISOString()}-${randomBytes(3).toString("hex")}`;
+  const summary: StateMigrationSummary = { skipped: false, runId, changes: [], unmatched: [] };
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS outreach_state_migration_log (
+      id BIGSERIAL PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      run_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      table_name TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      column_name TEXT NOT NULL,
+      old_value TEXT NOT NULL,
+      new_value TEXT NOT NULL,
+      outcome TEXT NOT NULL CHECK (outcome IN ('merged', 'tidied', 'unmatched'))
+    )
+  `);
+  // An unmatched value is recorded once, not again at every start.
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS outreach_state_migration_log_unmatched_key
+      ON outreach_state_migration_log (table_name, row_id, column_name, old_value)
+      WHERE outcome = 'unmatched'
+  `);
+
+  await inTransaction(async client => {
+    await client.query(`SET LOCAL lock_timeout = '5s'`);
+    await client.query(`SET LOCAL statement_timeout = '60s'`);
+    const lock = await client.query<{ locked: boolean }>(
+      `SELECT pg_try_advisory_xact_lock(hashtext('outreach_state_migration')) AS locked`);
+    if (!lock.rows[0]?.locked) { summary.skipped = true; return; }
+
+    for (const { table, column, kind } of STATE_MIGRATION_TARGETS) {
+      const { rows: distinct } = await client.query<{ value: string }>(
+        `SELECT DISTINCT ${column} AS value FROM ${table} WHERE ${column} IS NOT NULL`);
+      for (const { value } of distinct) {
+        const plan = plannedStateValue(kind, value);
+        if (!plan) continue;
+        if (plan.outcome === "unmatched") {
+          await client.query(
+            `INSERT INTO outreach_state_migration_log (run_id, table_name, row_id, column_name, old_value, new_value, outcome)
+             SELECT $1, $2, id, $3, $4, $4, 'unmatched' FROM ${table} WHERE ${column} = $4
+             ON CONFLICT (table_name, row_id, column_name, old_value) WHERE outcome = 'unmatched' DO NOTHING`,
+            [runId, table, column, value]);
+          const { rows: [{ n }] } = await client.query<{ n: string }>(
+            `SELECT COUNT(*) AS n FROM ${table} WHERE ${column} = $1`, [value]);
+          summary.unmatched.push({ table, column, from: value, to: value, outcome: "unmatched", rows: Number(n) });
+          continue;
+        }
+        const { rows: changed } = await client.query<{ id: string }>(
+          `UPDATE ${table} SET ${column} = $1 WHERE ${column} = $2 RETURNING id`, [plan.to, value]);
+        if (!changed.length) continue;
+        await client.query(
+          `INSERT INTO outreach_state_migration_log (run_id, table_name, row_id, column_name, old_value, new_value, outcome)
+           SELECT $1, $2, unnest($3::text[]), $4, $5, $6, $7`,
+          [runId, table, changed.map(r => r.id), column, value, plan.to, plan.outcome]);
+        summary.changes.push({ table, column, from: value, to: plan.to, outcome: plan.outcome, rows: changed.length });
+      }
+    }
+  });
+
+  if (summary.changes.length) {
+    const described = summary.changes.map(c => `${c.table}.${c.column} ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)} (${c.rows})`);
+    console.log(`Outreach state migration ${runId}: ${described.join("; ")}.`);
+  }
+  if (summary.unmatched.length) {
+    const described = summary.unmatched.map(c => `${c.table}.${c.column} ${JSON.stringify(c.from)} (${c.rows})`);
+    console.log(`Outreach: left unchanged, not a recognised state — ${described.join("; ")}.`);
+  }
+  return summary;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -671,6 +864,26 @@ async function insertWithFreeId<T>(base: string, insert: (id: string) => Promise
 /** Handles compared the way a person reads them: case-insensitive, without a leading @. */
 const sameHandleSql = `lower(regexp_replace(handle, '^@+', '')) = lower(regexp_replace($1, '^@+', ''))`;
 
+/**
+ * State and geography as they are stored: the canonical state name, and a
+ * tidied geography. The routes validate (and refuse an unknown state with a
+ * 400); this is the backstop for every other caller — the seed importer, the
+ * sync, a script — so nothing writes "gujarat " past them. An unknown state is
+ * kept, only tidied: refusing is the route's job, and the integrity tests and
+ * internal callers must not start throwing here.
+ */
+function placeFields<T extends { state?: string; geography?: string }>(input: T): T {
+  const out = { ...input };
+  if (typeof out.state === "string") out.state = canonicalState(out.state) ?? tidyText(out.state);
+  if (typeof out.geography === "string") out.geography = canonicalGeography(out.geography);
+  return out;
+}
+
+/** The SQL test "this row's state is one the scope may see", or null for no filter. */
+function scopeStates(scope: OutreachScope | undefined): string[] | null {
+  return scope && scope.kind === "states" ? scope.states : null;
+}
+
 // ── Page CRUD ──────────────────────────────────────────────────────────────
 
 export interface CreatePageInput {
@@ -692,12 +905,17 @@ export interface CreatePageInput {
   status?: string;
 }
 
-export async function listPages(): Promise<OutreachPage[]> {
-  const { rows } = await pool.query<OutreachPage>(`SELECT * FROM outreach_pages ORDER BY handle`);
+/** Every page, or with a State User's scope only the pages in their states — filtered here, in SQL. */
+export async function listPages(scope?: OutreachScope): Promise<OutreachPage[]> {
+  const states = scopeStates(scope);
+  const { rows } = states
+    ? await pool.query<OutreachPage>(`SELECT * FROM outreach_pages WHERE state = ANY($1::text[]) ORDER BY handle`, [states])
+    : await pool.query<OutreachPage>(`SELECT * FROM outreach_pages ORDER BY handle`);
   return rows.map(mapPageRow);
 }
 
-export async function createPage(input: CreatePageInput): Promise<OutreachPage> {
+export async function createPage(rawInput: CreatePageInput): Promise<OutreachPage> {
+  const input = placeFields(rawInput);
   // Prefix Facebook page ids so an FB page can coexist with an IG page that
   // shares the same handle (the id is a slug of the handle).
   const platform = input.platform ?? "instagram";
@@ -728,7 +946,8 @@ export async function updatePage(id: string, patch: Partial<CreatePageInput> & {
   const fields: string[] = [];
   const values: unknown[] = [];
   let i = 1;
-  for (const [k, v] of Object.entries(patch)) {
+  // Only the fields present are placed: a page_link edit never re-reads state.
+  for (const [k, v] of Object.entries(placeFields(patch))) {
     if (v === undefined) continue;
     if (k === "content_types" || k === "content_preferences") {
       fields.push(`${k} = $${i++}::jsonb`);
@@ -816,12 +1035,17 @@ export interface CreateCreatorInput {
   notes?: string;
 }
 
-export async function listCreators(): Promise<OutreachCreator[]> {
-  const { rows } = await pool.query<OutreachCreator>(`SELECT * FROM outreach_creators ORDER BY handle`);
+/** Every creator, or only those in a State User's states (creators are scoped exactly like pages). */
+export async function listCreators(scope?: OutreachScope): Promise<OutreachCreator[]> {
+  const states = scopeStates(scope);
+  const { rows } = states
+    ? await pool.query<OutreachCreator>(`SELECT * FROM outreach_creators WHERE state = ANY($1::text[]) ORDER BY handle`, [states])
+    : await pool.query<OutreachCreator>(`SELECT * FROM outreach_creators ORDER BY handle`);
   return rows.map(mapCreatorRow);
 }
 
-export async function createCreator(input: CreateCreatorInput): Promise<OutreachCreator> {
+export async function createCreator(rawInput: CreateCreatorInput): Promise<OutreachCreator> {
+  const input = placeFields(rawInput);
   const handle = input.handle.trim();
   const dup = await pool.query(`SELECT handle FROM outreach_creators WHERE ${sameHandleSql} LIMIT 1`, [handle]);
   if (dup.rowCount) throw new OutreachDuplicateError(`@${dup.rows[0].handle} is already a creator.`);
@@ -853,7 +1077,7 @@ export async function updateCreator(id: string, patch: Partial<CreateCreatorInpu
   const fields: string[] = [];
   const values: unknown[] = [];
   let i = 1;
-  for (const [k, v] of Object.entries(patch)) {
+  for (const [k, v] of Object.entries(placeFields(patch))) {
     if (v === undefined || !CREATOR_COLUMNS.has(k)) continue;
     if (k === "content_types") {
       fields.push(`${k} = $${i++}::jsonb`);
@@ -920,11 +1144,44 @@ export interface CreateCampaignInput {
   assigned_creator_ids?: string[];
 }
 
-export async function listCampaigns(): Promise<OutreachCampaign[]> {
-  const { rows } = await pool.query<OutreachCampaign>(
-    `SELECT * FROM outreach_campaigns ORDER BY start_date DESC`,
+/**
+ * Every campaign — or, for a State User, the campaigns whose own state is one
+ * of theirs or that have one of their pages or creators assigned (most
+ * campaigns carry no state at all, so the state alone would hide nearly all
+ * of them). Their assignment lists come back holding only that user's pages
+ * and creators: another state's page ids (and so its handles) never leave the
+ * server.
+ */
+export async function listCampaigns(scope?: OutreachScope): Promise<OutreachCampaign[]> {
+  const states = scopeStates(scope);
+  if (!states) {
+    const { rows } = await pool.query<OutreachCampaign>(
+      `SELECT * FROM outreach_campaigns ORDER BY start_date DESC`,
+    );
+    return rows.map(mapCampaignRow);
+  }
+  const inScope = (column: string, table: string) => `
+    SELECT jsonb_agg(e.id ORDER BY e.n)
+      FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(c.${column}) = 'array' THEN c.${column} ELSE '[]'::jsonb END)
+           WITH ORDINALITY AS e(id, n)
+      JOIN ${table} t ON t.id = e.id
+     WHERE t.state = ANY($1::text[])`;
+  const { rows } = await pool.query<OutreachCampaign & { scoped_page_ids: string[] | null; scoped_creator_ids: string[] | null }>(
+    `SELECT * FROM (
+       SELECT c.*,
+              (${inScope("assigned_page_ids", "outreach_pages")}) AS scoped_page_ids,
+              (${inScope("assigned_creator_ids", "outreach_creators")}) AS scoped_creator_ids
+         FROM outreach_campaigns c
+     ) scoped
+     WHERE state = ANY($1::text[]) OR scoped_page_ids IS NOT NULL OR scoped_creator_ids IS NOT NULL
+     ORDER BY start_date DESC`,
+    [states],
   );
-  return rows.map(mapCampaignRow);
+  return rows.map(({ scoped_page_ids, scoped_creator_ids, ...row }) => mapCampaignRow({
+    ...row,
+    assigned_page_ids: scoped_page_ids ?? [],
+    assigned_creator_ids: scoped_creator_ids ?? [],
+  }));
 }
 
 export async function getCampaign(id: string): Promise<OutreachCampaign | null> {
@@ -943,7 +1200,8 @@ export async function getPage(id: string): Promise<OutreachPage | null> {
   return rows[0] ?? null;
 }
 
-export async function createCampaign(input: CreateCampaignInput): Promise<OutreachCampaign> {
+export async function createCampaign(rawInput: CreateCampaignInput): Promise<OutreachCampaign> {
+  const input = placeFields(rawInput);
   const name = input.name.trim();
   /* Two campaigns with the same name are almost always one created twice, and
      every dashboard and filter would show them as indistinguishable. Names
@@ -976,7 +1234,7 @@ export async function updateCampaign(id: string, patch: Partial<CreateCampaignIn
   const fields: string[] = [];
   const values: unknown[] = [];
   let i = 1;
-  for (const [k, v] of Object.entries(patch)) {
+  for (const [k, v] of Object.entries(placeFields(patch))) {
     if (v === undefined) continue;
     if (k === "approvers" || k === "creative_variants" || k === "assigned_page_ids" || k === "assigned_creator_ids") {
       fields.push(`${k} = $${i++}::jsonb`);
@@ -1051,13 +1309,28 @@ export interface UpsertPostInput {
   added_as_live?: boolean;
 }
 
-export async function listPosts(filters: { pageId?: string; creatorId?: string; campaignId?: string } = {}): Promise<OutreachPost[]> {
+export async function listPosts(
+  filters: { pageId?: string; creatorId?: string; campaignId?: string } = {},
+  scope?: OutreachScope,
+): Promise<OutreachPost[]> {
   const where: string[] = [];
   const values: unknown[] = [];
   let i = 1;
   if (filters.pageId)     { where.push(`page_id = $${i++}`);     values.push(filters.pageId); }
   if (filters.creatorId)  { where.push(`creator_id = $${i++}`);  values.push(filters.creatorId); }
   if (filters.campaignId) { where.push(`campaign_id = $${i++}`); values.push(filters.campaignId); }
+  /* A post has no state of its own; it is in a State User's states when the
+     page or creator that owns it is (every post has exactly one owner). This
+     must be in the WHERE of both halves below, not applied afterwards: the
+     synced half is capped at 2000 rows, and filtering after the cap would
+     let other states' posts crowd this user's out. */
+  const states = scopeStates(scope);
+  if (states) {
+    const n = i++;
+    where.push(`(page_id IN (SELECT id FROM outreach_pages WHERE state = ANY($${n}::text[]))
+              OR creator_id IN (SELECT id FROM outreach_creators WHERE state = ANY($${n}::text[])))`);
+    values.push(states);
+  }
   // The 2000-row LIMIT keeps the unfiltered /outreach/posts response from
   // ballooning over thousands of Apify-synced rows. But `date` here is the
   // Instagram post's PUBLISH date, not the row's creation date — so a

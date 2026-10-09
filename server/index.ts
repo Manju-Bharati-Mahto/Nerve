@@ -76,7 +76,12 @@ import {
   CAMPAIGN_STATUSES as OUTREACH_CAMPAIGN_STATUSES,
   POST_TYPES as OUTREACH_POST_TYPES,
   POST_STATUSES as OUTREACH_POST_STATUSES,
+  getPage as getOutreachPage,
+  getCreator as getOutreachCreator,
+  getCampaign as getOutreachCampaign,
 } from "./outreach-db.js";
+import { mayEditOutreach, resolveOutreachScope, type OutreachScope } from "./outreach-scope.js";
+import { canonicalGeography, canonicalState, tidyText } from "./outreach-states.js";
 import { syncOutreach, addLivePosts, refreshLivePostMetrics, syncCampaignPosts } from "./outreach-sync.js";
 import { verifyPassword } from "./password.js";
 import {
@@ -322,7 +327,7 @@ type SessionRequest = express.Request & {
 
 // task_manager mirrors task_owner exactly (same dashboard + lead powers); it
 // exists so the branding head can hand out the role under a distinct title.
-const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "outreach_editor", "outreach_publisher", "inventory_manager", "branding_reports_admin", "design_reports_admin", "task_owner", "task_manager"] as const;
+const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "outreach_editor", "outreach_publisher", "inventory_manager", "branding_reports_admin", "design_reports_admin", "task_owner", "task_manager", "outreach_state_user"] as const;
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -455,7 +460,7 @@ function canCreateManagedUser(
      user registry (see managerMayActOn in outreach-video/routes.ts). */
   if (actor.role === "outreach_manager") {
     return actor.team === "outreach" && payload.team === "outreach"
-      && ["outreach_editor", "outreach_publisher", "outreach_manager"].includes(payload.role);
+      && ["outreach_editor", "outreach_publisher", "outreach_manager", "outreach_state_user"].includes(payload.role);
   }
 
   if (actor.role !== "admin") return false;
@@ -464,7 +469,7 @@ function canCreateManagedUser(
   // outreach_* are the outreach team's roles, for an admin sitting on it.
   return actor.team !== null && payload.team === actor.team
     && ["sub_admin", "user", "task_owner", "task_manager", "inventory_manager",
-        "outreach_editor", "outreach_publisher", "outreach_manager"].includes(payload.role);
+        "outreach_editor", "outreach_publisher", "outreach_manager", "outreach_state_user"].includes(payload.role);
 }
 
 app.get("/api/health", (_req, res) => {
@@ -2806,11 +2811,59 @@ app.get("/api/design/portal/leave/date/:date", asyncHandler(async (req, res) => 
 
 // ── Outreach routes ────────────────────────────────────────────────────────
 
-function requireOutreach(res: express.Response): boolean {
-  const role = res.locals.currentUser?.role;
-  if (role === "outreach_manager" || role === "super_admin") return true;
-  sendError(res, 403, "Outreach manager only.");
+/* Reads and writes used to share one check (outreach_manager or
+   super_admin), so read access could not be widened without handing out
+   every write too. They are separate now — see server/outreach-scope.ts. */
+
+/**
+ * The reader's scope, or null (after answering 403) when they have no
+ * influencer access. Resolved from the database on every call, so a change of
+ * role or assigned states applies to the very next request.
+ */
+async function requireOutreachRead(res: express.Response): Promise<OutreachScope | null> {
+  const scope = await resolveOutreachScope(res.locals.currentUser);
+  if (!scope) sendError(res, 403, "Influencer pages and analytics are not part of your role.");
+  return scope;
+}
+
+/** Writes and paid syncs: super_admin, outreach_manager, outreach_publisher. Never a State User. */
+function requireOutreachEdit(res: express.Response): boolean {
+  if (mayEditOutreach(res.locals.currentUser)) return true;
+  sendError(res, 403, "Only an outreach manager or publisher can change this.");
   return false;
+}
+
+/**
+ * A state as stored: its canonical name. Anything that is not on the master
+ * list is refused with a 400 that names the field and the value, rather than
+ * stored as one more spelling of a state ("Tamilnadu", "gujarat ") that every
+ * filter, grouping and State User's access then treats as somewhere else.
+ */
+const outreachStateField = (blank: "allowed" | "refused") => z.string().transform((value, ctx) => {
+  const canonical = canonicalState(value);
+  if (canonical === null) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `"${tidyText(value)}" is not an Indian state or union territory — choose one from the list` });
+    return z.NEVER;
+  }
+  if (canonical === "" && blank === "refused") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "is required — choose a state from the list" });
+    return z.NEVER;
+  }
+  return canonical;
+});
+
+/**
+ * A PATCH that hands back the row's own unrecognised state unchanged — an
+ * edit form sends the whole record — must not be refused for it: that would
+ * make a legacy row (one the migration could not place) uneditable until
+ * somebody guessed its state. Only a state that is actually being CHANGED has
+ * to be on the list.
+ */
+function withoutUnchangedLegacyState(body: unknown, current: { state: string } | null): unknown {
+  if (!current || !body || typeof body !== "object" || Array.isArray(body)) return body;
+  const { state, ...rest } = body as Record<string, unknown>;
+  if (typeof state === "string" && canonicalState(state) === null && tidyText(state) === tidyText(current.state)) return rest;
+  return body;
 }
 
 /** The first thing wrong with a request body, in words — not "Invalid payload". */
@@ -2846,8 +2899,9 @@ const outreachPageSchema = z.object({
   handle: z.string().min(1),
   // Instagram (default) or Facebook.
   platform: z.enum(["instagram", "facebook"]).optional(),
-  geography: z.string().min(1),
-  state: z.string().min(1),
+  // Free text (a city or region), tidied; a geography that IS a state takes its spelling.
+  geography: z.string().transform(canonicalGeography).pipe(z.string().min(1)),
+  state: outreachStateField("refused"),
   type: z.enum(OUTREACH_PAGE_TYPES),
   follower_tier: z.enum(OUTREACH_FOLLOWER_TIERS),
   content_types: z.array(z.enum(["static", "reel", "carousel"])).optional(),
@@ -2872,7 +2926,8 @@ const outreachCampaignSchema = z.object({
   start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   // Optional — campaigns are open-ended; '' or absent means no end date.
   end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).or(z.literal("")).optional(),
-  state: z.string().optional(),
+  // '' means the campaign is not tied to one state.
+  state: outreachStateField("allowed").optional(),
   goal: z.string().optional(),
   status: z.enum(OUTREACH_CAMPAIGN_STATUSES),
   budget_posts: wholeCount(OUTREACH_BUDGET_MAX),
@@ -2886,13 +2941,20 @@ const outreachCampaignSchema = z.object({
 
 // Pages
 
+/* What the signed-in person may see: {kind:'all'} or {kind:'states', states}.
+   Its own endpoint so the list responses keep exactly their old shape. */
+app.get("/api/outreach/scope", asyncHandler(async (_req, res) => {
+  const scope = await requireOutreachRead(res); if (!scope) return;
+  res.json(scope);
+}));
+
 app.get("/api/outreach/pages", asyncHandler(async (_req, res) => {
-  if (!requireOutreach(res)) return;
-  res.json({ pages: await listOutreachPages() });
+  const scope = await requireOutreachRead(res); if (!scope) return;
+  res.json({ pages: await listOutreachPages(scope) });
 }));
 
 app.post("/api/outreach/pages", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachEdit(res)) return;
   const parsed = outreachPageSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "page"));
   try {
@@ -2905,16 +2967,17 @@ app.post("/api/outreach/pages", asyncHandler(async (req, res) => {
 }));
 
 app.patch("/api/outreach/pages/:id", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
-  const parsed = outreachPageSchema.partial().safeParse(req.body);
+  if (!requireOutreachEdit(res)) return;
+  const id = getSingleParam(req.params.id);
+  const parsed = outreachPageSchema.partial().safeParse(withoutUnchangedLegacyState(req.body, await getOutreachPage(id)));
   if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "page"));
-  const page = await updateOutreachPage(getSingleParam(req.params.id), parsed.data);
+  const page = await updateOutreachPage(id, parsed.data);
   if (!page) return sendError(res, 404, "Page not found.");
   res.json({ page });
 }));
 
 app.delete("/api/outreach/pages/:id", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachEdit(res)) return;
   await deleteOutreachPage(getSingleParam(req.params.id));
   res.json({ ok: true });
 }));
@@ -2923,12 +2986,12 @@ app.delete("/api/outreach/pages/:id", asyncHandler(async (req, res) => {
 // the All Pages ledger and aren't auto-synced by Apify.
 
 app.get("/api/outreach/creators", asyncHandler(async (_req, res) => {
-  if (!requireOutreach(res)) return;
-  res.json({ creators: await listOutreachCreators() });
+  const scope = await requireOutreachRead(res); if (!scope) return;
+  res.json({ creators: await listOutreachCreators(scope) });
 }));
 
 app.post("/api/outreach/creators", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachEdit(res)) return;
   const parsed = outreachCreatorSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "creator"));
   try {
@@ -2941,16 +3004,17 @@ app.post("/api/outreach/creators", asyncHandler(async (req, res) => {
 }));
 
 app.patch("/api/outreach/creators/:id", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
-  const parsed = outreachCreatorSchema.partial().safeParse(req.body);
+  if (!requireOutreachEdit(res)) return;
+  const id = getSingleParam(req.params.id);
+  const parsed = outreachCreatorSchema.partial().safeParse(withoutUnchangedLegacyState(req.body, await getOutreachCreator(id)));
   if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "creator"));
-  const creator = await updateOutreachCreator(getSingleParam(req.params.id), parsed.data);
+  const creator = await updateOutreachCreator(id, parsed.data);
   if (!creator) return sendError(res, 404, "Creator not found.");
   res.json({ creator });
 }));
 
 app.delete("/api/outreach/creators/:id", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachEdit(res)) return;
   await deleteOutreachCreator(getSingleParam(req.params.id));
   res.json({ ok: true });
 }));
@@ -2958,12 +3022,12 @@ app.delete("/api/outreach/creators/:id", asyncHandler(async (req, res) => {
 // Campaigns
 
 app.get("/api/outreach/campaigns", asyncHandler(async (_req, res) => {
-  if (!requireOutreach(res)) return;
-  res.json({ campaigns: await listOutreachCampaigns() });
+  const scope = await requireOutreachRead(res); if (!scope) return;
+  res.json({ campaigns: await listOutreachCampaigns(scope) });
 }));
 
 app.post("/api/outreach/campaigns", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachEdit(res)) return;
   const parsed = outreachCampaignSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "campaign"));
   try {
@@ -2976,11 +3040,12 @@ app.post("/api/outreach/campaigns", asyncHandler(async (req, res) => {
 }));
 
 app.patch("/api/outreach/campaigns/:id", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
-  const parsed = outreachCampaignSchema.partial().safeParse(req.body);
+  if (!requireOutreachEdit(res)) return;
+  const id = getSingleParam(req.params.id);
+  const parsed = outreachCampaignSchema.partial().safeParse(withoutUnchangedLegacyState(req.body, await getOutreachCampaign(id)));
   if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "campaign"));
   try {
-    const campaign = await updateOutreachCampaign(getSingleParam(req.params.id), parsed.data);
+    const campaign = await updateOutreachCampaign(id, parsed.data);
     if (!campaign) return sendError(res, 404, "Campaign not found.");
     res.json({ campaign });
   } catch (err) {
@@ -2990,7 +3055,7 @@ app.patch("/api/outreach/campaigns/:id", asyncHandler(async (req, res) => {
 }));
 
 app.delete("/api/outreach/campaigns/:id", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachEdit(res)) return;
   await deleteOutreachCampaign(getSingleParam(req.params.id));
   res.json({ ok: true });
 }));
@@ -2998,11 +3063,13 @@ app.delete("/api/outreach/campaigns/:id", asyncHandler(async (req, res) => {
 // Posts
 
 app.get("/api/outreach/posts", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  const scope = await requireOutreachRead(res); if (!scope) return;
   const pageId = typeof req.query.page_id === "string" ? req.query.page_id : undefined;
   const creatorId = typeof req.query.creator_id === "string" ? req.query.creator_id : undefined;
   const campaignId = typeof req.query.campaign_id === "string" ? req.query.campaign_id : undefined;
-  res.json({ posts: await listOutreachPosts({ pageId, creatorId, campaignId }) });
+  /* Another state's page asked for by id comes back as an empty list — the
+     same answer as a page that does not exist, so nothing is given away. */
+  res.json({ posts: await listOutreachPosts({ pageId, creatorId, campaignId }, scope) });
 }));
 
 const outreachPlannedPostSchema = z.object({
@@ -3022,7 +3089,7 @@ const outreachPlannedPostSchema = z.object({
 );
 
 app.post("/api/outreach/posts", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachEdit(res)) return;
   const parsed = z.object({ posts: z.array(outreachPlannedPostSchema).min(1) }).safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "posts"));
   try {
@@ -3035,7 +3102,7 @@ app.post("/api/outreach/posts", asyncHandler(async (req, res) => {
 }));
 
 app.delete("/api/outreach/posts/:id", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachEdit(res)) return;
   await deleteOutreachPost(getSingleParam(req.params.id));
   res.json({ ok: true });
 }));
@@ -3056,7 +3123,7 @@ const outreachLivePostsSchema = z.object({
 );
 
 app.post("/api/outreach/posts/fetch-by-urls", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachEdit(res)) return;
   const parsed = outreachLivePostsSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, parsed.error.issues[0]?.message ?? "Invalid payload.");
   try {
@@ -3082,7 +3149,7 @@ app.post("/api/outreach/posts/fetch-by-urls", asyncHandler(async (req, res) => {
 // Sync — pulls latest profile + posts from Apify for all pages (or a subset)
 
 app.post("/api/outreach/sync", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachEdit(res)) return;
   const handlesRaw = req.body?.handles;
   const handles = Array.isArray(handlesRaw)
     ? handlesRaw.filter((h: unknown): h is string => typeof h === "string")
@@ -3100,7 +3167,7 @@ app.post("/api/outreach/sync", asyncHandler(async (req, res) => {
 // campaign (paid Apify calls, but scoped far tighter than a full refresh).
 // Facebook posts are refreshed via the Facebook Posts Scraper (Apify).
 app.post("/api/outreach/campaigns/:id/sync", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachEdit(res)) return;
   try {
     const result = await syncCampaignPosts(getSingleParam(req.params.id));
     res.json(result);
@@ -3114,7 +3181,7 @@ app.post("/api/outreach/campaigns/:id/sync", asyncHandler(async (req, res) => {
 // permalink and updates its metrics. This is the on-demand equivalent of what
 // the scheduled 9AM/5PM runs do, without the profile scrape. Paid Apify calls.
 app.post("/api/outreach/refresh-reach", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachEdit(res)) return;
   try {
     const result = await refreshLivePostMetrics();
     res.json({ ok: true, ...result });

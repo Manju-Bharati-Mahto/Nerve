@@ -18,9 +18,21 @@ import type { AppRole } from "../db.js";
 import { mutateUsers, readUsers } from "./drive-store.js";
 import type { ActivityEntry, VideoRole, VideoUser } from "./types.js";
 
-/** Maps a Nerve role onto the workflow role it acts as (§3). */
-export function videoRoleForNerveRole(role: string): VideoRole | null {
-  if (role === "super_admin" || role === "admin") return "admin";
+/**
+ * Maps a Nerve role onto the workflow role it acts as (§3).
+ *
+ * A Nerve "admin" is the workflow's Admin only on the outreach team. Every
+ * department has admins, and this used to map all of them to Admin — so a
+ * branding, design, media or content admin could call the video API and read
+ * every outreach page's followers and inventory (and was quietly registered
+ * as an outreach workflow Admin on the way). Their own departments are
+ * untouched; they simply no longer reach this one. super_admin has no team
+ * and stays Admin. outreach_state_user has no video workflow at all.
+ */
+export function videoRoleForNerveRole(role: string, team: string | null | undefined): VideoRole | null {
+  if (role === "super_admin") return "admin";
+  // Any other team's admin falls through to null below.
+  if (team === "outreach" && role === "admin") return "admin";
   if (role === "outreach_manager") return "manager";
   if (role === "outreach_editor") return "editor";
   if (role === "outreach_publisher") return "publisher";

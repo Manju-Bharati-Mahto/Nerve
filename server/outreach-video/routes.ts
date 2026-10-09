@@ -115,7 +115,7 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
    */
   async function requireVideoUser(res: express.Response): Promise<VideoUser | null> {
     const u = res.locals.currentUser as CurrentUser;
-    const role = videoRoleForNerveRole(u?.role ?? "");
+    const role = videoRoleForNerveRole(u?.role ?? "", u?.team);
     if (!role) { sendError(res, 403, "This area is for the video workflow team only."); return null; }
     // Picks up a Drive an Admin connected in the app, if the env names none.
     await ensureDriveResolved();
@@ -293,7 +293,7 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
 
   app.get(`${P}/config`, asyncHandler(async (_req, res) => {
     const u = res.locals.currentUser as CurrentUser;
-    const role = videoRoleForNerveRole(u?.role ?? "");
+    const role = videoRoleForNerveRole(u?.role ?? "", u?.team);
     if (!role) return sendError(res, 403, "This area is for the video workflow team only.");
     await ensureDriveResolved();
     const source = driveSource();
@@ -804,7 +804,7 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
          Someone registered here with no Nerve account yet has only the
          workflow record to change — their account, when it is made, decides. */
       const account = await getUserByEmail(target.email);
-      if (account && videoRoleForNerveRole(account.role) !== role) {
+      if (account && videoRoleForNerveRole(account.role, account.team) !== role) {
         const refusal = nerveRoleChangeRefusal(res.locals.currentUser as CurrentUser, account, role);
         if (refusal) return sendError(res, 403, refusal);
         await updateUser(account.id, { role: NERVE_ROLE_FOR_VIDEO_ROLE[role], team: "outreach" });
@@ -844,7 +844,7 @@ export function registerOutreachVideoApi(app: express.Express, h: Handlers) {
 
   function requireDriveAdmin(res: express.Response): CurrentUser | null {
     const u = res.locals.currentUser as CurrentUser;
-    const role = videoRoleForNerveRole(u?.role ?? "");
+    const role = videoRoleForNerveRole(u?.role ?? "", u?.team);
     if (role !== "admin" && role !== "manager") {
       sendError(res, 403, "Only an outreach Admin or Manager can set up Google Drive.");
       return null;
@@ -928,7 +928,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
 
   app.get(`${P}/drive/callback`, asyncHandler(async (req, res) => {
     const u = res.locals.currentUser as CurrentUser;
-    const role = videoRoleForNerveRole(u?.role ?? "");
+    const role = videoRoleForNerveRole(u?.role ?? "", u?.team);
     if (role !== "admin" && role !== "manager") {
       return void res.status(403).type("html").send(drivePopup(false, "Only an outreach Admin or Manager can connect Google Drive."));
     }
@@ -1192,7 +1192,13 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
   app.get(`${P}/social-pages`, asyncHandler(async (_req, res) => {
     const user = await requireVideoUser(res); if (!user) return;
     const { listPages } = await import("../outreach-db.js");
-    const all = await listPages();
+    const { resolveOutreachScope } = await import("../outreach-scope.js");
+    /* The same state scope as /api/outreach/pages, so this list can never be
+       the way round it. Only a state-scoped person is narrowed (nobody with
+       video access is one today — a State User has no video role); everyone
+       else reads exactly what they always have. */
+    const scope = await resolveOutreachScope(res.locals.currentUser as CurrentUser);
+    const all = await listPages(scope?.kind === "states" ? scope : undefined);
     const { pages, analyticsVisible } = socialPagesForRole(all, user.role);
 
     /* §8 — which campaigns each page is assigned to. Built here rather than
@@ -1245,8 +1251,17 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     }
     if (!Object.keys(patch).length) return sendError(res, 400, "Nothing to change.");
 
-    const { updatePage } = await import("../outreach-db.js");
-    const updated = await updatePage(getSingleParam(req.params.id), patch);
+    const { getPage, updatePage } = await import("../outreach-db.js");
+    const { resolveOutreachScope, stateInScope } = await import("../outreach-scope.js");
+    const id = getSingleParam(req.params.id);
+    /* Another state's page is "not found" to a state-scoped person, never
+       "forbidden" — a 403 would confirm it exists. */
+    const scope = await resolveOutreachScope(res.locals.currentUser as CurrentUser);
+    if (scope?.kind === "states") {
+      const current = await getPage(id);
+      if (!current || !stateInScope(scope, current.state)) return sendError(res, 404, "That page was not found.");
+    }
+    const updated = await updatePage(id, patch);
     if (!updated) return sendError(res, 404, "That page was not found.");
     res.json({ page: updated });
   }));

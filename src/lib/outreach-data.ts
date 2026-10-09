@@ -11,6 +11,7 @@
  */
 import { useEffect, useSyncExternalStore } from 'react'
 import { api, type ServerOutreachPage, type ServerOutreachCreator, type ServerOutreachCampaign, type ServerOutreachPost } from './api'
+import { OUTREACH_STATE_NAMES, canonicalState, stateKey as matchKey, tidyText } from './outreach-states'
 
 // ── Types (camelCase, frontend-facing) ─────────────────────────────────────
 
@@ -925,34 +926,30 @@ export function formatLocalDate(d: Date): string {
 
 // ── State-wise filtering (Dashboard / Analytics) ───────────────────────────
 
-/** Canonical state list used to seed the "State" dropdowns when adding a
- *  campaign / page. The live filters union this with whatever states already
- *  exist on records, so a new state typed by hand still shows up. */
-export const INDIAN_STATES = [
-  'Gujarat', 'Maharashtra', 'Madhya Pradesh', 'Bihar', 'Rajasthan', 'Assam',
-  'Uttar Pradesh', 'Goa', 'Delhi', 'Karnataka', 'Tamil Nadu', 'West Bengal',
-  'Punjab', 'Haryana', 'Kerala', 'Telangana', 'Andhra Pradesh', 'Odisha',
-  'Jharkhand', 'Chhattisgarh', 'Uttarakhand', 'Himachal Pradesh',
-] as const
+/* The master list and the matching rule live in ./outreach-states, a
+   byte-for-byte copy of the server's, so the browser groups and compares
+   states exactly as the server stores and scopes them. These helpers used to
+   carry their own rule — a 22-state list and a key that kept inner spaces —
+   which left "Tamilnadu" and "Tamil Nadu" as two states here while the server
+   (and a State User's access) would treat them as one. */
 
-const CANONICAL_STATE = new Map<string, string>(INDIAN_STATES.map(s => [s.toLowerCase(), s]))
-
-/** Case- and whitespace-insensitive key for comparing two state names. */
-export function stateKey(state: string | null | undefined): string {
-  return (state ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
-}
+/** Every state and union territory a page, creator or campaign may carry, plus "Pan India". */
+export const INDIAN_STATES = OUTREACH_STATE_NAMES
 
 /**
- * Canonical spelling of a state: a case-insensitive match against
- * INDIAN_STATES returns the listed name ("gujarat" → "Gujarat"); anything else
- * comes back trimmed. Pages and creators take free-text state while campaigns
- * pick from INDIAN_STATES, so without this "gujarat" and "Gujarat" were two
- * states — two dropdown entries, and a filter on either dropped the other's
- * pages, posts and campaigns.
+ * Canonical spelling of a state ("gujarat" → "Gujarat", "Tamilnadu" →
+ * "Tamil Nadu"). A value that matches nothing on the list — a legacy row the
+ * server's migration could not place — comes back tidied, not dropped, so it
+ * stays visible and can be corrected.
  */
 export function normaliseState(state: string | null | undefined): string {
-  const s = (state ?? '').trim().replace(/\s+/g, ' ')
-  return CANONICAL_STATE.get(s.toLowerCase()) ?? s
+  return canonicalState(state) || tidyText(state)
+}
+
+/** One key per state for grouping and comparing; unrecognised values key by their own text. */
+export function stateKey(state: string | null | undefined): string {
+  const canonical = normaliseState(state)
+  return matchKey(canonical) || canonical.toLowerCase()
 }
 
 /** True when two state names refer to the same state (see stateKey). */
