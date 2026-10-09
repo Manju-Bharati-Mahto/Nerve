@@ -344,10 +344,12 @@ export async function assetFoldersFor(
   campaign: Pick<CampaignRecord, "name" | "driveFolders"> & { id?: string },
 ): Promise<{ videos: string; captions: string; published: string }> {
   if (campaign.driveFolders?.published) return campaign.driveFolders;
-  // A record whose folders were never made must not borrow another
-  // campaign's tree just because the names match.
-  if (campaign.id) return foldersOwnedBy(campaign.id, campaign.name);
-  return createCampaignFolders(campaign.name);
+  // Neither a record whose folders were never made nor a typed-in name with
+  // no record may borrow another campaign's tree just because the names
+  // match. A typed-in name used to resolve to the folder a since-renamed
+  // campaign still holds under that name, where its "Video 1" landed on top
+  // of the renamed campaign's "Video 1".
+  return foldersOwnedBy(campaign.id ?? null, campaign.name);
 }
 
 /**

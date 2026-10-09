@@ -192,6 +192,24 @@ export async function updateEventDetails(id: string, actor: Actor, patch: {
 }
 
 /**
+ * The events counterpart of claimNameOnlyVideos: an event planned under the
+ * campaign's name with no campaign picked is tied to the campaign by id before
+ * an edit, so a rename carries it along instead of leaving it filed under a
+ * name nothing answers to any more.
+ */
+export async function claimNameOnlyEvents(campaignId: string, name: string): Promise<number> {
+  const wanted = name.trim().toLowerCase();
+  const loose = (events: EventRecord[]) =>
+    events.filter(e => !e.campaignId && (e.client ?? "").trim().toLowerCase() === wanted);
+  if (!wanted || loose((await readEvents()).events).length === 0) return 0;
+  return mutateEvents<number>(doc => {
+    const events = loose(doc.events);
+    for (const e of events) e.campaignId = campaignId;
+    return { doc, result: events.length };
+  });
+}
+
+/**
  * The events counterpart of renameCampaignOnVideos: an event planned for a
  * campaign carries the campaign's current name as its `client`, which the
  * calendar's client filter and search compare by text. Writes only when

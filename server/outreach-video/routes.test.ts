@@ -277,6 +277,30 @@ describe("campaigns and the videos they hold", () => {
     expect((await patch(`/campaigns/${campaign.id}`, { name: "FIX campaign renamed" })).status).toBe(200);
     expect((await listVideos()).find(v => v.id === video.id)?.client).toBe("FIX campaign renamed");
   });
+
+  it("keeps typed-in videos a campaign owns by name when it is renamed", async () => {
+    actingRole = "outreach_manager";
+    const file = path.join(tmpRoot, "typed.mp4");
+    await fs.writeFile(file, "video-bytes", "utf8");
+    // Uploaded before the campaign existed, so it holds the name and no id.
+    const typed = await uploadVideo({
+      editor, client: "FIX legacy", editorTitle: "t", caption: "c",
+      localPath: file, originalName: "clip.mp4", mimeType: "video/mp4", sizeBytes: 11,
+    });
+    const { campaign } = await (await post("/campaigns", {
+      name: "FIX legacy", startDate: "2027-01-01", endDate: "2027-03-31",
+    })).json();
+    await uploadTo(campaign.id);
+    const count = async () => ((await (await get("/campaigns")).json()).campaigns as Array<{ id: string; videoCount: number }>)
+      .find(c => c.id === campaign.id)?.videoCount;
+    expect(await count()).toBe(2);
+
+    expect((await patch(`/campaigns/${campaign.id}`, { name: "FIX legacy renamed" })).status).toBe(200);
+    // Used to drop to 1, the typed-in video left behind under the old name.
+    expect(await count()).toBe(2);
+    expect((await listVideos()).find(v => v.id === typed.id))
+      .toMatchObject({ campaignId: campaign.id, client: "FIX legacy renamed" });
+  });
 });
 
 describe("config", () => {

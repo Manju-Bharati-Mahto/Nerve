@@ -14,7 +14,7 @@ import {
   ensureDriveStructure, mutateWorkflow, readWorkflow, VIDEOS_FOLDER,
 } from "./drive-store.js";
 import { activityEntry, listActiveUsers } from "./users.js";
-import { assetFoldersFor, campaignAssetName, getCampaign } from "./campaigns.js";
+import { assetFoldersFor, campaignAssetName, findCampaignByName, getCampaign } from "./campaigns.js";
 import { mirrorVideo } from "./drive-mirror.js";
 import { alreadyNotified, notify } from "./notifications.js";
 import type {
@@ -88,16 +88,26 @@ async function reserveSequence(client: string, campaignId: string | null): Promi
      campaign that took the old name the renamed one's numbering. Only an
      upload with no campaign record — typed-in text, as before campaigns —
      is still counted by name. The prefix keeps the two kinds of key apart. */
-  const key = campaignId ? `campaign:${campaignId}` : client.trim().toLowerCase();
+  const nameKey = client.trim().toLowerCase();
+  const key = campaignId ? `campaign:${campaignId}` : nameKey;
   return mutateWorkflow<number>(doc => {
     const sequences = doc.sequences ?? (doc.sequences = {});
-    /* A campaign's first id-keyed reservation picks up after the highest
-       number its videos already carry, so the switch from name keys neither
-       repeats a number nor restarts at 1. Reservations still in flight under
-       a name key are not lost by this: they live only in memory, and the
-       restart that brings this code in forgets them. */
+    /* A campaign's first id-keyed reservation picks up after everything the
+       name counter already handed out for it: the name key's own count (which
+       remembers numbers whose upload never finished) and the highest number
+       on any video the campaign holds — those filed under its id, and the
+       typed-in ones carrying its name and no campaign, which it owns the same
+       way the campaign list counts them. Looking at id-linked videos alone
+       restarted a campaign created for earlier typed-in work at "Video 1",
+       in the same folder as that work's own Video 1, overwriting it. */
     const start = sequences[key] ?? (campaignId
-      ? Math.max(0, ...doc.videos.filter(v => v.campaignId === campaignId).map(v => v.sequence ?? 0))
+      ? Math.max(
+        sequences[nameKey] ?? 0,
+        ...doc.videos
+          .filter(v => v.campaignId === campaignId
+            || (!v.campaignId && v.client.trim().toLowerCase() === nameKey))
+          .map(v => v.sequence ?? 0),
+      )
       : 0);
     const next = start + 1;
     sequences[key] = next;
@@ -265,7 +275,13 @@ export async function validateUploadFields(details: UploadDetails): Promise<Vali
      typed, its §9 folders receive the files, and its §10 naming is used. An
      upload with no campaign record keeps every one of those as it was, which
      is what makes older campaigns carry on unchanged. */
-  const campaignRecord = details.campaignId ? await getCampaign(details.campaignId) : null;
+  const campaignRecord = details.campaignId
+    ? await getCampaign(details.campaignId)
+    /* A typed-in name that is a campaign's name IS that campaign. Left as
+       typed text it was counted on the name while uploads picked from the
+       record were counted on the id: two live counters for one campaign, so
+       the two kinds of upload handed out the same numbers in one folder. */
+    : (details.client ?? "").trim() ? await findCampaignByName(details.client ?? "") : null;
   if (details.campaignId && !campaignRecord) throw new Error("That campaign was not found.");
 
   const campaign = (campaignRecord?.name ?? details.client ?? "").trim();
@@ -462,7 +478,10 @@ export async function resyncAllToDrive(): Promise<{ synced: number; failed: Arra
       let video = original;
       // A record from before videos remembered their folders gets them now.
       if (!video.driveFolders?.published) {
-        const campaign = video.campaignId ? await getCampaign(video.campaignId) : null;
+        // A typed-in name a campaign record holds is filed in that record's tree.
+        const campaign = video.campaignId
+          ? await getCampaign(video.campaignId)
+          : await findCampaignByName(video.client);
         const folders = await assetFoldersFor(campaign ?? { name: video.client, driveFolders: null });
         video = await updateVideo(video.id, v => { v.driveFolders = folders; return { ...v }; });
       }
@@ -523,6 +542,29 @@ async function updateVideo<R>(
  * every campaign edit costs nothing when there was no rename, and a rename
  * whose follow-up failed is put right by the next edit.
  */
+/**
+ * Files under `campaignId` every video that carries the campaign's `name` but
+ * no campaign at all — typed-in work from before the campaign was a record,
+ * which the campaign already owns by name — and returns how many.
+ *
+ * Ownership by name lasts only as long as the name does: a rename used to
+ * leave these videos behind under the old text, gone from the campaign and
+ * waiting for any new campaign given that name to take them over. Called with
+ * the name a campaign has BEFORE an edit, so they are tied to it by id and
+ * move with the rename (renameCampaignOnVideos) like the rest.
+ */
+export async function claimNameOnlyVideos(campaignId: string, name: string): Promise<number> {
+  const wanted = name.trim().toLowerCase();
+  const loose = (doc: WorkflowStoreDoc) =>
+    doc.videos.filter(v => !v.campaignId && v.client.trim().toLowerCase() === wanted);
+  if (!wanted || loose(await readWorkflow()).length === 0) return 0;
+  return mutateWorkflow<number>(doc => {
+    const videos = loose(doc);
+    for (const v of videos) v.campaignId = campaignId;
+    return { doc, result: videos.length };
+  });
+}
+
 export async function renameCampaignOnVideos(campaignId: string, name: string): Promise<number> {
   const wanted = name.trim();
   const stale = (doc: WorkflowStoreDoc) =>

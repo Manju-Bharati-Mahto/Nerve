@@ -20,7 +20,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { listVideos, renameCampaignOnVideos, uploadVideo } from "./videos.js";
+import { claimNameOnlyVideos, listVideos, renameCampaignOnVideos, uploadVideo } from "./videos.js";
 
 import { config } from "../config.js";
 import { resetDriveClient } from "./drive-client.js";
@@ -355,8 +355,10 @@ describe("an upload with and without a campaign record", () => {
       editor, client: "", campaignId: campaign.id, editorTitle: "t", caption: "c",
       localPath: await fakeVideo("m.mp4"), originalName: "m.mp4", mimeType: "video/mp4", sizeBytes: 18,
     });
+    /* Typed as a name no campaign has. (Typing the campaign's own name now
+       files the upload under the campaign, so it would follow too.) */
     const typed = await uploadVideo({
-      editor, client: "VLF 2027", editorTitle: "t", caption: "c",
+      editor, client: "VLF 2028", editorTitle: "t", caption: "c",
       localPath: await fakeVideo("t.mp4"), originalName: "t.mp4", mimeType: "video/mp4", sizeBytes: 18,
     });
     const renamed = await updateCampaign(ACTOR, campaign.id, { name: "VLF 2027 old" });
@@ -364,9 +366,78 @@ describe("an upload with and without a campaign record", () => {
     const byId = new Map((await listVideos()).map(v => [v.id, v]));
     expect(byId.get(mine.id)?.client).toBe("VLF 2027 old");
     // A typed-in name has no campaign behind it to follow.
-    expect(byId.get(typed.id)?.client).toBe("VLF 2027");
+    expect(byId.get(typed.id)?.client).toBe("VLF 2028");
     // Nothing left to change, so nothing is written.
     expect(await renameCampaignOnVideos(renamed.id, renamed.name)).toBe(0);
+  });
+
+  it("numbers typed-in work, then the campaign made for it, as one sequence in one folder", async () => {
+    const typed = async (file: string, client = "FIXR legacy") => uploadVideo({
+      editor, client, editorTitle: "t", caption: "c",
+      localPath: await fakeVideo(file), originalName: "a.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+    const picked = async (campaignId: string, file: string) => uploadVideo({
+      editor, client: "", campaignId, editorTitle: "t", caption: "c",
+      localPath: await fakeVideo(file), originalName: "a.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+
+    expect((await typed("1.mp4")).title).toBe("FIXR legacy - Video 1");
+    expect((await typed("2.mp4")).title).toBe("FIXR legacy - Video 2");
+    const campaign = await createCampaign(ACTOR, { ...base, name: "FIXR legacy" });
+
+    /* Used to be a second "Video 1", written over the typed-in Video 1's file
+       in the same folder; then typed and picked uploads each kept their own
+       count, so 3 and 2 came round twice more. */
+    const third = await picked(campaign.id, "3.mp4");
+    expect(third.title).toBe("FIXR legacy - Video 3");
+    const fourth = await typed("4.mp4", "fixr  LEGACY");
+    expect(fourth.title).toBe("FIXR legacy - Video 4");
+    // Typing the campaign's name files the upload under the campaign itself.
+    expect(fourth.campaignId).toBe(campaign.id);
+    expect((await picked(campaign.id, "5.mp4")).title).toBe("FIXR legacy - Video 5");
+
+    const all = await listVideos();
+    expect(all.map(v => v.sequence).sort()).toEqual([1, 2, 3, 4, 5]);
+    expect(new Set(all.map(v => v.driveFileId)).size).toBe(5);
+    expect(new Set(all.map(v => v.driveFolders?.videos)).size).toBe(1);
+  });
+
+  it("never files a typed-in name into the folder a renamed campaign still holds under it", async () => {
+    const campaign = await createCampaign(ACTOR, { ...base, name: "VLF 2027" });
+    const mine = await uploadVideo({
+      editor, client: "", campaignId: campaign.id, editorTitle: "t", caption: "c",
+      localPath: await fakeVideo("m.mp4"), originalName: "m.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+    await updateCampaign(ACTOR, campaign.id, { name: "VLF 2027 old" });
+    // No campaign is called this any more; the renamed one's folder still is.
+    const typed = await uploadVideo({
+      editor, client: "VLF 2027", editorTitle: "t", caption: "c",
+      localPath: await fakeVideo("t.mp4"), originalName: "t.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+    expect(typed.campaignId).toBeNull();
+    expect(typed.driveFolders?.videos).not.toBe(mine.driveFolders?.videos);
+    expect(typed.driveFileId).not.toBe(mine.driveFileId);
+  });
+
+  it("ties typed-in videos a campaign owns by name to it, so a rename takes them along", async () => {
+    const typed = await uploadVideo({
+      editor, client: "VLF 2027", editorTitle: "t", caption: "c",
+      localPath: await fakeVideo("t.mp4"), originalName: "t.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+    const other = await uploadVideo({
+      editor, client: "VLF 2028", editorTitle: "t", caption: "c",
+      localPath: await fakeVideo("o.mp4"), originalName: "o.mp4", mimeType: "video/mp4", sizeBytes: 18,
+    });
+    const campaign = await createCampaign(ACTOR, { ...base, name: "VLF 2027" });
+    expect(await claimNameOnlyVideos(campaign.id, campaign.name)).toBe(1);
+    const renamed = await updateCampaign(ACTOR, campaign.id, { name: "VLF 2027 old" });
+    await renameCampaignOnVideos(renamed.id, renamed.name);
+
+    const byId = new Map((await listVideos()).map(v => [v.id, v]));
+    expect(byId.get(typed.id)).toMatchObject({ campaignId: campaign.id, client: "VLF 2027 old" });
+    // Another name's typed-in work is not the campaign's.
+    expect(byId.get(other.id)).toMatchObject({ campaignId: null, client: "VLF 2028" });
+    expect(await claimNameOnlyVideos(campaign.id, "VLF 2027")).toBe(0);
   });
 
   it("refuses an upload naming a campaign that does not exist", async () => {

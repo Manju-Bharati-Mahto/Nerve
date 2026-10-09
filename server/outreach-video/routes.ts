@@ -50,13 +50,14 @@ import {
   getVideo, listVideos, publishVideo, publishingQueue, setLiveUrls,
   approveVideo, rejectVideo, startRevision, scheduleVideo, reviewQueue, resyncAllToDrive,
   submitVideo, updateCaption, uploadVideo, acceptedVideoType, checkVideoFile, renameCampaignOnVideos,
-  InvalidTransitionError, NotYourVideoError, VideoNotFoundError, VideoFileRejectedError,
+  claimNameOnlyVideos, InvalidTransitionError, NotYourVideoError, VideoNotFoundError, VideoFileRejectedError,
   ACCEPTED_VIDEO_TYPES_LABEL, VIDEO_MIME_ALLOWLIST, type UploadDetails,
 } from "./videos.js";
 import { socialPagesForRole } from "./social-pages.js";
 import {
   assignEvent, completeEvent, createEvent, eventCounts, getEvent, listEvents,
-  todoFor, updateEventDetails, renameCampaignOnEvents, EventNotFoundError, EventNotOpenError, NotYourEventError,
+  todoFor, updateEventDetails, renameCampaignOnEvents, claimNameOnlyEvents,
+  EventNotFoundError, EventNotOpenError, NotYourEventError,
 } from "./events.js";
 import { listNotifications, markRead, notify } from "./notifications.js";
 import { editorVideoLog, workflowKpis } from "./reports.js";
@@ -1048,7 +1049,18 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const user = await requireVideoUser(res); if (!user) return;
     if (!requireRole(res, user, ["admin", "manager"])) return;
     try {
-      const campaign = await updateCampaign(user, getSingleParam(req.params.id), req.body as CampaignInput);
+      const id = getSingleParam(req.params.id);
+      /* Typed-in videos and events the campaign owns only by its name are tied
+         to it by id first, under the name it has now, so a rename takes them
+         along. Left to the name, they dropped out of the renamed campaign and
+         a new campaign given the old name took them over. Done before the
+         update, so a failure here leaves the old name still owning them. */
+      const before = await getCampaign(id);
+      if (before) {
+        await claimNameOnlyVideos(before.id, before.name);
+        await claimNameOnlyEvents(before.id, before.name);
+      }
+      const campaign = await updateCampaign(user, id, req.body as CampaignInput);
       /* A rename reaches the videos and events filed under the campaign, which
          the reports and filters group by name. Run on every edit, not only a
          rename: it writes nothing when the names already agree, and it puts

@@ -20,7 +20,7 @@ import { addUser, setUserActive } from "./users.js";
 import { listNotifications, markRead, unreadCount, NOTIFICATION_TEXT } from "./notifications.js";
 import {
   createEvent, assignEvent, completeEvent, updateEventDetails, getEvent,
-  listEvents, todoFor, eventCounts, renameCampaignOnEvents, EventNotFoundError, NotYourEventError,
+  listEvents, todoFor, eventCounts, renameCampaignOnEvents, claimNameOnlyEvents, EventNotFoundError, NotYourEventError,
 } from "./events.js";
 import type { VideoUser } from "./types.js";
 
@@ -275,6 +275,18 @@ describe("editing an event", () => {
     expect((await getEvent(planned.id)).client).toBe("VLF 2027 old");
     expect((await getEvent(typed.id)).client).toBe("VLF 2027");
     expect(await renameCampaignOnEvents("c-1", "VLF 2027 old")).toBe(0);
+  });
+
+  it("ties events planned under a campaign's name, with no campaign picked, to that campaign", async () => {
+    const typed = await createEvent(manager, { title: "Launch", date: "2026-10-15", client: " vlf 2027 " });
+    const other = await createEvent(manager, { title: "Other", date: "2026-10-15", client: "VLF 2028" });
+    const elsewhere = await createEvent(manager, { title: "Linked", date: "2026-10-15", client: "VLF 2027", campaignId: "c-2" });
+    expect(await claimNameOnlyEvents("c-1", "VLF 2027")).toBe(1);
+    await renameCampaignOnEvents("c-1", "VLF 2027 old");
+    expect(await getEvent(typed.id)).toMatchObject({ campaignId: "c-1", client: "VLF 2027 old" });
+    expect(await getEvent(other.id)).toMatchObject({ campaignId: null, client: "VLF 2028" });
+    // Already filed under another campaign, so not this one's to take.
+    expect(await getEvent(elsewhere.id)).toMatchObject({ campaignId: "c-2", client: "VLF 2027" });
   });
 
   it("leaves an event with no posting time without one", async () => {
