@@ -63,3 +63,29 @@ export async function resolveOutreachScope(user: ScopeSubject | null | undefined
 export function stateInScope(scope: OutreachScope, state: string | null | undefined): boolean {
   return scope.kind === "all" || scope.states.includes(state ?? "");
 }
+
+/**
+ * Whether `actor` may create an account with role outreach_state_user on
+ * `team`.
+ *
+ * WHY A RULE OF ITS OWN. canCreateManagedUser's admin branch only checks that
+ * the new account is on the admin's own team, never that the team is
+ * outreach. Adding the State User to that shared list let a branding, design,
+ * media or content admin mint one on their own team — a request that was
+ * refused before the role existed. (The account would have had no access,
+ * since the scope needs team outreach, but other departments' behaviour must
+ * not move.) So the role is decided here, outreach-only, before the shared
+ * lists are consulted:
+ *   - the account must be on team outreach (on any other team it could never
+ *     see anything — creating it would only be a mistake to clean up later);
+ *   - the actor must be super_admin, or an outreach_manager / admin sitting on
+ *     team outreach. Nobody else.
+ */
+export function mayCreateOutreachStateUser(
+  actor: Pick<ScopeSubject, "role" | "team"> | null | undefined,
+  team: string | null | undefined,
+): boolean {
+  if (!actor || team !== "outreach") return false;
+  if (actor.role === "super_admin") return true;
+  return actor.team === "outreach" && (actor.role === "outreach_manager" || actor.role === "admin");
+}

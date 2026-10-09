@@ -80,7 +80,13 @@ import {
   getCreator as getOutreachCreator,
   getCampaign as getOutreachCampaign,
 } from "./outreach-db.js";
-import { mayEditOutreach, resolveOutreachScope, type OutreachScope } from "./outreach-scope.js";
+import {
+  mayCreateOutreachStateUser,
+  mayEditOutreach,
+  OUTREACH_STATE_USER_ROLE,
+  resolveOutreachScope,
+  type OutreachScope,
+} from "./outreach-scope.js";
 import { canonicalGeography, canonicalState, tidyText } from "./outreach-states.js";
 import { syncOutreach, addLivePosts, refreshLivePostMetrics, syncCampaignPosts } from "./outreach-sync.js";
 import { verifyPassword } from "./password.js";
@@ -450,6 +456,10 @@ function canCreateManagedUser(
   payload: z.infer<typeof createUserSchema>,
 ) {
   if (!actor) return false;
+  /* The State User is outreach's alone, so it is decided by an outreach rule
+     and kept out of the shared lists below: the admin list checks only "own
+     team", which would let any department's admin create one. */
+  if (payload.role === OUTREACH_STATE_USER_ROLE) return mayCreateOutreachStateUser(actor, payload.team);
   if (actor.role === "super_admin") return true;
 
   /* An outreach manager administers the outreach team: they staff it, so they
@@ -460,7 +470,7 @@ function canCreateManagedUser(
      user registry (see managerMayActOn in outreach-video/routes.ts). */
   if (actor.role === "outreach_manager") {
     return actor.team === "outreach" && payload.team === "outreach"
-      && ["outreach_editor", "outreach_publisher", "outreach_manager", "outreach_state_user"].includes(payload.role);
+      && ["outreach_editor", "outreach_publisher", "outreach_manager"].includes(payload.role);
   }
 
   if (actor.role !== "admin") return false;
@@ -469,7 +479,7 @@ function canCreateManagedUser(
   // outreach_* are the outreach team's roles, for an admin sitting on it.
   return actor.team !== null && payload.team === actor.team
     && ["sub_admin", "user", "task_owner", "task_manager", "inventory_manager",
-        "outreach_editor", "outreach_publisher", "outreach_manager", "outreach_state_user"].includes(payload.role);
+        "outreach_editor", "outreach_publisher", "outreach_manager"].includes(payload.role);
 }
 
 app.get("/api/health", (_req, res) => {

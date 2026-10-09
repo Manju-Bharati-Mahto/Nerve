@@ -1,7 +1,13 @@
 // @vitest-environment node
 /* PRD 6.1 / 6.3 — who reads which outreach data, and who may change it. */
 import { describe, expect, it } from "vitest";
-import { mayEditOutreach, outreachAccessKind, resolveOutreachScope, stateInScope } from "./outreach-scope.js";
+import {
+  mayCreateOutreachStateUser,
+  mayEditOutreach,
+  outreachAccessKind,
+  resolveOutreachScope,
+  stateInScope,
+} from "./outreach-scope.js";
 
 describe("outreachAccessKind", () => {
   it("gives super_admin, the outreach manager and the outreach publisher everything", () => {
@@ -61,5 +67,35 @@ describe("stateInScope", () => {
     // No states assigned means nothing, never everything.
     expect(stateInScope({ kind: "states", states: [] }, "Gujarat")).toBe(false);
     expect(stateInScope({ kind: "states", states: [] }, "")).toBe(false);
+  });
+});
+
+describe("mayCreateOutreachStateUser", () => {
+  it("lets super_admin and the outreach team's manager or admin create a State User on team outreach", () => {
+    expect(mayCreateOutreachStateUser({ role: "super_admin", team: null }, "outreach")).toBe(true);
+    expect(mayCreateOutreachStateUser({ role: "outreach_manager", team: "outreach" }, "outreach")).toBe(true);
+    expect(mayCreateOutreachStateUser({ role: "admin", team: "outreach" }, "outreach")).toBe(true);
+  });
+
+  it("never lets another department's admin create one, on any team (review regression)", () => {
+    // canCreateManagedUser's admin branch checks only "own team"; with the
+    // role in that list a branding admin could mint one on team branding.
+    for (const team of ["branding", "design", "media", "content"]) {
+      expect(mayCreateOutreachStateUser({ role: "admin", team }, team), team).toBe(false);
+      expect(mayCreateOutreachStateUser({ role: "admin", team }, "outreach"), team).toBe(false);
+      expect(mayCreateOutreachStateUser({ role: "sub_admin", team }, team), team).toBe(false);
+    }
+    // A manager whose own team is not outreach cannot either.
+    expect(mayCreateOutreachStateUser({ role: "outreach_manager", team: "branding" }, "branding")).toBe(false);
+    expect(mayCreateOutreachStateUser({ role: "outreach_manager", team: "branding" }, "outreach")).toBe(false);
+  });
+
+  it("refuses the outreach production roles and an account off team outreach", () => {
+    expect(mayCreateOutreachStateUser({ role: "outreach_editor", team: "outreach" }, "outreach")).toBe(false);
+    expect(mayCreateOutreachStateUser({ role: "outreach_state_user", team: "outreach" }, "outreach")).toBe(false);
+    // On another team the account could never see anything — refuse even super_admin.
+    expect(mayCreateOutreachStateUser({ role: "super_admin", team: null }, "branding")).toBe(false);
+    expect(mayCreateOutreachStateUser({ role: "super_admin", team: null }, null)).toBe(false);
+    expect(mayCreateOutreachStateUser(null, "outreach")).toBe(false);
   });
 });
