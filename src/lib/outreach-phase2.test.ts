@@ -12,6 +12,7 @@ function page(over: Partial<OutreachPage> & { id: string }): OutreachPage {
     handle: over.id, platform: 'instagram', geography: 'Geo', state: 'Gujarat', type: 'state', followerTier: '3',
     contentTypes: [], contentPreferences: [], followers: 1000,
     inventoryPosts: 24, inventoryStories: 24, notes: '', lastSyncedAt: null,
+    pageLink: '', contactPerson: '', status: 'active',
     ...over,
   }
 }

@@ -1257,9 +1257,19 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     /* Another state's page is "not found" to a state-scoped person, never
        "forbidden" — a 403 would confirm it exists. */
     const scope = await resolveOutreachScope(res.locals.currentUser as CurrentUser);
-    if (scope?.kind === "states") {
-      const current = await getPage(id);
-      if (!current || !stateInScope(scope, current.state)) return sendError(res, 404, "That page was not found.");
+    const current = await getPage(id);
+    if (!current || (scope?.kind === "states" && !stateInScope(scope, current.state))) {
+      return sendError(res, 404, "That page was not found.");
+    }
+    /* The same link rule as the influencer Edit page dialog: an http(s) URL on
+       the page's own platform. This used to store any text at all. A link
+       handed back unchanged is not re-checked, so a page whose old link
+       predates the rule can still have its contact or status changed. */
+    if (patch.page_link !== undefined && patch.page_link !== current.page_link) {
+      const { normalisePageLink } = await import("../outreach-page-edit.js");
+      const checked = normalisePageLink(current.platform, patch.page_link);
+      if (!checked.ok) return sendError(res, 400, checked.problem);
+      patch.page_link = checked.link;
     }
     const updated = await updatePage(id, patch);
     if (!updated) return sendError(res, 404, "That page was not found.");

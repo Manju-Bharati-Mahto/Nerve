@@ -7,11 +7,13 @@ import {
 } from 'lucide-react'
 import {
   useOutreachData, pageMetrics, suggestedMonthlyUsage, removePage,
-  profileUrlForPage, isValidInstagramHandle, assignedPageIdSet, toCsv,
+  pageOpenUrl, isValidInstagramHandle, assignedPageIdSet, toCsv, canEditOutreach,
   PAGE_CONTENT_TYPES, FOLLOWER_TIERS, type FollowerTier, type PageContentType, type OutreachPage, type Platform,
 } from '@/lib/outreach-data'
 import ImportPagesDialog from './ImportPagesDialog'
-import { AddPageModal, EditPageModal } from './OutreachAnalytics'
+import { AddPageModal } from './OutreachAnalytics'
+import EditPageModal from './EditPageModal'
+import { useAuth } from '@/hooks/useAuth'
 import AddLivePostsDialog from './AddLivePostsDialog'
 
 type SortKey = 'handle' | 'tier' | 'geography' | 'total' | 'consumed' | 'suggested' | 'status'
@@ -19,6 +21,9 @@ type SortDir = 'asc' | 'desc'
 
 export default function OutreachAllPages() {
   const { pages, posts, campaigns } = useOutreachData()
+  const { role, team } = useAuth()
+  // The server refuses everyone else; this only spares them a button that fails.
+  const canEdit = canEditOutreach(role, team)
   const assigned = useMemo(() => assignedPageIdSet(campaigns), [campaigns])
   const [searchParams] = useSearchParams()
   // Pages to highlight, sourced from ?ids=ID1,ID2 (e.g. coming from the
@@ -47,7 +52,7 @@ export default function OutreachAllPages() {
   const [importing, setImporting] = useState(false)
   // Which page is currently the target of the "Add live posts" dialog (null = closed).
   const [livePostsPageId, setLivePostsPageId] = useState<string | null>(null)
-  // Page currently open in the edit modal (content preference + inventory totals).
+  // Page currently open in the Edit page dialog.
   const [editingPage, setEditingPage] = useState<OutreachPage | null>(null)
 
   const geographies = useMemo(() => Array.from(new Set(pages.map(p => p.geography))).sort(), [pages])
@@ -272,8 +277,8 @@ export default function OutreachAllPages() {
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-1.5">
                     <Link to={`/outreach/pages/${page.id}`} className="text-xs font-medium text-foreground hover:underline">@{page.handle}</Link>
-                    {(page.platform === 'facebook' || isValidInstagramHandle(page.handle)) && (
-                      <a href={profileUrlForPage(page)} target="_blank" rel="noreferrer"
+                    {(page.pageLink || page.platform === 'facebook' || isValidInstagramHandle(page.handle)) && (
+                      <a href={pageOpenUrl(page)} target="_blank" rel="noreferrer"
                         title={`Open @${page.handle} on ${page.platform === 'facebook' ? 'Facebook' : 'Instagram'}`}
                         className="text-muted-foreground hover:text-orange-600">
                         <ExternalLink className="w-3 h-3" />
@@ -307,11 +312,13 @@ export default function OutreachAllPages() {
                       className="p-1 rounded-md text-muted-foreground hover:bg-orange-50 hover:text-orange-600">
                       <LinkIcon className="w-3.5 h-3.5" />
                     </button>
-                    <button onClick={() => setEditingPage(page)}
-                      title="Edit content preference & inventory"
-                      className="p-1 rounded-md text-muted-foreground hover:bg-orange-50 hover:text-orange-600">
-                      <Pencil className="w-3.5 h-3.5" />
-                    </button>
+                    {canEdit && (
+                      <button onClick={() => setEditingPage(page)}
+                        title="Edit page — name, link, state, inventory" aria-label={`Edit @${page.handle}`}
+                        className="p-1 rounded-md text-muted-foreground hover:bg-orange-50 hover:text-orange-600">
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     <button onClick={() => confirmDelete(page)}
                       title="Delete page"
                       className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">

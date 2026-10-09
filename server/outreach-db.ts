@@ -18,6 +18,7 @@ import { randomBytes } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { config } from "./config.js";
 import { canonicalGeography, canonicalState, isCanonicalState, tidyText } from "./outreach-states.js";
+import { handleKey, normalisePageHandle, normalisePageLink } from "./outreach-page-edit.js";
 import type { OutreachScope } from "./outreach-scope.js";
 
 const pool = new Pool({ connectionString: config.databaseUrl });
@@ -968,6 +969,154 @@ export async function updatePage(id: string, patch: Partial<CreatePageInput> & {
     values,
   );
   return rows[0] ? mapPageRow(rows[0]) : null;
+}
+
+/** What a person may change on a page (PRD 6.5). `platform` is accepted only when unchanged. */
+export interface EditPageInput {
+  handle?: string;
+  platform?: Platform;
+  geography?: string;
+  state?: string;
+  type?: PageType;
+  follower_tier?: FollowerTier;
+  content_types?: PageContentType[];
+  content_preferences?: string[];
+  followers?: number;
+  inventory_posts?: number;
+  inventory_stories?: number;
+  notes?: string;
+  page_link?: string;
+  contact_person?: string;
+  status?: string;
+}
+
+/* The columns editPage writes, by name. The patch never reaches SQL as raw
+   keys: id, platform, platform_page_id and the sync's own columns stay out of
+   reach whatever the caller sends. */
+const EDITABLE_PAGE_COLUMNS = [
+  "handle", "geography", "state", "type", "follower_tier", "content_types", "content_preferences",
+  "followers", "inventory_posts", "inventory_stories", "notes", "page_link", "contact_person", "status",
+] as const;
+
+/**
+ * A person's edit of a page — the path the Edit page dialog uses. updatePage
+ * stays for the sync's own bookkeeping (last_synced_at, platform_page_id).
+ *
+ * - Renaming keeps the id, so posts (outreach_posts.page_id), campaign
+ *   assignments, video records and the page's URL all stay with it.
+ * - A new handle is normalised (a pasted profile URL becomes the username) and
+ *   must be a well-formed username: the sync finds the page by it.
+ * - A handle another page on the same platform already has — in any case,
+ *   with or without "@" — is a duplicate (409). The unique key on
+ *   (handle, platform) is case-sensitive, so "AmazingDwarka" used to sit
+ *   beside "amazingdwarka" and the sync, which looks pages up lower-cased,
+ *   put both accounts' posts on one of them.
+ * - Renaming a Facebook page to a different name clears platform_page_id, the
+ *   cached Meta id that "Add live posts" checks a post's owner against. It
+ *   was resolved from the OLD name, so after a typo fix it would vouch for the
+ *   wrong page's posts and refuse the right one's. The next sync or live-post
+ *   add resolves it again. A case-only change is the same Facebook page and
+ *   keeps it; an Instagram rename has no such id.
+ * - The link must be an http(s) URL on the page's own platform.
+ * - The platform is fixed: posts are platform-specific.
+ * - A value handed back unchanged is never re-validated, so a legacy row (an
+ *   old handle with a space in it, a link typed before links were checked)
+ *   can still have its inventory edited.
+ *
+ * Returns null when there is no such page.
+ */
+export async function editPage(id: string, input: EditPageInput): Promise<OutreachPage | null> {
+  try {
+    return await inTransaction(async client => {
+      const { rows } = await client.query<OutreachPage>(`SELECT * FROM outreach_pages WHERE id = $1 FOR UPDATE`, [id]);
+      const current = rows[0];
+      if (!current) return null;
+      const patch: EditPageInput = placeFields(input);
+
+      if (patch.platform !== undefined && patch.platform !== current.platform) {
+        throw new OutreachValidationError("A page's platform can't be changed — add the page again on the other platform.");
+      }
+
+      let clearFacebookId = false;
+      if (typeof patch.handle === "string") {
+        if (patch.handle.trim() === current.handle) {
+          delete patch.handle;
+        } else {
+          const checked = normalisePageHandle(current.platform, patch.handle);
+          if (!checked.ok) throw new OutreachValidationError(checked.problem);
+          if (checked.handle === current.handle) {
+            delete patch.handle;
+          } else {
+            const dup = await client.query<{ handle: string }>(
+              `SELECT handle FROM outreach_pages WHERE platform = $2 AND id <> $3 AND ${sameHandleSql} LIMIT 1`,
+              [checked.handle, current.platform, id],
+            );
+            if (dup.rowCount) throw new OutreachDuplicateError(`@${dup.rows[0].handle} is already in the ledger — choose another name.`);
+            patch.handle = checked.handle;
+            clearFacebookId = current.platform === "facebook" && handleKey(checked.handle) !== handleKey(current.handle);
+          }
+        }
+      }
+
+      if (typeof patch.page_link === "string") {
+        if (patch.page_link.trim() === current.page_link) {
+          delete patch.page_link;
+        } else {
+          const checked = normalisePageLink(current.platform, patch.page_link);
+          if (!checked.ok) throw new OutreachValidationError(checked.problem);
+          patch.page_link = checked.link;
+        }
+      }
+      if (typeof patch.contact_person === "string") patch.contact_person = tidyText(patch.contact_person);
+
+      const sets: string[] = [];
+      const values: unknown[] = [];
+      for (const column of EDITABLE_PAGE_COLUMNS) {
+        const value = patch[column];
+        if (value === undefined) continue;
+        if (column === "content_types" || column === "content_preferences") {
+          values.push(JSON.stringify(value));
+          sets.push(`${column} = $${values.length}::jsonb`);
+        } else {
+          values.push(value);
+          sets.push(`${column} = $${values.length}`);
+        }
+      }
+      if (clearFacebookId) sets.push(`platform_page_id = NULL`);
+      if (sets.length === 0) return mapPageRow(current);
+      values.push(id);
+      const updated = await client.query<OutreachPage>(
+        `UPDATE outreach_pages SET ${sets.join(", ")}, updated_at = NOW() WHERE id = $${values.length} RETURNING *`,
+        values,
+      );
+      return mapPageRow(updated.rows[0]);
+    });
+  } catch (err) {
+    // Two renames racing to one name: the second meets the unique key.
+    if (isUniqueViolation(err)) throw new OutreachDuplicateError("Another page already has that name.");
+    throw err;
+  }
+}
+
+/**
+ * Caches a Facebook page's Meta id — only if the page still has the handle the
+ * id was scraped under, and has none cached yet. Returns the id now on the
+ * row, or null when the page was renamed meanwhile.
+ *
+ * A sync or "Add live posts" reads the page, scrapes https://facebook.com/<handle>
+ * for seconds, then writes what it found. If the page was renamed in between
+ * (and editPage cleared the id), an unconditional write put back the OLD
+ * page's id — the very trust anchor the rename was meant to drop.
+ */
+export async function cacheFacebookOwnerId(pageId: string, scrapedHandle: string, ownerId: string): Promise<string | null> {
+  await pool.query(
+    `UPDATE outreach_pages SET platform_page_id = $3
+      WHERE id = $1 AND handle = $2 AND platform_page_id IS NULL`,
+    [pageId, scrapedHandle, ownerId],
+  );
+  const { rows } = await pool.query<{ platform_page_id: string | null }>(
+    `SELECT platform_page_id FROM outreach_pages WHERE id = $1 AND handle = $2`, [pageId, scrapedHandle]);
+  return rows[0]?.platform_page_id ?? null;
 }
 
 /**

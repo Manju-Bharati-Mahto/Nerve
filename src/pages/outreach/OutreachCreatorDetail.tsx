@@ -12,6 +12,7 @@ import {
   formatLocalDate, PAGE_TYPES, FOLLOWER_TIERS, PAGE_CONTENT_TYPES,
   type OutreachCreator, type PageType, type FollowerTier, type PageContentType,
 } from '@/lib/outreach-data'
+import StateSelect from './StateSelect'
 import AddLivePostsDialog from './AddLivePostsDialog'
 
 export default function OutreachCreatorDetail() {
@@ -345,7 +346,9 @@ function EditCreatorModal({ creator, onClose }: { creator: OutreachCreator; onCl
             </div>
             <div>
               <label className="hub-label">State *</label>
-              <input className="hub-input" value={form.state} onChange={e => setForm(f => ({ ...f, state: e.target.value }))} />
+              {/* A legacy state shows as "unrecognised" until replaced; left
+                  as it is, it is sent back unchanged, which the server accepts. */}
+              <StateSelect value={form.state} onChange={state => setForm(f => ({ ...f, state }))} aria-label="State" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">

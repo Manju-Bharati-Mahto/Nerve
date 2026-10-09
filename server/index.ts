@@ -56,7 +56,6 @@ import {
   bootstrapOutreach,
   listPages as listOutreachPages,
   createPage as createOutreachPage,
-  updatePage as updateOutreachPage,
   deletePage as deleteOutreachPage,
   listCreators as listOutreachCreators,
   createCreator as createOutreachCreator,
@@ -77,6 +76,7 @@ import {
   POST_TYPES as OUTREACH_POST_TYPES,
   POST_STATUSES as OUTREACH_POST_STATUSES,
   getPage as getOutreachPage,
+  editPage as editOutreachPage,
   getCreator as getOutreachCreator,
   getCampaign as getOutreachCampaign,
 } from "./outreach-db.js";
@@ -2880,6 +2880,11 @@ function withoutUnchangedLegacyState(body: unknown, current: { state: string } |
 function payloadProblem(error: z.ZodError, what: string): string {
   const issue = error.issues[0];
   if (!issue) return `Invalid ${what}.`;
+  // A strict schema's leftover keys, named in words rather than zod's "Unrecognized key(s) in object".
+  if (issue.code === z.ZodIssueCode.unrecognized_keys) {
+    const keys = issue.keys.map(k => `"${k}"`).join(", ");
+    return `Invalid ${what}: ${keys} ${issue.keys.length === 1 ? "is not a field" : "are not fields"} that can be set here.`;
+  }
   const field = issue.path.join(".").replace(/_/g, " ");
   return field ? `Invalid ${what}: ${field} — ${issue.message}.` : `Invalid ${what}: ${issue.message}.`;
 }
@@ -2923,6 +2928,35 @@ const outreachPageSchema = z.object({
   inventory_stories: wholeCount(),
   notes: z.string().optional(),
 });
+
+/* A person's edit of a page (PRD 6.5). Its own schema, not the create
+   schema made partial: that one had no page_link, contact_person or status,
+   and zod dropped them without a word — a PATCH setting a link answered 200
+   and changed nothing. strict() makes any key that is not editable a 400 that
+   names it. The platform is accepted only when it is the page's own (editPage
+   refuses a different one); the handle and link are checked against the
+   page's platform there, since that needs the row. */
+const outreachPageEditSchema = z.object({
+  handle: z.string(),
+  platform: z.enum(["instagram", "facebook"]),
+  geography: z.string().transform(canonicalGeography).pipe(z.string().min(1)),
+  state: outreachStateField("refused"),
+  type: z.enum(OUTREACH_PAGE_TYPES),
+  follower_tier: z.enum(OUTREACH_FOLLOWER_TIERS),
+  content_types: z.array(z.enum(["static", "reel", "carousel"])),
+  content_preferences: z.array(z.string()),
+  // Kept editable: only the Instagram sync writes followers; a Facebook
+  // page's count exists only as typed.
+  followers: wholeCount(),
+  // Raised or lowered. Below what is already used is allowed — the page then
+  // reads over-used, which is the truth.
+  inventory_posts: wholeCount(),
+  inventory_stories: wholeCount(),
+  notes: z.string(),
+  page_link: z.string().max(500, "must be at most 500 characters"),
+  contact_person: z.string().max(120, "must be at most 120 characters"),
+  status: z.enum(["active", "inactive"]),
+}).partial().strict();
 
 /* Creators used to BE the page schema, which accepts `platform` and
    `content_preferences` — columns outreach_creators doesn't have — so a PATCH
@@ -2979,11 +3013,16 @@ app.post("/api/outreach/pages", asyncHandler(async (req, res) => {
 app.patch("/api/outreach/pages/:id", asyncHandler(async (req, res) => {
   if (!requireOutreachEdit(res)) return;
   const id = getSingleParam(req.params.id);
-  const parsed = outreachPageSchema.partial().safeParse(withoutUnchangedLegacyState(req.body, await getOutreachPage(id)));
+  const parsed = outreachPageEditSchema.safeParse(withoutUnchangedLegacyState(req.body, await getOutreachPage(id)));
   if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "page"));
-  const page = await updateOutreachPage(id, parsed.data);
-  if (!page) return sendError(res, 404, "Page not found.");
-  res.json({ page });
+  try {
+    const page = await editOutreachPage(id, parsed.data);
+    if (!page) return sendError(res, 404, "Page not found.");
+    res.json({ page });
+  } catch (err) {
+    if (outreachErrorAnswered(res, err)) return;
+    throw err;
+  }
 }));
 
 app.delete("/api/outreach/pages/:id", asyncHandler(async (req, res) => {

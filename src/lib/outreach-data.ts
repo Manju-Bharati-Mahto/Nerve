@@ -62,7 +62,15 @@ export interface OutreachPage {
   inventoryStories: number
   notes: string
   lastSyncedAt: string | null
+  /** The page's own address, typed by a person ('' = not set — fall back to profileUrlForPage). */
+  pageLink: string
+  contactPerson: string
+  /** 'active' | 'inactive' — whether we still post here (video workflow §8). */
+  status: string
 }
+
+/** What a person may change on a page through the Edit page dialog (PRD 6.5). The platform is fixed. */
+export type PageEdit = Partial<Omit<OutreachPage, 'id' | 'platform' | 'lastSyncedAt'>>
 
 // Creators have the same shape as pages today but live in their own table —
 // they don't show up in the All Pages ledger and have their own list view.
@@ -154,10 +162,16 @@ function toPage(p: ServerOutreachPage): OutreachPage {
     inventoryStories: p.inventory_stories,
     notes: p.notes,
     lastSyncedAt: p.last_synced_at,
+    pageLink: p.page_link ?? '',
+    contactPerson: p.contact_person ?? '',
+    status: p.status ?? 'active',
   }
 }
 
-function fromPage(p: Omit<OutreachPage, 'id' | 'lastSyncedAt'> & Partial<Pick<OutreachPage, 'id' | 'lastSyncedAt'>>): Partial<ServerOutreachPage> {
+/** A new page as the create endpoint takes it — link, contact and status are set later, by editing. */
+export type NewPage = Omit<OutreachPage, 'id' | 'lastSyncedAt' | 'pageLink' | 'contactPerson' | 'status'>
+
+function fromPage(p: NewPage): Partial<ServerOutreachPage> {
   return {
     handle: p.handle,
     platform: p.platform,
@@ -373,12 +387,19 @@ export function refreshOutreach() {
 
 // ── Mutators (async; refetch on success) ───────────────────────────────────
 
-export async function addPage(page: Omit<OutreachPage, 'id' | 'lastSyncedAt'>) {
-  await api.createOutreachPage(fromPage(page))
+/** Creates a page and returns it as the server stored it — its id is the server's, not slug(handle). */
+export async function addPage(page: NewPage): Promise<OutreachPage> {
+  const { page: created } = await api.createOutreachPage(fromPage(page))
   await fetchAll()
+  return toPage(created)
 }
 
-export async function updatePage(id: string, patch: Partial<Omit<OutreachPage, 'id'>>) {
+/**
+ * Sends only the fields given. The server's edit schema is strict, so a field
+ * it does not take is a 400 rather than silently dropped — and sending only
+ * what changed keeps one person's edit from overwriting another's.
+ */
+export async function updatePage(id: string, patch: PageEdit) {
   const serverPatch: Partial<ServerOutreachPage> = {}
   if (patch.handle !== undefined) serverPatch.handle = patch.handle
   if (patch.geography !== undefined) serverPatch.geography = patch.geography
@@ -391,6 +412,9 @@ export async function updatePage(id: string, patch: Partial<Omit<OutreachPage, '
   if (patch.inventoryPosts !== undefined) serverPatch.inventory_posts = patch.inventoryPosts
   if (patch.inventoryStories !== undefined) serverPatch.inventory_stories = patch.inventoryStories
   if (patch.notes !== undefined) serverPatch.notes = patch.notes
+  if (patch.pageLink !== undefined) serverPatch.page_link = patch.pageLink
+  if (patch.contactPerson !== undefined) serverPatch.contact_person = patch.contactPerson
+  if (patch.status !== undefined) serverPatch.status = patch.status
   await api.updateOutreachPage(id, serverPatch)
   await fetchAll()
 }
@@ -511,6 +535,24 @@ export async function syncCampaignNow(campaignId: string) {
   const result = await api.syncOutreachCampaign(campaignId)
   await fetchAll()
   return result
+}
+
+/**
+ * Where "Open on Instagram/Facebook" goes: the link a person set for the page
+ * when there is one, otherwise the profile URL built from its handle.
+ */
+export function pageOpenUrl(page: Pick<OutreachPage, 'handle' | 'platform'> & Partial<Pick<OutreachPage, 'pageLink'>>): string {
+  return page.pageLink?.trim() || profileUrlForPage(page)
+}
+
+/**
+ * Who may change influencer pages, campaigns and creators — the client's copy
+ * of the server's mayEditOutreach, used only to hide buttons. The server still
+ * refuses everyone else (a State User is read-only).
+ */
+export function canEditOutreach(role: string | null | undefined, team: string | null | undefined): boolean {
+  if (role === 'super_admin' || role === 'outreach_manager') return true
+  return role === 'outreach_publisher' && team === 'outreach'
 }
 
 /** Public profile URL for a page on its own platform. */

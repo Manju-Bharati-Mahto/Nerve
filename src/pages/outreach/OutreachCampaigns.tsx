@@ -4,14 +4,15 @@ import { Send, Plus, Search, X, ChevronRight, Filter as FilterIcon, Trash2, Uplo
 import {
   useOutreachData, addCampaign, updateCampaign, removeCampaign, campaignMetrics,
   addLivePostsByUrl, refreshOutreach, formatLocalDate,
-  INDIAN_STATES,
   type Campaign, type CampaignStatus,
 } from '@/lib/outreach-data'
 import { parseCampaignSheet } from '@/lib/outreach-import'
+import { canonicalState } from '@/lib/outreach-states'
 import AddLivePostsDialog from './AddLivePostsDialog'
+import StateSelect from './StateSelect'
 import {
   MAX_BUDGET, toBudget, budgetProblem, isRealIsoDate,
-  ensureInstagramPage, instagramPageIndex, handleKey, PageNeedsPlaceError,
+  ensureInstagramPage, instagramPageIndex, handleKey, PageNeedsPlaceError, PageStateUnknownError,
 } from './import-pages'
 
 const STATUS_CFG: Record<CampaignStatus, { label: string; cls: string }> = {
@@ -341,12 +342,6 @@ function CreateCampaignModal({
     creatorIds: [] as string[],
     approversRaw: 'Outreach Manager',
   })
-  // State options: canonical list ∪ states already on pages, so a state the
-  // team has used before is always selectable.
-  const stateOptions = useMemo(
-    () => Array.from(new Set([...INDIAN_STATES, ...pages.map(p => p.state).filter(Boolean)])).sort(),
-    [pages],
-  )
   const [pageQuery, setPageQuery] = useState('')
   const [creatorQuery, setCreatorQuery] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -442,10 +437,10 @@ function CreateCampaignModal({
               </div>
               <div>
                 <label className="hub-label">State</label>
-                <select className="hub-input" value={form.state} onChange={e => setForm(f => ({ ...f, state: e.target.value }))}>
-                  <option value="">Select a state (which state this campaign targets)</option>
-                  {stateOptions.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
+                {/* The master list only. Page states used to be merged in, which
+                    offered "gujarat" and "  gujarat  " beside "Gujarat". */}
+                <StateSelect value={form.state} onChange={state => setForm(f => ({ ...f, state }))}
+                  allowEmpty="Not tied to one state" aria-label="State" />
               </div>
               <div>
                 <label className="hub-label">Description</label>
@@ -656,6 +651,15 @@ function ImportCampaignsModal({ onClose }: { onClose: () => void }) {
           }
           if (badDate) outcome.skipped.push(`"${g.name}" — start date ${g.startDate} is not a real date; kept the campaign's current start date.`)
 
+          // The sheet's State, as the master list names it: '' when blank,
+          // null when it matches nothing. An unknown state no longer rides in
+          // the same request as the page assignments — the server refuses it,
+          // and the assignments used to be lost with it.
+          const campaignState = canonicalState(g.state)
+          if (campaignState === null) {
+            outcome.skipped.push(`"${g.name}" — State "${g.state}" is not an Indian state or union territory; ${existing ? "kept the campaign's current state" : 'saved the campaign without a state'}. Fix the sheet or pick the state on the campaign.`)
+          }
+
           // 1) Resolve this group's pages, creating any the DB doesn't have.
           //    The id is whatever the server answers with — it is not always
           //    slug(handle), since a taken id gets a suffix. A page that cannot
@@ -678,7 +682,9 @@ function ImportCampaignsModal({ onClose }: { onClose: () => void }) {
             } catch (err) {
               outcome.skipped.push(err instanceof PageNeedsPlaceError
                 ? `"${g.name}" — @${err.handle} not added: it is a new page and the sheet gives this campaign no State. Add a State column (or add the page on All Pages) and upload again — the campaign is updated, not duplicated.`
-                : `"${g.name}" — @${row.handle} not added: ${err instanceof Error ? err.message : 'failed'}`)
+                : err instanceof PageStateUnknownError
+                  ? `"${g.name}" — @${err.handle} not added: it is a new page and "${err.state}" is not an Indian state or union territory. Fix the State cell (or add the page on All Pages) and upload again.`
+                  : `"${g.name}" — @${row.handle} not added: ${err instanceof Error ? err.message : 'failed'}`)
             }
           }
 
@@ -692,7 +698,7 @@ function ImportCampaignsModal({ onClose }: { onClose: () => void }) {
               creativeVariants: Array.from(new Set([...existing.creativeVariants, ...g.variants])),
             }
             if (g.startDate && !badDate) patch.startDate = g.startDate
-            if (g.state) patch.state = g.state
+            if (campaignState) patch.state = campaignState
             if (g.goal) patch.goal = g.goal
             if (g.budgetPosts) patch.budgetPosts = g.budgetPosts
             if (g.budgetStories) patch.budgetStories = g.budgetStories
@@ -705,7 +711,7 @@ function ImportCampaignsModal({ onClose }: { onClose: () => void }) {
             const startDate = g.startDate || formatLocalDate(new Date())
             campaign = await addCampaign({
               name: g.name, startDate, endDate: '',
-              state: g.state, goal: g.goal, status: 'planning',
+              state: campaignState ?? '', goal: g.goal, status: 'planning',
               budgetPosts: g.budgetPosts, budgetStories: g.budgetStories, budgetReels: g.budgetReels,
               approvers: ['Outreach Manager'], creativeVariants: g.variants,
               assignedPageIds: rows.map(r => r.pageId), assignedCreatorIds: [],

@@ -10,6 +10,7 @@ import {
   PAGE_TYPES, FOLLOWER_TIERS, PAGE_CONTENT_TYPES,
   type PageType, type FollowerTier, type PageContentType, type OutreachCreator,
 } from '@/lib/outreach-data'
+import StateSelect from './StateSelect'
 
 type SortKey = 'handle' | 'geography' | 'state' | 'tier' | 'followers' | 'inventory'
 type SortDir = 'asc' | 'desc'
@@ -317,7 +318,7 @@ function AddCreatorModal({ defaultType, onClose, onCreated }: {
             </div>
             <div>
               <label className="hub-label">State *</label>
-              <input className="hub-input" value={form.state} onChange={e => setForm(f => ({ ...f, state: e.target.value }))} placeholder="Gujarat" />
+              <StateSelect value={form.state} onChange={state => setForm(f => ({ ...f, state }))} aria-label="State" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">

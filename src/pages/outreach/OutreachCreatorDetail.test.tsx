@@ -48,7 +48,8 @@ describe('OutreachCreatorDetail', () => {
 
     const [, invPosts] = screen.getAllByRole('spinbutton')
     fireEvent.change(invPosts, { target: { value: '7.6' } })
-    fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: '4' } })
+    // Comboboxes: State (a dropdown since PRD 6.4), Type, Follower tier.
+    fireEvent.change(screen.getAllByRole('combobox')[2], { target: { value: '4' } })
     fireEvent.click(save)
 
     await waitFor(() => expect(mockUpdateCreator).toHaveBeenCalledTimes(1))

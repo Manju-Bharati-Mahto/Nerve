@@ -7,16 +7,19 @@ import {
 import {
   LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
-import { useOutreachData, pageMetrics, removePage, profileUrlForPage, isValidInstagramHandle, formatLocalDate, refreshOutreach, analyzePostPerformance } from '@/lib/outreach-data'
+import { useOutreachData, pageMetrics, removePage, pageOpenUrl, isValidInstagramHandle, formatLocalDate, refreshOutreach, analyzePostPerformance, canEditOutreach } from '@/lib/outreach-data'
 import { api } from '@/lib/api'
 import AddLivePostsDialog from './AddLivePostsDialog'
-import { EditPageModal } from './OutreachAnalytics'
+import EditPageModal from './EditPageModal'
+import { useAuth } from '@/hooks/useAuth'
 
 export default function OutreachPageDetail() {
   const { pageId } = useParams<{ pageId: string }>()
   const { pages, posts, campaigns } = useOutreachData()
   const navigate = useNavigate()
   const page = pages.find(p => p.id === pageId)
+  const { role, team } = useAuth()
+  const canEdit = canEditOutreach(role, team)
   const [deleting, setDeleting] = useState(false)
   const [addingLivePosts, setAddingLivePosts] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -132,8 +135,8 @@ export default function OutreachPageDetail() {
                 <h1 className="text-xl font-serif text-foreground">@{page.handle}</h1>
                 {/* Same rule as the All Pages row: a Facebook page links to Facebook.
                     This used to send every page to instagram.com/<handle>. */}
-                {(page.platform === 'facebook' || isValidInstagramHandle(page.handle)) && (
-                  <a href={profileUrlForPage(page)} target="_blank" rel="noreferrer"
+                {(page.pageLink || page.platform === 'facebook' || isValidInstagramHandle(page.handle)) && (
+                  <a href={pageOpenUrl(page)} target="_blank" rel="noreferrer"
                     title={`Open @${page.handle} on ${page.platform === 'facebook' ? 'Facebook' : 'Instagram'}`}
                     className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80">
                     <ExternalLink className="w-3 h-3" /> Open on {page.platform === 'facebook' ? 'Facebook' : 'Instagram'}
@@ -160,11 +163,13 @@ export default function OutreachPageDetail() {
               className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1">
               <LinkIcon className="w-3 h-3" /> Add live posts
             </button>
-            <button onClick={() => setEditing(true)}
-              title="Edit content preference & inventory"
-              className="text-xs px-2.5 py-1.5 rounded-lg border border-border text-muted-foreground hover:bg-accent inline-flex items-center gap-1">
-              <Pencil className="w-3 h-3" /> Edit
-            </button>
+            {canEdit && (
+              <button onClick={() => setEditing(true)}
+                title="Edit page — name, link, state, inventory"
+                className="text-xs px-2.5 py-1.5 rounded-lg border border-border text-muted-foreground hover:bg-accent inline-flex items-center gap-1">
+                <Pencil className="w-3 h-3" /> Edit page
+              </button>
+            )}
             <button onClick={handleDelete} disabled={deleting}
               title="Delete page"
               className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">

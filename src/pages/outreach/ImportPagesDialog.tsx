@@ -5,7 +5,9 @@ import {
   FOLLOWER_TIERS, type FollowerTier, type PageType,
 } from '@/lib/outreach-data'
 import { parseInventorySheet, type ParsedPageRow } from '@/lib/outreach-import'
-import { ensureInstagramPage, instagramPageIndex, PageNeedsPlaceError } from './import-pages'
+import { canonicalState } from '@/lib/outreach-states'
+import { ensureInstagramPage, instagramPageIndex, PageNeedsPlaceError, PageStateUnknownError } from './import-pages'
+import StateSelect from './StateSelect'
 
 interface EditableRow extends ParsedPageRow {
   rid: number
@@ -13,8 +15,14 @@ interface EditableRow extends ParsedPageRow {
 }
 
 let RID = 0
+
+/** Non-blank and matching nothing on the master list. */
+const isUnrecognisedState = (state: string) => canonicalState(state) === null
+/* The sheet's state as the master list names it ("gujarat " → "Gujarat").
+   One that matches nothing is kept as typed, so the row's dropdown shows it
+   as unrecognised for the person to replace — never guessed, never dropped. */
 function toEditable(p: ParsedPageRow): EditableRow {
-  return { rid: RID++, include: true, ...p }
+  return { rid: RID++, include: true, ...p, state: canonicalState(p.state) ?? p.state }
 }
 
 const BLANK: ParsedPageRow = {
@@ -39,6 +47,7 @@ export default function ImportPagesDialog({ onClose }: { onClose: () => void }) 
   const [result, setResult] = useState<{ pages: number; reused: number; campaigns: number; skipped: string[] } | null>(null)
 
   const includedCount = useMemo(() => rows.filter(r => r.include).length, [rows])
+  const unrecognisedCount = useMemo(() => rows.filter(r => r.include && isUnrecognisedState(r.state)).length, [rows])
 
   async function onFile(file: File) {
     setBusy(true)
@@ -96,7 +105,9 @@ export default function ImportPagesDialog({ onClose }: { onClose: () => void }) 
       } catch (e) {
         skipped.push(e instanceof PageNeedsPlaceError
           ? `@${e.handle}: fill in Geography and State, then import again.`
-          : `@${handle}: ${e instanceof Error ? e.message : 'failed to add'}`)
+          : e instanceof PageStateUnknownError
+            ? `@${e.handle}: "${e.state}" is not an Indian state or union territory — pick its state, then import again.`
+            : `@${handle}: ${e instanceof Error ? e.message : 'failed to add'}`)
       }
     }
 
@@ -193,6 +204,14 @@ export default function ImportPagesDialog({ onClose }: { onClose: () => void }) 
                 </button>
               </div>
 
+              {unrecognisedCount > 0 && (
+                <p className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  {unrecognisedCount} row{unrecognisedCount === 1 ? ' has' : 's have'} a state that is not on the list (highlighted). Pick the state —
+                  a new page left that way is reported and not added; a page already in the ledger is unaffected.
+                </p>
+              )}
+
               <div className="border border-border rounded-lg overflow-auto max-h-[52vh]">
                 <table className="w-full text-xs">
                   <thead className="sticky top-0 bg-muted/95 backdrop-blur">
@@ -216,7 +235,7 @@ export default function ImportPagesDialog({ onClose }: { onClose: () => void }) 
                   </thead>
                   <tbody>
                     {rows.map(r => (
-                      <tr key={r.rid} className={`border-t border-border ${r.include ? '' : 'opacity-40'}`}>
+                      <tr key={r.rid} className={`border-t border-border ${r.include ? '' : 'opacity-40'} ${r.include && isUnrecognisedState(r.state) ? 'bg-amber-50/60' : ''}`}>
                         <td className="px-2 py-1.5">
                           <input type="checkbox" checked={r.include} onChange={e => patch(r.rid, { include: e.target.checked })} />
                         </td>
@@ -229,8 +248,8 @@ export default function ImportPagesDialog({ onClose }: { onClose: () => void }) 
                             onChange={e => patch(r.rid, { geography: e.target.value })} placeholder="city" />
                         </td>
                         <td className="px-2 py-1.5">
-                          <input className="hub-input py-1 text-xs" value={r.state}
-                            onChange={e => patch(r.rid, { state: e.target.value })} placeholder="state" />
+                          <StateSelect className="hub-input py-1 text-xs" value={r.state}
+                            onChange={state => patch(r.rid, { state })} aria-label={`State for ${r.handle || 'new row'}`} />
                         </td>
                         <td className="px-2 py-1.5">
                           <select className="hub-input py-1 text-xs" value={r.type}

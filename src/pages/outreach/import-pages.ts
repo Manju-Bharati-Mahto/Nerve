@@ -7,6 +7,7 @@
 import { api } from '@/lib/api'
 import { HttpError } from '@/lib/http'
 import type { OutreachPage, PageType, FollowerTier } from '@/lib/outreach-data'
+import { canonicalState } from '@/lib/outreach-states'
 
 /**
  * Highest budget the forms accept. The column is a Postgres INTEGER, so
@@ -60,6 +61,18 @@ export class PageNeedsPlaceError extends Error {
   }
 }
 
+/**
+ * A new page whose sheet state matches nothing on the master list (PRD 6.4).
+ * Reported for that row, by name, instead of the server's 400 for the whole
+ * row — or, before states were checked, being stored as one more spelling.
+ */
+export class PageStateUnknownError extends Error {
+  constructor(readonly handle: string, readonly state: string) {
+    super(`@${handle} is not in the ledger yet, and "${state}" is not an Indian state or union territory — choose one from the list.`)
+    this.name = 'PageStateUnknownError'
+  }
+}
+
 export interface ImportedPage {
   handle: string
   geography: string
@@ -94,8 +107,10 @@ export async function ensureInstagramPage(
   if (hit) return { id: hit, created: false }
 
   const geography = input.geography.trim()
-  const state = input.state.trim()
-  if (!geography || !state) throw new PageNeedsPlaceError(handle)
+  if (!geography || !input.state.trim()) throw new PageNeedsPlaceError(handle)
+  // "gujarat " or "Tamilnadu" is the canonical state; "Guj" is reported.
+  const state = canonicalState(input.state)
+  if (!state) throw new PageStateUnknownError(handle, input.state.trim())
 
   try {
     const { page } = await api.createOutreachPage({
