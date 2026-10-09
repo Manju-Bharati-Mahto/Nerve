@@ -167,6 +167,14 @@ export async function updateEventDetails(id: string, actor: Actor, patch: {
     if (patch.description !== undefined) event.description = patch.description.trim();
     if (patch.date !== undefined) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(patch.date)) throw new Error("A valid event date is required.");
+      /* The posting time travels with the date unless the caller set one.
+         It used to stay on the old day: the calendar lists an event by its
+         postingAt and the To-Do list by its date, so one edit left the two
+         screens a day apart. Shifting by whole days keeps the time of day
+         the manager chose. */
+      if (patch.postingAt === undefined && event.postingAt) {
+        event.postingAt = shiftByDays(event.postingAt, event.date, patch.date);
+      }
       event.date = patch.date;
     }
     if (patch.client !== undefined) event.client = patch.client?.trim() || null;
@@ -181,6 +189,54 @@ export async function updateEventDetails(id: string, actor: Actor, patch: {
     event.activity.push(activityEntry(actor, "event.updated", { relatedEventId: event.id }));
     return { ...event };
   });
+}
+
+/**
+ * The events counterpart of claimNameOnlyVideos: an event planned under the
+ * campaign's name with no campaign picked is tied to the campaign by id before
+ * an edit, so a rename carries it along instead of leaving it filed under a
+ * name nothing answers to any more.
+ */
+export async function claimNameOnlyEvents(campaignId: string, name: string): Promise<number> {
+  const wanted = name.trim().toLowerCase();
+  const loose = (events: EventRecord[]) =>
+    events.filter(e => !e.campaignId && (e.client ?? "").trim().toLowerCase() === wanted);
+  if (!wanted || loose((await readEvents()).events).length === 0) return 0;
+  return mutateEvents<number>(doc => {
+    const events = loose(doc.events);
+    for (const e of events) e.campaignId = campaignId;
+    return { doc, result: events.length };
+  });
+}
+
+/**
+ * The events counterpart of renameCampaignOnVideos: an event planned for a
+ * campaign carries the campaign's current name as its `client`, which the
+ * calendar's client filter and search compare by text. Writes only when
+ * something differs.
+ */
+export async function renameCampaignOnEvents(campaignId: string, name: string): Promise<number> {
+  const wanted = name.trim();
+  const stale = (events: EventRecord[]) =>
+    events.filter(e => e.campaignId === campaignId && e.client !== wanted);
+  if (stale((await readEvents()).events).length === 0) return 0;
+  return mutateEvents<number>(doc => {
+    const events = stale(doc.events);
+    for (const e of events) e.client = wanted;
+    return { doc, result: events.length };
+  });
+}
+
+/**
+ * Moves an ISO instant by the whole days between two YYYY-MM-DD dates. A
+ * timestamp that will not parse is left alone rather than replaced with a
+ * guess.
+ */
+export function shiftByDays(iso: string, fromDate: string, toDate: string): string {
+  const at = new Date(iso).getTime();
+  const days = (Date.parse(`${toDate}T00:00:00Z`) - Date.parse(`${fromDate}T00:00:00Z`)) / 86_400_000;
+  if (Number.isNaN(at) || !Number.isFinite(days) || days === 0) return iso;
+  return new Date(at + days * 86_400_000).toISOString();
 }
 
 export async function getEvent(id: string): Promise<EventRecord> {

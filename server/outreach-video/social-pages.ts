@@ -42,15 +42,20 @@ export function isAnalyticsRestricted(role: VideoRole): boolean {
 
 /**
  * Shapes the page list for a role. Editors get the §8.2 allowlist; every other
- * role gets the pages unchanged, since analytics access is restricted "to roles
+ * role gets the whole page, since analytics access is restricted "to roles
  * other than Editor".
+ *
+ * `connected` is on both shapes. It used to be computed only for the editor
+ * projection, so the one Social Pages screen every role shares read an
+ * undefined `connected` for managers and admins and called every page "Not
+ * synced" — the same page an editor was told was connected.
  */
 export function socialPagesForRole<T extends SourcePage>(
   pages: T[],
   role: VideoRole,
-): { pages: EditorVisiblePage[] | T[]; analyticsVisible: boolean } {
+): { pages: EditorVisiblePage[] | Array<T & { connected: boolean }>; analyticsVisible: boolean } {
   if (!isAnalyticsRestricted(role)) {
-    return { pages, analyticsVisible: true };
+    return { pages: pages.map(p => ({ ...p, connected: !!p.last_synced_at })), analyticsVisible: true };
   }
   return {
     pages: pages.map(p => ({

@@ -64,6 +64,15 @@ function matches(haystack: (string | null | undefined)[], needle: string): boole
   return haystack.some(value => (value ?? "").toLowerCase().includes(needle));
 }
 
+/**
+ * A platform as it is compared and offered. Uploads store it lower-cased now,
+ * but records written before that carry whatever case was sent ("Instagram"
+ * beside "instagram"), and those must still be one platform to the filter.
+ */
+function platformKey(value: string | null | undefined): string {
+  return (value ?? "").trim().toLowerCase();
+}
+
 export async function search(query: SearchQuery, scope: SearchScope = {}): Promise<SearchResult> {
   const [workflow, eventsDoc, users] = await Promise.all([readWorkflow(), readEvents(), listAllUsers()]);
   const names = new Map(users.map(u => [u.id, `${u.name} ${u.email}`]));
@@ -78,7 +87,7 @@ export async function search(query: SearchQuery, scope: SearchScope = {}): Promi
     .filter(v => !query.status || v.status === query.status)
     .filter(v => !query.client || v.client === query.client)
     .filter(v => !query.publisherId || v.publishedBy === query.publisherId)
-    .filter(v => !query.platform || (v.platform ?? "") === query.platform)
+    .filter(v => !query.platform || platformKey(v.platform) === platformKey(query.platform))
     .filter(v => !query.pageId || (v.socialPageIds ?? []).includes(query.pageId))
     .filter(v => !query.contentType || query.contentType.toLowerCase() === "video")
     .filter(v => inRange(dayOf(v.createdAt), query.from, query.to))
@@ -118,7 +127,7 @@ export async function filterOptions(): Promise<{
   for (const v of workflow.videos) if (v.client) clients.add(v.client);
   for (const e of eventsDoc.events) if (e.client) clients.add(e.client);
   const platforms = new Set<string>();
-  for (const v of workflow.videos) if (v.platform) platforms.add(v.platform);
+  for (const v of workflow.videos) if (platformKey(v.platform)) platforms.add(platformKey(v.platform));
 
   /* Pages are named from the videos' own snapshots, so the list needs no trip
      to Postgres; an event's page shows by id until a video names it. */
