@@ -10,6 +10,9 @@ import {
   PAGE_TYPES, FOLLOWER_TIERS, PAGE_CONTENT_TYPES,
   type PageType, type FollowerTier, type PageContentType, type OutreachCreator,
 } from '@/lib/outreach-data'
+import StateSelect from './StateSelect'
+import { useIsOutreachAdmin } from '@/lib/outreach-access'
+import { geographyKey, geographyOptions } from '@/lib/outreach-states'
 
 type SortKey = 'handle' | 'geography' | 'state' | 'tier' | 'followers' | 'inventory'
 type SortDir = 'asc' | 'desc'
@@ -21,6 +24,8 @@ const TABS: { id: PageType; label: string }[] = [
 
 export default function OutreachCreators() {
   const { creators } = useOutreachData()
+  // Adding and deleting a creator is the outreach manager's, as on the server.
+  const isAdmin = useIsOutreachAdmin()
   const navigate = useNavigate()
 
   const [tab, setTab] = useState<PageType>('state')
@@ -31,7 +36,9 @@ export default function OutreachCreators() {
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: 'handle', dir: 'asc' })
   const [adding, setAdding] = useState(false)
 
-  const geographies = useMemo(() => Array.from(new Set(creators.map(c => c.geography))).sort(), [creators])
+  // One entry per geography however it was typed — the same rule as All Pages.
+  const geographies = useMemo(() => geographyOptions(creators.map(c => c.geography)), [creators])
+  const geographyLabel = useMemo(() => new Map(geographies.map(g => [g.key, g.label])), [geographies])
   const states = useMemo(() => Array.from(new Set(creators.map(c => c.state))).sort(), [creators])
 
   const counts = useMemo(() => ({
@@ -44,7 +51,7 @@ export default function OutreachCreators() {
     const q = search.trim().toLowerCase()
     const filtered = base.filter(c => {
       if (q && !c.handle.toLowerCase().includes(q)) return false
-      if (geography && c.geography !== geography) return false
+      if (geography && geographyKey(c.geography) !== geography) return false
       if (state && c.state !== state) return false
       if (tier && c.followerTier !== tier) return false
       return true
@@ -54,14 +61,14 @@ export default function OutreachCreators() {
       const k = sort.key
       const av: number | string =
         k === 'handle'    ? a.handle :
-        k === 'geography' ? a.geography :
+        k === 'geography' ? geographyKey(a.geography) :
         k === 'state'     ? a.state :
         k === 'tier'      ? a.followerTier :
         k === 'followers' ? a.followers :
         a.inventoryPosts + a.inventoryStories
       const bv: number | string =
         k === 'handle'    ? b.handle :
-        k === 'geography' ? b.geography :
+        k === 'geography' ? geographyKey(b.geography) :
         k === 'state'     ? b.state :
         k === 'tier'      ? b.followerTier :
         k === 'followers' ? b.followers :
@@ -95,10 +102,12 @@ export default function OutreachCreators() {
             <p className="text-sm text-muted-foreground">Directory of individual creators, split as State-level and PU-owned. Kept separate from the Pages ledger.</p>
           </div>
         </div>
-        <button onClick={() => setAdding(true)}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-orange-600 text-white hover:opacity-90">
-          <Plus className="w-4 h-4" /> Add creator
-        </button>
+        {isAdmin && (
+          <button onClick={() => setAdding(true)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-orange-600 text-white hover:opacity-90">
+            <Plus className="w-4 h-4" /> Add creator
+          </button>
+        )}
       </div>
 
       {/* Tabs */}
@@ -125,7 +134,7 @@ export default function OutreachCreators() {
           <FilterIcon className="w-4 h-4 text-muted-foreground" />
           <select value={geography} onChange={e => setGeography(e.target.value)} className="hub-input py-1.5 text-xs w-36">
             <option value="">All geographies</option>
-            {geographies.map(g => <option key={g} value={g}>{g}</option>)}
+            {geographies.map(g => <option key={g.key} value={g.key}>{g.label}</option>)}
           </select>
           <select value={state} onChange={e => setState(e.target.value)} className="hub-input py-1.5 text-xs w-32">
             <option value="">All states</option>
@@ -182,18 +191,20 @@ export default function OutreachCreators() {
                     )}
                   </div>
                 </td>
-                <td className="px-3 py-2.5 text-xs text-foreground">{c.geography}</td>
+                <td className="px-3 py-2.5 text-xs text-foreground">{geographyLabel.get(geographyKey(c.geography)) ?? c.geography}</td>
                 <td className="px-3 py-2.5 text-xs text-muted-foreground">{c.state}</td>
                 <td className="px-3 py-2.5 text-xs text-foreground">Tier {c.followerTier}</td>
                 <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground">{fmt(c.followers)}</td>
                 <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground">{c.inventoryPosts}/{c.inventoryStories}</td>
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-1">
-                    <button onClick={() => confirmDelete(c)}
-                      title="Delete creator"
-                      className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {isAdmin && (
+                      <button onClick={() => confirmDelete(c)}
+                        title="Delete creator"
+                        className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     <Link to={`/outreach/creators/${c.id}`} title="Open creator dashboard"
                       className="p-1 rounded-md text-muted-foreground hover:bg-accent">
                       <ChevronRight className="w-4 h-4" />
@@ -317,7 +328,7 @@ function AddCreatorModal({ defaultType, onClose, onCreated }: {
             </div>
             <div>
               <label className="hub-label">State *</label>
-              <input className="hub-input" value={form.state} onChange={e => setForm(f => ({ ...f, state: e.target.value }))} placeholder="Gujarat" />
+              <StateSelect value={form.state} onChange={state => setForm(f => ({ ...f, state }))} aria-label="State" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">

@@ -7,6 +7,7 @@
  */
 import * as XLSX from 'xlsx'
 import { parseInstagramHandle } from './outreach-data'
+import { canonicalState } from './outreach-states'
 
 export interface ParsedSheet {
   headers: string[]
@@ -15,7 +16,11 @@ export interface ParsedSheet {
 
 export async function parseSpreadsheet(file: File): Promise<ParsedSheet> {
   const buf = await file.arrayBuffer()
-  const wb = XLSX.read(buf, { type: 'array' })
+  /* raw: a CSV cell stays the text the person typed. Without it SheetJS reads
+     "08/10/2026" as a US date — 10 August, serial 46244 — before
+     normalizeDate ever sees the day-first string. (No effect on .xlsx, whose
+     date cells are real dates and arrive as serials either way.) */
+  const wb = XLSX.read(buf, { type: 'array', raw: true })
   const first = wb.SheetNames[0]
   if (!first) return { headers: [], rows: [] }
   const sheet = wb.Sheets[first]
@@ -97,8 +102,11 @@ const CITY_STATE: Record<string, string> = {
   goa: 'Goa', delhi: 'Delhi', punjab: 'Punjab', haryana: 'Haryana',
 }
 
+/* A section that names a state ("Tamilnadu", "TAMIL NADU") gets that
+   state's canonical name; a known city gets its state; anything else is ''
+   and the caller decides. */
 function cityToState(geo: string): string {
-  return CITY_STATE[geo.trim().toLowerCase()] ?? ''
+  return canonicalState(geo) || (CITY_STATE[geo.trim().toLowerCase()] ?? '')
 }
 
 /** Parses "48(P) 24 (S)", "25 P & 30 (S)", "16 (P) 10 (S)" → {posts, stories}. */
@@ -134,12 +142,30 @@ function cleanPageName(s: string): string {
 // row's post links are tagged with it (multiple/empty → links auto-match by
 // caption, the same behaviour as the Add Live Posts dialog).
 
-/** Accept "DD/MM/YYYY", "DD-MM-YYYY", "YYYY-MM-DD" (and Excel serials) →
- *  ISO YYYY-MM-DD. Returns '' when unparseable. */
+const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']
+
+/** 1–12 for a month name or its abbreviation of 3+ letters ("Oct", "Sept", "October"); 0 otherwise. */
+function monthNumber(word: string): number {
+  const w = word.toLowerCase()
+  return w.length >= 3 ? MONTHS.findIndex(m => m.startsWith(w)) + 1 : 0
+}
+
+/** "YYYY-MM-DD" for a day that exists on the calendar, '' for one that doesn't (31/02, 00/13). */
+function isoDay(y: number, mo: number, d: number): string {
+  const date = new Date(Date.UTC(y, mo - 1, d))
+  if (date.getUTCFullYear() !== y || date.getUTCMonth() !== mo - 1 || date.getUTCDate() !== d) return ''
+  return `${String(y).padStart(4, '0')}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+}
+
+/** Accepts day-first "DD/MM/YYYY", "DD-MM-YYYY", "DD.MM.YYYY", "8 Oct 2026",
+ *  "08-Oct-26", ISO "YYYY-MM-DD" and Excel serials → ISO YYYY-MM-DD.
+ *  Returns '' when unparseable OR when the date does not exist: "31/02/2026"
+ *  used to become "2026-02-31" and fail as a bare server error. */
 export function normalizeDate(raw: string): string {
   const s = raw.trim()
   if (!s) return ''
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (iso) return isoDay(Number(iso[1]), Number(iso[2]), Number(iso[3]))
   // Excel sometimes hands us a serial date number when cells are date-typed.
   if (/^\d{4,6}$/.test(s)) {
     const serial = parseInt(s, 10)
@@ -147,11 +173,15 @@ export function normalizeDate(raw: string): string {
     const d = new Date(ms)
     if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10)
   }
-  const m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/)
-  if (!m) return ''
-  const [, d, mo, y] = m
-  const yyyy = y.length === 2 ? `20${y}` : y
-  return `${yyyy}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`
+  const year = (y: string) => Number(y.length === 2 ? `20${y}` : y)
+  const dmy = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2}|\d{4})$/)
+  if (dmy) return isoDay(year(dmy[3]), Number(dmy[2]), Number(dmy[1]))
+  const named = s.match(/^(\d{1,2})(?:st|nd|rd|th)?[\s/.-]+([A-Za-z]{3,9})\.?,?[\s/.-]+(\d{2}|\d{4})$/)
+  if (named) {
+    const month = monthNumber(named[2])
+    if (month) return isoDay(year(named[3]), month, Number(named[1]))
+  }
+  return ''
 }
 
 export interface ParsedCampaignPageRow {
@@ -181,8 +211,18 @@ export interface ParsedCampaignSheet {
   warnings: string[]
 }
 
-function toCount(s: string): number {
-  const n = parseInt(s.replace(/[^\d]/g, ''), 10)
+/**
+ * The number a count cell starts with: "12", "12 posts", "1,200" → 12, 12, 1200.
+ * Not every digit in the cell glued together — that read a budget of "1.5" as
+ * 15 and "3 (2 pending)" as 32. A fraction stays a fraction, so the importer's
+ * whole-number check reports it instead of a silently different count; a cell
+ * with no number is 0.
+ */
+export function toCount(s: string): number {
+  const t = s.trim()
+  const m = t.match(/^\d{1,3}(?:,\d{3})+(?!\d)|^\d+(?:\.\d+)?/)
+  if (!m) return 0
+  const n = Number(m[0].replace(/,/g, ''))
   return Number.isFinite(n) && n >= 0 ? n : 0
 }
 
@@ -242,7 +282,13 @@ export async function parseCampaignSheet(file: File): Promise<ParsedCampaignShee
     }
 
     // Campaign-level fields: first non-empty value in the group wins.
-    if (!g.startDate) g.startDate = normalizeDate(pick(row, headers, PAT.start))
+    if (!g.startDate) {
+      const rawStart = pick(row, headers, PAT.start)
+      g.startDate = normalizeDate(rawStart)
+      if (rawStart && !g.startDate) {
+        warnings.push(`Row ${i + 2} ("${name}"): start date "${rawStart}" is not a date that exists — write it day first, e.g. 08/10/2026 or 8 Oct 2026.`)
+      }
+    }
     if (!g.state) g.state = pick(row, headers, PAT.state)
     if (!g.goal) g.goal = pick(row, headers, PAT.goal)
     if (!g.budgetPosts) g.budgetPosts = toCount(pick(row, headers, PAT.budgetPosts))
@@ -284,8 +330,14 @@ export async function parseInventorySheet(file: File): Promise<ParsedInventorySh
   const first = wb.SheetNames[0]
   if (!first) return { pages: [], campaigns: [] }
   const ws = wb.Sheets[first]
-  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', blankrows: false, raw: false }) as unknown[][]
+  /* blankrows: true keeps grid row i on sheet row (r0 + i). With blank rows
+     dropped, every blank line above a page shifted the grid one row away
+     from the sheet, and the hyperlink lookup below — which reads the SHEET
+     cell — gave each page the next page's Instagram link. r0 is where the
+     sheet's used range starts, for a sheet that doesn't start at row 1. */
+  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', blankrows: true, raw: false }) as unknown[][]
   const grid = aoa.map(r => (r ?? []).map(c => String(c ?? '').trim()))
+  const r0 = XLSX.utils.decode_range(ws['!ref'] ?? 'A1').s.r
 
   // Locate the header row: it has "Inventory", "Posts done" and a "… Social
   // Media Pages" cell. Fall back to just Inventory + Social Media.
@@ -326,13 +378,15 @@ export async function parseInventorySheet(file: File): Promise<ParsedInventorySh
       continue
     }
     // A real page row needs a name; prefer the cell's hyperlink for the handle.
-    const cell = ws[XLSX.utils.encode_cell({ r: i, c: colPages })] as { l?: { Target?: string } } | undefined
+    const cell = ws[XLSX.utils.encode_cell({ r: i + r0, c: colPages })] as { l?: { Target?: string } } | undefined
     const link = cell?.l?.Target
     const handle = link ? parseInstagramHandle(link) : cleanPageName(pageCell)
     if (!handle) continue
     const { posts: invPosts, stories: invStories } = parseInventory(row[colInv] ?? '')
-    const postsDone = parseInt((row[colPosts] ?? '').replace(/\D+/g, '') || '0', 10) || 0
+    const postsDone = Math.floor(toCount(row[colPosts] ?? ''))
     const geography = currentGeo
+    // Unplaced, the section name is kept as the state so the import grid can
+    // show it as unrecognised for the person to pick — never stored as is.
     const state = cityToState(geography) || geography
     const assignedCampaigns = campaignCols
       .filter(cc => (row[cc.idx] ?? '').trim() !== '')

@@ -56,7 +56,6 @@ import {
   bootstrapOutreach,
   listPages as listOutreachPages,
   createPage as createOutreachPage,
-  updatePage as updateOutreachPage,
   deletePage as deleteOutreachPage,
   listCreators as listOutreachCreators,
   createCreator as createOutreachCreator,
@@ -76,7 +75,24 @@ import {
   CAMPAIGN_STATUSES as OUTREACH_CAMPAIGN_STATUSES,
   POST_TYPES as OUTREACH_POST_TYPES,
   POST_STATUSES as OUTREACH_POST_STATUSES,
+  getPage as getOutreachPage,
+  getPostOwner as getOutreachPostOwner,
+  editPage as editOutreachPage,
+  getCreator as getOutreachCreator,
+  getCampaign as getOutreachCampaign,
 } from "./outreach-db.js";
+import {
+  mayCreateOutreachStateUser,
+  OUTREACH_STATE_USER_ROLE,
+  hasTab,
+  isOutreachAdmin,
+  resolveOutreachAccess,
+  resolveOutreachScope,
+  stateInScope,
+  type OutreachAccess,
+  type OutreachScope,
+} from "./outreach-scope.js";
+import { canonicalGeography, canonicalState, tidyText } from "./outreach-states.js";
 import { syncOutreach, addLivePosts, refreshLivePostMetrics, syncCampaignPosts } from "./outreach-sync.js";
 import { verifyPassword } from "./password.js";
 import {
@@ -144,6 +160,7 @@ import { bootstrapMediaOpsDatabase } from "./mediaops-db.js";
 import { registerMediaOpsApi, runMediaOpsAutomations, creatorStandingOf } from "./mediaops-api.js";
 import { CASTING_PHOTO_MIME, CASTING_PHOTO_MAX_BYTES } from "./casting-photos.js";
 import { registerOutreachVideoApi, isAcceptedVideoUpload, videoFileName } from "./outreach-video/routes.js";
+import { registerOutreachAccessApi } from "./outreach-access-routes.js";
 import { bootstrapBrandOpsDatabase } from "./brandops-db.js";
 import { registerBrandOpsApi } from "./brandops-api.js";
 import { acceptUpload, imageFileFilter, safeImageName, jsonErrorHandler } from "./upload-guard.js";
@@ -322,7 +339,7 @@ type SessionRequest = express.Request & {
 
 // task_manager mirrors task_owner exactly (same dashboard + lead powers); it
 // exists so the branding head can hand out the role under a distinct title.
-const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "outreach_editor", "outreach_publisher", "inventory_manager", "branding_reports_admin", "design_reports_admin", "task_owner", "task_manager"] as const;
+const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "outreach_editor", "outreach_publisher", "inventory_manager", "branding_reports_admin", "design_reports_admin", "task_owner", "task_manager", "outreach_state_user"] as const;
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -445,6 +462,10 @@ function canCreateManagedUser(
   payload: z.infer<typeof createUserSchema>,
 ) {
   if (!actor) return false;
+  /* The State User is outreach's alone, so it is decided by an outreach rule
+     and kept out of the shared lists below: the admin list checks only "own
+     team", which would let any department's admin create one. */
+  if (payload.role === OUTREACH_STATE_USER_ROLE) return mayCreateOutreachStateUser(actor, payload.team);
   if (actor.role === "super_admin") return true;
 
   /* An outreach manager administers the outreach team: they staff it, so they
@@ -459,6 +480,12 @@ function canCreateManagedUser(
   }
 
   if (actor.role !== "admin") return false;
+  /* On the outreach team the admins are the super admin and the outreach
+     manager (Account Tabs requirements): they alone add users and choose
+     their tabs and states. The video workflow's Admin no longer does. Only
+     an admin sitting on team outreach is affected; every other department's
+     admins keep exactly the list below. */
+  if (actor.team === "outreach") return false;
   // inventory_manager is a branding-team role (BrandOps), so a branding admin
   // can create one — which is the whole point of the module being theirs.
   // outreach_* are the outreach team's roles, for an admin sitting on it.
@@ -748,6 +775,8 @@ const castingPhotoUpload = multer({
 registerMediaOpsApi(app, { asyncHandler, sendError, getSingleParam, otpSendLimiter, otpVerifyLimiter,
                            kioskPinLimiter, assetImportUpload, castingPhotoUpload });
 registerOutreachVideoApi(app, { asyncHandler, sendError, getSingleParam, videoUpload, videoStagingDir: VIDEO_STAGING_DIR });
+// Account Tabs & State-wise Analytics: who may open which outreach tab, and which states.
+registerOutreachAccessApi(app, { asyncHandler, sendError, getSingleParam });
 
 /* BrandOps takes up to ten photos per request; the factory gives it each field
    already wrapped, so its refusals are JSON like everyone else's. */
@@ -859,9 +888,10 @@ app.put("/api/users/:id/capabilities", asyncHandler(async (req, res) => {
   /* The outreach manager administers outreach, so they grant its tabs — the
      same standing the branding admin has over BrandOps. An admin sitting on
      the outreach team administers it too. */
-  const isOutreachAdmin = currentUser.team === "outreach"
-    && (currentUser.role === "admin" || currentUser.role === "outreach_manager");
-  if (!isSuperAdmin && !isBrandingAdmin && !isOutreachAdmin) {
+  /* The outreach manager administers outreach; the video workflow's Admin
+     no longer grants anyone's tabs (Account Tabs requirements). */
+  const isOutreachManager = currentUser.team === "outreach" && currentUser.role === "outreach_manager";
+  if (!isSuperAdmin && !isBrandingAdmin && !isOutreachManager) {
     return sendError(res, 403, "Admin access required.");
   }
 
@@ -873,7 +903,7 @@ app.put("/api/users/:id/capabilities", asyncHandler(async (req, res) => {
   }
   /* A manager must not be able to grant their way past their own standing by
      editing the person who outranks them. */
-  if (isOutreachAdmin && currentUser.role === "outreach_manager" && target.role === "admin") {
+  if (isOutreachManager && currentUser.role === "outreach_manager" && target.role === "admin") {
     return sendError(res, 403, "A Manager cannot modify an Admin account.");
   }
 
@@ -2806,17 +2836,114 @@ app.get("/api/design/portal/leave/date/:date", asyncHandler(async (req, res) => 
 
 // ── Outreach routes ────────────────────────────────────────────────────────
 
-function requireOutreach(res: express.Response): boolean {
-  const role = res.locals.currentUser?.role;
-  if (role === "outreach_manager" || role === "super_admin") return true;
-  sendError(res, 403, "Outreach manager only.");
+/* Reads and writes used to share one check (outreach_manager or
+   super_admin), so read access could not be widened without handing out
+   every write too. They are separate now — see server/outreach-scope.ts. */
+
+/**
+ * The reader's scope, or null (after answering 403) when they have no
+ * influencer access. Resolved from the database on every call, so a change of
+ * role or assigned states applies to the very next request.
+ */
+async function requireOutreachRead(res: express.Response): Promise<OutreachScope | null> {
+  const scope = await resolveOutreachScope(res.locals.currentUser);
+  if (!scope) sendError(res, 403, "Influencer pages and analytics are not part of your role.");
+  return scope;
+}
+
+/**
+ * A change on an influencer tab: the person needs Edit on one of `tabs`
+ * (an outreach admin always has it). Returns their access, whose scope every
+ * caller then checks against the record — Edit on All Pages for Gujarat is
+ * not Edit on a Rajasthan page.
+ */
+async function requireOutreachEdit(res: express.Response, tabs: string | string[]): Promise<OutreachAccess | null> {
+  const access = await resolveOutreachAccess(res.locals.currentUser);
+  if (access && hasTab(access, tabs, "edit")) return access;
+  sendError(res, 403, hasTab(access, tabs, "view")
+    ? "You have view-only access to this tab. Ask your outreach manager for edit access."
+    : "This tab has not been given to you. Ask your outreach manager.");
+  return null;
+}
+
+/**
+ * Adding or deleting a page or creator, and the paid Apify syncs: outreach
+ * admins only (super_admin, outreach_manager). Pages are created by an admin
+ * and then edited by whoever holds Edit on All Pages for that page's state.
+ */
+function requireOutreachAdmin(res: express.Response): boolean {
+  if (isOutreachAdmin(res.locals.currentUser)) return true;
+  sendError(res, 403, "Only an outreach manager can do this.");
   return false;
+}
+
+/* A live post belongs to a campaign and to a page or creator, so Edit on any
+   of those three tabs adds or removes one — within the person's states. */
+const POST_TABS = ["campaigns", "pages", "creators"];
+
+/* Another state's record is "not found" to a state-scoped person, never
+   "forbidden": a 403 would confirm it exists. */
+const OUT_OF_SCOPE = "That record was not found.";
+
+/** The state of the page or creator a post belongs to, or null when there is none. */
+async function postOwnerState(owner: { page_id?: string | null; creator_id?: string | null }): Promise<string | null> {
+  if (owner.page_id) return (await getOutreachPage(owner.page_id))?.state ?? null;
+  if (owner.creator_id) return (await getOutreachCreator(owner.creator_id))?.state ?? null;
+  return null;
+}
+
+/** Whether every id in `ids` is a page (or creator) inside `access`'s states. */
+async function allInScope(access: OutreachAccess, ids: string[] | undefined, kind: "page" | "creator"): Promise<boolean> {
+  if (access.scope.kind === "all" || !ids?.length) return true;
+  for (const id of ids) {
+    const row = kind === "page" ? await getOutreachPage(id) : await getOutreachCreator(id);
+    if (!row || !stateInScope(access.scope, row.state)) return false;
+  }
+  return true;
+}
+
+/**
+ * A state as stored: its canonical name. Anything that is not on the master
+ * list is refused with a 400 that names the field and the value, rather than
+ * stored as one more spelling of a state ("Tamilnadu", "gujarat ") that every
+ * filter, grouping and State User's access then treats as somewhere else.
+ */
+const outreachStateField = (blank: "allowed" | "refused") => z.string().transform((value, ctx) => {
+  const canonical = canonicalState(value);
+  if (canonical === null) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `"${tidyText(value)}" is not an Indian state or union territory — choose one from the list` });
+    return z.NEVER;
+  }
+  if (canonical === "" && blank === "refused") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "is required — choose a state from the list" });
+    return z.NEVER;
+  }
+  return canonical;
+});
+
+/**
+ * A PATCH that hands back the row's own unrecognised state unchanged — an
+ * edit form sends the whole record — must not be refused for it: that would
+ * make a legacy row (one the migration could not place) uneditable until
+ * somebody guessed its state. Only a state that is actually being CHANGED has
+ * to be on the list.
+ */
+function withoutUnchangedLegacyState(body: unknown, current: { state: string } | null): unknown {
+  if (!current || !body || typeof body !== "object" || Array.isArray(body)) return body;
+  const { state, ...rest } = body as Record<string, unknown>;
+  if (typeof state === "string" && canonicalState(state) === null && tidyText(state) === tidyText(current.state)) return rest;
+  return body;
 }
 
 /** The first thing wrong with a request body, in words — not "Invalid payload". */
 function payloadProblem(error: z.ZodError, what: string): string {
   const issue = error.issues[0];
   if (!issue) return `Invalid ${what}.`;
+  // A strict schema's leftover keys, named in words rather than zod's "Unrecognized key(s) in object".
+  if (issue.code === z.ZodIssueCode.unrecognized_keys) {
+    const keys = issue.keys.map(k => `"${k}"`).join(", ");
+    return `Invalid ${what}: ${keys} ${issue.keys.length === 1 ? "is not a field" : "are not fields"} that can be set here.`;
+  }
   const field = issue.path.join(".").replace(/_/g, " ");
   return field ? `Invalid ${what}: ${field} — ${issue.message}.` : `Invalid ${what}: ${issue.message}.`;
 }
@@ -2846,8 +2973,9 @@ const outreachPageSchema = z.object({
   handle: z.string().min(1),
   // Instagram (default) or Facebook.
   platform: z.enum(["instagram", "facebook"]).optional(),
-  geography: z.string().min(1),
-  state: z.string().min(1),
+  // Free text (a city or region), tidied; a geography that IS a state takes its spelling.
+  geography: z.string().transform(canonicalGeography).pipe(z.string().min(1)),
+  state: outreachStateField("refused"),
   type: z.enum(OUTREACH_PAGE_TYPES),
   follower_tier: z.enum(OUTREACH_FOLLOWER_TIERS),
   content_types: z.array(z.enum(["static", "reel", "carousel"])).optional(),
@@ -2859,6 +2987,35 @@ const outreachPageSchema = z.object({
   inventory_stories: wholeCount(),
   notes: z.string().optional(),
 });
+
+/* A person's edit of a page (PRD 6.5). Its own schema, not the create
+   schema made partial: that one had no page_link, contact_person or status,
+   and zod dropped them without a word — a PATCH setting a link answered 200
+   and changed nothing. strict() makes any key that is not editable a 400 that
+   names it. The platform is accepted only when it is the page's own (editPage
+   refuses a different one); the handle and link are checked against the
+   page's platform there, since that needs the row. */
+const outreachPageEditSchema = z.object({
+  handle: z.string(),
+  platform: z.enum(["instagram", "facebook"]),
+  geography: z.string().transform(canonicalGeography).pipe(z.string().min(1)),
+  state: outreachStateField("refused"),
+  type: z.enum(OUTREACH_PAGE_TYPES),
+  follower_tier: z.enum(OUTREACH_FOLLOWER_TIERS),
+  content_types: z.array(z.enum(["static", "reel", "carousel"])),
+  content_preferences: z.array(z.string()),
+  // Kept editable: only the Instagram sync writes followers; a Facebook
+  // page's count exists only as typed.
+  followers: wholeCount(),
+  // Raised or lowered. Below what is already used is allowed — the page then
+  // reads over-used, which is the truth.
+  inventory_posts: wholeCount(),
+  inventory_stories: wholeCount(),
+  notes: z.string(),
+  page_link: z.string().max(500, "must be at most 500 characters"),
+  contact_person: z.string().max(120, "must be at most 120 characters"),
+  status: z.enum(["active", "inactive"]),
+}).partial().strict();
 
 /* Creators used to BE the page schema, which accepts `platform` and
    `content_preferences` — columns outreach_creators doesn't have — so a PATCH
@@ -2872,7 +3029,8 @@ const outreachCampaignSchema = z.object({
   start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   // Optional — campaigns are open-ended; '' or absent means no end date.
   end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).or(z.literal("")).optional(),
-  state: z.string().optional(),
+  // '' means the campaign is not tied to one state.
+  state: outreachStateField("allowed").optional(),
   goal: z.string().optional(),
   status: z.enum(OUTREACH_CAMPAIGN_STATUSES),
   budget_posts: wholeCount(OUTREACH_BUDGET_MAX),
@@ -2886,13 +3044,20 @@ const outreachCampaignSchema = z.object({
 
 // Pages
 
+/* What the signed-in person may see: {kind:'all'} or {kind:'states', states}.
+   Its own endpoint so the list responses keep exactly their old shape. */
+app.get("/api/outreach/scope", asyncHandler(async (_req, res) => {
+  const scope = await requireOutreachRead(res); if (!scope) return;
+  res.json(scope);
+}));
+
 app.get("/api/outreach/pages", asyncHandler(async (_req, res) => {
-  if (!requireOutreach(res)) return;
-  res.json({ pages: await listOutreachPages() });
+  const scope = await requireOutreachRead(res); if (!scope) return;
+  res.json({ pages: await listOutreachPages(scope) });
 }));
 
 app.post("/api/outreach/pages", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachAdmin(res)) return;
   const parsed = outreachPageSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "page"));
   try {
@@ -2905,16 +3070,30 @@ app.post("/api/outreach/pages", asyncHandler(async (req, res) => {
 }));
 
 app.patch("/api/outreach/pages/:id", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
-  const parsed = outreachPageSchema.partial().safeParse(req.body);
+  /* Edit on All Pages is the grant; the Analytics heatmap's inventory top-up
+     comes here too, and is the same change to the same record. */
+  const access = await requireOutreachEdit(res, "pages"); if (!access) return;
+  const id = getSingleParam(req.params.id);
+  const current = await getOutreachPage(id);
+  if (!current || !stateInScope(access.scope, current.state)) return sendError(res, 404, OUT_OF_SCOPE);
+  const parsed = outreachPageEditSchema.safeParse(withoutUnchangedLegacyState(req.body, current));
   if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "page"));
-  const page = await updateOutreachPage(getSingleParam(req.params.id), parsed.data);
-  if (!page) return sendError(res, 404, "Page not found.");
-  res.json({ page });
+  // Moving a page to a state the editor cannot see would hand it away from them.
+  if (parsed.data.state !== undefined && !stateInScope(access.scope, parsed.data.state)) {
+    return sendError(res, 403, `You can only move a page to one of your states, not ${parsed.data.state}.`);
+  }
+  try {
+    const page = await editOutreachPage(id, parsed.data);
+    if (!page) return sendError(res, 404, "Page not found.");
+    res.json({ page });
+  } catch (err) {
+    if (outreachErrorAnswered(res, err)) return;
+    throw err;
+  }
 }));
 
 app.delete("/api/outreach/pages/:id", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachAdmin(res)) return;
   await deleteOutreachPage(getSingleParam(req.params.id));
   res.json({ ok: true });
 }));
@@ -2923,12 +3102,12 @@ app.delete("/api/outreach/pages/:id", asyncHandler(async (req, res) => {
 // the All Pages ledger and aren't auto-synced by Apify.
 
 app.get("/api/outreach/creators", asyncHandler(async (_req, res) => {
-  if (!requireOutreach(res)) return;
-  res.json({ creators: await listOutreachCreators() });
+  const scope = await requireOutreachRead(res); if (!scope) return;
+  res.json({ creators: await listOutreachCreators(scope) });
 }));
 
 app.post("/api/outreach/creators", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachAdmin(res)) return;
   const parsed = outreachCreatorSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "creator"));
   try {
@@ -2941,16 +3120,22 @@ app.post("/api/outreach/creators", asyncHandler(async (req, res) => {
 }));
 
 app.patch("/api/outreach/creators/:id", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
-  const parsed = outreachCreatorSchema.partial().safeParse(req.body);
+  const access = await requireOutreachEdit(res, "creators"); if (!access) return;
+  const id = getSingleParam(req.params.id);
+  const current = await getOutreachCreator(id);
+  if (!current || !stateInScope(access.scope, current.state)) return sendError(res, 404, OUT_OF_SCOPE);
+  const parsed = outreachCreatorSchema.partial().safeParse(withoutUnchangedLegacyState(req.body, current));
   if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "creator"));
-  const creator = await updateOutreachCreator(getSingleParam(req.params.id), parsed.data);
+  if (parsed.data.state !== undefined && !stateInScope(access.scope, parsed.data.state)) {
+    return sendError(res, 403, `You can only move a creator to one of your states, not ${parsed.data.state}.`);
+  }
+  const creator = await updateOutreachCreator(id, parsed.data);
   if (!creator) return sendError(res, 404, "Creator not found.");
   res.json({ creator });
 }));
 
 app.delete("/api/outreach/creators/:id", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachAdmin(res)) return;
   await deleteOutreachCreator(getSingleParam(req.params.id));
   res.json({ ok: true });
 }));
@@ -2958,14 +3143,26 @@ app.delete("/api/outreach/creators/:id", asyncHandler(async (req, res) => {
 // Campaigns
 
 app.get("/api/outreach/campaigns", asyncHandler(async (_req, res) => {
-  if (!requireOutreach(res)) return;
-  res.json({ campaigns: await listOutreachCampaigns() });
+  const scope = await requireOutreachRead(res); if (!scope) return;
+  res.json({ campaigns: await listOutreachCampaigns(scope) });
 }));
 
 app.post("/api/outreach/campaigns", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  const access = await requireOutreachEdit(res, "campaigns"); if (!access) return;
   const parsed = outreachCampaignSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "campaign"));
+  /* A state-scoped editor's campaign belongs to one of their states, and can
+     only use their pages and creators. "No state" is an admin's choice: such a
+     campaign is visible to nobody scoped, including whoever made it. */
+  if (access.scope.kind === "states") {
+    if (!parsed.data.state || !stateInScope(access.scope, parsed.data.state)) {
+      return sendError(res, 400, "Choose one of your states for this campaign.");
+    }
+    if (!await allInScope(access, parsed.data.assigned_page_ids, "page")
+      || !await allInScope(access, parsed.data.assigned_creator_ids, "creator")) {
+      return sendError(res, 403, "A campaign can only use pages and creators in your states.");
+    }
+  }
   try {
     const campaign = await createOutreachCampaign(parsed.data);
     res.status(201).json({ campaign });
@@ -2976,11 +3173,43 @@ app.post("/api/outreach/campaigns", asyncHandler(async (req, res) => {
 }));
 
 app.patch("/api/outreach/campaigns/:id", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
-  const parsed = outreachCampaignSchema.partial().safeParse(req.body);
+  const access = await requireOutreachEdit(res, "campaigns"); if (!access) return;
+  const id = getSingleParam(req.params.id);
+  const current = await getOutreachCampaign(id);
+  /* Editable only when the campaign is in their states. A campaign of
+     another state that merely includes one of their pages is visible to them,
+     read-only. */
+  if (!current || !stateInScope(access.scope, current.state)) return sendError(res, 404, OUT_OF_SCOPE);
+  const parsed = outreachCampaignSchema.partial().safeParse(withoutUnchangedLegacyState(req.body, current));
   if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "campaign"));
+  if (access.scope.kind === "states") {
+    if (parsed.data.state !== undefined && (!parsed.data.state || !stateInScope(access.scope, parsed.data.state))) {
+      return sendError(res, 400, "Choose one of your states for this campaign.");
+    }
+    if (!await allInScope(access, parsed.data.assigned_page_ids, "page")
+      || !await allInScope(access, parsed.data.assigned_creator_ids, "creator")) {
+      return sendError(res, 403, "A campaign can only use pages and creators in your states.");
+    }
+    /* They are shown only their own states' assignments, so a list they send
+       back is missing every other state's. Keep those: saving must never
+       drop pages somebody cannot even see. */
+    const keep = async (ids: string[], kind: "page" | "creator") => {
+      const out: string[] = [];
+      for (const x of ids) {
+        const row = kind === "page" ? await getOutreachPage(x) : await getOutreachCreator(x);
+        if (row && !stateInScope(access.scope, row.state)) out.push(x);
+      }
+      return out;
+    };
+    if (parsed.data.assigned_page_ids) {
+      parsed.data.assigned_page_ids = [...new Set([...parsed.data.assigned_page_ids, ...await keep(current.assigned_page_ids, "page")])];
+    }
+    if (parsed.data.assigned_creator_ids) {
+      parsed.data.assigned_creator_ids = [...new Set([...parsed.data.assigned_creator_ids, ...await keep(current.assigned_creator_ids ?? [], "creator")])];
+    }
+  }
   try {
-    const campaign = await updateOutreachCampaign(getSingleParam(req.params.id), parsed.data);
+    const campaign = await updateOutreachCampaign(id, parsed.data);
     if (!campaign) return sendError(res, 404, "Campaign not found.");
     res.json({ campaign });
   } catch (err) {
@@ -2990,19 +3219,30 @@ app.patch("/api/outreach/campaigns/:id", asyncHandler(async (req, res) => {
 }));
 
 app.delete("/api/outreach/campaigns/:id", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
-  await deleteOutreachCampaign(getSingleParam(req.params.id));
+  const access = await requireOutreachEdit(res, "campaigns"); if (!access) return;
+  const id = getSingleParam(req.params.id);
+  const current = await getOutreachCampaign(id);
+  if (!current || !stateInScope(access.scope, current.state)) return sendError(res, 404, OUT_OF_SCOPE);
+  /* Deleting a campaign deletes its posts, including those on pages in other
+     states — data a state-scoped editor cannot see and must not remove. */
+  if (!await allInScope(access, current.assigned_page_ids, "page")
+    || !await allInScope(access, current.assigned_creator_ids ?? [], "creator")) {
+    return sendError(res, 403, "This campaign includes pages outside your states, so only an outreach manager can delete it.");
+  }
+  await deleteOutreachCampaign(id);
   res.json({ ok: true });
 }));
 
 // Posts
 
 app.get("/api/outreach/posts", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  const scope = await requireOutreachRead(res); if (!scope) return;
   const pageId = typeof req.query.page_id === "string" ? req.query.page_id : undefined;
   const creatorId = typeof req.query.creator_id === "string" ? req.query.creator_id : undefined;
   const campaignId = typeof req.query.campaign_id === "string" ? req.query.campaign_id : undefined;
-  res.json({ posts: await listOutreachPosts({ pageId, creatorId, campaignId }) });
+  /* Another state's page asked for by id comes back as an empty list — the
+     same answer as a page that does not exist, so nothing is given away. */
+  res.json({ posts: await listOutreachPosts({ pageId, creatorId, campaignId }, scope) });
 }));
 
 const outreachPlannedPostSchema = z.object({
@@ -3022,9 +3262,12 @@ const outreachPlannedPostSchema = z.object({
 );
 
 app.post("/api/outreach/posts", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  const access = await requireOutreachEdit(res, POST_TABS); if (!access) return;
   const parsed = z.object({ posts: z.array(outreachPlannedPostSchema).min(1) }).safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, payloadProblem(parsed.error, "posts"));
+  for (const post of parsed.data.posts) {
+    if (!stateInScope(access.scope, await postOwnerState(post))) return sendError(res, 404, OUT_OF_SCOPE);
+  }
   try {
     const created = await createOutreachPostsBulk(parsed.data.posts);
     res.status(201).json({ posts: created });
@@ -3035,8 +3278,11 @@ app.post("/api/outreach/posts", asyncHandler(async (req, res) => {
 }));
 
 app.delete("/api/outreach/posts/:id", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
-  await deleteOutreachPost(getSingleParam(req.params.id));
+  const access = await requireOutreachEdit(res, POST_TABS); if (!access) return;
+  const id = getSingleParam(req.params.id);
+  const owner = await getOutreachPostOwner(id);
+  if (!owner || !stateInScope(access.scope, await postOwnerState(owner))) return sendError(res, 404, OUT_OF_SCOPE);
+  await deleteOutreachPost(id);
   res.json({ ok: true });
 }));
 
@@ -3056,9 +3302,16 @@ const outreachLivePostsSchema = z.object({
 );
 
 app.post("/api/outreach/posts/fetch-by-urls", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  const access = await requireOutreachEdit(res, POST_TABS); if (!access) return;
   const parsed = outreachLivePostsSchema.safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, parsed.error.issues[0]?.message ?? "Invalid payload.");
+  if (!stateInScope(access.scope, await postOwnerState({ page_id: parsed.data.page_id, creator_id: parsed.data.creator_id }))) {
+    return sendError(res, 404, OUT_OF_SCOPE);
+  }
+  if (parsed.data.campaign_id && access.scope.kind === "states") {
+    const campaign = await getOutreachCampaign(parsed.data.campaign_id);
+    if (!campaign || !stateInScope(access.scope, campaign.state)) return sendError(res, 404, OUT_OF_SCOPE);
+  }
   try {
     const result = await addLivePosts({
       campaignId: parsed.data.campaign_id,
@@ -3082,7 +3335,7 @@ app.post("/api/outreach/posts/fetch-by-urls", asyncHandler(async (req, res) => {
 // Sync — pulls latest profile + posts from Apify for all pages (or a subset)
 
 app.post("/api/outreach/sync", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachAdmin(res)) return;
   const handlesRaw = req.body?.handles;
   const handles = Array.isArray(handlesRaw)
     ? handlesRaw.filter((h: unknown): h is string => typeof h === "string")
@@ -3100,7 +3353,7 @@ app.post("/api/outreach/sync", asyncHandler(async (req, res) => {
 // campaign (paid Apify calls, but scoped far tighter than a full refresh).
 // Facebook posts are refreshed via the Facebook Posts Scraper (Apify).
 app.post("/api/outreach/campaigns/:id/sync", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachAdmin(res)) return;
   try {
     const result = await syncCampaignPosts(getSingleParam(req.params.id));
     res.json(result);
@@ -3114,7 +3367,7 @@ app.post("/api/outreach/campaigns/:id/sync", asyncHandler(async (req, res) => {
 // permalink and updates its metrics. This is the on-demand equivalent of what
 // the scheduled 9AM/5PM runs do, without the profile scrape. Paid Apify calls.
 app.post("/api/outreach/refresh-reach", asyncHandler(async (req, res) => {
-  if (!requireOutreach(res)) return;
+  if (!requireOutreachAdmin(res)) return;
   try {
     const result = await refreshLivePostMetrics();
     res.json({ ok: true, ...result });

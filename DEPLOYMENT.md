@@ -204,6 +204,41 @@ Rollback steps
 - `systemctl reload nginx`
 - `docker compose --env-file /srv/nerve/shared/env/.env up -d api`
 
+### Rolling back past a new role
+
+`bootstrapDatabase()` drops and re-creates `users_role_check` on every boot,
+using the role list of the build that is starting. If the database already
+holds a user whose role that build does not know, the re-create fails and the
+API **does not start at all** (every department is down, not only the one that
+added the role). The outreach State User (`outreach_state_user`) is such a role:
+any build older than the one that introduced it cannot boot against a database
+that has State Users. The same applies to any server on another branch (a
+second worktree, a staging copy) pointed at the same database.
+
+Before rolling back past it, park the State Users so the old build's constraint
+can be added; they cannot sign in while parked (`getSessionUser` admits only
+`status = 'active'`), and their assigned states stay in `outreach_user_states`:
+
+```sql
+BEGIN;
+CREATE TABLE IF NOT EXISTS outreach_state_user_parked AS
+  SELECT id, role, status FROM users WHERE false;
+INSERT INTO outreach_state_user_parked (id, role, status)
+  SELECT id, role, status FROM users WHERE role = 'outreach_state_user';
+UPDATE users SET role = 'user', status = 'inactive' WHERE role = 'outreach_state_user';
+COMMIT;
+```
+
+After redeploying a build that has the role again, restore them:
+
+```sql
+BEGIN;
+UPDATE users u SET role = p.role, status = p.status
+  FROM outreach_state_user_parked p WHERE u.id = p.id;
+DROP TABLE outreach_state_user_parked;
+COMMIT;
+```
+
 ## Phase 4: HTTPS Later
 
 Once you have a domain pointing to the VPS:

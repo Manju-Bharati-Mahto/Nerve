@@ -11,6 +11,7 @@
  */
 import { useEffect, useSyncExternalStore } from 'react'
 import { api, type ServerOutreachPage, type ServerOutreachCreator, type ServerOutreachCampaign, type ServerOutreachPost } from './api'
+import { OUTREACH_STATE_NAMES, canonicalState, stateKey as matchKey, tidyText } from './outreach-states'
 
 // ── Types (camelCase, frontend-facing) ─────────────────────────────────────
 
@@ -61,7 +62,15 @@ export interface OutreachPage {
   inventoryStories: number
   notes: string
   lastSyncedAt: string | null
+  /** The page's own address, typed by a person ('' = not set — fall back to profileUrlForPage). */
+  pageLink: string
+  contactPerson: string
+  /** 'active' | 'inactive' — whether we still post here (video workflow §8). */
+  status: string
 }
+
+/** What a person may change on a page through the Edit page dialog (PRD 6.5). The platform is fixed. */
+export type PageEdit = Partial<Omit<OutreachPage, 'id' | 'platform' | 'lastSyncedAt'>>
 
 // Creators have the same shape as pages today but live in their own table —
 // they don't show up in the All Pages ledger and have their own list view.
@@ -153,10 +162,16 @@ function toPage(p: ServerOutreachPage): OutreachPage {
     inventoryStories: p.inventory_stories,
     notes: p.notes,
     lastSyncedAt: p.last_synced_at,
+    pageLink: p.page_link ?? '',
+    contactPerson: p.contact_person ?? '',
+    status: p.status ?? 'active',
   }
 }
 
-function fromPage(p: Omit<OutreachPage, 'id' | 'lastSyncedAt'> & Partial<Pick<OutreachPage, 'id' | 'lastSyncedAt'>>): Partial<ServerOutreachPage> {
+/** A new page as the create endpoint takes it — link, contact and status are set later, by editing. */
+export type NewPage = Omit<OutreachPage, 'id' | 'lastSyncedAt' | 'pageLink' | 'contactPerson' | 'status'>
+
+function fromPage(p: NewPage): Partial<ServerOutreachPage> {
   return {
     handle: p.handle,
     platform: p.platform,
@@ -372,12 +387,19 @@ export function refreshOutreach() {
 
 // ── Mutators (async; refetch on success) ───────────────────────────────────
 
-export async function addPage(page: Omit<OutreachPage, 'id' | 'lastSyncedAt'>) {
-  await api.createOutreachPage(fromPage(page))
+/** Creates a page and returns it as the server stored it — its id is the server's, not slug(handle). */
+export async function addPage(page: NewPage): Promise<OutreachPage> {
+  const { page: created } = await api.createOutreachPage(fromPage(page))
   await fetchAll()
+  return toPage(created)
 }
 
-export async function updatePage(id: string, patch: Partial<Omit<OutreachPage, 'id'>>) {
+/**
+ * Sends only the fields given. The server's edit schema is strict, so a field
+ * it does not take is a 400 rather than silently dropped — and sending only
+ * what changed keeps one person's edit from overwriting another's.
+ */
+export async function updatePage(id: string, patch: PageEdit) {
   const serverPatch: Partial<ServerOutreachPage> = {}
   if (patch.handle !== undefined) serverPatch.handle = patch.handle
   if (patch.geography !== undefined) serverPatch.geography = patch.geography
@@ -390,6 +412,9 @@ export async function updatePage(id: string, patch: Partial<Omit<OutreachPage, '
   if (patch.inventoryPosts !== undefined) serverPatch.inventory_posts = patch.inventoryPosts
   if (patch.inventoryStories !== undefined) serverPatch.inventory_stories = patch.inventoryStories
   if (patch.notes !== undefined) serverPatch.notes = patch.notes
+  if (patch.pageLink !== undefined) serverPatch.page_link = patch.pageLink
+  if (patch.contactPerson !== undefined) serverPatch.contact_person = patch.contactPerson
+  if (patch.status !== undefined) serverPatch.status = patch.status
   await api.updateOutreachPage(id, serverPatch)
   await fetchAll()
 }
@@ -510,6 +535,14 @@ export async function syncCampaignNow(campaignId: string) {
   const result = await api.syncOutreachCampaign(campaignId)
   await fetchAll()
   return result
+}
+
+/**
+ * Where "Open on Instagram/Facebook" goes: the link a person set for the page
+ * when there is one, otherwise the profile URL built from its handle.
+ */
+export function pageOpenUrl(page: Pick<OutreachPage, 'handle' | 'platform'> & Partial<Pick<OutreachPage, 'pageLink'>>): string {
+  return page.pageLink?.trim() || profileUrlForPage(page)
 }
 
 /** Public profile URL for a page on its own platform. */
@@ -925,34 +958,30 @@ export function formatLocalDate(d: Date): string {
 
 // ── State-wise filtering (Dashboard / Analytics) ───────────────────────────
 
-/** Canonical state list used to seed the "State" dropdowns when adding a
- *  campaign / page. The live filters union this with whatever states already
- *  exist on records, so a new state typed by hand still shows up. */
-export const INDIAN_STATES = [
-  'Gujarat', 'Maharashtra', 'Madhya Pradesh', 'Bihar', 'Rajasthan', 'Assam',
-  'Uttar Pradesh', 'Goa', 'Delhi', 'Karnataka', 'Tamil Nadu', 'West Bengal',
-  'Punjab', 'Haryana', 'Kerala', 'Telangana', 'Andhra Pradesh', 'Odisha',
-  'Jharkhand', 'Chhattisgarh', 'Uttarakhand', 'Himachal Pradesh',
-] as const
+/* The master list and the matching rule live in ./outreach-states, a
+   byte-for-byte copy of the server's, so the browser groups and compares
+   states exactly as the server stores and scopes them. These helpers used to
+   carry their own rule — a 22-state list and a key that kept inner spaces —
+   which left "Tamilnadu" and "Tamil Nadu" as two states here while the server
+   (and a State User's access) would treat them as one. */
 
-const CANONICAL_STATE = new Map<string, string>(INDIAN_STATES.map(s => [s.toLowerCase(), s]))
-
-/** Case- and whitespace-insensitive key for comparing two state names. */
-export function stateKey(state: string | null | undefined): string {
-  return (state ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
-}
+/** Every state and union territory a page, creator or campaign may carry, plus "Pan India". */
+export const INDIAN_STATES = OUTREACH_STATE_NAMES
 
 /**
- * Canonical spelling of a state: a case-insensitive match against
- * INDIAN_STATES returns the listed name ("gujarat" → "Gujarat"); anything else
- * comes back trimmed. Pages and creators take free-text state while campaigns
- * pick from INDIAN_STATES, so without this "gujarat" and "Gujarat" were two
- * states — two dropdown entries, and a filter on either dropped the other's
- * pages, posts and campaigns.
+ * Canonical spelling of a state ("gujarat" → "Gujarat", "Tamilnadu" →
+ * "Tamil Nadu"). A value that matches nothing on the list — a legacy row the
+ * server's migration could not place — comes back tidied, not dropped, so it
+ * stays visible and can be corrected.
  */
 export function normaliseState(state: string | null | undefined): string {
-  const s = (state ?? '').trim().replace(/\s+/g, ' ')
-  return CANONICAL_STATE.get(s.toLowerCase()) ?? s
+  return canonicalState(state) || tidyText(state)
+}
+
+/** One key per state for grouping and comparing; unrecognised values key by their own text. */
+export function stateKey(state: string | null | undefined): string {
+  const canonical = normaliseState(state)
+  return matchKey(canonical) || canonical.toLowerCase()
 }
 
 /** True when two state names refer to the same state (see stateKey). */

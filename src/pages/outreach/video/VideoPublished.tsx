@@ -7,7 +7,7 @@ import {
 import { useAuth } from '@/hooks/useAuth'
 import DriveProblemNotice from './DriveProblemNotice'
 import LiveLinksDialog from './LiveLinksDialog'
-import { mayPublishVideos } from './workflow-roles'
+import { mayPublishVideos, useVideoTabEdit } from './workflow-roles'
 
 /**
  * §27 — "Published" appears in every role's navigation. The API decides the
@@ -19,7 +19,8 @@ import { mayPublishVideos } from './workflow-roles'
  */
 export default function VideoPublished() {
   const { role } = useAuth()
-  const canEditLinks = mayPublishVideos(role)
+  // Live links: Edit on Published or the Publishing Queue, as the API decides.
+  const canEditLinks = useVideoTabEdit(['published', 'queue'], mayPublishVideos(role))
   const [videos, setVideos] = useState<VideoRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<LoadFailure | null>(null)

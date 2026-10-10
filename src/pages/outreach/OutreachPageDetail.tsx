@@ -7,16 +7,21 @@ import {
 import {
   LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
-import { useOutreachData, pageMetrics, removePage, profileUrlForPage, isValidInstagramHandle, formatLocalDate, refreshOutreach, analyzePostPerformance } from '@/lib/outreach-data'
+import { useOutreachData, pageMetrics, removePage, pageOpenUrl, isValidInstagramHandle, formatLocalDate, refreshOutreach, analyzePostPerformance } from '@/lib/outreach-data'
 import { api } from '@/lib/api'
 import AddLivePostsDialog from './AddLivePostsDialog'
-import { EditPageModal } from './OutreachAnalytics'
+import EditPageModal from './EditPageModal'
+import { useCanEditPosts, useCanEditTab, useIsOutreachAdmin } from '@/lib/outreach-access'
 
 export default function OutreachPageDetail() {
   const { pageId } = useParams<{ pageId: string }>()
   const { pages, posts, campaigns } = useOutreachData()
   const navigate = useNavigate()
   const page = pages.find(p => p.id === pageId)
+  // By tab level, as the server decides: see OutreachAllPages.
+  const canEdit = useCanEditTab('pages')
+  const canEditPosts = useCanEditPosts()
+  const isAdmin = useIsOutreachAdmin()
   const [deleting, setDeleting] = useState(false)
   const [addingLivePosts, setAddingLivePosts] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -132,8 +137,8 @@ export default function OutreachPageDetail() {
                 <h1 className="text-xl font-serif text-foreground">@{page.handle}</h1>
                 {/* Same rule as the All Pages row: a Facebook page links to Facebook.
                     This used to send every page to instagram.com/<handle>. */}
-                {(page.platform === 'facebook' || isValidInstagramHandle(page.handle)) && (
-                  <a href={profileUrlForPage(page)} target="_blank" rel="noreferrer"
+                {(page.pageLink || page.platform === 'facebook' || isValidInstagramHandle(page.handle)) && (
+                  <a href={pageOpenUrl(page)} target="_blank" rel="noreferrer"
                     title={`Open @${page.handle} on ${page.platform === 'facebook' ? 'Facebook' : 'Instagram'}`}
                     className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80">
                     <ExternalLink className="w-3 h-3" /> Open on {page.platform === 'facebook' ? 'Facebook' : 'Instagram'}
@@ -155,21 +160,27 @@ export default function OutreachPageDetail() {
           <div className="flex items-center gap-2 flex-wrap">
             <span className="hub-badge bg-orange-50 text-orange-700"><Users className="w-3 h-3 inline mr-1" />{fmt(page.followers)}</span>
             <span className="hub-badge bg-blue-50 text-blue-700">Inv {page.inventoryPosts}P / {page.inventoryStories}S</span>
-            <button onClick={() => setAddingLivePosts(true)}
-              title="Add live posts (analytics + inventory feed off these)"
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1">
-              <LinkIcon className="w-3 h-3" /> Add live posts
-            </button>
-            <button onClick={() => setEditing(true)}
-              title="Edit content preference & inventory"
-              className="text-xs px-2.5 py-1.5 rounded-lg border border-border text-muted-foreground hover:bg-accent inline-flex items-center gap-1">
-              <Pencil className="w-3 h-3" /> Edit
-            </button>
-            <button onClick={handleDelete} disabled={deleting}
-              title="Delete page"
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
-              <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
-            </button>
+            {canEditPosts && (
+              <button onClick={() => setAddingLivePosts(true)}
+                title="Add live posts (analytics + inventory feed off these)"
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1">
+                <LinkIcon className="w-3 h-3" /> Add live posts
+              </button>
+            )}
+            {canEdit && (
+              <button onClick={() => setEditing(true)}
+                title="Edit page — name, link, state, inventory"
+                className="text-xs px-2.5 py-1.5 rounded-lg border border-border text-muted-foreground hover:bg-accent inline-flex items-center gap-1">
+                <Pencil className="w-3 h-3" /> Edit page
+              </button>
+            )}
+            {isAdmin && (
+              <button onClick={handleDelete} disabled={deleting}
+                title="Delete page"
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
+                <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -267,7 +278,7 @@ export default function OutreachPageDetail() {
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.saves)}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.shares)}</td>
                       <td className="px-3 py-2 text-right">
-                        <button
+                        {canEditPosts && <button
                           type="button"
                           onClick={() => void handleDeletePost(p.id)}
                           disabled={isRowDeleting}
@@ -276,7 +287,7 @@ export default function OutreachPageDetail() {
                           className="p-1 rounded-md text-muted-foreground hover:bg-red-50 hover:text-red-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        </button>}
                       </td>
                     </tr>
                     {open && perf.underperforming && (

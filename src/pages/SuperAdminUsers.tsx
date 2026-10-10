@@ -4,7 +4,7 @@ import type { TeamRecord, AppUser } from '@/lib/app-types'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
 import { getErrorMessage } from '@/lib/error-utils'
-import { Crown, Shield, UserCheck, User, Search, RefreshCw, Plus, Trash2, Layers, Megaphone, ClipboardList, Film, Send, Boxes } from 'lucide-react'
+import { Crown, Shield, UserCheck, User, Search, RefreshCw, Plus, Trash2, Layers, Megaphone, ClipboardList, Film, Send, Boxes, MapPin } from 'lucide-react'
 import { ROLES, type AppRole } from '@/lib/constants'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
@@ -23,6 +23,7 @@ const ROLE_CFG: Record<AppRole, { label: string; icon: React.ElementType; color:
   outreach_editor: { label: 'Outreach Editor', icon: Film, color: 'text-orange-600', bg: 'bg-orange-50' },
   outreach_publisher: { label: 'Outreach Publisher', icon: Send, color: 'text-orange-700', bg: 'bg-orange-50' },
   inventory_manager: { label: 'Inventory Manager', icon: Boxes, color: 'text-sky-700', bg: 'bg-sky-100' },
+  outreach_state_user: { label: 'Outreach State User', icon: MapPin, color: 'text-orange-700', bg: 'bg-orange-50' },
 }
 
 const BLANK_USER = { full_name: '', email: '', password: '', department: '' }
@@ -41,6 +42,7 @@ const ROLE_LABEL: Record<AppRole, string> = {
   super_admin: 'Super Admin', admin: 'Admin', sub_admin: 'Team Lead', user: 'Member', outreach_manager: 'Outreach Manager',
   branding_reports_admin: 'Reports Admin', design_reports_admin: 'Reports Admin', task_owner: 'Task Owner', task_manager: 'Task Manager',
   outreach_editor: 'Outreach Editor', outreach_publisher: 'Outreach Publisher', inventory_manager: 'Inventory Manager',
+  outreach_state_user: 'Outreach State User',
 }
 
 /* Every role a Super Admin can assign here, from the role catalogue rather

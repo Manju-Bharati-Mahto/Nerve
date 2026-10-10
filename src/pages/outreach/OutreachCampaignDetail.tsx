@@ -5,6 +5,7 @@ import {
   Link as LinkIcon, Trash2, Users, Download, Pencil, X, Sparkles, RefreshCw, Loader2,
 } from 'lucide-react'
 import AddLivePostsDialog from './AddLivePostsDialog'
+import { useCanEditPosts, useCanEditTab, useIsOutreachAdmin } from '@/lib/outreach-access'
 import { buildCampaignReport, exportCampaignReportPdf, exportCampaignReportDocx } from '@/lib/outreach-export'
 import {
   BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -37,6 +38,10 @@ export default function OutreachCampaignDetail() {
   const navigate = useNavigate()
   const campaign = campaigns.find(c => c.id === campaignId)
   const [showAllPages, setShowAllPages] = useState(false)
+  // By tab level, as the server decides: Edit on Campaigns changes a campaign.
+  const canEdit = useCanEditTab('campaigns')
+  const canEditPosts = useCanEditPosts()
+  const isAdmin = useIsOutreachAdmin()
   const [livePostsOpen, setLivePostsOpen] = useState(false)
   const [editing, setEditing] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -175,28 +180,35 @@ export default function OutreachCampaignDetail() {
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <span className={`hub-badge ${STATUS_CFG[campaign.status].cls}`}>{STATUS_CFG[campaign.status].label}</span>
-            <button
-              onClick={() => setEditing(true)}
-              title="Edit pages, budgets and variants"
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-violet-100 text-violet-700 hover:opacity-80 inline-flex items-center gap-1"
-            >
-              <Pencil className="w-3 h-3" /> Edit
-            </button>
-            <button
-              onClick={() => setLivePostsOpen(true)}
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1"
-            >
-              <LinkIcon className="w-3 h-3" /> Add live posts
-            </button>
-            <button
-              onClick={handleCampaignSync}
-              disabled={syncing}
-              title="Re-scrape only this campaign's posts and reels and update their stats"
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50"
-            >
-              {syncing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-              {syncing ? 'Syncing…' : 'Sync'}
-            </button>
+            {canEdit && (
+              <button
+                onClick={() => setEditing(true)}
+                title="Edit pages, budgets and variants"
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-violet-100 text-violet-700 hover:opacity-80 inline-flex items-center gap-1"
+              >
+                <Pencil className="w-3 h-3" /> Edit
+              </button>
+            )}
+            {canEditPosts && (
+              <button
+                onClick={() => setLivePostsOpen(true)}
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1"
+              >
+                <LinkIcon className="w-3 h-3" /> Add live posts
+              </button>
+            )}
+            {/* A sync is a paid Apify run: the outreach manager's call. */}
+            {isAdmin && (
+              <button
+                onClick={handleCampaignSync}
+                disabled={syncing}
+                title="Re-scrape only this campaign's posts and reels and update their stats"
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50"
+              >
+                {syncing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                {syncing ? 'Syncing…' : 'Sync'}
+              </button>
+            )}
             <button
               onClick={() => exportCampaignReportPdf(buildCampaignReport(campaign, pages, creators, posts))}
               className="text-xs px-2.5 py-1.5 rounded-lg bg-blue-100 text-blue-700 hover:opacity-80 inline-flex items-center gap-1"
@@ -209,12 +221,12 @@ export default function OutreachCampaignDetail() {
             >
               <Download className="w-3 h-3" /> Export Word
             </button>
-            {campaign.status === 'planning' && (
+            {canEdit && campaign.status === 'planning' && (
               <button onClick={() => setStatus('active')} className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 hover:opacity-80 inline-flex items-center gap-1">
                 <Play className="w-3 h-3" /> Activate
               </button>
             )}
-            {campaign.status === 'active' && (
+            {canEdit && campaign.status === 'active' && (
               <>
                 <button onClick={() => setStatus('paused')} className="text-xs px-2.5 py-1.5 rounded-lg bg-amber-100 text-amber-700 hover:opacity-80 inline-flex items-center gap-1">
                   <Pause className="w-3 h-3" /> Pause
@@ -224,16 +236,18 @@ export default function OutreachCampaignDetail() {
                 </button>
               </>
             )}
-            {campaign.status === 'paused' && (
+            {canEdit && campaign.status === 'paused' && (
               <button onClick={() => setStatus('active')} className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 hover:opacity-80 inline-flex items-center gap-1">
                 <Play className="w-3 h-3" /> Resume
               </button>
             )}
-            <button onClick={handleDelete} disabled={deleting}
-              title="Delete campaign"
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
-              <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
-            </button>
+            {canEdit && (
+              <button onClick={handleDelete} disabled={deleting}
+                title="Delete campaign"
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
+                <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -325,7 +339,7 @@ export default function OutreachCampaignDetail() {
                     <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums" title={`${views.toLocaleString('en-US')} views`}>{views.toLocaleString('en-US')}</td>
                     <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{fmt(engagement)}</td>
                     <td className="px-3 py-2.5 text-right">
-                      <button
+                      {canEdit && <button
                         onClick={async () => {
                           if (!campaign) return
                           if (!confirm(`Remove @${page.handle} from this campaign? The page itself stays — only the assignment is cleared.`)) return
@@ -337,7 +351,7 @@ export default function OutreachCampaignDetail() {
                         className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      </button>}
                     </td>
                   </tr>
                 ))}

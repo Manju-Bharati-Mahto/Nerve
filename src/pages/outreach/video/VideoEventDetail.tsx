@@ -9,6 +9,7 @@ import {
 } from '@/lib/outreach-video-data'
 import DriveProblemNotice from './DriveProblemNotice'
 import { useAuth } from '@/hooks/useAuth'
+import { useVideoTabEdit } from './workflow-roles'
 
 /**
  * §11.2 — the event detail view: full details, assign or reassign to an editor,
@@ -27,7 +28,8 @@ export default function VideoEventDetail() {
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState(false)
 
-  const canAssign = role === 'outreach_manager' || role === 'super_admin' || role === 'admin'
+  // Edit on Event Calendar for a configured person; otherwise the roles the API always took.
+  const canAssign = useVideoTabEdit('event_calendar', role === 'outreach_manager' || role === 'super_admin' || role === 'admin')
   const isEditor = role === 'outreach_editor'
 
   const refresh = useCallback(async () => {

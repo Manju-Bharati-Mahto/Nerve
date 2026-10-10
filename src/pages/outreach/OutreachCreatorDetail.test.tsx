@@ -18,6 +18,15 @@ vi.mock('@/lib/outreach-data', async importOriginal => ({
   updateCreator: (...args: unknown[]) => mockUpdateCreator(...(args as [])),
 }))
 
+/* Who is looking: the outreach manager unless a test says otherwise. The
+   hooks are the page's only source of what it may show (Account Tabs). */
+const viewer = { admin: true, edit: true }
+vi.mock('@/lib/outreach-access', () => ({
+  useCanEditTab: () => viewer.edit,
+  useCanEditPosts: () => viewer.edit,
+  useIsOutreachAdmin: () => viewer.admin,
+}))
+
 // recharts' ResponsiveContainer needs it; jsdom has none.
 globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
 
@@ -48,7 +57,8 @@ describe('OutreachCreatorDetail', () => {
 
     const [, invPosts] = screen.getAllByRole('spinbutton')
     fireEvent.change(invPosts, { target: { value: '7.6' } })
-    fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: '4' } })
+    // Comboboxes: State (a dropdown since PRD 6.4), Type, Follower tier.
+    fireEvent.change(screen.getAllByRole('combobox')[2], { target: { value: '4' } })
     fireEvent.click(save)
 
     await waitFor(() => expect(mockUpdateCreator).toHaveBeenCalledTimes(1))
@@ -66,5 +76,20 @@ describe('OutreachCreatorDetail', () => {
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
 
     expect(await screen.findByText(/must be a whole number/)).toBeInTheDocument()
+  })
+
+  // Account Tabs requirements: Edit on Creators edits; deleting stays with the manager.
+  it('lets Edit on Creators edit but not delete, and View do neither', () => {
+    viewer.admin = false
+    try {
+      renderDetail()
+      expect(screen.getByRole('button', { name: /^edit$/i })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: /delete/i })).toBeNull()
+      cleanup()
+      viewer.edit = false
+      renderDetail()
+      expect(screen.queryByRole('button', { name: /^edit$/i })).toBeNull()
+      expect(screen.queryByRole('button', { name: /add live posts/i })).toBeNull()
+    } finally { viewer.admin = true; viewer.edit = true }
   })
 })

@@ -7,6 +7,8 @@ import {
   EVENT_STATUS_STYLE, type EventRecord, type LoadFailure,
 } from '@/lib/outreach-video-data'
 import DriveProblemNotice from './DriveProblemNotice'
+import { useAuth } from '@/hooks/useAuth'
+import { hasVideoRole, useVideoTabEdit } from './workflow-roles'
 
 /**
  * §8.1 — the editor's To-Do List: every event the Manager has assigned to them,
@@ -17,6 +19,9 @@ import DriveProblemNotice from './DriveProblemNotice'
  * list is this" question to get wrong here.
  */
 export default function VideoTodo() {
+  const { role } = useAuth()
+  // Marking an event done: Edit on To-Do List, or an Editor / Admin — the API's rule.
+  const canMark = useVideoTabEdit('todo', hasVideoRole(role, ['editor', 'admin']))
   const [events, setEvents] = useState<EventRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<LoadFailure | null>(null)
@@ -92,13 +97,13 @@ export default function VideoTodo() {
       ) : (
         <div className="space-y-3">
           {open.map(e => (
-            <TodoCard key={e.id} event={e} today={today} busy={busyId === e.id} onDone={() => markDone(e)} />
+            <TodoCard key={e.id} event={e} today={today} busy={busyId === e.id} canMark={canMark} onDone={() => markDone(e)} />
           ))}
           {completed.length > 0 && (
             <>
               <p className="text-[11px] uppercase tracking-widest text-muted-foreground pt-2">Completed</p>
               {completed.map(e => (
-                <TodoCard key={e.id} event={e} today={today} busy={false} onDone={() => {}} />
+                <TodoCard key={e.id} event={e} today={today} busy={false} canMark={false} onDone={() => {}} />
               ))}
             </>
           )}
@@ -118,8 +123,8 @@ function Kpi({ label, value, accent }: { label: string; value: number | null; ac
   )
 }
 
-function TodoCard({ event, today, busy, onDone }: {
-  event: EventRecord; today: string; busy: boolean; onDone: () => void
+function TodoCard({ event, today, busy, canMark, onDone }: {
+  event: EventRecord; today: string; busy: boolean; canMark: boolean; onDone: () => void
 }) {
   const overdue = event.status === 'open' && event.date < today
   const isToday = event.date === today
@@ -148,7 +153,7 @@ function TodoCard({ event, today, busy, onDone }: {
           <span className={`hub-badge ${EVENT_STATUS_STYLE[event.status].cls}`}>
             {EVENT_STATUS_STYLE[event.status].label}
           </span>
-          {event.status === 'open' && (
+          {canMark && event.status === 'open' && (
             <button onClick={onDone} disabled={busy}
               className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:opacity-90 disabled:opacity-40 inline-flex items-center gap-1">
               <CheckCircle2 className="w-3 h-3" /> {busy ? 'Saving…' : 'Mark completed'}

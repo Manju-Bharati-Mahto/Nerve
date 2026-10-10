@@ -30,6 +30,15 @@ vi.mock('@/lib/outreach-data', async importOriginal => ({
   removeCampaign: (...args: unknown[]) => mockRemoveCampaign(...(args as [])),
 }))
 
+/* Who is looking: the outreach manager unless a test says otherwise. The
+   hooks are the page's only source of what it may show (Account Tabs). */
+const viewer = { admin: true, edit: true }
+vi.mock('@/lib/outreach-access', () => ({
+  useCanEditTab: () => viewer.edit,
+  useCanEditPosts: () => viewer.edit,
+  useIsOutreachAdmin: () => viewer.admin,
+}))
+
 // recharts' ResponsiveContainer needs it; jsdom has none.
 globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver
 
@@ -78,5 +87,17 @@ describe('OutreachCampaignDetail', () => {
     expect(posts.value).toBe('1')
     expect(stories.value).toBe('100000')
     expect(reels.value).toBe('0')
+  })
+
+  // Account Tabs requirements: View on Campaigns shows the campaign, and nothing that changes it.
+  it('shows a view-only person no edit, status, sync or delete button', () => {
+    viewer.admin = false; viewer.edit = false
+    try {
+      renderDetail()
+      for (const name of [/^edit$/i, /add live posts/i, /^sync$/i, /pause/i, /complete/i, /delete/i]) {
+        expect(screen.queryByRole('button', { name }), String(name)).toBeNull()
+      }
+      expect(screen.getByRole('button', { name: /export pdf/i })).toBeTruthy()
+    } finally { viewer.admin = true; viewer.edit = true }
   })
 })

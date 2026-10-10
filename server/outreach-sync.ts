@@ -15,6 +15,7 @@ import {
   listPages,
   listCampaigns,
   updatePage,
+  cacheFacebookOwnerId,
   upsertPostByInstagramId,
   listLivePostsWithPermalink,
   updatePostMetrics,
@@ -210,7 +211,11 @@ export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> 
     for (const id of touchedPageIds) {
       syncedPageCount++;
       const cachedOwnerId = ownerIdByPageId.get(id);
-      await updatePage(id, { last_synced_at: new Date().toISOString(), ...(cachedOwnerId ? { platform_page_id: cachedOwnerId } : {}) });
+      await updatePage(id, { last_synced_at: new Date().toISOString() });
+      // Conditional on the handle this batch scraped: a rename made while the
+      // scrape ran must not get the old page's id written back onto it.
+      const scraped = batch.find(p => p.id === id);
+      if (cachedOwnerId && scraped) await cacheFacebookOwnerId(id, scraped.handle, cachedOwnerId);
     }
     // Pages in this batch that produced nothing (private/empty/unreachable)
     // aren't silently dropped from the summary.
@@ -467,8 +472,10 @@ async function resolveFacebookOwnerId(page: OutreachPage): Promise<string | null
   }
   const ownerId = items.find(i => i.ownerId)?.ownerId;
   if (!ownerId) return null;
-  await updatePage(page.id, { platform_page_id: ownerId });
-  return ownerId;
+  /* Only cached — and only trusted — if the page still has the handle that
+     was scraped. Renamed meanwhile, the id belongs to the old name's page:
+     return null, and this call verifies nothing rather than the wrong page. */
+  return cacheFacebookOwnerId(page.id, page.handle, ownerId);
 }
 
 async function addFacebookLivePosts(ctx: {

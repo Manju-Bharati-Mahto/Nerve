@@ -18,7 +18,7 @@ vi.mock('@/lib/api', () => ({
 }))
 
 const {
-  ensureInstagramPage, instagramPageIndex, handleKey, PageNeedsPlaceError,
+  ensureInstagramPage, instagramPageIndex, handleKey, PageNeedsPlaceError, PageStateUnknownError,
   isRealIsoDate, toBudget, budgetProblem, MAX_BUDGET,
 } = await import('./import-pages')
 
@@ -76,6 +76,20 @@ describe('ensureInstagramPage', () => {
 
   it('refuses to create a page with no state instead of sending a payload the server rejects', async () => {
     await expect(ensureInstagramPage(row('fix_nostate', ''), new Map())).rejects.toBeInstanceOf(PageNeedsPlaceError)
+    expect(createOutreachPage).not.toHaveBeenCalled()
+  })
+
+  // PRD 6.4 — the sheet's state is matched to the master list, per row.
+  it('sends the canonical state for a variant spelling', async () => {
+    createOutreachPage.mockResolvedValue({ page: { id: 'fix-tn' } })
+    await ensureInstagramPage({ ...row('fix_tn'), state: ' tamilnadu ' }, new Map())
+    expect(createOutreachPage.mock.calls[0][0]).toMatchObject({ state: 'Tamil Nadu' })
+  })
+
+  it('reports a state that is not on the list for that row, and creates nothing', async () => {
+    const err = await ensureInstagramPage({ ...row('fix_guj'), state: 'Guj' }, new Map()).catch(e => e)
+    expect(err).toBeInstanceOf(PageStateUnknownError)
+    expect(err).toMatchObject({ handle: 'fix_guj', state: 'Guj' })
     expect(createOutreachPage).not.toHaveBeenCalled()
   })
 

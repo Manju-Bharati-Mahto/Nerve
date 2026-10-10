@@ -110,6 +110,8 @@ export function getRoleDashboard(
   if (role === 'outreach_manager')      return '/outreach/dashboard'
   if (role === 'outreach_editor')       return '/outreach/video/my-videos'
   if (role === 'outreach_publisher')    return '/outreach/video/queue'
+  // A State User reads influencer data for their states and has no video workflow.
+  if (role === 'outreach_state_user')   return '/outreach/dashboard'
   // BrandOps is an Inventory Manager's entire workspace.
   if (role === 'inventory_manager')     return '/branding/ops/dashboard'
   if (role === 'branding_reports_admin') return '/branding/dashboard'

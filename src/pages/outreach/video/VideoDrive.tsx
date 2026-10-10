@@ -6,6 +6,7 @@ import {
   getDriveStatus, saveDriveClient, setDriveAccount, startDriveConnect, chooseDriveFolder,
   disconnectDrive, syncAllToDrive, formatWhen, type DriveStatus,
 } from '@/lib/outreach-video-data'
+import { useVideoTabEdit } from './workflow-roles'
 
 /**
  * Video Workflow → Google Drive (Campaign & Content Management PRD §9).
@@ -23,6 +24,8 @@ import {
  *      workflow is mirrored into it from then on.
  */
 export default function VideoDrive() {
+  // Edit on Google Drive for a configured person; the route already admits only Admin / Manager otherwise.
+  const canChange = useVideoTabEdit('drive', true)
   const [status, setStatus] = useState<DriveStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -115,6 +118,13 @@ export default function VideoDrive() {
 
       {error && <Banner kind="error">{error}</Banner>}
       {notice && <Banner kind="ok">{notice}</Banner>}
+      {!canChange && (
+        <Banner kind="error">You have view-only access to Google Drive. Ask your outreach manager to make changes here.</Banner>
+      )}
+
+      {/* View-only (Account Tabs requirements): every control below is
+          disabled at once; the API refuses the changes regardless. */}
+      <fieldset disabled={!canChange} className="contents">
 
       {/* ── Where things stand ─────────────────────────────────────────── */}
       <div className={`hub-card space-y-3 ${unhealthy ? 'border-rose-300 bg-rose-50' : ''}`}>
@@ -299,6 +309,7 @@ export default function VideoDrive() {
           </div>
         </>
       )}
+      </fieldset>
     </div>
   )
 }

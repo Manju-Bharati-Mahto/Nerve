@@ -10,10 +10,13 @@ import {
 } from 'recharts'
 import {
   useOutreachData, pageMetrics, campaignMetrics, addPage, updatePage,
-  parseInstagramHandle, profileUrlForPage, outreachStates, sameState, toCsv, INDIAN_STATES,
+  parseInstagramHandle, profileUrlForPage, outreachStates, sameState, toCsv,
   PAGE_TYPES, FOLLOWER_TIERS, PAGE_CONTENT_TYPES, PAGE_CONTENT_PREFERENCES, PLATFORMS,
   type PageType, type FollowerTier, type PageContentType, type OutreachPage, type Post, type Platform,
 } from '@/lib/outreach-data'
+import StateSelect from './StateSelect'
+import { geographyKey, geographyOptions } from '@/lib/outreach-states'
+import { useCanEditTab, useIsOutreachAdmin } from '@/lib/outreach-access'
 
 type Tab = 'pages' | 'campaigns' | 'posts' | 'trend' | 'inventory'
 
@@ -88,6 +91,8 @@ function rangeMetrics(pageId: string, posts: Post[], from: string, to: string) {
 
 function PagesPerformance() {
   const { pages, posts, campaigns } = useOutreachData()
+  // Adding a page is the outreach manager's (the server's rule too).
+  const isAdmin = useIsOutreachAdmin()
   const [statusFilter, setStatusFilter] = useState<'all' | 'over-used' | 'on-track' | 'under-used' | 'idle'>('all')
   const [campaignFilter, setCampaignFilter] = useState<string>('')
   const [stateFilter, setStateFilter] = useState('')
@@ -169,9 +174,11 @@ function PagesPerformance() {
           <span className="text-[11px] text-muted-foreground">Showing {from || '…'} → {to || '…'}</span>
         )}
         <div className="ml-auto flex items-center gap-2">
-          <button onClick={() => setCreating(true)} className="text-xs px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:opacity-90 inline-flex items-center gap-1.5">
-            <Plus className="w-3.5 h-3.5" /> Add page
-          </button>
+          {isAdmin && (
+            <button onClick={() => setCreating(true)} className="text-xs px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:opacity-90 inline-flex items-center gap-1.5">
+              <Plus className="w-3.5 h-3.5" /> Add page
+            </button>
+          )}
           <button onClick={exportCSV} className="text-xs px-3 py-1.5 rounded-lg border border-border hover:bg-accent inline-flex items-center gap-1.5">
             <Download className="w-3.5 h-3.5" /> Export
           </button>
@@ -430,15 +437,19 @@ function CampaignTrend() {
 
 function InventoryHeatmap() {
   const { pages, posts } = useOutreachData()
+  // A top-up changes a page's inventory: Edit on All Pages, as the server decides.
+  const canEditPages = useCanEditTab('pages')
   const [geoFilter, setGeoFilter] = useState<string>('')
   const [typeFilter, setTypeFilter] = useState<PageType | ''>('')
   const [topUp, setTopUp] = useState<OutreachPage | null>(null)
 
-  const geographies = useMemo(() => Array.from(new Set(pages.map(p => p.geography))).sort(), [pages])
+  // One section per geography however it was typed — the same rule as All Pages.
+  const geographies = useMemo(() => geographyOptions(pages.map(p => p.geography)), [pages])
+  const geographyLabel = useMemo(() => new Map(geographies.map(g => [g.key, g.label])), [geographies])
 
   const rows = useMemo(() => {
     return pages
-      .filter(p => (!geoFilter || p.geography === geoFilter) && (!typeFilter || p.type === typeFilter))
+      .filter(p => (!geoFilter || geographyKey(p.geography) === geoFilter) && (!typeFilter || p.type === typeFilter))
       .map(p => {
         const m = pageMetrics(p, posts)
         // Inventory here is POSTS + REELS only — stories are deliberately
@@ -461,14 +472,20 @@ function InventoryHeatmap() {
 
   // Group by geography for a tidy heatmap
   const grouped = useMemo(() => {
+    /* Grouped by KEY, not by the string typed: "Tamil Nadu" and "Tamilnadu"
+       were two sections of the heatmap. Each section is headed by the
+       geography's preferred spelling. */
     const byGeo = new Map<string, typeof rows>()
     for (const r of rows) {
-      const arr = byGeo.get(r.page.geography) ?? []
+      const key = geographyKey(r.page.geography)
+      const arr = byGeo.get(key) ?? []
       arr.push(r)
-      byGeo.set(r.page.geography, arr)
+      byGeo.set(key, arr)
     }
-    return Array.from(byGeo.entries()).sort(([a], [b]) => a.localeCompare(b))
-  }, [rows])
+    return Array.from(byGeo.entries())
+      .map(([key, gRows]) => [geographyLabel.get(key) ?? gRows[0].page.geography, gRows] as const)
+      .sort(([a], [b]) => a.localeCompare(b, 'en', { sensitivity: 'base' }))
+  }, [rows, geographyLabel])
 
   return (
     <div className="space-y-4">
@@ -476,17 +493,19 @@ function InventoryHeatmap() {
         <FilterIcon className="w-4 h-4 text-muted-foreground" />
         <select value={geoFilter} onChange={e => setGeoFilter(e.target.value)} className="hub-input py-1.5 text-xs w-40">
           <option value="">All geographies</option>
-          {geographies.map(g => <option key={g} value={g}>{g}</option>)}
+          {geographies.map(g => <option key={g.key} value={g.key}>{g.label}</option>)}
         </select>
         <select value={typeFilter} onChange={e => setTypeFilter(e.target.value as PageType | '')} className="hub-input py-1.5 text-xs w-32">
           <option value="">Any type</option>
           {PAGE_TYPES.map(t => <option key={t} value={t}>{t === 'pu' ? 'PU' : 'State'}</option>)}
         </select>
         <span className="text-xs text-muted-foreground">{rows.length} pages</span>
-        <button onClick={() => setTopUp(pages[0] ?? null)} disabled={pages.length === 0}
-          className="text-xs px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:opacity-90 disabled:opacity-40 inline-flex items-center gap-1.5 ml-auto">
-          <Plus className="w-3.5 h-3.5" /> Add inventory
-        </button>
+        {canEditPages && (
+          <button onClick={() => setTopUp(pages[0] ?? null)} disabled={pages.length === 0}
+            className="text-xs px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:opacity-90 disabled:opacity-40 inline-flex items-center gap-1.5 ml-auto">
+            <Plus className="w-3.5 h-3.5" /> Add inventory
+          </button>
+        )}
       </div>
 
       <div className="hub-card flex items-center gap-3 text-xs flex-wrap">
@@ -676,12 +695,10 @@ export function AddPageModal({ onClose, defaultPlatform = 'instagram' }: { onClo
             </div>
             <div>
               <label className="hub-label">State *</label>
-              {/* Suggest the canonical names so new pages match campaign states;
-                  free text still works for a state not on the list. */}
-              <input className="hub-input" list="outreach-add-page-states" value={form.state} onChange={e => setForm(f => ({ ...f, state: e.target.value }))} placeholder="Gujarat" />
-              <datalist id="outreach-add-page-states">
-                {INDIAN_STATES.map(s => <option key={s} value={s} />)}
-              </datalist>
+              {/* The master list only (PRD 6.4): the server refuses anything
+                  else, and a typed variant ("gujarat ") filed the page under a
+                  state nobody filters by. */}
+              <StateSelect value={form.state} onChange={state => setForm(f => ({ ...f, state }))} aria-label="State" />
             </div>
           </div>
           <div>
@@ -767,13 +784,25 @@ export function AddInventoryModal({ pages, initialPage, onClose }:
   const [addPosts, setAddPosts] = useState(0)
   const [addStories, setAddStories] = useState(0)
   const current = pages.find(p => p.id === pageId) ?? initialPage
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  function submit() {
-    updatePage(pageId, {
-      inventoryPosts: current.inventoryPosts + addPosts,
-      inventoryStories: current.inventoryStories + addStories,
-    })
-    onClose()
+  /* Awaited, and kept open on failure. It used to fire the update and close
+     at once, so a refused or failed top-up vanished without a word and the
+     person believed the slots were added. */
+  async function submit() {
+    if (saving) return
+    setSaving(true); setError(null)
+    try {
+      await updatePage(pageId, {
+        inventoryPosts: current.inventoryPosts + addPosts,
+        inventoryStories: current.inventoryStories + addStories,
+      })
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to add inventory.')
+      setSaving(false)
+    }
   }
 
   return (
@@ -809,106 +838,12 @@ export function AddInventoryModal({ pages, initialPage, onClose }:
             New totals: <strong>{current.inventoryPosts + addPosts}</strong> posts · <strong>{current.inventoryStories + addStories}</strong> stories
           </div>
         </div>
-        <div className="flex items-center justify-end gap-2 p-4 border-t border-border">
-          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent">Cancel</button>
-          <button onClick={submit} disabled={addPosts + addStories === 0}
-            className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">
-            Add inventory
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-// Edit an existing page's content preference (PRD 6.5) and inventory totals
-// (PRD 6.2). Unlike AddInventoryModal (which tops up), this SETS the totals.
-export function EditPageModal({ page, onClose }: { page: OutreachPage; onClose: () => void }) {
-  const [contentPreferences, setContentPreferences] = useState<string[]>(page.contentPreferences)
-  const [inventoryPosts, setInventoryPosts] = useState(page.inventoryPosts)
-  const [inventoryStories, setInventoryStories] = useState(page.inventoryStories)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  function togglePref(p: string) {
-    setContentPreferences(prev => prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p])
-  }
-
-  const changed =
-    inventoryPosts !== page.inventoryPosts ||
-    inventoryStories !== page.inventoryStories ||
-    JSON.stringify(contentPreferences) !== JSON.stringify(page.contentPreferences)
-
-  async function save() {
-    if (saving || !changed) return
-    setSaving(true); setError(null)
-    try {
-      await updatePage(page.id, {
-        contentPreferences,
-        inventoryPosts: Math.max(0, inventoryPosts),
-        inventoryStories: Math.max(0, inventoryStories),
-      })
-      onClose()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to save page.')
-      setSaving(false)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-fade-in" onClick={onClose}>
-      <div className="bg-card rounded-xl border border-border w-full max-w-md" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between p-4 border-b border-border">
-          <h2 className="text-base font-serif text-foreground">Edit @{page.handle}</h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
-        </div>
-        <div className="p-4 space-y-3">
-          <div>
-            <label className="hub-label">Content preference</label>
-            <div className="flex gap-2 flex-wrap">
-              {PAGE_CONTENT_PREFERENCES.map(p => {
-                const selected = contentPreferences.includes(p)
-                return (
-                  <button key={p} type="button" onClick={() => togglePref(p)}
-                    className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                      selected
-                        ? 'bg-orange-100 border-orange-300 text-orange-700 font-medium'
-                        : 'bg-card border-border text-muted-foreground hover:bg-accent'
-                    }`}>
-                    {p}
-                  </button>
-                )
-              })}
-            </div>
-            {contentPreferences.length === 0 && (
-              <p className="text-[11px] text-muted-foreground mt-1">Not set — pick the content this page is known for.</p>
-            )}
-          </div>
-          <div>
-            <label className="hub-label">Inventory (total slots)</label>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-[11px] text-muted-foreground">Posts</label>
-                <input type="number" min={0} className="hub-input" value={inventoryPosts}
-                  onChange={e => setInventoryPosts(Number(e.target.value) || 0)} />
-              </div>
-              <div>
-                <label className="text-[11px] text-muted-foreground">Stories</label>
-                <input type="number" min={0} className="hub-input" value={inventoryStories}
-                  onChange={e => setInventoryStories(Number(e.target.value) || 0)} />
-              </div>
-            </div>
-            <p className="text-[11px] text-muted-foreground mt-1">
-              Used slots are counted automatically from live posts — only the total is editable here.
-            </p>
-          </div>
-        </div>
-        {error && <div className="px-4 py-2 text-xs text-rose-700 bg-rose-50 border-t border-rose-200">{error}</div>}
+        {error && <div role="alert" className="px-4 py-2 text-xs text-rose-700 bg-rose-50 border-t border-rose-200">{error}</div>}
         <div className="flex items-center justify-end gap-2 p-4 border-t border-border">
           <button onClick={onClose} disabled={saving} className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent disabled:opacity-40">Cancel</button>
-          <button onClick={save} disabled={saving || !changed}
+          <button onClick={submit} disabled={saving || addPosts + addStories === 0}
             className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">
-            {saving ? 'Saving…' : 'Save changes'}
+            {saving ? 'Adding…' : 'Add inventory'}
           </button>
         </div>
       </div>

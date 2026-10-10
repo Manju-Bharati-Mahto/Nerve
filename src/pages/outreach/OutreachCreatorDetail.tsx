@@ -12,7 +12,9 @@ import {
   formatLocalDate, PAGE_TYPES, FOLLOWER_TIERS, PAGE_CONTENT_TYPES,
   type OutreachCreator, type PageType, type FollowerTier, type PageContentType,
 } from '@/lib/outreach-data'
+import StateSelect from './StateSelect'
 import AddLivePostsDialog from './AddLivePostsDialog'
+import { useCanEditPosts, useCanEditTab, useIsOutreachAdmin } from '@/lib/outreach-access'
 
 export default function OutreachCreatorDetail() {
   const { creatorId } = useParams<{ creatorId: string }>()
@@ -21,6 +23,10 @@ export default function OutreachCreatorDetail() {
   const creator = creators.find(c => c.id === creatorId)
   const [deleting, setDeleting] = useState(false)
   const [livePostsOpen, setLivePostsOpen] = useState(false)
+  // By tab level, as the server decides: Edit on Creators edits; deleting is the manager's.
+  const canEdit = useCanEditTab('creators')
+  const canEditPosts = useCanEditPosts()
+  const isAdmin = useIsOutreachAdmin()
   const [editing, setEditing] = useState(false)
 
   // Posts attributed to this creator. Sorted newest first for the table.
@@ -142,24 +148,30 @@ export default function OutreachCreatorDetail() {
           <div className="flex items-center gap-2 flex-wrap">
             <span className="hub-badge bg-orange-50 text-orange-700"><Users className="w-3 h-3 inline mr-1" />{fmt(creator.followers)}</span>
             <span className="hub-badge bg-blue-50 text-blue-700">Inv {creator.inventoryPosts}P / {creator.inventoryStories}S</span>
-            <button
-              onClick={() => setLivePostsOpen(true)}
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1"
-            >
-              <LinkIcon className="w-3 h-3" /> Add live posts
-            </button>
+            {canEditPosts && (
+              <button
+                onClick={() => setLivePostsOpen(true)}
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1"
+              >
+                <LinkIcon className="w-3 h-3" /> Add live posts
+              </button>
+            )}
             {/* Without this a wrong inventory or tier could only be fixed by
                 deleting the creator — which also deletes its posts. */}
-            <button onClick={() => setEditing(true)}
-              title="Edit location, tier and inventory"
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-accent text-foreground hover:opacity-80 inline-flex items-center gap-1">
-              <Pencil className="w-3 h-3" /> Edit
-            </button>
-            <button onClick={handleDelete} disabled={deleting}
-              title="Delete creator"
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
-              <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
-            </button>
+            {canEdit && (
+              <button onClick={() => setEditing(true)}
+                title="Edit location, tier and inventory"
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-accent text-foreground hover:opacity-80 inline-flex items-center gap-1">
+                <Pencil className="w-3 h-3" /> Edit
+              </button>
+            )}
+            {isAdmin && (
+              <button onClick={handleDelete} disabled={deleting}
+                title="Delete creator"
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
+                <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -194,12 +206,14 @@ export default function OutreachCreatorDetail() {
         <div className="hub-card lg:col-span-2 p-0 overflow-hidden">
           <div className="flex items-center justify-between p-4 border-b border-border">
             <h2 className="text-sm font-semibold text-foreground">Historical posts ({creatorPosts.length})</h2>
-            <button
-              onClick={() => setLivePostsOpen(true)}
-              className="text-xs text-orange-600 hover:underline inline-flex items-center gap-1"
-            >
-              <LinkIcon className="w-3 h-3" /> Add live posts
-            </button>
+            {canEditPosts && (
+              <button
+                onClick={() => setLivePostsOpen(true)}
+                className="text-xs text-orange-600 hover:underline inline-flex items-center gap-1"
+              >
+                <LinkIcon className="w-3 h-3" /> Add live posts
+              </button>
+            )}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -345,7 +359,9 @@ function EditCreatorModal({ creator, onClose }: { creator: OutreachCreator; onCl
             </div>
             <div>
               <label className="hub-label">State *</label>
-              <input className="hub-input" value={form.state} onChange={e => setForm(f => ({ ...f, state: e.target.value }))} />
+              {/* A legacy state shows as "unrecognised" until replaced; left
+                  as it is, it is sent back unchanged, which the server accepts. */}
+              <StateSelect value={form.state} onChange={state => setForm(f => ({ ...f, state }))} aria-label="State" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">

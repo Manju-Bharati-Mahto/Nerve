@@ -9,11 +9,13 @@ import {
   Megaphone, Send, Calendar, BarChart3, Sparkles,
   Award, CalendarOff, Settings2, AlertTriangle,
   Film, Inbox, Share2, CheckCircle2, ListChecks, Bell, ClipboardList, UserCog, History,
-  ShieldCheck, HardDrive,
+  ShieldCheck, HardDrive, MapPin, CalendarClock, ListTodo,
 } from 'lucide-react'
 import ProfileModal from './ProfileModal'
 import { useOutreachData, computeOutreachAlerts } from '@/lib/outreach-data'
 import { listNotifications } from '@/lib/outreach-video-data'
+import { canUseTab, useOutreachAccess, type OutreachAccess } from '@/lib/outreach-access'
+import { OUTREACH_TABS } from '@/lib/outreach-tabs'
 import { CAPABILITY_META, OV_CAPABILITY_ORDER } from '@/lib/capabilities'
 
 type NavItem =
@@ -66,6 +68,39 @@ function grantedOutreachItems(
     .map(meta => ({ path: meta.route, label: meta.sidebarLabel, icon: Film }))
 }
 
+/* Icons and badges for menus built from tabs (a configured person's). */
+const TAB_ICON: Record<string, React.ElementType> = {
+  dashboard: LayoutDashboard, campaigns: Send, calendar: Calendar, analytics: BarChart3,
+  alerts: AlertTriangle, states: MapPin, pages: FileText, creators: Users, ai: Sparkles,
+  video_dashboard: BarChart3, users: UserCog, drive: HardDrive, video_campaigns: Film,
+  review: ShieldCheck, event_calendar: Calendar, all_videos: Film, queue: Inbox,
+  published: CheckCircle2, editor_log: ClipboardList, activity: History, notifications: Bell,
+  my_videos: Film, scheduled: CalendarClock, todo: ListTodo, social_pages: Share2,
+}
+const TAB_BADGE: Record<string, 'outreach-alerts' | 'video-notifications'> = {
+  alerts: 'outreach-alerts', notifications: 'video-notifications',
+}
+
+/**
+ * The menu of somebody an admin has configured (Account Tabs requirements
+ * §1): exactly their tabs, influencer first, in the order the requirements
+ * list them. Used only for a configured person on team outreach; everyone
+ * else keeps the per-role menus below.
+ */
+function configuredOutreachConfig(access: OutreachAccess, base: RoleConfig): RoleConfig {
+  const section = (group: 'influencer' | 'video', heading: string): SectionConfig | null => {
+    const items: NavItem[] = OUTREACH_TABS
+      .filter(t => t.group === group && canUseTab(access, t.id))
+      .map(t => ({ path: t.path, label: t.label, icon: TAB_ICON[t.id] ?? FileText, badge: TAB_BADGE[t.id] }))
+    return items.length ? { heading, items } : null
+  }
+  return {
+    ...base,
+    sections: [section('influencer', 'Outreach'), section('video', 'Video workflow')]
+      .filter((x): x is SectionConfig => x !== null),
+  }
+}
+
 // Sidebar config keyed by `${role}:${team}`
 const SIDEBAR: Record<string, RoleConfig> = {
 
@@ -88,6 +123,7 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/outreach/calendar',  label: 'Calendar',           icon: Calendar },
       { path: '/outreach/analytics', label: 'Analytics',          icon: BarChart3 },
       { path: '/outreach/alerts',    label: 'Alerts',             icon: AlertTriangle, badge: 'outreach-alerts' },
+      { path: '/outreach/states',    label: 'State',              icon: MapPin },
       { path: '/outreach/pages',     label: 'All Pages',          icon: FileText },
       { path: '/outreach/creators',  label: 'Creators',           icon: Users },
     ]},
@@ -220,6 +256,7 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/outreach/alerts',    label: 'Alerts',     icon: AlertTriangle, badge: 'outreach-alerts' },
     ]},
     { heading: 'Content', items: [
+      { path: '/outreach/states',   label: 'State',     icon: MapPin },
       { path: '/outreach/pages',    label: 'All Pages', icon: FileText },
       { path: '/outreach/creators', label: 'Creators',  icon: Users },
     ]},
@@ -294,6 +331,8 @@ const FALLBACK: RoleConfig = cfg('User', User, 'text-muted-foreground', 'bg-mute
 
 export default function AppSidebar() {
   const { profile, role, team, signOut } = useAuth()
+  // Outreach-only: asks the server nothing for anyone outside the outreach team.
+  const { access: outreachAccess, loading: outreachLoading } = useOutreachAccess()
   const location = useLocation()
   const isActive = (path: string) => location.pathname === path
   const [profileOpen, setProfileOpen] = useState(false)
@@ -317,9 +356,16 @@ export default function AppSidebar() {
   const granted = team === 'outreach'
     ? grantedOutreachItems(profile?.capabilities, baseConfig.sections)
     : []
-  const config: RoleConfig = granted.length
-    ? { ...baseConfig, sections: [...baseConfig.sections, { heading: 'Granted access', items: granted }] }
-    : baseConfig
+  /* Until an outreach person's access has loaded, the menu stays empty: the
+     role's default menu would flash tabs they may not have, and its badges
+     would ask the server for them. Admins are answered without loading. */
+  const config: RoleConfig = team === 'outreach' && outreachLoading
+    ? { ...baseConfig, sections: [] }
+    : team === 'outreach' && outreachAccess?.configured
+    ? configuredOutreachConfig(outreachAccess, baseConfig)
+    : granted.length
+      ? { ...baseConfig, sections: [...baseConfig.sections, { heading: 'Granted access', items: granted }] }
+      : baseConfig
   const BadgeIcon = config.icon
 
   return (

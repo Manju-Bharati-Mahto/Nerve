@@ -293,7 +293,7 @@ export async function bootstrapDatabase() {
       full_name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
       department TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager', 'outreach_editor', 'outreach_publisher', 'inventory_manager', 'branding_reports_admin', 'design_reports_admin', 'task_owner', 'task_manager')),
+      role TEXT NOT NULL CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager', 'outreach_editor', 'outreach_publisher', 'inventory_manager', 'branding_reports_admin', 'design_reports_admin', 'task_owner', 'task_manager', 'outreach_state_user')),
       team TEXT REFERENCES teams(id) ON DELETE SET NULL,
       managed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
       password_hash TEXT NOT NULL,
@@ -330,12 +330,20 @@ export async function bootstrapDatabase() {
   // Widen role CHECK constraint to include all current roles (safe migration).
   // branding_reports_admin: branding-team admin restricted to Daily Reports +
   // Manage Categories. Doesn't get KRA or Leave Requests.
+  //
+  // ROLLBACK HAZARD (outreach_state_user). This step drops and re-adds the
+  // constraint on every boot, from whichever build is booting. Once any user
+  // holds a role that an OLDER build's list lacks, that build's ADD
+  // CONSTRAINT fails and it does not boot — every department goes down, not
+  // just outreach. Before starting a build without outreach_state_user
+  // against a database that has State Users, park them first; DEPLOYMENT.md
+  // ("Rolling back past a new role") has the SQL.
   await pool.query(`
     DO $$
     BEGIN
       ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
       ALTER TABLE users ADD CONSTRAINT users_role_check
-        CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager', 'outreach_editor', 'outreach_publisher', 'inventory_manager', 'branding_reports_admin', 'design_reports_admin', 'task_owner', 'task_manager'));
+        CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager', 'outreach_editor', 'outreach_publisher', 'inventory_manager', 'branding_reports_admin', 'design_reports_admin', 'task_owner', 'task_manager', 'outreach_state_user'));
     END $$;
   `);
 

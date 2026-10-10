@@ -19,6 +19,7 @@ const page = (inventoryPosts: number, inventoryStories: number): OutreachPage =>
   type: 'Institute' as OutreachPage['type'], followerTier: 'Macro' as OutreachPage['followerTier'],
   contentTypes: [], contentPreferences: [], followers: 0,
   inventoryPosts, inventoryStories, notes: '', lastSyncedAt: null,
+  pageLink: '', contactPerson: '', status: 'active',
 })
 
 let n = 0

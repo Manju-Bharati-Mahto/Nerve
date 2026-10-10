@@ -8,6 +8,8 @@ import {
   formatWhen, loadFailureOf, type VideoRecord, type LoadFailure,
 } from '@/lib/outreach-video-data'
 import DriveProblemNotice from './DriveProblemNotice'
+import { useAuth } from '@/hooks/useAuth'
+import { hasVideoRole, useVideoTabEdit } from './workflow-roles'
 
 /**
  * §11 — the review step: content waiting to be approved or sent back.
@@ -22,6 +24,10 @@ import DriveProblemNotice from './DriveProblemNotice'
  * has to act on it, so the dialog will not submit without one.
  */
 export default function VideoReview() {
+  const { role } = useAuth()
+  /* Approving and sending back: Edit on Review Queue, or a Manager / Admin —
+     the API's rule. Someone with View sees the queue and can download. */
+  const canDecide = useVideoTabEdit('review', hasVideoRole(role, ['manager', 'admin']))
   const [videos, setVideos] = useState<VideoRecord[]>([])
   const [loading, setLoading] = useState(true)
   /* A queue that could not be read is not an empty queue: "Nothing is
@@ -93,7 +99,7 @@ export default function VideoReview() {
         <div className="space-y-3">
           {videos.map(v => (
             <ReviewCard key={v.id} video={v} busy={busyId === v.id}
-              onApprove={remark => approve(v, remark)} onReject={() => setRejecting(v)} />
+              canDecide={canDecide} onApprove={remark => approve(v, remark)} onReject={() => setRejecting(v)} />
           ))}
         </div>
       )}
@@ -107,8 +113,8 @@ export default function VideoReview() {
   )
 }
 
-function ReviewCard({ video, busy, onApprove, onReject }: {
-  video: VideoRecord; busy: boolean; onApprove: (remark: string) => void; onReject: () => void
+function ReviewCard({ video, busy, canDecide, onApprove, onReject }: {
+  video: VideoRecord; busy: boolean; canDecide: boolean; onApprove: (remark: string) => void; onReject: () => void
 }) {
   const [copied, setCopied] = useState(false)
   const [remark, setRemark] = useState('')
@@ -131,14 +137,18 @@ function ReviewCard({ video, busy, onApprove, onReject }: {
             className="text-xs px-2.5 py-1.5 rounded-lg bg-blue-100 text-blue-700 hover:opacity-80 inline-flex items-center gap-1">
             <Download className="w-3 h-3" /> Download
           </a>
-          <button onClick={onReject} disabled={busy}
-            className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 disabled:opacity-40 inline-flex items-center gap-1">
-            <ThumbsDown className="w-3 h-3" /> Send back
-          </button>
-          <button onClick={() => onApprove(remark)} disabled={busy}
-            className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:opacity-90 disabled:opacity-40 inline-flex items-center gap-1">
-            <ThumbsUp className="w-3 h-3" /> {busy ? 'Approving…' : 'Approve'}
-          </button>
+          {canDecide && (
+            <>
+              <button onClick={onReject} disabled={busy}
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 disabled:opacity-40 inline-flex items-center gap-1">
+                <ThumbsDown className="w-3 h-3" /> Send back
+              </button>
+              <button onClick={() => onApprove(remark)} disabled={busy}
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:opacity-90 disabled:opacity-40 inline-flex items-center gap-1">
+                <ThumbsUp className="w-3 h-3" /> {busy ? 'Approving…' : 'Approve'}
+              </button>
+            </>
+          )}
         </div>
       </div>
 

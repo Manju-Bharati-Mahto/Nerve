@@ -39,22 +39,33 @@ afterEach(async () => {
 });
 
 describe("§3 role mapping", () => {
+  /* Updated for PRD 6.3: the mapping now takes the person's team, because a
+     Nerve "admin" is the workflow's Admin only on the outreach team. */
   it("maps each Nerve role onto its workflow role", () => {
-    expect(videoRoleForNerveRole("super_admin")).toBe("admin");
-    expect(videoRoleForNerveRole("admin")).toBe("admin");
-    expect(videoRoleForNerveRole("outreach_manager")).toBe("manager");
-    expect(videoRoleForNerveRole("outreach_editor")).toBe("editor");
-    expect(videoRoleForNerveRole("outreach_publisher")).toBe("publisher");
+    expect(videoRoleForNerveRole("super_admin", null)).toBe("admin");
+    expect(videoRoleForNerveRole("admin", "outreach")).toBe("admin");
+    expect(videoRoleForNerveRole("outreach_manager", "outreach")).toBe("manager");
+    expect(videoRoleForNerveRole("outreach_editor", "outreach")).toBe("editor");
+    expect(videoRoleForNerveRole("outreach_publisher", "outreach")).toBe("publisher");
   });
 
   it("returns null for roles with no place in this workflow", () => {
-    expect(videoRoleForNerveRole("branding_reports_admin")).toBeNull();
-    expect(videoRoleForNerveRole("user")).toBeNull();
+    expect(videoRoleForNerveRole("branding_reports_admin", "branding")).toBeNull();
+    expect(videoRoleForNerveRole("user", "media")).toBeNull();
+    // A State User reads influencer data for their states and has no video workflow.
+    expect(videoRoleForNerveRole("outreach_state_user", "outreach")).toBeNull();
+  });
+
+  it("does not make another department's admin the workflow's Admin", () => {
+    // They used to be, and could read every outreach page's analytics through /social-pages.
+    for (const team of ["branding", "design", "media", "content", null]) {
+      expect(videoRoleForNerveRole("admin", team), String(team)).toBeNull();
+    }
   });
 
   it("gives each workflow role a Nerve role that maps straight back to it", () => {
-    // A role change writes this Nerve role; requireVideoUser reads it back.
-    for (const role of VIDEO_ROLES) expect(videoRoleForNerveRole(NERVE_ROLE_FOR_VIDEO_ROLE[role]), role).toBe(role);
+    // A role change writes this Nerve role (always on team outreach); requireVideoUser reads it back.
+    for (const role of VIDEO_ROLES) expect(videoRoleForNerveRole(NERVE_ROLE_FOR_VIDEO_ROLE[role], "outreach"), role).toBe(role);
   });
 });
 

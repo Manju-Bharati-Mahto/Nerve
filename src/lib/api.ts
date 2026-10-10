@@ -301,6 +301,11 @@ export interface ServerOutreachPage {
   last_synced_at: string | null;
   created_at: string;
   updated_at: string;
+  /* Maintained by a person, not synced (PRD 6.5 / video §8). Optional
+     because older responses and test fixtures may leave them out. */
+  page_link?: string;
+  contact_person?: string;
+  status?: string;
 }
 
 export interface ServerOutreachCreator {
