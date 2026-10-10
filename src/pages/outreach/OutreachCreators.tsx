@@ -11,6 +11,7 @@ import {
   type PageType, type FollowerTier, type PageContentType, type OutreachCreator,
 } from '@/lib/outreach-data'
 import StateSelect from './StateSelect'
+import { geographyKey, geographyOptions } from '@/lib/outreach-states'
 
 type SortKey = 'handle' | 'geography' | 'state' | 'tier' | 'followers' | 'inventory'
 type SortDir = 'asc' | 'desc'
@@ -32,7 +33,9 @@ export default function OutreachCreators() {
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({ key: 'handle', dir: 'asc' })
   const [adding, setAdding] = useState(false)
 
-  const geographies = useMemo(() => Array.from(new Set(creators.map(c => c.geography))).sort(), [creators])
+  // One entry per geography however it was typed — the same rule as All Pages.
+  const geographies = useMemo(() => geographyOptions(creators.map(c => c.geography)), [creators])
+  const geographyLabel = useMemo(() => new Map(geographies.map(g => [g.key, g.label])), [geographies])
   const states = useMemo(() => Array.from(new Set(creators.map(c => c.state))).sort(), [creators])
 
   const counts = useMemo(() => ({
@@ -45,7 +48,7 @@ export default function OutreachCreators() {
     const q = search.trim().toLowerCase()
     const filtered = base.filter(c => {
       if (q && !c.handle.toLowerCase().includes(q)) return false
-      if (geography && c.geography !== geography) return false
+      if (geography && geographyKey(c.geography) !== geography) return false
       if (state && c.state !== state) return false
       if (tier && c.followerTier !== tier) return false
       return true
@@ -55,14 +58,14 @@ export default function OutreachCreators() {
       const k = sort.key
       const av: number | string =
         k === 'handle'    ? a.handle :
-        k === 'geography' ? a.geography :
+        k === 'geography' ? geographyKey(a.geography) :
         k === 'state'     ? a.state :
         k === 'tier'      ? a.followerTier :
         k === 'followers' ? a.followers :
         a.inventoryPosts + a.inventoryStories
       const bv: number | string =
         k === 'handle'    ? b.handle :
-        k === 'geography' ? b.geography :
+        k === 'geography' ? geographyKey(b.geography) :
         k === 'state'     ? b.state :
         k === 'tier'      ? b.followerTier :
         k === 'followers' ? b.followers :
@@ -126,7 +129,7 @@ export default function OutreachCreators() {
           <FilterIcon className="w-4 h-4 text-muted-foreground" />
           <select value={geography} onChange={e => setGeography(e.target.value)} className="hub-input py-1.5 text-xs w-36">
             <option value="">All geographies</option>
-            {geographies.map(g => <option key={g} value={g}>{g}</option>)}
+            {geographies.map(g => <option key={g.key} value={g.key}>{g.label}</option>)}
           </select>
           <select value={state} onChange={e => setState(e.target.value)} className="hub-input py-1.5 text-xs w-32">
             <option value="">All states</option>
@@ -183,7 +186,7 @@ export default function OutreachCreators() {
                     )}
                   </div>
                 </td>
-                <td className="px-3 py-2.5 text-xs text-foreground">{c.geography}</td>
+                <td className="px-3 py-2.5 text-xs text-foreground">{geographyLabel.get(geographyKey(c.geography)) ?? c.geography}</td>
                 <td className="px-3 py-2.5 text-xs text-muted-foreground">{c.state}</td>
                 <td className="px-3 py-2.5 text-xs text-foreground">Tier {c.followerTier}</td>
                 <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground">{fmt(c.followers)}</td>

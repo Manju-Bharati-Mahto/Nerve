@@ -121,6 +121,39 @@ afterAll(async () => {
   await pool.end();
 });
 
+describe("geography spellings that only match as a group", () => {
+  /* "Start up" and "Startup" are not states, so no single value says which is
+     right — only seeing both does. Letters unique to this run, because the key
+     ignores digits and the pass looks across the whole table. */
+  const token = `Zq${RUN.replace(/[^a-z]/gi, "").slice(-6)}`;
+  // Lakshadweep, which no other test here scopes to, so these rows cannot leak into a State User's results.
+
+  maybe()("rewrites every spelling of one geography to one, across pages and creators", async () => {
+    const a = await rawPage("g1", "Lakshadweep", `${token} Start up`);
+    const b = await rawPage("g2", "Lakshadweep", `${token}Startup`);
+    const c = await rawPage("g3", "Lakshadweep", `${token}Startup`);
+    const d = await rawCreator("g4", "Lakshadweep", `${token.toLowerCase()} start up`);
+
+    await migrate();
+
+    const values = [
+      await valueOf("outreach_pages", "geography", a),
+      await valueOf("outreach_pages", "geography", b),
+      await valueOf("outreach_pages", "geography", c),
+      await valueOf("outreach_creators", "geography", d),
+    ];
+    // Two rows say "…Startup", one "… Start up", one lower case: the commonest wins.
+    expect(new Set(values)).toEqual(new Set([`${token}Startup`]));
+  });
+
+  maybe()("stores a new page under the spelling already in use", async () => {
+    await rawPage("g5", "Lakshadweep", `${token}Law`);
+    expect(await db.settledGeography(`${token.toLowerCase()} law`)).toBe(`${token}Law`);
+    // A geography nobody uses yet is kept as typed (tidied).
+    expect(await db.settledGeography(`  ${token}Fresh   Place `)).toBe(`${token}Fresh Place`);
+  });
+});
+
 describe("the state / geography migration", () => {
   maybe()("merges spellings, tidies geography, leaves unknowns, and is idempotent", async () => {
     const padded = await rawPage("padded", "  gujarat  ", "gujarat");
@@ -148,12 +181,16 @@ describe("the state / geography migration", () => {
     // Campaign '' means "not tied to a state" and stays that way.
     expect(await valueOf("outreach_campaigns", "state", unscoped)).toBe("");
 
-    // Geography: a state name takes the state's spelling; a city is only tidied; no aliases.
+    /* Geography: a state name takes the state's spelling; a city is only
+       tidied. UPDATED: "Orissa" used to stay "Orissa" (no aliases for
+       geography); the product owner asked for abbreviations and old names to
+       merge too, so it is now "Odisha". The city-name aliases still do not
+       apply: New Delhi stays New Delhi. */
     expect(await valueOf("outreach_pages", "geography", padded)).toBe("Gujarat");
     expect(await valueOf("outreach_pages", "geography", lower)).toBe("Vadodara City");
     expect(await valueOf("outreach_pages", "geography", ladakh)).toBe("New Delhi");
     expect(await valueOf("outreach_pages", "geography", tamil)).toBe("Tamil Nadu");
-    expect(await valueOf("outreach_creators", "geography", odisha)).toBe("Orissa");
+    expect(await valueOf("outreach_creators", "geography", odisha)).toBe("Odisha");
 
     // Never guessed: "Guj" is left exactly as it is, and recorded once.
     expect(await valueOf("outreach_creators", "state", guj)).toBe("Guj");

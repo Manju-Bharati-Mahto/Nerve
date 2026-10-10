@@ -17,7 +17,9 @@
 import { randomBytes } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import { config } from "./config.js";
-import { canonicalGeography, canonicalState, isCanonicalState, tidyText } from "./outreach-states.js";
+import {
+  canonicalGeography, canonicalState, geographyKey, isCanonicalState, preferredGeographySpelling, tidyText,
+} from "./outreach-states.js";
 import { handleKey, normalisePageHandle, normalisePageLink } from "./outreach-page-edit.js";
 import type { OutreachScope } from "./outreach-scope.js";
 
@@ -751,6 +753,41 @@ export async function migrateOutreachStates(): Promise<StateMigrationSummary> {
         summary.changes.push({ table, column, from: value, to: plan.to, outcome: plan.outcome, rows: changed.length });
       }
     }
+
+    /* Second pass, geography only. The first pass settles each value on its
+       own ("MP" → "Madhya Pradesh", "kolkata" → "Kolkata"), but two spellings
+       of the same non-state geography — "Start up" and "Startup" — are only
+       recognisable as one by looking at both. Pages and creators are pooled,
+       so a geography is spelled the same in both lists, and every spelling in
+       a group is rewritten to the one preferredGeographySpelling picks. */
+    const { rows: spellings } = await client.query<{ value: string; n: string }>(
+      `SELECT geography AS value, COUNT(*)::text AS n FROM (
+         SELECT geography FROM outreach_pages UNION ALL SELECT geography FROM outreach_creators
+       ) g WHERE geography <> '' GROUP BY geography`);
+    const groups = new Map<string, Map<string, number>>();
+    for (const { value, n } of spellings) {
+      const key = geographyKey(value);
+      const group = groups.get(key) ?? new Map<string, number>();
+      group.set(value, Number(n));
+      groups.set(key, group);
+    }
+    for (const group of groups.values()) {
+      if (group.size < 2) continue;
+      const to = preferredGeographySpelling(group);
+      for (const from of group.keys()) {
+        if (from === to) continue;
+        for (const table of ["outreach_pages", "outreach_creators"] as const) {
+          const { rows: changed } = await client.query<{ id: string }>(
+            `UPDATE ${table} SET geography = $1 WHERE geography = $2 RETURNING id`, [to, from]);
+          if (!changed.length) continue;
+          await client.query(
+            `INSERT INTO outreach_state_migration_log (run_id, table_name, row_id, column_name, old_value, new_value, outcome)
+             SELECT $1, $2, unnest($3::text[]), 'geography', $4, $5, 'merged'`,
+            [runId, table, changed.map(r => r.id), from, to]);
+          summary.changes.push({ table, column: "geography", from, to, outcome: "merged", rows: changed.length });
+        }
+      }
+    }
   });
 
   if (summary.changes.length) {
@@ -880,6 +917,28 @@ function placeFields<T extends { state?: string; geography?: string }>(input: T)
   return out;
 }
 
+/**
+ * The spelling to store for a geography someone typed: if the same geography
+ * is already in use under another spelling ("Startup" when they typed "Start
+ * up"), that one. A duplicate entry cannot be created this way — the PDF's
+ * acceptance rule — and nobody has to know which spelling came first.
+ */
+export async function settledGeography(typed: string, db: { query: typeof pool.query } = pool): Promise<string> {
+  const text = canonicalGeography(typed);
+  if (!text) return text;
+  const key = geographyKey(text);
+  const { rows } = await db.query<{ value: string; n: string }>(
+    `SELECT geography AS value, COUNT(*)::text AS n FROM (
+       SELECT geography FROM outreach_pages UNION ALL SELECT geography FROM outreach_creators
+     ) g WHERE geography <> '' GROUP BY geography`);
+  const group = new Map<string, number>();
+  for (const { value, n } of rows) if (geographyKey(value) === key) group.set(value, Number(n));
+  if (!group.size) return text;
+  // The new row counts too, so a first spelling never loses to itself.
+  group.set(text, (group.get(text) ?? 0) + 1);
+  return preferredGeographySpelling(group);
+}
+
 /** The SQL test "this row's state is one the scope may see", or null for no filter. */
 function scopeStates(scope: OutreachScope | undefined): string[] | null {
   return scope && scope.kind === "states" ? scope.states : null;
@@ -917,6 +976,7 @@ export async function listPages(scope?: OutreachScope): Promise<OutreachPage[]> 
 
 export async function createPage(rawInput: CreatePageInput): Promise<OutreachPage> {
   const input = placeFields(rawInput);
+  input.geography = await settledGeography(input.geography);
   // Prefix Facebook page ids so an FB page can coexist with an IG page that
   // shares the same handle (the id is a slug of the handle).
   const platform = input.platform ?? "instagram";
@@ -1032,6 +1092,9 @@ export async function editPage(id: string, input: EditPageInput): Promise<Outrea
       const current = rows[0];
       if (!current) return null;
       const patch: EditPageInput = placeFields(input);
+      if (typeof patch.geography === "string" && patch.geography !== current.geography) {
+        patch.geography = await settledGeography(patch.geography, client);
+      }
 
       if (patch.platform !== undefined && patch.platform !== current.platform) {
         throw new OutreachValidationError("A page's platform can't be changed — add the page again on the other platform.");
@@ -1195,6 +1258,7 @@ export async function listCreators(scope?: OutreachScope): Promise<OutreachCreat
 
 export async function createCreator(rawInput: CreateCreatorInput): Promise<OutreachCreator> {
   const input = placeFields(rawInput);
+  input.geography = await settledGeography(input.geography);
   const handle = input.handle.trim();
   const dup = await pool.query(`SELECT handle FROM outreach_creators WHERE ${sameHandleSql} LIMIT 1`, [handle]);
   if (dup.rowCount) throw new OutreachDuplicateError(`@${dup.rows[0].handle} is already a creator.`);
@@ -1226,7 +1290,9 @@ export async function updateCreator(id: string, patch: Partial<CreateCreatorInpu
   const fields: string[] = [];
   const values: unknown[] = [];
   let i = 1;
-  for (const [k, v] of Object.entries(placeFields(patch))) {
+  const placed = placeFields(patch);
+  if (typeof placed.geography === "string") placed.geography = await settledGeography(placed.geography);
+  for (const [k, v] of Object.entries(placed)) {
     if (v === undefined || !CREATOR_COLUMNS.has(k)) continue;
     if (k === "content_types") {
       fields.push(`${k} = $${i++}::jsonb`);

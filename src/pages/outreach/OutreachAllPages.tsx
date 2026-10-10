@@ -15,6 +15,7 @@ import { AddPageModal } from './OutreachAnalytics'
 import EditPageModal from './EditPageModal'
 import { useAuth } from '@/hooks/useAuth'
 import AddLivePostsDialog from './AddLivePostsDialog'
+import { geographyKey, geographyOptions } from '@/lib/outreach-states'
 
 type SortKey = 'handle' | 'tier' | 'geography' | 'total' | 'consumed' | 'suggested' | 'status'
 type SortDir = 'asc' | 'desc'
@@ -55,7 +56,11 @@ export default function OutreachAllPages() {
   // Page currently open in the Edit page dialog.
   const [editingPage, setEditingPage] = useState<OutreachPage | null>(null)
 
-  const geographies = useMemo(() => Array.from(new Set(pages.map(p => p.geography))).sort(), [pages])
+  /* One entry per geography however it was typed ("Start up" / "Startup",
+     "MP" / "Madhya pradesh"), sorted without regard to case. The filter holds
+     the geography's KEY, so choosing it catches every spelling. */
+  const geographies = useMemo(() => geographyOptions(pages.map(p => p.geography)), [pages])
+  const geographyLabel = useMemo(() => new Map(geographies.map(g => [g.key, g.label])), [geographies])
 
   function toggleContentType(t: PageContentType) {
     setContentTypeFilter(prev => {
@@ -78,7 +83,7 @@ export default function OutreachAllPages() {
       if (page.platform !== platform) return false
       if (q && !`${page.handle} ${page.geography}`.toLowerCase().includes(q)) return false
       if (tier && page.followerTier !== tier) return false
-      if (geography && page.geography !== geography) return false
+      if (geography && geographyKey(page.geography) !== geography) return false
       if (invStatus !== 'all' && m.status !== invStatus) return false
       // Content-type filter: page must have AT LEAST ONE of the selected types.
       if (contentTypeFilter.size > 0 && !page.contentTypes.some(t => contentTypeFilter.has(t))) return false
@@ -90,7 +95,7 @@ export default function OutreachAllPages() {
       const av: number | string =
         k === 'handle'    ? a.page.handle :
         k === 'tier'      ? a.page.followerTier :
-        k === 'geography' ? a.page.geography :
+        k === 'geography' ? geographyKey(a.page.geography) :
         k === 'total'     ? a.total :
         k === 'consumed'  ? a.consumed :
         k === 'suggested' ? a.suggested :
@@ -98,7 +103,7 @@ export default function OutreachAllPages() {
       const bv: number | string =
         k === 'handle'    ? b.page.handle :
         k === 'tier'      ? b.page.followerTier :
-        k === 'geography' ? b.page.geography :
+        k === 'geography' ? geographyKey(b.page.geography) :
         k === 'total'     ? b.total :
         k === 'consumed'  ? b.consumed :
         k === 'suggested' ? b.suggested :
@@ -206,7 +211,7 @@ export default function OutreachAllPages() {
           </select>
           <select value={geography} onChange={e => setGeography(e.target.value)} className="hub-input py-1.5 text-xs w-36">
             <option value="">Any geography</option>
-            {geographies.map(g => <option key={g} value={g}>{g}</option>)}
+            {geographies.map(g => <option key={g.key} value={g.key}>{g.label}</option>)}
           </select>
           <select value={invStatus} onChange={e => setInvStatus(e.target.value as typeof invStatus)} className="hub-input py-1.5 text-xs w-36">
             <option value="all">Any status</option>
@@ -294,7 +299,7 @@ export default function OutreachAllPages() {
                 <td className="px-3 py-2.5">
                   <span className="hub-badge bg-orange-50 text-orange-700 text-[10px]">Tier {page.followerTier}</span>
                 </td>
-                <td className="px-3 py-2.5 text-xs text-foreground">{page.geography}</td>
+                <td className="px-3 py-2.5 text-xs text-foreground">{geographyLabel.get(geographyKey(page.geography)) ?? page.geography}</td>
                 <td className="px-3 py-2.5 text-right">
                   <span className="inline-flex items-center gap-1 text-xs font-mono tabular-nums text-foreground"
                     title={suggested === 0 && page.inventoryPosts > 0 ? 'No post slots left — top up this page’s inventory' : undefined}>

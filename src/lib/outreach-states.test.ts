@@ -7,6 +7,7 @@ import { normaliseState, outreachStates, sameState, stateKey as groupKey } from 
 import {
   OUTREACH_STATES, OUTREACH_STATE_NAMES, PAN_INDIA,
   canonicalGeography, canonicalState, isCanonicalState, stateKey,
+  geographyKey, geographyOptions, preferredGeographySpelling, sameGeography,
 } from './outreach-states'
 
 // PRD 6.4 — one master list and one matching rule, the same in the browser and on the server.
@@ -116,10 +117,78 @@ describe('canonicalGeography', () => {
     expect(canonicalGeography('')).toBe('')
   })
 
-  it('never applies the aliases — a city is not its state', () => {
+  /* UPDATED: this used to assert canonicalGeography('UP') === 'UP' — aliases
+     were never applied to geography. The product owner asked for "MP" and
+     "Madhya pradesh" to be one entry, so the unambiguous abbreviations and the
+     "Rajsthan" misspelling now apply to geography too. The two aliases that are
+     also city names still do not. */
+  it('applies the abbreviations and misspellings, but never turns a city into its state', () => {
+    expect(canonicalGeography('UP')).toBe('Uttar Pradesh')
+    expect(canonicalGeography('MP')).toBe('Madhya Pradesh')
+    expect(canonicalGeography('Rajsthan')).toBe('Rajasthan')
     expect(canonicalGeography('New Delhi')).toBe('New Delhi')
     expect(canonicalGeography('Pondicherry')).toBe('Pondicherry')
-    expect(canonicalGeography('UP')).toBe('UP')
+  })
+
+  it('capitalises a name typed all in lower case, and keeps any other casing', () => {
+    expect(canonicalGeography('kolkata')).toBe('Kolkata')
+    expect(canonicalGeography('north-east')).toBe('North-East')
+    expect(canonicalGeography('MBA')).toBe('MBA')
+    expect(canonicalGeography('Start up')).toBe('Start up')
+  })
+})
+
+describe('geography grouping — the All Pages "Any geography" list', () => {
+  /* Exactly the dropdown in the product owner's screenshot, in its order.
+     A plain .sort() put "MP" before "Madhya pradesh" and "kolkata" last. */
+  const SCREENSHOT = [
+    'Andhra Pradesh', 'Bengaluru', 'Bihar', 'Chhattisgarh', 'Delhi', 'Goa', 'Gujarat', 'Haryana',
+    'Hyderabad', 'Jammu', 'Karnataka', 'Kashmir', 'Kerala', 'Law', 'MP', 'Madhya pradesh',
+    'Maharashtra', 'Nagpur', 'North-East', 'Puducherry', 'Punjab', 'Rajsthan', 'Srinagar', 'Start up',
+    'Startup', 'Surat', 'Tamil Nadu', 'Tamilnadu', 'Telangana', 'Uttar Pradesh', 'Uttarakhand',
+    'Vadodara', 'kolkata',
+  ]
+
+  it('lists each geography once — the highlighted duplicates and MP / Madhya pradesh merged', () => {
+    const labels = geographyOptions(SCREENSHOT).map(o => o.label)
+    expect(labels).toHaveLength(30)
+    expect(new Set(labels.map(l => l.toLowerCase().replace(/\s/g, ''))).size).toBe(30)
+    expect(labels).toContain('Startup')
+    expect(labels).not.toContain('Start up')
+    expect(labels).toContain('Tamil Nadu')
+    expect(labels).not.toContain('Tamilnadu')
+    expect(labels).toContain('Madhya Pradesh')
+    expect(labels).not.toContain('MP')
+    expect(labels).toContain('Rajasthan')
+    expect(labels).toContain('Kolkata')
+  })
+
+  it('sorts without regard to case', () => {
+    const labels = geographyOptions(SCREENSHOT).map(o => o.label)
+    expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' })))
+    expect(labels.indexOf('Kolkata')).toBeLessThan(labels.indexOf('Law'))
+  })
+
+  it('keeps cities and regions that only look related apart', () => {
+    const labels = geographyOptions(SCREENSHOT).map(o => o.label)
+    for (const kept of ['Jammu', 'Kashmir', 'Srinagar', 'Delhi', 'North-East', 'Law', 'Surat', 'Vadodara']) {
+      expect(labels, kept).toContain(kept)
+    }
+  })
+
+  it('treats the PDF\'s four spellings as one state', () => {
+    const variants = ['Tamil Nadu', 'tamil nadu', 'TAMIL NADU', 'tamilnadu']
+    expect(new Set(variants.map(geographyKey)).size).toBe(1)
+    expect(geographyOptions(variants)).toEqual([{ key: geographyKey('Tamil Nadu'), label: 'Tamil Nadu' }])
+    expect(sameGeography('Start up', 'STARTUP')).toBe(true)
+    expect(sameGeography('Surat', 'Vadodara')).toBe(false)
+  })
+
+  it('picks one spelling deterministically: the state name, else the commonest, else the tidier', () => {
+    expect(preferredGeographySpelling({ Tamilnadu: 9, 'Tamil Nadu': 1 })).toBe('Tamil Nadu')
+    expect(preferredGeographySpelling({ 'Start up': 5, Startup: 2 })).toBe('Start up')
+    expect(preferredGeographySpelling({ 'Start up': 2, Startup: 2 })).toBe('Startup')
+    expect(preferredGeographySpelling({ startup: 1, Startup: 1 })).toBe('Startup')
   })
 })
 

@@ -104,21 +104,29 @@ export function stateKey(value: string | null | undefined): string {
  * under the wrong state, and with state-wise access, show them to the wrong
  * people.
  */
-const STATE_ALIASES: ReadonlyArray<readonly [alias: string, canonical: string]> = [
-  ["J&K", "Jammu and Kashmir"],
-  ["JK", "Jammu and Kashmir"],
-  ["UP", "Uttar Pradesh"],
-  ["MP", "Madhya Pradesh"],
-  ["WB", "West Bengal"],
-  ["Orissa", "Odisha"],
-  ["Pondicherry", "Puducherry"],
-  ["NCT of Delhi", "Delhi"],
-  ["New Delhi", "Delhi"],
-  ["Uttaranchal", "Uttarakhand"],
+const STATE_ALIASES: ReadonlyArray<readonly [alias: string, canonical: string, scope: "state" | "both"]> = [
+  ["J&K", "Jammu and Kashmir", "both"],
+  ["JK", "Jammu and Kashmir", "both"],
+  ["UP", "Uttar Pradesh", "both"],
+  ["MP", "Madhya Pradesh", "both"],
+  ["WB", "West Bengal", "both"],
+  ["Orissa", "Odisha", "both"],
+  ["Uttaranchal", "Uttarakhand", "both"],
+  ["NCT of Delhi", "Delhi", "both"],
+  /* Misspellings seen in the live ledger. "Rajsthan" sat in the All Pages
+     geography list as a state of its own. */
+  ["Rajsthan", "Rajasthan", "both"],
+  /* State only. As a GEOGRAPHY these are cities — New Delhi is a district of
+     Delhi, Pondicherry the town in Puducherry — and filing a page there under
+     the whole state would lose the detail somebody wrote down on purpose. */
+  ["Pondicherry", "Puducherry", "state"],
+  ["New Delhi", "Delhi", "state"],
 ];
 
 const CANONICAL_BY_KEY = new Map<string, string>(OUTREACH_STATE_NAMES.map(n => [stateKey(n), n]));
 const ALIAS_BY_KEY = new Map<string, string>(STATE_ALIASES.map(([alias, name]) => [stateKey(alias), name]));
+const GEOGRAPHY_ALIAS_BY_KEY = new Map<string, string>(
+  STATE_ALIASES.filter(([, , scope]) => scope === "both").map(([alias, name]) => [stateKey(alias), name]));
 
 /** Trimmed, with every run of whitespace collapsed to one space. */
 export function tidyText(value: string | null | undefined): string {
@@ -143,14 +151,93 @@ export function isCanonicalState(value: string): boolean {
 }
 
 /**
- * Geography is a city or region ("Vadodara", "North-East"), so it stays free
- * text. It is tidied, and when it IS a state name it takes that state's
- * spelling ("gujarat" → "Gujarat"), which is what merged the duplicate
- * sections. Only the canonical names match here, never the aliases: "New
- * Delhi" is a city and must not become "Delhi", "Pondicherry" must not become
- * "Puducherry".
+ * Geography is free text — a state, a city ("Surat", "Kolkata") or a grouping
+ * the team uses ("North-East", "Startup", "Law") — so there is no master list
+ * to snap it to. What makes two spellings the same geography is the rule the
+ * product owner set: capitals and spaces do not count. "Start up" and
+ * "Startup", "Tamil Nadu" and "tamilnadu" are one entry each.
+ *
+ * This function settles everything that can be settled from one value alone:
+ *   - a state or union territory name, or an unambiguous abbreviation or
+ *     misspelling of one ("MP", "Rajsthan"), takes the state's spelling;
+ *   - anything else is tidied, and written entirely in lower case it gets
+ *     capitals ("kolkata" → "Kolkata") — a name typed in a hurry, not a
+ *     spelling anybody chose. Mixed or upper case ("MBA", "North-East") is
+ *     kept as written.
+ * Choosing between two spellings of the SAME non-state geography ("Start up"
+ * vs "Startup") needs every spelling in use — see preferredGeographySpelling.
  */
 export function canonicalGeography(value: string | null | undefined): string {
   const text = tidyText(value);
-  return CANONICAL_BY_KEY.get(stateKey(text)) ?? text;
+  const key = stateKey(text);
+  const state = CANONICAL_BY_KEY.get(key) ?? GEOGRAPHY_ALIAS_BY_KEY.get(key);
+  if (state) return state;
+  if (text && text === text.toLowerCase() && /[a-z]/.test(text)) {
+    return text.replace(/(^|[\s\-/(])([a-z])/g, (_m, sep: string, ch: string) => sep + ch.toUpperCase());
+  }
+  return text;
+}
+
+/**
+ * The matching key for a geography: two values with the same key are the same
+ * geography. Built on canonicalGeography first, so "MP" and "Madhya pradesh"
+ * agree, then on stateKey, so case, spaces and punctuation do not count.
+ */
+export function geographyKey(value: string | null | undefined): string {
+  const canonical = canonicalGeography(value);
+  return stateKey(canonical) || canonical.toLowerCase();
+}
+
+/** Whether two geographies are the same place by the rule above. */
+export function sameGeography(a: string | null | undefined, b: string | null | undefined): boolean {
+  return geographyKey(a) === geographyKey(b);
+}
+
+/**
+ * Which spelling a group of same-key geographies is shown and stored as.
+ * Deterministic, so the server's migration, its write path and the browser's
+ * dropdown always land on the same one:
+ *   1. a state's canonical name, whenever the group is a state;
+ *   2. otherwise the spelling the most rows use;
+ *   3. on a tie, one that is not all lower case, then the one with fewer
+ *      spaces ("Startup" over "Start up"), then alphabetical.
+ * `counts` maps each spelling in use to how many rows carry it.
+ */
+export function preferredGeographySpelling(counts: ReadonlyMap<string, number> | Record<string, number>): string {
+  const entries = (counts instanceof Map ? [...counts.entries()] : Object.entries(counts))
+    .map(([spelling, n]) => [canonicalGeography(spelling), n] as const)
+    .filter(([spelling]) => spelling !== "");
+  if (!entries.length) return "";
+  const merged = new Map<string, number>();
+  for (const [spelling, n] of entries) merged.set(spelling, (merged.get(spelling) ?? 0) + n);
+  const state = [...merged.keys()].find(sp => CANONICAL_BY_KEY.get(stateKey(sp)) === sp);
+  if (state) return state;
+  const spaces = (x: string) => (x.match(/\s/g) ?? []).length;
+  return [...merged.entries()].sort(([a, na], [b, nb]) =>
+    nb - na
+    || Number(a === a.toLowerCase()) - Number(b === b.toLowerCase())
+    || spaces(a) - spaces(b)
+    || a.localeCompare(b),
+  )[0][0];
+}
+
+/**
+ * The geography choices for a dropdown or a grouping: one entry per geography
+ * however many spellings it has, labelled with its preferred spelling, sorted
+ * without regard to case (a plain sort put "kolkata" after "Vadodara" and "MP"
+ * before "Madhya pradesh").
+ */
+export function geographyOptions(values: Iterable<string | null | undefined>): Array<{ key: string; label: string }> {
+  const groups = new Map<string, Map<string, number>>();
+  for (const raw of values) {
+    const text = tidyText(raw);
+    if (!text) continue;
+    const key = geographyKey(text);
+    const group = groups.get(key) ?? new Map<string, number>();
+    group.set(text, (group.get(text) ?? 0) + 1);
+    groups.set(key, group);
+  }
+  return [...groups.entries()]
+    .map(([key, counts]) => ({ key, label: preferredGeographySpelling(counts) }))
+    .sort((a, b) => a.label.localeCompare(b.label, "en", { sensitivity: "base" }));
 }

@@ -15,6 +15,7 @@ import {
   type PageType, type FollowerTier, type PageContentType, type OutreachPage, type Post, type Platform,
 } from '@/lib/outreach-data'
 import StateSelect from './StateSelect'
+import { geographyKey, geographyOptions } from '@/lib/outreach-states'
 
 type Tab = 'pages' | 'campaigns' | 'posts' | 'trend' | 'inventory'
 
@@ -435,11 +436,13 @@ function InventoryHeatmap() {
   const [typeFilter, setTypeFilter] = useState<PageType | ''>('')
   const [topUp, setTopUp] = useState<OutreachPage | null>(null)
 
-  const geographies = useMemo(() => Array.from(new Set(pages.map(p => p.geography))).sort(), [pages])
+  // One section per geography however it was typed — the same rule as All Pages.
+  const geographies = useMemo(() => geographyOptions(pages.map(p => p.geography)), [pages])
+  const geographyLabel = useMemo(() => new Map(geographies.map(g => [g.key, g.label])), [geographies])
 
   const rows = useMemo(() => {
     return pages
-      .filter(p => (!geoFilter || p.geography === geoFilter) && (!typeFilter || p.type === typeFilter))
+      .filter(p => (!geoFilter || geographyKey(p.geography) === geoFilter) && (!typeFilter || p.type === typeFilter))
       .map(p => {
         const m = pageMetrics(p, posts)
         // Inventory here is POSTS + REELS only — stories are deliberately
@@ -462,14 +465,20 @@ function InventoryHeatmap() {
 
   // Group by geography for a tidy heatmap
   const grouped = useMemo(() => {
+    /* Grouped by KEY, not by the string typed: "Tamil Nadu" and "Tamilnadu"
+       were two sections of the heatmap. Each section is headed by the
+       geography's preferred spelling. */
     const byGeo = new Map<string, typeof rows>()
     for (const r of rows) {
-      const arr = byGeo.get(r.page.geography) ?? []
+      const key = geographyKey(r.page.geography)
+      const arr = byGeo.get(key) ?? []
       arr.push(r)
-      byGeo.set(r.page.geography, arr)
+      byGeo.set(key, arr)
     }
-    return Array.from(byGeo.entries()).sort(([a], [b]) => a.localeCompare(b))
-  }, [rows])
+    return Array.from(byGeo.entries())
+      .map(([key, gRows]) => [geographyLabel.get(key) ?? gRows[0].page.geography, gRows] as const)
+      .sort(([a], [b]) => a.localeCompare(b, 'en', { sensitivity: 'base' }))
+  }, [rows, geographyLabel])
 
   return (
     <div className="space-y-4">
@@ -477,7 +486,7 @@ function InventoryHeatmap() {
         <FilterIcon className="w-4 h-4 text-muted-foreground" />
         <select value={geoFilter} onChange={e => setGeoFilter(e.target.value)} className="hub-input py-1.5 text-xs w-40">
           <option value="">All geographies</option>
-          {geographies.map(g => <option key={g} value={g}>{g}</option>)}
+          {geographies.map(g => <option key={g.key} value={g.key}>{g.label}</option>)}
         </select>
         <select value={typeFilter} onChange={e => setTypeFilter(e.target.value as PageType | '')} className="hub-input py-1.5 text-xs w-32">
           <option value="">Any type</option>
