@@ -202,6 +202,11 @@ const ALLOWED: Record<string, string> = {
      transaction's client as `db` (no `pool` default) and runs every statement
      on it, nextReference() included; the activity row is logged after release. */
   "server/brandops-queries.ts:insertDelivery": "receives the held client; opens no connection of its own",
+
+  /* Outreach — inTransaction() runs a callback on the pinned client between
+     BEGIN/COMMIT. The helper itself never uses `pool` while holding the client;
+     it delegates every statement to the callback through the same client. */
+  "server/outreach-db.ts:work": "transaction callback receives the held client",
 };
 
 describe("no handler holds a pooled connection while acquiring another", () => {
