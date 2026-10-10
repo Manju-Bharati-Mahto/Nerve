@@ -3,6 +3,7 @@ import {
   Megaphone, Plus, AlertCircle, Loader2, X, Pencil, Trash2,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
+import { useVideoTabEdit } from './workflow-roles'
 import {
   listCampaigns, createCampaign, updateCampaign, deleteCampaign, driveProblemOf,
   CAMPAIGN_STATUS_LABEL, type Campaign, type DriveErrorCode,
@@ -23,7 +24,8 @@ import DriveProblemNotice from './DriveProblemNotice'
  */
 export default function VideoCampaigns() {
   const { role } = useAuth()
-  const canManage = role === 'super_admin' || role === 'admin' || role === 'outreach_manager'
+  // Edit on Video Campaigns for a configured person; otherwise the roles the API always took.
+  const canManage = useVideoTabEdit('video_campaigns', role === 'super_admin' || role === 'admin' || role === 'outreach_manager')
 
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [loading, setLoading] = useState(true)

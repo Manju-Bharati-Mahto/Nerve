@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Share2, Lock, CheckCircle2, MinusCircle, Pencil, X } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
+import { useVideoTabEdit } from './workflow-roles'
 import {
   listSocialPages, updateSocialPage, loadFailureOf, type EditorVisiblePage, type LoadFailure,
 } from '@/lib/outreach-video-data'
@@ -17,7 +18,8 @@ import DriveProblemNotice from './DriveProblemNotice'
  */
 export default function VideoSocialPages() {
   const { role } = useAuth()
-  const canEdit = role === 'super_admin' || role === 'admin' || role === 'outreach_manager'
+  // Edit on Social Pages for a configured person; otherwise the roles the API always took.
+  const canEdit = useVideoTabEdit('social_pages', role === 'super_admin' || role === 'admin' || role === 'outreach_manager')
 
   const [pages, setPages] = useState<EditorVisiblePage[]>([])
   const [analyticsVisible, setAnalyticsVisible] = useState(false)

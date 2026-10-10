@@ -324,6 +324,10 @@ describe("state-scoped reads", () => {
       userIds.push(id);
     }
     const subject = { id: userId, role: "outreach_state_user", team: "outreach" };
+    // Until the manager gives them an influencer tab, they read no influencer data at all.
+    expect(await scopeMod.resolveOutreachScope(subject)).toBeNull();
+    await db.saveUserAccess(userId, { tabs: { analytics: "view" }, allStates: false, states: [] }, granter);
+    // Given a tab but no state: nothing, never everything.
     expect(await scopeMod.resolveOutreachScope(subject)).toEqual({ kind: "states", states: [] });
 
     await pool.query(

@@ -9,6 +9,7 @@ import {
 import { parseCampaignSheet } from '@/lib/outreach-import'
 import { canonicalState } from '@/lib/outreach-states'
 import AddLivePostsDialog from './AddLivePostsDialog'
+import { useCanEditTab } from '@/lib/outreach-access'
 import StateSelect from './StateSelect'
 import {
   MAX_BUDGET, toBudget, budgetProblem, isRealIsoDate,
@@ -24,6 +25,8 @@ const STATUS_CFG: Record<CampaignStatus, { label: string; cls: string }> = {
 
 export default function OutreachCampaigns() {
   const { campaigns, posts, pages, creators } = useOutreachData()
+  // View on Campaigns shows them; Edit creates, imports and deletes (the server decides the same).
+  const canEdit = useCanEditTab('campaigns')
   const navigate = useNavigate()
   const [view, setView] = useState<'cards' | 'table' | 'state'>('cards')
   const [search, setSearch] = useState('')
@@ -101,14 +104,18 @@ export default function OutreachCampaigns() {
               </button>
             ))}
           </div>
-          <button onClick={() => setImporting(true)}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border border-border hover:bg-accent transition-colors">
-            <Upload className="w-4 h-4" /> Import Excel
-          </button>
-          <button onClick={() => setCreating(true)}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-orange-600 text-white hover:opacity-90 transition-opacity">
-            <Plus className="w-4 h-4" /> New campaign
-          </button>
+          {canEdit && (
+            <>
+              <button onClick={() => setImporting(true)}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border border-border hover:bg-accent transition-colors">
+                <Upload className="w-4 h-4" /> Import Excel
+              </button>
+              <button onClick={() => setCreating(true)}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-orange-600 text-white hover:opacity-90 transition-opacity">
+                <Plus className="w-4 h-4" /> New campaign
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -274,11 +281,13 @@ export default function OutreachCampaigns() {
                   <td className="px-3 py-2.5"><span className={`hub-badge ${STATUS_CFG[c.status].cls}`}>{STATUS_CFG[c.status].label}</span></td>
                   <td className="px-3 py-2.5">
                     <div className="flex items-center gap-1">
-                      <button onClick={() => confirmDelete(c)}
-                        title="Delete campaign"
-                        className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      {canEdit && (
+                        <button onClick={() => confirmDelete(c)}
+                          title="Delete campaign"
+                          className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                       <ChevronRight className="w-4 h-4 text-muted-foreground" />
                     </div>
                   </td>

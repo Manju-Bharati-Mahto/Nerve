@@ -24,7 +24,6 @@ vi.mock('@/lib/outreach-data', async importOriginal => ({
 }))
 
 const { default: EditPageModal } = await import('./EditPageModal')
-const { canEditOutreach } = await import('@/lib/outreach-data')
 
 afterEach(() => {
   cleanup()
@@ -106,18 +105,5 @@ describe('EditPageModal', () => {
     fireEvent.click(screen.getByRole('button', { name: /Use @fix_page’s address/ }))
     fireEvent.click(save())
     await waitFor(() => expect(mockUpdatePage).toHaveBeenCalledWith('fix-page', { pageLink: 'https://www.instagram.com/fix_page/' }))
-  })
-})
-
-describe('canEditOutreach — who sees Edit page', () => {
-  it('is the manager, super admin and outreach publisher, never a State User', () => {
-    expect(canEditOutreach('super_admin', null)).toBe(true)
-    expect(canEditOutreach('outreach_manager', 'outreach')).toBe(true)
-    expect(canEditOutreach('outreach_publisher', 'outreach')).toBe(true)
-    expect(canEditOutreach('outreach_publisher', 'branding')).toBe(false)
-    expect(canEditOutreach('outreach_state_user', 'outreach')).toBe(false)
-    expect(canEditOutreach('outreach_editor', 'outreach')).toBe(false)
-    expect(canEditOutreach('admin', 'outreach')).toBe(false)
-    expect(canEditOutreach(null, null)).toBe(false)
   })
 })

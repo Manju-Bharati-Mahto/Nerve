@@ -584,7 +584,7 @@ export async function bootstrapOutreach() {
   try {
     await bootstrapOutreachStateAccess();
   } catch (err) {
-    console.error("Outreach: could not create outreach_user_states — State Users will be refused until it exists:", err);
+    console.error("Outreach: could not create the outreach access tables — configured people will be refused until they exist:", err);
   }
   try {
     await migrateOutreachStates();
@@ -615,6 +615,136 @@ async function bootstrapOutreachStateAccess() {
     )
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS outreach_user_states_state_idx ON outreach_user_states(state)`);
+
+  /* Account Tabs requirements §1 and §2. A row here means an admin has
+     CONFIGURED this person: from then on they get exactly the tabs in
+     outreach_user_tabs and the states in outreach_user_states (or every state,
+     when all_states). No row means not configured yet — they keep what their
+     role gave them before, so deploying this changes nobody's access.
+     Outreach-owned tables, not columns on the shared users table. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS outreach_user_access (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      all_states BOOLEAN NOT NULL DEFAULT FALSE,
+      configured_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      configured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  /* Who changed whose outreach access, and when — and who removed whom.
+     Ids are kept as plain text, not foreign keys: an audit row must outlive
+     the people it names. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS outreach_user_audit (
+      id BIGSERIAL PRIMARY KEY,
+      occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      actor_id TEXT,
+      actor_email TEXT,
+      action TEXT NOT NULL,
+      target_user_id TEXT NOT NULL,
+      target_email TEXT,
+      detail JSONB NOT NULL DEFAULT '{}'::jsonb
+    )
+  `);
+  /* Disable (Users tab, PRD §4.5) keeps a person's password here while they
+     are disabled, and puts a hash nothing matches in its place, so sign-in
+     refuses them. Nerve's own status check does not stop a sign-in
+     (getUserById does not return status), and that check is shared with
+     every department, so outreach does not rely on it. Enable puts the
+     password back — unless it was reset in the meantime. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS outreach_disabled_logins (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      password_hash TEXT NOT NULL,
+      disabled_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS outreach_user_tabs (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      tab TEXT NOT NULL,
+      level TEXT NOT NULL CHECK (level IN ('view', 'edit')),
+      PRIMARY KEY (user_id, tab)
+    )
+  `);
+}
+
+export interface OutreachAccessRow {
+  allStates: boolean;
+  tabs: Record<string, "view" | "edit">;
+  configuredAt: string;
+  configuredBy: string | null;
+}
+
+/** A configured person's saved access, or null when nobody has configured them. Read per request. */
+export async function getUserAccess(userId: string): Promise<OutreachAccessRow | null> {
+  const { rows } = await pool.query<{ all_states: boolean; configured_at: string; configured_by: string | null }>(
+    `SELECT all_states, configured_at, configured_by FROM outreach_user_access WHERE user_id = $1`, [userId]);
+  if (!rows[0]) return null;
+  const tabs = await pool.query<{ tab: string; level: "view" | "edit" }>(
+    `SELECT tab, level FROM outreach_user_tabs WHERE user_id = $1`, [userId]);
+  return {
+    allStates: rows[0].all_states,
+    tabs: Object.fromEntries(tabs.rows.map(r => [r.tab, r.level])),
+    configuredAt: new Date(rows[0].configured_at).toISOString(),
+    configuredBy: rows[0].configured_by,
+  };
+}
+
+/**
+ * Saves one person's tabs and states in a single transaction, so nobody ever
+ * reads half of a change — the old tabs with the new states. The single-tab
+ * grants that came before (outreach:* capabilities) are removed: once a
+ * person is configured the grid is the whole answer, and a leftover grant
+ * would only be something to misread later.
+ */
+export async function saveUserAccess(
+  userId: string,
+  access: { tabs: Record<string, "view" | "edit">; allStates: boolean; states: string[] },
+  actorId: string | null,
+): Promise<void> {
+  await inTransaction(async client => {
+    await client.query(
+      `INSERT INTO outreach_user_access (user_id, all_states, configured_by, configured_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (user_id) DO UPDATE SET all_states = EXCLUDED.all_states,
+         configured_by = EXCLUDED.configured_by, configured_at = NOW()`,
+      [userId, access.allStates, actorId]);
+    await client.query(`DELETE FROM outreach_user_tabs WHERE user_id = $1`, [userId]);
+    for (const [tab, level] of Object.entries(access.tabs)) {
+      await client.query(`INSERT INTO outreach_user_tabs (user_id, tab, level) VALUES ($1, $2, $3)`, [userId, tab, level]);
+    }
+    await client.query(`DELETE FROM outreach_user_states WHERE user_id = $1`, [userId]);
+    for (const state of access.allStates ? [] : access.states) {
+      await client.query(
+        `INSERT INTO outreach_user_states (user_id, state, granted_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [userId, state, actorId]);
+    }
+    await client.query(`DELETE FROM user_capabilities WHERE user_id = $1 AND capability_key LIKE 'outreach:%'`, [userId]);
+  });
+}
+
+/**
+ * Changes only which states a person sees — the State window (§2). Saving it
+ * for somebody not yet configured configures them, with the tabs they
+ * effectively had, so choosing their states never takes a tab away.
+ */
+export async function saveUserStates(
+  userId: string,
+  states: { allStates: boolean; states: string[] },
+  fallbackTabs: Record<string, "view" | "edit">,
+  actorId: string | null,
+): Promise<void> {
+  const current = await getUserAccess(userId);
+  await saveUserAccess(userId, { tabs: current?.tabs ?? fallbackTabs, ...states }, actorId);
+}
+
+/** Every configured person's states, for the State window and the Users table. */
+export async function listAllUserStates(): Promise<Array<{ userId: string; allStates: boolean; states: string[] }>> {
+  const { rows } = await pool.query<{ user_id: string; all_states: boolean; states: string[] | null }>(
+    `SELECT a.user_id, a.all_states,
+            ARRAY(SELECT s.state FROM outreach_user_states s WHERE s.user_id = a.user_id ORDER BY s.state) AS states
+       FROM outreach_user_access a`);
+  return rows.map(r => ({ userId: r.user_id, allStates: r.all_states, states: r.states ?? [] }));
 }
 
 /** The canonical states assigned to one user, sorted. Read per request — never cached. */
@@ -1405,6 +1535,13 @@ export async function getCampaign(id: string): Promise<OutreachCampaign | null> 
     [id],
   );
   return rows[0] ? mapCampaignRow(rows[0]) : null;
+}
+
+/** Which page or creator a post belongs to — enough to decide whose state it is. */
+export async function getPostOwner(id: string): Promise<{ page_id: string | null; creator_id: string | null } | null> {
+  const { rows } = await pool.query<{ page_id: string | null; creator_id: string | null }>(
+    `SELECT page_id, creator_id FROM outreach_posts WHERE id = $1`, [id]);
+  return rows[0] ?? null;
 }
 
 export async function getPage(id: string): Promise<OutreachPage | null> {

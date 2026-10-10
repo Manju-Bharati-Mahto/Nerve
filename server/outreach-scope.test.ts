@@ -1,61 +1,72 @@
 // @vitest-environment node
-/* PRD 6.1 / 6.3 — who reads which outreach data, and who may change it. */
+/* Account Tabs & State-wise Analytics requirements — who reads which outreach
+   data, and who may change it. The database-backed paths (a configured
+   person's saved tabs and states) are covered by
+   outreach-state-scope.integration.test.ts. */
 import { describe, expect, it } from "vitest";
 import {
+  hasTab,
+  isOutreachAdmin,
   mayCreateOutreachStateUser,
-  mayEditOutreach,
-  outreachAccessKind,
+  readsInfluencer,
+  resolveOutreachAccess,
   resolveOutreachScope,
   stateInScope,
+  type OutreachAccess,
 } from "./outreach-scope.js";
+import { OUTREACH_TABS } from "./outreach-tabs.js";
 
-describe("outreachAccessKind", () => {
-  it("gives super_admin, the outreach manager and the outreach publisher everything", () => {
-    expect(outreachAccessKind({ role: "super_admin", team: null })).toBe("all");
-    expect(outreachAccessKind({ role: "outreach_manager", team: "outreach" })).toBe("all");
-    // The product owner's "Publisher (Admin)": a full influencer admin.
-    expect(outreachAccessKind({ role: "outreach_publisher", team: "outreach" })).toBe("all");
-  });
+const configured = (tabs: OutreachAccess["tabs"]): OutreachAccess =>
+  ({ admin: false, configured: true, tabs, scope: { kind: "states", states: ["Gujarat"] } });
 
-  it("scopes a State User to their states", () => {
-    expect(outreachAccessKind({ role: "outreach_state_user", team: "outreach" })).toBe("states");
-  });
-
-  it("refuses everyone else — the outreach Admin and every other department included", () => {
-    // The outreach Admin is the video workflow's Admin only (not widened).
-    expect(outreachAccessKind({ role: "admin", team: "outreach" })).toBeNull();
-    expect(outreachAccessKind({ role: "outreach_editor", team: "outreach" })).toBeNull();
-    for (const team of ["branding", "design", "media", "content"]) {
-      expect(outreachAccessKind({ role: "admin", team }), team).toBeNull();
-      expect(outreachAccessKind({ role: "user", team }), team).toBeNull();
+describe("isOutreachAdmin", () => {
+  it("is the super admin and the outreach manager, nobody else", () => {
+    expect(isOutreachAdmin({ role: "super_admin" })).toBe(true);
+    expect(isOutreachAdmin({ role: "outreach_manager" })).toBe(true);
+    // The video workflow's Admin and the Publisher no longer administer outreach.
+    for (const role of ["admin", "outreach_publisher", "outreach_editor", "outreach_state_user", "user"]) {
+      expect(isOutreachAdmin({ role }), role).toBe(false);
     }
-    expect(outreachAccessKind(null)).toBeNull();
-    expect(outreachAccessKind(undefined)).toBeNull();
-  });
-
-  it("requires team outreach for the publisher and the State User", () => {
-    // Nothing in the users table stops an outreach_* role sitting on another team.
-    expect(outreachAccessKind({ role: "outreach_publisher", team: "branding" })).toBeNull();
-    expect(outreachAccessKind({ role: "outreach_state_user", team: "design" })).toBeNull();
+    expect(isOutreachAdmin(null)).toBe(false);
   });
 });
 
-describe("mayEditOutreach", () => {
-  it("lets only full-access people write", () => {
-    expect(mayEditOutreach({ role: "super_admin", team: null })).toBe(true);
-    expect(mayEditOutreach({ role: "outreach_manager", team: "outreach" })).toBe(true);
-    expect(mayEditOutreach({ role: "outreach_publisher", team: "outreach" })).toBe(true);
-    // State Users are strictly read-only.
-    expect(mayEditOutreach({ role: "outreach_state_user", team: "outreach" })).toBe(false);
-    expect(mayEditOutreach({ role: "admin", team: "outreach" })).toBe(false);
-    expect(mayEditOutreach({ role: "admin", team: "branding" })).toBe(false);
+describe("resolveOutreachAccess — without the database", () => {
+  it("gives an admin every tab at Edit and every state", async () => {
+    const access = await resolveOutreachAccess({ id: "u", role: "outreach_manager", team: "outreach" });
+    expect(access?.admin).toBe(true);
+    expect(access?.scope).toEqual({ kind: "all" });
+    for (const t of OUTREACH_TABS) expect(access?.tabs[t.id], t.id).toBe("edit");
+  });
+
+  it("gives other departments nothing", async () => {
+    for (const team of ["branding", "design", "media", "content", null]) {
+      expect(await resolveOutreachAccess({ id: "u", role: "admin", team }), String(team)).toBeNull();
+      expect(await resolveOutreachScope({ id: "u", role: "admin", team }), String(team)).toBeNull();
+    }
+    expect(await resolveOutreachAccess(null)).toBeNull();
   });
 });
 
-describe("resolveOutreachScope", () => {
-  it("answers full access and refusal without reading the database", async () => {
-    expect(await resolveOutreachScope({ id: "u", role: "outreach_publisher", team: "outreach" })).toEqual({ kind: "all" });
-    expect(await resolveOutreachScope({ id: "u", role: "admin", team: "media" })).toBeNull();
+describe("hasTab — Off / View / Edit", () => {
+  it("Edit includes View, View is not Edit, Off is neither", () => {
+    const a = configured({ pages: "edit", analytics: "view" });
+    expect(hasTab(a, "pages", "edit")).toBe(true);
+    expect(hasTab(a, "pages", "view")).toBe(true);
+    expect(hasTab(a, "analytics", "view")).toBe(true);
+    expect(hasTab(a, "analytics", "edit")).toBe(false);
+    expect(hasTab(a, "campaigns", "view")).toBe(false);
+    expect(hasTab(a, ["campaigns", "pages"], "edit")).toBe(true);
+    expect(hasTab(null, "pages", "view")).toBe(false);
+  });
+});
+
+describe("readsInfluencer", () => {
+  it("needs an influencer tab, chosen by an admin", () => {
+    expect(readsInfluencer(configured({ analytics: "view" }))).toBe(true);
+    expect(readsInfluencer(configured({ queue: "edit" }))).toBe(false);
+    // Unconfigured: influencer data was the admins' alone, and still is.
+    expect(readsInfluencer({ ...configured({ analytics: "view" }), configured: false })).toBe(false);
   });
 });
 
@@ -71,21 +82,19 @@ describe("stateInScope", () => {
 });
 
 describe("mayCreateOutreachStateUser", () => {
-  it("lets super_admin and the outreach team's manager or admin create a State User on team outreach", () => {
+  it("lets the super admin and the outreach manager create a State User on team outreach", () => {
     expect(mayCreateOutreachStateUser({ role: "super_admin", team: null }, "outreach")).toBe(true);
     expect(mayCreateOutreachStateUser({ role: "outreach_manager", team: "outreach" }, "outreach")).toBe(true);
-    expect(mayCreateOutreachStateUser({ role: "admin", team: "outreach" }, "outreach")).toBe(true);
+    // The video workflow's Admin no longer adds users.
+    expect(mayCreateOutreachStateUser({ role: "admin", team: "outreach" }, "outreach")).toBe(false);
   });
 
   it("never lets another department's admin create one, on any team (review regression)", () => {
-    // canCreateManagedUser's admin branch checks only "own team"; with the
-    // role in that list a branding admin could mint one on team branding.
     for (const team of ["branding", "design", "media", "content"]) {
       expect(mayCreateOutreachStateUser({ role: "admin", team }, team), team).toBe(false);
       expect(mayCreateOutreachStateUser({ role: "admin", team }, "outreach"), team).toBe(false);
       expect(mayCreateOutreachStateUser({ role: "sub_admin", team }, team), team).toBe(false);
     }
-    // A manager whose own team is not outreach cannot either.
     expect(mayCreateOutreachStateUser({ role: "outreach_manager", team: "branding" }, "branding")).toBe(false);
     expect(mayCreateOutreachStateUser({ role: "outreach_manager", team: "branding" }, "outreach")).toBe(false);
   });
@@ -93,7 +102,6 @@ describe("mayCreateOutreachStateUser", () => {
   it("refuses the outreach production roles and an account off team outreach", () => {
     expect(mayCreateOutreachStateUser({ role: "outreach_editor", team: "outreach" }, "outreach")).toBe(false);
     expect(mayCreateOutreachStateUser({ role: "outreach_state_user", team: "outreach" }, "outreach")).toBe(false);
-    // On another team the account could never see anything — refuse even super_admin.
     expect(mayCreateOutreachStateUser({ role: "super_admin", team: null }, "branding")).toBe(false);
     expect(mayCreateOutreachStateUser({ role: "super_admin", team: null }, null)).toBe(false);
     expect(mayCreateOutreachStateUser(null, "outreach")).toBe(false);

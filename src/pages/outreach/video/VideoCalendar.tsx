@@ -10,6 +10,8 @@ import {
   type EventRecord, type EventCounts, type VideoRecord, type Campaign, type CalendarStatus, type LoadFailure,
 } from '@/lib/outreach-video-data'
 import DriveProblemNotice from './DriveProblemNotice'
+import { useAuth } from '@/hooks/useAuth'
+import { hasVideoRole, useVideoTabEdit } from './workflow-roles'
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
@@ -45,6 +47,9 @@ interface Entry {
 }
 
 export default function VideoCalendar() {
+  const { role } = useAuth()
+  // Creating events: Edit on Event Calendar, or a Manager / Admin — the API's rule.
+  const canCreate = useVideoTabEdit('event_calendar', hasVideoRole(role, ['manager', 'admin']))
   const [events, setEvents] = useState<EventRecord[]>([])
   const [videos, setVideos] = useState<VideoRecord[]>([])
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
@@ -179,7 +184,7 @@ export default function VideoCalendar() {
         </div>
         {/* Events are stored in Drive too, so with Drive down the form could
             only fail at the last step. */}
-        {!error?.code && (
+        {canCreate && !error?.code && (
           <button onClick={() => setCreating(today)}
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-orange-600 text-white hover:opacity-90">
             <Plus className="w-4 h-4" /> New event
@@ -249,8 +254,8 @@ export default function VideoCalendar() {
           </div>
           <div className="grid grid-cols-7 gap-px bg-border rounded-lg overflow-hidden">
             {cells.map((date, i) => (
-              <div key={i} className={`bg-card min-h-24 p-1.5 ${date ? 'cursor-pointer hover:bg-accent/40' : ''}`}
-                onClick={() => date && setCreating(date)}>
+              <div key={i} className={`bg-card min-h-24 p-1.5 ${date && canCreate ? 'cursor-pointer hover:bg-accent/40' : ''}`}
+                onClick={() => date && canCreate && setCreating(date)}>
                 {date && (
                   <>
                     <div className={`text-[11px] mb-1 ${date === today

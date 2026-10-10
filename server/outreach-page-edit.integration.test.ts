@@ -166,7 +166,8 @@ describe("editPage — the other fields", () => {
     const saved = await db.editPage(page.id, { inventory_posts: 0, inventory_stories: 0, state: "tamil nadu", geography: "  chennai  " });
     expect(saved?.inventory_posts).toBe(0);
     expect(saved?.state).toBe("Tamil Nadu");
-    expect(saved?.geography).toBe("chennai");
+    // Account Tabs §3: one spelling per geography — an all-lowercase one is title-cased.
+    expect(saved?.geography).toBe("Chennai");
   });
 
   maybe()("an empty edit changes nothing, not even updated_at", async () => {

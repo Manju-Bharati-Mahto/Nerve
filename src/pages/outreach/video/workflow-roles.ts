@@ -18,6 +18,8 @@
       a choice the API will refuse.
    ═══════════════════════════════════════════════════════════════════════════ */
 import type { AppRole } from '@/lib/constants'
+import { useAuth } from '@/hooks/useAuth'
+import { canUseTab, useOutreachAccess } from '@/lib/outreach-access'
 import type { VideoRole } from '@/lib/outreach-video-data'
 
 /**
@@ -43,12 +45,14 @@ export const ALL_VIDEO_ROLES: VideoRole[] = ['admin', 'manager', 'editor', 'publ
 /**
  * The roles this actor may create or assign.
  *
- * A Manager is capped below Admin. Anyone else who reaches the administration
- * tab at all is an Admin or super admin, so they get the full set.
+ * Only a super admin creates an Admin — the same rule as canCreateManagedUser
+ * on the server. Everyone else who administers outreach users is an outreach
+ * manager (Account Tabs requirements: the outreach admins are the super admin
+ * and the manager), capped below Admin.
  */
 export function grantableVideoRoles(actorNerveRole: AppRole | null): VideoRole[] {
-  if (actorNerveRole === 'outreach_manager') return MANAGER_GRANTABLE_ROLES
-  return ALL_VIDEO_ROLES
+  if (actorNerveRole === 'super_admin') return ALL_VIDEO_ROLES
+  return MANAGER_GRANTABLE_ROLES
 }
 
 /** Whether this actor may create or edit someone holding `target`. */
@@ -89,4 +93,33 @@ export function mayUploadVideos(nerveRole: AppRole | null): boolean {
 export function mayPublishVideos(nerveRole: AppRole | null): boolean {
   const role = videoRoleOf(nerveRole)
   return !!role && PUBLISH_ROLES.includes(role)
+}
+
+/**
+ * The same decision as the API's allowedHere(): someone the outreach manager
+ * has configured may act on a tab they hold at Edit; anyone else keeps the
+ * role rule they always had (`legacy`). Only hides what would be refused.
+ */
+export function useVideoTabEdit(tabs: string | string[], legacy: boolean): boolean {
+  const { access } = useOutreachAccess()
+  if (!access?.configured) return legacy
+  return (Array.isArray(tabs) ? tabs : [tabs]).some(t => canUseTab(access, t, 'edit'))
+}
+
+/** Whether this Nerve role reads as one of `roles` in the video workflow. */
+export function hasVideoRole(nerveRole: AppRole | null, roles: VideoRole[]): boolean {
+  const role = videoRoleOf(nerveRole)
+  return !!role && roles.includes(role)
+}
+
+/** Upload, caption, submit, revise — My Videos at Edit, or the Editor / Admin role. */
+export function useMayUploadVideos(): boolean {
+  const { role } = useAuth()
+  return useVideoTabEdit('my_videos', mayUploadVideos(role))
+}
+
+/** Schedule and mark published — Publishing Queue at Edit, or the Publisher / Admin role. */
+export function useMayPublishVideos(): boolean {
+  const { role } = useAuth()
+  return useVideoTabEdit('queue', mayPublishVideos(role))
 }

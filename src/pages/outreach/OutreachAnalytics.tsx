@@ -16,6 +16,7 @@ import {
 } from '@/lib/outreach-data'
 import StateSelect from './StateSelect'
 import { geographyKey, geographyOptions } from '@/lib/outreach-states'
+import { useCanEditTab, useIsOutreachAdmin } from '@/lib/outreach-access'
 
 type Tab = 'pages' | 'campaigns' | 'posts' | 'trend' | 'inventory'
 
@@ -90,6 +91,8 @@ function rangeMetrics(pageId: string, posts: Post[], from: string, to: string) {
 
 function PagesPerformance() {
   const { pages, posts, campaigns } = useOutreachData()
+  // Adding a page is the outreach manager's (the server's rule too).
+  const isAdmin = useIsOutreachAdmin()
   const [statusFilter, setStatusFilter] = useState<'all' | 'over-used' | 'on-track' | 'under-used' | 'idle'>('all')
   const [campaignFilter, setCampaignFilter] = useState<string>('')
   const [stateFilter, setStateFilter] = useState('')
@@ -171,9 +174,11 @@ function PagesPerformance() {
           <span className="text-[11px] text-muted-foreground">Showing {from || '…'} → {to || '…'}</span>
         )}
         <div className="ml-auto flex items-center gap-2">
-          <button onClick={() => setCreating(true)} className="text-xs px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:opacity-90 inline-flex items-center gap-1.5">
-            <Plus className="w-3.5 h-3.5" /> Add page
-          </button>
+          {isAdmin && (
+            <button onClick={() => setCreating(true)} className="text-xs px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:opacity-90 inline-flex items-center gap-1.5">
+              <Plus className="w-3.5 h-3.5" /> Add page
+            </button>
+          )}
           <button onClick={exportCSV} className="text-xs px-3 py-1.5 rounded-lg border border-border hover:bg-accent inline-flex items-center gap-1.5">
             <Download className="w-3.5 h-3.5" /> Export
           </button>
@@ -432,6 +437,8 @@ function CampaignTrend() {
 
 function InventoryHeatmap() {
   const { pages, posts } = useOutreachData()
+  // A top-up changes a page's inventory: Edit on All Pages, as the server decides.
+  const canEditPages = useCanEditTab('pages')
   const [geoFilter, setGeoFilter] = useState<string>('')
   const [typeFilter, setTypeFilter] = useState<PageType | ''>('')
   const [topUp, setTopUp] = useState<OutreachPage | null>(null)
@@ -493,10 +500,12 @@ function InventoryHeatmap() {
           {PAGE_TYPES.map(t => <option key={t} value={t}>{t === 'pu' ? 'PU' : 'State'}</option>)}
         </select>
         <span className="text-xs text-muted-foreground">{rows.length} pages</span>
-        <button onClick={() => setTopUp(pages[0] ?? null)} disabled={pages.length === 0}
-          className="text-xs px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:opacity-90 disabled:opacity-40 inline-flex items-center gap-1.5 ml-auto">
-          <Plus className="w-3.5 h-3.5" /> Add inventory
-        </button>
+        {canEditPages && (
+          <button onClick={() => setTopUp(pages[0] ?? null)} disabled={pages.length === 0}
+            className="text-xs px-3 py-1.5 rounded-lg bg-orange-600 text-white hover:opacity-90 disabled:opacity-40 inline-flex items-center gap-1.5 ml-auto">
+            <Plus className="w-3.5 h-3.5" /> Add inventory
+          </button>
+        )}
       </div>
 
       <div className="hub-card flex items-center gap-3 text-xs flex-wrap">

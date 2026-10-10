@@ -28,18 +28,34 @@ const hooks = vi.hoisted(() => ({
   getCampaign: null as null | (() => Promise<never>),
   /** The Nerve accounts, by email, that the role-change route reads and writes. */
   nerveAccounts: new Map<string, { id: string; role: string; team: string | null }>(),
+  /** Saved outreach tabs by user id: someone the manager configured (Account Tabs). Absent = not configured. */
+  savedTabs: new Map<string, Record<string, "view" | "edit">>(),
 }));
 vi.mock("../db.js", async () => {
   const real = await vi.importActual<typeof import("../db.js")>("../db.js");
   return {
     ...real,
     getUserByEmail: async (email: string) => hooks.nerveAccounts.get(email.toLowerCase()) ?? null,
+    listUserCapabilities: async () => [],
     updateUser: async (id: string, input: { role?: string; team?: string | null }) => {
       const account = [...hooks.nerveAccounts.values()].find(a => a.id === id);
       if (!account) return null;
       Object.assign(account, input);
       return account;
     },
+  };
+});
+/* Every handler asks what the person's outreach tabs are (allowedHere); no
+   database here, so the saved grid comes from hooks.savedTabs. */
+vi.mock("../outreach-db.js", async () => {
+  const real = await vi.importActual<typeof import("../outreach-db.js")>("../outreach-db.js");
+  return {
+    ...real,
+    getUserAccess: async (userId: string) => {
+      const tabs = hooks.savedTabs.get(userId);
+      return tabs ? { tabs, allStates: true, configuredAt: "2026-10-01T00:00:00Z", configuredBy: null } : null;
+    },
+    listUserStates: async () => [],
   };
 });
 vi.mock("./users.js", async () => {
@@ -421,6 +437,22 @@ describe("direct upload endpoints", () => {
   it("is for editors and admins only", async () => {
     actingRole = "outreach_publisher";
     expect((await post("/videos/upload-session", session)).status).toBe(403);
+  });
+
+  // Account Tabs requirements: a configured person goes by their tabs, not their role.
+  it("follows My Videos for someone the manager configured", async () => {
+    actingRole = "outreach_editor";
+    hooks.savedTabs.set("u-outreach_editor", { my_videos: "view" });
+    try {
+      const refused = await post("/videos/upload-session", session);
+      expect(refused.status).toBe(403);
+      expect((await refused.json()).message).toMatch(/view-only access to this tab/);
+      actingRole = "outreach_publisher";
+      hooks.savedTabs.set("u-outreach_publisher", { my_videos: "edit" });
+      expect((await post("/videos/upload-session", session)).status).not.toBe(403);
+    } finally {
+      hooks.savedTabs.clear();
+    }
   });
 });
 

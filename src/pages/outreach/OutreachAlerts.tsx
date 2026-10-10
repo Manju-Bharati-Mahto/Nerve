@@ -6,6 +6,7 @@ import {
   type Campaign,
 } from '@/lib/outreach-data'
 import AddLivePostsDialog from './AddLivePostsDialog'
+import { useCanEditPosts } from '@/lib/outreach-access'
 
 function fmtOverdue(hours: number): string {
   if (hours < 24) return `${hours}h overdue`
@@ -16,6 +17,7 @@ function fmtOverdue(hours: number): string {
 
 export default function OutreachAlerts() {
   const { campaigns, pages, creators, posts, dismissedAlertIds } = useOutreachData()
+  const canEditPosts = useCanEditPosts()
   const [stateFilter, setStateFilter] = useState('')
   const [resolveFor, setResolveFor] = useState<Campaign | null>(null)
 
@@ -94,7 +96,7 @@ export default function OutreachAlerts() {
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="hub-badge bg-rose-100 text-rose-700 whitespace-nowrap">{fmtOverdue(a.hoursOverdue)}</span>
-                  {campaign && a.subjectKind === 'page' && (
+                  {canEditPosts && campaign && a.subjectKind === 'page' && (
                     <button onClick={() => setResolveFor(campaign)}
                       title="Add the published post link to resolve this alert"
                       className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1">

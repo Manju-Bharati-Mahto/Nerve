@@ -545,16 +545,6 @@ export function pageOpenUrl(page: Pick<OutreachPage, 'handle' | 'platform'> & Pa
   return page.pageLink?.trim() || profileUrlForPage(page)
 }
 
-/**
- * Who may change influencer pages, campaigns and creators — the client's copy
- * of the server's mayEditOutreach, used only to hide buttons. The server still
- * refuses everyone else (a State User is read-only).
- */
-export function canEditOutreach(role: string | null | undefined, team: string | null | undefined): boolean {
-  if (role === 'super_admin' || role === 'outreach_manager') return true
-  return role === 'outreach_publisher' && team === 'outreach'
-}
-
 /** Public profile URL for a page on its own platform. */
 export function profileUrlForPage(page: Pick<OutreachPage, 'handle' | 'platform'>): string {
   return page.platform === 'facebook'

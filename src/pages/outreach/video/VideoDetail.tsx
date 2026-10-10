@@ -12,7 +12,7 @@ import {
 import { useAuth } from '@/hooks/useAuth'
 import DriveProblemNotice from './DriveProblemNotice'
 import LiveLinksDialog from './LiveLinksDialog'
-import { mayPublishVideos, mayUploadVideos } from './workflow-roles'
+import { useMayPublishVideos, useMayUploadVideos } from './workflow-roles'
 
 /**
  * §10 — "the video detail page should show the video player, client, title,
@@ -27,9 +27,8 @@ import { mayPublishVideos, mayUploadVideos } from './workflow-roles'
  */
 export default function VideoDetail() {
   const { videoId } = useParams<{ videoId: string }>()
-  const { role } = useAuth()
-  const canUpload = mayUploadVideos(role)
-  const canPublish = mayPublishVideos(role)
+  const canUpload = useMayUploadVideos()
+  const canPublish = useMayPublishVideos()
   const [video, setVideo] = useState<VideoRecord | null>(null)
   const [error, setError] = useState<LoadFailure | null>(null)
   const [loading, setLoading] = useState(true)

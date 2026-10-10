@@ -7,13 +7,13 @@ import {
 } from 'lucide-react'
 import {
   useOutreachData, pageMetrics, suggestedMonthlyUsage, removePage,
-  pageOpenUrl, isValidInstagramHandle, assignedPageIdSet, toCsv, canEditOutreach,
+  pageOpenUrl, isValidInstagramHandle, assignedPageIdSet, toCsv,
   PAGE_CONTENT_TYPES, FOLLOWER_TIERS, type FollowerTier, type PageContentType, type OutreachPage, type Platform,
 } from '@/lib/outreach-data'
 import ImportPagesDialog from './ImportPagesDialog'
 import { AddPageModal } from './OutreachAnalytics'
 import EditPageModal from './EditPageModal'
-import { useAuth } from '@/hooks/useAuth'
+import { useCanEditPosts, useCanEditTab, useIsOutreachAdmin } from '@/lib/outreach-access'
 import AddLivePostsDialog from './AddLivePostsDialog'
 import { geographyKey, geographyOptions } from '@/lib/outreach-states'
 
@@ -22,9 +22,13 @@ type SortDir = 'asc' | 'desc'
 
 export default function OutreachAllPages() {
   const { pages, posts, campaigns } = useOutreachData()
-  const { role, team } = useAuth()
-  // The server refuses everyone else; this only spares them a button that fails.
-  const canEdit = canEditOutreach(role, team)
+  /* What this person may change here, by their tabs (Account Tabs
+     requirements): Edit on All Pages edits a page; adding or deleting one is
+     the outreach manager's. The server refuses the rest whatever is shown;
+     this only spares them a button that fails. */
+  const canEdit = useCanEditTab('pages')
+  const canEditPosts = useCanEditPosts()
+  const isAdmin = useIsOutreachAdmin()
   const assigned = useMemo(() => assignedPageIdSet(campaigns), [campaigns])
   const [searchParams] = useSearchParams()
   // Pages to highlight, sourced from ?ids=ID1,ID2 (e.g. coming from the
@@ -158,12 +162,16 @@ export default function OutreachAllPages() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => setCreating(true)} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-orange-600 text-white hover:opacity-90">
-            <Plus className="w-4 h-4" /> Add page
-          </button>
-          <button onClick={() => setImporting(true)} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border border-border hover:bg-accent">
-            <Upload className="w-4 h-4" /> Import Excel
-          </button>
+          {isAdmin && (
+            <>
+              <button onClick={() => setCreating(true)} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-orange-600 text-white hover:opacity-90">
+                <Plus className="w-4 h-4" /> Add page
+              </button>
+              <button onClick={() => setImporting(true)} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border border-border hover:bg-accent">
+                <Upload className="w-4 h-4" /> Import Excel
+              </button>
+            </>
+          )}
           <button onClick={exportCSV} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border border-border hover:bg-accent">
             <Download className="w-4 h-4" /> Export CSV
           </button>
@@ -312,11 +320,13 @@ export default function OutreachAllPages() {
                 <td className="px-3 py-2.5"><StatusBadge status={m.status} /></td>
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-1">
-                    <button onClick={() => setLivePostsPageId(page.id)}
-                      title="Add live posts to this page"
-                      className="p-1 rounded-md text-muted-foreground hover:bg-orange-50 hover:text-orange-600">
-                      <LinkIcon className="w-3.5 h-3.5" />
-                    </button>
+                    {canEditPosts && (
+                      <button onClick={() => setLivePostsPageId(page.id)}
+                        title="Add live posts to this page"
+                        className="p-1 rounded-md text-muted-foreground hover:bg-orange-50 hover:text-orange-600">
+                        <LinkIcon className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     {canEdit && (
                       <button onClick={() => setEditingPage(page)}
                         title="Edit page — name, link, state, inventory" aria-label={`Edit @${page.handle}`}
@@ -324,11 +334,13 @@ export default function OutreachAllPages() {
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
                     )}
-                    <button onClick={() => confirmDelete(page)}
-                      title="Delete page"
-                      className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {isAdmin && (
+                      <button onClick={() => confirmDelete(page)}
+                        title="Delete page"
+                        className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>

@@ -16,6 +16,7 @@ import {
   computeOutreachAlerts, dismissAlert, dailyTrend, formatLocalDate,
 } from '@/lib/outreach-data'
 import { buildDashboardReport, exportDashboardReportPdf } from '@/lib/outreach-export'
+import { useIsOutreachAdmin } from '@/lib/outreach-access'
 
 type Range = '7d' | '30d' | 'mtd' | 'all'
 
@@ -30,6 +31,8 @@ function rangeStart(range: Range): Date | null {
 export default function OutreachDashboard() {
   const { profile } = useAuth()
   const { pages, creators, campaigns, posts, dismissedAlertIds } = useOutreachData()
+  // Sync and Refresh reach are paid Apify runs: the outreach manager's, as on the server.
+  const isAdmin = useIsOutreachAdmin()
   const [range, setRange] = useState<Range>('30d')
   const [stateFilter, setStateFilter] = useState('')
   const [syncing, setSyncing] = useState(false)
@@ -230,23 +233,27 @@ export default function OutreachDashboard() {
               </button>
             ))}
           </div>
-          <button onClick={onSyncNow} disabled={syncing || refreshing}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-orange-600 text-white hover:opacity-90 disabled:opacity-50">
-            <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
-            {syncing ? 'Syncing…' : 'Sync now'}
-          </button>
+          {isAdmin && (
+            <button onClick={onSyncNow} disabled={syncing || refreshing}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-orange-600 text-white hover:opacity-90 disabled:opacity-50">
+              <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+              {syncing ? 'Syncing…' : 'Sync now'}
+            </button>
+          )}
           <button onClick={onDownloadReport}
             title="Download a PDF summary of the last 30 days (respects the state filter)"
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-border hover:bg-accent">
             <Download className="w-3.5 h-3.5" />
             Download report
           </button>
-          <button onClick={onRefreshReach} disabled={refreshing || syncing}
-            title="Re-pull the latest views/reach for every tracked live post across all pages"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-border hover:bg-accent disabled:opacity-50">
-            <Gauge className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-            {refreshing ? 'Refreshing…' : 'Refresh reach'}
-          </button>
+          {isAdmin && (
+            <button onClick={onRefreshReach} disabled={refreshing || syncing}
+              title="Re-pull the latest views/reach for every tracked live post across all pages"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-border hover:bg-accent disabled:opacity-50">
+              <Gauge className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+              {refreshing ? 'Refreshing…' : 'Refresh reach'}
+            </button>
+          )}
           <span className="text-[11px] text-muted-foreground">
             {syncErr
               ? <span className="text-rose-600">{syncErr}</span>

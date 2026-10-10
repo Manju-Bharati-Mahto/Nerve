@@ -40,11 +40,11 @@ describe("what an outreach manager may hand out", () => {
     }
   })
 
-  it("lets an admin and a super admin assign every role", () => {
-    for (const actor of ['admin', 'super_admin'] as const) {
-      expect([...grantableVideoRoles(actor)].sort()).toEqual([...ALL_VIDEO_ROLES].sort())
-      expect(mayAssignVideoRole(actor, 'admin')).toBe(true)
-    }
+  it("lets only a super admin assign every role, Admin included", () => {
+    expect([...grantableVideoRoles('super_admin')].sort()).toEqual([...ALL_VIDEO_ROLES].sort())
+    expect(mayAssignVideoRole('super_admin', 'admin')).toBe(true)
+    // The video workflow's Admin no longer administers users (Account Tabs requirements).
+    expect(mayAssignVideoRole('admin', 'admin')).toBe(false)
   })
 })
 
@@ -100,31 +100,43 @@ describe("the workflow role a new account will actually sign in as", () => {
    ═══════════════════════════════════════════════════════════════════════════ */
 const ROUTES = readFileSync('server/outreach-video/routes.ts', 'utf8')
 
-/** The roles requireRole admits on `METHOD path`, read from the handler. */
-function rolesFor(method: string, path: string): string[] {
+/**
+ * What the API admits on `METHOD path`, read from the handler's allowedHere():
+ * the tabs a configured person needs at Edit, and the roles everyone else needs.
+ */
+function ruleFor(method: string, path: string): { tabs: string[]; level: string; roles: string[] } {
   const at = ROUTES.indexOf(`app.${method}(\`\${P}${path}\``)
   expect(at, `no ${method.toUpperCase()} ${path} in routes.ts`).toBeGreaterThan(-1)
-  const m = /requireRole\(res, user, \[([^\]]*)\]\)/.exec(ROUTES.slice(at, at + 800))
-  expect(m, `no requireRole in ${method.toUpperCase()} ${path}`).toBeTruthy()
-  return [...m![1].matchAll(/"([a-z]+)"/g)].map(x => x[1]).sort()
+  const m = /allowedHere\(res, user, \{ tabs: \[([^\]]*)\], level: "([a-z]+)", roles: \[([^\]]*)\]/.exec(ROUTES.slice(at, at + 800))
+  expect(m, `no allowedHere in ${method.toUpperCase()} ${path}`).toBeTruthy()
+  const words = (list: string) => [...list.matchAll(/"([a-z_]+)"/g)].map(x => x[1]).sort()
+  return { tabs: words(m![1]), level: m![2], roles: words(m![3]) }
 }
 
 describe('who the UI lets act on a video', () => {
-  it('offers upload, caption, submit and revise to exactly the roles the API accepts', () => {
+  it('offers upload, caption, submit and revise to exactly whom the API accepts', () => {
     for (const [method, path] of [
       ['post', '/videos'], ['post', '/videos/upload-session'], ['patch', '/videos/:id/caption'],
       ['post', '/videos/:id/submit'], ['post', '/videos/:id/revise'],
     ]) {
-      expect(rolesFor(method, path), `${method} ${path}`).toEqual([...UPLOAD_ROLES].sort())
+      // useMayUploadVideos: My Videos at Edit, else UPLOAD_ROLES.
+      expect(ruleFor(method, path), `${method} ${path}`)
+        .toEqual({ tabs: ['my_videos'], level: 'edit', roles: [...UPLOAD_ROLES].sort() })
     }
   })
 
-  it('offers schedule, publish and live links to exactly the roles the API accepts', () => {
-    for (const [method, path] of [
-      ['post', '/videos/:id/schedule'], ['post', '/videos/:id/publish'], ['patch', '/videos/:id/live-urls'],
-    ]) {
-      expect(rolesFor(method, path), `${method} ${path}`).toEqual([...PUBLISH_ROLES].sort())
+  it('offers schedule and publish to exactly whom the API accepts', () => {
+    for (const [method, path] of [['post', '/videos/:id/schedule'], ['post', '/videos/:id/publish']]) {
+      // useMayPublishVideos: Publishing Queue at Edit, else PUBLISH_ROLES.
+      expect(ruleFor(method, path), `${method} ${path}`)
+        .toEqual({ tabs: ['queue'], level: 'edit', roles: [...PUBLISH_ROLES].sort() })
     }
+  })
+
+  it('offers live links to exactly whom the API accepts', () => {
+    // VideoPublished: Published or Publishing Queue at Edit, else PUBLISH_ROLES.
+    expect(ruleFor('patch', '/videos/:id/live-urls'))
+      .toEqual({ tabs: ['published', 'queue'], level: 'edit', roles: [...PUBLISH_ROLES].sort() })
   })
 
   it('reads every Nerve role as the server does', () => {

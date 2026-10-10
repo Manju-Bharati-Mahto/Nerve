@@ -142,7 +142,14 @@ export async function listActiveEditors(): Promise<VideoUser[]> {
 export async function findUserByEmail(email: string): Promise<VideoUser | null> {
   const doc = await readUsers();
   const target = email.trim().toLowerCase();
-  return doc.users.find(u => u.email.trim().toLowerCase() === target) ?? null;
+  const matches = doc.users.filter(u => u.email.trim().toLowerCase() === target);
+  /* A person removed and later re-added with the same email has two records:
+     the old one tombstoned (it keeps their history attributed) and the new,
+     live one. The first match used to win, which was the tombstone — so the
+     re-added person was told "This account no longer has access" on every
+     request. The live record wins; a tombstone answers only when it is all
+     there is. */
+  return matches.find(u => !u.deletedAt) ?? matches[matches.length - 1] ?? null;
 }
 
 export async function findUserById(id: string): Promise<VideoUser | null> {

@@ -11,6 +11,7 @@ import {
   type PageType, type FollowerTier, type PageContentType, type OutreachCreator,
 } from '@/lib/outreach-data'
 import StateSelect from './StateSelect'
+import { useIsOutreachAdmin } from '@/lib/outreach-access'
 import { geographyKey, geographyOptions } from '@/lib/outreach-states'
 
 type SortKey = 'handle' | 'geography' | 'state' | 'tier' | 'followers' | 'inventory'
@@ -23,6 +24,8 @@ const TABS: { id: PageType; label: string }[] = [
 
 export default function OutreachCreators() {
   const { creators } = useOutreachData()
+  // Adding and deleting a creator is the outreach manager's, as on the server.
+  const isAdmin = useIsOutreachAdmin()
   const navigate = useNavigate()
 
   const [tab, setTab] = useState<PageType>('state')
@@ -99,10 +102,12 @@ export default function OutreachCreators() {
             <p className="text-sm text-muted-foreground">Directory of individual creators, split as State-level and PU-owned. Kept separate from the Pages ledger.</p>
           </div>
         </div>
-        <button onClick={() => setAdding(true)}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-orange-600 text-white hover:opacity-90">
-          <Plus className="w-4 h-4" /> Add creator
-        </button>
+        {isAdmin && (
+          <button onClick={() => setAdding(true)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-orange-600 text-white hover:opacity-90">
+            <Plus className="w-4 h-4" /> Add creator
+          </button>
+        )}
       </div>
 
       {/* Tabs */}
@@ -193,11 +198,13 @@ export default function OutreachCreators() {
                 <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground">{c.inventoryPosts}/{c.inventoryStories}</td>
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-1">
-                    <button onClick={() => confirmDelete(c)}
-                      title="Delete creator"
-                      className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {isAdmin && (
+                      <button onClick={() => confirmDelete(c)}
+                        title="Delete creator"
+                        className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     <Link to={`/outreach/creators/${c.id}`} title="Open creator dashboard"
                       className="p-1 rounded-md text-muted-foreground hover:bg-accent">
                       <ChevronRight className="w-4 h-4" />

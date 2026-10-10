@@ -16,7 +16,7 @@ import { DirectUploadBlockedError, uploadToDrive } from '@/lib/drive-upload'
 import { HttpError } from '@/lib/http'
 import { useAuth } from '@/hooks/useAuth'
 import DriveProblemNotice from './DriveProblemNotice'
-import { mayUploadVideos } from './workflow-roles'
+import { useMayUploadVideos } from './workflow-roles'
 
 /**
  * §8 — the editor's own work. KPI cards for Total / Draft / Submitted /
@@ -45,8 +45,7 @@ export default function VideoMyVideos() {
      or start a revision (the API refuses everyone else). Offering those to
      a Manager meant filling in the whole upload form to be told "Your role
      cannot perform that action." */
-  const { role } = useAuth()
-  const canUpload = mayUploadVideos(role)
+  const canUpload = useMayUploadVideos()
   const [videos, setVideos] = useState<VideoRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<{ message: string; code: DriveErrorCode | null } | null>(null)

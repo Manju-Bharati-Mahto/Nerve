@@ -9,7 +9,7 @@ import {
 } from '@/lib/outreach-video-data'
 import { useAuth } from '@/hooks/useAuth'
 import DriveProblemNotice from './DriveProblemNotice'
-import { mayPublishVideos } from './workflow-roles'
+import { useMayPublishVideos } from './workflow-roles'
 
 /**
  * §4/§11 — the Publisher's queue: approved videos, scheduled or not. (Before
@@ -29,8 +29,7 @@ import { mayPublishVideos } from './workflow-roles'
  * "Your role cannot perform that action."
  */
 export default function VideoQueue() {
-  const { role } = useAuth()
-  const canPublish = mayPublishVideos(role)
+  const canPublish = useMayPublishVideos()
   const [videos, setVideos] = useState<VideoRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<LoadFailure | null>(null)
