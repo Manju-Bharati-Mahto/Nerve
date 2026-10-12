@@ -23,6 +23,12 @@
 --             → LEFT ALONE and listed. A lead decides who executes it; the
 --               next reassignment in the app retires the row by itself.
 --
+-- ONLY the old drawer's rows are considered, identified exactly: the drawer
+-- audited each one as `deliverable.assigned` with {kind:'crew', assignment_id}.
+-- Assign work also links rows to deliverables — that is how a deliverable gets
+-- a team — and those are never touched here; retiring them would take people
+-- off work a lead gave them.
+--
 -- SMC coverage rows (is_smc = true) are never touched. Idempotent.
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -42,6 +48,10 @@ SELECT a.id AS assignment_id, a.deliverable_id, d.project_id, d.title,
   JOIN mo_deliverables d ON d.id = a.deliverable_id AND d.deleted_at IS NULL
   LEFT JOIN mo_assignment_users au ON au.assignment_id = a.id
  WHERE NOT COALESCE(a.is_smc, false) AND a.status <> 'cancelled'
+   AND EXISTS (SELECT 1 FROM mo_audit_logs l
+                WHERE l.action = 'deliverable.assigned'
+                  AND l.after->>'kind' = 'crew'
+                  AND l.after->>'assignment_id' = a.id::text)
  GROUP BY a.id, a.deliverable_id, d.project_id, d.title, d.owner_id;
 
 \echo '── Preview ───────────────────────────────────────────────────────────────'

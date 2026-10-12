@@ -3782,7 +3782,8 @@ function visibleProjects(){
   /* #6: employees see only their projects — owned, crewed on, or holding one of
      its deliverables (the context they need to do that deliverable). */
   if(isEmp()){
-    const mine=new Set(DB.deliverables.filter(d=>d.owner_id===S.me&&!d.deleted_at).map(d=>d.project_id));
+    const ids=teamDelivIds(S.me);
+    const mine=new Set(DB.deliverables.filter(d=>ids.has(d.id)).map(d=>d.project_id));
     return all.filter(p=>isOnProject(p.id)||p.owner_id===S.me||mine.has(p.id));
   }
   return all;                                    /* §16 note (1): production history is departmental knowledge */
@@ -6030,8 +6031,9 @@ function quickAddItems(){
   const m=shortcutModel();
   const extra=[
     {label:'Request Leave',   icon:'umbrella', mod:'leave',    fn:()=>openLeaveRequest()},
-    {label:'New Deliverable', icon:'file', mod:'pipeline', fn:()=>openNewDeliverable()},
-    {label:'Assign Work',     icon:'users', mod:'projects', cap:'project.assign', fn:()=>openAssignWork()},
+    /* Deliverables are created by assigning the work that produces them, so
+       there is one entry here, offered to whoever runs at least one project. */
+    ...(canOwnProjects().length?[{label:'Assign Work', icon:'users', mod:'projects', fn:()=>openAssignWork()}]:[]),
     {label:'New Board Card',  icon:'board', mod:'boards',   cap:'boards.manage',  fn:()=>openNewCard()}
   ].filter(a=>actAllowed(a.mod,a.cap));
   const primary=m.actions.map(a=>({label:a.l,icon:a.icon,hint:a.k.toUpperCase(),fn:a.fn}));
@@ -6217,7 +6219,7 @@ function pendingVersionReviews(){
     return {v,d,age:D.diff(TODAY,v.submitted_at.slice(0,10))};}).filter(Boolean)
     /* The reviews that are MINE to give: projects I lead (or all, as Admin) —
        never another team's, and never my own deliverable or version. */
-    .filter(x=>canReviewDeliverables(proj(x.d.project_id))&&x.d.owner_id!==S.me&&x.v.submitted_by!==S.me)
+    .filter(x=>canReviewDeliverables(proj(x.d.project_id))&&!onDelivTeam(x.d)&&x.v.submitted_by!==S.me)
     .sort((a,b)=>b.age-a.age);
 }
 function flaggedReports(){return visibleReports().filter(r=>r.status==='flagged')
@@ -8398,8 +8400,9 @@ function viewDashboard(){
   const W=S.widgets;
   const shoots=todayShoots().filter(x=>isEmp()?DB.shoot_crew.some(c=>c.shoot_id===x.id&&c.user_id===S.me):true);
   const pend=pendingReportsToday();
-  const dueWeek=deliverablesDue(TODAY,D.add(TODAY,7)).filter(d=>isEmp()?d.owner_id===S.me:true);
-  const overdue=overdueDeliverables().filter(d=>isEmp()?d.owner_id===S.me:true);
+  const myIds=isEmp()?teamDelivIds(S.me):null;   // owned + team: the work they actually carry
+  const dueWeek=deliverablesDue(TODAY,D.add(TODAY,7)).filter(d=>isEmp()?myIds.has(d.id):true);
+  const overdue=overdueDeliverables().filter(d=>isEmp()?myIds.has(d.id):true);
   const active=visibleProjects().filter(p=>['planning','in_production','in_review','approved'].includes(p.status))
     .filter(p=>isEmp()?(isOnProject(p.id)||p.owner_id===S.me):true);
   const lastMonth=visibleProjects().filter(p=>p.start_date<D.add(TODAY,-30)&&['planning','in_production','in_review'].includes(p.status)).length;
@@ -8826,7 +8829,7 @@ function upcomingWidget(){
   DB.shoots.filter(s=>s.shoot_date>=TODAY&&s.shoot_date<=to&&s.status!=='cancelled')
     .filter(s=>isEmp()?DB.shoot_crew.some(c=>c.shoot_id===s.id&&c.user_id===S.me):true)
     .forEach(s=>evts.push({d:s.shoot_date,ico:'video',cls:'b',t:s.title,s:s.call_time+' · '+s.location,k:'shoot',id:s.id}));
-  deliverablesDue(TODAY,to).filter(d=>isEmp()?d.owner_id===S.me:true)
+  deliverablesDue(TODAY,to).filter(d=>isEmp()?onDelivTeam(d):true)
     .forEach(d=>evts.push({d:d.due_date,ico:'file',cls:'a',t:d.title,s:'Due',k:'deliverable',id:d.id,uid:d.owner_id}));
   visibleProjects().filter(p=>p.end_date>=TODAY&&p.end_date<=to&&!['completed','archived','cancelled'].includes(p.status))
     .forEach(p=>evts.push({d:p.end_date,ico:'folder',cls:'g',t:p.name+' ends',s:PROJ_STATUS[p.status].l,k:'project',id:p.id}));
@@ -9180,9 +9183,39 @@ function isDeliveredOutput(d){
   const v=latestVersion(d.id);
   return !!v&&v.review_status==='approved';
 }
+/* WHO WORKS ON A DELIVERABLE — mirrors deliverableTeamIds() on the server.
+   The owner is accountable; Assign work puts everyone the lead picked on one
+   work row linked to the deliverable, and those people are its team. A linked
+   row counts only if it also names the owner: the old drawer wrote rows that
+   never did, and those must not hand anyone access. */
+function isTeamRow(a,d){
+  return !!d&&a.deliverable_id===d.id&&!a.is_smc&&a.status!=='cancelled'
+    &&d.owner_id!=null&&(a.assignees||[]).includes(d.owner_id);
+}
+function delivTeam(d){
+  const out=new Set();
+  if(!d||d.owner_id==null) return out;
+  out.add(d.owner_id);
+  for(const a of (DB.assignments||[])) if(isTeamRow(a,d)) (a.assignees||[]).forEach(u=>out.add(u));
+  return out;
+}
+const onDelivTeam=(d,uid=S.me)=>delivTeam(d).has(uid);
+/* Every deliverable this person works on (owns or is on the team of), in one
+   pass over the assignments rather than one scan per deliverable. */
+function teamDelivIds(uid=S.me){
+  const byId=new Map(DB.deliverables.map(d=>[d.id,d]));
+  const out=new Set(DB.deliverables.filter(d=>d.owner_id===uid&&!d.deleted_at).map(d=>d.id));
+  for(const a of (DB.assignments||[])){
+    if(!a.deliverable_id||!(a.assignees||[]).includes(uid)) continue;
+    const d=byId.get(a.deliverable_id);
+    if(d&&!d.deleted_at&&isTeamRow(a,d)) out.add(d.id);
+  }
+  return out;
+}
 function scheduledDeliverables(uid=S.me,date){
   date=String(date||rtoday()).slice(0,10);
-  return DB.deliverables.filter(d=>d.owner_id===uid&&!d.deleted_at
+  const mine=teamDelivIds(uid);
+  return DB.deliverables.filter(d=>mine.has(d.id)&&!d.deleted_at
     &&String(d.scheduled_date||'').slice(0,10)===date
     &&!DELIV_DONE.includes(d.status));
 }
@@ -9218,11 +9251,19 @@ function myAssignments(uid=S.me,date,opts={}){
   const logged=opts.all?{delivs:new Set(),projects:new Set()}:loggedTodayKeys(uid);
   const tasks=(DB.assignments||[]).filter(a=>(a.assignees||[]).includes(uid)&&a.status!=='cancelled'
     &&!a.is_smc                       /* drawn by the SMC card, with its own actions */
-    &&!a.deliverable_id&&inSchedule(a,date)
+    /* Work on a deliverable (Assign work's own row) is in the queue for every
+       assignee on its dates. An old drawer row linked to a deliverable is not
+       work anyone was given — it stays out, as it always has. */
+    &&(!a.deliverable_id||isTeamRow(a,deliv(a.deliverable_id)))
+    &&inSchedule(a,date)
     /* an ad-hoc task counts as logged once its project has a log entry today */
-    &&!(a.project_id&&logged.projects.has(a.project_id)));
+    &&!(a.project_id&&logged.projects.has(a.project_id))
+    &&!(a.deliverable_id&&logged.delivs.has(a.deliverable_id)));
+  /* A deliverable already in the queue through its work row is not listed a
+     second time because it is also scheduled for today. */
+  const viaWork=new Set(tasks.map(a=>a.deliverable_id).filter(Boolean));
   const delivs=scheduledDeliverables(uid,date)
-    .filter(d=>!logged.delivs.has(d.id))
+    .filter(d=>!logged.delivs.has(d.id)&&!viaWork.has(d.id))
     .map(d=>({
       id:'d'+d.id, deliverable_id:d.id, project_id:d.project_id, title:d.title,
       priority:d.priority||'normal', status:d.status==='not_started'?'not_started':'in_progress',
@@ -9288,12 +9329,16 @@ function assignmentCard(a){
       ${a.estimated_hours?`<span>~${+a.estimated_hours}h</span>`:''}
       ${a.due_date&&!a._shoot?`<span>due ${D.fmt(a.due_date)}</span>`:''}
       ${a.assigned_by?`<span>by ${esc((user(a.assigned_by).full_name||'—').split(' ')[0])}</span>`:''}
+      ${(()=>{/* Work that produces a deliverable names it, and who is on it. */
+        const dl=!a._deliverable&&a.deliverable_id?deliv(a.deliverable_id):null; if(!dl) return '';
+        const team=[...delivTeam(dl)];
+        return `<span class="chip" title="${esc(team.map(id=>user(id).full_name+(id===dl.owner_id?' (owner)':'')).join(', '))}">◆ ${esc(dl.title)}${team.length>1?' · '+team.length+' on it':''}</span>`;})()}
     </div>
     ${tpl&&tpl.card?tpl.card(a):''}
     <div class="asg-acts">
       <button class="btn xs" title="Log work on this: project${a.deliverable_id?' & deliverable':''} pre-filled"
         onclick="ACTIONS.logWork({pid:${a.project_id},did:${a.deliverable_id||0}})">✎ Log</button>
-      ${a._deliverable?`<button class="btn xs" data-drawer="deliverable:${a.deliverable_id}">Open</button>`:''}
+      ${a._deliverable||a.deliverable_id?`<button class="btn xs" data-drawer="deliverable:${a.deliverable_id}">Open</button>`:''}
       ${tpl&&tpl.actions?tpl.actions(a):''}
     </div>
   </div>`;
@@ -9342,7 +9387,10 @@ function viewMyDay(){
      always in exactly one of them and review outcomes move it automatically:
        approved            → Delivered Outputs
        in review / changes → stays in My Deliverables (PRD). */
-  const mineDeliv=DB.deliverables.filter(d=>d.owner_id===S.me&&!d.deleted_at
+  /* Mine = the ones I own AND the ones I am on the team of. A teammate needs
+     the deliverable in front of them as much as its owner does. */
+  const myIds=teamDelivIds(S.me);
+  const mineDeliv=DB.deliverables.filter(d=>myIds.has(d.id)&&!d.deleted_at
     &&!['not_required','cancelled'].includes(d.status));
   const myDue=mineDeliv.filter(d=>!isDeliveredOutput(d))
     .sort((a,b)=>(a.due_date||'9')<(b.due_date||'9')?-1:1);
@@ -9402,8 +9450,14 @@ function viewMyDay(){
       /* Exactly the gates the Deliverable Details drawer uses, so both entry points
          offer the same action in the same states — including review-exempt types,
          which skip version review and are marked delivered directly. */
-      const canSubmit=d.owner_id===S.me&&['not_started','in_progress','changes_requested'].includes(d.status);
+      const canSubmit=['not_started','in_progress','changes_requested'].includes(d.status);
       const exempt=dtype(d.deliverable_type_id).review_exempt&&d.status==='in_progress';
+      /* Who else is on it: a teammate sees whose it is, the owner sees how many
+         are working on it with them. */
+      const team=[...delivTeam(d)].filter(id=>id!==S.me);
+      const withWho=d.owner_id!==S.me
+        ? `<span class="chip" title="${esc(user(d.owner_id).full_name||'')} owns it and submits it for review">with ${esc((user(d.owner_id).full_name||'—').split(' ')[0])}</span>`
+        : team.length?`<span class="chip" title="${esc(team.map(id=>user(id).full_name).join(', '))}">＋${team.length} on it</span>`:'';
       return `<div class="dlv">
         <div class="dlv-top">
           <span style="font-size:14px;flex:0 0 auto">${dtype(d.deliverable_type_id).icon}</span>
@@ -9414,6 +9468,7 @@ function viewMyDay(){
           <span><span class="code">${esc(proj(d.project_id).code||'')}</span> ${esc(proj(d.project_id).name)}</span>
           ${v?`<span class="chip">v${v.version_no}</span>`:''}
           <span class="${over?'st-danger-txt':''}">${over?'⚑ ':''}due ${D.fmt(d.due_date)}</span>
+          ${withWho}
         </div>
         ${v&&v.review_status==='changes_requested'&&v.review_comment
           ? `<div class="dlv-note">↩ ${esc(v.review_comment)}</div>`:''}
@@ -9428,7 +9483,7 @@ function viewMyDay(){
              title="This deliverable type is review-exempt. It is delivered without a version review">✔ Deliver</button>`:''}
           <button class="btn xs" data-drawer="deliverable:${d.id}">Open</button>
         </div>
-      </div>`;}).join(''):`<div class="empty" style="padding:20px"><p>Nothing open. Every deliverable you own has been approved.</p></div>`}
+      </div>`;}).join(''):`<div class="empty" style="padding:20px"><p>Nothing open. Every deliverable you work on has been approved.</p></div>`}
     </div></div>`;
 
   const cDelivered=`<div class="card">
@@ -10032,8 +10087,8 @@ function viewProject(id,tab){
       <div class="page-actions">
         <span class="f ac gap2"><span class="small mut3">Owner</span>${avatar(p.owner_id,'sm')}
           <span class="small b">${esc(user(p.owner_id).full_name)}</span></span>
-        ${canScheduleWork(p)?`<button class="btn sm" data-act="newDeliverable" data-pid="${p.id}">＋ Deliverable</button>`:""}
-        <button class="btn sm primary" data-act="assignWork" data-pid="${p.id}" ${can('project.assign')?'':'disabled'}>＋ Assign work</button>
+        ${canScheduleWork(p)?`<button class="btn sm primary" data-act="assignWork" data-pid="${p.id}"
+          title="Assign work to your team. A deliverable is created with it">＋ Assign work</button>`:''}
         <button class="btn sm" data-menu="projMore" data-pid="${p.id}">⋯</button>
       </div></div>
 
@@ -10351,7 +10406,8 @@ function projDeliverablesTab(p,dls){
   return `<div class="card"><div class="card-head"><h3>Deliverables</h3>
       
       <div class="ca">
-        ${canScheduleWork(p)?`<button class="btn xs primary" data-act="newDeliverable" data-pid="${p.id}">＋ Deliverable</button>`:""}</div></div>
+        ${canScheduleWork(p)?`<button class="btn xs primary" data-act="assignWork" data-pid="${p.id}"
+          title="Deliverables are created by assigning the work that produces them">＋ Assign work</button>`:""}</div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl m-cards pj-cards">
       <thead><tr><th>Type</th><th>Title</th><th>Owner</th><th>Scheduled</th><th>Due</th><th>Qty</th><th>Versions</th>
         <th>Social</th><th>Mail</th><th>Status</th><th class="num">Actions</th></tr></thead>
@@ -10420,7 +10476,7 @@ function delivOwnerCell(p,d){
 function projShootsTab(p,shoots){
   return `<div class="card"><div class="card-head"><h3>Shoots</h3>
       
-      <div class="ca">${can('project.assign')?`<button class="btn xs primary" data-act="assignWork" data-pid="${p.id}">＋ Assign work</button>`:''}</div></div>
+      <div class="ca">${canScheduleWork(p)?`<button class="btn xs primary" data-act="assignWork" data-pid="${p.id}">＋ Assign work</button>`:''}</div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl m-cards pj-cards">
       <thead><tr><th>Shoot</th><th>Date</th><th>Call</th><th>Location</th><th>Crew</th><th>Equipment</th><th>Status</th></tr></thead>
       <tbody>${shoots.map(s=>{
@@ -10521,7 +10577,7 @@ function viewPipeline(){
   const f=S.filters.pipe||(S.filters.pipe={type:[],owner:[],unit:[],ptype:[],q:''});
   let ds=DB.deliverables.filter(d=>!d.deleted_at);
   /* §16: "View pipeline board — Employee: OWN ITEMS" — owner or PM of the parent. */
-  if(isEmp())ds=ds.filter(d=>d.owner_id===S.me||isPMof(d.project_id));
+  if(isEmp()){const mine=teamDelivIds(S.me);ds=ds.filter(d=>mine.has(d.id)||isPMof(d.project_id));}
   if(f.q){const q=f.q.toLowerCase();ds=ds.filter(d=>(d.title+' '+proj(d.project_id).name).toLowerCase().includes(q));}
   if(f.type.length)ds=ds.filter(d=>f.type.includes(d.deliverable_type_id));
   if(f.owner.length)ds=ds.filter(d=>f.owner.includes(d.owner_id));
@@ -10541,7 +10597,7 @@ function viewPipeline(){
         ${andList([`<b>${flight.length}</b> in flight across <b>${plural(nProj,'project')}</b>`,
           over.length?`<b>${over.length}</b> overdue`:'nothing overdue',`<b>${inReview}</b> awaiting review`])}.`,
       actions:`<button class="btn" data-act="exportOpen" data-what="pipeline">${ic('download')} Export</button>
-        ${(!isEmp()||canOwnProjects().length)?`<button class="btn primary" data-act="newDeliverable">${ic('plus')} Deliverable</button>`:''}`,
+        ${canOwnProjects().length?`<button class="btn primary" data-act="assignWork">${ic('plus')} Assign work</button>`:''}`,
       kpis:[kpi('In flight',flight.length,{meta:`across ${plural(nProj,'project')}`}),
         kpi('Overdue',over.length,{tone:over.length?'alert':'',meta:over.length?'oldest '+oldest+'d':'clean'}),
         kpi('Awaiting review',inReview,{meta:`${pendingVersionReviews().length} versions pending`}),
@@ -19057,13 +19113,15 @@ function drawerDeliverable(id){
   const links=DB.drive_links.filter(l=>l.entity_type==='deliverable'&&l.entity_id===id);
   const cs=DB.comments.filter(c=>c.entity_type==='deliverable'&&c.entity_id===id);
   const over=d.due_date&&d.due_date<TODAY&&!['delivered','not_required','cancelled'].includes(d.status);
-  const canApprove=canReviewDeliverables(proj(d.project_id))&&latest&&latest.submitted_by!==S.me&&d.owner_id!==S.me;
+  const canApprove=canReviewDeliverables(proj(d.project_id))&&latest&&latest.submitted_by!==S.me&&!onDelivTeam(d);
   /* Review follows the version, not the status: Pending Approvals lists every
      pending version, and the server reviews the latest whatever the status.
      Closed work is the exception: approving would set a delivered item back to
      approved, so it keeps its own delivered-approval path. */
   const awaiting=!!latest&&latest.review_status==='pending'&&!['delivered','not_required','cancelled'].includes(d.status);
-  const isOwner=d.owner_id===S.me;
+  /* "Owner" for the drawer's actions means anyone doing the work: its owner or
+     a teammate Assign work put on it — the same people the server lets submit. */
+  const isOwner=onDelivTeam(d);
   const tasks=DB.report_tasks.filter(x=>x.deliverable_id===id);
   openDrawer(`
     <div class="dr-head">
@@ -19419,35 +19477,6 @@ function openNewProject(){
   $('#modal-layer').appendChild(dl);
   ACTIONS.npDelivSync();
 }
-function openNewDeliverable(pid){
-  const ps=canOwnProjects();
-  if(!ps.length){toast('you can create deliverables only on projects you own or manage','warn');return;}
-  modal(`<div class="mo-head"><div><h2>New deliverable</h2><p>The unit that replaces the Excel row.</p></div>
-      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
-    <div class="mo-body">
-      <div class="field"><label class="lbl">Project <span class="req">*</span></label>
-        <select class="inp" id="nd-project">${ps.map(p=>`<option value="${p.id}" ${+pid===p.id?'selected':''}>${esc(p.name)} — ${p.code}</option>`).join('')}</select></div>
-      <div class="row">
-        <div class="field"><label class="lbl">Type <span class="req">*</span></label>
-          <select class="inp" id="nd-type">${DB.deliverable_types.filter(t=>t.is_active).map(t=>`<option value="${t.id}">${t.icon} ${esc(t.name)}</option>`).join('')}</select></div>
-        <div class="field"><label class="lbl">Owner <span class="req">*</span></label>
-          <select class="inp" id="nd-owner">${assignableMembers().map(u=>`<option value="${u.id}" ${u.id===S.me?'selected':''}>${esc(u.full_name)}</option>`).join('')}</select></div>
-      </div>
-      <div class="field"><label class="lbl">Title <span class="req">*</span></label><input class="inp" id="nd-title" placeholder="e.g. Edited Photos — Convocation 2026"></div>
-      <div class="row">
-        <div class="field"><label class="lbl">Due date</label><input class="inp" type="date" id="nd-due" value="${D.add(rtoday(),7)}">
-          <div class="hint">Warns if outside project span ± 30 days.</div></div>
-        <div class="field"><label class="lbl">Quantity target</label><input class="inp" type="number" id="nd-qty" placeholder="e.g. 1800"></div>
-      </div>
-      <div class="field"><label class="lbl">Spec notes</label><textarea class="inp" id="nd-spec" placeholder="Format, deadline constraints, who signs off…"></textarea></div>
-      <div class="field"><label class="lbl">Drive link <span class="mut3">(optional)</span></label>
-        <input class="inp" id="nd-drive" placeholder="https://drive.google.com/… (can add later)">
-        <div class="hint">Attach the Google Drive/Docs folder now, or add it later from the deliverable.</div></div>
-    </div>
-    <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
-      <button class="btn primary" data-act="createDeliverable">Create deliverable</button></div>`,{size:'wide'});
-  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=e=>{e.stopPropagation();ACTIONS[n.dataset.act](n.dataset,n);});
-}
 function openBooking(eid,sid){
   const shoots=DB.shoots.filter(s=>s.shoot_date>=TODAY);
   modal(`<div class="mo-head"><div><h2>Book equipment</h2>
@@ -19529,18 +19558,48 @@ const workType=id=>(DB.work_types||[]).find(w=>w.id===+id)||null;
 const WORK_TEMPLATES={
   standard_task:{
     label:'Standard task',
+    /* The deliverable is part of the work, not a form of its own. By default the
+       work CREATES one (type + title; due date and Drive link optional). A
+       deliverable that already exists on the project — one the Coordinator
+       added at creation, say — can be taken on instead, so it is not made
+       twice. Everyone assigned works on it; the owner is accountable for it. */
     body(pid){
-      const dls=DB.deliverables.filter(d=>d.project_id===+pid&&!d.deleted_at&&!DELIV_DONE.includes(d.status));
+      const open=DB.deliverables.filter(d=>d.project_id===+pid&&!d.deleted_at&&!DELIV_DONE.includes(d.status));
+      const dtypes=DB.deliverable_types.filter(t=>t.is_active!==false&&!t.archived_at);
       return `
       <div class="field"><label class="lbl">Title <span class="req">*</span></label>
         <input class="inp" id="aw-title" placeholder="e.g. Edit convocation highlights"></div>
-      <div class="field"><label class="lbl">Deliverable <span class="mut3">(optional, links the work to a project output)</span></label>
-        <select class="inp" id="aw-deliv"><option value="">— None</option>
-          ${dls.map(d=>`<option value="${d.id}">${esc(d.title)}</option>`).join('')}</select></div>
+      <div class="field"><label class="lbl">Deliverable</label>
+        <div class="seg" id="aw-dmode" role="radiogroup" aria-label="Deliverable">
+          <button type="button" class="on" data-m="new" role="radio" aria-checked="true" onclick="ACTIONS.awDelivMode({m:'new'})">New deliverable</button>
+          ${open.length?`<button type="button" data-m="existing" role="radio" aria-checked="false" onclick="ACTIONS.awDelivMode({m:'existing'})">Existing on this project (${open.length})</button>`:''}
+          <button type="button" data-m="none" role="radio" aria-checked="false" onclick="ACTIONS.awDelivMode({m:'none'})">No deliverable</button></div>
+        <div class="hint" id="aw-dhint">What this work produces. It is created on this project for the people you assign.</div></div>
+      <div id="aw-dnew">
+        <div class="row">
+          <div class="field"><label class="lbl">Deliverable type <span class="req">*</span></label>
+            <select class="inp" id="aw-dtype">${dtypes.map(t=>`<option value="${t.id}">${t.icon?esc(t.icon)+' ':''}${esc(t.name)}</option>`).join('')}</select></div>
+          <div class="field"><label class="lbl">Deliverable title</label>
+            <input class="inp" id="aw-dtitle" maxlength="160" placeholder="Same as the work title"></div>
+        </div>
+        <div class="row">
+          <div class="field"><label class="lbl">Deliverable due <span class="mut3">(optional)</span></label>
+            <input class="inp" type="date" id="aw-ddue"><div class="hint">Defaults to the work's due date.</div></div>
+          <div class="field"><label class="lbl">Drive link <span class="mut3">(optional)</span></label>
+            <input class="inp" id="aw-ddrive" inputmode="url" autocapitalize="off" placeholder="https://drive.google.com/… (can add later)"></div>
+        </div>
+      </div>
+      <div id="aw-dexisting" hidden>
+        <div class="field"><label class="lbl">Deliverable <span class="req">*</span></label>
+          <select class="inp" id="aw-deliv" onchange="ACTIONS.awOwnerSync()">${open.map(d=>`<option value="${d.id}">${esc(d.title)} — ${d.owner_id?esc(user(d.owner_id).full_name):'unassigned'}</option>`).join('')}</select></div>
+      </div>
       <div class="field"><label class="lbl">Assign to <span class="req">*</span></label>
         <div class="f wrap gap2" id="aw-users">${assignableMembers().map(u=>
-          `<button type="button" class="chip" data-uid="${u.id}" onclick="this.classList.toggle('sel')">${esc(u.full_name)}</button>`).join('')}</div>
-        <div class="hint">${isAdmin()?'You can assign anyone in the crew.':'Members of your own team only.'}</div></div>
+          `<button type="button" class="chip" data-uid="${u.id}" onclick="ACTIONS.awPick(this)">${esc(u.full_name)}</button>`).join('')}</div>
+        <div class="hint">${isAdmin()?'You can assign anyone in the crew.':isTL()?'Members of your own team only.':'You can assign work to yourself.'}
+          Everyone you pick sees the deliverable in their My Day and can upload versions of it.</div></div>
+      <div class="field" id="aw-ownerf"><label class="lbl">Owner <span class="mut3">(accountable — submits it for review)</span></label>
+        <select class="inp" id="aw-owner" disabled><option value="">Pick who to assign first</option></select></div>
       <div class="row">
         <div class="field"><label class="lbl">Start date</label><input class="inp" type="date" id="aw-start"></div>
         <div class="field"><label class="lbl">Due date</label><input class="inp" type="date" id="aw-due"></div>
@@ -19551,12 +19610,29 @@ const WORK_TEMPLATES={
     },
     collect(){
       const title=$('#aw-title').value.trim();
-      const assignees=$$('#aw-users .chip.sel').map(c=>+c.dataset.uid);
+      const assignees=awPicked();
       if(!title)return {err:'Title is required'};
       if(!assignees.length)return {err:'Assign the work to at least one member'};
-      return {payload:{title,deliverable_id:$('#aw-deliv').value?+$('#aw-deliv').value:null,
-        assignees,start_date:$('#aw-start').value||null,due_date:$('#aw-due').value||null,
-        priority:$('#aw-pri').value,notes:$('#aw-notes').value.trim()}};
+      const start=$('#aw-start').value||null, due=$('#aw-due').value||null;
+      if(start&&due&&due<start)return {err:'Due date must be on or after the start date'};
+      const mode=awDelivModeNow();
+      const payload={title,assignees,start_date:start,due_date:due,
+        priority:$('#aw-pri').value,notes:$('#aw-notes').value.trim()};
+      if(mode==='new'){
+        const typeId=+($('#aw-dtype')||{}).value;
+        if(!typeId)return {err:"Pick the deliverable's type"};
+        const drive=$('#aw-ddrive').value.trim();
+        if(drive&&!/^https:\/\/(drive|docs)\.google\.com\//.test(drive))
+          return {err:'The Drive link must be a Google Drive or Docs link'};
+        payload.new_deliverable={deliverable_type_id:typeId,title:$('#aw-dtitle').value.trim()||null,
+          due_date:$('#aw-ddue').value||null,drive_url:drive||null};
+      } else if(mode==='existing'){
+        const did=+($('#aw-deliv')||{}).value;
+        if(!did)return {err:'Pick the deliverable'};
+        payload.deliverable_id=did;
+      }
+      if(mode!=='none') payload.owner_id=+$('#aw-owner').value||assignees[0];
+      return {payload};
     },
     /* No extra block — the base Assignment card already carries everything a
        desk task needs. Progress is set inline, without opening the task. */
@@ -19626,13 +19702,26 @@ const WORK_TEMPLATES={
   }
 };
 function workTemplateFor(wt){return (wt&&WORK_TEMPLATES[wt.form_template])||WORK_TEMPLATES.standard_task;}
+/* Which deliverable choice is on in the Assign work dialog: new | existing | none. */
+function awDelivModeNow(){const b=$('#aw-dmode button.on');return b?b.dataset.m:'none';}
+/* The people picked, in the order they were picked — so "the first person you
+   pick owns it" means what it says, whatever order the roster is drawn in. */
+function awPicked(){
+  return $$('#aw-users .chip.sel').sort((a,b)=>(+a.dataset.at||0)-(+b.dataset.at||0)).map(c=>+c.dataset.uid);
+}
 
 function openAssignWork(pid){
-  const ps=visibleProjects().filter(p=>!['archived','cancelled','completed'].includes(p.status));
+  /* Only projects this person may run — the server's canManageProject():
+     Admin, the project's Team Lead, or its owner/PM. */
+  const ps=canOwnProjects();
+  if(!ps.length){toast('You can assign work only on projects you lead, own or manage','warn');return;}
   const types=activeWorkTypes();
   if(!types.length){toast('No active work types. Add one in Settings → Work Types','bad');return;}
   const initial=types[0];
-  pid=+pid||(ps[0]&&ps[0].id);
+  /* Opened from a project page, the project IS that project — shown, not
+     offered as a choice. From anywhere else it is picked from the list. */
+  const fixed=pid&&ps.some(p=>p.id===+pid)?+pid:null;
+  pid=fixed||ps[0].id;
   modal(`<div class="mo-head"><div><h2>Assign work</h2>
       <p>Pick the work type first. The form adapts to it. Types are configured in <b>Settings → Work Types</b>.</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
@@ -19641,9 +19730,14 @@ function openAssignWork(pid){
         <select class="inp" id="aw-type" onchange="ACTIONS.awTypeChange()">
           ${types.map(w=>`<option value="${w.id}">${w.icon?esc(w.icon)+' ':''}${esc(w.name)}</option>`).join('')}</select>
         <div class="hint" id="aw-tplhint">Form: ${esc(workTemplateFor(initial).label)}</div></div>
-      <div class="field"><label class="lbl">Project <span class="req">*</span></label>
-        <select class="inp" id="aw-project" onchange="ACTIONS.awTypeChange()">
-          ${ps.map(p=>`<option value="${p.id}" ${pid===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div>
+      ${fixed?`<div class="field"><span class="lbl">Project</span>
+          <div class="aw-proj"><b>${esc(proj(fixed).name)}</b> <span class="code">${esc(proj(fixed).code||'')}</span></div>
+          <input type="hidden" id="aw-project" value="${fixed}"></div>`
+        :`<div class="field"><label class="lbl" for="aw-project">Project <span class="req">*</span></label>
+          <select class="inp" id="aw-project" onchange="ACTIONS.awTypeChange()">
+            ${ps.map(p=>`<option value="${p.id}" ${pid===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div>`}
+      <style>.aw-proj{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 12px;border:1px solid var(--border);
+        border-radius:var(--r);background:var(--surface-2)}</style>
       <div id="aw-body">${workTemplateFor(initial).body(pid)}</div>
     </div>
     <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
@@ -20798,12 +20892,41 @@ const ACTIONS = {
   logTask:()=>openTaskLog(),
   editTask:(d)=>openTaskLog(+d.tid),
   newProject:()=>openNewProject(),
-  newDeliverable:(d)=>openNewDeliverable(d&&d.pid),
   assignWork:(d)=>openAssignWork(d&&d.pid),
   awTypeChange:()=>{
     const wt=workType($('#aw-type').value), tpl=workTemplateFor(wt);
     const h=$('#aw-tplhint'); if(h)h.textContent='Form: '+tpl.label;
     const body=$('#aw-body'); if(body)body.innerHTML=tpl.body($('#aw-project').value);
+  },
+  awDelivMode:(d)=>{
+    $$('#aw-dmode button').forEach(b=>{const on=b.dataset.m===d.m;b.classList.toggle('on',on);b.setAttribute('aria-checked',on?'true':'false');});
+    const nw=$('#aw-dnew'), ex=$('#aw-dexisting'), of=$('#aw-ownerf'), h=$('#aw-dhint');
+    if(nw) nw.hidden=d.m!=='new';
+    if(ex) ex.hidden=d.m!=='existing';
+    if(of) of.hidden=d.m==='none';
+    if(h) h.textContent=d.m==='new'?'What this work produces. It is created on this project for the people you assign.'
+      :d.m==='existing'?'The people you assign take this deliverable on; the owner you pick becomes accountable for it.'
+      :'Plain work with no project output.';
+    ACTIONS.awOwnerSync();
+  },
+  /* The owner is one of the people assigned, so the list follows the chips. It
+     keeps the current pick while that person stays selected; otherwise it falls
+     back to the deliverable's current owner (taking on an existing one) or the
+     first person picked. */
+  awPick:(chip)=>{
+    const on=chip.classList.toggle('sel');
+    chip.dataset.at=on?String((S._awSeq=(S._awSeq||0)+1)):'';
+    ACTIONS.awOwnerSync();
+  },
+  awOwnerSync:()=>{
+    const sel=$('#aw-owner'); if(!sel) return;
+    const ids=awPicked();
+    const prev=+sel.value;
+    const cur=awDelivModeNow()==='existing'?((deliv(+($('#aw-deliv')||{}).value)||{}).owner_id):null;
+    const pick=ids.includes(prev)?prev:ids.includes(cur)?cur:ids[0];
+    sel.innerHTML=ids.length?ids.map(id=>`<option value="${id}" ${id===pick?'selected':''}>${esc(user(id).full_name)}</option>`).join('')
+      :'<option value="">Pick who to assign first</option>';
+    sel.disabled=!ids.length;
   },
   createWork:()=>{
     const wt=workType($('#aw-type').value); if(!wt){toast('Pick a work type','bad');return;}
@@ -20822,9 +20945,23 @@ const ACTIONS = {
         is_replacement:false,replaced_user_id:null}));
       audit(S.me,'work.assigned','shoot',id,null,{work_type:wt.name,form_template:wt.form_template,title:payload.title});
     } else {
+      /* A new deliverable appears straight away, owned and shared as the server
+         will store it; the re-hydrate after moSync swaps in its real id. */
+      let did=payload.deliverable_id||null;
+      if(payload.new_deliverable){
+        const nd=payload.new_deliverable, dt=dtype(nd.deliverable_type_id);
+        did=Math.max(0,...DB.deliverables.map(x=>x.id))+1;
+        DB.deliverables.push({id:did,project_id:pid,deliverable_type_id:nd.deliverable_type_id,
+          title:nd.title||payload.title,owner_id:payload.owner_id,due_date:nd.due_date||payload.due_date,
+          completed_at:null,quantity_target:null,quantity_delivered:null,unit:dt.default_unit,spec_notes:'',
+          weight:dt.default_weight||1,status:'not_started',priority:payload.priority,scheduled_date:null,
+          social_status:'na',social_post_url:null,social_posted_at:null,mail_status:'na',mail_sent_at:null,deleted_at:null});
+      } else if(did&&payload.owner_id){
+        const dl=deliv(did); if(dl) dl.owner_id=payload.owner_id;
+      }
       const id=Math.max(0,...(DB.assignments||[]).map(x=>x.id))+1;
       (DB.assignments=DB.assignments||[]).push({id,project_id:pid,work_type_id:wt.id,
-        deliverable_id:payload.deliverable_id,title:payload.title,assigned_by:S.me,priority:payload.priority,
+        deliverable_id:did,title:payload.title,assigned_by:S.me,priority:payload.priority,
         status:'not_started',start_date:payload.start_date,due_date:payload.due_date,start_time:null,end_time:null,
         notes:payload.notes,estimated_hours:null,assignees:payload.assignees.slice()});
       audit(S.me,'work.assigned','assignment',id,null,{work_type:wt.name,form_template:wt.form_template,title:payload.title});
@@ -20832,7 +20969,8 @@ const ACTIONS = {
     closeModal();render();
     toast(wt.name+' assigned','ok');
     moSync(MO_API.post('/projects/'+pid+'/work',{work_type_id:wt.id,...payload,
-      assignees:(payload.assignees||[]).map(u=>ruid(u)),crew:(payload.crew||[]).map(u=>ruid(u))}));
+      assignees:(payload.assignees||[]).map(u=>ruid(u)),crew:(payload.crew||[]).map(u=>ruid(u)),
+      ...(payload.owner_id?{owner_id:ruid(payload.owner_id)}:{})}));
   },
   newCard:(d)=>openNewCard(d&&d.bid),
   booking:(d)=>openBooking(d&&d.eid,d&&d.sid),
@@ -21118,27 +21256,6 @@ const ACTIONS = {
       :tname?`Created · ${made} deliverable${made===1?'':'s'} for ${tname} to allocate`
             :`Created · ${made} deliverable${made===1?'':'s'} · no team assigned yet`,'ok');
   },
-  createDeliverable:()=>{
-    const title=$('#nd-title').value.trim();
-    if(!title){toast('Title is required','bad');return;}
-    const pid=+$('#nd-project').value,tid=+$('#nd-type').value,due=$('#nd-due').value;
-    const p=proj(pid);
-    if(due&&(due<D.add(p.start_date,-30)||due>D.add(p.end_date,30)))
-      toast('Heads up: that due date is outside the project span by more than 30 days','warn');
-    const t=dtype(tid);
-    const id=Math.max(...DB.deliverables.map(d=>d.id))+1;
-    DB.deliverables.push({id,project_id:pid,deliverable_type_id:tid,title,owner_id:+$('#nd-owner').value,
-      due_date:due,completed_at:null,quantity_target:$('#nd-qty').value?+$('#nd-qty').value:null,
-      quantity_delivered:null,unit:t.default_unit,spec_notes:$('#nd-spec').value.trim(),weight:t.default_weight,
-      status:'not_started',social_status:'na',social_post_url:null,social_posted_at:null,
-      mail_status:'na',mail_sent_at:null,deleted_at:null});
-    audit(S.me,'deliverable.created','project',pid,null,{title,type:t.name});
-    const _nd={title,deliverable_type_id:tid,owner_id:ruid(+$('#nd-owner').value),due_date:due,
-      quantity_target:$('#nd-qty').value?+$('#nd-qty').value:null,spec_notes:$('#nd-spec').value.trim(),
-      drive_url:($('#nd-drive')?$('#nd-drive').value.trim():'')};
-    closeModal();render();toast('Deliverable created','ok');
-    moSync(MO_API.post('/projects/'+pid+'/deliverables',_nd));
-  },
   editShoot:(d)=>{
     const s=DB.shoots.find(x=>x.id===+d.sid); if(!s)return;
     modal(`<div class="mo-head"><div><h2>Edit shoot</h2><p>${esc(s.title)}</p></div>
@@ -21255,7 +21372,7 @@ const ACTIONS = {
     const dl=deliv(+d.did);
     const v=DB.deliverable_versions.filter(x=>x.deliverable_id===dl.id).sort((a,b)=>b.version_no-a.version_no)[0];
     if(v.submitted_by===S.me){toast('a version cannot be approved by its submitter','bad');return;}
-    if(dl.owner_id===S.me){toast('you cannot approve your own deliverable','bad');return;}
+    if(onDelivTeam(dl)){toast('you cannot approve a deliverable you are assigned to','bad');return;}
     if(!canReviewDeliverables(proj(dl.project_id))){toast("403: only the project's Team Lead or an Admin may review","bad");return;}
     dl.dispatch_status=dl.dispatch_status==='none'||!dl.dispatch_status?'queued':dl.dispatch_status;
     v.review_status='approved';v.reviewed_by=S.me;v.reviewed_at=TODAY;
@@ -24834,7 +24951,7 @@ const ACTIONS = {
   reviewDelivered:(d)=>{
     const dl=DB.deliverables.find(x=>x.id===+d.did); if(!dl)return;
     if(!canReviewDeliverables(proj(dl.project_id))){toast("403: only the project's Team Lead or an Admin may review","bad");return;}
-    if(dl.owner_id===S.me){toast('you cannot approve your own deliverable','bad');return;}
+    if(onDelivTeam(dl)){toast('you cannot approve a deliverable you are assigned to','bad');return;}
     const to=d.v;
     const before={approval_status:dl.approval_status,status:dl.status};
     dl.approval_status=to; dl.approved_by=S.me;
@@ -25200,7 +25317,7 @@ function applyDelivStatus(dl,s){
   if(s==='approved'||s==='changes_requested'){
     if(!canReviewDeliverables(proj(dl.project_id))){
       toast("only the project's Team Lead or an Admin may review it",'bad');return false;}
-    if(dl.owner_id===S.me){toast('you cannot review your own deliverable','bad');return false;}
+    if(onDelivTeam(dl)){toast('you cannot review a deliverable you are assigned to','bad');return false;}
     if(latest&&latest.submitted_by===S.me){
       toast('you submitted the latest version. Someone else must review it','bad');return false;}
     if(s==='approved'&&(!latest||latest.review_status!=='pending')){
@@ -26303,12 +26420,13 @@ function delivAssignSection(did){
   return `<div data-dasg="${did}">
     <div class="sec-head"><span class="sec-title">Assignment</span></div>
     <dl class="kv mb3">
-      <dt>Team member</dt><dd>${line(a.crew&&a.crew.full_name, a.crew&&a.crew.designation)}</dd>
+      <dt>Owner</dt><dd>${line(a.crew&&a.crew.full_name, a.crew&&a.crew.designation)}</dd>
+      ${(a.team||[]).length?`<dt>Working with</dt><dd>${(a.team||[]).map(t=>line(t.full_name,t.designation)).join('')}</dd>`:''}
       <dt>SMC member</dt><dd>${line(a.smc&&a.smc.full_name, a.smc&&a.smc.institute)}</dd>
     </dl>
     <div class="f gap2 wrap mb3">
       ${(()=>{const dl=deliv(+did);return dl&&canScheduleWork(proj(dl.project_id))?`<button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="crew">
-        ${a.crew?'Change team member':'Assign to team member'}</button>`:'';})()}
+        ${a.crew?'Change owner':'Assign an owner'}</button>`:'';})()}
       <button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="smc">
         ${a.smc?'Change SMC member':'Assign to SMC member'}</button>
     </div></div>`;
