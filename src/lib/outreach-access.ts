@@ -133,6 +133,15 @@ export function useCanEditPosts(): boolean {
   return ['campaigns', 'pages', 'creators'].some(t => canUseTab(access, t, 'edit'))
 }
 
+/**
+ * The first option of a state filter. For someone limited to some states,
+ * "All states" read as the whole country; their data is only their states.
+ */
+export function useAllStatesLabel(): string {
+  const { access } = useOutreachAccess()
+  return access?.scope.kind === 'states' && !access.admin ? 'All my states' : 'All states'
+}
+
 /** May the signed-in person add or delete pages and creators, or run the paid syncs? Admins only. */
 export function useIsOutreachAdmin(): boolean {
   const { role } = useAuth()

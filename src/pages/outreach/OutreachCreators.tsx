@@ -11,7 +11,7 @@ import {
   type PageType, type FollowerTier, type PageContentType, type OutreachCreator,
 } from '@/lib/outreach-data'
 import StateSelect from './StateSelect'
-import { useIsOutreachAdmin } from '@/lib/outreach-access'
+import { useIsOutreachAdmin, useAllStatesLabel } from '@/lib/outreach-access'
 import { geographyKey, geographyOptions } from '@/lib/outreach-states'
 
 type SortKey = 'handle' | 'geography' | 'state' | 'tier' | 'followers' | 'inventory'
@@ -26,6 +26,7 @@ export default function OutreachCreators() {
   const { creators } = useOutreachData()
   // Adding and deleting a creator is the outreach manager's, as on the server.
   const isAdmin = useIsOutreachAdmin()
+  const allStatesLabel = useAllStatesLabel()
   const navigate = useNavigate()
 
   const [tab, setTab] = useState<PageType>('state')
@@ -137,7 +138,7 @@ export default function OutreachCreators() {
             {geographies.map(g => <option key={g.key} value={g.key}>{g.label}</option>)}
           </select>
           <select value={state} onChange={e => setState(e.target.value)} className="hub-input py-1.5 text-xs w-32">
-            <option value="">All states</option>
+            <option value="">{allStatesLabel}</option>
             {states.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
           <select value={tier} onChange={e => setTier(e.target.value as FollowerTier | '')} className="hub-input py-1.5 text-xs w-32">

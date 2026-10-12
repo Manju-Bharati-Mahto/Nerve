@@ -6,7 +6,7 @@ import {
   type Campaign,
 } from '@/lib/outreach-data'
 import AddLivePostsDialog from './AddLivePostsDialog'
-import { useCanEditPosts } from '@/lib/outreach-access'
+import { useCanEditPosts, useAllStatesLabel } from '@/lib/outreach-access'
 
 function fmtOverdue(hours: number): string {
   if (hours < 24) return `${hours}h overdue`
@@ -18,6 +18,7 @@ function fmtOverdue(hours: number): string {
 export default function OutreachAlerts() {
   const { campaigns, pages, creators, posts, dismissedAlertIds } = useOutreachData()
   const canEditPosts = useCanEditPosts()
+  const allStatesLabel = useAllStatesLabel()
   const [stateFilter, setStateFilter] = useState('')
   const [resolveFor, setResolveFor] = useState<Campaign | null>(null)
 
@@ -53,7 +54,7 @@ export default function OutreachAlerts() {
               <MapPin className="w-3.5 h-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <select value={stateFilter} onChange={e => setStateFilter(e.target.value)}
                 className="hub-input py-1.5 pl-7 text-xs w-40">
-                <option value="">All states</option>
+                <option value="">{allStatesLabel}</option>
                 {states.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
