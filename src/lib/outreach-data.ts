@@ -10,6 +10,8 @@
  * once on first boot, and metrics come from the Apify sync.
  */
 import { useEffect, useSyncExternalStore } from 'react'
+import { useAuth } from '@/hooks/useAuth'
+import { useOutreachAccess, type OutreachAccess } from './outreach-access'
 import { api, type ServerOutreachPage, type ServerOutreachCreator, type ServerOutreachCampaign, type ServerOutreachPost } from './api'
 import { OUTREACH_STATE_NAMES, canonicalState, stateKey as matchKey, tidyText } from './outreach-states'
 
@@ -340,7 +342,22 @@ function getSnapshot(): OutreachDB {
   return store
 }
 
+/* Whose data the store holds: the signed-in person and the states they may
+   see. Signing out and back in as somebody else does not reload the page, so
+   without this the next person was shown the previous person's lists — a
+   Gujarat-only user saw the manager's every state, and the manager's overall
+   reach on their dashboard. */
+let owner: string | null = null
+/* Bumped on every fetch, so an answer that arrives after a newer fetch began
+   (or after the person changed) is dropped instead of overwriting it. */
+let generation = 0
+
+function emptyStore(): Partial<OutreachDB> {
+  return { pages: [], creators: [], campaigns: [], posts: [], loaded: false, loading: false, error: null }
+}
+
 async function fetchAll() {
+  const gen = ++generation
   setStore({ loading: true, error: null })
   try {
     const [{ pages }, { creators }, { campaigns }, { posts }] = await Promise.all([
@@ -349,6 +366,7 @@ async function fetchAll() {
       api.listOutreachCampaigns(),
       api.listOutreachPosts(),
     ])
+    if (gen !== generation) return
     setStore({
       pages: pages.map(toPage),
       creators: creators.map(toCreator),
@@ -359,6 +377,7 @@ async function fetchAll() {
       error: null,
     })
   } catch (err) {
+    if (gen !== generation) return
     setStore({ loading: false, error: err instanceof Error ? err.message : 'Failed to load outreach data.' })
   }
 }
@@ -369,14 +388,51 @@ function ensureLoaded() {
   inflight = fetchAll().finally(() => { inflight = null })
 }
 
+/**
+ * The store's owner key: who is signed in, and what they may see. A change of
+ * person, or of their states (the manager edits them; the access hook
+ * refetches on focus), empties the store and loads it again.
+ */
+function ownerKey(userId: string | null | undefined, access: OutreachAccess | null): string {
+  const scope = !access ? 'none'
+    : access.admin || access.scope.kind === 'all' ? 'all'
+    : [...access.scope.states].sort().join(',')
+  return `${userId ?? ''}|${access?.configured ? 'c' : 'u'}|${scope}`
+}
+
+function takeOwnership(key: string) {
+  if (owner === key) return
+  owner = key
+  generation++            // whatever is still in flight belongs to the previous owner
+  inflight = null
+  setStore(emptyStore())
+}
+
 export function useOutreachStore() {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
-/** Hook every outreach page uses. Hydrates from API on first mount. */
+const LOADING_VIEW: OutreachDB = {
+  pages: [], creators: [], campaigns: [], posts: [], dismissedAlertIds: new Set(),
+  loaded: false, loading: true, error: null,
+}
+
+/** Hook every outreach page uses. Loads the signed-in person's own data, and reloads it when they or their states change. */
 export function useOutreachData() {
   const db = useOutreachStore()
-  useEffect(() => { ensureLoaded() }, [])
+  const { user } = useAuth()
+  const { access, loading: accessLoading } = useOutreachAccess()
+  const key = accessLoading ? null : ownerKey(user?.id, access)
+
+  useEffect(() => {
+    if (key === null) return
+    takeOwnership(key)
+    ensureLoaded()
+  }, [key])
+
+  /* Until this person's own data is in, show nothing rather than whatever the
+     store last held — even for one frame. */
+  if (key === null || owner !== key) return { ...LOADING_VIEW, dismissedAlertIds: db.dismissedAlertIds }
   return db
 }
 

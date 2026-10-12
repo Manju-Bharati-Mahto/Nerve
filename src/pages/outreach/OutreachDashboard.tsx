@@ -16,7 +16,7 @@ import {
   computeOutreachAlerts, dismissAlert, dailyTrend, formatLocalDate,
 } from '@/lib/outreach-data'
 import { buildDashboardReport, exportDashboardReportPdf } from '@/lib/outreach-export'
-import { useIsOutreachAdmin } from '@/lib/outreach-access'
+import { useIsOutreachAdmin, useAllStatesLabel } from '@/lib/outreach-access'
 
 type Range = '7d' | '30d' | 'mtd' | 'all'
 
@@ -33,6 +33,7 @@ export default function OutreachDashboard() {
   const { pages, creators, campaigns, posts, dismissedAlertIds } = useOutreachData()
   // Sync and Refresh reach are paid Apify runs: the outreach manager's, as on the server.
   const isAdmin = useIsOutreachAdmin()
+  const allStatesLabel = useAllStatesLabel()
   const [range, setRange] = useState<Range>('30d')
   const [stateFilter, setStateFilter] = useState('')
   const [syncing, setSyncing] = useState(false)
@@ -221,7 +222,7 @@ export default function OutreachDashboard() {
             <MapPin className="w-3.5 h-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <select value={stateFilter} onChange={e => setStateFilter(e.target.value)}
               className="hub-input py-1.5 pl-7 text-xs w-40" title="Filter all dashboard data by state">
-              <option value="">All states</option>
+              <option value="">{allStatesLabel}</option>
               {states.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
