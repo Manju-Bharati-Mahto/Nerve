@@ -13,6 +13,7 @@ import {
   parseInstagramHandle, profileUrlForPage, outreachStates, sameState, toCsv,
   PAGE_TYPES, FOLLOWER_TIERS, PAGE_CONTENT_TYPES, PAGE_CONTENT_PREFERENCES, PLATFORMS,
   type PageType, type FollowerTier, type PageContentType, type OutreachPage, type Post, type Platform,
+  effectiveViews, isEstimatedViews
 } from '@/lib/outreach-data'
 import StateSelect from './StateSelect'
 import { geographyKey, geographyOptions } from '@/lib/outreach-states'
@@ -81,7 +82,7 @@ export default function OutreachAnalytics() {
 function rangeMetrics(pageId: string, posts: Post[], from: string, to: string) {
   const pp = posts.filter(p => p.pageId === pageId && p.addedAsLive
     && (!from || p.date >= from) && (!to || p.date <= to))
-  const reach = pp.reduce((s, p) => s + p.views, 0)
+  const reach = pp.reduce((s, p) => s + effectiveViews(p), 0)
   const likes = pp.reduce((s, p) => s + p.likes, 0)
   const comments = pp.reduce((s, p) => s + p.comments, 0)
   const eng = likes + comments
@@ -382,7 +383,10 @@ function BestPosts() {
                   <td className="px-3 py-2.5"><span className="hub-badge bg-orange-50 text-orange-700 capitalize">{post.type}</span></td>
                   <td className="px-3 py-2.5 text-xs text-muted-foreground">{post.creativeVariant ?? '—'}</td>
                   <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{fmt(eng)}</td>
-                  <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{fmt(post.views)}</td>
+                  <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums"
+                    title={isEstimatedViews(post) ? 'Estimated reach: likes × 20 — static posts and carousels have no view count' : undefined}>
+                    {isEstimatedViews(post) && <span className="text-muted-foreground">~</span>}{fmt(effectiveViews(post))}
+                  </td>
                   <td className="px-3 py-2.5"><TierChip t={t} /></td>
                 </tr>
               )
@@ -405,7 +409,7 @@ function CampaignTrend() {
       if (!p.addedAsLive) continue
       const cur = byDay.get(p.date) ?? { posts: 0, reach: 0, eng: 0 }
       cur.posts++
-      cur.reach += p.views
+      cur.reach += effectiveViews(p)
       cur.eng += p.likes + p.comments
       byDay.set(p.date, cur)
     }

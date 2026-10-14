@@ -208,6 +208,29 @@ describe('the publishing queue', () => {
       cleanup()
     }
   })
+
+  it('tells the publisher which pages the video is to be posted on', async () => {
+    handler = path => {
+      if (path === '/queue') return { status: 200, body: { videos: [
+        video({ socialPageNames: ['@parul_official', '@parul_gujarat'] }),
+      ] } }
+      if (path.startsWith('/videos?')) return { status: 200, body: { videos: [] } }
+      return undefined
+    }
+    as('outreach_publisher')
+    mount(<VideoQueue />)
+    await screen.findByText('FIX clip - Video 1')
+    expect(screen.getByText(/Publish to/)).toBeTruthy()
+    expect(screen.getByText('@parul_official')).toBeTruthy()
+    expect(screen.getByText('@parul_gujarat')).toBeTruthy()
+  })
+
+  it('shows no page row when a video carries no pages', async () => {
+    as('outreach_publisher')
+    mount(<VideoQueue />)
+    await screen.findByText('FIX clip - Video 1')
+    expect(screen.queryByText(/Publish to/)).toBeNull()
+  })
 })
 
 describe('My Videos', () => {

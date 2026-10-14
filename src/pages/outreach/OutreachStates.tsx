@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MapPin, X, Users as UsersIcon, AlertCircle } from 'lucide-react'
-import { useOutreachData, pageMetrics } from '@/lib/outreach-data'
+import { useOutreachData, pageMetrics, effectiveViews } from '@/lib/outreach-data'
 import { useAuth } from '@/hooks/useAuth'
 import { OUTREACH_STATE_NAMES, canonicalState } from '@/lib/outreach-states'
 import {
@@ -52,7 +52,7 @@ export default function OutreachStates() {
       r.total += page.inventoryPosts
       r.used += pageMetrics(page, posts).postsDone
       for (const p of posts) {
-        if (p.pageId === page.id && p.addedAsLive) { r.views += p.views; r.likes += p.likes }
+        if (p.pageId === page.id && p.addedAsLive) { r.views += effectiveViews(p); r.likes += p.likes }
       }
       byState.set(state, r)
     }

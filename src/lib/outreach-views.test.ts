@@ -128,7 +128,7 @@ describe('dailyTrend', () => {
   it('labels and buckets the same local day just after midnight', () => {
     // 00:30 local: in IST, toISOString() is still the previous day here.
     const ref = new Date(2026, 8, 12, 0, 30)
-    const trend = dailyTrend([post({ date: '2026-09-12', views: 7 }), post({ date: '2026-09-11' })], 14, ref)
+    const trend = dailyTrend([post({ date: '2026-09-12', type: 'reel', views: 7 }), post({ date: '2026-09-11' })], 14, ref)
     expect(trend).toHaveLength(14)
     const last = trend[13]
     expect(last).toMatchObject({ date: '2026-09-12', day: '12/9', posts: 1, reach: 7 })
@@ -201,11 +201,11 @@ describe('matchPagesForPostType', () => {
 describe('predictReach', () => {
   it('gives 100% to a page whose equal posts all meet the cross-page median, and skips planned posts', () => {
     const ps = [
-      ...Array.from({ length: 10 }, () => post({ pageId: 'inv', likes: 100, comments: 5, views: 1000 })),
-      post({ pageId: 'inv', status: 'scheduled', addedAsLive: false }),
-      post({ pageId: 'other', likes: 50 }),
+      ...Array.from({ length: 10 }, () => post({ pageId: 'inv', type: 'reel', likes: 100, comments: 5, views: 1000 })),
+      post({ pageId: 'inv', type: 'reel', status: 'scheduled', addedAsLive: false }),
+      post({ pageId: 'other', type: 'reel', likes: 50 }),
     ]
-    const r = predictReach('inv', 'static', ps)!
+    const r = predictReach('inv', 'reel', ps)!
     expect(r.samples).toBe(10)
     expect(r.avgReach).toBe(1000)
     expect(r.benchmarkPages).toBe(2)

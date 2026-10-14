@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  Send, Download, Copy, Check, AlertCircle, Loader2, X, Inbox, CalendarClock,
+  Send, Download, Copy, Check, AlertCircle, Loader2, X, Inbox, CalendarClock, Share2,
 } from 'lucide-react'
 import {
   publishingQueue, publishVideo, scheduleVideo, listVideos, localDay, videoDownloadUrl, videoStreamUrl,
@@ -172,6 +172,21 @@ function QueueCard({ video, canPublish, onPublish, onSchedule }: {
               )}
             </div>
           </div>
+          {/* Which pages this video is to be posted on, so the publisher knows
+              where it goes before they publish. The handles were captured at
+              upload (socialPageNames); older records that predate the picker,
+              or an upload with no campaign, have none — then there is nothing
+              to show. */}
+          {video.socialPageNames && video.socialPageNames.length > 0 && (
+            <div className="flex items-start gap-1.5 flex-wrap">
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground pt-0.5">
+                <Share2 className="w-3 h-3" /> Publish to:
+              </span>
+              {video.socialPageNames.map((name, i) => (
+                <span key={`${name}-${i}`} className="hub-badge bg-orange-50 text-orange-700">{name}</span>
+              ))}
+            </div>
+          )}
           <p className="text-xs text-foreground whitespace-pre-wrap bg-muted/40 rounded-lg p-2.5 max-h-32 overflow-y-auto">
             {video.caption}
           </p>
