@@ -7,7 +7,7 @@ import {
 import {
   LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
-import { useOutreachData, pageMetrics, removePage, pageOpenUrl, isValidInstagramHandle, formatLocalDate, refreshOutreach, analyzePostPerformance } from '@/lib/outreach-data'
+import { useOutreachData, pageMetrics, removePage, pageOpenUrl, isValidInstagramHandle, formatLocalDate, refreshOutreach, analyzePostPerformance, effectiveViews, isEstimatedViews } from '@/lib/outreach-data'
 import { api } from '@/lib/api'
 import AddLivePostsDialog from './AddLivePostsDialog'
 import EditPageModal from './EditPageModal'
@@ -116,7 +116,7 @@ export default function OutreachPageDetail() {
 
   const totals = pagePosts.reduce((acc, p) => ({
     likes: acc.likes + p.likes, comments: acc.comments + p.comments,
-    views: acc.views + p.views, saves: acc.saves + p.saves, shares: acc.shares + p.shares,
+    views: acc.views + effectiveViews(p), saves: acc.saves + p.saves, shares: acc.shares + p.shares,
   }), { likes: 0, comments: 0, views: 0, saves: 0, shares: 0 })
 
   return (
@@ -260,10 +260,16 @@ export default function OutreachPageDetail() {
                       <td className="px-3 py-2 text-xs text-muted-foreground">{p.creativeVariant ?? '—'}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.likes)}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.comments)}</td>
-                      {/* Views: show the exact total (not abbreviated) so the real
-                          per-post reach is auditable. An "Underperforming" chip (PRD
-                          6.6) appears when reach is below the page's own average. */}
-                      <td className="px-3 py-2 text-right text-xs font-mono tabular-nums" title={`${p.views.toLocaleString('en-US')} views`}>
+                      {/* Views: the exact total (not abbreviated) so the real
+                          per-post reach is auditable. Static posts and carousels
+                          have no view count, so their reach is estimated as
+                          likes × 20 and marked with a "~". An "Underperforming"
+                          chip (PRD 6.6) appears when reach is below the page's
+                          own average. */}
+                      <td className="px-3 py-2 text-right text-xs font-mono tabular-nums"
+                        title={isEstimatedViews(p)
+                          ? `Estimated reach ${effectiveViews(p).toLocaleString('en-US')} — likes × 20 (static and carousel posts have no view count)`
+                          : `${effectiveViews(p).toLocaleString('en-US')} views`}>
                         <div className="inline-flex items-center gap-1 justify-end">
                           {perf.underperforming && (
                             <button type="button" onClick={() => setOpenReasonId(open ? null : p.id)}
@@ -272,7 +278,7 @@ export default function OutreachPageDetail() {
                               <AlertTriangle className="w-2.5 h-2.5" /> Low
                             </button>
                           )}
-                          <span>{p.views.toLocaleString('en-US')}</span>
+                          <span>{isEstimatedViews(p) && <span className="text-muted-foreground">~</span>}{effectiveViews(p).toLocaleString('en-US')}</span>
                         </div>
                       </td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.saves)}</td>
@@ -303,7 +309,7 @@ export default function OutreachPageDetail() {
                             </p>
                           )}
                           <p className="text-[10px] text-muted-foreground mt-1">
-                            Reach {p.views.toLocaleString('en-US')} vs this page's average {perf.pageAvgReach.toLocaleString('en-US')}. A likely cause, not a certainty.
+                            Reach {effectiveViews(p).toLocaleString('en-US')}{isEstimatedViews(p) && ' (estimated)'} vs this page's average {perf.pageAvgReach.toLocaleString('en-US')}. A likely cause, not a certainty.
                           </p>
                         </td>
                       </tr>

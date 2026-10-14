@@ -133,6 +133,29 @@ export interface Post {
   addedAsLive: boolean
 }
 
+/**
+ * Instagram and Facebook report a view/play count only for videos and reels.
+ * A static image or a carousel has no view number — the sync stores views = 0
+ * for them (see bestViewCount in server/integrations/apify.ts). So their reach
+ * is estimated from engagement at a fixed rate: likes × 20.
+ *
+ * This is the one place that rule lives. Every reach total and every per-post
+ * view number on the influencer side reads through effectiveViews, so a static
+ * post or a carousel shows its estimate and a reel shows its real plays. The
+ * raw `views` column is left untouched — nothing persists the estimate.
+ */
+export const ESTIMATED_VIEWS_PER_LIKE = 20
+
+export function effectiveViews(post: Pick<Post, 'type' | 'views' | 'likes'>): number {
+  if (post.type === 'static' || post.type === 'carousel') return post.likes * ESTIMATED_VIEWS_PER_LIKE
+  return post.views
+}
+
+/** Whether a post's shown views are the likes × 20 estimate rather than real plays. */
+export function isEstimatedViews(post: Pick<Post, 'type'>): boolean {
+  return post.type === 'static' || post.type === 'carousel'
+}
+
 interface OutreachDB {
   pages: OutreachPage[]
   creators: OutreachCreator[]
@@ -704,7 +727,7 @@ export function campaignMetrics(campaign: Campaign, posts: Post[]): CampaignMetr
   const totalDelivered = postsDelivered + storiesDelivered + reelsDelivered
   const pctConsumed = totalBudget ? totalDelivered / totalBudget : 0
   const totalEngagement = cp.reduce((s, p) => s + p.likes + p.comments, 0)
-  const totalReach = cp.reduce((s, p) => s + p.views, 0)
+  const totalReach = cp.reduce((s, p) => s + effectiveViews(p), 0)
   return { postsDelivered, storiesDelivered, reelsDelivered, totalBudget, pctConsumed, totalEngagement, totalReach }
 }
 
@@ -755,7 +778,7 @@ export function recommendPages(
   for (const page of pages) {
     if (exclude.has(page.id)) continue
     const pp = posts.filter(p => p.pageId === page.id && p.addedAsLive)
-    const avgReach = pp.length ? Math.round(pp.reduce((s, p) => s + p.views, 0) / pp.length) : 0
+    const avgReach = pp.length ? Math.round(pp.reduce((s, p) => s + effectiveViews(p), 0) / pp.length) : 0
     const avgEngagement = pp.length ? Math.round(pp.reduce((s, p) => s + p.likes + p.comments, 0) / pp.length) : 0
     const stateMatch = !!opts.campaignState && sameState(page.state, opts.campaignState)
     const prefMatch = !!opts.preference && page.contentPreferences.includes(opts.preference)
@@ -801,20 +824,20 @@ export function analyzePostPerformance(
   if (live.length < UNDERPERF_MIN_HISTORY) {
     return { underperforming: false, enoughData: false, pageAvgReach: 0, reasons: [], alternate: null }
   }
-  const pageAvgReach = Math.round(live.reduce((s, p) => s + p.views, 0) / live.length)
+  const pageAvgReach = Math.round(live.reduce((s, p) => s + effectiveViews(p), 0) / live.length)
 
   // Best-performing format on this page (by avg reach) — also the alternate suggestion.
   const byFormat = new Map<PostType, { sum: number; n: number }>()
   for (const p of live) {
     const e = byFormat.get(p.type) ?? { sum: 0, n: 0 }
-    e.sum += p.views; e.n++; byFormat.set(p.type, e)
+    e.sum += effectiveViews(p); e.n++; byFormat.set(p.type, e)
   }
   const formatRank = [...byFormat.entries()]
     .map(([t, e]) => ({ t, avg: e.sum / e.n }))
     .sort((a, b) => b.avg - a.avg)
   const alternate = formatRank[0]?.t ?? null
 
-  if (post.views >= pageAvgReach) {
+  if (effectiveViews(post) >= pageAvgReach) {
     return { underperforming: false, enoughData: true, pageAvgReach, reasons: [], alternate }
   }
 
@@ -832,7 +855,7 @@ export function analyzePostPerformance(
   for (const p of live) {
     const d = new Date(`${p.date}T00:00:00`).getDay()
     const e = byDow.get(d) ?? { sum: 0, n: 0 }
-    e.sum += p.views; e.n++; byDow.set(d, e)
+    e.sum += effectiveViews(p); e.n++; byDow.set(d, e)
   }
   const dowRank = [...byDow.entries()].map(([d, e]) => ({ d, avg: e.sum / e.n })).sort((a, b) => b.avg - a.avg)
   const postDow = new Date(`${post.date}T00:00:00`).getDay()
@@ -937,7 +960,7 @@ export function predictReach(pageId: string, type: PostType, posts: Post[]): Rea
   const hist = measured.filter(p => p.pageId === pageId)
   if (hist.length === 0) return null
   const benchmarkEngagement = median(measured.map(postEngagement))
-  const reach = hist.map(p => p.views)
+  const reach = hist.map(effectiveViews)
   return {
     samples: hist.length,
     medianReach: Math.round(median(reach)),
@@ -1090,7 +1113,7 @@ export interface OutreachTotals {
  */
 export function aggregateTotals(posts: Post[]): OutreachTotals {
   let views = 0, likes = 0, comments = 0, shares = 0
-  for (const p of posts) { views += p.views; likes += p.likes; comments += p.comments; shares += p.shares }
+  for (const p of posts) { views += effectiveViews(p); likes += p.likes; comments += p.comments; shares += p.shares }
   return { reach: views, views, likes, comments, shares, engagement: likes + comments, posts: posts.length }
 }
 
@@ -1118,7 +1141,7 @@ export function dailyTrend(posts: Post[], days: number, ref = new Date()): Daily
       date,
       day: `${d.getDate()}/${d.getMonth() + 1}`,
       posts: same.length,
-      reach: same.reduce((s, p) => s + p.views, 0),
+      reach: same.reduce((s, p) => s + effectiveViews(p), 0),
     }
   })
 }

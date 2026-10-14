@@ -11,6 +11,7 @@ import {
   useOutreachData, removeCreator, updateCreator, instagramUrlForHandle, isValidInstagramHandle,
   formatLocalDate, PAGE_TYPES, FOLLOWER_TIERS, PAGE_CONTENT_TYPES,
   type OutreachCreator, type PageType, type FollowerTier, type PageContentType,
+  effectiveViews, isEstimatedViews
 } from '@/lib/outreach-data'
 import StateSelect from './StateSelect'
 import AddLivePostsDialog from './AddLivePostsDialog'
@@ -81,7 +82,7 @@ export default function OutreachCreatorDetail() {
     const pctConsumed = (pctPosts + pctStories) / 2
     const totalEng = mtd.reduce((s, p) => s + p.likes + p.comments, 0)
     const avgEngagement = mtd.length ? Math.round(totalEng / mtd.length) : 0
-    const totalReach = creatorPosts.reduce((s, p) => s + p.views, 0)
+    const totalReach = creatorPosts.reduce((s, p) => s + effectiveViews(p), 0)
     return {
       postsDoneMTD: postsCount + storyCount,
       pctConsumed,
@@ -256,7 +257,10 @@ export default function OutreachCreatorDetail() {
                       <td className="px-3 py-2 text-xs text-muted-foreground">{p.creativeVariant ?? '—'}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.likes)}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.comments)}</td>
-                      <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.views)}</td>
+                      <td className="px-3 py-2 text-right text-xs font-mono tabular-nums"
+                        title={isEstimatedViews(p) ? 'Estimated reach: likes × 20 — static posts and carousels have no view count' : undefined}>
+                        {isEstimatedViews(p) && <span className="text-muted-foreground">~</span>}{fmt(effectiveViews(p))}
+                      </td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.saves)}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.shares)}</td>
                     </tr>

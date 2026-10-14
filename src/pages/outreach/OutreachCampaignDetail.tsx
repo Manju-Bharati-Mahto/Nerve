@@ -15,6 +15,7 @@ import {
   syncCampaignNow,
   PAGE_CONTENT_PREFERENCES,
   type Campaign, type CampaignStatus, type OutreachPage, type OutreachCreator, type Post, type Platform,
+  effectiveViews
 } from '@/lib/outreach-data'
 
 // The server refuses budgets outside 0..100000 (whole numbers only).
@@ -117,7 +118,7 @@ export default function OutreachCampaignDetail() {
         delivered: pp.length,
         likes: pp.reduce((s, p) => s + p.likes, 0),
         comments: pp.reduce((s, p) => s + p.comments, 0),
-        views: pp.reduce((s, p) => s + p.views, 0),
+        views: pp.reduce((s, p) => s + effectiveViews(p), 0),
         engagement: pp.reduce((s, p) => s + p.likes + p.comments + p.saves + p.shares, 0),
       }
     }).filter(x => x.page).sort((a, b) => b.engagement - a.engagement)
