@@ -5554,7 +5554,7 @@ function drawMoreSheet(){
 }
 const MORE_ACTIONS={
   moreNotifications:()=>moreSheetGo('#/media/notifications'),
-  moreProfile:()=>{closeMoreSheet();$('#btn-role').onclick();},
+  moreProfile:()=>{closeMoreSheet();location.hash='#/media/profile';},
   moreKiosk:()=>{closeMoreSheet();openKiosk();},
   moreReload:()=>{closeMoreSheet();location.reload();},
   moreNerveHome:()=>{closeMoreSheet();window.location.href='/';},
@@ -5692,6 +5692,10 @@ const ROUTES = [
   [/^#\/media\/boards$/,               ()=>viewBoards()],
   [/^#\/media\/ai$/,                   ()=>viewAI()],
   [/^#\/media\/notifications$/,        ()=>viewNotifications()],
+  [/^#\/media\/profile$/,              ()=>viewMyProfile()],
+  /* An admin opening another member's personal profile. Guards are inside the
+     view (viewMyProfile) — a non-admin hitting /profile/:uid lands on their own. */
+  [/^#\/media\/profile\/(\d+)$/,       m=>viewMyProfile(+m[1])],
   [/^#\/media\/admin$/,                ()=>viewAdmin('lookups')],
   [/^#\/media\/admin\/audit$/,         ()=>{loadAudit();return viewAdmin('audit');}],
   [/^#\/media\/admin\/(\w+)$/,         m=>viewAdmin(m[1])],
@@ -5932,34 +5936,475 @@ $('#btn-quickadd').onclick=e=>menu(e.currentTarget,quickAddItems());
 $('#btn-display').onclick=e=>openDisplayMenu(e.currentTarget);
 mVV();
 $('#btn-logout').onclick=()=>ACTIONS.logout();
-$('#btn-role').onclick=()=>{
-  const m=me(), rl={admin:'Admin',team_lead:'Team Lead',coordinator:'Coordinator',employee:'Employee'}[m.role]||'Member';
-  modal(`<div class="mo-head"><div class="f ac gap3">${avatar(S.me,'lg')}
-      <div><h2>${esc(m.full_name)}</h2><p>${esc(m.email||'')} · ${rl}</p></div></div>
+/* The topbar avatar opens an account menu. "My Profile" is a real route — a
+   full page the viewer navigates to, like every other sidebar destination; the
+   quick controls (preferences, password, sign out) stay as modals so they can
+   be reached from any page without losing it. The handler on a phone shows a
+   bottom sheet instead because menu() does, so this one call covers both. */
+$('#btn-role').onclick=e=>{
+  menu(e.currentTarget,[
+    {label:'My Profile',      icon:ic('user'),     fn:()=>{ location.hash='#/media/profile'; }},
+    {label:'My Preference',   icon:ic('sliders'),  fn:()=>openMyPreferences()},
+    {label:'Change Password', icon:ic('lock'),     fn:()=>openChangePassword()},
+    {sep:true},
+    {label:'Nerve home',      icon:ic('external'), fn:()=>{ window.location.href='/'; }},
+    {label:'Log out',         icon:ic('logout'),   cls:'danger', fn:()=>ACTIONS.logout()},
+  ]);
+};
+/* The preferences modal: display options first (theme, layout) because they are
+   what somebody landing here most often wants to flip; the dashboard widgets
+   below for people who want to tune their home page. */
+function openMyPreferences(){
+  const widgetKeys=Object.keys(S.widgets||{});
+  modal(`<div class="mo-head"><div><h2>My Preference</h2>
+      <p>Display and dashboard widgets — saved on this device.</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
     <div class="mo-body">
-      ${displayBlock()}<div class="divider"></div>
-      <dl class="kv mb4"><dt>Name</dt><dd>${esc(m.full_name)}</dd>
-        <dt>Email</dt><dd>${esc(m.email||'—')}</dd>
-        <dt>Role</dt><dd>${rl}</dd>
-        ${m.designation?`<dt>Designation</dt><dd>${esc(m.designation)}</dd>`:''}</dl>
-      <div class="divider"></div>
-      <div class="small b mb3">Profile photo</div>
-      <div class="field"><label class="lbl">Upload a new photo</label>
-        <input class="inp" type="file" id="pf-photo" accept="image/*" onchange="ACTIONS.uploadMyPhoto(this)">
-        <div id="pf-photo-status" class="hint">${m.avatar_url?'A photo is set.':'No photo yet.'}</div></div>
-      <div class="divider"></div>
-      <div class="small b mb3">Change password</div>
-      <div class="field"><label class="lbl">Current password</label><input class="inp" id="pw-cur" type="password" autocomplete="current-password"></div>
-      <div class="row">
-        <div class="field"><label class="lbl">New password</label><input class="inp" id="pw-new" type="password" placeholder="min 6 characters" autocomplete="new-password"></div>
-        <div class="field"><label class="lbl">Confirm</label><input class="inp" id="pw-conf" type="password" autocomplete="new-password"></div></div></div>
-    <div class="mo-foot"><button class="btn danger" data-act="logout">⏻ Log out</button>
-      <div class="ml-auto f gap2"><button class="btn ghost" onclick="closeModal();window.location.href='/'">← Nerve home</button>
-        <button class="btn" onclick="closeModal()">Close</button>
-        <button class="btn primary" data-act="changePassword">Update password</button></div></div>`);
-  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+      ${displayBlock()}
+      ${widgetKeys.length?`<div class="divider"></div>
+        <div class="small b mb3">Home dashboard widgets</div>
+        ${widgetKeys.map(k=>`<div class="switch-row"><div class="sr-txt"><b>${esc(k.replace(/^\w/,c=>c.toUpperCase()))}</b></div>
+          <span class="switch ${S.widgets[k]?'on':''}" onclick="ACTIONS.toggleWidget({k:'${k}'});this.classList.toggle('on')"></span></div>`).join('')}`:''}
+    </div>
+    <div class="mo-foot"><button class="btn primary ml-auto" onclick="closeModal();render()">Done</button></div>`);
+}
+/* ── Photo cropper (self-contained, no library) ───────────────────────────
+   One modal, two states:
+     1. "Pick a photo"        — a file picker + a drop hint
+     2. "Crop it"              — the chosen image sits inside a stage, with a
+                                 circular mask showing the area that will become
+                                 the avatar. The viewer drags the image under
+                                 the mask and uses the zoom slider to scale.
+   On Apply, the visible region inside the mask is drawn to a 512×512 canvas
+   and uploaded via the same /api/users/me/avatar endpoint the Settings modal
+   has always used, so nothing downstream has to change. */
+function openPhotoCropper(){
+  modal(`<div class="mo-head"><div><h2>Change Profile Photo</h2>
+      <p id="pc-sub">Choose a photo from your device. A square crop becomes your avatar.</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body" id="pc-body">
+      <div id="pc-pick" class="pc-pick">
+        <div class="pc-pick-ico">${ic('image')}</div>
+        <div class="pc-pick-l">Pick a photo</div>
+        <div class="pc-pick-s">JPG, PNG or WebP — up to 10&nbsp;MB. A square portrait works best.</div>
+        <button class="btn primary" id="pc-pick-btn">${ic('upload')} Choose from device</button>
+        <input type="file" accept="image/*" id="pc-file" hidden>
+      </div>
+      <div id="pc-crop" class="pc-crop" hidden>
+        <div class="pc-stage" id="pc-stage">
+          <img id="pc-img" alt="" draggable="false">
+          <div class="pc-mask" aria-hidden="true"></div>
+          <div class="pc-ring" aria-hidden="true"></div>
+        </div>
+        <div class="pc-ctrls">
+          <label class="pc-zoom">
+            <span class="small b">Zoom</span>
+            <input type="range" id="pc-zoom" min="1" max="4" step="0.01" value="1">
+          </label>
+          <button class="btn ghost" id="pc-recenter" type="button">${ic('refresh')} Re-center</button>
+          <button class="btn" id="pc-change" type="button">${ic('image')} Change photo</button>
+        </div>
+        <div class="hint small">This circle is what everyone sees. Drag the photo to reposition it; the slider zooms in.</div>
+      </div>
+    </div>
+    <div class="mo-foot">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn primary ml-auto" id="pc-apply" disabled>${ic('check')} Apply</button>
+    </div>`);
+
+  const S_PC={ img:null, scale:1, minScale:1, offX:0, offY:0, dragging:false, startX:0, startY:0, startOffX:0, startOffY:0, stageW:0, stageH:0, cropD:0, iw:0, ih:0 };
+  const fileInp=$('#pc-file'), pickBtn=$('#pc-pick-btn'), changeBtn=$('#pc-change'),
+        pick=$('#pc-pick'), crop=$('#pc-crop'), stage=$('#pc-stage'), img=$('#pc-img'),
+        zoom=$('#pc-zoom'), applyBtn=$('#pc-apply'), recenter=$('#pc-recenter'),
+        sub=$('#pc-sub');
+  pickBtn.onclick=()=>fileInp.click();
+  changeBtn.onclick=()=>fileInp.click();
+
+  function toCrop(){
+    pick.hidden=true; crop.hidden=false; applyBtn.disabled=false;
+    sub.textContent='Drag the photo and use the zoom slider so the right area sits inside the circle.';
+    /* The stage reads whatever CSS gives it (320–420 px square). The mask
+       diameter is 70% of the shorter side, keeping some padding so a hand
+       cropping with a mouse has room to drag. */
+    const r=stage.getBoundingClientRect();
+    S_PC.stageW=r.width; S_PC.stageH=r.height;
+    S_PC.cropD=Math.min(r.width,r.height)*0.78;
+    stage.style.setProperty('--pc-d',S_PC.cropD+'px');
+    /* The minimum zoom is whatever makes the image at least cover the circle;
+       below that, empty surface would show through the mask. */
+    S_PC.iw=img.naturalWidth; S_PC.ih=img.naturalHeight;
+    const coverScale=Math.max(S_PC.cropD/S_PC.iw, S_PC.cropD/S_PC.ih);
+    S_PC.minScale=coverScale; S_PC.scale=coverScale;
+    zoom.min=coverScale.toFixed(3); zoom.max=(coverScale*4).toFixed(3); zoom.step='0.005'; zoom.value=coverScale.toFixed(3);
+    S_PC.offX=0; S_PC.offY=0;
+    applyTransform();
+  }
+  function clampOffsets(){
+    const halfVisW = (S_PC.iw*S_PC.scale)/2;
+    const halfVisH = (S_PC.ih*S_PC.scale)/2;
+    const halfCrop = S_PC.cropD/2;
+    const maxX = Math.max(0, halfVisW - halfCrop);
+    const maxY = Math.max(0, halfVisH - halfCrop);
+    if(S_PC.offX>maxX) S_PC.offX=maxX;
+    if(S_PC.offX<-maxX) S_PC.offX=-maxX;
+    if(S_PC.offY>maxY) S_PC.offY=maxY;
+    if(S_PC.offY<-maxY) S_PC.offY=-maxY;
+  }
+  function applyTransform(){
+    clampOffsets();
+    img.style.transform=`translate(calc(-50% + ${S_PC.offX}px), calc(-50% + ${S_PC.offY}px)) scale(${S_PC.scale})`;
+  }
+
+  fileInp.onchange=e=>{
+    const f=e.target.files&&e.target.files[0]; if(!f) return;
+    if(f.size>10*1024*1024){ toast('Picture is over 10 MB. Pick a smaller one.','bad'); return; }
+    if(!/^image\//.test(f.type)){ toast('That is not an image file.','bad'); return; }
+    const url=URL.createObjectURL(f);
+    img.onload=()=>{ URL.revokeObjectURL(url); toCrop(); };
+    img.onerror=()=>{ URL.revokeObjectURL(url); toast('Could not read that image.','bad'); };
+    img.src=url;
+  };
+  zoom.oninput=()=>{ S_PC.scale=+zoom.value; applyTransform(); };
+  recenter.onclick=()=>{ S_PC.offX=0; S_PC.offY=0; S_PC.scale=S_PC.minScale; zoom.value=S_PC.minScale.toFixed(3); applyTransform(); };
+
+  stage.addEventListener('pointerdown',e=>{
+    if(crop.hidden) return;
+    S_PC.dragging=true; S_PC.startX=e.clientX; S_PC.startY=e.clientY;
+    S_PC.startOffX=S_PC.offX; S_PC.startOffY=S_PC.offY;
+    try{ stage.setPointerCapture(e.pointerId); }catch(_){}
+    stage.classList.add('is-drag');
+  });
+  stage.addEventListener('pointermove',e=>{
+    if(!S_PC.dragging) return;
+    S_PC.offX=S_PC.startOffX+(e.clientX-S_PC.startX);
+    S_PC.offY=S_PC.startOffY+(e.clientY-S_PC.startY);
+    applyTransform();
+  });
+  const endDrag=()=>{ S_PC.dragging=false; stage.classList.remove('is-drag'); };
+  stage.addEventListener('pointerup',endDrag);
+  stage.addEventListener('pointercancel',endDrag);
+  stage.addEventListener('wheel',e=>{
+    if(crop.hidden) return;
+    e.preventDefault();
+    const factor=Math.exp(-e.deltaY*0.001);
+    const next=Math.max(S_PC.minScale, Math.min(S_PC.minScale*4, S_PC.scale*factor));
+    S_PC.scale=next; zoom.value=next.toFixed(3); applyTransform();
+  },{passive:false});
+
+  applyBtn.onclick=()=>{
+    if(crop.hidden) return;
+    const out=document.createElement('canvas'); out.width=512; out.height=512;
+    const ctx=out.getContext('2d');
+    /* Source rect: whatever sits inside the circle in image coordinates. The
+       image is centered at stage mid with (offX, offY) displacement at `scale`,
+       so the top-left of the mask in image space is the mid minus the half-
+       diameter, divided out by the scale. */
+    const halfCrop=S_PC.cropD/2;
+    const srcX = (S_PC.iw/2) - (halfCrop/S_PC.scale) - (S_PC.offX/S_PC.scale);
+    const srcY = (S_PC.ih/2) - (halfCrop/S_PC.scale) - (S_PC.offY/S_PC.scale);
+    const srcSize = S_PC.cropD/S_PC.scale;
+    ctx.imageSmoothingQuality='high';
+    ctx.drawImage(img, srcX, srcY, srcSize, srcSize, 0, 0, 512, 512);
+    out.toBlob(blob=>{
+      if(!blob){ toast('Could not save the crop.','bad'); return; }
+      applyBtn.disabled=true; applyBtn.textContent='Uploading…';
+      const fd=new FormData(); fd.append('avatar', blob, 'avatar.png');
+      fetch('/api/users/me/avatar',{method:'POST',credentials:'same-origin',body:fd})
+        .then(r=>r.json().then(j=>{ if(!r.ok) throw new Error(j.message||('HTTP '+r.status)); return j; }))
+        .then(j=>{
+          const m=DB.users.find(u=>u.id===S.me); if(m) m.avatar_url=j.avatar_url;
+          closeModal(); render(); toast('Profile photo updated','ok');
+        })
+        .catch(e=>{ applyBtn.disabled=false; applyBtn.innerHTML=ic('check')+' Apply'; toast('Upload failed: '+e.message,'bad'); });
+    },'image/png',0.92);
+  };
+  pfCropperStyleOnce();
+}
+/* The cropper styles — scoped to its own ids/classes, injected once per page. */
+function pfCropperStyleOnce(){
+  if(document.getElementById('pc-styles')) return;
+  const s=document.createElement('style'); s.id='pc-styles';
+  s.textContent=`
+    .pc-pick{display:flex;flex-direction:column;align-items:center;gap:10px;padding:28px 20px;text-align:center;
+      border:1.5px dashed var(--border);border-radius:var(--r);background:var(--surface-2)}
+    .pc-pick-ico{width:52px;height:52px;border-radius:50%;background:var(--surface);display:grid;place-items:center;color:var(--text-2);
+      box-shadow:0 2px 6px rgba(0,0,0,.06)}
+    .pc-pick-ico svg{width:22px;height:22px}
+    .pc-pick-l{font-weight:800;font-size:15px}
+    .pc-pick-s{font-size:12px;color:var(--text-3);max-width:360px}
+    .pc-crop{display:flex;flex-direction:column;align-items:center;gap:14px}
+    .pc-stage{--pc-d:280px;position:relative;width:min(420px,86vw);height:min(420px,86vw);
+      border-radius:var(--r);overflow:hidden;background:#0b0b0b;touch-action:none;user-select:none;cursor:grab;
+      display:grid;place-items:center}
+    .pc-stage.is-drag{cursor:grabbing}
+    .pc-stage #pc-img{position:absolute;top:50%;left:50%;transform-origin:center center;
+      max-width:none;max-height:none;pointer-events:none;will-change:transform}
+    /* The mask is a dark overlay with a transparent circle in the middle; it
+       lives above the image but below the ring. The ring is a visible outline
+       so the circle reads even on a mostly-dark photo. */
+    .pc-mask{position:absolute;inset:0;background:rgba(0,0,0,.55);pointer-events:none;
+      -webkit-mask:radial-gradient(circle at 50% 50%, transparent calc(var(--pc-d)/2 - 0.5px), #000 calc(var(--pc-d)/2));
+      mask:radial-gradient(circle at 50% 50%, transparent calc(var(--pc-d)/2 - 0.5px), #000 calc(var(--pc-d)/2))}
+    .pc-ring{position:absolute;left:50%;top:50%;width:var(--pc-d);height:var(--pc-d);border-radius:50%;
+      border:2px solid rgba(255,255,255,.9);box-shadow:0 0 0 1px rgba(0,0,0,.3) inset;transform:translate(-50%,-50%);pointer-events:none}
+    .pc-ctrls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;width:100%;justify-content:center}
+    .pc-zoom{display:flex;align-items:center;gap:10px;min-width:220px}
+    .pc-zoom input[type=range]{flex:1;accent-color:var(--brand-500)}
+  `;
+  document.head.appendChild(s);
+}
+
+/* ── UMS Staff Profile PDF importer ─────────────────────────────────────────
+   Everyone at Parul gets the same Staff Profile PDF from the UMS staff portal.
+   Its layout is a fixed grid of "Label : Value" lines, so a careful parser can
+   lift the fields the person would otherwise have to copy by hand into Nerve.
+
+   The parse runs entirely in the browser so the PDF never leaves the device.
+   pdf.js is only pulled in when somebody actually imports (it is ~400 KB, and
+   loading it on every page would be wasteful) — on first use we fetch the UMD
+   build from a public CDN, cache it on window.pdfjsLib, and reuse that. The
+   result is saved to localStorage under pf_extra_<nerve_user_id>, and the
+   next render of /media/profile picks it up through pfReadExtra(). */
+function pfLoadPdfJs(){
+  if(window.pdfjsLib && window.pdfjsLib.getDocument) return Promise.resolve(window.pdfjsLib);
+  if(window.__pfPdfJsLoading) return window.__pfPdfJsLoading;
+  const src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+  const workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  window.__pfPdfJsLoading = new Promise((resolve,reject)=>{
+    const s=document.createElement('script'); s.src=src;
+    s.onload=()=>{
+      try{ window.pdfjsLib.GlobalWorkerOptions.workerSrc=workerSrc; }catch(_){}
+      resolve(window.pdfjsLib);
+    };
+    s.onerror=()=>reject(new Error('Could not reach pdf.js. Are you online?'));
+    document.head.appendChild(s);
+  });
+  return window.__pfPdfJsLoading;
+}
+/* The field map: UMS label → key stored on the user's profile extra object.
+   Everything missing in UMS stays absent in Nerve, so the renderer can still
+   fall back to the generated placeholder ("—"). */
+const PF_FIELD_MAP = {
+  'Staff Name':'staff_name', 'Staff Code':'staff_code', 'Short Name':'short_name',
+  'Gender':'gender', 'Birth Date':'birth_date', 'Blood Group':'blood_group',
+  'Marital Status':'marital_status', 'Nationality Country':'nationality',
+  'Nationality':'nationality', 'Religion':'religion', 'Category':'category',
+  'Caste':'caste', 'Sub Caste':'sub_caste', 'Home Town':'home_town',
+  'Birth Place':'birth_place', 'Mother Tongue':'mother_tongue',
+  'Father Name':'father_name', 'Mother Name':'mother_name', 'Spouse Name':'spouse_name',
+  'Anniversary Date':'anniversary_date', 'Is Single Parent?':'is_single_parent',
+  'Is Physically Disabled ?':'is_disabled', 'Is Ex-Army Man?':'is_ex_army',
+  'Is Aadhaar Pan Linked':'is_aadhaar_pan_linked',
+  'Mobile No.':'mobile_no', 'Alternate Mobile No.':'alternate_mobile',
+  'Email':'email_personal', 'Email (Institute)':'email_institute',
+  'Email (P)':'email_personal', 'Intercom':'intercom',
+  'Office / Room / Cabin No.':'office_room', 'Office / Room /\nCabin No.':'office_room',
+  'Phone (Office)':'phone_office', 'Phone (Resident)':'phone_resident',
+  'Emergency Contact Name':'emergency_contact', 'Emergency Contact No.':'emergency_contact_no',
+  'Fax':'fax', 'Personal Website':'personal_website',
+  'Present Address':'present_address', 'Permanent Address':'permanent_address',
+  'Institute':'institute', 'Functional Institute':'functional_institute',
+  'Department':'department', 'Sub Department':'sub_department',
+  'Functional Department':'functional_department', 'Designation':'designation',
+  'Designation Date':'designation_date', 'Appointment Type':'appointment_type',
+  'Shift Type':'shift_type', 'Employee Type':'employee_type',
+  'Leave Category':'leave_category', 'Salary Department':'salary_department',
+  'Seating Place':'seating_place', 'Institute Joining Date':'institute_joining_date',
+  'Functional Institute Joining Date':'functional_institute_joining_date',
+  'Highest Degree':'highest_degree', 'Education Qualification':'education_qualification',
+  'Specialization Area':'specialization_area', 'Additional Role':'additional_role',
+  'Current Activities':'current_activities', 'Membership':'membership',
+  'Subjects taught in UG':'subjects_ug', 'NDCDCI Registration Number':'ndcdci_reg',
+  'GSDC Registration Number':'gsdc_reg',
+  'First':'reporting_first', 'Second':'reporting_second',
+  'Third':'reporting_third', 'Fourth':'reporting_fourth',
+  'Teaching':'teaching_exp', 'Industry':'industry_exp',
+  'Research':'research_exp', 'Other':'other_exp', 'Total':'total_experience',
+  'Bank':'bank', 'Account Number':'account_number', 'PAN':'pan',
+  'Aadhar Card Number':'aadhar', 'EPF Number':'epf_number', 'EPF Joining Date':'epf_joining_date',
+  'UAN (Universal Account Number)':'uan', 'UAN Generation Date':'uan_generation_date',
+  'Voter ID No':'voter_id', 'File No':'file_no',
+  'Nominee Name':'nominee_name', 'Nominee Relation':'nominee_relation',
+  'Nominee Birth Date':'nominee_birth_date', 'Passport Number':'passport_number',
+  'Issue Date':'passport_issue_date', 'Issue Place':'passport_issue_place',
+  'Expiry Date':'passport_expiry_date', 'Driving Licence No':'driving_licence',
+  'About Me':'about_me', 'Hobbies':'hobbies', 'My Vision':'vision',
+  'Biometric Person ID':'biometric_id', 'Visited Countries':'visited_countries',
+  'Languages Known':'languages_known', 'Reference Staff':'reference_staff',
+  'Citations':'citations', 'H index':'h_index', 'I index':'i_index',
+  'Project Guided':'projects_guided', 'PhD Guided (Completed)':'phd_guided',
+  'International Journals':'international_journals',
+  'International Conferences':'international_conferences',
+  'Books':'books', 'Patents':'patents',
+  'Registered PG Teacher':'registered_pg_teacher',
+  'Registered PhD Guide':'registered_phd_guide'
 };
+/* The PDF text layout: each page is a sequence of {str,x,y}. We bucket items
+   by y (same row), then within a row, read label-colon-value in that order.
+   The source document uses the glyph ":" between every label and its value,
+   so splitting a row on the first ":" lifts the pair cleanly. Multi-line
+   addresses stitch across rows below the "Present/Permanent Address" heading
+   because UMS prints them without labels after the first line. */
+function pfParsePdfText(pages){
+  const out={};
+  const lines=[];
+  for(const items of pages){
+    /* Group runs by y-coordinate (within 2 pixels). PDF.js reports y with the
+       origin at the bottom, so sort descending to get top-to-bottom order. */
+    const bucket=new Map();
+    for(const it of items){
+      const y=Math.round(it.y); let b=null;
+      for(const [ky,v] of bucket){ if(Math.abs(ky-y)<=2){b=v;break;} }
+      if(!b){ b=[]; bucket.set(y,b); }
+      b.push(it);
+    }
+    const rows=[...bucket.entries()].sort((a,b)=>b[0]-a[0])
+      .map(([,arr])=>arr.sort((a,b)=>a.x-b.x).map(it=>it.str).join(' ').replace(/\s+/g,' ').trim())
+      .filter(Boolean);
+    lines.push(...rows);
+  }
+  /* First pass: anything that looks like "Label : Value" wins. UMS doubles
+     fields on a line (e.g. "Mobile No. : 9… Intercom : 02…") so split on " : "
+     and interleave label/value tokens pairwise. */
+  for(const raw of lines){
+    const parts=raw.split(/\s*:\s*/);
+    if(parts.length<2) continue;
+    for(let i=0;i<parts.length-1;i++){
+      /* The label ends with the LAST word before this colon; everything before
+         that word is the value of the previous pair. The first part is the
+         first label; the last part is the last value. */
+      let label=parts[i].trim(); let value=parts[i+1].trim();
+      /* If this is not the first pair, the label is the TAIL of parts[i]:
+         e.g. "9173348449  Intercom" → "Intercom". We already assigned the
+         previous value, so drop it here. */
+      if(i>0){
+        const m=label.match(/([A-Z][A-Za-z0-9 ()?.\/'&-]+)$/);
+        if(m) label=m[1].trim();
+      }
+      /* And the value for this pair is everything in parts[i+1] UP TO the next
+         label (if any). parts[i+2] holds the next value; its leading tokens
+         belong to this value. */
+      if(i<parts.length-2){
+        const next=parts[i+1];
+        const m=next.match(/^(.*?)(\s[A-Z][A-Za-z0-9 ()?.\/'&-]+)$/);
+        if(m) value=m[1].trim();
+      }
+      const key=PF_FIELD_MAP[label];
+      if(key && value && value!=='-' && value!=='_' && !out[key]) out[key]=value;
+    }
+  }
+  /* Addresses: UMS prints them under a heading on its own row, then the body
+     spans the next 1-3 rows without a label. Capture both. */
+  const grabAddress=(headingRe, key)=>{
+    const i=lines.findIndex(l=>headingRe.test(l));
+    if(i<0) return;
+    const parts=[];
+    for(let j=i+1;j<Math.min(i+6,lines.length);j++){
+      const l=lines[j];
+      if(/^(Personal Information|Institute Information|Reporting Authority|Academic Information|Experience Details|Financial Information|Other Details|Publication|Address Information)$/i.test(l)) break;
+      if(/^[A-Z][A-Za-z ()?.\/'&-]+ : /.test(l)) break;
+      parts.push(l);
+    }
+    const addr=parts.join(', ').replace(/\s*,\s*,/g,',').replace(/\s{2,}/g,' ').trim();
+    if(addr) out[key]=addr;
+  };
+  grabAddress(/^Present Address$/, 'present_address');
+  grabAddress(/^Permanent Address$/, 'permanent_address');
+  return out;
+}
+function openUmsImport(){
+  modal(`<div class="mo-head"><div><h2>Import from UMS</h2>
+      <p>Upload your Parul UMS Staff Profile PDF. Nerve reads it in your browser — the file is never sent anywhere.</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body" id="ui-body">
+      <div class="pc-pick" id="ui-pick">
+        <div class="pc-pick-ico">${ic('file')}</div>
+        <div class="pc-pick-l">Pick your Staff Profile PDF</div>
+        <div class="pc-pick-s">From UMS → <b>My Profile</b> → Print. The file name usually looks like <span class="mono">Staff_Profile_Mr_YOUR_NAME.pdf</span>.</div>
+        <button class="btn primary" id="ui-pick-btn">${ic('upload')} Choose PDF</button>
+        <input type="file" accept="application/pdf,.pdf" id="ui-file" hidden>
+      </div>
+      <div id="ui-status" class="small mut mt3" style="display:none"></div>
+      <div id="ui-preview" hidden></div>
+    </div>
+    <div class="mo-foot">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn primary ml-auto" id="ui-apply" disabled>${ic('check')} Save to profile</button>
+    </div>`);
+  pfCropperStyleOnce();
+  const fileInp=$('#ui-file'), pickBtn=$('#ui-pick-btn'),
+        status=$('#ui-status'), preview=$('#ui-preview'), apply=$('#ui-apply');
+  pickBtn.onclick=()=>fileInp.click();
+  let parsed=null;
+  const setStatus=(txt,tone)=>{ status.style.display=''; status.textContent=txt;
+    status.style.color = tone==='bad'?'var(--danger)':(tone==='ok'?'var(--success)':''); };
+
+  fileInp.onchange=async e=>{
+    const f=e.target.files&&e.target.files[0]; if(!f) return;
+    if(!/\.pdf$/i.test(f.name) && f.type!=='application/pdf'){
+      setStatus('That is not a PDF.','bad'); return;
+    }
+    setStatus('Loading reader…');
+    try{
+      const pdfjsLib=await pfLoadPdfJs();
+      setStatus('Reading PDF…');
+      const buf=await f.arrayBuffer();
+      const doc=await pdfjsLib.getDocument({data:buf}).promise;
+      const pages=[];
+      for(let p=1;p<=doc.numPages;p++){
+        const pg=await doc.getPage(p);
+        const tc=await pg.getTextContent();
+        pages.push(tc.items.map(it=>({str:it.str, x:it.transform[4], y:it.transform[5]})));
+      }
+      parsed=pfParsePdfText(pages);
+      const found=Object.keys(parsed).length;
+      if(!found){ setStatus('No recognisable fields in that file. Is it the UMS Staff Profile PDF?','bad'); return; }
+      setStatus(`Found ${found} field${found===1?'':'s'}. Preview below — press Save to apply.`,'ok');
+      /* Preview — labels alphabetised so the person can scan it, values trimmed. */
+      preview.hidden=false;
+      const rows=Object.entries(parsed).sort((a,b)=>a[0].localeCompare(b[0]))
+        .map(([k,v])=>`<div class="pf-row"><span class="pf-l">${esc(k.replace(/_/g,' '))}</span><span class="pf-v">${esc(String(v).slice(0,160))}</span></div>`).join('');
+      preview.innerHTML=`<div class="divider mt3 mb3"></div>
+        <div class="small b mb2">What we will save</div>
+        <div class="pf-grid" style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:var(--r);padding:8px 14px">${rows}</div>`;
+      apply.disabled=false;
+    }catch(err){
+      console.error(err);
+      setStatus('Could not read that PDF: '+(err.message||err),'bad');
+    }
+  };
+  apply.onclick=()=>{
+    if(!parsed) return;
+    /* Merge over whatever was imported before, so a re-run with a newer file
+       only overwrites the fields the new file actually contains. */
+    const prev=pfReadExtra(S.me)||{};
+    pfWriteExtra(S.me, Object.assign({},prev,parsed));
+    closeModal();
+    toast(`Imported ${Object.keys(parsed).length} field(s) from UMS`,'ok');
+    if((S.route||'').startsWith('#/media/profile')) render(); else location.hash='#/media/profile';
+  };
+}
+
+/* The change-password modal: just the password fields. The current/new/confirm
+   trio and the data-act hook into ACTIONS.changePassword stay as they were. */
+function openChangePassword(){
+  modal(`<div class="mo-head"><div><h2>Change Password</h2>
+      <p>Pick a new sign-in password for your account.</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <div class="field"><label class="lbl">Current password</label>
+        <input class="inp" id="pw-cur" type="password" autocomplete="current-password" autofocus></div>
+      <div class="row">
+        <div class="field"><label class="lbl">New password</label>
+          <input class="inp" id="pw-new" type="password" placeholder="min 6 characters" autocomplete="new-password"></div>
+        <div class="field"><label class="lbl">Confirm</label>
+          <input class="inp" id="pw-conf" type="password" autocomplete="new-password"></div>
+      </div>
+    </div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn primary ml-auto" data-act="changePassword">Update password</button></div>`);
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+}
 /* ══ THE ACTION / SHORTCUT REGISTRY ═════════════════════════════════════════
    The keyboard shortcuts, the command palette, the quick-add menu and the
    shortcut help dialog were four hardcoded lists. A Creator pressing ? was
@@ -16744,7 +17189,9 @@ function viewTeamMember(uid){
           </div></div></div>
       <div class="page-actions">
         ${can('project.assign')?`<button class="btn">Assign to project</button>`:''}
-        ${isAdmin()?`<button class="btn" data-act="manageDuties" data-uid="${uid}">Manage duties</button>`:''}</div></div>
+        ${isAdmin()?`<button class="btn" data-act="manageDuties" data-uid="${uid}">Manage duties</button>`:''}
+        ${(isAdmin()&&uid!==S.me)?`<a class="btn primary" href="#/media/profile/${uid}">${ic('user')} View personal profile</a>`:''}
+      </div></div>
 
     ${!canSeeHR?`<div class="note warn mb4"><b>Scoped view.</b> Reports, leave requests and performance are visible only to the
       person, their Team Lead and Admin. Production history below is visible to everyone.</div>`:''}
@@ -16814,6 +17261,307 @@ function viewTeamMember(uid){
           ${held.length?`<div class="card-foot">Deactivating a user holding equipment is blocked with an actionable error.</div>`:''}</div>
       </div></div>`;
 }
+/* ==========================================================================
+   MY PROFILE — Full-page staff dashboard
+   The UMS Staff Profile re-made at home: a hero with the person's identity
+   and avatar, then grouped cards for Personal, Contact, Address, Institute,
+   Reporting Authority, Academic, Experience, Financial, Work Summary and
+   Other details. Fields Media Ops knows (name, email, role, department,
+   team, joined_on, nerve id, phone, avatar) read from DB.users; everything
+   else is HR data this app does not keep, shown as — placeholders so the
+   layout matches UMS and nobody is left wondering if a value was dropped.
+   The topbar avatar menu's "My Profile" lands here; actions on this page
+   open the preference and change-password modals the menu also exposes.
+   ========================================================================== */
+function viewMyProfile(targetUid){
+  /* /profile is always the signed-in viewer. /profile/:uid is reserved for an
+     Admin inspecting someone else's personal profile; anyone else landing on
+     one of those links falls back to their own page rather than seeing a
+     stranger's HR card. */
+  const isSelf = targetUid==null || targetUid===S.me;
+  if(!isSelf && !isAdmin()) targetUid = S.me;
+  const uid = isSelf ? S.me : targetUid;
+  const u=user(uid)||me();
+  const rl=roleMeta(u.role).l;
+  const t=teamOf(uid);
+  const camp=(DB.campuses||[]).find(c=>c.id===u.campus_id);
+  const dept=(DB.departments||[]).find(d=>d.id===u.department_id);
+  const lead=t&&t.lead_user_id&&t.lead_user_id!==uid ? user(t.lead_user_id) : null;
+  const admins=DB.users.filter(x=>x.is_active&&x.role==='admin'&&x.id!==uid);
+  const second=admins[0]||null;
+  const joined=u.joined_on;
+  const now=new Date(), jd=joined?new Date(joined):null;
+  const yrs = jd ? ((now - jd)/(365.25*86400000)) : 0;
+  const mos = jd ? Math.max(0,Math.round(((now - jd)/(30.44*86400000)) % 12)) : 0;
+  const yearsOnly = Math.floor(yrs);
+  const expStr = jd ? `${yearsOnly} year${yearsOnly===1?'':'s'} ${mos} month${mos===1?'':'s'}` : '—';
+  const duties=(DB.user_duties||[]).filter(d=>d.user_id===uid)
+    .map(d=>(DB.duty_flags||[]).find(f=>f.id===d.duty_flag_id)).filter(Boolean);
+  const snaps=(DB.performance_snapshots||[]).filter(s=>s.user_id===uid);
+  const hours30=userHours(uid,D.add(TODAY,-30),TODAY);
+  const activeProj=activeProjectsOf(uid);
+  const openDel=openDeliverables(uid);
+  const held=heldBy ? (heldBy(uid)||{rows:[]}).rows.map(r=>r.asset) : [];
+  const kraCount=(DB.kras||[]).filter(k=>k.user_id===uid).length;
+  const reportsCount=(DB.daily_reports||[]).filter(r=>r.user_id===uid).length;
+  /* Imported HR data from the UMS Staff Profile PDF, stored per-user in the
+     browser so a reload still shows it. A real deployment would move this to
+     the server (/api/users/:id/profile-extra); keeping it in localStorage for
+     now keeps the prototype self-contained. */
+  const extra = pfReadExtra(uid);
+  const V=(k,fallback)=>{const v=(extra||{})[k]; return v && String(v).trim() ? esc(v) : (fallback||'');};
+  /* The profile completion bar: counts both what Media Ops tracks AND what the
+     UMS import filled in, so a freshly imported profile lifts the gauge. */
+  const extraKeys=['birth_date','blood_group','gender','marital_status','religion','category','home_town','mother_tongue','present_address','permanent_address','pan','aadhar','bank','account_number','highest_degree','education_qualification'];
+  const extraFilled=extraKeys.filter(k=>extra&&extra[k]&&String(extra[k]).trim()).length;
+  const coreBits=[!!u.avatar_url,!!u.phone,!!t,duties.length>0,reportsCount>0,!!u.email,!!joined];
+  const pct=Math.round(((coreBits.filter(Boolean).length+extraFilled)/(coreBits.length+extraKeys.length))*100);
+
+  const row=(l,v)=>`<div class="pf-row"><span class="pf-l">${esc(l)}</span><span class="pf-v">${v||'<span class="mut3">—</span>'}</span></div>`;
+  const sect=(title,rows,extraHead)=>`<div class="card mb4"><div class="card-head ruled"><h3>${esc(title)}</h3>${extraHead||''}</div>
+    <div class="card-body pad"><div class="pf-grid">${rows.join('')}</div></div></div>`;
+  const hrNote=`<div class="hint small">Blank HR fields? Download your Staff Profile PDF from UMS and press <b>Import from UMS</b> above to fill them in.</div>`;
+
+  return `${profileStyleOnce()}
+    <div class="pf-wrap">
+      ${(!isSelf)?`<div class="note mb3"><b>Admin view.</b> You are looking at ${esc(u.full_name)}'s personal profile. HR fields show only what they imported themselves — nothing here is editable by you.</div>`:''}
+      <div class="pf-hero card">
+        <div class="pf-hero-grid">
+          <div class="pf-hero-left">
+            <button class="pf-avatar-wrap ${isSelf?'is-self':''}" ${isSelf?`data-act="openPhotoCropper" title="Change profile photo" aria-label="Change profile photo"`:'aria-label="Profile photo" disabled'}>
+              ${avatar(uid,'xl')}
+              ${isSelf?`<span class="pf-avatar-edit">${ic('camera')}<span>Change photo</span></span>`:''}
+            </button>
+            <div class="pf-head-id">
+              <h1 class="page-title">${esc(u.full_name||'—')}</h1>
+              <div class="pf-sub">${esc(u.designation||rl)}</div>
+              <div class="pf-chips f wrap gap2 mt3">
+                <span class="chip sel">${esc(rl)}</span>
+                ${t?`<span class="chip">${esc(teamIcon(t))} ${esc(t.name)}${t.lead_user_id===uid?' · lead':''}</span>`:'<span class="chip mut">No primary team</span>'}
+                ${dept?`<span class="chip">${esc(dept.name)}</span>`:''}
+                ${camp?`<span class="chip">${esc(camp.name)}</span>`:''}
+                ${joined?`<span class="chip">joined ${D.fmt(joined)}</span>`:''}
+                ${duties.map(d=>`<span class="chip sel">⚑ ${esc(d.name)}</span>`).join('')}
+              </div>
+            </div>
+          </div>
+          <div class="pf-hero-right">
+            <div class="pf-meter">
+              <div class="pf-meter-head"><span>Profile Filled</span><b>${pct}%</b></div>
+              <div class="pf-meter-track"><div class="pf-meter-fill" style="width:${pct}%"></div></div>
+              <div class="pf-meter-foot small mut">${pct===100?'Everything we track is filled in.':'Press Import from UMS to add the missing HR fields.'}</div>
+            </div>
+            <div class="pf-actions f gap2 wrap">
+              ${isSelf?`<button class="btn" data-act="openMyPrefs">${ic('sliders')} My Preference</button>
+                <button class="btn" data-act="openChangePw">${ic('lock')} Change Password</button>`:''}
+              <a class="btn ghost" href="#/media/team/${uid}">${ic('users')} View public page</a>
+              ${isSelf?`<button class="btn ghost pf-import-btn" data-act="openUmsImport" title="Import your Staff Profile PDF from UMS" aria-label="Import from UMS">${ic('upload')}</button>`:''}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="pf-tabs mb4">
+        <a class="pf-tab on" href="${isSelf?'#/media/profile':'#/media/profile/'+uid}">${ic('user')} ${isSelf?'My':'Personal'} Profile</a>
+        <a class="pf-tab" href="#/media/team/${uid}">${ic('users')} Public team page</a>
+        ${isSelf?`<a class="pf-tab" href="#/media/performance">${ic('trend')} Performance</a>
+        <a class="pf-tab" href="#/media/kra">${ic('target')} KRA</a>
+        <a class="pf-tab" href="#/media/leave">${ic('umbrella')} Leave</a>`:''}
+      </div>
+
+      <div class="pf-cols">
+        <div class="pf-col-main">
+          ${sect('Personal Information',[
+            row('Staff Name',esc(u.full_name)),
+            row('Staff Code',u.nerve_user_id?`<span class="mono">${esc(u.nerve_user_id)}</span>`:''),
+            row('Short Name',esc(u.initials||'')),
+            row('Gender',V('gender')),
+            row('Birth Date',V('birth_date')),
+            row('Blood Group',V('blood_group')),
+            row('Marital Status',V('marital_status')),
+            row('Nationality',V('nationality')),
+            row('Religion',V('religion')),
+            row('Category',V('category')),
+            row('Home Town',V('home_town')),
+            row('Mother Tongue',V('mother_tongue')),
+          ])}
+
+          ${sect('Contact Information',[
+            row('Mobile No.',u.phone?`<span class="mono">${esc(u.phone)}</span>`:V('mobile_no')),
+            row('Alternate Mobile',V('alternate_mobile')),
+            row('Email (Institute)',u.email?`<a href="mailto:${esc(u.email)}">${esc(u.email)}</a>`:V('email_institute')),
+            row('Email (Personal)',V('email_personal')),
+            row('Intercom',V('intercom')),
+            row('Office / Room / Cabin',V('office_room')),
+            row('Phone (Office)',V('phone_office')),
+            row('Phone (Resident)',V('phone_resident')),
+            row('Emergency Contact',V('emergency_contact')),
+            row('Fax',V('fax')),
+          ])}
+
+          ${sect('Address Information',[
+            row('Present Address',V('present_address')),
+            row('Permanent Address',V('permanent_address')),
+          ])}
+
+          ${sect('Academic Information',[
+            row('Highest Degree',V('highest_degree')),
+            row('Education Qualification',V('education_qualification')),
+            row('Specialization Area',V('specialization_area')),
+            row('Current Activities',V('current_activities',esc(u.designation||''))),
+            row('Additional Role',duties.length?duties.map(d=>esc(d.name)).join(', '):V('additional_role')),
+          ])}
+
+          ${sect('Experience Details',[
+            row('Total Experience',V('total_experience',esc(expStr))),
+            row('Teaching',V('teaching_exp')),
+            row('Industry',V('industry_exp')),
+            row('Research',V('research_exp')),
+            row('Other',V('other_exp',jd?esc(expStr):'')),
+          ])}
+
+          ${sect('Financial Information',[
+            row('Bank',V('bank')),
+            row('Account Number',V('account_number')),
+            row('PAN',V('pan')),
+            row('Aadhar Card Number',V('aadhar')),
+            row('EPF Number',V('epf_number')),
+            row('UAN',V('uan')),
+            row('Nominee Name',V('nominee_name')),
+            row('Nominee Relation',V('nominee_relation')),
+          ])}
+          ${isSelf&&extraFilled<extraKeys.length?hrNote:''}
+        </div>
+
+        <div class="pf-col-side">
+          ${sect('Institute Information',[
+            row('Institute',V('institute',esc((camp||{}).name||''))),
+            row('Functional Institute',V('functional_institute',esc((camp||{}).name||''))),
+            row('Department',V('department',esc((dept||{}).name||''))),
+            row('Sub Department',V('sub_department')),
+            row('Functional Department',t?`${esc(teamIcon(t))} ${esc(t.name)}`:V('functional_department')),
+            row('Designation',esc(u.designation||rl)),
+            row('Designation Date',V('designation_date',joined?esc(D.fmt(joined)):'')),
+            row('Appointment Type',V('appointment_type')),
+            row('Shift Type',V('shift_type')),
+            row('Employee Type',V('employee_type',esc(rl))),
+            row('Institute Joining Date',V('institute_joining_date',joined?esc(D.fmt(joined)):'')),
+            row('Functional Institute Joining Date',V('functional_institute_joining_date',joined?esc(D.fmt(joined)):'')),
+          ])}
+
+          ${sect('Reporting Authority',[
+            row('First',lead?`<div class="f ac gap2">${avatar(lead.id,'xs')}<span>${esc(lead.full_name)}</span></div>`:(u.role==='admin'?'<span class="mut3">Self-reporting (Admin)</span>':V('reporting_first'))),
+            row('Second',second?`<div class="f ac gap2">${avatar(second.id,'xs')}<span>${esc(second.full_name)}</span></div>`:V('reporting_second')),
+            row('Third',V('reporting_third')),
+            row('Fourth',V('reporting_fourth')),
+          ])}
+
+          ${sect('Work Summary (Media Ops)',[
+            row('Active projects',String(activeProj.length)),
+            row('Open deliverables',String(openDel.length)),
+            row('Hours (last 30 days)',hours30?`${hours30.toFixed(1)}h`:'0h'),
+            row('Reports filed',String(reportsCount)),
+            row('KRAs set',String(kraCount)),
+            row('Equipment held',String(held.length)),
+            row('Performance snapshots',String(snaps.length)),
+          ])}
+
+          ${sect('Other Details',[
+            row('About Me',V('about_me')),
+            row('Hobbies',V('hobbies')),
+            row('My Vision',V('vision')),
+            row('Biometric Person ID',V('biometric_id')),
+            row('Visited Countries',V('visited_countries')),
+            row('Languages Known',V('languages_known')),
+          ])}
+        </div>
+      </div>
+    </div>`;
+}
+/* Imported UMS profile data lives per-user in localStorage. Keyed by the
+   nerve_user_id when we have one, so a seed id changing between restarts does
+   not orphan a saved profile. The reader and writer stay next to the view
+   that uses them so the shape is easy to evolve. */
+function pfExtraKey(uid){ const u=user(uid)||{}; return 'pf_extra_'+(u.nerve_user_id||('u'+uid)); }
+function pfReadExtra(uid){ try{ const s=localStorage.getItem(pfExtraKey(uid)); return s?JSON.parse(s):null; }catch(_){ return null; } }
+function pfWriteExtra(uid,obj){ try{ localStorage.setItem(pfExtraKey(uid),JSON.stringify(obj||{})); }catch(_){} }
+/* The profile page's own styles, injected once per session. Kept with the view
+   rather than in the main stylesheet because this is the only place that uses
+   them, and the ones around it (pf-grid, pf-hero, pf-tabs) read better next to
+   the markup they style. Scoped to .pf-wrap so nothing else can inherit them. */
+function profileStyleOnce(){
+  if(document.getElementById('pf-styles')) return '';
+  return `<style id="pf-styles">
+    .pf-wrap{display:block;padding-bottom:40px}
+    .pf-hero{padding:26px 28px;margin-bottom:18px;background:
+      radial-gradient(360px 220px at 100% -10%,rgba(59,130,246,.10),transparent 70%),
+      radial-gradient(300px 180px at -5% 110%,rgba(124,58,237,.08),transparent 70%),
+      var(--surface)}
+    .pf-hero-grid{display:grid;grid-template-columns:1.4fr .9fr;gap:28px;align-items:center}
+    @media (max-width:760px){.pf-hero-grid{grid-template-columns:1fr}}
+    /* Hero: the avatar sits on the left at the full height of the name+sub+chips
+       column, so the eye line matches without squeezing text to the top. gap is
+       widened to let the identity breathe next to a photo this large. */
+    .pf-hero-left{display:flex;gap:28px;align-items:center;min-width:0}
+    .pf-avatar-wrap{position:relative;flex:0 0 auto;background:none;border:0;padding:0;cursor:default;
+      display:inline-block}
+    .pf-avatar-wrap.is-self{cursor:pointer}
+    .pf-avatar-wrap .av.xl{width:148px;height:148px;border-radius:28px;font-size:40px;
+      border:4px solid var(--surface);box-shadow:0 6px 18px rgba(0,0,0,.10);transition:transform .18s ease,box-shadow .18s ease}
+    .pf-avatar-wrap.is-self:hover .av.xl{transform:translateY(-1px);box-shadow:0 10px 24px rgba(0,0,0,.14)}
+    /* The camera chip tucked into the lower-right of the avatar, revealed as a
+       pill ("Change photo") on hover so the affordance is unambiguous. */
+    .pf-avatar-edit{position:absolute;right:6px;bottom:6px;height:30px;padding:0 10px 0 8px;
+      border-radius:999px;background:var(--surface);border:1px solid var(--border);
+      display:inline-flex;align-items:center;gap:6px;box-shadow:0 2px 8px rgba(0,0,0,.14);
+      font-size:11px;font-weight:700;color:var(--text-2);letter-spacing:.01em;max-width:30px;overflow:hidden;
+      transition:max-width .22s ease,color .18s ease,background .18s ease}
+    .pf-avatar-wrap.is-self:hover .pf-avatar-edit{max-width:160px;color:var(--brand-700,var(--brand-600));background:var(--surface)}
+    .pf-avatar-edit svg{width:14px;height:14px;flex:0 0 14px}
+    .pf-avatar-edit span{white-space:nowrap}
+    .pf-head-id{min-width:0;display:flex;flex-direction:column;justify-content:center;gap:4px}
+    .pf-head-id .page-title{margin:0;line-height:1.1}
+    .pf-sub{color:var(--text-2);font-size:15px;font-weight:600;margin-top:0}
+    .pf-chips{margin-top:8px}
+    .pf-chips .chip.mut{color:var(--text-3)}
+    /* The Import button is an icon-only ghost so it sits beside "View public
+       page" without stealing attention from the main actions. A tooltip explains
+       what it does; the import modal has the full copy. */
+    .pf-import-btn{width:34px;padding:0;display:inline-grid;place-items:center;color:var(--text-2)}
+    .pf-import-btn:hover{color:var(--brand-700,var(--brand-600));border-color:var(--brand-300,var(--brand-500))}
+    .pf-import-btn svg{width:16px;height:16px}
+    .pf-meter{background:var(--surface-2);border:1px solid var(--border-soft);border-radius:var(--r);
+      padding:14px 16px;margin-bottom:12px}
+    .pf-meter-head{display:flex;justify-content:space-between;align-items:baseline;font-size:12px;color:var(--text-3);font-weight:600}
+    .pf-meter-head b{color:var(--text);font-size:15px}
+    .pf-meter-track{height:8px;border-radius:999px;background:var(--surface-3);overflow:hidden;margin:8px 0 6px}
+    .pf-meter-fill{height:100%;background:linear-gradient(90deg,var(--brand-500),var(--brand-600));border-radius:inherit;
+      transition:width .4s cubic-bezier(.2,.9,.2,1)}
+    .pf-meter-foot{margin-top:2px}
+    .pf-actions .btn{height:34px}
+
+    .pf-tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);overflow-x:auto}
+    .pf-tab{display:inline-flex;align-items:center;gap:8px;padding:10px 14px;
+      font-size:13px;font-weight:600;color:var(--text-2);border-bottom:2px solid transparent;white-space:nowrap;
+      text-decoration:none;transition:color .15s,border-color .15s}
+    .pf-tab:hover{color:var(--text);text-decoration:none}
+    .pf-tab.on{color:var(--brand-600);border-bottom-color:var(--brand-600)}
+    .pf-tab svg{width:14px;height:14px}
+
+    .pf-cols{display:grid;grid-template-columns:1.4fr 1fr;gap:18px}
+    @media (max-width:960px){.pf-cols{grid-template-columns:1fr}}
+    .pf-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 24px}
+    @media (max-width:620px){.pf-grid{grid-template-columns:1fr}}
+    .pf-row{display:grid;grid-template-columns:150px 1fr;gap:10px;padding:9px 0;
+      border-bottom:1px dashed var(--border-soft);align-items:baseline;font-size:13px}
+    .pf-row:last-child{border-bottom:0}
+    .pf-l{color:var(--text-3);font-weight:600;font-size:12px;letter-spacing:.01em}
+    .pf-v{color:var(--text);font-weight:500;overflow-wrap:anywhere}
+    .pf-v a{color:var(--brand-600)}
+    .pf-wrap .card-head.ruled h3{font-size:14px;font-weight:800;letter-spacing:-.01em;color:var(--brand-700,var(--brand-600))}
+  </style>`;
+}
+
 /* ==========================================================================
    MODULE 8 — PERFORMANCE REVIEW
    ========================================================================== */
@@ -23099,6 +23847,12 @@ const ACTIONS = {
       .then(j=>{const m=DB.users.find(u=>u.id===S.me); if(m)m.avatar_url=j.avatar_url; render(); toast('Profile photo updated','ok'); closeModal();})
       .catch(e=>{st.textContent='Upload failed: '+e.message;});
   },
+  /* The two shortcuts the My Profile page offers to the modals that back the
+     topbar avatar menu, so a button on the page lands in the same flow. */
+  openMyPrefs:()=>openMyPreferences(),
+  openChangePw:()=>openChangePassword(),
+  openPhotoCropper:()=>openPhotoCropper(),
+  openUmsImport:()=>openUmsImport(),
   setLayout:(d)=>{ closeModal(); closeMoreSheet(); if(window.moLayout) moLayout.set(d.v); },
   setTheme:(d)=>{ if(S.theme!==d.v) toggleTheme(); else refreshDisplaySegs();
     if(isMobileLayout()){ try{ localStorage.setItem('mo_theme',d.v); }catch(_){} } },
