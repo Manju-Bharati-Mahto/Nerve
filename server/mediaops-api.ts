@@ -2350,9 +2350,18 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (nd) {
       const typeId = Number(nd.deliverable_type_id);
       const type = typeId ? (await pool.query(
-        `SELECT id FROM mo_deliverable_types WHERE id=$1 AND archived_at IS NULL`, [typeId])).rows[0] : null;
+        `SELECT id, name FROM mo_deliverable_types WHERE id=$1 AND archived_at IS NULL`, [typeId])).rows[0] : null;
       if (!type) return sendError(res, 400, "Pick the deliverable's type.");
-      const dTitle = String(nd.title ?? "").trim() || title;
+      /* Untitled, the deliverable is named by its kind — "Highlight Reel" — the
+         same way New project names the ones the Coordinator adds; a second of
+         the same kind on this project becomes "Highlight Reel (2)". */
+      let dTitle = String(nd.title ?? "").trim();
+      if (!dTitle) {
+        const taken = new Set((await pool.query(
+          `SELECT title FROM mo_deliverables WHERE project_id=$1 AND deleted_at IS NULL`, [pid])).rows.map((r) => String(r.title)));
+        dTitle = String(type.name);
+        for (let n = 2; taken.has(dTitle); n++) dTitle = `${type.name} (${n})`;
+      }
       if (dTitle.length > 160) return sendError(res, 400, "A deliverable title must be 160 characters or fewer.");
       const drive = String(nd.drive_url ?? "").trim();
       if (drive && !/^https:\/\/(drive|docs)\.google\.com\//.test(drive))

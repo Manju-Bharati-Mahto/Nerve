@@ -19477,18 +19477,12 @@ function openNewProject(){
         <div class="between mb2"><label class="lbl" style="margin:0">Deliverables</label>
           <button type="button" class="btn xs" data-act="npAddDeliverable">＋ Add deliverable</button></div>
         <div id="np-delivs"></div>
-        <div class="hint">Describe what this project has to produce. Who does each one is the Team Lead’s call. Deliverables start unassigned.</div></div>
+        <div class="hint">Pick what this project has to produce — one row per deliverable. Who does each one is the Team Lead’s call; deliverables start unassigned.</div></div>
     </div>
     <div class="mo-foot"><span class="left small mut3">Duplicate scan runs on create</span>
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn primary" data-act="createProject">Create project</button></div>`,{size:'wide'});
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=e=>{e.stopPropagation();ACTIONS[n.dataset.act](n.dataset,n);});
-  /* Autocomplete from what this crew has actually produced before — a hint
-     drawn from real history, never a list the creator must pick from. */
-  const seen=[...new Set(DB.deliverables.map(d=>String(d.title||'').trim()).filter(Boolean))].sort().slice(0,200);
-  const dl=document.createElement('datalist'); dl.id='np-d-suggest';
-  dl.innerHTML=seen.map(t=>`<option value="${esc(t)}"></option>`).join('');
-  $('#modal-layer').appendChild(dl);
   ACTIONS.npDelivSync();
 }
 function openBooking(eid,sid){
@@ -19592,16 +19586,13 @@ const WORK_TEMPLATES={
       <div id="aw-dnew">
         <div class="row">
           <div class="field"><label class="lbl">Deliverable type <span class="req">*</span></label>
-            <select class="inp" id="aw-dtype">${dtypes.map(t=>`<option value="${t.id}">${t.icon?esc(t.icon)+' ':''}${esc(t.name)}</option>`).join('')}</select></div>
-          <div class="field"><label class="lbl">Deliverable title</label>
-            <input class="inp" id="aw-dtitle" maxlength="160" placeholder="Same as the work title"></div>
+            <select class="inp" id="aw-dtype" onchange="ACTIONS.awTypeTitleHint()">${dtypes.map(t=>`<option value="${t.id}">${t.icon?esc(t.icon)+' ':''}${esc(t.name)}</option>`).join('')}</select></div>
+          <div class="field"><label class="lbl">Deliverable title <span class="mut3">(optional)</span></label>
+            <input class="inp" id="aw-dtitle" maxlength="160" placeholder="${esc((dtypes[0]||{}).name||'')}">
+            <div class="hint">Named after its type unless you say otherwise. It is due when the work is due.</div></div>
         </div>
-        <div class="row">
-          <div class="field"><label class="lbl">Deliverable due <span class="mut3">(optional)</span></label>
-            <input class="inp" type="date" id="aw-ddue"><div class="hint">Defaults to the work's due date.</div></div>
-          <div class="field"><label class="lbl">Drive link <span class="mut3">(optional)</span></label>
-            <input class="inp" id="aw-ddrive" inputmode="url" autocapitalize="off" placeholder="https://drive.google.com/… (can add later)"></div>
-        </div>
+        <div class="field"><label class="lbl">Drive link <span class="mut3">(optional)</span></label>
+          <input class="inp" id="aw-ddrive" inputmode="url" autocapitalize="off" placeholder="https://drive.google.com/… (can add later)"></div>
       </div>
       <div id="aw-dexisting" hidden>
         <div class="field"><label class="lbl">Deliverable <span class="req">*</span></label>
@@ -19638,8 +19629,7 @@ const WORK_TEMPLATES={
         const drive=$('#aw-ddrive').value.trim();
         if(drive&&!/^https:\/\/(drive|docs)\.google\.com\//.test(drive))
           return {err:'The Drive link must be a Google Drive or Docs link'};
-        payload.new_deliverable={deliverable_type_id:typeId,title:$('#aw-dtitle').value.trim()||null,
-          due_date:$('#aw-ddue').value||null,drive_url:drive||null};
+        payload.new_deliverable={deliverable_type_id:typeId,title:$('#aw-dtitle').value.trim()||null,drive_url:drive||null};
       } else if(mode==='existing'){
         const did=+($('#aw-deliv')||{}).value;
         if(!did)return {err:'Pick the deliverable'};
@@ -20912,6 +20902,12 @@ const ACTIONS = {
     const h=$('#aw-tplhint'); if(h)h.textContent='Form: '+tpl.label;
     const body=$('#aw-body'); if(body)body.innerHTML=tpl.body($('#aw-project').value);
   },
+  /* The optional title's placeholder shows what the deliverable will be called
+     if left blank: its type's name. */
+  awTypeTitleHint:()=>{
+    const t=dtype(+($('#aw-dtype')||{}).value), inp=$('#aw-dtitle');
+    if(inp&&t) inp.placeholder=t.name||'';
+  },
   awDelivMode:(d)=>{
     $$('#aw-dmode button').forEach(b=>{const on=b.dataset.m===d.m;b.classList.toggle('on',on);b.setAttribute('aria-checked',on?'true':'false');});
     const nw=$('#aw-dnew'), ex=$('#aw-dexisting'), of=$('#aw-ownerf'), h=$('#aw-dhint');
@@ -20966,7 +20962,7 @@ const ACTIONS = {
         const nd=payload.new_deliverable, dt=dtype(nd.deliverable_type_id);
         did=Math.max(0,...DB.deliverables.map(x=>x.id))+1;
         DB.deliverables.push({id:did,project_id:pid,deliverable_type_id:nd.deliverable_type_id,
-          title:nd.title||payload.title,owner_id:payload.owner_id,due_date:nd.due_date||payload.due_date,
+          title:nd.title||dt.name,owner_id:payload.owner_id,due_date:payload.due_date,
           completed_at:null,quantity_target:null,quantity_delivered:null,unit:dt.default_unit,spec_notes:'',
           weight:dt.default_weight||1,status:'not_started',priority:payload.priority,scheduled_date:null,
           social_status:'na',social_post_url:null,social_posted_at:null,mail_status:'na',mail_sent_at:null,deleted_at:null});
@@ -21190,12 +21186,12 @@ const ACTIONS = {
     const row=document.createElement('div');
     row.className='np-d';
     row.style.cssText='border:1px solid var(--border);border-radius:var(--r);padding:10px;margin-bottom:8px;background:var(--surface-2)';
-    row.innerHTML=`<div class="f gap2 ac mb2">
-        <input class="inp np-d-title" placeholder="e.g. Event photography, Aftermovie, Highlight reel" style="flex:1"
-          list="np-d-suggest" autocomplete="off">
-        <button type="button" class="icon-btn np-d-del" title="Remove this deliverable" style="color:var(--danger)">${ic('trash')}</button></div>
-      <div class="f gap2 wrap ac">
-        <select class="inp np-d-type" style="height:30px;font-size:12px;width:auto">
+    /* ONE field says what the deliverable is: its type (Photos — Edited,
+       Aftermovie, Reel…). The title is the type's name; a second of the same
+       type on this project becomes "… (2)". A free-text title beside the type
+       was two fields for one fact, and read as a choice between them. */
+    row.innerHTML=`<div class="f gap2 wrap ac">
+        <select class="inp np-d-type" style="height:34px;font-size:13px;flex:1 1 220px" aria-label="Deliverable type">
           ${types.map(t=>`<option value="${t.id}">${t.icon||''} ${esc(t.name)}</option>`).join('')}</select>
         <select class="inp np-d-pri" style="height:30px;font-size:12px;width:auto">
           <option value="normal">Normal</option><option value="urgent">Urgent</option>
@@ -21203,10 +21199,11 @@ const ACTIONS = {
         <input class="inp np-d-due" type="date" style="height:30px;font-size:12px;width:auto" title="Due date">
         <span class="f ac gap1"><input class="inp np-d-est" type="number" min="0" step="0.5" placeholder="—"
           style="height:30px;font-size:12px;width:64px;text-align:center" title="Estimated effort"><span class="xsmall mut3">h</span></span>
-        <span class="chip mut3" style="margin-left:auto">Team Lead will assign</span></div>`;
+        <span class="chip mut3">Team Lead will assign</span>
+        <button type="button" class="icon-btn np-d-del" title="Remove this deliverable" style="color:var(--danger);margin-left:auto">${ic('trash')}</button></div>`;
     row.querySelector('.np-d-del').onclick=()=>{row.remove();ACTIONS.npDelivSync();};
     box.appendChild(row);
-    if(!n)row.querySelector('.np-d-title').focus();
+    if(!n)row.querySelector('.np-d-type').focus();
   },
   /* Redraw the empty state when the last row goes. */
   npDelivSync:()=>{
@@ -21238,13 +21235,17 @@ const ACTIONS = {
     /* Deliverables the creator typed. They go to the server unassigned — the
        optimistic copy mirrors that so the screen never implies an owner the
        Team Lead has not chosen. */
-    const delivs=$$('#np-delivs .np-d').map(r=>({
-      title:(r.querySelector('.np-d-title').value||'').trim(),
-      deliverable_type_id:+r.querySelector('.np-d-type').value,
-      priority:r.querySelector('.np-d-pri').value,
-      due_date:r.querySelector('.np-d-due').value||null,
-      estimated_hours:+(r.querySelector('.np-d-est').value||0)||null,
-    })).filter(d=>d.title);
+    /* Each row is a type; its title is the type's name, numbered when the same
+       type appears again ("Reel / Short (2)"). */
+    const seenTitles={};
+    const delivs=$$('#np-delivs .np-d').map(r=>{
+      const typeId=+r.querySelector('.np-d-type').value, base=dtype(typeId).name||'Deliverable';
+      const n=(seenTitles[base]=(seenTitles[base]||0)+1);
+      return {title:n>1?`${base} (${n})`:base, deliverable_type_id:typeId,
+        priority:r.querySelector('.np-d-pri').value,
+        due_date:r.querySelector('.np-d-due').value||null,
+        estimated_hours:+(r.querySelector('.np-d-est').value||0)||null};
+    });
     let made=0;
     delivs.forEach(d=>{
       const dt=dtype(d.deliverable_type_id);

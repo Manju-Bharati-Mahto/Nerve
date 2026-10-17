@@ -890,8 +890,11 @@ maybe("assign work — creates the deliverable and gives it a team", () => {
     expect(n2.rowCount).toBe(1);
     expect(n1.rows[0].body).toContain("You own");
     expect(n2.rows[0].body).toContain("You are working on");
-    // Untitled, the deliverable takes the work's title.
-    expect((await deliv(did)).title).toBe(`${PX} edit the highlights`);
+    // Untitled, the deliverable is named by its type; a second of that type is numbered.
+    const typeName = String((await one(`SELECT name FROM mo_deliverable_types WHERE id=$1`, [dtype])).name);
+    expect((await deliv(did)).title).toBe(typeName);
+    const r2 = await work("leadA", pid, { assignees: [ACTORS.empA1.id], new_deliverable: { deliverable_type_id: dtype } });
+    expect((await deliv(Number((r2.body.deliverable as Record<string, unknown>).id))).title).toBe(`${typeName} (2)`);
   });
 
   it("an owner named explicitly must be one of the people assigned", async () => {
