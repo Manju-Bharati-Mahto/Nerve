@@ -447,12 +447,16 @@ maybe("submission — the owner submits, the project's lead hears about it", () 
     expect((await notes(ACTORS.leadB.id, "deliverable", did)).length).toBe(0);
   });
 
-  it("18 — Team B's lead cannot review Team A's work", async () => {
-    expect((await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "changes_requested", comment: "x" })).status).toBe(403);
-    expect((await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(403);
+  /* Product decision (Oct 2026): ANY Team Lead may approve, on any project.
+     The Coordinator and employees never do, and nobody approves their own. */
+  it("18 — any Team Lead may review; the Coordinator and employees may not", async () => {
     expect((await as("coord", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(403);
     expect((await as("empA1", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(403);
+    expect((await as("empB1", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(403);
     expect((await deliv(did)).status).toBe("in_review");
+    // Team B's lead reviews Team A's work.
+    expect((await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "changes_requested", comment: "x" })).status).toBe(200);
+    expect((await deliv(did)).status).toBe("changes_requested");
   });
 });
 
@@ -465,11 +469,20 @@ maybe("review — Team A's lead decides, and approval queues dispatch", () => {
     await as("empA1", "POST", `/deliverables/${did}/versions`, drive("r1"));
   });
 
-  it("20 — Team B's lead is refused on every review path", async () => {
-    expect((await as("leadB", "POST", `/deliverables/${did}/status`, { status: "approved" })).status).toBe(403);
-    expect((await as("leadB", "POST", `/deliverables/${did}/approval`, { approval_status: "approved" })).status).toBe(403);
-    const d = await deliv(did);
-    expect([d.status, d.approval_status ?? "pending", d.dispatch_status]).toEqual(["in_review", "pending", "none"]);
+  it("20 — another team's lead approves on every review path; the Coordinator and employees do not", async () => {
+    // A deliverable of its own, so the shared one below is left as it is.
+    const own = await ownedBy("empA1");
+    await as("empA1", "POST", `/deliverables/${own.did}/versions`, drive("x20"));
+    for (const who of ["coord", "empA2", "empB1"] as const) {
+      expect((await as(who, "POST", `/deliverables/${own.did}/status`, { status: "approved" })).status, who).toBe(403);
+      expect((await as(who, "POST", `/deliverables/${own.did}/approval`, { approval_status: "approved" })).status, who).toBe(403);
+    }
+    expect((await as("leadB", "POST", `/deliverables/${own.did}/status`, { status: "approved" })).status).toBe(200);
+    expect((await deliv(own.did)).dispatch_status).toBe("queued");
+    // Post-delivery sign-off, by the other team's lead too.
+    await as("empA1", "POST", `/deliverables/${own.did}/deliver`, {});
+    expect((await as("leadB", "POST", `/deliverables/${own.did}/approval`, { approval_status: "approved" })).status).toBe(200);
+    expect((await deliv(own.did)).approval_status).toBe("approved");
   });
 
   it("22 — changes requested sends it back, and the owner resubmits", async () => {
@@ -746,14 +759,26 @@ maybe("conversion — a request becomes a project on the team it was routed to",
 /* ── EDGES the rule has to hold across ────────────────────────────────────── */
 
 maybe("legacy projects, PMs, shoots and ad-hoc assignments", () => {
-  it("a legacy project (no team_id) is led by the Team Lead who owns it", async () => {
+  it("a legacy project (no team_id): the Team Lead who owns it is the one told; any lead may approve", async () => {
     const { did } = await ownedBy("empA1");
     const pid = Number((await deliv(did)).project_id);
     await pool.query(`UPDATE mo_projects SET team_id=NULL WHERE id=$1`, [pid]);
     await as("empA1", "POST", `/deliverables/${did}/versions`, drive("l1"));
     expect((await notes(ACTORS.leadA.id, "deliverable", did)).length).toBe(1);   // the owner-lead hears about it
-    expect((await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(403);
-    expect((await as("leadA", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(200);
+    expect((await notes(ACTORS.leadB.id, "deliverable", did)).length).toBe(0);   // not every lead is told
+    expect((await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(200);
+  });
+
+  it("any Team Lead approves a proposed project; running it stays with its own lead", async () => {
+    const { pid } = await routed(teamA);
+    await pool.query(`UPDATE mo_projects SET status='proposed' WHERE id=$1`, [pid]);
+    expect((await as("empA1", "POST", `/projects/${pid}/status`, { status: "approved" })).status).toBe(403);
+    expect((await as("coord", "POST", `/projects/${pid}/status`, { status: "approved" })).status).toBe(403);
+    expect((await as("leadB", "POST", `/projects/${pid}/status`, { status: "approved" })).status).toBe(200);
+    expect((await project(pid)).status).toBe("approved");
+    // Any other status move on Team A's project is not Team B's lead's to make.
+    expect((await as("leadB", "POST", `/projects/${pid}/status`, { status: "on_hold" })).status).toBe(403);
+    expect((await as("leadA", "POST", `/projects/${pid}/status`, { status: "on_hold" })).status).toBe(200);
   });
 
   it("a PM who is not the lead manages but does not review", async () => {

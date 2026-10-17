@@ -634,9 +634,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   /* ── Who may ASSIGN on a project ───────────────────────────────────────────
      Assigning (work, crew, a deliverable's owner, tasks) is wider than running
-     the project (editing it, its dates, status, routing — canManageProject),
-     and wider than reviewing it (canReviewProject, still the project's own
-     lead or an Admin):
+     the project (editing it, its dates, status, routing — canManageProject).
+     Approving is its own question (canReviewProject: any Team Lead or Admin):
        · Admin, and any Team Lead — on every project;
        · an employee — on a project they are part of: its owner or PM, or on its
          crew (assignment puts every assignee on the crew);
@@ -723,8 +722,20 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     return String(owner ?? "") === actor.id || await isProjectPM(actor, projectId);
   }
 
-  /** Who may review and approve a project's deliverables: Admin, or its Team Lead. */
-  async function canReviewProject(actor: CurrentUser, projectId: number): Promise<boolean> {
+  /** Who may review and approve deliverables (and approve proposed projects):
+      an Admin or ANY Team Lead, on any project. Product decision (Oct 2026):
+      approval is not limited to the project's own team. What still holds,
+      everywhere: nobody approves work they are on (reviewDeliverable checks
+      the team and the submitter), and Coordinators and employees never
+      approve. The projectId is kept so the call sites read as what they ask. */
+  async function canReviewProject(actor: CurrentUser, _projectId: number): Promise<boolean> {
+    return isMoAdmin(actor) || isMoTL(actor);
+  }
+
+  /** The project's own lead (or an Admin) — the one who submits a version on
+      someone's behalf or marks work delivered. That is running the project,
+      not approving it, so it stays with the team. */
+  async function leadsProjectOrAdmin(actor: CurrentUser, projectId: number): Promise<boolean> {
     return isMoAdmin(actor) || await isTeamLeadOfProject(actor, projectId);
   }
 
@@ -1651,9 +1662,13 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        lead, Admin, or its owner/PM may move status; only Admin may archive.
        BR-11: an employee may move their own project through production states,
        but NEVER approve a proposal (that would let them approve their own). */
-    if (!(await canManageProject(u, id))) return sendError(res, 403, "You cannot change this project's status.");
-    if (from === "proposed" && to === "approved" && !(isMoAdmin(u) || await isTeamLeadOfProject(u, id)))
-      return sendError(res, 403, "BR-11: only the project's Team Lead or an Admin may approve a proposed project.");
+    /* Approving a proposal is an APPROVAL, and any Team Lead or Admin may give
+       it — on any project. Every other move is running the project and stays
+       with its own lead, owner/PM or an Admin. */
+    if (from === "proposed" && to === "approved") {
+      if (!(await canReviewProject(u, id)))
+        return sendError(res, 403, "BR-11: only a Team Lead or an Admin may approve a proposed project.");
+    } else if (!(await canManageProject(u, id))) return sendError(res, 403, "You cannot change this project's status.");
     if (to === "archived" && !isMoAdmin(u)) return sendError(res, 403, "Only Admin may archive (BR-1).");
     if (from === "archived" && !isMoAdmin(u)) return sendError(res, 403, "BR-12: only Admin may un-archive.");
     if (!(PROJ_TRANSITIONS[from] ?? []).includes(to))
@@ -1884,7 +1899,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        else pushing a version into a colleague's deliverable could put it in
        front of a reviewer, and make a reviewer on it look eligible. */
     const team = await deliverableTeamIds(Number(d.id));
-    if (!(team.has(u.id) || await canReviewProject(u, Number(d.project_id))))
+    if (!(team.has(u.id) || await leadsProjectOrAdmin(u, Number(d.project_id))))
       return sendError(res, 403, "Only the people assigned to this deliverable, the project's Team Lead or an Admin may submit a version.");
     /* A deliverable the lead has cancelled, marked not required, approved or
        delivered is OUT of the production flow. Submitting a version onto one
@@ -1935,7 +1950,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   async function reviewDeliverable(u: CurrentUser, d: Record<string, unknown>, outcome: "approved" | "changes_requested",
                                    comment: string, req: express.Request): Promise<{ status: number; message?: string }> {
     if (!(await canReviewProject(u, Number(d.project_id))))
-      return { status: 403, message: "Only the project's Team Lead or an Admin may review this deliverable." };
+      return { status: 403, message: "Only a Team Lead or an Admin may review a deliverable." };
     const team = await deliverableTeamIds(Number(d.id));
     if (team.has(u.id))
       return { status: 403, message: "BR-5: you cannot review a deliverable you are assigned to." };
@@ -1992,7 +2007,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const id = parseInt(getSingleParam(req.params.id), 10);
     const d = await pool.query(`SELECT d.*, dt.review_exempt FROM mo_deliverables d JOIN mo_deliverable_types dt ON dt.id=d.deliverable_type_id WHERE d.id=$1`, [id]);
     if (!d.rows[0]) return sendError(res, 404, "Deliverable not found.");
-    if (!(await worksOnDeliverable(u, id) || await canReviewProject(u, Number(d.rows[0].project_id))))
+    if (!(await worksOnDeliverable(u, id) || await leadsProjectOrAdmin(u, Number(d.rows[0].project_id))))
       return sendError(res, 403, "Only the people assigned to this deliverable, the project's Team Lead or an Admin may mark it delivered.");
     /* Only an approved deliverable can be delivered (a review-exempt type reaches
        delivered straight from work). Before this check, calling /deliver after
@@ -8758,7 +8773,7 @@ async function allocateInternalCode(
     const d = (await pool.query(`SELECT * FROM mo_deliverables WHERE id=$1`, [id])).rows[0];
     if (!d) return sendError(res, 404, "Deliverable not found.");
     if (!(await canReviewProject(u, Number(d.project_id))))
-      return sendError(res, 403, "Only the project's Team Lead or an Admin may approve deliverables.");
+      return sendError(res, 403, "Only a Team Lead or an Admin may approve deliverables.");
     if (await worksOnDeliverable(u, id))
       return sendError(res, 403, "BR-5: you cannot approve a deliverable you are assigned to.");
     if (d.status !== "delivered")

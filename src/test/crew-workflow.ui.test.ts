@@ -251,21 +251,32 @@ describe("Notifications — clickable, routed and segmented for leads", () => {
   });
 });
 
-describe("Review — the project's lead, never your own work", () => {
-  it("each lead's queue holds their own team's submissions only", async () => {
+/* Product decision (Oct 2026): ANY Team Lead approves, on any project. The
+   Coordinator and employees never do, and nobody approves their own work. */
+describe("Review — any Team Lead, never your own work", () => {
+  it("every lead's queue holds every team's submissions — except their own", async () => {
     const h = await boot(901);
-    expect(h.ev<number[]>("pendingVersionReviews().map(x=>x.d.id)")).toEqual([8001]);   // 8005 is their own
+    let q = h.ev<number[]>("pendingVersionReviews().map(x=>x.d.id)");
+    expect(q).toContain(8001);
+    expect(q).toContain(8004);            // Team B's
+    expect(q).not.toContain(8005);        // their own
     h.as(904);
-    expect(h.ev<number[]>("pendingVersionReviews().map(x=>x.d.id)")).toEqual([8004]);
+    q = h.ev<number[]>("pendingVersionReviews().map(x=>x.d.id)");
+    for (const id of [8001, 8004, 8005]) expect(q).toContain(id);   // Team A's, their own team's, 901's
     h.as(902);
+    expect(h.ev<number[]>("pendingVersionReviews().map(x=>x.d.id)")).toEqual([]);
+    h.as(906);
     expect(h.ev<number[]>("pendingVersionReviews().map(x=>x.d.id)")).toEqual([]);
   });
 
-  it("the drawer offers Approve to the project's lead only", async () => {
+  it("the drawer offers Approve to every Team Lead — not to employees or the Coordinator", async () => {
     const h = await boot(901);
     h.ev("drawerDeliverable(8001)");
     expect(h.doc.getElementById("drawer")!.innerHTML).toContain('data-act="approveVersion"');
-    for (const who of [904, 902, 906]) {
+    h.as(904);
+    h.ev("drawerDeliverable(8001)");
+    expect(h.doc.getElementById("drawer")!.innerHTML, "another team's lead was not offered Approve").toContain('data-act="approveVersion"');
+    for (const who of [902, 906]) {
       h.as(who);
       h.ev("drawerDeliverable(8001)");
       expect(h.doc.getElementById("drawer")!.innerHTML, `user ${who} was offered Approve`).not.toContain('data-act="approveVersion"');
@@ -278,8 +289,8 @@ describe("Review — the project's lead, never your own work", () => {
     expect(h.doc.getElementById("drawer")!.innerHTML).not.toContain('data-act="approveVersion"');
   });
 
-  it("the board refuses another team's lead, an owner, a missing version and an unapproved delivery", async () => {
-    const h = await boot(904);
+  it("the board refuses the Coordinator, an owner, a missing version and an unapproved delivery", async () => {
+    const h = await boot(906);
     expect(h.ev<boolean>("applyDelivStatus(deliv(8001),'approved')")).toBe(false);
     h.as(901);
     expect(h.ev<boolean>("applyDelivStatus(deliv(8005),'approved')")).toBe(false);   // own deliverable
@@ -291,10 +302,20 @@ describe("Review — the project's lead, never your own work", () => {
     expect(h.writes().filter((c) => c.url.includes("/status")), "a refused move still reached the server").toEqual([]);
   });
 
-  it("the board lets the project's lead approve a submitted version", async () => {
-    const h = await boot(901);
+  it("the board lets any Team Lead approve a submitted version — another team's included", async () => {
+    const h = await boot(904);
     expect(h.ev<boolean>("applyDelivStatus(deliv(8001),'approved')")).toBe(true);
     expect(h.writes().some((c) => c.url.endsWith("/deliverables/8001/status"))).toBe(true);
+  });
+
+  it("the project status menu lets another team's lead approve a proposal — and nothing else", async () => {
+    const h = await boot(904);
+    h.ev("proj(7001).status='proposed'");
+    expect(h.ev<string[]>("MENUS.projStatus({pid:'7001'}).filter(i=>i.label).map(i=>i.label)")).toEqual(["Approved"]);
+    h.ev("proj(7001).status='in_production'");
+    expect(h.ev<string[]>("MENUS.projStatus({pid:'7001'}).filter(i=>i.label).map(i=>i.label)")).toEqual([]);
+    h.as(901);   // the project's own lead runs it
+    expect(h.ev<string[]>("MENUS.projStatus({pid:'7001'}).filter(i=>i.label).length")).toBeGreaterThan(0);
   });
 });
 

@@ -3694,8 +3694,11 @@ function leadsProject(p){
   if(p.team_id==null)return p.owner_id===S.me;
   return activeTeams().some(t=>String(t.id)===String(p.team_id)&&t.lead_user_id===S.me);
 }
-/* Who reviews and approves a project's deliverables — mirrors canReviewProject(). */
-function canReviewDeliverables(p){return isAdmin()||leadsProject(p);}
+/* Who reviews and approves deliverables, and approves proposed projects —
+   mirrors canReviewProject(): an Admin or ANY Team Lead, on any project.
+   Nobody approves work they are on; callers add !onDelivTeam(d) and the
+   submitter check, exactly as the server does. */
+function canReviewDeliverables(p){return isAdmin()||isTL();}
 /* Who may schedule or allocate a deliverable: Admin, the project's lead, or its
    owner/PM. Mirrors canManageProject() behind /schedule and /assignee. */
 function canScheduleWork(p){return isAdmin()||leadsProject(p)||!!(p&&(p.owner_id===S.me||isPMof(p.id)));}
@@ -3718,14 +3721,14 @@ const CAPS = {
   'report.review':          {employee:'-',team_lead:'T',admin:'A'},
   'report.unlock':          {employee:'-',team_lead:'T',admin:'A'},
   'project.create':         {employee:'A',team_lead:'A',admin:'A',coordinator:'A'},
-  'project.approve':        {employee:'-',team_lead:'T',admin:'A'},
+  'project.approve':        {employee:'-',team_lead:'A',admin:'A'},
   'project.edit':           {employee:'OWN',team_lead:'T',admin:'A',coordinator:'A'},
   'project.status':         {employee:'OWN',team_lead:'T',admin:'A',coordinator:'A'},
   'project.assign':         {employee:'-',team_lead:'T',admin:'A',coordinator:'A'},
   'project.archive':        {employee:'-',team_lead:'-',admin:'A'},
   'deliverable.edit':       {employee:'OWN',team_lead:'T',admin:'A'},
   'deliverable.submit':     {employee:'OWNER',team_lead:'A',admin:'A'},
-  'deliverable.approve':    {employee:'-',team_lead:'T',admin:'A'},
+  'deliverable.approve':    {employee:'-',team_lead:'A',admin:'A'},
   'pipeline.view':          {employee:'S',team_lead:'T',admin:'A',coordinator:'A'},
   'boards.manage':          {employee:'-',team_lead:'A',admin:'A'},
   'equipment.book':         {employee:'S',team_lead:'S',admin:'S',coordinator:'S'},
@@ -21384,7 +21387,7 @@ const ACTIONS = {
     const v=DB.deliverable_versions.filter(x=>x.deliverable_id===dl.id).sort((a,b)=>b.version_no-a.version_no)[0];
     if(v.submitted_by===S.me){toast('a version cannot be approved by its submitter','bad');return;}
     if(onDelivTeam(dl)){toast('you cannot approve a deliverable you are assigned to','bad');return;}
-    if(!canReviewDeliverables(proj(dl.project_id))){toast("403: only the project's Team Lead or an Admin may review","bad");return;}
+    if(!canReviewDeliverables(proj(dl.project_id))){toast("403: only a Team Lead or an Admin may review","bad");return;}
     dl.dispatch_status=dl.dispatch_status==='none'||!dl.dispatch_status?'queued':dl.dispatch_status;
     v.review_status='approved';v.reviewed_by=S.me;v.reviewed_at=TODAY;
     dl.status='approved';
@@ -24981,7 +24984,7 @@ const ACTIONS = {
   },
   reviewDelivered:(d)=>{
     const dl=DB.deliverables.find(x=>x.id===+d.did); if(!dl)return;
-    if(!canReviewDeliverables(proj(dl.project_id))){toast("403: only the project's Team Lead or an Admin may review","bad");return;}
+    if(!canReviewDeliverables(proj(dl.project_id))){toast("403: only a Team Lead or an Admin may review","bad");return;}
     if(onDelivTeam(dl)){toast('you cannot approve a deliverable you are assigned to','bad');return;}
     const to=d.v;
     const before={approval_status:dl.approval_status,status:dl.status};
@@ -25243,7 +25246,13 @@ const MENUS = {
         return [{label_only:'Status changes: project owner/PM, Team Lead or Admin only'}];
     }
     const p=proj(+d.pid);
-    const allowed=PROJ_TRANSITIONS[p.status]||[];
+    /* Running the project (every status move) is its own lead's, owner/PM's or
+       an Admin's. Any other Team Lead may still APPROVE a proposal — that is
+       an approval, open to every lead — and nothing else. Mirrors the server. */
+    const runs=isAdmin()||leadsProject(p)||p.owner_id===S.me||isPMof(p.id);
+    const allowed=runs?(PROJ_TRANSITIONS[p.status]||[])
+      :(canReviewDeliverables(p)&&p.status==='proposed'?['approved']:[]);
+    if(!allowed.length) return [{label_only:"Status changes: the project's Team Lead, owner/PM or an Admin"}];
     return [{label_only:'Allowed from '+PROJ_STATUS[p.status].l},
       ...allowed.map(s=>({label:PROJ_STATUS[s].l,icon:PROJ_STATUS[s].i,fn:()=>{
         if(s==='archived'&&!can('project.archive')){toast('403: only Admin may archive','bad');return;}
@@ -25347,7 +25356,7 @@ function applyDelivStatus(dl,s){
      reviewDeliverable() as the drawer), so they obey the same rules — Admins too. */
   if(s==='approved'||s==='changes_requested'){
     if(!canReviewDeliverables(proj(dl.project_id))){
-      toast("only the project's Team Lead or an Admin may review it",'bad');return false;}
+      toast("only a Team Lead or an Admin may review it",'bad');return false;}
     if(onDelivTeam(dl)){toast('you cannot review a deliverable you are assigned to','bad');return false;}
     if(latest&&latest.submitted_by===S.me){
       toast('you submitted the latest version. Someone else must review it','bad');return false;}
