@@ -139,18 +139,20 @@ describe("Team Lead — their own team, their own team's projects", () => {
     expect(layer).not.toContain("Pending Approval");
   });
 
-  it("allocates a deliverable among their own team — and can reassign it", async () => {
+  /* Assigning is not limited by team (product decision, Oct 2026): a lead picks
+     from the whole crew, on any project. Running another team's project —
+     its schedule and dates — is still that team's lead's. */
+  it("allocates a deliverable to anyone in the crew — another team included — and can reassign it", async () => {
     const h = await boot(901);
     const cell = h.ev<string>("delivOwnerCell(proj(7001),deliv(8003))");
-    expect(cell).toContain('value="902"');
-    expect(cell).toContain('value="903"');
-    expect(cell).not.toContain('value="905"');
+    for (const id of ["902", "903", "905"]) expect(cell).toContain(`value="${id}"`);
     expect(h.ev<string>("delivOwnerCell(proj(7001),deliv(8002))")).toMatch(/value="902" selected/);
   });
 
-  it("is offered nothing to allocate on another team's project", async () => {
+  it("assigns on another team's project, but does not run it", async () => {
     const h = await boot(904);
-    expect(h.ev<string>("delivOwnerCell(proj(7001),deliv(8003))")).not.toContain("<select");
+    expect(h.ev<string>("delivOwnerCell(proj(7001),deliv(8003))")).toContain("<select");
+    expect(h.ev<boolean>("canAssignOn(proj(7001))")).toBe(true);
     expect(h.ev<boolean>("canScheduleWork(proj(7001))")).toBe(false);
     expect(h.ev<boolean>("canEditDueDates(proj(7001))")).toBe(false);
   });
@@ -320,11 +322,46 @@ describe("Assign work — creates the deliverable and shares it with everyone as
     expect(h.ev<boolean>("typeof openNewDeliverable==='undefined'")).toBe(true);
   });
 
-  it("is offered to whoever runs the project — not to another team's lead or the Coordinator", async () => {
-    const h = await boot(904);
+  it("is offered to every Team Lead and to employees on the project — not the Coordinator, not someone off it", async () => {
+    const h = await boot(904);   // another team's lead
+    expect(h.ev<string>("viewProject(7001,'overview')")).toContain('data-act="assignWork"');
+    h.as(906);                   // the Coordinator routes, never assigns
     expect(h.ev<string>("viewProject(7001,'overview')")).not.toContain('data-act="assignWork"');
+    h.as(905);                   // an employee who is not on 7001
+    expect(h.ev<boolean>("canAssignOn(proj(7001))")).toBe(false);
+    h.ev("DB.project_assignments.push({id:99009,project_id:7001,user_id:905,is_project_manager:false,removed_at:null})");
+    expect(h.ev<boolean>("canAssignOn(proj(7001))")).toBe(true);   // now on its crew
+    expect(h.ev<string>("viewProject(7001,'overview')")).toContain('data-act="assignWork"');
+  });
+
+  it("an employee on a project picks from the whole crew; the Coordinator picks nobody but themselves", async () => {
+    const h = await boot(903);
+    const ids = h.ev<number[]>("assignableMembers().map(u=>u.id)");
+    for (const id of [901, 902, 904, 905]) expect(ids).toContain(id);
     h.as(906);
-    expect(h.ev<string>("viewProject(7001,'overview')")).not.toContain('data-act="assignWork"');
+    expect(h.ev<number[]>("assignableMembers().map(u=>u.id)")).toEqual([906]);
+  });
+
+  it("crew buttons: another team's lead may add crew, but removing crew and editing shoots stay with the project's lead", async () => {
+    const h = await boot(904);
+    const page = h.ev<string>("viewProject(7001,'overview')");
+    expect(page).toContain('data-act="assignCrew"');
+    expect(page, "another team's lead was offered Remove from project").not.toContain("Remove from project");
+    h.as(901);
+    expect(h.ev<string>("viewProject(7001,'overview')")).toContain('data-act="assignCrew"');
+  });
+
+  it("'Assign to project' on a person's page now works: it adds them to the chosen project", async () => {
+    const h = await boot(901);
+    const page = h.ev<string>("viewTeamMember(905)");
+    expect(page).toMatch(/data-act="assignMemberToProject" data-uid="905"/);
+    h.ev("ACTIONS.assignMemberToProject({uid:'905'})");
+    const sel = h.doc.querySelector("#amp-project") as HTMLSelectElement;
+    expect(sel, "no project picker opened").not.toBeNull();
+    sel.value = "7001";
+    h.ev("ACTIONS.confirmMemberToProject({uid:'905'})");
+    const post = h.writes().find((c) => c.url.endsWith("/projects/7001/assignments"));
+    expect(post?.body).toEqual({ user_id: "zcw-905" });
   });
 
   it("opened from a project, the project is fixed and a new deliverable is the default", async () => {

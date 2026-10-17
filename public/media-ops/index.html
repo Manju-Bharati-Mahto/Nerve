@@ -3664,16 +3664,27 @@ function assignableTeams(){
   }).filter(t=>!isTL()||t.lead_user_id===S.me);
 }
 
+/* Who this person may put on work — mirrors assignableMemberIds() on the
+   server. Admins, Team Leads and employees pick from the whole active crew
+   (assigning is not limited to your own team). The Coordinator routes projects
+   and never names individuals, and an SMC member is not Media Crew: both get
+   only themselves. */
 function assignableMembers(uid=S.me){
   const u=user(uid)||{};
   const active=DB.users.filter(x=>x.is_active);
   if(u.role==='admin')return active;
-  if(u.role==='team_lead'){
-    const teamIds=activeTeams().filter(t=>t.lead_user_id===uid).map(t=>t.id);
-    const ids=new Set([uid,...DB.team_members.filter(m=>teamIds.includes(m.team_id)).map(m=>m.user_id)]);
-    return active.filter(x=>ids.has(x.id));
-  }
-  return active.filter(x=>x.id===uid);
+  if(u.role==='coordinator'||(uid===S.me&&amSmcMember()))return active.filter(x=>x.id===uid);
+  return active;
+}
+/* Who may ASSIGN on a project — mirrors canAssignOnProject(): Admin and every
+   Team Lead on any project; an employee on a project they are part of (owner,
+   PM or crew); never the Coordinator or an SMC member. Running the project
+   (editing, dates, status) and reviewing it stay with its own lead. */
+function canAssignOn(p){
+  if(isAdmin())return true;
+  if(!p||isCoord()||amSmcMember())return false;
+  if(isTL())return true;
+  return p.owner_id===S.me||isOnProject(p.id)||isPMof(p.id);
 }
 /* The project's Team Lead — mirrors the server's isTeamLeadOfProject(): the lead
    of the team the project is routed to, or, for a project from before teams were
@@ -3694,7 +3705,7 @@ function canEditDueDates(p){return isAdmin()||leadsProject(p);}
 const isPMof = (pid,uid=S.me)=>DB.project_assignments.some(a=>a.project_id===pid&&a.user_id===uid&&a.is_project_manager&&!a.removed_at);
 /* §16: projects on which the current user may CREATE deliverables — the ones they
    run (Admin, the project's lead, its owner/PM), as POST /projects/:id/deliverables. */
-const canOwnProjects=()=>visibleProjects().filter(p=>!['archived','cancelled','completed'].includes(p.status)&&canScheduleWork(p));
+const canOwnProjects=()=>visibleProjects().filter(p=>!['archived','cancelled','completed'].includes(p.status)&&canAssignOn(p));
 const isOnProject = (pid,uid=S.me)=>DB.project_assignments.some(a=>a.project_id===pid&&a.user_id===uid&&!a.removed_at);
 
 /* ---------- §16 PERMISSION MATRIX — server-side equivalent, deny by default ---------- */
@@ -10087,7 +10098,7 @@ function viewProject(id,tab){
       <div class="page-actions">
         <span class="f ac gap2"><span class="small mut3">Owner</span>${avatar(p.owner_id,'sm')}
           <span class="small b">${esc(user(p.owner_id).full_name)}</span></span>
-        ${canScheduleWork(p)?`<button class="btn sm primary" data-act="assignWork" data-pid="${p.id}"
+        ${canAssignOn(p)?`<button class="btn sm primary" data-act="assignWork" data-pid="${p.id}"
           title="Assign work to your team. A deliverable is created with it">＋ Assign work</button>`:''}
         <button class="btn sm" data-menu="projMore" data-pid="${p.id}">⋯</button>
       </div></div>
@@ -10285,7 +10296,7 @@ function projOverview(p,dls,crew,shoots,pr){
 
       <div class="card"><div class="card-head"><h3>Team &amp; logged hours</h3>
         
-        <div class="ca">${can('project.assign')?`<button class="btn xs" data-act="assignCrew" data-pid="${p.id}">＋ Assign</button>`:''}</div></div>
+        <div class="ca">${canAssignOn(p)?`<button class="btn xs" data-act="assignCrew" data-pid="${p.id}">＋ Assign</button>`:''}</div></div>
         <div class="card-body flush"><div class="tbl-wrap"><table class="tbl m-cards pj-cards">
           <thead><tr><th>Person</th><th>Deliverables</th><th class="num">Hours logged</th><th></th></tr></thead>
           <tbody>${projectPeople(p.id,dls,crew).map(a=>`<tr class="click" data-go="#/media/team/${a.user_id}">
@@ -10304,7 +10315,7 @@ function projOverview(p,dls,crew,shoots,pr){
               :'<span class="small mut3">No deliverables</span>';})()}</td>
             <td class="num" data-m="hide">${((perPerson[a.user_id]||0)/60).toFixed(1)}h</td>
             <td class="num" data-m="aside">${statusPill(PRESENCE_MAP(),presence(a.user_id))}
-              ${(can('project.assign')&&!a.is_project_manager)?`<span class="icon-btn" role="button" title="Remove from project" style="color:var(--danger)"
+              ${((isAdmin()||leadsProject(p))&&!a.is_project_manager)?`<span class="icon-btn" role="button" title="Remove from project" style="color:var(--danger)"
                 onclick="event.stopPropagation();event.preventDefault();ACTIONS.removeAssignment({pid:${p.id},uid:${a.user_id}})">${ic('trash')}</span>`:''}</td></tr>`).join('')}
           </tbody></table></div></div></div>
     </div>
@@ -10406,7 +10417,7 @@ function projDeliverablesTab(p,dls){
   return `<div class="card"><div class="card-head"><h3>Deliverables</h3>
       
       <div class="ca">
-        ${canScheduleWork(p)?`<button class="btn xs primary" data-act="assignWork" data-pid="${p.id}"
+        ${canAssignOn(p)?`<button class="btn xs primary" data-act="assignWork" data-pid="${p.id}"
           title="Deliverables are created by assigning the work that produces them">＋ Assign work</button>`:""}</div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl m-cards pj-cards">
       <thead><tr><th>Type</th><th>Title</th><th>Owner</th><th>Scheduled</th><th>Due</th><th>Qty</th><th>Versions</th>
@@ -10459,7 +10470,7 @@ function projDeliverablesTab(p,dls){
    is offered their team, a Coordinator is offered nothing, and PATCH
    /deliverables/:id re-checks both server-side regardless of what is rendered. */
 function delivOwnerCell(p,d){
-  const opts=canScheduleWork(p)?assignableMembers():[];
+  const opts=canAssignOn(p)?assignableMembers():[];
   /* Reassigning stays in the lead's hands: an owner they could not have chosen
      (someone outside their scope) is shown, not offered for change. */
   if(d.owner_id&&!opts.some(u=>u.id===d.owner_id))return avatar(d.owner_id,'sm');
@@ -10476,7 +10487,7 @@ function delivOwnerCell(p,d){
 function projShootsTab(p,shoots){
   return `<div class="card"><div class="card-head"><h3>Shoots</h3>
       
-      <div class="ca">${canScheduleWork(p)?`<button class="btn xs primary" data-act="assignWork" data-pid="${p.id}">＋ Assign work</button>`:''}</div></div>
+      <div class="ca">${canAssignOn(p)?`<button class="btn xs primary" data-act="assignWork" data-pid="${p.id}">＋ Assign work</button>`:''}</div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl m-cards pj-cards">
       <thead><tr><th>Shoot</th><th>Date</th><th>Call</th><th>Location</th><th>Crew</th><th>Equipment</th><th>Status</th></tr></thead>
       <tbody>${shoots.map(s=>{
@@ -10494,7 +10505,7 @@ function projShootsTab(p,shoots){
             :bk.length?bk.map(b2=>`<span class="chip" title="${esc((b2.make||'')+' '+(b2.model||''))}">${esc(b2.asset_tag)}</span>`).join(' ')
             :'<span class="mut3">none</span>'}</td>
           <td data-m="actions"><span class="chip">${esc(s.status)}</span>
-            ${can('project.assign')?`<span class="nowrap" onclick="event.stopPropagation()">
+            ${(isAdmin()||leadsProject(p))?`<span class="nowrap" onclick="event.stopPropagation()">
               <button class="btn xs" onclick="ACTIONS.editShoot({sid:${s.id}})">✎</button>
               <button class="btn xs" style="color:var(--danger)" onclick="ACTIONS.deleteShoot({sid:${s.id}})">${ic('trash')}</button></span>`:''}</td></tr>`;}).join('')
         ||'<tr><td colspan="7" class="tbl-empty">No shoots. A multi-day event has many shoot sessions with different crews and gear.</td></tr>'}
@@ -16799,7 +16810,7 @@ function viewTeamMember(uid){
             ${DB.user_duties.filter(d=>d.user_id===uid).map(d=>`<span class="chip sel">⚑ ${esc((DB.duty_flags.find(f=>f.id===d.duty_flag_id)||{name:'duty'}).name)}</span>`).join('')}
           </div></div></div>
       <div class="page-actions">
-        ${can('project.assign')?`<button class="btn">Assign to project</button>`:''}
+        ${canOwnProjects().length&&u.is_active!==false?`<button class="btn" data-act="assignMemberToProject" data-uid="${uid}">Assign to project</button>`:''}
         ${isAdmin()?`<button class="btn" data-act="manageDuties" data-uid="${uid}">Manage duties</button>`:''}</div></div>
 
     ${!canSeeHR?`<div class="note warn mb4"><b>Scoped view.</b> Reports, leave requests and performance are visible only to the
@@ -19270,7 +19281,7 @@ function drawerShoot(id){
         unfilled crew slots alert the Team Lead.</div>
     </div>
     <div class="dr-foot">
-      ${can('project.assign')?`<button class="btn primary" data-act="assignCrew" data-sid="${s.id}">＋ Assign crew</button>`:''}
+      ${canAssignOn(p)?`<button class="btn primary" data-act="assignCrew" data-sid="${s.id}">＋ Assign crew</button>`:''}
       <button class="btn" data-act="booking" data-sid="${s.id}">▣ Book equipment</button>
       <a class="btn ghost ml-auto" href="#/media/projects/${p.id}/shoots" onclick="closeDrawer()">Open project</a></div>`);
   wirePage();
@@ -19596,7 +19607,7 @@ const WORK_TEMPLATES={
       <div class="field"><label class="lbl">Assign to <span class="req">*</span></label>
         <div class="f wrap gap2" id="aw-users">${assignableMembers().map(u=>
           `<button type="button" class="chip" data-uid="${u.id}" onclick="ACTIONS.awPick(this)">${esc(u.full_name)}</button>`).join('')}</div>
-        <div class="hint">${isAdmin()?'You can assign anyone in the crew.':isTL()?'Members of your own team only.':'You can assign work to yourself.'}
+        <div class="hint">You can assign anyone in the Media Crew.
           Everyone you pick sees the deliverable in their My Day and can upload versions of it.</div></div>
       <div class="field" id="aw-ownerf"><label class="lbl">Owner <span class="mut3">(accountable — submits it for review)</span></label>
         <select class="inp" id="aw-owner" disabled><option value="">Pick who to assign first</option></select></div>
@@ -24879,10 +24890,30 @@ const ACTIONS = {
         <p>Assigned crew see this project in their dashboard.</p></div>
         <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
       <div class="mo-body"><div class="f wrap gap2" id="pa-crew">${assignableMembers().map(u=>`<button type="button" class="chip ${isOnProject(p.id,u.id)?'sel':''}" data-uid="${u.id}" onclick="this.classList.toggle('sel')">${esc(u.full_name)}</button>`).join('')}</div>
-        <div class="hint mt2">${isAdmin()?'You can assign anyone in the crew.':'You can assign members of your own team only.'}</div></div>
+        <div class="hint mt2">You can assign anyone in the Media Crew.</div></div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" data-act="confirmAssign" data-pid="${p.id}">Assign</button></div>`);
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  /* From a person's page: put them on one of the projects you may assign on. */
+  assignMemberToProject:(d)=>{
+    const uid=+d.uid, who=user(uid);
+    const ps=canOwnProjects().filter(p=>!isOnProject(p.id,uid));
+    if(!ps.length){toast(esc(who.full_name)+' is already on every project you can assign on','warn');return;}
+    modal(`<div class="mo-head"><div><h2>Assign ${esc(who.full_name)} to a project</h2>
+        <p>They join the project's crew and are told.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body"><div class="field"><label class="lbl" for="amp-project">Project</label>
+        <select class="inp" id="amp-project">${ps.map(p=>`<option value="${p.id}">${esc(p.name)} — ${esc(p.code||'')}</option>`).join('')}</select></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="confirmMemberToProject" data-uid="${uid}">Assign</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  confirmMemberToProject:(d)=>{
+    const pid=+$('#amp-project').value; if(!pid) return;
+    closeModal();
+    moSync(MO_API.post('/projects/'+pid+'/assignments',{user_id:ruid(+d.uid)}),
+      ()=>{render();toast(user(+d.uid).full_name+' added to '+proj(pid).name,'ok');});
   },
   confirmAssign:(d)=>{
     const uids=$$('#pa-crew .chip.sel').map(c=>ruid(+c.dataset.uid));
@@ -25249,7 +25280,7 @@ const MENUS = {
   projMore:(d)=>{
     const p=proj(+d.pid);
     return [
-      {label:'Assign crew',icon:'users',disabled:!can('project.assign'),fn:()=>ACTIONS.assignProject(d)},
+      {label:'Assign crew',icon:'users',disabled:!canAssignOn(p),fn:()=>ACTIONS.assignProject(d)},
       {label:'Edit details',icon:'edit',disabled:!(isAdmin()||isTL()||p.owner_id===S.me||isPMof(p.id)),fn:()=>ACTIONS.editProject(d)},
       {label:'Add Drive link',icon:'link',fn:()=>ACTIONS.addLink(d)},
       {sep:true},
@@ -26425,7 +26456,7 @@ function delivAssignSection(did){
       <dt>SMC member</dt><dd>${line(a.smc&&a.smc.full_name, a.smc&&a.smc.institute)}</dd>
     </dl>
     <div class="f gap2 wrap mb3">
-      ${(()=>{const dl=deliv(+did);return dl&&canScheduleWork(proj(dl.project_id))?`<button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="crew">
+      ${(()=>{const dl=deliv(+did);return dl&&canAssignOn(proj(dl.project_id))?`<button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="crew">
         ${a.crew?'Change owner':'Assign an owner'}</button>`:'';})()}
       <button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="smc">
         ${a.smc?'Change SMC member':'Assign to SMC member'}</button>

@@ -297,24 +297,33 @@ maybe("team lead — allocates inside their own team, on their own team's projec
     expect((r.body.crew as Record<string, unknown> | null)?.user_id ?? null).toBe(ACTORS.empA1.id);
   });
 
-  it("7 — Team A's lead cannot assign a Team B employee, by either path", async () => {
-    expect((await as("leadA", "PATCH", `/deliverables/${a.dids[2]}`, { owner_id: ACTORS.empB1.id })).status).toBe(403);
-    expect((await as("leadA", "POST", `/deliverables/${a.dids[2]}/assignee`,
-      { kind: "crew", user_id: ACTORS.empB1.id })).status).toBe(403);
+  /* Product decision (Oct 2026): assigning is not limited by team. A Team Lead
+     assigns anyone, on any project — like an Admin. Running another team's
+     project (dates, schedule, routing, status) and reviewing it are still that
+     team's lead's. */
+  it("7 — Team A's lead may assign a Team B employee, by either path", async () => {
+    expect((await as("leadA", "PATCH", `/deliverables/${a.dids[2]}`, { owner_id: ACTORS.empB1.id })).status).toBe(200);
+    expect((await as("leadA", "POST", `/deliverables/${a.dids[1]}/assignee`,
+      { kind: "crew", user_id: ACTORS.empB1.id })).status).toBe(201);
+    expect((await deliv(a.dids[2])).owner_id).toBe(ACTORS.empB1.id);
   });
 
-  it("8 — Team A's lead cannot operate on Team B's project", async () => {
+  it("8 — Team A's lead assigns on Team B's project, but does not run or review it", async () => {
     const d = b.dids[0];
-    expect((await as("leadA", "PATCH", `/deliverables/${d}`, { owner_id: ACTORS.empA1.id })).status).toBe(403);
-    expect((await as("leadA", "POST", `/deliverables/${d}/assignee`, { kind: "crew", user_id: ACTORS.empA1.id })).status).toBe(403);
-    expect((await deliv(d)).owner_id).toBe(null);
+    // Assigning — open to every lead.
+    expect((await as("leadA", "PATCH", `/deliverables/${d}`, { owner_id: ACTORS.empA1.id })).status).toBe(200);
+    expect((await as("leadA", "POST", `/deliverables/${d}/assignee`, { kind: "crew", user_id: ACTORS.empB1.id })).status).toBe(201);
+    expect((await deliv(d)).owner_id).toBe(ACTORS.empB1.id);
+    expect((await as("leadA", "POST", `/projects/${b.pid}/work`,
+      { work_type_id: workTypeId, title: `${PX} task`, assignees: [ACTORS.empA1.id] })).status).toBe(201);
+    expect((await as("leadA", "POST", `/projects/${b.pid}/tasks`,
+      { title: `${PX} task`, assignees: [ACTORS.empA1.id] })).status).toBe(201);
+    expect((await as("leadA", "POST", `/projects/${b.pid}/assignments`, { user_id: ACTORS.empA2.id })).status).toBe(201);
+    // Running it — still Team B's lead's.
     expect((await as("leadA", "POST", `/deliverables/${d}/schedule`, { scheduled_date: "2026-10-04" })).status).toBe(403);
     expect((await as("leadA", "PATCH", `/deliverables/${d}/due-date`, { due_date: "2026-10-09" })).status).toBe(403);
-    expect((await as("leadA", "POST", `/projects/${b.pid}/work`,
-      { work_type_id: workTypeId, title: `${PX} task`, assignees: [ACTORS.empA1.id] })).status).toBe(403);
-    expect((await as("leadA", "POST", `/projects/${b.pid}/tasks`,
-      { title: `${PX} task`, assignees: [ACTORS.empA1.id] })).status).toBe(403);
-    expect((await as("leadA", "POST", `/projects/${b.pid}/assignments`, { user_id: ACTORS.empA1.id })).status).toBe(403);
+    expect((await as("leadA", "PATCH", `/deliverables/${d}`, { title: "renamed" })).status).toBe(403);
+    expect((await as("leadA", "POST", `/projects/${b.pid}/status`, { status: "on_hold" })).status).toBe(403);
     expect((await as("leadA", "PATCH", `/projects/${b.pid}`, { team_id: teamA })).status).toBe(403);
     expect(Number((await project(b.pid)).team_id)).toBe(teamB);
     // A lead does not re-route even their own project — that is the Coordinator's call.
@@ -371,16 +380,19 @@ maybe("employee — sees and executes their own work, and nothing more", () => {
     expect(owned.rows.map((r) => r.owner_id)).toEqual([ACTORS.empA1.id]);
   });
 
-  it("13 — an employee cannot take or hand out deliverables", async () => {
-    // claiming an unassigned one
+  /* Employees assign too (product decision, Oct 2026) — but only on a project
+     they are part of. Someone who is not on it cannot take or hand out its work. */
+  it("13 — an employee off the project cannot take its work; one on it can hand work to a colleague", async () => {
+    // empA2 is not on this project: claiming an unassigned one, or a colleague's, is refused.
     expect((await as("empA2", "PATCH", `/deliverables/${dids[1]}`, { owner_id: ACTORS.empA2.id })).status).toBe(403);
-    // taking a colleague's
     expect((await as("empA2", "PATCH", `/deliverables/${dids[0]}`, { owner_id: ACTORS.empA2.id })).status).toBe(403);
+    expect((await as("empB1", "POST", `/deliverables/${dids[2]}/assignee`,
+      { kind: "crew", user_id: ACTORS.empB1.id })).status).toBe(403);
     expect((await deliv(dids[0])).owner_id).toBe(ACTORS.empA1.id);
-    // handing one to a colleague
-    expect((await as("empA1", "PATCH", `/deliverables/${dids[0]}`, { owner_id: ACTORS.empA2.id })).status).toBe(403);
+    // empA1 is on it (they own a deliverable here) and hands an unassigned one to a colleague.
     expect((await as("empA1", "POST", `/deliverables/${dids[2]}/assignee`,
-      { kind: "crew", user_id: ACTORS.empA1.id })).status).toBe(403);
+      { kind: "crew", user_id: ACTORS.empA2.id })).status).toBe(201);
+    expect((await deliv(dids[2])).owner_id).toBe(ACTORS.empA2.id);
   });
 
   it("13b — an employee cannot edit another employee's deliverable", async () => {
@@ -758,13 +770,15 @@ maybe("legacy projects, PMs, shoots and ad-hoc assignments", () => {
     expect((await as("leadA", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(200);
   });
 
-  it("shoot crew follows the same scope and notifies each added member", async () => {
+  it("shoot crew: any lead crews anyone; the Coordinator and people off the project cannot; added members are told", async () => {
     const { pid } = await routed(teamA);
     const shoot = await one(
       `INSERT INTO mo_shoots (project_id, title, shoot_date, location, status, created_by)
        VALUES ($1,$2,'2026-10-05','Auditorium','planned',$3) RETURNING id`, [pid, `${PX} shoot`, ACTORS.leadA.id]);
-    expect((await as("leadB", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empB1.id] })).status).toBe(403);
-    expect((await as("leadA", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empB1.id] })).status).toBe(403);
+    expect((await as("leadB", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empB1.id] })).status).toBe(201);
+    expect((await as("coord", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empA2.id] })).status).toBe(403);
+    // empB1 is on the shoot, not on the project's crew — they do not assign here.
+    expect((await as("empB1", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empA2.id] })).status).toBe(403);
     expect((await as("leadA", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empA1.id] })).status).toBe(201);
     // The newly-added crew member is told, with the shoot's title and date in the body.
     const n = await pool.query(
@@ -786,14 +800,18 @@ maybe("legacy projects, PMs, shoots and ad-hoc assignments", () => {
     expect(n.rows.map((x) => x.title)).toContain("You are on a project");
   });
 
-  it("an assignment's members cannot be replaced from outside its project's team", async () => {
+  it("any lead re-assigns an assignment's people; an assignee only moves its status; deleting stays with the project's lead", async () => {
     const { pid } = await routed(teamA);
     const t = await as("leadA", "POST", `/projects/${pid}/tasks`, { title: `${PX} t`, assignees: [ACTORS.empA1.id] });
     const id = Number((t.body.assignment as Record<string, unknown>).id);
-    expect((await as("leadB", "PATCH", `/assignments/${id}`, { assignees: [ACTORS.empB1.id] })).status).toBe(403);
-    expect((await as("leadA", "PATCH", `/assignments/${id}`, { assignees: [ACTORS.empB1.id] })).status).toBe(403);
+    const people = async () => (await pool.query(
+      `SELECT user_id FROM mo_assignment_users WHERE assignment_id=$1 ORDER BY user_id`, [id])).rows.map((r) => r.user_id);
+    expect((await as("leadB", "PATCH", `/assignments/${id}`, { assignees: [ACTORS.empB1.id] })).status).toBe(200);
+    expect(await people()).toEqual([ACTORS.empB1.id]);
     expect((await as("leadA", "PATCH", `/assignments/${id}`, { assignees: [ACTORS.empA2.id] })).status).toBe(200);
-    expect((await as("empA2", "PATCH", `/assignments/${id}`, { status: "in_progress" })).status).toBe(200);
+    // An assignee who did not set it moves its status; the people on it are not theirs to change.
+    expect((await as("empA2", "PATCH", `/assignments/${id}`, { status: "in_progress", assignees: [ACTORS.empB1.id] })).status).toBe(200);
+    expect(await people()).toEqual([ACTORS.empA2.id]);
     expect((await as("leadB", "DELETE", `/assignments/${id}`)).status).toBe(403);
   });
 
@@ -870,9 +888,10 @@ maybe("assign work — creates the deliverable and gives it a team", () => {
       new_deliverable: { deliverable_type_id: 999999 } })).status).toBe(400);
     expect((await work("leadA", pid, { assignees: [ACTORS.empA1.id],
       new_deliverable: { deliverable_type_id: dtype, drive_url: "https://example.com/x" } })).status).toBe(400);
-    expect((await work("leadA", pid, { assignees: [ACTORS.empB1.id],
+    // The Coordinator routes and never assigns; empB1 is not on this project.
+    expect((await work("coord", pid, { assignees: [ACTORS.empA1.id],
       new_deliverable: { deliverable_type_id: dtype } })).status).toBe(403);
-    expect((await work("leadB", pid, { assignees: [ACTORS.empB1.id],
+    expect((await work("empB1", pid, { assignees: [ACTORS.empB1.id],
       new_deliverable: { deliverable_type_id: dtype } })).status).toBe(403);
     expect(Number((await one(`SELECT COUNT(*)::int c FROM mo_deliverables WHERE project_id=$1`, [pid])).c)).toBe(before);
   });
@@ -956,15 +975,26 @@ maybe("assign work — creates the deliverable and gives it a team", () => {
     expect((a.body.team as Array<Record<string, unknown>>).map((t) => t.user_id)).toEqual([ACTORS.empA2.id]);
   });
 
-  it("an employee assigns work on their own project — to themselves only", async () => {
+  it("an employee creates their own project for themselves, then assigns work on it to anyone", async () => {
+    // Creating: the project is theirs alone — naming someone else is refused.
+    const named = await as("empA1", "POST", "/projects", {
+      name: `${PX} my reel ${Math.random().toString(36).slice(2, 7)}`, project_type_id: projectTypeId,
+      start_date: "2026-10-01", end_date: "2026-10-10",
+      deliverables: [{ title: "x", deliverable_type_id: dtype, owner_id: ACTORS.empA2.id }] });
+    expect(named.status).toBe(403);
     const mine = await as("empA1", "POST", "/projects", {
       name: `${PX} my reel ${Math.random().toString(36).slice(2, 7)}`, project_type_id: projectTypeId,
       start_date: "2026-10-01", end_date: "2026-10-10" });
     const pid = Number((mine.body.project as Record<string, unknown>).id);
-    expect((await work("empA1", pid, { assignees: [ACTORS.empA2.id], new_deliverable: { deliverable_type_id: dtype } })).status).toBe(403);
-    const ok = await work("empA1", pid, { assignees: [ACTORS.empA1.id], new_deliverable: { deliverable_type_id: dtype } });
+    // Assigning on it: anyone in the crew, another team included.
+    const ok = await work("empA1", pid, { assignees: [ACTORS.empA1.id, ACTORS.empB1.id], owner_id: ACTORS.empB1.id,
+      new_deliverable: { deliverable_type_id: dtype } });
     expect(ok.status).toBe(201);
-    expect((await deliv(Number((ok.body.deliverable as Record<string, unknown>).id))).owner_id).toBe(ACTORS.empA1.id);
+    const did = Number((ok.body.deliverable as Record<string, unknown>).id);
+    expect((await deliv(did)).owner_id).toBe(ACTORS.empB1.id);
+    expect((await teamRow(did))[0].users).toEqual([ACTORS.empA1.id, ACTORS.empB1.id].sort());
+    // Someone not on the project still cannot.
+    expect((await work("empA2", pid, { assignees: [ACTORS.empA2.id], new_deliverable: { deliverable_type_id: dtype } })).status).toBe(403);
   });
 
   it("plain work with no deliverable still works, and names no owner", async () => {

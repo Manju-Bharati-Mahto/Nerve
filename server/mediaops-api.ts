@@ -611,9 +611,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   // ── Assignable-member scoping (§16) ──────────────────────────────────────
   // Who may this actor put on a project, a deliverable or a task?
-  //   Admin      → every active media crew member (no department limit).
-  //   Team Lead  → only members of the team(s) they lead, plus themselves.
-  //   Employee   → themselves only.
+  //   Admin                 → every media crew member.
+  //   Team Lead, Employee   → every ACTIVE media crew member. Product decision
+  //                           (Oct 2026): assigning is not limited to your own
+  //                           team — a lead, or an employee on a project, may
+  //                           hand work to anyone in the crew.
+  //   Coordinator           → themselves only. The Coordinator routes projects
+  //                           to teams and never names individuals.
+  //   SMC member            → themselves only. SMC is a separate network.
   // Enforced server-side on every assignment path; the UI merely mirrors it.
   async function assignableMemberIds(actor: CurrentUser): Promise<Set<string>> {
     const role = moRoleOf(actor);
@@ -621,15 +626,31 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       const { rows } = await pool.query(`SELECT id FROM users WHERE team='media'`);
       return new Set(rows.map((r) => String(r.id)));
     }
-    const out = new Set<string>([actor.id]);
-    if (role === "team_lead") {
-      const { rows } = await pool.query(
-        `SELECT tm.user_id FROM mo_team_members tm
-           JOIN mo_teams t ON t.id = tm.team_id
-          WHERE t.lead_user_id = $1 AND t.is_active`, [actor.id]);
-      rows.forEach((r) => out.add(String(r.user_id)));
-    }
-    return out;
+    if (actor.team !== "media" || await isCoordinator(actor)) return new Set<string>([actor.id]);
+    const { rows } = await pool.query(
+      `SELECT id FROM users WHERE team='media' AND COALESCE(status,'active')='active'`);
+    return new Set([actor.id, ...rows.map((r) => String(r.id))]);
+  }
+
+  /* ── Who may ASSIGN on a project ───────────────────────────────────────────
+     Assigning (work, crew, a deliverable's owner, tasks) is wider than running
+     the project (editing it, its dates, status, routing — canManageProject),
+     and wider than reviewing it (canReviewProject, still the project's own
+     lead or an Admin):
+       · Admin, and any Team Lead — on every project;
+       · an employee — on a project they are part of: its owner or PM, or on its
+         crew (assignment puts every assignee on the crew);
+       · never the Coordinator (routes, does not assign) or an SMC member. */
+  async function canAssignOnProject(actor: CurrentUser, projectId: number): Promise<boolean> {
+    if (isMoAdmin(actor)) return true;
+    if (actor.team !== "media" || await isCoordinator(actor)) return false;
+    if (isMoTL(actor)) return true;
+    if (!projectId) return false;
+    return !!(await pool.query(
+      `SELECT 1 FROM mo_projects p WHERE p.id=$1 AND p.deleted_at IS NULL AND (p.owner_id=$2
+         OR EXISTS (SELECT 1 FROM mo_project_assignments a
+                     WHERE a.project_id=p.id AND a.user_id=$2 AND a.removed_at IS NULL))`,
+      [projectId, actor.id])).rows[0];
   }
 
   /* ── Team → Team Lead ──────────────────────────────────────────────────────
@@ -1490,7 +1511,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (isCoord && !isMoAdmin(u) && named.length)
       return sendError(res, 403,
         "A Coordinator assigns the project to a team — individuals are the Team Lead's to allocate.");
-    // Every id a Team Lead or Admin names must still be inside their own scope.
+    /* An employee's own project is assigned to themselves (product decision) —
+       stated outright, because the people an employee may assign to on an
+       existing project is now the whole crew. */
+    if (isEmployee && named.some((id) => id !== u.id))
+      return sendError(res, 403, "A project you create is assigned to you — assign work to others from the project once it exists.");
+    // Every id a Team Lead or Admin names must still be someone they may assign.
     if (!isCoord && !(await assertAssignable(res, u, named))) return;
     const gated = false;   // TL/Admin only ⇒ projects are created active
     const ay = await pool.query(`SELECT id FROM mo_academic_years WHERE is_current LIMIT 1`);
@@ -1644,8 +1670,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   app.post(`${P}/projects/:id/assignments`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
-    if (!(isMoAdmin(u) || await isTeamLeadOfProject(u, id)))
-      return sendError(res, 403, "Only the project's Team Lead or an Admin may assign crew.");
+    if (!(await canAssignOnProject(u, id)))
+      return sendError(res, 403, "You can assign crew only on a project you are part of.");
     const b = req.body as Record<string, unknown>;
     // A4: clean 400s instead of FK-violation 500s.
     if (!b.user_id || typeof b.user_id !== "string") return sendError(res, 400, "user_id is required.");
@@ -1741,6 +1767,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (await canEditProjectDates(u, pid)) [...PLAN, ...EXECUTION, "due_date"].forEach((k) => allowed.add(k));
     else if (await canManageProject(u, pid)) [...PLAN, ...EXECUTION].forEach((k) => allowed.add(k));
     if (await worksOnDeliverable(u, id)) EXECUTION.forEach((k) => allowed.add(k));
+    // Choosing who carries it is assigning — open to whoever may assign here.
+    if (await canAssignOnProject(u, pid)) allowed.add("owner_id");
     if (await isCoordinator(u)) ["social_status", "social_post_url", "mail_status"].forEach((k) => allowed.add(k));
     const asked = [...PLAN, ...EXECUTION, "due_date"].filter((k) => k in b);
     const refused = asked.filter((k) => !allowed.has(k));
@@ -2224,9 +2252,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const wt = (await pool.query(`SELECT * FROM mo_work_types WHERE id=$1`, [Number(b.work_type_id)])).rows[0];
     if (!wt) return sendError(res, 400, "Unknown work type.");
     if (!wt.is_active || wt.archived_at) return sendError(res, 400, "That work type is archived or disabled — pick an active one.");
-    // Assigning work is running the project: its lead, its owner/PM, or Admin.
-    if (!(await canManageProject(u, pid)))
-      return sendError(res, 403, "Only the project's Team Lead, PM or an Admin may assign work.");
+    // Admin, any Team Lead, or an employee who is part of the project.
+    if (!(await canAssignOnProject(u, pid)))
+      return sendError(res, 403, "You can assign work only on a project you are part of.");
 
     if (wt.form_template === "shoot") {
       if (!String(b.title ?? "").trim()) return sendError(res, 400, "Title is required.");
@@ -10927,7 +10955,9 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
   app.post(`${P}/shoots/:id/crew`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const sid = parseInt(getSingleParam(req.params.id), 10);
-    if (!(await leadsShootProject(u, sid))) return sendError(res, 403, "Only the project's Team Lead or an Admin may assign shoot crew.");
+    const shootPid = Number((await pool.query(`SELECT project_id FROM mo_shoots WHERE id=$1`, [sid])).rows[0]?.project_id ?? 0);
+    if (!(await canAssignOnProject(u, shootPid)))
+      return sendError(res, 403, "You can assign shoot crew only on a project you are part of.");
     const crew = (Array.isArray((req.body as Record<string, unknown>).crew) ? (req.body as Record<string, unknown>).crew as unknown[] : []).map(String);
     // Crewing a shoot is an assignment — the same team scope as every other path.
     if (!(await assertAssignable(res, u, crew))) return;
@@ -11851,8 +11881,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
   app.post(`${P}/projects/:id/tasks`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const pid = parseInt(getSingleParam(req.params.id), 10);
-    if (!(isMoAdmin(u) || await isTeamLeadOfProject(u, pid)))
-      return sendError(res, 403, "Only the project's Team Lead or an Admin may assign tasks.");
+    if (!(await canAssignOnProject(u, pid)))
+      return sendError(res, 403, "You can assign tasks only on a project you are part of.");
     const b = req.body as Record<string, unknown>;
     const title = String(b.title ?? "").trim();
     if (!title) return sendError(res, 400, "Task title is required.");
@@ -11880,11 +11910,11 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const cur = (await pool.query(`SELECT * FROM mo_assignments WHERE id=$1`, [id])).rows[0];
     if (!cur) return sendError(res, 404, "Assignment not found.");
     const isAssignee = (await pool.query(`SELECT 1 FROM mo_assignment_users WHERE assignment_id=$1 AND user_id=$2`, [id, u.id])).rows[0];
-    /* Crew work on a project is managed by that project's lead (or Admin, or
-       whoever set it). SMC coverage keeps its own long-standing rule here — its
-       lifecycle lives under /smc/* and is not this route's to reshape. */
-    const priv = isMoAdmin(u) || cur.assigned_by === u.id || (cur.is_smc || cur.project_id == null
-      ? isMoTL(u) : await isTeamLeadOfProject(u, Number(cur.project_id)));
+    /* An assignment is edited by an Admin, by whoever set it, or by a Team Lead
+       (leads assign on every project). An employee assigns new work but does
+       not rewrite work somebody else set; their own assignments are theirs.
+       SMC coverage keeps its long-standing rule (any Team Lead). */
+    const priv = isMoAdmin(u) || cur.assigned_by === u.id || isMoTL(u);
     if (!priv && !isAssignee) return sendError(res, 403, "You can't change this assignment.");
     const b0 = req.body as Record<string, unknown>;
     if (priv && !cur.is_smc && Array.isArray(b0.assignees)
@@ -18028,8 +18058,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
        through the same deliverableAssigned() every other path uses, by the
        same people who may run the project. */
     if (kind === "crew") {
-      if (!(await canManageProject(u, Number(d.project_id))))
-        return sendError(res, 403, "Only the project's Team Lead, owner/PM or an Admin may assign this deliverable.");
+      if (!(await canAssignOnProject(u, Number(d.project_id))))
+        return sendError(res, 403, "You can assign this deliverable only on a project you are part of.");
       if (!(await assertAssignable(res, u, [memberId]))) return;
       const from = d.owner_id ? String(d.owner_id) : null;
       if (from === memberId) return res.json({ ok: true, unchanged: true, kind });
