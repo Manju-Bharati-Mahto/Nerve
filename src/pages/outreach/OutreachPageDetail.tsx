@@ -7,16 +7,21 @@ import {
 import {
   LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
-import { useOutreachData, pageMetrics, removePage, instagramUrlForHandle, isValidInstagramHandle, formatLocalDate, refreshOutreach, analyzePostPerformance } from '@/lib/outreach-data'
+import { useOutreachData, pageMetrics, removePage, pageOpenUrl, isValidInstagramHandle, formatLocalDate, refreshOutreach, analyzePostPerformance, effectiveViews, isEstimatedViews } from '@/lib/outreach-data'
 import { api } from '@/lib/api'
 import AddLivePostsDialog from './AddLivePostsDialog'
-import { EditPageModal } from './OutreachAnalytics'
+import EditPageModal from './EditPageModal'
+import { useCanEditPosts, useCanEditTab, useIsOutreachAdmin } from '@/lib/outreach-access'
 
 export default function OutreachPageDetail() {
   const { pageId } = useParams<{ pageId: string }>()
   const { pages, posts, campaigns } = useOutreachData()
   const navigate = useNavigate()
   const page = pages.find(p => p.id === pageId)
+  // By tab level, as the server decides: see OutreachAllPages.
+  const canEdit = useCanEditTab('pages')
+  const canEditPosts = useCanEditPosts()
+  const isAdmin = useIsOutreachAdmin()
   const [deleting, setDeleting] = useState(false)
   const [addingLivePosts, setAddingLivePosts] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -111,7 +116,7 @@ export default function OutreachPageDetail() {
 
   const totals = pagePosts.reduce((acc, p) => ({
     likes: acc.likes + p.likes, comments: acc.comments + p.comments,
-    views: acc.views + p.views, saves: acc.saves + p.saves, shares: acc.shares + p.shares,
+    views: acc.views + effectiveViews(p), saves: acc.saves + p.saves, shares: acc.shares + p.shares,
   }), { likes: 0, comments: 0, views: 0, saves: 0, shares: 0 })
 
   return (
@@ -130,11 +135,13 @@ export default function OutreachPageDetail() {
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h1 className="text-xl font-serif text-foreground">@{page.handle}</h1>
-                {isValidInstagramHandle(page.handle) && (
-                  <a href={instagramUrlForHandle(page.handle)} target="_blank" rel="noreferrer"
-                    title={`Open @${page.handle} on Instagram`}
+                {/* Same rule as the All Pages row: a Facebook page links to Facebook.
+                    This used to send every page to instagram.com/<handle>. */}
+                {(page.pageLink || page.platform === 'facebook' || isValidInstagramHandle(page.handle)) && (
+                  <a href={pageOpenUrl(page)} target="_blank" rel="noreferrer"
+                    title={`Open @${page.handle} on ${page.platform === 'facebook' ? 'Facebook' : 'Instagram'}`}
                     className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80">
-                    <ExternalLink className="w-3 h-3" /> Open on Instagram
+                    <ExternalLink className="w-3 h-3" /> Open on {page.platform === 'facebook' ? 'Facebook' : 'Instagram'}
                   </a>
                 )}
               </div>
@@ -153,21 +160,27 @@ export default function OutreachPageDetail() {
           <div className="flex items-center gap-2 flex-wrap">
             <span className="hub-badge bg-orange-50 text-orange-700"><Users className="w-3 h-3 inline mr-1" />{fmt(page.followers)}</span>
             <span className="hub-badge bg-blue-50 text-blue-700">Inv {page.inventoryPosts}P / {page.inventoryStories}S</span>
-            <button onClick={() => setAddingLivePosts(true)}
-              title="Add live posts (analytics + inventory feed off these)"
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1">
-              <LinkIcon className="w-3 h-3" /> Add live posts
-            </button>
-            <button onClick={() => setEditing(true)}
-              title="Edit content preference & inventory"
-              className="text-xs px-2.5 py-1.5 rounded-lg border border-border text-muted-foreground hover:bg-accent inline-flex items-center gap-1">
-              <Pencil className="w-3 h-3" /> Edit
-            </button>
-            <button onClick={handleDelete} disabled={deleting}
-              title="Delete page"
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
-              <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
-            </button>
+            {canEditPosts && (
+              <button onClick={() => setAddingLivePosts(true)}
+                title="Add live posts (analytics + inventory feed off these)"
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1">
+                <LinkIcon className="w-3 h-3" /> Add live posts
+              </button>
+            )}
+            {canEdit && (
+              <button onClick={() => setEditing(true)}
+                title="Edit page — name, link, state, inventory"
+                className="text-xs px-2.5 py-1.5 rounded-lg border border-border text-muted-foreground hover:bg-accent inline-flex items-center gap-1">
+                <Pencil className="w-3 h-3" /> Edit page
+              </button>
+            )}
+            {isAdmin && (
+              <button onClick={handleDelete} disabled={deleting}
+                title="Delete page"
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
+                <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -176,7 +189,7 @@ export default function OutreachPageDetail() {
 
       {/* KPIs */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <Kpi label="Posts done"  value={String((m?.postsDone ?? 0) + (m?.storiesDone ?? 0))} icon={FileText}  bg="bg-orange-50" color="text-orange-600" />
+        <Kpi label="Posts done"  value={String(m?.postsDone ?? 0)} icon={FileText}  bg="bg-orange-50" color="text-orange-600" />
         <Kpi label="% consumed"  value={`${Math.round((m?.pctConsumed ?? 0) * 100)}%`} icon={TrendingUp} bg="bg-blue-50" color="text-blue-600" />
         <Kpi label="Avg eng"     value={fmt(m?.avgEngagement ?? 0)} icon={Heart}    bg="bg-rose-50" color="text-rose-600" />
         <Kpi label="Total reach" value={fmt(totals.views)}            icon={Eye}      bg="bg-emerald-50" color="text-emerald-600" />
@@ -235,7 +248,7 @@ export default function OutreachPageDetail() {
                       <td className="px-3 py-2 text-xs text-foreground">
                         {p.permalink ? (
                           <a href={p.permalink} target="_blank" rel="noreferrer"
-                            title="Open on Instagram"
+                            title={`Open on ${p.platform === 'facebook' ? 'Facebook' : 'Instagram'}`}
                             className="inline-flex items-center gap-1 text-orange-600 hover:underline">
                             {p.date}
                             <ExternalLink className="w-3 h-3" />
@@ -247,10 +260,16 @@ export default function OutreachPageDetail() {
                       <td className="px-3 py-2 text-xs text-muted-foreground">{p.creativeVariant ?? '—'}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.likes)}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.comments)}</td>
-                      {/* Views: show the exact total (not abbreviated) so the real
-                          per-post reach is auditable. An "Underperforming" chip (PRD
-                          6.6) appears when reach is below the page's own average. */}
-                      <td className="px-3 py-2 text-right text-xs font-mono tabular-nums" title={`${p.views.toLocaleString('en-US')} views`}>
+                      {/* Views: the exact total (not abbreviated) so the real
+                          per-post reach is auditable. Static posts and carousels
+                          have no view count, so their reach is estimated as
+                          likes × 20 and marked with a "~". An "Underperforming"
+                          chip (PRD 6.6) appears when reach is below the page's
+                          own average. */}
+                      <td className="px-3 py-2 text-right text-xs font-mono tabular-nums"
+                        title={isEstimatedViews(p)
+                          ? `Estimated reach ${effectiveViews(p).toLocaleString('en-US')} — likes × 20 (static and carousel posts have no view count)`
+                          : `${effectiveViews(p).toLocaleString('en-US')} views`}>
                         <div className="inline-flex items-center gap-1 justify-end">
                           {perf.underperforming && (
                             <button type="button" onClick={() => setOpenReasonId(open ? null : p.id)}
@@ -259,13 +278,13 @@ export default function OutreachPageDetail() {
                               <AlertTriangle className="w-2.5 h-2.5" /> Low
                             </button>
                           )}
-                          <span>{p.views.toLocaleString('en-US')}</span>
+                          <span>{isEstimatedViews(p) && <span className="text-muted-foreground">~</span>}{effectiveViews(p).toLocaleString('en-US')}</span>
                         </div>
                       </td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.saves)}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.shares)}</td>
                       <td className="px-3 py-2 text-right">
-                        <button
+                        {canEditPosts && <button
                           type="button"
                           onClick={() => void handleDeletePost(p.id)}
                           disabled={isRowDeleting}
@@ -274,7 +293,7 @@ export default function OutreachPageDetail() {
                           className="p-1 rounded-md text-muted-foreground hover:bg-red-50 hover:text-red-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        </button>}
                       </td>
                     </tr>
                     {open && perf.underperforming && (
@@ -290,7 +309,7 @@ export default function OutreachPageDetail() {
                             </p>
                           )}
                           <p className="text-[10px] text-muted-foreground mt-1">
-                            Reach {p.views.toLocaleString('en-US')} vs this page's average {perf.pageAvgReach.toLocaleString('en-US')}. A likely cause, not a certainty.
+                            Reach {effectiveViews(p).toLocaleString('en-US')}{isEstimatedViews(p) && ' (estimated)'} vs this page's average {perf.pageAvgReach.toLocaleString('en-US')}. A likely cause, not a certainty.
                           </p>
                         </td>
                       </tr>

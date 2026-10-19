@@ -186,6 +186,27 @@ const ALLOWED: Record<string, string> = {
      was taken, so the function takes a connection, never sees `pool`, and opens
      none of its own. The audit for each person runs after release. */
   "server/mediaops-api.ts:applyEquipmentAccess": "receives the held client; opens no connection of its own",
+
+  /* BrandOps — a quotation for a requirement typed into the quotation form
+     creates the requirement and the quotation in ONE transaction, so a
+     failing quotation never leaves a stray requirement behind. Both inserts
+     take the transaction's client as `db` and run every statement on it —
+     including nextReference(), which is passed the same client — and neither
+     sees `pool`. Activity is logged after release, as everywhere else. */
+  "server/brandops-queries.ts:insertRequest": "receives the held client; opens no connection of its own",
+  "server/brandops-queries.ts:insertQuotation": "receives the held client; opens no connection of its own",
+
+  /* BrandOps — a material delivery and its proof images are written in ONE
+     transaction, so an image that fails to record never leaves a DEL-xxxx
+     behind for the uploader's retry to duplicate. insertDelivery() takes the
+     transaction's client as `db` (no `pool` default) and runs every statement
+     on it, nextReference() included; the activity row is logged after release. */
+  "server/brandops-queries.ts:insertDelivery": "receives the held client; opens no connection of its own",
+
+  /* Outreach — inTransaction() runs a callback on the pinned client between
+     BEGIN/COMMIT. The helper itself never uses `pool` while holding the client;
+     it delegates every statement to the callback through the same client. */
+  "server/outreach-db.ts:work": "transaction callback receives the held client",
 };
 
 describe("no handler holds a pooled connection while acquiring another", () => {

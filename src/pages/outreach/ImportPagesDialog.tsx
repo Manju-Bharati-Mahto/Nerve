@@ -1,10 +1,13 @@
 import { useMemo, useRef, useState } from 'react'
 import { Upload, X, CheckCircle, AlertCircle, Plus, Trash2 } from 'lucide-react'
 import {
-  useOutreachData, addPage, addCampaign, updateCampaign, slug,
+  useOutreachData, addCampaign, updateCampaign, refreshOutreach, formatLocalDate,
   FOLLOWER_TIERS, type FollowerTier, type PageType,
 } from '@/lib/outreach-data'
 import { parseInventorySheet, type ParsedPageRow } from '@/lib/outreach-import'
+import { canonicalState } from '@/lib/outreach-states'
+import { ensureInstagramPage, instagramPageIndex, PageNeedsPlaceError, PageStateUnknownError } from './import-pages'
+import StateSelect from './StateSelect'
 
 interface EditableRow extends ParsedPageRow {
   rid: number
@@ -12,8 +15,14 @@ interface EditableRow extends ParsedPageRow {
 }
 
 let RID = 0
+
+/** Non-blank and matching nothing on the master list. */
+const isUnrecognisedState = (state: string) => canonicalState(state) === null
+/* The sheet's state as the master list names it ("gujarat " → "Gujarat").
+   One that matches nothing is kept as typed, so the row's dropdown shows it
+   as unrecognised for the person to replace — never guessed, never dropped. */
 function toEditable(p: ParsedPageRow): EditableRow {
-  return { rid: RID++, include: true, ...p }
+  return { rid: RID++, include: true, ...p, state: canonicalState(p.state) ?? p.state }
 }
 
 const BLANK: ParsedPageRow = {
@@ -27,7 +36,7 @@ const BLANK: ParsedPageRow = {
  * commit), and optionally creates the detected campaign columns + assignments.
  */
 export default function ImportPagesDialog({ onClose }: { onClose: () => void }) {
-  const { campaigns } = useOutreachData()
+  const { campaigns, pages } = useOutreachData()
   const fileRef = useRef<HTMLInputElement>(null)
   const [step, setStep] = useState<'file' | 'edit' | 'done'>('file')
   const [busy, setBusy] = useState(false)
@@ -35,9 +44,10 @@ export default function ImportPagesDialog({ onClose }: { onClose: () => void }) 
   const [rows, setRows] = useState<EditableRow[]>([])
   const [detectedCampaigns, setDetectedCampaigns] = useState<string[]>([])
   const [createCampaigns, setCreateCampaigns] = useState(true)
-  const [result, setResult] = useState<{ pages: number; campaigns: number; skipped: string[] } | null>(null)
+  const [result, setResult] = useState<{ pages: number; reused: number; campaigns: number; skipped: string[] } | null>(null)
 
   const includedCount = useMemo(() => rows.filter(r => r.include).length, [rows])
+  const unrecognisedCount = useMemo(() => rows.filter(r => r.include && isUnrecognisedState(r.state)).length, [rows])
 
   async function onFile(file: File) {
     setBusy(true)
@@ -68,41 +78,49 @@ export default function ImportPagesDialog({ onClose }: { onClose: () => void }) 
     setBusy(true)
     const skipped: string[] = []
     let createdPages = 0
+    let reusedPages = 0
     const included = rows.filter(r => r.include)
+    // rid → the id the server gave (or already had) for that row's page.
+    const pageIdByRow = new Map<number, string>()
+    const known = instagramPageIndex(pages)
 
     for (const r of included) {
       const handle = r.handle.trim()
       if (!handle) { skipped.push('(row with empty handle skipped)'); continue }
       try {
-        await addPage({
+        // Excel import is the legacy IG sheet — FB pages are added via the FB tab.
+        const { id, created } = await ensureInstagramPage({
           handle,
-          platform: 'instagram',   // Excel import is the legacy IG sheet — FB pages are added via the FB tab
-          geography: r.geography.trim(),
-          state: r.state.trim(),
+          geography: r.geography,
+          state: r.state,
           type: r.type,
           followerTier: r.followerTier,
-          contentTypes: [],
-          contentPreferences: [],
-          followers: 0,
           inventoryPosts: r.inventoryPosts,
           inventoryStories: r.inventoryStories,
           notes: r.postsDone ? `Posts done (imported): ${r.postsDone}` : '',
-        })
-        createdPages++
+        }, known)
+        pageIdByRow.set(r.rid, id)
+        if (created) createdPages++
+        else reusedPages++
       } catch (e) {
-        skipped.push(`@${handle}: ${e instanceof Error ? e.message : 'failed to add'}`)
+        skipped.push(e instanceof PageNeedsPlaceError
+          ? `@${e.handle}: fill in Geography and State, then import again.`
+          : e instanceof PageStateUnknownError
+            ? `@${e.handle}: "${e.state}" is not an Indian state or union territory — pick its state, then import again.`
+            : `@${handle}: ${e instanceof Error ? e.message : 'failed to add'}`)
       }
     }
 
-    // Optionally materialise the campaign columns + page assignments. Page ids
-    // are derived the same way the server does (slug of the handle), so we can
-    // wire assignments without round-tripping for each created page.
+    // Optionally materialise the campaign columns + page assignments, using
+    // the ids the server answered with. Rows whose page could not be saved
+    // are left out rather than pointing the campaign at a page that is not
+    // there.
     let createdCampaigns = 0
     if (createCampaigns) {
       const byCampaign = new Map<string, string[]>()
       for (const r of included) {
-        if (!r.handle.trim()) continue
-        const pid = slug(r.handle)
+        const pid = pageIdByRow.get(r.rid)
+        if (!pid) continue
         for (const name of r.assignedCampaigns) {
           const arr = byCampaign.get(name) ?? []
           arr.push(pid)
@@ -110,7 +128,8 @@ export default function ImportPagesDialog({ onClose }: { onClose: () => void }) 
         }
       }
       const existingByName = new Map(campaigns.map(c => [c.name.trim().toLowerCase(), c]))
-      const today = new Date().toISOString().slice(0, 10)
+      // Local day, not toISOString's UTC day — before 05:30 IST that is yesterday.
+      const today = formatLocalDate(new Date())
       for (const [name, pageIds] of byCampaign) {
         const ids = Array.from(new Set(pageIds))
         const existing = existingByName.get(name.trim().toLowerCase())
@@ -132,7 +151,9 @@ export default function ImportPagesDialog({ onClose }: { onClose: () => void }) 
       }
     }
 
-    setResult({ pages: createdPages, campaigns: createdCampaigns, skipped })
+    // Pages were created straight through the API, so the store has not seen them.
+    await refreshOutreach().catch(() => {})
+    setResult({ pages: createdPages, reused: reusedPages, campaigns: createdCampaigns, skipped })
     setStep('done')
     setBusy(false)
   }
@@ -175,13 +196,21 @@ export default function ImportPagesDialog({ onClose }: { onClose: () => void }) 
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <p className="text-xs text-muted-foreground">
                   <span className="font-semibold text-foreground">{includedCount}</span> of {rows.length} pages selected.
-                  Edit any field below — uncheck a row to skip it.
+                  Edit any field below — uncheck a row to skip it. "Posts done" is kept in the page's notes; consumed inventory counts the live posts you add.
                 </p>
                 <button onClick={() => setRows(rs => [...rs, toEditable(BLANK)])}
                   className="text-xs px-2.5 py-1.5 rounded-lg border border-border hover:bg-accent inline-flex items-center gap-1">
                   <Plus className="w-3.5 h-3.5" /> Add row
                 </button>
               </div>
+
+              {unrecognisedCount > 0 && (
+                <p className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  {unrecognisedCount} row{unrecognisedCount === 1 ? ' has' : 's have'} a state that is not on the list (highlighted). Pick the state —
+                  a new page left that way is reported and not added; a page already in the ledger is unaffected.
+                </p>
+              )}
 
               <div className="border border-border rounded-lg overflow-auto max-h-[52vh]">
                 <table className="w-full text-xs">
@@ -195,14 +224,18 @@ export default function ImportPagesDialog({ onClose }: { onClose: () => void }) 
                       <th className="px-2 py-2">Tier</th>
                       <th className="px-2 py-2 w-16">Inv P</th>
                       <th className="px-2 py-2 w-16">Inv S</th>
-                      <th className="px-2 py-2 w-16">Posts</th>
+                      {/* Consumed inventory is counted from the live posts added
+                          against a page, so this number cannot seed it — it is
+                          kept as a note. Labelled "Posts" it read as if the
+                          ledger would show it as consumed. */}
+                      <th className="px-2 py-2 w-20" title="Saved in the page's notes. Consumed inventory counts the live posts you add, not this number.">Posts done (note)</th>
                       <th className="px-2 py-2 min-w-[140px]">Campaigns</th>
                       <th className="px-2 py-2 w-8"></th>
                     </tr>
                   </thead>
                   <tbody>
                     {rows.map(r => (
-                      <tr key={r.rid} className={`border-t border-border ${r.include ? '' : 'opacity-40'}`}>
+                      <tr key={r.rid} className={`border-t border-border ${r.include ? '' : 'opacity-40'} ${r.include && isUnrecognisedState(r.state) ? 'bg-amber-50/60' : ''}`}>
                         <td className="px-2 py-1.5">
                           <input type="checkbox" checked={r.include} onChange={e => patch(r.rid, { include: e.target.checked })} />
                         </td>
@@ -215,8 +248,8 @@ export default function ImportPagesDialog({ onClose }: { onClose: () => void }) 
                             onChange={e => patch(r.rid, { geography: e.target.value })} placeholder="city" />
                         </td>
                         <td className="px-2 py-1.5">
-                          <input className="hub-input py-1 text-xs" value={r.state}
-                            onChange={e => patch(r.rid, { state: e.target.value })} placeholder="state" />
+                          <StateSelect className="hub-input py-1 text-xs" value={r.state}
+                            onChange={state => patch(r.rid, { state })} aria-label={`State for ${r.handle || 'new row'}`} />
                         </td>
                         <td className="px-2 py-1.5">
                           <select className="hub-input py-1 text-xs" value={r.type}
@@ -285,6 +318,7 @@ export default function ImportPagesDialog({ onClose }: { onClose: () => void }) 
                 <CheckCircle className="w-4 h-4" />
                 Imported {result.pages} page{result.pages === 1 ? '' : 's'}
                 {result.campaigns > 0 && ` and created ${result.campaigns} campaign${result.campaigns === 1 ? '' : 's'}`}.
+                {result.reused > 0 && ` ${result.reused} already in the ledger (left unchanged).`}
               </div>
               {result.skipped.length > 0 && (
                 <div className="hub-card bg-amber-50 border-amber-200 text-xs text-amber-900">

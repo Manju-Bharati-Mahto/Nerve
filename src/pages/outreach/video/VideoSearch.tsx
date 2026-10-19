@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Search, AlertCircle, Film, Calendar, X } from 'lucide-react'
+import { Search, Film, Calendar, X } from 'lucide-react'
 import {
-  searchWorkflow, getFilterOptions, formatWhen,
-  STATUS_STYLE, EVENT_STATUS_STYLE,
-  type SearchParams, type FilterOptions, type VideoRecord, type EventRecord,
+  searchWorkflow, getFilterOptions, formatWhen, loadFailureOf,
+  STATUS_STYLE, EVENT_STATUS_STYLE, VIDEO_STATUS_ORDER, VIDEO_STATUS_LABEL,
+  type SearchParams, type FilterOptions, type VideoRecord, type EventRecord, type LoadFailure,
 } from '@/lib/outreach-video-data'
+import DriveProblemNotice from './DriveProblemNotice'
 import { useAuth } from '@/hooks/useAuth'
 
 /**
@@ -25,7 +26,7 @@ export default function VideoSearch() {
   const [videos, setVideos] = useState<VideoRecord[]>([])
   const [events, setEvents] = useState<EventRecord[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LoadFailure | null>(null)
 
   useEffect(() => {
     getFilterOptions().then(setOptions).catch(() => setOptions(null))
@@ -39,7 +40,7 @@ export default function VideoSearch() {
       setEvents(r.events)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Search failed.')
+      setError(loadFailureOf(err, 'Search failed.'))
     } finally {
       setLoading(false)
     }
@@ -86,11 +87,13 @@ export default function VideoSearch() {
         <div className="flex flex-wrap items-center gap-2">
           <Select label="Video status" value={params.status ?? ''}
             onChange={v => set({ status: (v || undefined) as SearchParams['status'] })}
-            options={[['draft', 'Draft'], ['submitted', 'Submitted'], ['published', 'Published']]} />
+            /* §13 — driven off the status catalogue so a status added to the
+               workflow cannot go missing from the filter that searches it. */
+            options={VIDEO_STATUS_ORDER.map(st => [st, VIDEO_STATUS_LABEL[st]] as [string, string])} />
           <Select label="Event status" value={params.eventStatus ?? ''}
             onChange={v => set({ eventStatus: (v || undefined) as SearchParams['eventStatus'] })}
             options={[['unassigned', 'Unassigned'], ['open', 'Open'], ['completed', 'Completed']]} />
-          <Select label="Client" value={params.client ?? ''} onChange={v => set({ client: v || undefined })}
+          <Select label="Campaign" value={params.client ?? ''} onChange={v => set({ client: v || undefined })}
             options={(options?.clients ?? []).map(c => [c, c] as [string, string])} />
           {/* An editor's results are pinned to them, so an editor picker here
               would be a control that does nothing. */}
@@ -105,6 +108,15 @@ export default function VideoSearch() {
           {(options?.platforms.length ?? 0) > 0 && (
             <Select label="Platform" value={params.platform ?? ''} onChange={v => set({ platform: v || undefined })}
               options={(options?.platforms ?? []).map(p => [p, p] as [string, string])} />
+          )}
+          {/* §13 — "Social Media Page" and "Content Type". */}
+          {(options?.pages?.length ?? 0) > 0 && (
+            <Select label="Page" value={params.pageId ?? ''} onChange={v => set({ pageId: v || undefined })}
+              options={(options?.pages ?? []).map(pg => [pg.id, pg.name] as [string, string])} />
+          )}
+          {(options?.contentTypes?.length ?? 0) > 0 && (
+            <Select label="Content type" value={params.contentType ?? ''} onChange={v => set({ contentType: v || undefined })}
+              options={(options?.contentTypes ?? []).map(t => [t, t] as [string, string])} />
           )}
           <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
             From
@@ -125,66 +137,65 @@ export default function VideoSearch() {
         </div>
       </div>
 
-      {error && (
-        <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> <span>{error}</span>
+      {error && <DriveProblemNotice message={error.message} code={error.code} />}
+
+      {/* "No videos match" is an answer, and a search that failed has none. */}
+      {!error && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <section className="space-y-2">
+            <h2 className="text-[11px] uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
+              <Film className="w-3.5 h-3.5" /> Videos ({videos.length})
+            </h2>
+            {loading ? (
+              <div className="hub-card text-center py-8 text-sm text-muted-foreground">Searching…</div>
+            ) : videos.length === 0 ? (
+              <div className="hub-card text-center py-8 text-sm text-muted-foreground">No videos match.</div>
+            ) : videos.map(v => (
+              <Link key={v.id} to={`/outreach/video/videos/${v.id}`}
+                className="hub-card block hover:border-orange-300 transition-colors">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-foreground truncate">{v.title}</p>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {v.client}{v.editorTitle && ` · ${v.editorTitle}`}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">{formatWhen(v.createdAt)}</p>
+                  </div>
+                  <span className={`hub-badge shrink-0 ${STATUS_STYLE[v.status].cls}`}>
+                    {STATUS_STYLE[v.status].label}
+                  </span>
+                </div>
+              </Link>
+            ))}
+          </section>
+
+          <section className="space-y-2">
+            <h2 className="text-[11px] uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
+              <Calendar className="w-3.5 h-3.5" /> Events ({events.length})
+            </h2>
+            {loading ? (
+              <div className="hub-card text-center py-8 text-sm text-muted-foreground">Searching…</div>
+            ) : events.length === 0 ? (
+              <div className="hub-card text-center py-8 text-sm text-muted-foreground">No events match.</div>
+            ) : events.map(e => (
+              <Link key={e.id} to={`/outreach/video/events/${e.id}`}
+                className="hub-card block hover:border-orange-300 transition-colors">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-foreground truncate">{e.title}</p>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {e.date}{e.client && ` · ${e.client}`}
+                    </p>
+                  </div>
+                  <span className={`hub-badge shrink-0 ${EVENT_STATUS_STYLE[e.status].cls}`}>
+                    {EVENT_STATUS_STYLE[e.status].label}
+                  </span>
+                </div>
+              </Link>
+            ))}
+          </section>
         </div>
       )}
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <section className="space-y-2">
-          <h2 className="text-[11px] uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
-            <Film className="w-3.5 h-3.5" /> Videos ({videos.length})
-          </h2>
-          {loading ? (
-            <div className="hub-card text-center py-8 text-sm text-muted-foreground">Searching…</div>
-          ) : videos.length === 0 ? (
-            <div className="hub-card text-center py-8 text-sm text-muted-foreground">No videos match.</div>
-          ) : videos.map(v => (
-            <Link key={v.id} to={`/outreach/video/videos/${v.id}`}
-              className="hub-card block hover:border-orange-300 transition-colors">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-foreground truncate">{v.title}</p>
-                  <p className="text-xs text-muted-foreground truncate">
-                    {v.client}{v.editorTitle && ` · ${v.editorTitle}`}
-                  </p>
-                  <p className="text-[11px] text-muted-foreground">{formatWhen(v.createdAt)}</p>
-                </div>
-                <span className={`hub-badge shrink-0 ${STATUS_STYLE[v.status].cls}`}>
-                  {STATUS_STYLE[v.status].label}
-                </span>
-              </div>
-            </Link>
-          ))}
-        </section>
-
-        <section className="space-y-2">
-          <h2 className="text-[11px] uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
-            <Calendar className="w-3.5 h-3.5" /> Events ({events.length})
-          </h2>
-          {loading ? (
-            <div className="hub-card text-center py-8 text-sm text-muted-foreground">Searching…</div>
-          ) : events.length === 0 ? (
-            <div className="hub-card text-center py-8 text-sm text-muted-foreground">No events match.</div>
-          ) : events.map(e => (
-            <Link key={e.id} to={`/outreach/video/events/${e.id}`}
-              className="hub-card block hover:border-orange-300 transition-colors">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-foreground truncate">{e.title}</p>
-                  <p className="text-xs text-muted-foreground truncate">
-                    {e.date}{e.client && ` · ${e.client}`}
-                  </p>
-                </div>
-                <span className={`hub-badge shrink-0 ${EVENT_STATUS_STYLE[e.status].cls}`}>
-                  {EVENT_STATUS_STYLE[e.status].label}
-                </span>
-              </div>
-            </Link>
-          ))}
-        </section>
-      </div>
     </div>
   )
 }

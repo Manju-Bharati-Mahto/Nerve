@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight } from 'lucide-react'
 import {
-  useOutreachData, formatLocalDate, campaignDateStatus,
+  useOutreachData, formatLocalDate, campaignDateStatus, shiftCalendarCursor,
   type CampaignDateStatus,
 } from '@/lib/outreach-data'
 
@@ -66,10 +66,7 @@ export default function OutreachCalendar() {
   const monthLabel = cursor.toLocaleString('en-US', { month: 'long', year: 'numeric' })
 
   function shift(dir: -1 | 1) {
-    const d = new Date(cursor)
-    if (view === 'month') d.setMonth(d.getMonth() + dir)
-    else d.setDate(d.getDate() + dir * 7)
-    setCursor(d)
+    setCursor(shiftCalendarCursor(cursor, view, dir))
   }
 
   const maxPerCell = view === 'week' ? 14 : 5

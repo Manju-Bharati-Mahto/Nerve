@@ -14,16 +14,95 @@
  * they acted, so history stays readable even after the account is gone.
  */
 import { randomUUID } from "node:crypto";
+import type { AppRole } from "../db.js";
 import { mutateUsers, readUsers } from "./drive-store.js";
 import type { ActivityEntry, VideoRole, VideoUser } from "./types.js";
 
-/** Maps a Nerve role onto the workflow role it acts as (§3). */
-export function videoRoleForNerveRole(role: string): VideoRole | null {
-  if (role === "super_admin" || role === "admin") return "admin";
+/**
+ * Maps a Nerve role onto the workflow role it acts as (§3).
+ *
+ * A Nerve "admin" is the workflow's Admin only on the outreach team. Every
+ * department has admins, and this used to map all of them to Admin — so a
+ * branding, design, media or content admin could call the video API and read
+ * every outreach page's followers and inventory (and was quietly registered
+ * as an outreach workflow Admin on the way). Their own departments are
+ * untouched; they simply no longer reach this one. super_admin has no team
+ * and stays Admin. outreach_state_user has no video workflow at all.
+ */
+export function videoRoleForNerveRole(role: string, team: string | null | undefined): VideoRole | null {
+  if (role === "super_admin") return "admin";
+  // Any other team's admin falls through to null below.
+  if (team === "outreach" && role === "admin") return "admin";
   if (role === "outreach_manager") return "manager";
   if (role === "outreach_editor") return "editor";
   if (role === "outreach_publisher") return "publisher";
   return null;
+}
+
+/**
+ * The Nerve role that makes someone each workflow role — the inverse of
+ * videoRoleForNerveRole, and the same table as NERVE_ROLE_FOR_VIDEO_ROLE in
+ * src/pages/outreach/video/workflow-roles.ts, which the Add user dialog uses.
+ * Admin is the asymmetric case: both super_admin and admin read as Admin, and
+ * admin is the one that can be handed out.
+ */
+export const NERVE_ROLE_FOR_VIDEO_ROLE: Record<VideoRole, AppRole> = {
+  admin: "admin",
+  manager: "outreach_manager",
+  editor: "outreach_editor",
+  publisher: "outreach_publisher",
+};
+
+/**
+ * Why `actor` may not give `target` the Nerve role behind workflow role
+ * `next`, or null when they may. The checks the workflow's own
+ * mayAssignRole / mayModifyUserWithRole make still apply before this; these
+ * are the ones Nerve's user management makes, so the Users tab is not a way
+ * around them now that a role change there reaches the Nerve account.
+ */
+export function nerveRoleChangeRefusal(
+  actor: { role: string; team: string | null },
+  target: { role: string; team: string | null },
+  next: VideoRole,
+): string | null {
+  if (target.role === "super_admin") {
+    return "That person is a super admin. Their role is changed from Nerve's user management, not here.";
+  }
+  if (actor.role === "super_admin") return null;
+  if (!actor.team || target.team !== actor.team) {
+    return "You can only change the role of someone on your own team.";
+  }
+  // Nerve lets only a super admin create an admin (canCreateManagedUser).
+  if (next === "admin") return "Only a super admin can make someone an Admin.";
+  return null;
+}
+
+/**
+ * Roles a Manager may hand out (PRD §6). A Manager administers the outreach
+ * team — they staff it — but cannot create or promote anyone to Admin, which
+ * is the one grant that would let them hand away more authority than they
+ * hold.
+ */
+export const MANAGER_GRANTABLE_ROLES: VideoRole[] = ["editor", "manager", "publisher"];
+
+/** Whether `actor` may give somebody the role `target`. Admin is unrestricted. */
+export function mayAssignRole(actor: VideoRole, target: VideoRole): boolean {
+  if (actor === "admin") return true;
+  if (actor !== "manager") return false;
+  return MANAGER_GRANTABLE_ROLES.includes(target);
+}
+
+/**
+ * Whether `actor` may modify a user who currently holds `targetRole`.
+ *
+ * Separate from mayAssignRole, and both are needed. Capping what a Manager may
+ * ASSIGN is decoration on its own: without this, a Manager who cannot promote
+ * someone to Admin could still disable or delete the Admin instead.
+ */
+export function mayModifyUserWithRole(actor: VideoRole, targetRole: VideoRole): boolean {
+  if (actor === "admin") return true;
+  if (actor !== "manager") return false;
+  return targetRole !== "admin";
 }
 
 /** Everyone still on the active list — tombstones and disabled users excluded. */
@@ -63,7 +142,14 @@ export async function listActiveEditors(): Promise<VideoUser[]> {
 export async function findUserByEmail(email: string): Promise<VideoUser | null> {
   const doc = await readUsers();
   const target = email.trim().toLowerCase();
-  return doc.users.find(u => u.email.trim().toLowerCase() === target) ?? null;
+  const matches = doc.users.filter(u => u.email.trim().toLowerCase() === target);
+  /* A person removed and later re-added with the same email has two records:
+     the old one tombstoned (it keeps their history attributed) and the new,
+     live one. The first match used to win, which was the tombstone — so the
+     re-added person was told "This account no longer has access" on every
+     request. The live record wins; a tombstone answers only when it is all
+     there is. */
+  return matches.find(u => !u.deletedAt) ?? matches[matches.length - 1] ?? null;
 }
 
 export async function findUserById(id: string): Promise<VideoUser | null> {

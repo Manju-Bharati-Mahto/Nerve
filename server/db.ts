@@ -71,6 +71,8 @@ export interface AppUser {
   managed_by: string | null;
   email_verified: boolean;
   avatar_url: string | null;
+  /** PRD §6 — optional everywhere; null when it was never given. */
+  mobile: string | null;
   created_at: string;
   updated_at: string;
   team_joined_at: string | null;
@@ -88,6 +90,8 @@ export interface CreateUserInput {
   role: AppRole;
   team: string | null;
   managed_by: string | null;
+  /** PRD §6 — optional. */
+  mobile?: string | null;
 }
 
 export interface UpdateUserInput {
@@ -99,6 +103,7 @@ export interface UpdateUserInput {
   team?: string | null;
   managed_by?: string | null;
   avatar_url?: string | null;
+  mobile?: string | null;
 }
 
 export interface CreateEntryInput {
@@ -144,6 +149,7 @@ interface UserRow {
   password_hash: string;
   email_verified: boolean;
   avatar_url: string | null;
+  mobile: string | null;
   created_at: string;
   updated_at: string;
   team_joined_at: string | null;
@@ -217,6 +223,7 @@ function mapUser(row: UserRow): AppUser {
     managed_by: row.managed_by,
     email_verified: row.email_verified ?? false,
     avatar_url: row.avatar_url ?? null,
+    mobile: row.mobile ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
     team_joined_at: row.team_joined_at ?? null,
@@ -286,7 +293,7 @@ export async function bootstrapDatabase() {
       full_name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
       department TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager', 'outreach_editor', 'outreach_publisher', 'inventory_manager', 'branding_reports_admin', 'design_reports_admin', 'task_owner', 'task_manager')),
+      role TEXT NOT NULL CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager', 'outreach_editor', 'outreach_publisher', 'inventory_manager', 'branding_reports_admin', 'design_reports_admin', 'task_owner', 'task_manager', 'outreach_state_user')),
       team TEXT REFERENCES teams(id) ON DELETE SET NULL,
       managed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
       password_hash TEXT NOT NULL,
@@ -298,6 +305,13 @@ export async function bootstrapDatabase() {
   // Add avatar_url column if it doesn't exist (safe migration)
   await pool.query(`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT DEFAULT NULL
+  `);
+
+  /* Mobile number. Optional everywhere (Campaign & Content Management PRD §6
+     lists it as optional), so it is nullable with no default and nothing reads
+     it as required — an existing row simply has none. */
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS mobile TEXT
   `);
 
   // Track when each user joined their current team. Used to clamp the KRA
@@ -316,12 +330,20 @@ export async function bootstrapDatabase() {
   // Widen role CHECK constraint to include all current roles (safe migration).
   // branding_reports_admin: branding-team admin restricted to Daily Reports +
   // Manage Categories. Doesn't get KRA or Leave Requests.
+  //
+  // ROLLBACK HAZARD (outreach_state_user). This step drops and re-adds the
+  // constraint on every boot, from whichever build is booting. Once any user
+  // holds a role that an OLDER build's list lacks, that build's ADD
+  // CONSTRAINT fails and it does not boot — every department goes down, not
+  // just outreach. Before starting a build without outreach_state_user
+  // against a database that has State Users, park them first; DEPLOYMENT.md
+  // ("Rolling back past a new role") has the SQL.
   await pool.query(`
     DO $$
     BEGIN
       ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check;
       ALTER TABLE users ADD CONSTRAINT users_role_check
-        CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager', 'outreach_editor', 'outreach_publisher', 'inventory_manager', 'branding_reports_admin', 'design_reports_admin', 'task_owner', 'task_manager'));
+        CHECK (role IN ('super_admin', 'admin', 'sub_admin', 'user', 'outreach_manager', 'outreach_editor', 'outreach_publisher', 'inventory_manager', 'branding_reports_admin', 'design_reports_admin', 'task_owner', 'task_manager', 'outreach_state_user'));
     END $$;
   `);
 
@@ -500,8 +522,8 @@ export async function listUsers() {
 export async function createUser(input: CreateUserInput) {
   const passwordHash = await hashPassword(input.password);
   const result = await pool.query<UserRow>(
-    `INSERT INTO users (id, full_name, email, department, role, team, managed_by, password_hash, team_joined_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $6::text IS NULL THEN NULL ELSE NOW() END)
+    `INSERT INTO users (id, full_name, email, department, role, team, managed_by, password_hash, team_joined_at, mobile)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $6::text IS NULL THEN NULL ELSE NOW() END, $9)
      RETURNING *`,
     [
       generateId("u"),
@@ -512,6 +534,7 @@ export async function createUser(input: CreateUserInput) {
       input.team,
       input.role === "user" ? input.managed_by : null,
       passwordHash,
+      input.mobile?.trim() || null,
     ],
   );
   return mapUser(result.rows[0]);
@@ -529,6 +552,7 @@ export async function updateUser(id: string, input: UpdateUserInput) {
     : null;
 
   const avatarUrl = input.avatar_url !== undefined ? input.avatar_url : current.avatar_url;
+  const mobile = input.mobile !== undefined ? (input.mobile?.trim() || null) : current.mobile;
 
   // Re-stamp team_joined_at whenever the team actually changes (including
   // assignment from null → team, team → team', or team → null). Keep the
@@ -545,6 +569,7 @@ export async function updateUser(id: string, input: UpdateUserInput) {
          managed_by = $7,
          password_hash = $8,
          avatar_url = $9,
+         mobile = $11,
          team_joined_at = CASE
            WHEN $10::boolean THEN (CASE WHEN $6::text IS NULL THEN NULL ELSE NOW() END)
            ELSE team_joined_at
@@ -563,6 +588,7 @@ export async function updateUser(id: string, input: UpdateUserInput) {
       passwordHash,
       avatarUrl,
       teamChanged,
+      mobile,
     ],
   );
 

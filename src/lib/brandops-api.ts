@@ -4,19 +4,25 @@
  * Mirrors the server's row shapes rather than re-modelling them, so a column
  * rename shows up as a type error here instead of an empty cell in the UI.
  */
+import { errorFor, fetchOrExplain, readJson } from './http'
+import { checkImageFile, IMAGE_ACCEPT } from './image-file'
+
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 const BASE = `${API_BASE_URL}/brandops`
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetchOrExplain(`${BASE}${path}`, {
     credentials: 'include',
     headers: init?.body instanceof FormData
       ? (init?.headers ?? {})
       : { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
     ...init,
   })
-  const payload = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error((payload as { message?: string }).message || 'Request failed.')
+  /* Photo uploads go through here too, and a body over nginx's limit comes
+     back as an HTML 413 — readJson/errorFor say "too large" instead of
+     "Request failed.". */
+  const payload = await readJson(res)
+  if (!res.ok) throw errorFor(res, payload, 'Request failed.')
   return payload as T
 }
 
@@ -58,13 +64,41 @@ export interface BrandingRequest {
   id: string; reference: string; institute_id: string; institute_name: string
   required_date: string; work_type: string; priority: Priority; description: string
   location: string; quantity: number; status: RequestStatus; created_at: string
+  /** Free text — a frame size or anything new. Empty when not given. */
+  size: string
+  completed_at: string | null; completion_note: string
+  /** Quotations still standing (removed ones are history, not counted). */
   quote_count: number; approved_amount: string | null
+  /** The cheapest quotation still standing. */
+  lowest_amount: string | null
 }
 export interface Quotation {
   id: string; reference: string; request_id: string; request_reference: string
   institute_name: string; vendor_id: string; vendor_name: string; amount: string
   quote_date: string; status: QuoteStatus; notes: string; decision_note: string
   decided_at: string | null; created_at: string
+  /** 1 for an unedited quotation; each edit adds one. */
+  revision: number; updated_at: string | null
+  removed_at: string | null; removal_reason: string
+  work_type: string; request_size: string
+  /** Set when the requirement itself was removed — the quotation is then history only. */
+  request_removed_at: string | null
+}
+/** One earlier version of a quotation, kept when it was edited. */
+export interface QuotationRevision {
+  revision: number; vendor_name: string; amount: string; quote_date: string
+  notes: string; replaced_at: string; replaced_by_name: string | null
+}
+export interface QuotationWithHistory extends Quotation { revisions: QuotationRevision[] }
+/** A quotation as the Dashboard's ⓘ shows it. */
+export interface QuoteSummary {
+  id: string; reference: string; vendor_name: string; amount: string
+  quote_date: string; status: QuoteStatus; revision: number
+}
+/** A requirement as the forms send it. */
+export interface RequestForm {
+  institute_id: string; required_date: string; work_type: string
+  priority: Priority; description: string; location: string; quantity: number; size: string
 }
 export interface WorkOrder {
   id: string; reference: string; request_id: string; request_reference: string
@@ -109,6 +143,8 @@ export const boMe = () => request<{ admin: boolean; capabilities: string[] }>('/
 
 export const boDashboard = () => request<{
   kpis: Kpis; sizes: SizeBreakdown[]; allocations: Allocation[]; requests: BrandingRequest[]
+  /** The quotations behind each listed requirement, by requirement id. */
+  quotes: Record<string, QuoteSummary[]>
 }>('/dashboard')
 
 export const boReports = () => request<{
@@ -154,18 +190,43 @@ export const boReturnFrame = (id: string, r: { condition?: string; location?: st
   request<{ ok: true }>(`/frames/${id}/return`, { method: 'POST', body: JSON.stringify(r) })
 
 export const boRequests = (p: { status?: RequestStatus; institute_id?: string; q?: string } = {}) =>
-  request<{ requests: BrandingRequest[] }>(`/requests${qs(p)}`)
-export const boAddRequest = (r: {
-  institute_id: string; required_date: string; work_type: string; priority: Priority
-  description: string; location?: string; quantity?: number
-}) => request<{ request: BrandingRequest }>('/requests', { method: 'POST', body: JSON.stringify(r) })
+  request<{ requests: BrandingRequest[]; sizes: string[] }>(`/requests${qs(p)}`)
+export const boAddRequest = (r: RequestForm) =>
+  request<{ request: BrandingRequest }>('/requests', { method: 'POST', body: JSON.stringify(r) })
+export const boUpdateRequest = (id: string, r: RequestForm) =>
+  request<{ request: BrandingRequest }>(`/requests/${id}`, { method: 'PATCH', body: JSON.stringify(r) })
 export const boSetRequestStatus = (id: string, status: RequestStatus) =>
   request<{ ok: true }>(`/requests/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) })
+/** Marks the work finished. */
+export const boCompleteRequest = (id: string, note = '') =>
+  request<{ ok: true }>(`/requests/${id}/complete`, { method: 'POST', body: JSON.stringify({ note }) })
+/** Undoes "Completed"; returns the status it went back to. */
+export const boReopenRequest = (id: string) =>
+  request<{ status: RequestStatus }>(`/requests/${id}/reopen`, { method: 'POST' })
+/** Removes a requirement from Requests and the Dashboard alike. Kept on record. */
+export const boRemoveRequest = (id: string, reason = '') =>
+  request<{ removed: true }>(`/requests/${id}`, { method: 'DELETE', body: JSON.stringify({ reason }) })
+/** Every quotation a requirement has had, each with its earlier versions. */
+export const boRequestQuotations = (id: string) =>
+  request<{ request: BrandingRequest | null; quotations: QuotationWithHistory[] }>(`/requests/${id}/quotations`)
 
-export const boQuotations = (p: { status?: QuoteStatus; request_id?: string } = {}) =>
+export const boQuotations = (p: { status?: QuoteStatus; request_id?: string; include_removed?: '1' } = {}) =>
   request<{ quotations: Quotation[] }>(`/quotations${qs(p)}`)
-export const boAddQuotation = (q: { request_id: string; vendor_id: string; amount: number; quote_date: string; notes?: string }) =>
-  request<{ quotation: Quotation }>('/quotations', { method: 'POST', body: JSON.stringify(q) })
+/**
+ * Adds a quotation — against a requirement from the list (`request_id`), or a
+ * new one typed into the form (`new_requirement`), created in the same step.
+ */
+export const boAddQuotation = (q: {
+  request_id?: string; new_requirement?: RequestForm
+  vendor_id: string; amount: number; quote_date: string; notes?: string
+}) => request<{ quotation: Quotation }>('/quotations', { method: 'POST', body: JSON.stringify(q) })
+/** Edits a quotation; the version it replaces is kept. */
+export const boUpdateQuotation = (id: string, patch: {
+  vendor_id?: string; amount?: number; quote_date?: string; notes?: string
+}) => request<{ quotation: Quotation }>(`/quotations/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+/** Removes a quotation from the lists; it stays in the requirement's history. */
+export const boRemoveQuotation = (id: string, reason = '') =>
+  request<{ removed: true }>(`/quotations/${id}`, { method: 'DELETE', body: JSON.stringify({ reason }) })
 export const boApprovals = () => request<{ quotations: Quotation[] }>('/approvals')
 export const boDecideQuotation = (id: string, decision: 'approved' | 'rejected', note = '') =>
   request<{ ok: true }>(`/quotations/${id}/decision`, { method: 'POST', body: JSON.stringify({ decision, note }) })
@@ -187,6 +248,27 @@ export const boCheckIn = (workOrderId: string, notes = '') =>
   request<{ ok: true }>(`/work-orders/${workOrderId}/check-in`, { method: 'POST', body: JSON.stringify({ notes }) })
 export const boCheckOut = (workOrderId: string, notes = '') =>
   request<{ ok: true }>(`/work-orders/${workOrderId}/check-out`, { method: 'POST', body: JSON.stringify({ notes }) })
+
+/* ── Photo checks, before anything is sent ────────────────────────────────
+   The per-file rule is the one every image picker uses (./image-file.ts,
+   mirroring server/upload-guard.ts); BrandOps adds its own limits — 10 MB a
+   photo, ten at a time — and names the photo that is wrong. */
+
+/** The `accept` for BrandOps photo inputs; see IMAGE_ACCEPT for why it lists types. */
+export const BO_PHOTO_ACCEPT = IMAGE_ACCEPT
+export const BO_PHOTO_MAX_BYTES = 10 * 1024 * 1024
+export const BO_PHOTO_MAX_FILES = 10
+
+/** Why these photos cannot be uploaded, or null when they can. */
+export function boCheckPhotos(files: ArrayLike<File> | null | undefined): string | null {
+  const list = Array.from(files ?? [])
+  if (list.length > BO_PHOTO_MAX_FILES) return `Choose at most ${BO_PHOTO_MAX_FILES} photos at a time — ${list.length} are selected.`
+  for (const f of list) {
+    const problem = checkImageFile(f, BO_PHOTO_MAX_BYTES)
+    if (problem) return `${f.name}: ${problem}`
+  }
+  return null
+}
 
 export const boCompletion = () => request<{ work_orders: WorkOrder[] }>('/completion')
 export const boUploadPhotos = (workOrderId: string, form: FormData) =>

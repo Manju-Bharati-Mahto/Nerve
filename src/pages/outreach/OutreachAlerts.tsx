@@ -2,10 +2,11 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AlertTriangle, MapPin, Link as LinkIcon, ExternalLink, CheckCircle2 } from 'lucide-react'
 import {
-  useOutreachData, computeOutreachAlerts, outreachStates,
+  useOutreachData, computeOutreachAlerts, outreachStates, sameState,
   type Campaign,
 } from '@/lib/outreach-data'
 import AddLivePostsDialog from './AddLivePostsDialog'
+import { useCanEditPosts, useAllStatesLabel } from '@/lib/outreach-access'
 
 function fmtOverdue(hours: number): string {
   if (hours < 24) return `${hours}h overdue`
@@ -15,18 +16,22 @@ function fmtOverdue(hours: number): string {
 }
 
 export default function OutreachAlerts() {
-  const { campaigns, pages, creators, posts } = useOutreachData()
+  const { campaigns, pages, creators, posts, dismissedAlertIds } = useOutreachData()
+  const canEditPosts = useCanEditPosts()
+  const allStatesLabel = useAllStatesLabel()
   const [stateFilter, setStateFilter] = useState('')
   const [resolveFor, setResolveFor] = useState<Campaign | null>(null)
 
   const states = useMemo(() => outreachStates(pages, campaigns), [pages, campaigns])
   const campaignById = useMemo(() => new Map(campaigns.map(c => [c.id, c])), [campaigns])
 
+  // Alerts dismissed on the Dashboard stay dismissed here: computeOutreachAlerts
+  // leaves them out. This page used to list them all and count them as pending.
   const alerts = useMemo(() => {
-    const all = computeOutreachAlerts(campaigns, pages, creators, posts)
+    const all = computeOutreachAlerts(campaigns, pages, creators, posts, new Date(), dismissedAlertIds)
     if (!stateFilter) return all
-    return all.filter(a => campaignById.get(a.campaignId)?.state === stateFilter)
-  }, [campaigns, pages, creators, posts, stateFilter, campaignById])
+    return all.filter(a => sameState(campaignById.get(a.campaignId)?.state, stateFilter))
+  }, [campaigns, pages, creators, posts, stateFilter, campaignById, dismissedAlertIds])
 
   return (
     <div className="animate-fade-in space-y-5">
@@ -49,7 +54,7 @@ export default function OutreachAlerts() {
               <MapPin className="w-3.5 h-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <select value={stateFilter} onChange={e => setStateFilter(e.target.value)}
                 className="hub-input py-1.5 pl-7 text-xs w-40">
-                <option value="">All states</option>
+                <option value="">{allStatesLabel}</option>
                 {states.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
@@ -92,7 +97,7 @@ export default function OutreachAlerts() {
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="hub-badge bg-rose-100 text-rose-700 whitespace-nowrap">{fmtOverdue(a.hoursOverdue)}</span>
-                  {campaign && a.subjectKind === 'page' && (
+                  {canEditPosts && campaign && a.subjectKind === 'page' && (
                     <button onClick={() => setResolveFor(campaign)}
                       title="Add the published post link to resolve this alert"
                       className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1">

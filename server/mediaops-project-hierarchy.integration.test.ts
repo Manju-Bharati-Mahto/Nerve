@@ -314,7 +314,7 @@ maybe("TEST 4/14 — individual assignment is not the Coordinator's to make", ()
     expect((r.body.members as Array<{ id: string }>).map((m) => m.id)).toEqual([ACTORS.coord.id]);
   });
 
-  it("TEST 14 — an employee cannot assign work to another employee", async () => {
+  it("TEST 14 — an employee who is not on the project cannot assign work on it", async () => {
     const created = await newProject("admin", { team_id: teamA,
       deliverables: [{ title: "Reel", deliverable_type_id: deliverableTypeId }] });
     const [d] = await deliverablesOf(Number((created.body.project as Record<string, unknown>).id));
@@ -386,11 +386,15 @@ maybe("TEST 11/12/13 — allocation belongs to the Team Lead", () => {
     delivId = Number((await deliverablesOf(pid))[0].id);
   });
 
-  it("TEST 12 — the lead's assignable people are their own team, and only theirs", async () => {
+  /* Product decision (Oct 2026): a lead assigns anyone in the crew, not only
+     their own team. What stays fenced is shown by the Coordinator's list. */
+  it("TEST 12 — the lead's assignable people are the whole active crew, other teams included", async () => {
     const r = await as("leadA", "GET", "/members/assignable");
-    const ids = (r.body.members as Array<{ id: string }>).map((m) => m.id).sort();
-    expect(ids).toEqual([ACTORS.empA1.id, ACTORS.empA2.id, ACTORS.leadA.id].sort());
-    expect(ids).not.toContain(ACTORS.empB1.id);
+    const ids = (r.body.members as Array<{ id: string }>).map((m) => m.id);
+    for (const who of [ACTORS.empA1.id, ACTORS.empA2.id, ACTORS.empB1.id, ACTORS.leadA.id]) expect(ids).toContain(who);
+    expect(ids, "a removed account is offered").not.toContain(`${PX}-deadlead`);
+    const c = await as("coord", "GET", "/members/assignable");
+    expect((c.body.members as Array<{ id: string }>).map((m) => m.id)).toEqual([ACTORS.coord.id]);
   });
 
   it("TEST 11 — the lead assigns the deliverable to one of their people", async () => {
@@ -399,16 +403,16 @@ maybe("TEST 11/12/13 — allocation belongs to the Team Lead", () => {
     expect((await deliverablesOf(pid))[0].owner_id).toBe(ACTORS.empA1.id);
   });
 
-  it("refuses the lead reaching into another team", async () => {
-    const r = await as("leadA", "PATCH", `/deliverables/${delivId}`, { owner_id: ACTORS.empB1.id });
-    expect(r.status).toBe(403);
-    expect(String(r.body.message)).toContain("your own team");
-  });
-
   it("TEST 13 — the work reaches exactly one employee", async () => {
     const rows = await pool.query(
       `SELECT owner_id FROM mo_deliverables WHERE project_id=$1 AND owner_id IS NOT NULL`, [pid]);
     expect(rows.rows.map((r) => r.owner_id)).toEqual([ACTORS.empA1.id]);
+  });
+
+  it("the lead may assign someone from another team", async () => {
+    const r = await as("leadA", "PATCH", `/deliverables/${delivId}`, { owner_id: ACTORS.empB1.id });
+    expect(r.status).toBe(200);
+    expect((await deliverablesOf(pid))[0].owner_id).toBe(ACTORS.empB1.id);
   });
 
   it("reassignment stays inside the team and is auditable", async () => {

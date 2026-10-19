@@ -5,6 +5,7 @@ import {
   Link as LinkIcon, Trash2, Users, Download, Pencil, X, Sparkles, RefreshCw, Loader2,
 } from 'lucide-react'
 import AddLivePostsDialog from './AddLivePostsDialog'
+import { useCanEditPosts, useCanEditTab, useIsOutreachAdmin } from '@/lib/outreach-access'
 import { buildCampaignReport, exportCampaignReportPdf, exportCampaignReportDocx } from '@/lib/outreach-export'
 import {
   BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -14,7 +15,16 @@ import {
   syncCampaignNow,
   PAGE_CONTENT_PREFERENCES,
   type Campaign, type CampaignStatus, type OutreachPage, type OutreachCreator, type Post, type Platform,
+  effectiveViews
 } from '@/lib/outreach-data'
+
+// The server refuses budgets outside 0..100000 (whole numbers only).
+const BUDGET_MAX = 100000
+
+/** A typed budget as the whole, in-range number the server will accept. */
+function toBudget(raw: string): number {
+  return Math.min(BUDGET_MAX, Math.max(0, Math.floor(Number(raw) || 0)))
+}
 
 const STATUS_CFG: Record<CampaignStatus, { label: string; cls: string }> = {
   planning:  { label: 'Planning',  cls: 'bg-blue-100 text-blue-700' },
@@ -29,6 +39,10 @@ export default function OutreachCampaignDetail() {
   const navigate = useNavigate()
   const campaign = campaigns.find(c => c.id === campaignId)
   const [showAllPages, setShowAllPages] = useState(false)
+  // By tab level, as the server decides: Edit on Campaigns changes a campaign.
+  const canEdit = useCanEditTab('campaigns')
+  const canEditPosts = useCanEditPosts()
+  const isAdmin = useIsOutreachAdmin()
   const [livePostsOpen, setLivePostsOpen] = useState(false)
   const [editing, setEditing] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -60,8 +74,11 @@ export default function OutreachCampaignDetail() {
   async function handleDelete() {
     if (!campaign) return
     const linked = posts.filter(p => p.campaignId === campaign.id).length
+    // The posts go with it: outreach_posts.campaign_id is ON DELETE CASCADE
+    // (deliberately, so a deleted campaign's posts stop counting on its pages).
+    // This used to promise they'd be "kept but unattributed".
     const msg = linked > 0
-      ? `Delete "${campaign.name}"? ${linked} post${linked === 1 ? '' : 's'} attributed to it will be kept but unattributed. This cannot be undone.`
+      ? `Delete "${campaign.name}"? This will also delete the ${linked} post${linked === 1 ? '' : 's'} attributed to it. This cannot be undone.`
       : `Delete "${campaign.name}"? This cannot be undone.`
     if (!window.confirm(msg)) return
     setDeleting(true)
@@ -101,7 +118,7 @@ export default function OutreachCampaignDetail() {
         delivered: pp.length,
         likes: pp.reduce((s, p) => s + p.likes, 0),
         comments: pp.reduce((s, p) => s + p.comments, 0),
-        views: pp.reduce((s, p) => s + p.views, 0),
+        views: pp.reduce((s, p) => s + effectiveViews(p), 0),
         engagement: pp.reduce((s, p) => s + p.likes + p.comments + p.saves + p.shares, 0),
       }
     }).filter(x => x.page).sort((a, b) => b.engagement - a.engagement)
@@ -164,28 +181,35 @@ export default function OutreachCampaignDetail() {
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <span className={`hub-badge ${STATUS_CFG[campaign.status].cls}`}>{STATUS_CFG[campaign.status].label}</span>
-            <button
-              onClick={() => setEditing(true)}
-              title="Edit pages, budgets and variants"
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-violet-100 text-violet-700 hover:opacity-80 inline-flex items-center gap-1"
-            >
-              <Pencil className="w-3 h-3" /> Edit
-            </button>
-            <button
-              onClick={() => setLivePostsOpen(true)}
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1"
-            >
-              <LinkIcon className="w-3 h-3" /> Add live posts
-            </button>
-            <button
-              onClick={handleCampaignSync}
-              disabled={syncing}
-              title="Re-scrape only this campaign's posts and reels and update their stats"
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50"
-            >
-              {syncing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-              {syncing ? 'Syncing…' : 'Sync'}
-            </button>
+            {canEdit && (
+              <button
+                onClick={() => setEditing(true)}
+                title="Edit pages, budgets and variants"
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-violet-100 text-violet-700 hover:opacity-80 inline-flex items-center gap-1"
+              >
+                <Pencil className="w-3 h-3" /> Edit
+              </button>
+            )}
+            {canEditPosts && (
+              <button
+                onClick={() => setLivePostsOpen(true)}
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1"
+              >
+                <LinkIcon className="w-3 h-3" /> Add live posts
+              </button>
+            )}
+            {/* A sync is a paid Apify run: the outreach manager's call. */}
+            {isAdmin && (
+              <button
+                onClick={handleCampaignSync}
+                disabled={syncing}
+                title="Re-scrape only this campaign's posts and reels and update their stats"
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50"
+              >
+                {syncing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                {syncing ? 'Syncing…' : 'Sync'}
+              </button>
+            )}
             <button
               onClick={() => exportCampaignReportPdf(buildCampaignReport(campaign, pages, creators, posts))}
               className="text-xs px-2.5 py-1.5 rounded-lg bg-blue-100 text-blue-700 hover:opacity-80 inline-flex items-center gap-1"
@@ -198,12 +222,12 @@ export default function OutreachCampaignDetail() {
             >
               <Download className="w-3 h-3" /> Export Word
             </button>
-            {campaign.status === 'planning' && (
+            {canEdit && campaign.status === 'planning' && (
               <button onClick={() => setStatus('active')} className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 hover:opacity-80 inline-flex items-center gap-1">
                 <Play className="w-3 h-3" /> Activate
               </button>
             )}
-            {campaign.status === 'active' && (
+            {canEdit && campaign.status === 'active' && (
               <>
                 <button onClick={() => setStatus('paused')} className="text-xs px-2.5 py-1.5 rounded-lg bg-amber-100 text-amber-700 hover:opacity-80 inline-flex items-center gap-1">
                   <Pause className="w-3 h-3" /> Pause
@@ -213,16 +237,18 @@ export default function OutreachCampaignDetail() {
                 </button>
               </>
             )}
-            {campaign.status === 'paused' && (
+            {canEdit && campaign.status === 'paused' && (
               <button onClick={() => setStatus('active')} className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-100 text-emerald-700 hover:opacity-80 inline-flex items-center gap-1">
                 <Play className="w-3 h-3" /> Resume
               </button>
             )}
-            <button onClick={handleDelete} disabled={deleting}
-              title="Delete campaign"
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
-              <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
-            </button>
+            {canEdit && (
+              <button onClick={handleDelete} disabled={deleting}
+                title="Delete campaign"
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
+                <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+            )}
           </div>
         </div>
 
@@ -314,7 +340,7 @@ export default function OutreachCampaignDetail() {
                     <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums" title={`${views.toLocaleString('en-US')} views`}>{views.toLocaleString('en-US')}</td>
                     <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{fmt(engagement)}</td>
                     <td className="px-3 py-2.5 text-right">
-                      <button
+                      {canEdit && <button
                         onClick={async () => {
                           if (!campaign) return
                           if (!confirm(`Remove @${page.handle} from this campaign? The page itself stays — only the assignment is cleared.`)) return
@@ -326,7 +352,7 @@ export default function OutreachCampaignDetail() {
                         className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      </button>}
                     </td>
                   </tr>
                 ))}
@@ -523,18 +549,18 @@ function EditCampaignModal({ campaign, pages, creators, posts, onClose }: {
             <div className="grid grid-cols-3 gap-3">
               <div>
                 <label className="hub-label">Posts</label>
-                <input type="number" min={0} className="hub-input" value={budgetPosts}
-                  onChange={e => setBudgetPosts(Number(e.target.value) || 0)} />
+                <input type="number" min={0} max={BUDGET_MAX} step={1} className="hub-input" value={budgetPosts}
+                  onChange={e => setBudgetPosts(toBudget(e.target.value))} />
               </div>
               <div>
                 <label className="hub-label">Stories</label>
-                <input type="number" min={0} className="hub-input" value={budgetStories}
-                  onChange={e => setBudgetStories(Number(e.target.value) || 0)} />
+                <input type="number" min={0} max={BUDGET_MAX} step={1} className="hub-input" value={budgetStories}
+                  onChange={e => setBudgetStories(toBudget(e.target.value))} />
               </div>
               <div>
                 <label className="hub-label">Reels</label>
-                <input type="number" min={0} className="hub-input" value={budgetReels}
-                  onChange={e => setBudgetReels(Number(e.target.value) || 0)} />
+                <input type="number" min={0} max={BUDGET_MAX} step={1} className="hub-input" value={budgetReels}
+                  onChange={e => setBudgetReels(toBudget(e.target.value))} />
               </div>
             </div>
           </div>

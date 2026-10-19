@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { BarChart3, AlertCircle, Film, Send, CheckCircle2, Clock, Calendar, UserX } from 'lucide-react'
-import { getKpis, formatHours, type WorkflowKpis, type CountRow } from '@/lib/outreach-video-data'
+import { BarChart3, Film, Send, CheckCircle2, Clock, Calendar, UserX } from 'lucide-react'
+import {
+  getKpis, formatHours, loadFailureOf, type WorkflowKpis, type CountRow, type LoadFailure,
+} from '@/lib/outreach-video-data'
+import DriveProblemNotice from './DriveProblemNotice'
 
 /**
  * §20 — the workflow KPI dashboard, for Admin and Manager only (the API
@@ -13,46 +16,83 @@ import { getKpis, formatHours, type WorkflowKpis, type CountRow } from '@/lib/ou
  */
 export default function VideoDashboard() {
   const [kpis, setKpis] = useState<WorkflowKpis | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LoadFailure | null>(null)
 
   useEffect(() => {
-    getKpis().then(setKpis).catch(err =>
-      setError(err instanceof Error ? err.message : 'Could not load the dashboard.'))
+    getKpis().then(setKpis).catch(err => setError(loadFailureOf(err, 'Could not load the dashboard.')))
   }, [])
 
-  if (error) {
+  /* The heading stays up whatever happened, so a failed load still reads as
+     this page — and a Drive problem comes with the way to fix it. */
+  const header = (
+    <div className="flex items-center gap-3">
+      <div className="w-10 h-10 rounded-xl bg-orange-100 flex items-center justify-center">
+        <BarChart3 className="w-5 h-5 text-orange-600" />
+      </div>
+      <div>
+        <h1 className="text-2xl font-serif text-foreground">Workflow Dashboard</h1>
+        <p className="text-sm text-muted-foreground">Everything moving through video, at a glance.</p>
+      </div>
+    </div>
+  )
+
+  if (error || !kpis) {
     return (
-      <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
-        <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> <span>{error}</span>
+      <div className="animate-fade-in space-y-6">
+        {header}
+        {error
+          ? <DriveProblemNotice message={error.message} code={error.code} />
+          : <div className="hub-card text-center py-12 text-sm text-muted-foreground">Loading…</div>}
       </div>
     )
   }
-  if (!kpis) return <div className="hub-card text-center py-12 text-sm text-muted-foreground">Loading…</div>
 
   return (
     <div className="animate-fade-in space-y-6">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-orange-100 flex items-center justify-center">
-          <BarChart3 className="w-5 h-5 text-orange-600" />
+      {header}
+
+      {/* §5 Manager / §12 Admin — the campaign-level view first: it is what
+          the dashboard is for. */}
+      <section className="space-y-3">
+        <h2 className="text-[11px] uppercase tracking-widest text-muted-foreground">Campaigns</h2>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <Kpi label="Total campaigns" value={kpis.campaignsTotal ?? 0} to="/outreach/video/campaigns" />
+          <Kpi label="Running" value={kpis.campaignsRunning ?? 0} to="/outreach/video/campaigns" />
+          <Kpi label="Upcoming" value={kpis.campaignsUpcoming ?? 0} to="/outreach/video/campaigns" />
+          <Kpi label="Completed" value={kpis.campaignsCompleted ?? 0} to="/outreach/video/campaigns" />
         </div>
-        <div>
-          <h1 className="text-2xl font-serif text-foreground">Workflow Dashboard</h1>
-          <p className="text-sm text-muted-foreground">Everything moving through video, at a glance.</p>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <Kpi label="Today's posts" value={kpis.todaysPosts} to="/outreach/video/scheduled" />
+          <Kpi label="Pending posts" value={kpis.pendingPublishingVideos} to="/outreach/video/queue" />
+          <Kpi label="Published posts" value={kpis.publishedVideos} to="/outreach/video/published" />
+          <Kpi label="Pending content" value={kpis.pendingContentVideos} to="/outreach/video/review" />
         </div>
-      </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <Kpi label="Total social media pages" text={kpis.totalSocialPages == null ? '—' : String(kpis.totalSocialPages)}
+            to="/outreach/video/social-pages" />
+          <Kpi label="Team members" value={kpis.totalUsers ?? 0} to="/outreach/video/users" />
+        </div>
+      </section>
 
       <section className="space-y-3">
         <h2 className="text-[11px] uppercase tracking-widest text-muted-foreground">Videos</h2>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <Kpi label="Total videos" value={kpis.totalVideos} icon={Film} to="/outreach/video/all" />
-          <Kpi label="Draft" value={kpis.draftVideos} icon={Clock} />
-          <Kpi label="Submitted" value={kpis.submittedVideos} icon={Send} to="/outreach/video/queue" />
+          <Kpi label="Uploaded" value={kpis.uploadedVideos} icon={Clock} />
+          <Kpi label="Under review" value={kpis.underReviewVideos} icon={Send} to="/outreach/video/review" />
           <Kpi label="Published" value={kpis.publishedVideos} icon={CheckCircle2} to="/outreach/video/published" />
+        </div>
+        {/* §11 — the three states that are somebody's turn right now. */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <Kpi label="Awaiting publishing" value={kpis.pendingPublishingVideos} to="/outreach/video/queue" />
+          <Kpi label="Scheduled" value={kpis.scheduledVideos} to="/outreach/video/scheduled" />
+          <Kpi label="Rejected" value={kpis.rejectedVideos} />
+          <Kpi label="Back with the editor" value={kpis.needsEditorVideos} />
         </div>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <Kpi label="Published this week" value={kpis.publishedThisWeek} />
           <Kpi label="Published this month" value={kpis.publishedThisMonth} />
-          <Kpi label="Avg. draft → submitted" text={formatHours(kpis.avgDraftToSubmittedHours)} />
+          <Kpi label="Avg. upload → submitted" text={formatHours(kpis.avgUploadedToSubmittedHours)} />
           <Kpi label="Avg. submitted → published" text={formatHours(kpis.avgSubmittedToPublishedHours)} />
         </div>
       </section>

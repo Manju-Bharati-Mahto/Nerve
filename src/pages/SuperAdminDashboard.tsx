@@ -486,7 +486,7 @@ function VideoWorkflowSection({ allUsers }: { allUsers: AppUser[] }) {
     { label: 'Editors',    value: editors.length,    icon: Film,        bg: 'bg-orange-50',  color: 'text-orange-600' },
     { label: 'Publishers', value: publishers.length, icon: Send,        bg: 'bg-violet-50',  color: 'text-violet-600' },
     { label: 'Videos',     value: kpis?.totalVideos ?? '—',       icon: Video,        bg: 'bg-blue-50',    color: 'text-blue-600' },
-    { label: 'In queue',   value: kpis?.submittedVideos ?? '—',   icon: Inbox,        bg: 'bg-amber-50',   color: 'text-amber-600' },
+    { label: 'In queue',   value: kpis?.pendingPublishingVideos ?? '—', icon: Inbox,  bg: 'bg-amber-50',   color: 'text-amber-600' },
     { label: 'Published',  value: kpis?.publishedVideos ?? '—',   icon: ClipboardCheck, bg: 'bg-emerald-50', color: 'text-emerald-600' },
     { label: 'Unassigned', value: kpis?.unassignedEvents ?? '—',  icon: ListChecks,   bg: 'bg-rose-50',    color: 'text-rose-600' },
   ]
@@ -576,7 +576,7 @@ function VideoWorkflowSection({ allUsers }: { allUsers: AppUser[] }) {
               {[
                 ['Published this week',  kpis ? String(kpis.publishedThisWeek) : '—'],
                 ['Published this month', kpis ? String(kpis.publishedThisMonth) : '—'],
-                ['Avg. draft → submitted',   kpis ? formatHours(kpis.avgDraftToSubmittedHours) : '—'],
+                ['Avg. upload → submitted',  kpis ? formatHours(kpis.avgUploadedToSubmittedHours) : '—'],
                 ['Avg. submitted → published', kpis ? formatHours(kpis.avgSubmittedToPublishedHours) : '—'],
                 ['Events upcoming',      kpis ? String(kpis.upcomingEvents) : '—'],
                 ['Events completed',     kpis ? String(kpis.completedEvents) : '—'],

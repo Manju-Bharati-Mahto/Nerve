@@ -7,18 +7,28 @@ import {
 } from 'lucide-react'
 import {
   useOutreachData, pageMetrics, suggestedMonthlyUsage, removePage,
-  profileUrlForPage, isValidInstagramHandle, assignedPageIdSet,
+  pageOpenUrl, isValidInstagramHandle, assignedPageIdSet, toCsv,
   PAGE_CONTENT_TYPES, FOLLOWER_TIERS, type FollowerTier, type PageContentType, type OutreachPage, type Platform,
 } from '@/lib/outreach-data'
 import ImportPagesDialog from './ImportPagesDialog'
-import { AddPageModal, EditPageModal } from './OutreachAnalytics'
+import { AddPageModal } from './OutreachAnalytics'
+import EditPageModal from './EditPageModal'
+import { useCanEditPosts, useCanEditTab, useIsOutreachAdmin } from '@/lib/outreach-access'
 import AddLivePostsDialog from './AddLivePostsDialog'
+import { geographyKey, geographyOptions } from '@/lib/outreach-states'
 
 type SortKey = 'handle' | 'tier' | 'geography' | 'total' | 'consumed' | 'suggested' | 'status'
 type SortDir = 'asc' | 'desc'
 
 export default function OutreachAllPages() {
   const { pages, posts, campaigns } = useOutreachData()
+  /* What this person may change here, by their tabs (Account Tabs
+     requirements): Edit on All Pages edits a page; adding or deleting one is
+     the outreach manager's. The server refuses the rest whatever is shown;
+     this only spares them a button that fails. */
+  const canEdit = useCanEditTab('pages')
+  const canEditPosts = useCanEditPosts()
+  const isAdmin = useIsOutreachAdmin()
   const assigned = useMemo(() => assignedPageIdSet(campaigns), [campaigns])
   const [searchParams] = useSearchParams()
   // Pages to highlight, sourced from ?ids=ID1,ID2 (e.g. coming from the
@@ -47,10 +57,14 @@ export default function OutreachAllPages() {
   const [importing, setImporting] = useState(false)
   // Which page is currently the target of the "Add live posts" dialog (null = closed).
   const [livePostsPageId, setLivePostsPageId] = useState<string | null>(null)
-  // Page currently open in the edit modal (content preference + inventory totals).
+  // Page currently open in the Edit page dialog.
   const [editingPage, setEditingPage] = useState<OutreachPage | null>(null)
 
-  const geographies = useMemo(() => Array.from(new Set(pages.map(p => p.geography))).sort(), [pages])
+  /* One entry per geography however it was typed ("Start up" / "Startup",
+     "MP" / "Madhya pradesh"), sorted without regard to case. The filter holds
+     the geography's KEY, so choosing it catches every spelling. */
+  const geographies = useMemo(() => geographyOptions(pages.map(p => p.geography)), [pages])
+  const geographyLabel = useMemo(() => new Map(geographies.map(g => [g.key, g.label])), [geographies])
 
   function toggleContentType(t: PageContentType) {
     setContentTypeFilter(prev => {
@@ -65,14 +79,15 @@ export default function OutreachAllPages() {
     const enriched = pages.map(p => {
       const m = pageMetrics(p, posts)
       const total = p.inventoryPosts + p.inventoryStories
-      const consumed = m.postsDone + m.storiesDone
+      // Consumed inventory is posts only — stories do not draw it down.
+      const consumed = m.postsDone
       return { page: p, m, total, consumed, suggested: suggestedMonthlyUsage(p, posts) }
     })
     const filtered = enriched.filter(({ page, m }) => {
       if (page.platform !== platform) return false
       if (q && !`${page.handle} ${page.geography}`.toLowerCase().includes(q)) return false
       if (tier && page.followerTier !== tier) return false
-      if (geography && page.geography !== geography) return false
+      if (geography && geographyKey(page.geography) !== geography) return false
       if (invStatus !== 'all' && m.status !== invStatus) return false
       // Content-type filter: page must have AT LEAST ONE of the selected types.
       if (contentTypeFilter.size > 0 && !page.contentTypes.some(t => contentTypeFilter.has(t))) return false
@@ -84,7 +99,7 @@ export default function OutreachAllPages() {
       const av: number | string =
         k === 'handle'    ? a.page.handle :
         k === 'tier'      ? a.page.followerTier :
-        k === 'geography' ? a.page.geography :
+        k === 'geography' ? geographyKey(a.page.geography) :
         k === 'total'     ? a.total :
         k === 'consumed'  ? a.consumed :
         k === 'suggested' ? a.suggested :
@@ -92,7 +107,7 @@ export default function OutreachAllPages() {
       const bv: number | string =
         k === 'handle'    ? b.page.handle :
         k === 'tier'      ? b.page.followerTier :
-        k === 'geography' ? b.page.geography :
+        k === 'geography' ? geographyKey(b.page.geography) :
         k === 'total'     ? b.total :
         k === 'consumed'  ? b.consumed :
         k === 'suggested' ? b.suggested :
@@ -122,8 +137,8 @@ export default function OutreachAllPages() {
     const lines = rows.map(({ page, total, consumed, suggested, m }) => [
       page.handle, page.platform, page.followerTier, page.geography, page.state, total, consumed, suggested, m.status,
       assigned.has(page.id) ? 'assigned' : 'available',
-    ].join(','))
-    const csv = [header.join(','), ...lines].join('\n')
+    ])
+    const csv = toCsv([header, ...lines])
     const blob = new Blob([csv], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
@@ -147,12 +162,16 @@ export default function OutreachAllPages() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => setCreating(true)} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-orange-600 text-white hover:opacity-90">
-            <Plus className="w-4 h-4" /> Add page
-          </button>
-          <button onClick={() => setImporting(true)} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border border-border hover:bg-accent">
-            <Upload className="w-4 h-4" /> Import Excel
-          </button>
+          {isAdmin && (
+            <>
+              <button onClick={() => setCreating(true)} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-orange-600 text-white hover:opacity-90">
+                <Plus className="w-4 h-4" /> Add page
+              </button>
+              <button onClick={() => setImporting(true)} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border border-border hover:bg-accent">
+                <Upload className="w-4 h-4" /> Import Excel
+              </button>
+            </>
+          )}
           <button onClick={exportCSV} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border border-border hover:bg-accent">
             <Download className="w-4 h-4" /> Export CSV
           </button>
@@ -200,7 +219,7 @@ export default function OutreachAllPages() {
           </select>
           <select value={geography} onChange={e => setGeography(e.target.value)} className="hub-input py-1.5 text-xs w-36">
             <option value="">Any geography</option>
-            {geographies.map(g => <option key={g} value={g}>{g}</option>)}
+            {geographies.map(g => <option key={g.key} value={g.key}>{g.label}</option>)}
           </select>
           <select value={invStatus} onChange={e => setInvStatus(e.target.value as typeof invStatus)} className="hub-input py-1.5 text-xs w-36">
             <option value="all">Any status</option>
@@ -264,15 +283,15 @@ export default function OutreachAllPages() {
                   <span className="text-muted-foreground"> & </span>
                   {page.inventoryStories} <span className="text-[10px] text-muted-foreground">(Stories)</span>
                 </td>
-                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground">
-                  {consumed}
-                  <span className="text-[10px] text-muted-foreground"> ({Math.round(m.pctConsumed * 100)}%)</span>
+                <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums text-foreground whitespace-nowrap">
+                  {consumed} <span className="text-[10px] text-muted-foreground">(Posts)</span>
+                  <span className="text-[10px] text-muted-foreground"> · {Math.round(m.pctConsumed * 100)}%</span>
                 </td>
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-1.5">
                     <Link to={`/outreach/pages/${page.id}`} className="text-xs font-medium text-foreground hover:underline">@{page.handle}</Link>
-                    {(page.platform === 'facebook' || isValidInstagramHandle(page.handle)) && (
-                      <a href={profileUrlForPage(page)} target="_blank" rel="noreferrer"
+                    {(page.pageLink || page.platform === 'facebook' || isValidInstagramHandle(page.handle)) && (
+                      <a href={pageOpenUrl(page)} target="_blank" rel="noreferrer"
                         title={`Open @${page.handle} on ${page.platform === 'facebook' ? 'Facebook' : 'Instagram'}`}
                         className="text-muted-foreground hover:text-orange-600">
                         <ExternalLink className="w-3 h-3" />
@@ -288,30 +307,40 @@ export default function OutreachAllPages() {
                 <td className="px-3 py-2.5">
                   <span className="hub-badge bg-orange-50 text-orange-700 text-[10px]">Tier {page.followerTier}</span>
                 </td>
-                <td className="px-3 py-2.5 text-xs text-foreground">{page.geography}</td>
+                <td className="px-3 py-2.5 text-xs text-foreground">{geographyLabel.get(geographyKey(page.geography)) ?? page.geography}</td>
                 <td className="px-3 py-2.5 text-right">
-                  <span className="inline-flex items-center gap-1 text-xs font-mono tabular-nums text-foreground">
+                  <span className="inline-flex items-center gap-1 text-xs font-mono tabular-nums text-foreground"
+                    title={suggested === 0 && page.inventoryPosts > 0 ? 'No post slots left — top up this page’s inventory' : undefined}>
                     <Sparkles className="w-3 h-3 text-amber-500" /> {suggested}
                   </span>
+                  {suggested === 0 && page.inventoryPosts > 0 && (
+                    <div className="text-[10px] text-muted-foreground">Inventory used up</div>
+                  )}
                 </td>
                 <td className="px-3 py-2.5"><StatusBadge status={m.status} /></td>
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-1">
-                    <button onClick={() => setLivePostsPageId(page.id)}
-                      title="Add live posts to this page"
-                      className="p-1 rounded-md text-muted-foreground hover:bg-orange-50 hover:text-orange-600">
-                      <LinkIcon className="w-3.5 h-3.5" />
-                    </button>
-                    <button onClick={() => setEditingPage(page)}
-                      title="Edit content preference & inventory"
-                      className="p-1 rounded-md text-muted-foreground hover:bg-orange-50 hover:text-orange-600">
-                      <Pencil className="w-3.5 h-3.5" />
-                    </button>
-                    <button onClick={() => confirmDelete(page)}
-                      title="Delete page"
-                      className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {canEditPosts && (
+                      <button onClick={() => setLivePostsPageId(page.id)}
+                        title="Add live posts to this page"
+                        className="p-1 rounded-md text-muted-foreground hover:bg-orange-50 hover:text-orange-600">
+                        <LinkIcon className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    {canEdit && (
+                      <button onClick={() => setEditingPage(page)}
+                        title="Edit page — name, link, state, inventory" aria-label={`Edit @${page.handle}`}
+                        className="p-1 rounded-md text-muted-foreground hover:bg-orange-50 hover:text-orange-600">
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    {isAdmin && (
+                      <button onClick={() => confirmDelete(page)}
+                        title="Delete page"
+                        className="p-1 rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>

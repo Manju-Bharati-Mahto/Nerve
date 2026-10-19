@@ -17,7 +17,7 @@ import {
   HeadingLevel, WidthType, AlignmentType, BorderStyle,
 } from 'docx'
 import type { Campaign, OutreachPage, OutreachCreator, Post } from './outreach-data'
-import { slug, buildPostStateLookup, formatLocalDate } from './outreach-data'
+import { slug, buildPostStateLookup, formatLocalDate, effectiveViews } from './outreach-data'
 
 export interface CampaignReportRow {
   subject: string          // @handle
@@ -58,7 +58,7 @@ export function buildCampaignReport(
       rows.push({ subject: `@${page.handle}`, kind: 'page', link: '', reach: 0, views: 0, likes: 0, comments: 0, pending: true })
     } else {
       for (const p of pp) {
-        rows.push({ subject: `@${page.handle}`, kind: 'page', link: p.permalink ?? '', reach: p.views, views: p.views, likes: p.likes, comments: p.comments, pending: false })
+        rows.push({ subject: `@${page.handle}`, kind: 'page', link: p.permalink ?? '', reach: effectiveViews(p), views: effectiveViews(p), likes: p.likes, comments: p.comments, pending: false })
       }
     }
   }
@@ -71,7 +71,7 @@ export function buildCampaignReport(
       rows.push({ subject: `@${creator.handle}`, kind: 'creator', link: '', reach: 0, views: 0, likes: 0, comments: 0, pending: true })
     } else {
       for (const p of cp) {
-        rows.push({ subject: `@${creator.handle}`, kind: 'creator', link: p.permalink ?? '', reach: p.views, views: p.views, likes: p.likes, comments: p.comments, pending: false })
+        rows.push({ subject: `@${creator.handle}`, kind: 'creator', link: p.permalink ?? '', reach: effectiveViews(p), views: effectiveViews(p), likes: p.likes, comments: p.comments, pending: false })
       }
     }
   }
@@ -284,7 +284,7 @@ export function buildDashboardReport(
     // "active or run in the last N days": include if it drew posts in the window
     // or is currently active. Skip otherwise so the table stays relevant.
     if (cp.length === 0 && c.status !== 'active') continue
-    const reach = cp.reduce((s, p) => s + p.views, 0)
+    const reach = cp.reduce((s, p) => s + effectiveViews(p), 0)
     const likes = cp.reduce((s, p) => s + p.likes, 0)
     const comments = cp.reduce((s, p) => s + p.comments, 0)
     const shares = cp.reduce((s, p) => s + p.shares, 0)
@@ -310,7 +310,7 @@ export function buildDashboardReport(
   // ones attributed to a campaign) so the headline views/likes match the
   // dashboard's state-scoped cards.
   const summary = {
-    views: windowPosts.reduce((s, p) => s + p.views, 0),
+    views: windowPosts.reduce((s, p) => s + effectiveViews(p), 0),
     likes: windowPosts.reduce((s, p) => s + p.likes, 0),
     campaigns: rows.length,
   }

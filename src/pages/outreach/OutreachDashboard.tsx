@@ -12,10 +12,11 @@ import {
 import { useAuth } from '@/hooks/useAuth'
 import {
   useOutreachData, pageMetrics, campaignMetrics, syncNow, refreshReachNow,
-  aggregateTotals, outreachStates, buildPostStateLookup,
-  computeOutreachAlerts, getDismissedAlertIds, dismissAlert,
+  aggregateTotals, outreachStates, buildPostStateLookup, sameState,
+  computeOutreachAlerts, dismissAlert, dailyTrend, formatLocalDate,
 } from '@/lib/outreach-data'
 import { buildDashboardReport, exportDashboardReportPdf } from '@/lib/outreach-export'
+import { useIsOutreachAdmin, useAllStatesLabel } from '@/lib/outreach-access'
 
 type Range = '7d' | '30d' | 'mtd' | 'all'
 
@@ -29,21 +30,23 @@ function rangeStart(range: Range): Date | null {
 
 export default function OutreachDashboard() {
   const { profile } = useAuth()
-  const { pages, creators, campaigns, posts } = useOutreachData()
+  const { pages, creators, campaigns, posts, dismissedAlertIds } = useOutreachData()
+  // Sync and Refresh reach are paid Apify runs: the outreach manager's, as on the server.
+  const isAdmin = useIsOutreachAdmin()
+  const allStatesLabel = useAllStatesLabel()
   const [range, setRange] = useState<Range>('30d')
   const [stateFilter, setStateFilter] = useState('')
   const [syncing, setSyncing] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [syncErr, setSyncErr] = useState<string | null>(null)
   const [syncMsg, setSyncMsg] = useState<string | null>(null)
-  const [dismissed, setDismissed] = useState<Set<string>>(() => getDismissedAlertIds())
 
   // State-wise filter (spec 1.1): when a state is selected every number on the
   // dashboard narrows to data from pages/campaigns in that state.
   const states = useMemo(() => outreachStates(pages, campaigns), [pages, campaigns])
   const stateOf = useMemo(() => buildPostStateLookup(pages, creators), [pages, creators])
-  const statePages = useMemo(() => stateFilter ? pages.filter(p => p.state === stateFilter) : pages, [pages, stateFilter])
-  const stateCampaigns = useMemo(() => stateFilter ? campaigns.filter(c => c.state === stateFilter) : campaigns, [campaigns, stateFilter])
+  const statePages = useMemo(() => stateFilter ? pages.filter(p => sameState(p.state, stateFilter)) : pages, [pages, stateFilter])
+  const stateCampaigns = useMemo(() => stateFilter ? campaigns.filter(c => sameState(c.state, stateFilter)) : campaigns, [campaigns, stateFilter])
 
   const mostRecentSync = useMemo(() => {
     const ts = pages
@@ -90,7 +93,7 @@ export default function OutreachDashboard() {
   }
 
   function onDismissAlert(id: string) {
-    setDismissed(dismissAlert(id))
+    dismissAlert(id)
   }
 
   // PRD 6.3 — one-click last-30-days PDF. Uses the latest synced data and honours
@@ -106,12 +109,15 @@ export default function OutreachDashboard() {
   // every downstream calculation honest without per-call gymnastics.
   const livePosts = useMemo(() => {
     const live = posts.filter(p => p.addedAsLive)
-    return stateFilter ? live.filter(p => stateOf(p) === stateFilter) : live
+    return stateFilter ? live.filter(p => sameState(stateOf(p), stateFilter)) : live
   }, [posts, stateFilter, stateOf])
 
   const filteredPosts = useMemo(() => {
+    // post.date is a local calendar day. Compare it as one: new Date(p.date)
+    // parses as UTC midnight (05:30 IST), which moved posts across the edge.
     const start = rangeStart(range)
-    return start ? livePosts.filter(p => new Date(p.date) >= start) : livePosts
+    const startDay = start ? formatLocalDate(start) : null
+    return startDay ? livePosts.filter(p => p.date >= startDay) : livePosts
   }, [livePosts, range])
 
   // Five headline totals (spec 1.1 summary cards). Reach is proxied by post
@@ -160,32 +166,17 @@ export default function OutreachDashboard() {
   // Standing alerts (spec 1.4): pages/creators assigned to a campaign that
   // haven't posted within 24h of the campaign start. Scoped to the selected
   // state via the campaign's state.
-  const alerts = useMemo(() => {
-    const all = computeOutreachAlerts(campaigns, pages, creators, posts)
+  // Dismissed alerts (localStorage-backed, per browser) are already left out
+  // by computeOutreachAlerts, so this count matches the Alerts page and badge.
+  const visibleAlerts = useMemo(() => {
+    const all = computeOutreachAlerts(campaigns, pages, creators, posts, new Date(), dismissedAlertIds)
     return stateFilter ? all.filter(a => {
       const c = campaigns.find(cc => cc.id === a.campaignId)
-      return c?.state === stateFilter
+      return sameState(c?.state, stateFilter)
     }) : all
-  }, [campaigns, pages, creators, posts, stateFilter])
+  }, [campaigns, pages, creators, posts, stateFilter, dismissedAlertIds])
 
-  // Hide alerts the user has dismissed (localStorage-backed, per browser).
-  const visibleAlerts = useMemo(() => alerts.filter(a => !dismissed.has(a.id)), [alerts, dismissed])
-
-  const trendData = useMemo(() => {
-    const days = 14
-    const today = new Date()
-    return Array.from({ length: days }, (_, i) => {
-      const d = new Date(today)
-      d.setDate(today.getDate() - (days - 1 - i))
-      const iso = d.toISOString().slice(0, 10)
-      const same = livePosts.filter(p => p.date === iso)
-      return {
-        day: `${d.getDate()}/${d.getMonth() + 1}`,
-        posts: same.length,
-        reach: same.reduce((s, p) => s + p.views, 0),
-      }
-    })
-  }, [livePosts])
+  const trendData = useMemo(() => dailyTrend(livePosts, 14), [livePosts])
 
   // Page inventory usage (PRD 6.2) — total slots consumed vs available across the
   // (state-filtered) page set. Reflects instantly when a page's inventory is
@@ -231,7 +222,7 @@ export default function OutreachDashboard() {
             <MapPin className="w-3.5 h-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <select value={stateFilter} onChange={e => setStateFilter(e.target.value)}
               className="hub-input py-1.5 pl-7 text-xs w-40" title="Filter all dashboard data by state">
-              <option value="">All states</option>
+              <option value="">{allStatesLabel}</option>
               {states.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
@@ -243,23 +234,27 @@ export default function OutreachDashboard() {
               </button>
             ))}
           </div>
-          <button onClick={onSyncNow} disabled={syncing || refreshing}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-orange-600 text-white hover:opacity-90 disabled:opacity-50">
-            <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
-            {syncing ? 'Syncing…' : 'Sync now'}
-          </button>
+          {isAdmin && (
+            <button onClick={onSyncNow} disabled={syncing || refreshing}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-orange-600 text-white hover:opacity-90 disabled:opacity-50">
+              <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+              {syncing ? 'Syncing…' : 'Sync now'}
+            </button>
+          )}
           <button onClick={onDownloadReport}
             title="Download a PDF summary of the last 30 days (respects the state filter)"
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-border hover:bg-accent">
             <Download className="w-3.5 h-3.5" />
             Download report
           </button>
-          <button onClick={onRefreshReach} disabled={refreshing || syncing}
-            title="Re-pull the latest views/reach for every tracked live post across all pages"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-border hover:bg-accent disabled:opacity-50">
-            <Gauge className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
-            {refreshing ? 'Refreshing…' : 'Refresh reach'}
-          </button>
+          {isAdmin && (
+            <button onClick={onRefreshReach} disabled={refreshing || syncing}
+              title="Re-pull the latest views/reach for every tracked live post across all pages"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-border hover:bg-accent disabled:opacity-50">
+              <Gauge className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+              {refreshing ? 'Refreshing…' : 'Refresh reach'}
+            </button>
+          )}
           <span className="text-[11px] text-muted-foreground">
             {syncErr
               ? <span className="text-rose-600">{syncErr}</span>

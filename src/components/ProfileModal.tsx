@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useAuth } from '@/hooks/useAuth'
 import { api } from '@/lib/api'
+import { checkImageFile, IMAGE_ACCEPT } from '@/lib/image-file'
 import { Camera, Shield, User, ArrowLeft, CheckCircle2, Eye, EyeOff } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -254,7 +255,9 @@ export default function ProfileModal({ open, onClose }: ProfileModalProps) {
   async function handleAvatarChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
-    if (file.size > 3 * 1024 * 1024) { toast.error('Image must be under 3 MB.'); return }
+    // The server's rules for an avatar (raster images only, 3 MB), checked before sending.
+    const problem = checkImageFile(file, 3 * 1024 * 1024)
+    if (problem) { toast.error(problem); e.target.value = ''; return }
     setAvatarUploading(true)
     try {
       const res = await api.uploadAvatar(file)
@@ -306,7 +309,8 @@ export default function ProfileModal({ open, onClose }: ProfileModalProps) {
                     ? <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin" />
                     : <Camera className="w-3 h-3 text-muted-foreground" />
                   }
-                  <input type="file" accept="image/*" className="hidden" onChange={handleAvatarChange} disabled={avatarUploading} />
+                  {/* Listed types, not image/*: iOS Safari then converts a HEIC photo to JPEG. */}
+                  <input type="file" accept={IMAGE_ACCEPT} className="hidden" onChange={handleAvatarChange} disabled={avatarUploading} />
                 </label>
               </div>
               <div className="min-w-0">

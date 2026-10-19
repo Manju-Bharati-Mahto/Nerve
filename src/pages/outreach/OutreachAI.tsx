@@ -2,7 +2,9 @@ import { useMemo, useState } from 'react'
 import {
   Sparkles, Send, MessageSquare, Target, TrendingUp, Info, Copy, Check,
 } from 'lucide-react'
-import { useOutreachData } from '@/lib/outreach-data'
+import {
+  useOutreachData, matchPagesForPostType, predictReach, isMeasuredPost, REACH_PREDICTION_MIN_SAMPLES,
+} from '@/lib/outreach-data'
 
 type Tab = 'caption' | 'matching' | 'reach'
 
@@ -65,23 +67,27 @@ function CaptionPanel() {
   const examples = useMemo(() => {
     if (!pageId) return []
     return posts
-      .filter(p => p.pageId === pageId)
+      .filter(p => p.pageId === pageId && isMeasuredPost(p))
       .map(p => ({ p, eng: p.likes + p.comments + p.saves + p.shares }))
       .sort((a, b) => b.eng - a.eng)
       .slice(0, 5)
       .map(x => x.p.caption)
   }, [pageId, posts])
 
+  // No AI model backs this panel yet: these are fill-in templates. Page,
+  // campaign and brief are all required — without them the templates used to
+  // fill the gaps with placeholder words ("campaign is here!", "news from town").
+  const page = pages.find(p => p.id === pageId)
+  const campaign = campaigns.find(c => c.id === campaignId)
+  const canGenerate = !!page && !!campaign && brief.trim().length > 0
+
   function generate() {
-    const page = pages.find(p => p.id === pageId)
-    const campaign = campaigns.find(c => c.id === campaignId)
-    const handle = page?.handle ?? 'page'
-    const cname = campaign?.name ?? 'campaign'
-    // Local stub — in production this would call your LLM with `brief` + `examples`.
+    if (!page || !campaign || !brief.trim()) return
+    const b = brief.trim()
     setGenerated([
-      `${cname} is here! Catch the action live with @${handle}. ${brief.slice(0, 120)}`,
-      `Big news from ${page?.geography ?? 'town'} — ${cname}. ${brief.slice(0, 100)} Don't miss out!`,
-      `Mark your calendar: ${cname}. Brought to you by @${handle}. ${brief.slice(0, 80)}`,
+      `${campaign.name} is here! Catch the action live with @${page.handle}. ${b.slice(0, 120)}`,
+      `Big news from ${page.geography} — ${campaign.name}. ${b.slice(0, 100)} Don't miss out!`,
+      `Mark your calendar: ${campaign.name}. Brought to you by @${page.handle}. ${b.slice(0, 80)}`,
     ])
   }
 
@@ -103,34 +109,35 @@ function CaptionPanel() {
           </select>
         </div>
         <div>
-          <label className="hub-label">Campaign</label>
+          <label className="hub-label">Campaign *</label>
           <select value={campaignId} onChange={e => setCampaignId(e.target.value)} className="hub-input py-1.5">
             <option value="">Select…</option>
             {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
         <div>
-          <label className="hub-label">Brief</label>
+          <label className="hub-label">Brief *</label>
           <textarea rows={5} value={brief} onChange={e => setBrief(e.target.value)}
             placeholder="Tone, key messages, hashtags, CTA…"
             className="hub-input resize-none" />
         </div>
-        <button onClick={generate} disabled={!pageId}
+        <button onClick={generate} disabled={!canGenerate}
           className="w-full px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2">
-          <Sparkles className="w-4 h-4" /> Generate
+          <Sparkles className="w-4 h-4" /> Generate drafts
         </button>
+        <p className="text-[11px] text-muted-foreground">Template drafts built from your campaign and brief — not AI-written. Edit before posting.</p>
       </div>
 
       <div className="lg:col-span-2 space-y-3">
         {generated.length === 0 ? (
           <div className="hub-card text-center py-16">
             <MessageSquare className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
-            <p className="text-sm text-foreground">Pick a page and brief, then generate.</p>
-            <p className="text-xs text-muted-foreground mt-1">Suggestions use this page's top-performing past captions as style examples.</p>
+            <p className="text-sm text-foreground">Pick a page and campaign, write a brief, then generate.</p>
+            <p className="text-xs text-muted-foreground mt-1">Drafts are templates; this page's top-performing past captions are shown below for reference.</p>
           </div>
         ) : (
           <>
-            <h2 className="text-sm font-semibold text-foreground">Suggestions</h2>
+            <h2 className="text-sm font-semibold text-foreground">Template drafts</h2>
             {generated.map((text, i) => (
               <div key={i} className="hub-card flex items-start justify-between gap-3">
                 <p className="text-sm text-foreground flex-1 whitespace-pre-wrap">{text}</p>
@@ -146,7 +153,7 @@ function CaptionPanel() {
 
         {examples.length > 0 && (
           <div className="hub-card">
-            <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-2">Style examples used</h3>
+            <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-2">Top past captions on this page</h3>
             <ul className="space-y-1">
               {examples.map((c, i) => (
                 <li key={i} className="text-xs text-muted-foreground line-clamp-2">· {c}</li>
@@ -166,21 +173,19 @@ function MatchingPanel() {
   const [postType, setPostType] = useState<'static' | 'reel' | 'story' | 'carousel'>('reel')
   const [campaignId, setCampaignId] = useState('')
 
+  const campaign = campaigns.find(c => c.id === campaignId) ?? null
+
   // Rule-based fallback (the spec calls out: "Without 3+ months of labeled data,
-  // fall back to rule-based"). Score = avg engagement of this type from this page.
+  // fall back to rule-based"). Score = avg engagement of this type from this page;
+  // a selected campaign ranks pages in its state first.
   const recs = useMemo(() => {
-    return pages.map(page => {
-      const hist = posts.filter(p => p.pageId === page.id && p.type === postType)
-      const avgEng = hist.length ? hist.reduce((s, p) => s + p.likes + p.comments + p.saves + p.shares, 0) / hist.length : 0
-      let reason = ''
-      if (hist.length === 0) reason = `No prior ${postType} history`
-      else reason = `${hist.length} prior ${postType}s · avg eng ${fmt(Math.round(avgEng))}`
-      return { page, score: avgEng, reason, samples: hist.length }
+    return matchPagesForPostType(pages, posts, postType, campaign).map(r => {
+      const parts = [`${r.samples} prior ${postType}s · avg eng ${fmt(Math.round(r.avgEngagement))}`]
+      if (r.stateMatch) parts.unshift(`In ${campaign?.state}`)
+      if (r.assigned) parts.push('already on this campaign')
+      return { page: r.page, score: r.avgEngagement, reason: parts.join(' · ') }
     })
-    .filter(r => r.samples > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 10)
-  }, [pages, posts, postType])
+  }, [pages, posts, postType, campaign])
 
   return (
     <div className="space-y-4">
@@ -211,6 +216,13 @@ function MatchingPanel() {
             {campaigns.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
+        {campaign && (
+          <p className="text-[11px] text-muted-foreground self-end pb-1.5">
+            {campaign.state
+              ? <>Pages in <strong>{campaign.state}</strong> are ranked first.</>
+              : 'This campaign has no state set, so it does not change the ranking.'}
+          </p>
+        )}
       </div>
 
       <div className="hub-card p-0 overflow-x-auto">
@@ -254,26 +266,12 @@ function ReachPanel() {
     if (!pageId) return null
     const page = pages.find(p => p.id === pageId)
     if (!page) return null
-    const hist = posts.filter(p => p.pageId === pageId && p.type === type)
-    if (hist.length === 0) {
-      return { kind: 'no-data' as const, page }
-    }
-    const eng = hist.map(p => p.likes + p.comments + p.saves + p.shares)
-    const reach = hist.map(p => p.views)
-    const median = (xs: number[]) => xs.slice().sort((a, b) => a - b)[Math.floor(xs.length / 2)]
-    const avg = (xs: number[]) => xs.reduce((s, x) => s + x, 0) / xs.length
-    const successProb = eng.filter(e => e > median(eng)).length / eng.length
-    return {
-      kind: 'ok' as const,
-      page,
-      samples: hist.length,
-      medianEng: Math.round(median(eng)),
-      medianReach: Math.round(median(reach)),
-      avgReach: Math.round(avg(reach)),
-      successProb,                           // P(eng > page-median)
-      formula: 'P(engagement > page-median for this post type)',
-    }
+    const prediction = predictReach(pageId, type, posts)
+    if (!prediction) return { kind: 'no-data' as const, page }
+    return { kind: 'ok' as const, page, ...prediction }
   }, [pageId, type, pages, posts])
+
+  const FORMULA = 'P(engagement ≥ the median for this post type across all pages)'
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -297,7 +295,7 @@ function ReachPanel() {
         </div>
         <div className="hub-card bg-blue-50 border-blue-200 text-[11px] text-blue-900 flex items-start gap-2">
           <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-          <p>"Predicted reach" replaces the vague "feasibility %". Definition: <strong>{result?.kind === 'ok' ? result.formula : 'P(engagement > page-median for this post type)'}</strong>.</p>
+          <p>"Predicted reach" replaces the vague "feasibility %". Success probability: <strong>{FORMULA}</strong>. Only published or live posts count; planned posts have no metrics yet.</p>
         </div>
       </div>
 
@@ -310,7 +308,7 @@ function ReachPanel() {
         )}
         {result?.kind === 'no-data' && (
           <div className="hub-card text-center py-12 bg-amber-50 border-amber-200">
-            <p className="text-sm text-amber-900">No prior <strong>{type}</strong> posts on @{result.page.handle}. Need history before predictions are meaningful.</p>
+            <p className="text-sm text-amber-900">No published <strong>{type}</strong> posts on @{result.page.handle}. Need history before predictions are meaningful.</p>
           </div>
         )}
         {result?.kind === 'ok' && (
@@ -324,11 +322,16 @@ function ReachPanel() {
               <div className="hub-card">
                 <p className="text-[11px] uppercase tracking-widest text-muted-foreground">Success probability</p>
                 <p className="text-3xl font-serif text-foreground mt-1">{Math.round(result.successProb * 100)}%</p>
-                <p className="text-[11px] text-muted-foreground mt-1">P(engagement &gt; {fmt(result.medianEng)} median)</p>
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  P(engagement ≥ {fmt(result.benchmarkEngagement)}, the median {type} across {result.benchmarkPages} page{result.benchmarkPages === 1 ? '' : 's'}) · this page's median {fmt(result.medianEngagement)}
+                </p>
               </div>
             </div>
             <div className="hub-card text-xs text-muted-foreground">
-              <p className="mb-1"><strong>Sample size:</strong> {result.samples}. Confidence is low below ~10 samples — treat results as directional.</p>
+              <p className="mb-1">
+                <strong>Sample size:</strong> {result.samples}.
+                {result.samples < REACH_PREDICTION_MIN_SAMPLES && <> Confidence is low below {REACH_PREDICTION_MIN_SAMPLES} samples — treat results as directional.</>}
+              </p>
               <p><strong>Page:</strong> @{result.page.handle} · {result.page.geography} · {fmt(result.page.followers)} followers · Tier {result.page.followerTier}.</p>
             </div>
           </>

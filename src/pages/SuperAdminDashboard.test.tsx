@@ -118,8 +118,12 @@ vi.mock('@/lib/outreach-data', () => ({
 }))
 
 const mockGetKpis = vi.fn(async () => ({
-  totalVideos: 7, draftVideos: 1, submittedVideos: 2, publishedVideos: 4,
-  avgDraftToSubmittedHours: 6, avgSubmittedToPublishedHours: 30,
+  // §11 statuses. "In queue" is what a publisher still has to act on, which
+  // is approved plus scheduled — pendingPublishingVideos.
+  totalVideos: 7, uploadedVideos: 1, underReviewVideos: 2, approvedVideos: 1,
+  scheduledVideos: 1, rejectedVideos: 0, inRevisionVideos: 0,
+  needsEditorVideos: 0, pendingPublishingVideos: 2, publishedVideos: 4,
+  avgUploadedToSubmittedHours: 6, avgSubmittedToPublishedHours: 30,
   publishedThisWeek: 3, publishedThisMonth: 4,
   videosByEditor: [], videosByClient: [],
   totalEvents: 5, upcomingEvents: 2, pastEvents: 3,

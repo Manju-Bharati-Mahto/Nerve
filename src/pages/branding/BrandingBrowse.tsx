@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
 import { brandingApi } from '@/lib/branding-api'
+import { checkImageFile, IMAGE_ACCEPT } from '@/lib/image-file'
 import type { BrandingDesign, DesignVoter } from '@/lib/branding-types'
 import {
   Search, Upload, X, Tag, User, Calendar, Layers,
@@ -126,9 +127,18 @@ function UploadDialog({ categories, onUploaded, onClose }: UploadDialogProps) {
   const [err, setErr] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
+  /* The server's rules (raster images only, 10 MB), checked as the file is
+     picked so the reason shows at once instead of after the upload. */
   function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]
     if (!f) return
+    const problem = checkImageFile(f, 10 * 1024 * 1024)
+    if (problem) {
+      setErr(problem)
+      e.target.value = ''
+      return
+    }
+    setErr('')
     setFile(f)
     setPreview(URL.createObjectURL(f))
     if (!title) setTitle(f.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' '))
@@ -175,7 +185,7 @@ function UploadDialog({ categories, onUploaded, onClose }: UploadDialogProps) {
                   <span className="text-xs">PNG, JPG, WEBP · max 10 MB</span>
                 </div>
             }
-            <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onFileChange} />
+            <input ref={fileRef} type="file" accept={IMAGE_ACCEPT} className="hidden" onChange={onFileChange} />
           </div>
           <div>
             <label className="text-xs font-medium text-muted-foreground block mb-1">Title *</label>

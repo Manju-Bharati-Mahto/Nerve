@@ -7,23 +7,86 @@
  * it needs and refetches after it changes something, which keeps what's on
  * screen honest rather than quietly stale.
  */
+import { HttpError, NETWORK_ERROR_MESSAGE, errorFor, fetchOrExplain, readJson, statusMessage } from './http'
+
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '')
 const BASE = `${API_BASE_URL}/outreach/video`
 
+/**
+ * Everything here keeps its data in Google Drive, so "it failed" has very
+ * different remedies: a revoked Drive sign-in needs an outreach Admin to
+ * reconnect, an unreachable Drive needs a retry, anything else is the
+ * request itself. The API says which with a `code` next to its message, and
+ * this carries it to the page alongside the HTTP status.
+ */
+export type DriveErrorCode = 'drive_reconnect' | 'drive_unavailable' | 'drive_not_connected'
+const DRIVE_ERROR_CODES: readonly string[] = ['drive_reconnect', 'drive_unavailable', 'drive_not_connected']
+
+export class VideoApiError extends HttpError {
+  constructor(message: string, status: number, readonly code: string | null = null) {
+    super(message, status)
+    this.name = 'VideoApiError'
+  }
+}
+
+/** The Drive problem behind a failed call, when that is what it was. */
+export function driveProblemOf(err: unknown): DriveErrorCode | null {
+  const code = err instanceof VideoApiError ? err.code : null
+  return code && DRIVE_ERROR_CODES.includes(code) ? code as DriveErrorCode : null
+}
+
+/**
+ * A page load that failed, with the Drive problem behind it when there was
+ * one, for DriveProblemNotice. A page keeps this instead of the bare message
+ * so it can offer the way to the fix — and so it knows not to draw "nothing
+ * here yet" under a list it never managed to read.
+ */
+export interface LoadFailure { message: string; code: DriveErrorCode | null }
+
+export function loadFailureOf(err: unknown, fallback: string): LoadFailure {
+  return { message: err instanceof Error ? err.message : fallback, code: driveProblemOf(err) }
+}
+
+/** A failed response as a VideoApiError: the API's message and code, or one for the status. */
+function videoErrorFor(res: Response, payload: Record<string, unknown>, fallback: string): VideoApiError {
+  const err = errorFor(res, payload, fallback)
+  return new VideoApiError(err.message, err.status, typeof payload.code === 'string' ? payload.code : null)
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetchOrExplain(`${BASE}${path}`, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
     ...init,
+    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
   })
-  const payload = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error((payload as { message?: string }).message || 'Request failed.')
+  const payload = await readJson(res)
+  if (!res.ok) throw videoErrorFor(res, payload, 'Request failed.')
   return payload as T
 }
 
 // ── Types (mirroring the server records) ───────────────────────────────────
 
-export type VideoStatus = 'draft' | 'submitted' | 'published'
+/** §11 — Uploaded → Under Review → Approved → Scheduled → Published,
+    with Rejected → Editor Revision → Under Review as the loop back. */
+export type VideoStatus =
+  | 'uploaded' | 'under_review' | 'approved' | 'scheduled' | 'published'
+  | 'rejected' | 'revision'
+
+/** How each status is written for a person, in the PRD's own words. */
+export const VIDEO_STATUS_LABEL: Record<VideoStatus, string> = {
+  uploaded: 'Uploaded',
+  under_review: 'Under Review',
+  approved: 'Approved',
+  scheduled: 'Scheduled',
+  published: 'Published',
+  rejected: 'Rejected',
+  revision: 'Editor Revision',
+}
+
+/** The order the statuses are worked through, for filters and counts. */
+export const VIDEO_STATUS_ORDER: VideoStatus[] = [
+  'uploaded', 'under_review', 'approved', 'scheduled', 'published', 'rejected', 'revision',
+]
 export type VideoRole = 'admin' | 'editor' | 'manager' | 'publisher'
 export type LiveUrlPlatform = 'instagram' | 'facebook'
 
@@ -60,6 +123,22 @@ export interface VideoRecord {
   submittedAt?: string | null
   publishedBy?: string | null
   publishedAt?: string | null
+  /** §11 — what the reviewer said, for the editor to act on. */
+  rejectionReason?: string | null
+  approvedBy?: string | null
+  approvedAt?: string | null
+  rejectedBy?: string | null
+  rejectedAt?: string | null
+  /** §4 — the intended posting time, ISO. */
+  scheduledFor?: string | null
+  scheduledBy?: string | null
+  /** §17 — the campaign this belongs to; null on records from before. */
+  campaignId?: string | null
+  /** §3 — the pages chosen at upload, and their handles as they were then. */
+  socialPageIds?: string[]
+  socialPageNames?: string[]
+  /** §10 — the N in "<campaign> - Video N". */
+  sequence?: number | null
   liveUrls?: Partial<Record<LiveUrlPlatform, string>>
   activity: ActivityEntry[]
 }
@@ -84,12 +163,27 @@ export interface EditorVisiblePage {
   handle: string
   platform: string
   connected: boolean
+  /* §8 — present for everyone except an editor, whose projection is an
+     allowlist on purpose (§25) and carries none of these. */
+  page_link?: string
+  contact_person?: string
+  status?: string
+  assigned_campaigns?: string[]
 }
 
 // ── Calls ──────────────────────────────────────────────────────────────────
 
-export const getVideoConfig = () =>
-  request<{ configured: boolean; local: boolean; role: VideoRole }>('/config')
+export interface VideoConfig {
+  configured: boolean
+  local: boolean
+  source?: 'env' | 'app' | 'local' | 'none'
+  role: VideoRole
+  /** True when uploads can go from the browser straight into Google Drive.
+      Absent on an older server, which reads as "no". */
+  directUpload?: boolean
+}
+
+export const getVideoConfig = () => request<VideoConfig>('/config')
 
 export const listVideos = (params: { status?: VideoStatus; client?: string } = {}) => {
   const q = new URLSearchParams()
@@ -101,12 +195,117 @@ export const listVideos = (params: { status?: VideoStatus; client?: string } = {
 
 export const getVideo = (id: string) => request<{ video: VideoRecord }>(`/videos/${id}`)
 
-/** Multipart — deliberately not through `request`, which forces a JSON body. */
-export async function uploadVideo(form: FormData): Promise<VideoRecord> {
-  const res = await fetch(`${BASE}/videos`, { method: 'POST', credentials: 'include', body: form })
-  const payload = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error((payload as { message?: string }).message || 'Upload failed.')
-  return (payload as { video: VideoRecord }).video
+/** The upload form's fields, as both upload paths send them. */
+export interface VideoUploadFields {
+  client: string
+  campaignId: string | null
+  socialPageIds: string[]
+  title: string
+  caption: string
+  platform: string | null
+  notes: string | null
+  tags: string[]
+}
+
+/**
+ * Starts an upload. In 'direct' mode the server has opened a Google Drive
+ * resumable upload for the final file name in the campaign's folder, and the
+ * browser sends the bytes to `uploadUrl` itself — they never pass through
+ * Nerve. 'proxy' means this Drive cannot take that (the local development
+ * folder), so the multipart upload below is the way in.
+ */
+export type UploadSession =
+  | { mode: 'direct'; sessionId: string; uploadUrl: string; chunkBytes: number }
+  | { mode: 'proxy' }
+
+export const createUploadSession = (input: VideoUploadFields & {
+  fileName: string; mimeType: string; sizeBytes: number
+}) => request<UploadSession>('/videos/upload-session', { method: 'POST', body: JSON.stringify(input) })
+
+/** Records a video whose bytes are already in Drive. Safe to repeat. */
+export const completeUpload = (sessionId: string, fileId: string) =>
+  request<{ video: VideoRecord }>('/videos/complete', {
+    method: 'POST', body: JSON.stringify({ sessionId, fileId }),
+  }).then(r => r.video)
+
+export const cancelUpload = (sessionId: string) =>
+  request<unknown>(`/videos/upload-session/${encodeURIComponent(sessionId)}/cancel`, { method: 'POST' })
+
+/**
+ * A file that reached Drive but was not recorded in the workflow. Kept in
+ * sessionStorage, per user, so closing the dialog (or reloading) does not
+ * strand it: reopening the upload offers "Finish saving" for as long as the
+ * server keeps the session — a day.
+ */
+export interface PendingFinish { sessionId: string; fileId: string; title?: string }
+export const PENDING_TTL_MS = 24 * 60 * 60 * 1000
+const pendingKey = (userId: string) => `outreach-video:pending-finish:${userId}`
+
+export function loadPendingFinish(userId: string | null, now = Date.now()): PendingFinish | null {
+  if (!userId) return null
+  try {
+    const raw = window.sessionStorage.getItem(pendingKey(userId))
+    if (!raw) return null
+    const p = JSON.parse(raw) as Partial<PendingFinish & { at: number }>
+    if (typeof p.sessionId !== 'string' || typeof p.fileId !== 'string' || typeof p.at !== 'number'
+      || now - p.at > PENDING_TTL_MS) {
+      window.sessionStorage.removeItem(pendingKey(userId))
+      return null
+    }
+    return { sessionId: p.sessionId, fileId: p.fileId, title: typeof p.title === 'string' ? p.title : undefined }
+  } catch {
+    return null // storage blocked or unreadable: the dialog simply starts fresh
+  }
+}
+
+export function storePendingFinish(userId: string | null, pending: PendingFinish | null, now = Date.now()) {
+  if (!userId) return
+  try {
+    if (pending) window.sessionStorage.setItem(pendingKey(userId), JSON.stringify({ ...pending, at: now }))
+    else window.sessionStorage.removeItem(pendingKey(userId))
+  } catch { /* storage blocked: "Finish saving" still works until the dialog closes */ }
+}
+
+/**
+ * The fallback upload: multipart through Nerve, which stages the file briefly
+ * and passes it on to Drive. XMLHttpRequest rather than fetch, because fetch
+ * cannot report upload progress and a 2 GB file with no progress bar looks
+ * exactly like a hung page.
+ */
+export function uploadVideo(
+  form: FormData,
+  onProgress?: (sent: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<VideoRecord> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException('Upload cancelled.', 'AbortError'))
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${BASE}/videos`)
+    xhr.withCredentials = true
+    xhr.responseType = 'text'
+    if (onProgress) xhr.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded, e.total) }
+    const onAbort = () => xhr.abort()
+    signal?.addEventListener('abort', onAbort, { once: true })
+    const done = () => signal?.removeEventListener('abort', onAbort)
+    xhr.onabort = () => { done(); reject(new DOMException('Upload cancelled.', 'AbortError')) }
+    xhr.onerror = () => { done(); reject(new VideoApiError(NETWORK_ERROR_MESSAGE, 0)) }
+    xhr.onload = () => {
+      done()
+      let payload: Record<string, unknown> = {}
+      try {
+        const parsed: unknown = JSON.parse(xhr.responseText)
+        if (parsed && typeof parsed === 'object') payload = parsed as Record<string, unknown>
+      } catch { /* nginx's HTML error pages — the status says what happened */ }
+      if (xhr.status >= 200 && xhr.status < 300 && payload.video) {
+        return resolve(payload.video as VideoRecord)
+      }
+      const message = typeof payload.message === 'string' && payload.message.trim()
+        ? payload.message
+        : statusMessage(xhr.status, 'Upload failed.')
+      reject(new VideoApiError(message, xhr.status, typeof payload.code === 'string' ? payload.code : null))
+    }
+    xhr.send(form)
+  })
 }
 
 export const updateCaption = (id: string, caption: string) =>
@@ -119,9 +318,123 @@ export const submitVideo = (id: string) =>
 
 export const publishingQueue = () => request<{ videos: VideoRecord[] }>('/queue')
 
-export const publishVideo = (id: string, liveUrls: Partial<Record<LiveUrlPlatform, string>> = {}) =>
+// ── §11 review loop ────────────────────────────────────────────────────────
+
+export const reviewQueue = () => request<{ videos: VideoRecord[] }>('/review-queue')
+
+export const approveVideo = (id: string, note = '') =>
+  request<{ video: VideoRecord }>(`/videos/${id}/approve`, {
+    method: 'POST', body: JSON.stringify({ note }),
+  }).then(r => r.video)
+
+/** The reason is required — an editor cannot act on silence. */
+export const rejectVideo = (id: string, reason: string) =>
+  request<{ video: VideoRecord }>(`/videos/${id}/reject`, {
+    method: 'POST', body: JSON.stringify({ reason }),
+  }).then(r => r.video)
+
+export const startRevision = (id: string) =>
+  request<{ video: VideoRecord }>(`/videos/${id}/revise`, { method: 'POST' }).then(r => r.video)
+
+/** §4 — `scheduledFor` is an ISO datetime. */
+export const scheduleVideo = (id: string, scheduledFor: string) =>
+  request<{ video: VideoRecord }>(`/videos/${id}/schedule`, {
+    method: 'POST', body: JSON.stringify({ scheduledFor }),
+  }).then(r => r.video)
+
+// ── Google Drive connection (§9) ───────────────────────────────────────────
+
+/** Where the workflow's Drive is configured from, and how it stands. */
+export interface DriveStatus {
+  /** Where the Google OAuth client comes from. */
+  client: 'env' | 'app' | 'none'
+  client_id: string | null
+  /** What must be registered on the OAuth client in Google Cloud Console. */
+  redirect_uri: string
+  connected: boolean
+  account_email: string | null
+  /** The Google account the Drive must belong to. */
+  expected_email: string
+  folder: { id: string; name: string | null; url: string | null } | null
+  connected_at: string | null
+  connected_by_name: string | null
+  default_folder_name: string
+  /** env = set on the server (wins); app = connected here; local = dev folder. */
+  source: 'env' | 'app' | 'local' | 'none'
+  /** Whether Google actually answered a check just now; null when not connected.
+      Optional only so an older server reads as "not checked". */
+  healthy?: boolean | null
+  problem?: 'expired' | 'folder_missing' | 'unreachable' | null
+  problemMessage?: string | null
+}
+
+export const getDriveStatus = () => request<DriveStatus>('/drive')
+
+export const saveDriveClient = (clientId: string, clientSecret: string) =>
+  request<DriveStatus>('/drive/client', {
+    method: 'POST', body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+  })
+
+export const setDriveAccount = (email: string) =>
+  request<DriveStatus>('/drive/account', { method: 'POST', body: JSON.stringify({ email }) })
+
+/** Returns Google's sign-in URL, to open in a popup. */
+export const startDriveConnect = () =>
+  request<{ url: string }>('/drive/connect', { method: 'POST' }).then(r => r.url)
+
+export const chooseDriveFolder = (folder: string) =>
+  request<DriveStatus>('/drive/folder', { method: 'POST', body: JSON.stringify({ folder }) })
+
+export const disconnectDrive = () => request<DriveStatus>('/drive', { method: 'DELETE' })
+
+export const syncAllToDrive = () =>
+  request<{ synced: number; failed: Array<{ title: string; error: string }> }>('/drive/sync', { method: 'POST' })
+
+// ── §7 campaigns ───────────────────────────────────────────────────────────
+
+export interface CampaignProgress { required: number; published: number; remaining: number }
+
+export interface Campaign {
+  id: string
+  name: string
+  description: string
+  startDate: string
+  endDate: string
+  campaignManagerId?: string | null
+  socialPageIds: string[]
+  status: 'upcoming' | 'running' | 'completed'
+  requiredPosts: number
+  notes: string
+  createdAt: string
+  updatedAt: string
+  progress?: CampaignProgress
+}
+
+export const CAMPAIGN_STATUS_LABEL: Record<Campaign['status'], string> = {
+  upcoming: 'Upcoming', running: 'Running', completed: 'Completed',
+}
+
+export const listCampaigns = () => request<{ campaigns: Campaign[] }>('/campaigns')
+
+export const getCampaign = (id: string) =>
+  request<{ campaign: Campaign; progress: CampaignProgress; videos: VideoRecord[] }>(`/campaigns/${id}`)
+
+export const createCampaign = (input: Partial<Campaign>) =>
+  request<{ campaign: Campaign }>('/campaigns', {
+    method: 'POST', body: JSON.stringify(input),
+  }).then(r => r.campaign)
+
+export const updateCampaign = (id: string, patch: Partial<Campaign>) =>
+  request<{ campaign: Campaign }>(`/campaigns/${id}`, {
+    method: 'PATCH', body: JSON.stringify(patch),
+  }).then(r => r.campaign)
+
+export const deleteCampaign = (id: string) =>
+  request<{ deleted: boolean }>(`/campaigns/${id}`, { method: 'DELETE' })
+
+export const publishVideo = (id: string, liveUrls: Partial<Record<LiveUrlPlatform, string>> = {}, remark = '') =>
   request<{ video: VideoRecord }>(`/videos/${id}/publish`, {
-    method: 'POST', body: JSON.stringify({ live_urls: liveUrls }),
+    method: 'POST', body: JSON.stringify({ live_urls: liveUrls, remark }),
   }).then(r => r.video)
 
 export const setLiveUrls = (id: string, liveUrls: Partial<Record<LiveUrlPlatform, string>>) =>
@@ -132,16 +445,33 @@ export const setLiveUrls = (id: string, liveUrls: Partial<Record<LiveUrlPlatform
 export const listSocialPages = () =>
   request<{ pages: EditorVisiblePage[]; analytics_visible: boolean }>('/social-pages')
 
+/**
+ * §8 — the details a person maintains on a page. Deliberately narrow: every
+ * other field comes from the sync, and editing those here would mean the next
+ * sync silently undid the edit.
+ */
+export const updateSocialPage = (
+  id: string, patch: { page_link?: string; contact_person?: string; status?: 'active' | 'inactive' },
+) => request<{ page: unknown }>(`/social-pages/${id}`, {
+  method: 'PATCH', body: JSON.stringify(patch),
+}).then(r => r.page)
+
 /** Streamed through the API so access is checked on the bytes themselves (§25). */
 export const videoStreamUrl = (id: string) => `${BASE}/videos/${id}/stream`
 export const videoDownloadUrl = (id: string) => `${BASE}/videos/${id}/download`
 
 // ── Display helpers ────────────────────────────────────────────────────────
 
+/* §11 — one entry per status. Rejection and revision are rose and orange
+   because they are the two that ask somebody to do something. */
 export const STATUS_STYLE: Record<VideoStatus, { label: string; cls: string }> = {
-  draft:     { label: 'Draft',     cls: 'bg-slate-100 text-slate-700' },
-  submitted: { label: 'Submitted', cls: 'bg-amber-100 text-amber-800' },
-  published: { label: 'Published', cls: 'bg-emerald-100 text-emerald-700' },
+  uploaded:     { label: 'Uploaded',        cls: 'bg-slate-100 text-slate-700' },
+  under_review: { label: 'Under Review',    cls: 'bg-amber-100 text-amber-800' },
+  approved:     { label: 'Approved',        cls: 'bg-sky-100 text-sky-800' },
+  scheduled:    { label: 'Scheduled',       cls: 'bg-violet-100 text-violet-800' },
+  published:    { label: 'Published',       cls: 'bg-emerald-100 text-emerald-700' },
+  rejected:     { label: 'Rejected',        cls: 'bg-rose-100 text-rose-700' },
+  revision:     { label: 'Editor Revision', cls: 'bg-orange-100 text-orange-800' },
 }
 
 export function formatBytes(bytes?: number | null): string {
@@ -156,6 +486,23 @@ export function formatWhen(iso?: string | null): string {
   return new Date(iso).toLocaleString(undefined, {
     day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
   })
+}
+
+/**
+ * An activity entry's note as a person should read it.
+ *
+ * Scheduling records the posting time as an ISO instant (videos.ts,
+ * scheduleVideo), which is right for storage and unreadable on screen:
+ * "2026-10-20T05:00:00.000Z" is 10:30 in Gujarat, and nobody should have to
+ * work that out. Every other note is free text and is shown as written.
+ */
+export function activityNote(entry: Pick<ActivityEntry, 'action' | 'notes'>): string | null {
+  if (!entry.notes) return null
+  if (entry.action === 'video.scheduled' || entry.action === 'video.rescheduled') {
+    const at = new Date(entry.notes)
+    if (!Number.isNaN(at.getTime())) return `For ${formatWhen(entry.notes)}`
+  }
+  return entry.notes
 }
 
 /** Turns "video.caption_updated" into "Caption updated" for the §16 timeline. */
@@ -176,11 +523,55 @@ export interface EventRecord {
   client?: string | null
   assignedEditorId?: string | null
   assignedBy?: string | null
+  /* §5 — what each calendar entry must show. All optional: an event goes in
+     the calendar before any of it is decided. */
+  campaignId?: string | null
+  socialPageId?: string | null
+  contentType?: string | null
+  /** ISO time of the planned posting; `date` is the day. */
+  postingAt?: string | null
+  assignedPublisherId?: string | null
   status: EventStatus
   createdAt: string
   updatedAt: string
   completedAt?: string | null
   activity: ActivityEntry[]
+}
+
+/** §5 — the content types a calendar entry offers. Free text is allowed too. */
+export const CONTENT_TYPES = ['Reel', 'Post', 'Story', 'Short', 'Carousel', 'Live'] as const
+
+/** §5 "Calendar statuses: Upcoming, Running/Scheduled, Pending, Completed." */
+export type CalendarStatus = 'upcoming' | 'scheduled' | 'pending' | 'completed'
+
+export const CALENDAR_STATUS: Record<CalendarStatus, { label: string; cls: string }> = {
+  upcoming:  { label: 'Upcoming',          cls: 'bg-sky-100 text-sky-800' },
+  scheduled: { label: 'Running/Scheduled', cls: 'bg-violet-100 text-violet-800' },
+  pending:   { label: 'Pending',           cls: 'bg-amber-100 text-amber-800' },
+  completed: { label: 'Completed',         cls: 'bg-emerald-100 text-emerald-700' },
+}
+
+/**
+ * Places an event or a posting on §5's four calendar statuses.
+ *
+ * The workflow's own statuses are finer than the calendar's, so this is the
+ * one place they are folded together. The rule that matters: anything whose
+ * date has passed without being done is PENDING — overdue — rather than
+ * still "upcoming", because a missed slot is what a manager looks at a
+ * calendar to find.
+ */
+export function calendarStatusOf(
+  entry:
+    | { kind: 'event'; status: EventStatus; date: string }
+    | { kind: 'posting'; status: VideoStatus; when: string },
+  now: Date = new Date(),
+): CalendarStatus {
+  if (entry.kind === 'event') {
+    if (entry.status === 'completed') return 'completed'
+    return entry.date < localDay(now) ? 'pending' : 'upcoming'
+  }
+  if (entry.status === 'published') return 'completed'
+  return new Date(entry.when).getTime() < now.getTime() ? 'pending' : 'scheduled'
 }
 
 export interface EventCounts {
@@ -207,10 +598,17 @@ export const getEvent = (id: string) => request<{ event: EventRecord }>(`/events
 
 export const eventCounts = () => request<{ counts: EventCounts }>('/events/counts')
 
-export const createEvent = (input: { title: string; description?: string; date: string; client?: string | null }) =>
+/** §5 — the calendar entry's own details. */
+export interface EventDetailsInput {
+  title: string; description?: string; date: string; client?: string | null
+  campaignId?: string | null; socialPageId?: string | null; contentType?: string | null
+  postingAt?: string | null; assignedPublisherId?: string | null
+}
+
+export const createEvent = (input: EventDetailsInput) =>
   request<{ event: EventRecord }>('/events', { method: 'POST', body: JSON.stringify(input) }).then(r => r.event)
 
-export const updateEvent = (id: string, patch: Partial<{ title: string; description: string; date: string; client: string | null }>) =>
+export const updateEvent = (id: string, patch: Partial<EventDetailsInput>) =>
   request<{ event: EventRecord }>(`/events/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }).then(r => r.event)
 
 export const assignEvent = (id: string, editorId: string) =>
@@ -223,15 +621,22 @@ export const completeEvent = (id: string) =>
 
 export const listEditors = () => request<{ editors: WorkflowUser[] }>('/editors')
 
+/** §5 — who an event can be assigned to publish. */
+export const listPublishers = () =>
+  request<{ publishers: Array<{ id: string; name: string; email: string }> }>('/publishers')
+
 // ── Notifications (§19) ────────────────────────────────────────────────────
 
 export interface WorkflowNotification {
   id: string
-  kind: 'video_submitted' | 'event_assigned' | 'event_reassigned' | 'event_completed'
+  kind:
+    | 'video_submitted' | 'event_assigned' | 'event_reassigned' | 'event_completed'
+    | 'video_approved' | 'video_rejected' | 'posting_due' | 'campaign_deadline'
+    | 'campaign_completed' | 'user_created' | 'system_issue'
   message: string
   createdAt: string
   readAt?: string | null
-  subject?: { type: 'video' | 'event'; id: string } | null
+  subject?: { type: 'video' | 'event' | 'campaign' | 'system'; id: string } | null
 }
 
 export const listNotifications = () =>
@@ -257,6 +662,10 @@ export interface SearchParams {
   editorId?: string
   publisherId?: string
   platform?: string
+  /** §13 — a social media page's id. */
+  pageId?: string
+  /** §13 — Reel, Post, Story… or "Video" for workflow videos. */
+  contentType?: string
   from?: string
   to?: string
 }
@@ -266,6 +675,8 @@ export interface FilterOptions {
   platforms: string[]
   editors: { id: string; name: string }[]
   publishers: { id: string; name: string }[]
+  pages?: { id: string; name: string }[]
+  contentTypes?: string[]
 }
 
 export const searchWorkflow = (params: SearchParams = {}) => {
@@ -273,7 +684,8 @@ export const searchWorkflow = (params: SearchParams = {}) => {
   const map: Record<string, string | undefined> = {
     q: params.q, status: params.status, event_status: params.eventStatus,
     client: params.client, editor_id: params.editorId, publisher_id: params.publisherId,
-    platform: params.platform, from: params.from, to: params.to,
+    platform: params.platform, page_id: params.pageId, content_type: params.contentType,
+    from: params.from, to: params.to,
   }
   for (const [key, value] of Object.entries(map)) if (value) q.set(key, value)
   const qs = q.toString()
@@ -288,10 +700,26 @@ export interface CountRow { key: string; label: string; count: number }
 
 export interface WorkflowKpis {
   totalVideos: number
-  draftVideos: number
-  submittedVideos: number
+  uploadedVideos: number
+  underReviewVideos: number
+  approvedVideos: number
+  scheduledVideos: number
+  rejectedVideos: number
+  inRevisionVideos: number
+  needsEditorVideos: number
+  pendingPublishingVideos: number
   publishedVideos: number
-  avgDraftToSubmittedHours: number | null
+  pendingContentVideos: number
+  todaysPosts: number
+  publishedToday: number
+  /* §5 / §12 — added by the route from the campaigns, pages and team. */
+  campaignsTotal?: number
+  campaignsRunning?: number
+  campaignsUpcoming?: number
+  campaignsCompleted?: number
+  totalSocialPages?: number | null
+  totalUsers?: number
+  avgUploadedToSubmittedHours: number | null
   avgSubmittedToPublishedHours: number | null
   publishedThisWeek: number
   publishedThisMonth: number

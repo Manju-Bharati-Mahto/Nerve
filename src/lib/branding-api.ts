@@ -4,18 +4,20 @@ import type {
   BrandingProject, MemberReportStatus, BrandingDesign, DesignVoter,
   BrandingPortalStats, BrandingLeave, ReportRowComment,
 } from "./branding-types";
+import { errorFor, fetchOrExplain, readJson } from "./http";
 
 const BASE = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
 const P = `${BASE}/branding/portal`;
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${P}${path}`, {
+  const res = await fetchOrExplain(`${P}${path}`, {
     credentials: "include",
     headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
     ...init,
   });
-  const payload = await res.json().catch(() => ({})) as { message?: string } & Record<string, unknown>;
-  if (!res.ok) throw new Error(payload.message || "Request failed.");
+  // An HTML error page from nginx reads as {} and is explained by its status.
+  const payload = await readJson(res);
+  if (!res.ok) throw errorFor(res, payload, "Request failed.");
   return payload as T;
 }
 
@@ -146,13 +148,13 @@ export const brandingApi = {
   },
   uploadDesign: (formData: FormData) => {
     const base = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
-    return fetch(`${base}/branding/portal/designs`, {
+    return fetchOrExplain(`${base}/branding/portal/designs`, {
       method: "POST",
       credentials: "include",
       body: formData,
     }).then(async r => {
-      const payload = await r.json().catch(() => ({})) as { message?: string; design?: BrandingDesign };
-      if (!r.ok) throw new Error(payload.message || "Upload failed.");
+      const payload = await readJson(r);
+      if (!r.ok) throw errorFor(r, payload, "Upload failed.");
       return payload as { design: BrandingDesign };
     });
   },

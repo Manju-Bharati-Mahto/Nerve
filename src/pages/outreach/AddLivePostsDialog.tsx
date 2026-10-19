@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { X, Plus, Trash2, Loader2, Link as LinkIcon, ExternalLink, AlertCircle, CheckCircle2 } from 'lucide-react'
 import {
-  addLivePostsByUrl, refreshOutreach, useOutreachStore,
+  addLivePostsByUrl, refreshOutreach, useOutreachStore, effectiveViews, isEstimatedViews,
   type Campaign, type Post, type Platform,
 } from '@/lib/outreach-data'
 
@@ -457,7 +457,10 @@ function ResultsBlock({ results }: { results: { posts: Post[]; skipped: { url: s
                     <td className="px-3 py-2 text-xs text-muted-foreground">{p.date}</td>
                     <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.likes)}</td>
                     <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.comments)}</td>
-                    <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.views)}</td>
+                    <td className="px-3 py-2 text-right text-xs font-mono tabular-nums"
+                      title={isEstimatedViews(p) ? 'Estimated reach: likes × 20 — static posts and carousels have no view count' : undefined}>
+                      {isEstimatedViews(p) && <span className="text-muted-foreground">~</span>}{fmt(effectiveViews(p))}
+                    </td>
                   </tr>
                 ))}
               </tbody>

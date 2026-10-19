@@ -23,11 +23,11 @@
  * The folder layout created on first use matches §6 exactly.
  */
 import {
-  getDriveClient, RevisionMismatchError, type DriveClient,
+  getDriveClient, resetAppDriveConnection, RevisionMismatchError, type DriveClient,
 } from "./drive-client.js";
 import {
-  EMPTY_EVENT_STORE, EMPTY_USER_STORE, EMPTY_WORKFLOW_STORE,
-  type EventStoreDoc, type UserStoreDoc, type WorkflowStoreDoc,
+  EMPTY_CAMPAIGN_STORE, EMPTY_EVENT_STORE, EMPTY_USER_STORE, EMPTY_WORKFLOW_STORE,
+  type CampaignStoreDoc, type EventStoreDoc, type UserStoreDoc, type WorkflowStoreDoc,
 } from "./types.js";
 
 /** §6 — the documented tree beneath "Agency Video Workflow/". */
@@ -35,6 +35,11 @@ export const STORE_FILES = {
   users: "user-data-store.json",
   workflow: "workflow-data-store.json",
   events: "event-data-store.json",
+  /* Campaign & Content Management PRD §7. A fourth document rather than a
+     field on the workflow store: campaigns are read on their own by the
+     manager's dashboard and the calendar, and keeping them separate means
+     those reads do not pull every video down with them. */
+  campaigns: "campaign-data-store.json",
 } as const;
 
 export const VIDEOS_FOLDER = "Videos";
@@ -65,6 +70,7 @@ let folderIdsPromise: Promise<Record<string, string>> | null = null;
 function emptyDoc(store: StoreName): unknown {
   if (store === "users") return EMPTY_USER_STORE;
   if (store === "workflow") return EMPTY_WORKFLOW_STORE;
+  if (store === "campaigns") return EMPTY_CAMPAIGN_STORE;
   return EMPTY_EVENT_STORE;
 }
 
@@ -194,12 +200,45 @@ export const mutateUsers = <R>(fn: (d: UserStoreDoc) => { doc: UserStoreDoc; res
   mutateStore<UserStoreDoc, R>("users", fn);
 export const mutateWorkflow = <R>(fn: (d: WorkflowStoreDoc) => { doc: WorkflowStoreDoc; result: R }) =>
   mutateStore<WorkflowStoreDoc, R>("workflow", fn);
+export const readCampaigns = () => readStore<CampaignStoreDoc>("campaigns");
+
+export const mutateCampaigns = <R>(fn: (d: CampaignStoreDoc) => { doc: CampaignStoreDoc; result: R }) =>
+  mutateStore<CampaignStoreDoc, R>("campaigns", fn);
+
 export const mutateEvents = <R>(fn: (d: EventStoreDoc) => { doc: EventStoreDoc; result: R }) =>
   mutateStore<EventStoreDoc, R>("events", fn);
 
 /** Test seam — clears cache, queues and the memoised folder bootstrap. */
+/*
+ * Other modules that remember Drive ids register here to be told when they
+ * go stale. A registry rather than an import, because those modules already
+ * import this one and importing them back would be a cycle.
+ */
+const resetHooks: Array<() => void> = [];
+export function onDriveReset(fn: () => void): void {
+  resetHooks.push(fn);
+}
+
 export function resetStoreState(): void {
   cache.clear();
   writeQueues.clear();
   folderIdsPromise = null;
+  for (const fn of resetHooks) fn();
+}
+
+/**
+ * Called when the Drive behind the workflow changes — an Admin connects,
+ * swaps or disconnects the app's Google account. The cached documents and
+ * folder ids belong to the old Drive and would point the new one at files it
+ * cannot see.
+ *
+ * Unlike the test seam above, the write queues are left alone: a write that
+ * is mid-flight must finish against the Drive it started on rather than have
+ * the next one interleave with it.
+ */
+export function resetForDriveChange(): void {
+  resetAppDriveConnection();
+  cache.clear();
+  folderIdsPromise = null;
+  for (const fn of resetHooks) fn();
 }

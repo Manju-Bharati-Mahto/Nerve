@@ -9,11 +9,12 @@ import type {
   TeamRecord,
   UpdateUserInput,
 } from "./app-types";
+import { errorFor, fetchOrExplain, readJson } from "./http";
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "/api").replace(/\/$/, "");
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetchOrExplain(`${API_BASE_URL}${path}`, {
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
@@ -22,10 +23,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
 
-  const payload = await response.json().catch(() => ({}));
+  /* readJson, not response.json(): nginx answers a too-large body or a
+     restarting API with an HTML page, and errorFor turns its status into a
+     sentence instead of a bare "Request failed.". */
+  const payload = await readJson(response);
 
   if (!response.ok) {
-    throw new Error(payload.message || "Request failed.");
+    throw errorFor(response, payload, "Request failed.");
   }
 
   return payload as T;
@@ -111,13 +115,27 @@ export const api = {
   uploadAvatar: (file: File) => {
     const formData = new FormData()
     formData.append("avatar", file)
-    return fetch(`${API_BASE_URL}/users/me/avatar`, {
+    return fetchOrExplain(`${API_BASE_URL}/users/me/avatar`, {
       method: "POST",
       credentials: "include",
       body: formData,
     }).then(async r => {
-      const payload = await r.json().catch(() => ({}))
-      if (!r.ok) throw new Error(payload.message || "Upload failed.")
+      const payload = await readJson(r)
+      if (!r.ok) throw errorFor(r, payload, "Upload failed.")
+      return payload as { user: AppUser; avatar_url: string }
+    })
+  },
+  /** PRD §6 — an administrator sets a team member's profile photo. */
+  uploadMemberAvatar: (userId: string, file: File) => {
+    const formData = new FormData()
+    formData.append("avatar", file)
+    return fetchOrExplain(`${API_BASE_URL}/users/${encodeURIComponent(userId)}/avatar`, {
+      method: "POST",
+      credentials: "include",
+      body: formData,
+    }).then(async r => {
+      const payload = await readJson(r)
+      if (!r.ok) throw errorFor(r, payload, "Photo upload failed.")
       return payload as { user: AppUser; avatar_url: string }
     })
   },
@@ -283,6 +301,11 @@ export interface ServerOutreachPage {
   last_synced_at: string | null;
   created_at: string;
   updated_at: string;
+  /* Maintained by a person, not synced (PRD 6.5 / video §8). Optional
+     because older responses and test fixtures may leave them out. */
+  page_link?: string;
+  contact_person?: string;
+  status?: string;
 }
 
 export interface ServerOutreachCreator {

@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, UserCheck, CheckCircle2, AlertCircle, Pencil, X } from 'lucide-react'
+import { ArrowLeft, UserCheck, CheckCircle2, Pencil, X } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   getEvent, assignEvent, completeEvent, updateEvent, listEditors,
-  EVENT_STATUS_STYLE, formatWhen, describeAction,
-  type EventRecord, type WorkflowUser,
+  EVENT_STATUS_STYLE, formatWhen, describeAction, loadFailureOf,
+  type EventRecord, type WorkflowUser, type LoadFailure,
 } from '@/lib/outreach-video-data'
+import DriveProblemNotice from './DriveProblemNotice'
 import { useAuth } from '@/hooks/useAuth'
+import { useVideoTabEdit } from './workflow-roles'
 
 /**
  * §11.2 — the event detail view: full details, assign or reassign to an editor,
@@ -22,11 +24,12 @@ export default function VideoEventDetail() {
   const { role } = useAuth()
   const [event, setEvent] = useState<EventRecord | null>(null)
   const [editors, setEditors] = useState<WorkflowUser[]>([])
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LoadFailure | null>(null)
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState(false)
 
-  const canAssign = role === 'outreach_manager' || role === 'super_admin' || role === 'admin'
+  // Edit on Event Calendar for a configured person; otherwise the roles the API always took.
+  const canAssign = useVideoTabEdit('event_calendar', role === 'outreach_manager' || role === 'super_admin' || role === 'admin')
   const isEditor = role === 'outreach_editor'
 
   const refresh = useCallback(async () => {
@@ -36,7 +39,7 @@ export default function VideoEventDetail() {
       setEvent(event)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load this event.')
+      setError(loadFailureOf(err, 'Could not load this event.'))
     } finally {
       setLoading(false)
     }
@@ -54,9 +57,7 @@ export default function VideoEventDetail() {
     return (
       <div className="animate-fade-in space-y-4">
         <Back isEditor={isEditor} />
-        <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> <span>{error ?? 'Not found.'}</span>
-        </div>
+        <DriveProblemNotice message={error?.message ?? 'Not found.'} code={error?.code ?? null} />
       </div>
     )
   }

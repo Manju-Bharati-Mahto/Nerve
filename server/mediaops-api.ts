@@ -611,9 +611,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   // ── Assignable-member scoping (§16) ──────────────────────────────────────
   // Who may this actor put on a project, a deliverable or a task?
-  //   Admin      → every active media crew member (no department limit).
-  //   Team Lead  → only members of the team(s) they lead, plus themselves.
-  //   Employee   → themselves only.
+  //   Admin                 → every media crew member.
+  //   Team Lead, Employee   → every ACTIVE media crew member. Product decision
+  //                           (Oct 2026): assigning is not limited to your own
+  //                           team — a lead, or an employee on a project, may
+  //                           hand work to anyone in the crew.
+  //   Coordinator           → themselves only. The Coordinator routes projects
+  //                           to teams and never names individuals.
+  //   SMC member            → themselves only. SMC is a separate network.
   // Enforced server-side on every assignment path; the UI merely mirrors it.
   async function assignableMemberIds(actor: CurrentUser): Promise<Set<string>> {
     const role = moRoleOf(actor);
@@ -621,15 +626,30 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       const { rows } = await pool.query(`SELECT id FROM users WHERE team='media'`);
       return new Set(rows.map((r) => String(r.id)));
     }
-    const out = new Set<string>([actor.id]);
-    if (role === "team_lead") {
-      const { rows } = await pool.query(
-        `SELECT tm.user_id FROM mo_team_members tm
-           JOIN mo_teams t ON t.id = tm.team_id
-          WHERE t.lead_user_id = $1 AND t.is_active`, [actor.id]);
-      rows.forEach((r) => out.add(String(r.user_id)));
-    }
-    return out;
+    if (actor.team !== "media" || await isCoordinator(actor)) return new Set<string>([actor.id]);
+    const { rows } = await pool.query(
+      `SELECT id FROM users WHERE team='media' AND COALESCE(status,'active')='active'`);
+    return new Set([actor.id, ...rows.map((r) => String(r.id))]);
+  }
+
+  /* ── Who may ASSIGN on a project ───────────────────────────────────────────
+     Assigning (work, crew, a deliverable's owner, tasks) is wider than running
+     the project (editing it, its dates, status, routing — canManageProject).
+     Approving is its own question (canReviewProject: any Team Lead or Admin):
+       · Admin, and any Team Lead — on every project;
+       · an employee — on a project they are part of: its owner or PM, or on its
+         crew (assignment puts every assignee on the crew);
+       · never the Coordinator (routes, does not assign) or an SMC member. */
+  async function canAssignOnProject(actor: CurrentUser, projectId: number): Promise<boolean> {
+    if (isMoAdmin(actor)) return true;
+    if (actor.team !== "media" || await isCoordinator(actor)) return false;
+    if (isMoTL(actor)) return true;
+    if (!projectId) return false;
+    return !!(await pool.query(
+      `SELECT 1 FROM mo_projects p WHERE p.id=$1 AND p.deleted_at IS NULL AND (p.owner_id=$2
+         OR EXISTS (SELECT 1 FROM mo_project_assignments a
+                     WHERE a.project_id=p.id AND a.user_id=$2 AND a.removed_at IS NULL))`,
+      [projectId, actor.id])).rows[0];
   }
 
   /* ── Team → Team Lead ──────────────────────────────────────────────────────
@@ -702,8 +722,20 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     return String(owner ?? "") === actor.id || await isProjectPM(actor, projectId);
   }
 
-  /** Who may review and approve a project's deliverables: Admin, or its Team Lead. */
-  async function canReviewProject(actor: CurrentUser, projectId: number): Promise<boolean> {
+  /** Who may review and approve deliverables (and approve proposed projects):
+      an Admin or ANY Team Lead, on any project. Product decision (Oct 2026):
+      approval is not limited to the project's own team. What still holds,
+      everywhere: nobody approves work they are on (reviewDeliverable checks
+      the team and the submitter), and Coordinators and employees never
+      approve. The projectId is kept so the call sites read as what they ask. */
+  async function canReviewProject(actor: CurrentUser, _projectId: number): Promise<boolean> {
+    return isMoAdmin(actor) || isMoTL(actor);
+  }
+
+  /** The project's own lead (or an Admin) — the one who submits a version on
+      someone's behalf or marks work delivered. That is running the project,
+      not approving it, so it stays with the team. */
+  async function leadsProjectOrAdmin(actor: CurrentUser, projectId: number): Promise<boolean> {
     return isMoAdmin(actor) || await isTeamLeadOfProject(actor, projectId);
   }
 
@@ -711,16 +743,40 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       inside registerMediaOpsApi can keep calling the short name. */
   const reviewerIdsFor = reviewerIdsForDb;
 
-  /* ── A deliverable's owner IS its crew assignment ──────────────────────────
-     mo_deliverables.owner_id is the one record of who executes a deliverable:
-     it is what My Day, workload, review and the board all read. Every path that
-     changes it ends here, so each one has the same consequences:
+  /* ── Who works on a deliverable ────────────────────────────────────────────
+     mo_deliverables.owner_id is the ACCOUNTABLE person: review routing, the
+     board and workload read it, and there is exactly one.
 
-       · the person joins the project's crew, which is what lets them open the
-         project and read its conversation (visibility follows crew);
-       · any crew row an earlier version of the drawer wrote into mo_assignments
-         for this deliverable is retired, so nothing else claims the work;
-       · the incoming person is told, and so is the one it was taken from. */
+     A deliverable can also have a TEAM. Assign work creates one mo_assignments
+     row linked to the deliverable (deliverable_id) naming everyone the lead
+     picked, the owner among them. Everyone on that row works on it: they see
+     it in My Day, open its project, and may submit a version.
+
+     THE RULE: the team is the owner plus the people on any live, non-SMC
+     work row linked to the deliverable THAT ALSO NAMES THE OWNER. The second
+     half is what keeps the past out. Before ea700aa the drawer recorded its
+     assignee as a lone row and never set owner_id, so those legacy rows never
+     name the owner. They therefore grant nobody anything, and the decisions
+     still pending on them (scripts/reconcile-deliverable-crew-assignments.sql)
+     are not taken by this code. */
+  const deliverableTeamIds = deliverableTeamIdsDb;
+
+  /** Owner or team member — the people who carry out this deliverable. */
+  async function worksOnDeliverable(u: CurrentUser, deliverableId: number): Promise<boolean> {
+    return (await deliverableTeamIds(deliverableId)).has(u.id);
+  }
+
+  /* Every path that changes owner_id ends in deliverableAssigned(), so each one
+     has the same consequences:
+
+       · the incoming owner joins the project's crew (visibility follows crew);
+       · on the deliverable's team rows the outgoing owner is replaced by the
+         incoming one, so their teammates keep working on it. Without the swap
+         the row would stop naming the owner and the team would vanish;
+       · any other linked crew row (an old drawer row that never named the
+         owner) is retired, as before, so nothing else claims the work;
+       · the incoming owner is told (unless the caller tells them itself), and
+         so is the outgoing one. */
   async function addToProjectCrew(projectId: number, userId: string, actorId: string) {
     await pool.query(
       `INSERT INTO mo_project_assignments (project_id, user_id, is_project_manager, assigned_by)
@@ -729,16 +785,30 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   }
 
   async function deliverableAssigned(actor: CurrentUser, d: { id: number; project_id: number; title: string },
-                                     from: string | null, to: string | null) {
+                                     from: string | null, to: string | null,
+                                     opts: { notifyIncoming?: boolean; skipAssignmentId?: number } = {}) {
     if (from === to) return;
     if (to) await addToProjectCrew(Number(d.project_id), to, actor.id);
-    await pool.query(
-      `UPDATE mo_assignments SET status='cancelled'
-        WHERE deliverable_id=$1 AND NOT is_smc AND status<>'cancelled'`, [d.id]);
+    const linked = (await pool.query(
+      `SELECT a.id, EXISTS (SELECT 1 FROM mo_assignment_users au
+                             WHERE au.assignment_id = a.id AND au.user_id = $2) AS names_outgoing
+         FROM mo_assignments a
+        WHERE a.deliverable_id=$1 AND NOT COALESCE(a.is_smc,false) AND a.status <> 'cancelled'
+          AND a.id <> $3`,
+      [d.id, from ?? "", opts.skipAssignmentId ?? 0])).rows;
+    for (const row of linked) {
+      if (from && row.names_outgoing) {
+        await pool.query(`DELETE FROM mo_assignment_users WHERE assignment_id=$1 AND user_id=$2`, [row.id, from]);
+        if (to) await pool.query(
+          `INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [row.id, to]);
+      } else {
+        await pool.query(`UPDATE mo_assignments SET status='cancelled' WHERE id=$1`, [row.id]);
+      }
+    }
     const say = (uid: string, title: string, body: string) => pool.query(
       `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
        VALUES ($1,'assignment',$2,$3,'deliverable',$4)`, [uid, title, body, d.id]).catch(() => {});
-    if (to && to !== actor.id)
+    if (to && to !== actor.id && opts.notifyIncoming !== false)
       await say(to, "New assignment", `${actor.full_name ?? "Your Team Lead"} assigned “${d.title}” to you.`);
     if (from && from !== actor.id)
       await say(from, "Assignment reassigned", `“${d.title}” is no longer assigned to you.`);
@@ -1452,7 +1522,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (isCoord && !isMoAdmin(u) && named.length)
       return sendError(res, 403,
         "A Coordinator assigns the project to a team — individuals are the Team Lead's to allocate.");
-    // Every id a Team Lead or Admin names must still be inside their own scope.
+    /* An employee's own project is assigned to themselves (product decision) —
+       stated outright, because the people an employee may assign to on an
+       existing project is now the whole crew. */
+    if (isEmployee && named.some((id) => id !== u.id))
+      return sendError(res, 403, "A project you create is assigned to you — assign work to others from the project once it exists.");
+    // Every id a Team Lead or Admin names must still be someone they may assign.
     if (!isCoord && !(await assertAssignable(res, u, named))) return;
     const gated = false;   // TL/Admin only ⇒ projects are created active
     const ay = await pool.query(`SELECT id FROM mo_academic_years WHERE is_current LIMIT 1`);
@@ -1587,9 +1662,13 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        lead, Admin, or its owner/PM may move status; only Admin may archive.
        BR-11: an employee may move their own project through production states,
        but NEVER approve a proposal (that would let them approve their own). */
-    if (!(await canManageProject(u, id))) return sendError(res, 403, "You cannot change this project's status.");
-    if (from === "proposed" && to === "approved" && !(isMoAdmin(u) || await isTeamLeadOfProject(u, id)))
-      return sendError(res, 403, "BR-11: only the project's Team Lead or an Admin may approve a proposed project.");
+    /* Approving a proposal is an APPROVAL, and any Team Lead or Admin may give
+       it — on any project. Every other move is running the project and stays
+       with its own lead, owner/PM or an Admin. */
+    if (from === "proposed" && to === "approved") {
+      if (!(await canReviewProject(u, id)))
+        return sendError(res, 403, "BR-11: only a Team Lead or an Admin may approve a proposed project.");
+    } else if (!(await canManageProject(u, id))) return sendError(res, 403, "You cannot change this project's status.");
     if (to === "archived" && !isMoAdmin(u)) return sendError(res, 403, "Only Admin may archive (BR-1).");
     if (from === "archived" && !isMoAdmin(u)) return sendError(res, 403, "BR-12: only Admin may un-archive.");
     if (!(PROJ_TRANSITIONS[from] ?? []).includes(to))
@@ -1606,8 +1685,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   app.post(`${P}/projects/:id/assignments`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
-    if (!(isMoAdmin(u) || await isTeamLeadOfProject(u, id)))
-      return sendError(res, 403, "Only the project's Team Lead or an Admin may assign crew.");
+    if (!(await canAssignOnProject(u, id)))
+      return sendError(res, 403, "You can assign crew only on a project you are part of.");
     const b = req.body as Record<string, unknown>;
     // A4: clean 400s instead of FK-violation 500s.
     if (!b.user_id || typeof b.user_id !== "string") return sendError(res, 400, "user_id is required.");
@@ -1702,7 +1781,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const pid = Number(d.project_id);
     if (await canEditProjectDates(u, pid)) [...PLAN, ...EXECUTION, "due_date"].forEach((k) => allowed.add(k));
     else if (await canManageProject(u, pid)) [...PLAN, ...EXECUTION].forEach((k) => allowed.add(k));
-    if (String(d.owner_id ?? "") === u.id) EXECUTION.forEach((k) => allowed.add(k));
+    if (await worksOnDeliverable(u, id)) EXECUTION.forEach((k) => allowed.add(k));
+    // Choosing who carries it is assigning — open to whoever may assign here.
+    if (await canAssignOnProject(u, pid)) allowed.add("owner_id");
     if (await isCoordinator(u)) ["social_status", "social_post_url", "mail_status"].forEach((k) => allowed.add(k));
     const asked = [...PLAN, ...EXECUTION, "due_date"].filter((k) => k in b);
     const refused = asked.filter((k) => !allowed.has(k));
@@ -1813,12 +1894,13 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const id = parseInt(getSingleParam(req.params.id), 10);
     const d = (await pool.query(`SELECT * FROM mo_deliverables WHERE id=$1 AND deleted_at IS NULL`, [id])).rows[0];
     if (!d) return sendError(res, 404, "Deliverable not found.");
-    /* The work is submitted by the person doing it — or by the project's lead
-       or an Admin acting for them. Anybody else pushing a version into a
-       colleague's deliverable could put it in front of a reviewer, and make a
-       reviewer who owns it look eligible to approve it. */
-    if (!(String(d.owner_id ?? "") === u.id || await canReviewProject(u, Number(d.project_id))))
-      return sendError(res, 403, "Only the deliverable's owner, the project's Team Lead or an Admin may submit a version.");
+    /* The work is submitted by the people doing it — its owner or anyone on its
+       team — or by the project's lead or an Admin acting for them. Anybody
+       else pushing a version into a colleague's deliverable could put it in
+       front of a reviewer, and make a reviewer on it look eligible. */
+    const team = await deliverableTeamIds(Number(d.id));
+    if (!(team.has(u.id) || await leadsProjectOrAdmin(u, Number(d.project_id))))
+      return sendError(res, 403, "Only the people assigned to this deliverable, the project's Team Lead or an Admin may submit a version.");
     /* A deliverable the lead has cancelled, marked not required, approved or
        delivered is OUT of the production flow. Submitting a version onto one
        of those statuses used to un-cancel scope and let an approved pending
@@ -1841,7 +1923,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        assigned the work to themselves), they are ineligible to review their
        own: tell the Admins instead so the item does not vanish into the
        reviewer's own queue they cannot action. */
-    for (const rid of await reviewerIdsFor(Number(d.project_id), String(d.owner_id ?? "")))
+    for (const rid of await reviewerIdsFor(Number(d.project_id), team))
       if (rid !== u.id)
         await pool.query(
           `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
@@ -1868,9 +1950,10 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   async function reviewDeliverable(u: CurrentUser, d: Record<string, unknown>, outcome: "approved" | "changes_requested",
                                    comment: string, req: express.Request): Promise<{ status: number; message?: string }> {
     if (!(await canReviewProject(u, Number(d.project_id))))
-      return { status: 403, message: "Only the project's Team Lead or an Admin may review this deliverable." };
-    if (String(d.owner_id ?? "") === u.id)
-      return { status: 403, message: "BR-5: you cannot review a deliverable you own." };
+      return { status: 403, message: "Only a Team Lead or an Admin may review a deliverable." };
+    const team = await deliverableTeamIds(Number(d.id));
+    if (team.has(u.id))
+      return { status: 403, message: "BR-5: you cannot review a deliverable you are assigned to." };
     const v = (await pool.query(
       `SELECT * FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [d.id])).rows[0];
     if (!v) return { status: 400, message: "No version to review — the owner submits one first." };
@@ -1892,13 +1975,15 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
           WHERE id=$1 AND dispatch_status='queued'`, [d.id]);
     await audit(u, "deliverable.version_reviewed", "deliverable_version", v.id,
       { review_status: v.review_status }, { review_status: outcome }, req);
-    if (d.owner_id && String(d.owner_id) !== u.id)
-      await pool.query(
-        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
-         VALUES ($1,'review',$2,$3,'deliverable',$4)`,
-        [d.owner_id, outcome === "approved" ? `Approved: ${d.title}` : `Changes requested on ${d.title}`,
-          `${u.full_name ?? "Your Team Lead"} ${outcome === "approved" ? "approved" : "asked for changes to"} v${v.version_no}.${comment ? " " + comment : ""}`,
-          d.id]).catch(() => {});
+    // The verdict reaches everyone working on it, not only its owner.
+    for (const uid of team)
+      if (uid !== u.id)
+        await pool.query(
+          `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+           VALUES ($1,'review',$2,$3,'deliverable',$4)`,
+          [uid, outcome === "approved" ? `Approved: ${d.title}` : `Changes requested on ${d.title}`,
+            `${u.full_name ?? "Your Team Lead"} ${outcome === "approved" ? "approved" : "asked for changes to"} v${v.version_no}.${comment ? " " + comment : ""}`,
+            d.id]).catch(() => {});
     return { status: 200 };
   }
 
@@ -1922,8 +2007,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const id = parseInt(getSingleParam(req.params.id), 10);
     const d = await pool.query(`SELECT d.*, dt.review_exempt FROM mo_deliverables d JOIN mo_deliverable_types dt ON dt.id=d.deliverable_type_id WHERE d.id=$1`, [id]);
     if (!d.rows[0]) return sendError(res, 404, "Deliverable not found.");
-    if (!(String(d.rows[0].owner_id ?? "") === u.id || await canReviewProject(u, Number(d.rows[0].project_id))))
-      return sendError(res, 403, "Only the deliverable's owner, the project's Team Lead or an Admin may mark it delivered.");
+    if (!(await worksOnDeliverable(u, id) || await leadsProjectOrAdmin(u, Number(d.rows[0].project_id))))
+      return sendError(res, 403, "Only the people assigned to this deliverable, the project's Team Lead or an Admin may mark it delivered.");
     /* Only an approved deliverable can be delivered (a review-exempt type reaches
        delivered straight from work). Before this check, calling /deliver after
        a reviewer's post-delivery send-back silently re-flipped status back to
@@ -2182,9 +2267,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const wt = (await pool.query(`SELECT * FROM mo_work_types WHERE id=$1`, [Number(b.work_type_id)])).rows[0];
     if (!wt) return sendError(res, 400, "Unknown work type.");
     if (!wt.is_active || wt.archived_at) return sendError(res, 400, "That work type is archived or disabled — pick an active one.");
-    // Assigning work is running the project: its lead, its owner/PM, or Admin.
-    if (!(await canManageProject(u, pid)))
-      return sendError(res, 403, "Only the project's Team Lead, PM or an Admin may assign work.");
+    // Admin, any Team Lead, or an employee who is part of the project.
+    if (!(await canAssignOnProject(u, pid)))
+      return sendError(res, 403, "You can assign work only on a project you are part of.");
 
     if (wt.form_template === "shoot") {
       if (!String(b.title ?? "").trim()) return sendError(res, 400, "Title is required.");
@@ -2219,30 +2304,156 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       return res.status(201).json({ kind: "shoot", work_type: wt, shoot });
     }
 
-    // standard_task
+    /* ── standard_task ────────────────────────────────────────────────────────
+       Assign work is where a lead creates deliverables now, not a separate
+       "+ Deliverable" form. The work can carry:
+
+         new_deliverable  { deliverable_type_id, title?, due_date?, drive_url? }
+                          → a deliverable is created on this project;
+         deliverable_id   → an existing open deliverable of this project (one
+                            the Coordinator added at creation, say) is taken on;
+         neither          → plain work with no project output.
+
+       When a deliverable is involved, owner_id names the ACCOUNTABLE person and
+       must be one of the assignees (the first, if not given). Every assignee is
+       on the work row, so every one of them works on the deliverable: see
+       deliverableTeamIds(). */
     const title = String(b.title ?? "").trim();
     if (!title) return sendError(res, 400, "Title is required.");
-    const assignees = (Array.isArray(b.assignees) ? b.assignees : []).map((r) => String(toUid(r)));
+    if (title.length > 160) return sendError(res, 400, "Title must be 160 characters or fewer.");
+    const assignees = [...new Set((Array.isArray(b.assignees) ? b.assignees : []).map((r) => String(toUid(r))))];
     if (!assignees.length) return sendError(res, 400, "Assign the work to at least one member.");
     if (!(await assertAssignable(res, u, assignees))) return;
     const priority = ["urgent", "high", "normal", "low"].includes(String(b.priority)) ? String(b.priority) : "normal";
-    const ins = await pool.query(
-      `INSERT INTO mo_assignments (project_id, work_type_id, deliverable_id, title, assigned_by, priority, status,
-         start_date, due_date, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,'not_started',$7,$8,$9) RETURNING *`,
-      [pid, wt.id, b.deliverable_id ? Number(b.deliverable_id) : null, title, u.id, priority,
-       (b.start_date as string) || null, (b.due_date as string) || null, String(b.notes ?? "")]);
-    for (const uid of assignees)
-      await pool.query(`INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [ins.rows[0].id, uid]);
-    await audit(u, "work.assigned", "assignment", ins.rows[0].id, null,
-      { work_type: wt.name, form_template: wt.form_template, title, assignees }, req);
-    for (const uid of assignees)
-      if (uid !== u.id)
-        await pool.query(
-          `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
-           VALUES ($1,'assignment',$2,$3,'assignment',$4)`,
-          [uid, `${wt.name} assigned to you`, `${u.full_name ?? "Your Team Lead"} assigned “${title}”.`, ins.rows[0].id]).catch(() => {});
-    res.status(201).json({ kind: "assignment", work_type: wt, assignment: ins.rows[0] });
+    const startDate = (b.start_date as string) || null, dueDate = (b.due_date as string) || null;
+    if (startDate && dueDate && dueDate < startDate)
+      return sendError(res, 400, "Due date must be on or after the start date.");
+
+    const nd = b.new_deliverable && typeof b.new_deliverable === "object" ? b.new_deliverable as Record<string, unknown> : null;
+    if (nd && b.deliverable_id)
+      return sendError(res, 400, "Create a new deliverable or take on an existing one — not both.");
+    const withDeliverable = !!(nd || b.deliverable_id);
+    const ownerId = withDeliverable ? String(toUid(b.owner_id ?? assignees[0])) : null;
+    if (ownerId && !assignees.includes(ownerId))
+      return sendError(res, 400, "The deliverable's owner must be one of the people you assign.");
+
+    let existing: Record<string, unknown> | null = null;
+    let ndRow: { typeId: number; title: string; due: string | null; drive: string } | null = null;
+    if (b.deliverable_id) {
+      existing = (await pool.query(
+        `SELECT * FROM mo_deliverables WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL`,
+        [Number(b.deliverable_id), pid])).rows[0] ?? null;
+      if (!existing) return sendError(res, 400, "That deliverable is not on this project.");
+      if (["delivered", "not_required", "cancelled"].includes(String(existing.status)))
+        return sendError(res, 400, `That deliverable is ${String(existing.status).replace("_", " ")} — it can no longer take new work.`);
+    }
+    if (nd) {
+      const typeId = Number(nd.deliverable_type_id);
+      const type = typeId ? (await pool.query(
+        `SELECT id, name FROM mo_deliverable_types WHERE id=$1 AND archived_at IS NULL`, [typeId])).rows[0] : null;
+      if (!type) return sendError(res, 400, "Pick the deliverable's type.");
+      /* Untitled, the deliverable is named by its kind — "Highlight Reel" — the
+         same way New project names the ones the Coordinator adds; a second of
+         the same kind on this project becomes "Highlight Reel (2)". */
+      let dTitle = String(nd.title ?? "").trim();
+      if (!dTitle) {
+        const taken = new Set((await pool.query(
+          `SELECT title FROM mo_deliverables WHERE project_id=$1 AND deleted_at IS NULL`, [pid])).rows.map((r) => String(r.title)));
+        dTitle = String(type.name);
+        for (let n = 2; taken.has(dTitle); n++) dTitle = `${type.name} (${n})`;
+      }
+      if (dTitle.length > 160) return sendError(res, 400, "A deliverable title must be 160 characters or fewer.");
+      const drive = String(nd.drive_url ?? "").trim();
+      if (drive && !/^https:\/\/(drive|docs)\.google\.com\//.test(drive))
+        return sendError(res, 400, "The Drive link must be a Google Drive or Docs link.");
+      // The deliverable is due when the work is due, unless the lead says otherwise.
+      ndRow = { typeId, title: dTitle, due: (nd.due_date as string) || dueDate, drive };
+    }
+
+    /* The deliverable, the work row and its people go in together or not at
+       all — half a creation (a deliverable with nobody on it, or work pointing
+       at nothing) is worse than a clean failure. Every await in here is on the
+       held client; notifications, crew and audit follow once it is released. */
+    const client = await pool.connect();
+    let deliverable: Record<string, unknown> | null = null;
+    let assignment: Record<string, unknown>;
+    try {
+      await client.query("BEGIN");
+      if (ndRow) {
+        deliverable = (await client.query(
+          `INSERT INTO mo_deliverables (project_id, deliverable_type_id, title, owner_id, due_date, unit, weight,
+             status, priority, due_date_source)
+           SELECT $1, dt.id, $2, $3, $4, dt.default_unit, dt.default_weight, 'not_started', $5, 'manual'
+             FROM mo_deliverable_types dt WHERE dt.id=$6
+           RETURNING id, project_id, title, owner_id, due_date, status`,
+          [pid, ndRow.title, ownerId, ndRow.due, priority, ndRow.typeId])).rows[0] ?? null;
+        if (!deliverable) throw new Error("deliverable type vanished mid-request");
+        if (ndRow.drive)
+          await client.query(
+            `INSERT INTO mo_drive_links (entity_type, entity_id, label, url, added_by, validation_status, last_validated_at)
+             VALUES ('deliverable',$1,$2,$3,$4,'ok',NOW())`, [deliverable.id, ndRow.title, ndRow.drive, u.id]);
+      }
+      assignment = (await client.query(
+        `INSERT INTO mo_assignments (project_id, work_type_id, deliverable_id, title, assigned_by, priority, status,
+           start_date, due_date, notes)
+         VALUES ($1,$2,$3,$4,$5,$6,'not_started',$7,$8,$9)
+         RETURNING id, project_id, work_type_id, deliverable_id, title, assigned_by, priority, status,
+                   start_date, due_date, notes`,
+        [pid, wt.id, deliverable ? deliverable.id : (existing ? existing.id : null), title, u.id, priority,
+         startDate, dueDate, String(b.notes ?? "")])).rows[0];
+      for (const uid of assignees)
+        await client.query(
+          `INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+          [assignment.id, uid]);
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    /* Taking on an existing deliverable with a different owner is a
+       reassignment: the shared path swaps the owner on the deliverable's
+       EARLIER team rows and tells the outgoing owner. The row just inserted is
+       skipped — it is exactly the people the lead picked, and swapping on it
+       would drop the outgoing owner from work they were just given. The
+       incoming owner hears about it below, once. */
+    if (existing && String(existing.owner_id ?? "") !== ownerId) {
+      await pool.query(`UPDATE mo_deliverables SET owner_id=$1, updated_at=NOW() WHERE id=$2`, [ownerId, existing.id]);
+      await deliverableAssigned(u, existing as { id: number; project_id: number; title: string },
+        existing.owner_id ? String(existing.owner_id) : null, ownerId,
+        { notifyIncoming: false, skipAssignmentId: Number(assignment.id) });
+      await audit(u, "deliverable.assigned", "deliverable", Number(existing.id),
+        { owner_id: existing.owner_id }, { owner_id: ownerId, via: "assign_work" }, req);
+    }
+    const target = deliverable ?? existing;
+    for (const uid of assignees) await addToProjectCrew(pid, uid, u.id);
+    if (deliverable)
+      await audit(u, "deliverable.created", "deliverable", Number(deliverable.id), null,
+        { title: deliverable.title, owner_id: ownerId, team: assignees, via: "assign_work" }, req);
+    await audit(u, "work.assigned", "assignment", Number(assignment.id), null,
+      { work_type: wt.name, form_template: wt.form_template, title, assignees,
+        deliverable_id: target ? target.id : null, owner_id: ownerId }, req);
+
+    /* One notice per person. With a deliverable, tapping it opens the
+       deliverable — that is what they have to act on — and the body says
+       whether they own it or are working on it with someone. */
+    const ownerName = ownerId
+      ? (await pool.query(`SELECT full_name FROM users WHERE id=$1`, [ownerId])).rows[0]?.full_name ?? "the owner" : "";
+    for (const uid of assignees) {
+      if (uid === u.id) continue;
+      const by = u.full_name ?? "Your Team Lead";
+      const body = !target ? `${by} assigned “${title}”.`
+        : uid === ownerId ? `${by} assigned “${title}”. You own “${target.title}” and submit it for review.`
+        : `${by} assigned “${title}”. You are working on “${target.title}” with ${ownerName}.`;
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'assignment',$2,$3,$4,$5)`,
+        [uid, `${wt.name} assigned to you`, body, target ? "deliverable" : "assignment",
+         target ? target.id : assignment.id]).catch(() => {});
+    }
+    res.status(201).json({ kind: "assignment", work_type: wt, assignment, deliverable: target ?? null });
   }));
 
   // ── Shoots (§7.5) ─────────────────────────────────────────────────────────
@@ -8531,7 +8742,7 @@ async function allocateInternalCode(
       return sendError(res, 400, "Submit a version for review — only an approved deliverable can be delivered.");
     // The owner drives their own execution; scope changes (not required,
     // cancelled, and back) are the project's to make.
-    const isOwner = String(d.owner_id ?? "") === u.id;
+    const isOwner = await worksOnDeliverable(u, id);   // owner or team: the people doing it
     const manages = await canManageProject(u, Number(d.project_id));
     const ownerMoves = ["in_progress", "in_review", "delivered"];
     if (!(manages || (isOwner && ownerMoves.includes(to))))
@@ -8571,9 +8782,9 @@ async function allocateInternalCode(
     const d = (await pool.query(`SELECT * FROM mo_deliverables WHERE id=$1`, [id])).rows[0];
     if (!d) return sendError(res, 404, "Deliverable not found.");
     if (!(await canReviewProject(u, Number(d.project_id))))
-      return sendError(res, 403, "Only the project's Team Lead or an Admin may approve deliverables.");
-    if (String(d.owner_id) === u.id)
-      return sendError(res, 403, "BR-5: you cannot approve your own deliverable.");
+      return sendError(res, 403, "Only a Team Lead or an Admin may approve deliverables.");
+    if (await worksOnDeliverable(u, id))
+      return sendError(res, 403, "BR-5: you cannot approve a deliverable you are assigned to.");
     if (d.status !== "delivered")
       return sendError(res, 400, "This deliverable has not been delivered — review its submitted version instead.");
     const to = String((req.body as Record<string, unknown>).approval_status ?? "");
@@ -10768,7 +10979,9 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
   app.post(`${P}/shoots/:id/crew`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const sid = parseInt(getSingleParam(req.params.id), 10);
-    if (!(await leadsShootProject(u, sid))) return sendError(res, 403, "Only the project's Team Lead or an Admin may assign shoot crew.");
+    const shootPid = Number((await pool.query(`SELECT project_id FROM mo_shoots WHERE id=$1`, [sid])).rows[0]?.project_id ?? 0);
+    if (!(await canAssignOnProject(u, shootPid)))
+      return sendError(res, 403, "You can assign shoot crew only on a project you are part of.");
     const crew = (Array.isArray((req.body as Record<string, unknown>).crew) ? (req.body as Record<string, unknown>).crew as unknown[] : []).map(String);
     // Crewing a shoot is an assignment — the same team scope as every other path.
     if (!(await assertAssignable(res, u, crew))) return;
@@ -11692,8 +11905,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
   app.post(`${P}/projects/:id/tasks`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const pid = parseInt(getSingleParam(req.params.id), 10);
-    if (!(isMoAdmin(u) || await isTeamLeadOfProject(u, pid)))
-      return sendError(res, 403, "Only the project's Team Lead or an Admin may assign tasks.");
+    if (!(await canAssignOnProject(u, pid)))
+      return sendError(res, 403, "You can assign tasks only on a project you are part of.");
     const b = req.body as Record<string, unknown>;
     const title = String(b.title ?? "").trim();
     if (!title) return sendError(res, 400, "Task title is required.");
@@ -11721,11 +11934,11 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const cur = (await pool.query(`SELECT * FROM mo_assignments WHERE id=$1`, [id])).rows[0];
     if (!cur) return sendError(res, 404, "Assignment not found.");
     const isAssignee = (await pool.query(`SELECT 1 FROM mo_assignment_users WHERE assignment_id=$1 AND user_id=$2`, [id, u.id])).rows[0];
-    /* Crew work on a project is managed by that project's lead (or Admin, or
-       whoever set it). SMC coverage keeps its own long-standing rule here — its
-       lifecycle lives under /smc/* and is not this route's to reshape. */
-    const priv = isMoAdmin(u) || cur.assigned_by === u.id || (cur.is_smc || cur.project_id == null
-      ? isMoTL(u) : await isTeamLeadOfProject(u, Number(cur.project_id)));
+    /* An assignment is edited by an Admin, by whoever set it, or by a Team Lead
+       (leads assign on every project). An employee assigns new work but does
+       not rewrite work somebody else set; their own assignments are theirs.
+       SMC coverage keeps its long-standing rule (any Team Lead). */
+    const priv = isMoAdmin(u) || cur.assigned_by === u.id || isMoTL(u);
     if (!priv && !isAssignee) return sendError(res, 403, "You can't change this assignment.");
     const b0 = req.body as Record<string, unknown>;
     if (priv && !cur.is_smc && Array.isArray(b0.assignees)
@@ -17818,7 +18031,14 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
         WHERE d.id = $1`, [did])).rows[0];
     const crew = o ? { assignment_id: null, user_id: o.owner_id, full_name: o.full_name,
                        designation: o.designation ?? null, institute: null, status: o.status } : null;
-    res.json({ crew, smc });
+    // Everyone else working on it with the owner (the team rows' people).
+    const others = [...await deliverableTeamIds(did)].filter((id) => id !== String(o?.owner_id ?? ""));
+    const team = others.length ? (await pool.query(
+      `SELECT us.id AS user_id, us.full_name, p.designation FROM users us
+         LEFT JOIN mo_user_profiles p ON p.user_id = us.id
+        WHERE us.id = ANY($1::text[]) ORDER BY us.full_name`, [others])).rows
+      .map((x) => ({ user_id: x.user_id, full_name: x.full_name, designation: x.designation ?? null })) : [];
+    res.json({ crew, team, smc });
   }));
 
   /** Candidates for both pickers, from the existing rosters. */
@@ -17862,8 +18082,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
        through the same deliverableAssigned() every other path uses, by the
        same people who may run the project. */
     if (kind === "crew") {
-      if (!(await canManageProject(u, Number(d.project_id))))
-        return sendError(res, 403, "Only the project's Team Lead, owner/PM or an Admin may assign this deliverable.");
+      if (!(await canAssignOnProject(u, Number(d.project_id))))
+        return sendError(res, 403, "You can assign this deliverable only on a project you are part of.");
       if (!(await assertAssignable(res, u, [memberId]))) return;
       const from = d.owner_id ? String(d.owner_id) : null;
       if (from === memberId) return res.json({ ok: true, unchanged: true, kind });
@@ -18018,6 +18238,23 @@ function addDays(iso: string, n: number): string {
 // server-persisted notification feed (AUTO-1/2/3 + review-pending). Idempotent —
 // notifications dedupe on (user, kind, entity) while unread, so re-runs never spam.
 // ═══════════════════════════════════════════════════════════════════════════
+/** Owner + the deliverable's team. The rule and its reasons are written next
+    to deliverableTeamIds inside registerMediaOpsApi; this is the one query,
+    at module scope so runMediaOpsAutomations() shares it. */
+async function deliverableTeamIdsDb(deliverableId: number): Promise<Set<string>> {
+  const { rows } = await pool.query(
+    `SELECT d.owner_id AS uid FROM mo_deliverables d WHERE d.id=$1 AND d.owner_id IS NOT NULL
+     UNION
+     SELECT au.user_id FROM mo_assignments a
+       JOIN mo_assignment_users au ON au.assignment_id = a.id
+       JOIN mo_deliverables d ON d.id = a.deliverable_id
+      WHERE a.deliverable_id=$1 AND NOT COALESCE(a.is_smc,false) AND a.status <> 'cancelled'
+        AND d.owner_id IS NOT NULL
+        AND EXISTS (SELECT 1 FROM mo_assignment_users o
+                     WHERE o.assignment_id = a.id AND o.user_id = d.owner_id)`, [deliverableId]);
+  return new Set(rows.map((r) => String(r.uid)));
+}
+
 /** The person a submission should reach: the project team's lead, else (a
     legacy project) its owner when they are a Team Lead, else the Admins.
     excludeUserId falls back to Admins when the resolved reviewer is also the
@@ -18026,7 +18263,10 @@ function addDays(iso: string, n: number): string {
     automations in runMediaOpsAutomations() share one definition with the
     request handlers; before this, AUTO-4 used mo_project_assignments.PM
     instead and the two drifted after a team-lead change. */
-async function reviewerIdsForDb(projectId: number, excludeUserId: string = ""): Promise<string[]> {
+async function reviewerIdsForDb(projectId: number, exclude: string | Iterable<string> = ""): Promise<string[]> {
+  /* Nobody who works on the deliverable reviews it, so if the project's lead is
+     on its team the Admins are asked instead. */
+  const out = new Set(typeof exclude === "string" ? [exclude] : [...exclude]);
   const r = (await pool.query(
     `SELECT CASE WHEN p.team_id IS NOT NULL THEN t.lead_user_id
                  WHEN o.role = 'sub_admin' AND o.team = 'media' THEN p.owner_id END AS lead
@@ -18034,7 +18274,7 @@ async function reviewerIdsForDb(projectId: number, excludeUserId: string = ""): 
        LEFT JOIN mo_teams t ON t.id = p.team_id AND t.is_active AND t.archived_at IS NULL
        LEFT JOIN users o ON o.id = p.owner_id
       WHERE p.id = $1`, [projectId])).rows[0];
-  if (r?.lead && String(r.lead) !== excludeUserId) return [String(r.lead)];
+  if (r?.lead && !out.has(String(r.lead))) return [String(r.lead)];
   return (await pool.query(
     `SELECT id FROM users WHERE team='media' AND role IN ('admin','super_admin')`)).rows.map((x) => String(x.id));
 }
@@ -18126,7 +18366,7 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
         WHERE d.status='in_review' AND d.deleted_at IS NULL
           AND p.deleted_at IS NULL AND p.status NOT IN ('cancelled','on_hold','archived')`)).rows;
     for (const d of rows)
-      for (const rid of await reviewerIdsForDb(Number(d.project_id), String(d.owner_id ?? "")))
+      for (const rid of await reviewerIdsForDb(Number(d.project_id), await deliverableTeamIdsDb(Number(d.id))))
         await notify(rid, "approval", "Awaiting your review", `“${d.title}” has a version pending`, "deliverable", d.id);
   }
 

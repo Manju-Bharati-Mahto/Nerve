@@ -9,10 +9,14 @@ import {
   Megaphone, Send, Calendar, BarChart3, Sparkles,
   Award, CalendarOff, Settings2, AlertTriangle,
   Film, Inbox, Share2, CheckCircle2, ListChecks, Bell, ClipboardList, UserCog, History,
+  ShieldCheck, HardDrive, MapPin, CalendarClock, ListTodo,
 } from 'lucide-react'
 import ProfileModal from './ProfileModal'
 import { useOutreachData, computeOutreachAlerts } from '@/lib/outreach-data'
 import { listNotifications } from '@/lib/outreach-video-data'
+import { canUseTab, useOutreachAccess, type OutreachAccess } from '@/lib/outreach-access'
+import { OUTREACH_TABS } from '@/lib/outreach-tabs'
+import { CAPABILITY_META, OV_CAPABILITY_ORDER } from '@/lib/capabilities'
 
 type NavItem =
   | { path: string; label: string; icon: React.ElementType; badge?: 'outreach-alerts' | 'video-notifications' }
@@ -36,6 +40,67 @@ function cfg(
   return { label, icon, iconColor, iconBg, sections }
 }
 
+
+/**
+ * Tabs this person was granted but their role's own menu does not list.
+ *
+ * The outreach manager switches tabs on per person (PRD §6), so a granted tab
+ * has to appear in the nav of someone whose role would never show it — an
+ * editor given the publishing queue, say. Entries already in the role's menu
+ * are skipped so nothing appears twice, and the order follows the capability
+ * catalogue rather than the order the grants happen to be stored in.
+ *
+ * This only ADDS. A tab the role already shows stays shown: capabilities widen
+ * access, they never narrow it, and the route guard says the same.
+ */
+function grantedOutreachItems(
+  capabilities: string[] | undefined,
+  sections: SectionConfig[],
+): NavItem[] {
+  if (!capabilities?.length) return []
+  const alreadyShown = new Set(
+    sections.flatMap(sec => sec.items.map(i => ('path' in i ? i.path : ''))),
+  )
+  return OV_CAPABILITY_ORDER
+    .filter(key => capabilities.includes(key))
+    .map(key => CAPABILITY_META[key])
+    .filter(meta => !alreadyShown.has(meta.route))
+    .map(meta => ({ path: meta.route, label: meta.sidebarLabel, icon: Film }))
+}
+
+/* Icons and badges for menus built from tabs (a configured person's). */
+const TAB_ICON: Record<string, React.ElementType> = {
+  dashboard: LayoutDashboard, campaigns: Send, calendar: Calendar, analytics: BarChart3,
+  alerts: AlertTriangle, states: MapPin, pages: FileText, creators: Users, ai: Sparkles,
+  video_dashboard: BarChart3, users: UserCog, drive: HardDrive, video_campaigns: Film,
+  review: ShieldCheck, event_calendar: Calendar, all_videos: Film, queue: Inbox,
+  published: CheckCircle2, editor_log: ClipboardList, activity: History, notifications: Bell,
+  my_videos: Film, scheduled: CalendarClock, todo: ListTodo, social_pages: Share2,
+}
+const TAB_BADGE: Record<string, 'outreach-alerts' | 'video-notifications'> = {
+  alerts: 'outreach-alerts', notifications: 'video-notifications',
+}
+
+/**
+ * The menu of somebody an admin has configured (Account Tabs requirements
+ * §1): exactly their tabs, influencer first, in the order the requirements
+ * list them. Used only for a configured person on team outreach; everyone
+ * else keeps the per-role menus below.
+ */
+function configuredOutreachConfig(access: OutreachAccess, base: RoleConfig): RoleConfig {
+  const section = (group: 'influencer' | 'video', heading: string): SectionConfig | null => {
+    const items: NavItem[] = OUTREACH_TABS
+      .filter(t => t.group === group && canUseTab(access, t.id))
+      .map(t => ({ path: t.path, label: t.label, icon: TAB_ICON[t.id] ?? FileText, badge: TAB_BADGE[t.id] }))
+    return items.length ? { heading, items } : null
+  }
+  return {
+    ...base,
+    sections: [section('influencer', 'Outreach'), section('video', 'Video workflow')]
+      .filter((x): x is SectionConfig => x !== null),
+  }
+}
+
 // Sidebar config keyed by `${role}:${team}`
 const SIDEBAR: Record<string, RoleConfig> = {
 
@@ -49,9 +114,25 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/browse',       label: 'Browse all',  icon: Search },
       { path: '/admin/export', label: 'Export data', icon: Download },
     ]},
+    /* Influencer outreach. Without these, the only "Campaigns" in this menu
+       was the video workflow's — Drive-backed, so it cannot work until Google
+       Drive is connected — and the influencer campaigns had no way in at all. */
+    { heading: 'Outreach', items: [
+      { path: '/outreach/dashboard', label: 'Outreach Dashboard', icon: LayoutDashboard },
+      { path: '/outreach/campaigns', label: 'Campaigns',          icon: Send },
+      { path: '/outreach/calendar',  label: 'Calendar',           icon: Calendar },
+      { path: '/outreach/analytics', label: 'Analytics',          icon: BarChart3 },
+      { path: '/outreach/alerts',    label: 'Alerts',             icon: AlertTriangle, badge: 'outreach-alerts' },
+      { path: '/outreach/states',    label: 'State',              icon: MapPin },
+      { path: '/outreach/pages',     label: 'All Pages',          icon: FileText },
+      { path: '/outreach/creators',  label: 'Creators',           icon: Users },
+    ]},
     { heading: 'Video workflow', items: [
       { path: '/outreach/video/dashboard',  label: 'Video Dashboard',  icon: BarChart3 },
       { path: '/outreach/video/users',      label: 'Workflow Users',   icon: UserCog },
+      { path: '/outreach/video/drive',      label: 'Google Drive',     icon: HardDrive },
+      { path: '/outreach/video/campaigns',  label: 'Video Campaigns',  icon: Film },
+      { path: '/outreach/video/review',     label: 'Review Queue',     icon: Inbox },
       { path: '/outreach/video/all',        label: 'All Videos',       icon: Film },
       { path: '/outreach/video/calendar',   label: 'Event Calendar',   icon: Calendar },
       { path: '/outreach/video/editor-log', label: 'Editor Video Log', icon: ClipboardList },
@@ -69,6 +150,9 @@ const SIDEBAR: Record<string, RoleConfig> = {
     { items: [
       { path: '/outreach/video/dashboard',  label: 'Dashboard',        icon: LayoutDashboard },
       { path: '/outreach/video/users',      label: 'Users',            icon: UserCog },
+      { path: '/outreach/video/drive',      label: 'Google Drive',     icon: HardDrive },
+      { path: '/outreach/video/campaigns',  label: 'Video Campaigns',  icon: Film },
+      { path: '/outreach/video/review',     label: 'Review Queue',     icon: Inbox },
       { path: '/outreach/video/all',        label: 'All Videos',       icon: Film },
       { path: '/outreach/video/calendar',   label: 'Event Calendar',   icon: Calendar },
     ]},
@@ -172,11 +256,18 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/outreach/alerts',    label: 'Alerts',     icon: AlertTriangle, badge: 'outreach-alerts' },
     ]},
     { heading: 'Content', items: [
+      { path: '/outreach/states',   label: 'State',     icon: MapPin },
       { path: '/outreach/pages',    label: 'All Pages', icon: FileText },
       { path: '/outreach/creators', label: 'Creators',  icon: Users },
     ]},
     { heading: 'Video workflow', items: [
       { path: '/outreach/video/dashboard',    label: 'Video Dashboard',  icon: BarChart3 },
+      /* The outreach manager administers the team (PRD §2/§6) and reviews
+         its content (§11), so both tabs belong in their own menu. */
+      { path: '/outreach/video/users',        label: 'Users',            icon: UserCog },
+      { path: '/outreach/video/drive',        label: 'Google Drive',     icon: HardDrive },
+      { path: '/outreach/video/campaigns',    label: 'Video Campaigns',  icon: Megaphone },
+      { path: '/outreach/video/review',       label: 'Review Queue',     icon: ShieldCheck },
       { path: '/outreach/video/calendar',     label: 'Event Calendar',   icon: Calendar },
       { path: '/outreach/video/all',          label: 'All Videos',       icon: Film },
       { path: '/outreach/video/queue',        label: 'Publishing Queue', icon: Inbox },
@@ -240,6 +331,8 @@ const FALLBACK: RoleConfig = cfg('User', User, 'text-muted-foreground', 'bg-mute
 
 export default function AppSidebar() {
   const { profile, role, team, signOut } = useAuth()
+  // Outreach-only: asks the server nothing for anyone outside the outreach team.
+  const { access: outreachAccess, loading: outreachLoading } = useOutreachAccess()
   const location = useLocation()
   const isActive = (path: string) => location.pathname === path
   const [profileOpen, setProfileOpen] = useState(false)
@@ -254,8 +347,25 @@ export default function AppSidebar() {
   if (team === 'design' && (role === 'user' || role === 'sub_admin' || role === 'admin' || role === 'design_reports_admin' || role === 'task_owner' || role === 'task_manager')) return null
 
   const key = `${role ?? ''}:${team ?? ''}`
-  const config = SIDEBAR[key]
+  const baseConfig = SIDEBAR[key]
     ?? (isActiveCreator(profile?.creator) ? CREATOR_SIDEBAR : FALLBACK)
+
+  /* Granted outreach tabs join the menu under their own heading, so it is
+     obvious they were switched on for this person rather than coming with
+     the role. */
+  const granted = team === 'outreach'
+    ? grantedOutreachItems(profile?.capabilities, baseConfig.sections)
+    : []
+  /* Until an outreach person's access has loaded, the menu stays empty: the
+     role's default menu would flash tabs they may not have, and its badges
+     would ask the server for them. Admins are answered without loading. */
+  const config: RoleConfig = team === 'outreach' && outreachLoading
+    ? { ...baseConfig, sections: [] }
+    : team === 'outreach' && outreachAccess?.configured
+    ? configuredOutreachConfig(outreachAccess, baseConfig)
+    : granted.length
+      ? { ...baseConfig, sections: [...baseConfig.sections, { heading: 'Granted access', items: granted }] }
+      : baseConfig
   const BadgeIcon = config.icon
 
   return (

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ClipboardList, AlertCircle, Users, Rows3 } from 'lucide-react'
+import { ClipboardList, Users, Rows3 } from 'lucide-react'
 import {
-  getEditorLog, getFilterOptions, formatMonth, STATUS_STYLE,
-  type EditorVideoLog, type VideoLogEntry, type FilterOptions,
+  getEditorLog, getFilterOptions, formatMonth, loadFailureOf, STATUS_STYLE,
+  type EditorVideoLog, type VideoLogEntry, type FilterOptions, type LoadFailure,
 } from '@/lib/outreach-video-data'
+import DriveProblemNotice from './DriveProblemNotice'
 
 /**
  * §11.3 (Manager) and §14.1 (Publisher) — the monthly log of which editor
@@ -20,7 +21,7 @@ export default function VideoEditorLog() {
   const [month, setMonth] = useState<string>('')
   const [client, setClient] = useState<string>('')
   const [grouped, setGrouped] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LoadFailure | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { getFilterOptions().then(setOptions).catch(() => setOptions(null)) }, [])
@@ -35,7 +36,7 @@ export default function VideoEditorLog() {
       setMonth(m => m || l.month)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load the log.')
+      setError(loadFailureOf(err, 'Could not load the log.'))
     } finally {
       setLoading(false)
     }
@@ -71,13 +72,12 @@ export default function VideoEditorLog() {
         </div>
       </div>
 
-      {error && (
-        <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> <span>{error}</span>
-        </div>
-      )}
+      {error && <DriveProblemNotice message={error.message} code={error.code} />}
 
-      {loading ? (
+      {/* The month comes back with the log, so after a failed load there is
+          none to name — "No videos were uploaded in ." — and no reason to
+          believe the month is empty either. */}
+      {error ? null : loading ? (
         <div className="hub-card text-center py-12 text-sm text-muted-foreground">Loading…</div>
       ) : !log || log.entries.length === 0 ? (
         <div className="hub-card text-center py-12">

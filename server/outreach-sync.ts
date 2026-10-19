@@ -15,6 +15,7 @@ import {
   listPages,
   listCampaigns,
   updatePage,
+  cacheFacebookOwnerId,
   upsertPostByInstagramId,
   listLivePostsWithPermalink,
   updatePostMetrics,
@@ -39,6 +40,24 @@ import {
   type ApifyPostResult,
   type ApifyFacebookPost,
 } from "./integrations/apify.js";
+
+/**
+ * The calendar day, in India, of an instant. Instagram and Facebook report
+ * when a post went out as a UTC timestamp; cutting that to its first ten
+ * characters gives the UTC date, which before 05:30 IST is still yesterday —
+ * so a post published at 1 a.m. was filed under the previous day.
+ *
+ * Fixed to Asia/Kolkata rather than the server's own zone: the calendar that
+ * matters is the team's, and a container's zone is whatever its image says.
+ */
+const IST_DAY = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Kolkata", year: "numeric", month: "2-digit", day: "2-digit",
+});
+function istDay(instant?: string | null): string {
+  const d = instant ? new Date(instant) : new Date();
+  return IST_DAY.format(Number.isNaN(d.getTime()) ? new Date() : d);
+}
+
 
 export interface SyncResult {
   ok: true;
@@ -164,7 +183,7 @@ export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> 
 
       touchedPageIds.add(page.id);
       if (item.ownerId && !page.platform_page_id) ownerIdByPageId.set(page.id, item.ownerId);
-      const date = item.publishedAt ? item.publishedAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
+      const date = istDay(item.publishedAt);
       const attribution = attributePostToCampaign(page.id, date, item.caption, campaigns);
       await upsertPostByInstagramId({
         instagram_id: `fb:${item.ref}`,
@@ -192,7 +211,11 @@ export async function syncOutreach(opts: SyncOptions = {}): Promise<SyncResult> 
     for (const id of touchedPageIds) {
       syncedPageCount++;
       const cachedOwnerId = ownerIdByPageId.get(id);
-      await updatePage(id, { last_synced_at: new Date().toISOString(), ...(cachedOwnerId ? { platform_page_id: cachedOwnerId } : {}) });
+      await updatePage(id, { last_synced_at: new Date().toISOString() });
+      // Conditional on the handle this batch scraped: a rename made while the
+      // scrape ran must not get the old page's id written back onto it.
+      const scraped = batch.find(p => p.id === id);
+      if (cachedOwnerId && scraped) await cacheFacebookOwnerId(id, scraped.handle, cachedOwnerId);
     }
     // Pages in this batch that produced nothing (private/empty/unreachable)
     // aren't silently dropped from the summary.
@@ -449,8 +472,10 @@ async function resolveFacebookOwnerId(page: OutreachPage): Promise<string | null
   }
   const ownerId = items.find(i => i.ownerId)?.ownerId;
   if (!ownerId) return null;
-  await updatePage(page.id, { platform_page_id: ownerId });
-  return ownerId;
+  /* Only cached — and only trusted — if the page still has the handle that
+     was scraped. Renamed meanwhile, the id belongs to the old name's page:
+     return null, and this call verifies nothing rather than the wrong page. */
+  return cacheFacebookOwnerId(page.id, page.handle, ownerId);
 }
 
 async function addFacebookLivePosts(ctx: {
@@ -520,7 +545,7 @@ async function addFacebookLivePosts(ctx: {
       platform: "facebook",
       page_id: ctx.page.id,
       campaign_id: ctx.campaign?.id ?? null,
-      date: s.publishedAt ? s.publishedAt.slice(0, 10) : new Date().toISOString().slice(0, 10),
+      date: istDay(s.publishedAt),
       type: s.mediaType ?? ref.type,
       creative_variant: forceVariant,
       caption: s.caption,

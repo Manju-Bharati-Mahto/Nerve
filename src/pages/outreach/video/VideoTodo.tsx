@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ListChecks, CheckCircle2, AlertCircle, Circle } from 'lucide-react'
+import { ListChecks, CheckCircle2, Circle } from 'lucide-react'
 import { toast } from 'sonner'
 import {
-  listEvents, completeEvent, localDay,
-  EVENT_STATUS_STYLE, type EventRecord,
+  listEvents, completeEvent, localDay, loadFailureOf,
+  EVENT_STATUS_STYLE, type EventRecord, type LoadFailure,
 } from '@/lib/outreach-video-data'
+import DriveProblemNotice from './DriveProblemNotice'
+import { useAuth } from '@/hooks/useAuth'
+import { hasVideoRole, useVideoTabEdit } from './workflow-roles'
 
 /**
  * §8.1 — the editor's To-Do List: every event the Manager has assigned to them,
@@ -16,9 +19,12 @@ import {
  * list is this" question to get wrong here.
  */
 export default function VideoTodo() {
+  const { role } = useAuth()
+  // Marking an event done: Edit on To-Do List, or an Editor / Admin — the API's rule.
+  const canMark = useVideoTabEdit('todo', hasVideoRole(role, ['editor', 'admin']))
   const [events, setEvents] = useState<EventRecord[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<LoadFailure | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
@@ -27,7 +33,7 @@ export default function VideoTodo() {
       setEvents(events)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load your To-Do List.')
+      setError(loadFailureOf(err, 'Could not load your To-Do List.'))
     } finally {
       setLoading(false)
     }
@@ -36,6 +42,9 @@ export default function VideoTodo() {
   useEffect(() => { void refresh() }, [refresh])
 
   const today = localDay()
+  /* Counted from a list that was never read, the tiles would tell an editor
+     "0 Open" over a notice saying nobody knows. */
+  const known = !loading && !error
   const { open, completed } = useMemo(() => ({
     open: events.filter(e => e.status === 'open'),
     completed: events.filter(e => e.status === 'completed'),
@@ -67,19 +76,17 @@ export default function VideoTodo() {
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
-        <Kpi label="Open" value={open.length} accent={open.length > 0} />
-        <Kpi label="Completed" value={completed.length} />
-        <Kpi label="Due today or overdue" value={open.filter(e => e.date <= today).length}
-          accent={open.some(e => e.date <= today)} />
+        <Kpi label="Open" value={known ? open.length : null} accent={known && open.length > 0} />
+        <Kpi label="Completed" value={known ? completed.length : null} />
+        <Kpi label="Due today or overdue" value={known ? open.filter(e => e.date <= today).length : null}
+          accent={known && open.some(e => e.date <= today)} />
       </div>
 
-      {error && (
-        <div className="hub-card bg-rose-50 border-rose-200 flex items-start gap-2 text-sm text-rose-900">
-          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" /> <span>{error}</span>
-        </div>
-      )}
+      {error && <DriveProblemNotice message={error.message} code={error.code} />}
 
-      {loading ? (
+      {/* "Nothing assigned to you yet" over a list that was never read would
+          tell an editor they have no work when nobody knows. */}
+      {error ? null : loading ? (
         <div className="hub-card text-center py-12 text-sm text-muted-foreground">Loading…</div>
       ) : events.length === 0 ? (
         <div className="hub-card text-center py-12">
@@ -90,13 +97,13 @@ export default function VideoTodo() {
       ) : (
         <div className="space-y-3">
           {open.map(e => (
-            <TodoCard key={e.id} event={e} today={today} busy={busyId === e.id} onDone={() => markDone(e)} />
+            <TodoCard key={e.id} event={e} today={today} busy={busyId === e.id} canMark={canMark} onDone={() => markDone(e)} />
           ))}
           {completed.length > 0 && (
             <>
               <p className="text-[11px] uppercase tracking-widest text-muted-foreground pt-2">Completed</p>
               {completed.map(e => (
-                <TodoCard key={e.id} event={e} today={today} busy={false} onDone={() => {}} />
+                <TodoCard key={e.id} event={e} today={today} busy={false} canMark={false} onDone={() => {}} />
               ))}
             </>
           )}
@@ -106,17 +113,18 @@ export default function VideoTodo() {
   )
 }
 
-function Kpi({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
+/** `null` is "not known": a dash, never a zero. */
+function Kpi({ label, value, accent }: { label: string; value: number | null; accent?: boolean }) {
   return (
     <div className={`hub-card py-3 ${accent ? 'border-amber-300 bg-amber-50/50' : ''}`}>
-      <div className="text-2xl font-serif text-foreground leading-none">{value}</div>
+      <div className="text-2xl font-serif text-foreground leading-none">{value ?? '—'}</div>
       <div className="text-[11px] text-muted-foreground mt-1">{label}</div>
     </div>
   )
 }
 
-function TodoCard({ event, today, busy, onDone }: {
-  event: EventRecord; today: string; busy: boolean; onDone: () => void
+function TodoCard({ event, today, busy, canMark, onDone }: {
+  event: EventRecord; today: string; busy: boolean; canMark: boolean; onDone: () => void
 }) {
   const overdue = event.status === 'open' && event.date < today
   const isToday = event.date === today
@@ -145,7 +153,7 @@ function TodoCard({ event, today, busy, onDone }: {
           <span className={`hub-badge ${EVENT_STATUS_STYLE[event.status].cls}`}>
             {EVENT_STATUS_STYLE[event.status].label}
           </span>
-          {event.status === 'open' && (
+          {canMark && event.status === 'open' && (
             <button onClick={onDone} disabled={busy}
               className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:opacity-90 disabled:opacity-40 inline-flex items-center gap-1">
               <CheckCircle2 className="w-3 h-3" /> {busy ? 'Saving…' : 'Mark completed'}

@@ -6,16 +6,25 @@ server {
     root /srv/nerve/releases/current;
     index index.html;
 
-    # Proxy API requests to the Node/Express container
+    # Proxy API requests to the Node/Express container.
+    # Upload limits: without them nginx refuses any body over 1 MB with an HTML
+    # 413 and the app shows "Upload failed." (BrandOps photos are 10 x 10 MB, the
+    # outreach video fallback upload is up to 2 GB). The LIVE vhost is not a copy
+    # of this file — deploy/scripts/set-upload-limits.sh patches these same
+    # values (and the CSP connect-src for direct uploads to Google Drive) into
+    # it on every deploy.
     location /api/ {
+        client_max_body_size    2100m;
+        client_body_timeout     300s;
+        proxy_request_buffering on;
+        proxy_send_timeout      300s;
+        proxy_read_timeout      900s;
         proxy_pass         http://127.0.0.1:3001;
         proxy_http_version 1.1;
         proxy_set_header   Host              $host;
         proxy_set_header   X-Real-IP         $remote_addr;
         proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto $scheme;
-        proxy_read_timeout 120s;
-        client_max_body_size 20M;
     }
 
     # Proxy uploaded files (design images, etc.) — must point to API, not dist/

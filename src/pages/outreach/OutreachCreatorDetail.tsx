@@ -2,16 +2,20 @@ import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Users, Calendar, TrendingUp, FileText, Heart, Eye, MessageSquare,
-  Bookmark, Share2, ExternalLink, Trash2, Link as LinkIcon,
+  Bookmark, Share2, ExternalLink, Trash2, Pencil, Link as LinkIcon,
 } from 'lucide-react'
 import {
   LineChart, Line, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
 import {
-  useOutreachData, removeCreator, instagramUrlForHandle, isValidInstagramHandle,
-  formatLocalDate,
+  useOutreachData, removeCreator, updateCreator, instagramUrlForHandle, isValidInstagramHandle,
+  formatLocalDate, PAGE_TYPES, FOLLOWER_TIERS, PAGE_CONTENT_TYPES,
+  type OutreachCreator, type PageType, type FollowerTier, type PageContentType,
+  effectiveViews, isEstimatedViews
 } from '@/lib/outreach-data'
+import StateSelect from './StateSelect'
 import AddLivePostsDialog from './AddLivePostsDialog'
+import { useCanEditPosts, useCanEditTab, useIsOutreachAdmin } from '@/lib/outreach-access'
 
 export default function OutreachCreatorDetail() {
   const { creatorId } = useParams<{ creatorId: string }>()
@@ -20,6 +24,11 @@ export default function OutreachCreatorDetail() {
   const creator = creators.find(c => c.id === creatorId)
   const [deleting, setDeleting] = useState(false)
   const [livePostsOpen, setLivePostsOpen] = useState(false)
+  // By tab level, as the server decides: Edit on Creators edits; deleting is the manager's.
+  const canEdit = useCanEditTab('creators')
+  const canEditPosts = useCanEditPosts()
+  const isAdmin = useIsOutreachAdmin()
+  const [editing, setEditing] = useState(false)
 
   // Posts attributed to this creator. Sorted newest first for the table.
   const creatorPosts = useMemo(
@@ -73,7 +82,7 @@ export default function OutreachCreatorDetail() {
     const pctConsumed = (pctPosts + pctStories) / 2
     const totalEng = mtd.reduce((s, p) => s + p.likes + p.comments, 0)
     const avgEngagement = mtd.length ? Math.round(totalEng / mtd.length) : 0
-    const totalReach = creatorPosts.reduce((s, p) => s + p.views, 0)
+    const totalReach = creatorPosts.reduce((s, p) => s + effectiveViews(p), 0)
     return {
       postsDoneMTD: postsCount + storyCount,
       pctConsumed,
@@ -140,17 +149,30 @@ export default function OutreachCreatorDetail() {
           <div className="flex items-center gap-2 flex-wrap">
             <span className="hub-badge bg-orange-50 text-orange-700"><Users className="w-3 h-3 inline mr-1" />{fmt(creator.followers)}</span>
             <span className="hub-badge bg-blue-50 text-blue-700">Inv {creator.inventoryPosts}P / {creator.inventoryStories}S</span>
-            <button
-              onClick={() => setLivePostsOpen(true)}
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1"
-            >
-              <LinkIcon className="w-3 h-3" /> Add live posts
-            </button>
-            <button onClick={handleDelete} disabled={deleting}
-              title="Delete creator"
-              className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
-              <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
-            </button>
+            {canEditPosts && (
+              <button
+                onClick={() => setLivePostsOpen(true)}
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:opacity-80 inline-flex items-center gap-1"
+              >
+                <LinkIcon className="w-3 h-3" /> Add live posts
+              </button>
+            )}
+            {/* Without this a wrong inventory or tier could only be fixed by
+                deleting the creator — which also deletes its posts. */}
+            {canEdit && (
+              <button onClick={() => setEditing(true)}
+                title="Edit location, tier and inventory"
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-accent text-foreground hover:opacity-80 inline-flex items-center gap-1">
+                <Pencil className="w-3 h-3" /> Edit
+              </button>
+            )}
+            {isAdmin && (
+              <button onClick={handleDelete} disabled={deleting}
+                title="Delete creator"
+                className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 inline-flex items-center gap-1 disabled:opacity-50">
+                <Trash2 className="w-3 h-3" /> {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -185,12 +207,14 @@ export default function OutreachCreatorDetail() {
         <div className="hub-card lg:col-span-2 p-0 overflow-hidden">
           <div className="flex items-center justify-between p-4 border-b border-border">
             <h2 className="text-sm font-semibold text-foreground">Historical posts ({creatorPosts.length})</h2>
-            <button
-              onClick={() => setLivePostsOpen(true)}
-              className="text-xs text-orange-600 hover:underline inline-flex items-center gap-1"
-            >
-              <LinkIcon className="w-3 h-3" /> Add live posts
-            </button>
+            {canEditPosts && (
+              <button
+                onClick={() => setLivePostsOpen(true)}
+                className="text-xs text-orange-600 hover:underline inline-flex items-center gap-1"
+              >
+                <LinkIcon className="w-3 h-3" /> Add live posts
+              </button>
+            )}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -233,7 +257,10 @@ export default function OutreachCreatorDetail() {
                       <td className="px-3 py-2 text-xs text-muted-foreground">{p.creativeVariant ?? '—'}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.likes)}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.comments)}</td>
-                      <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.views)}</td>
+                      <td className="px-3 py-2 text-right text-xs font-mono tabular-nums"
+                        title={isEstimatedViews(p) ? 'Estimated reach: likes × 20 — static posts and carousels have no view count' : undefined}>
+                        {isEstimatedViews(p) && <span className="text-muted-foreground">~</span>}{fmt(effectiveViews(p))}
+                      </td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.saves)}</td>
                       <td className="px-3 py-2 text-right text-xs font-mono tabular-nums">{fmt(p.shares)}</td>
                     </tr>
@@ -274,6 +301,137 @@ export default function OutreachCreatorDetail() {
         />
       )}
 
+      {editing && <EditCreatorModal creator={creator} onClose={() => setEditing(false)} />}
+
+    </div>
+  )
+}
+
+type CreatorForm = Pick<OutreachCreator,
+  'geography' | 'state' | 'type' | 'followerTier' | 'contentTypes' |
+  'followers' | 'inventoryPosts' | 'inventoryStories' | 'notes'>
+
+// Everything Add creator asks for except the handle, which is the creator's
+// identity (its id and its Instagram link derive from it).
+function EditCreatorModal({ creator, onClose }: { creator: OutreachCreator; onClose: () => void }) {
+  const initial: CreatorForm = {
+    geography: creator.geography, state: creator.state, type: creator.type,
+    followerTier: creator.followerTier, contentTypes: creator.contentTypes,
+    followers: creator.followers, inventoryPosts: creator.inventoryPosts,
+    inventoryStories: creator.inventoryStories, notes: creator.notes,
+  }
+  const [form, setForm] = useState<CreatorForm>(initial)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const changed = JSON.stringify(form) !== JSON.stringify(initial)
+  const canSave = changed && !!form.geography.trim() && !!form.state.trim() && !saving
+
+  function toggleContentType(t: PageContentType) {
+    setForm(f => ({
+      ...f,
+      contentTypes: f.contentTypes.includes(t) ? f.contentTypes.filter(x => x !== t) : [...f.contentTypes, t],
+    }))
+  }
+
+  const count = (raw: string) => Math.max(0, Math.floor(Number(raw) || 0))
+
+  async function save() {
+    if (!canSave) return
+    setSaving(true); setError(null)
+    try {
+      await updateCreator(creator.id, { ...form, geography: form.geography.trim(), state: form.state.trim() })
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to save creator.')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4 animate-fade-in" onClick={() => { if (!saving) onClose() }}>
+      <div className="bg-card rounded-xl border border-border w-full max-w-lg" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between p-4 border-b border-border">
+          <h2 className="text-base font-serif text-foreground">Edit @{creator.handle}</h2>
+          <button onClick={onClose} disabled={saving} className="text-muted-foreground hover:text-foreground text-xl leading-none disabled:opacity-40">×</button>
+        </div>
+        <div className="p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="hub-label">Geography *</label>
+              <input className="hub-input" value={form.geography} onChange={e => setForm(f => ({ ...f, geography: e.target.value }))} />
+            </div>
+            <div>
+              <label className="hub-label">State *</label>
+              {/* A legacy state shows as "unrecognised" until replaced; left
+                  as it is, it is sent back unchanged, which the server accepts. */}
+              <StateSelect value={form.state} onChange={state => setForm(f => ({ ...f, state }))} aria-label="State" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="hub-label">Type</label>
+              <select className="hub-input" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value as PageType }))}>
+                {PAGE_TYPES.map(t => <option key={t} value={t}>{t === 'pu' ? 'PU' : 'State'}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="hub-label">Follower tier</label>
+              <select className="hub-input" value={form.followerTier} onChange={e => setForm(f => ({ ...f, followerTier: e.target.value as FollowerTier }))}>
+                {FOLLOWER_TIERS.map(t => <option key={t} value={t}>Tier {t}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="hub-label">Content type</label>
+            <div className="flex gap-2 flex-wrap">
+              {PAGE_CONTENT_TYPES.map(t => {
+                const selected = form.contentTypes.includes(t)
+                return (
+                  <button key={t} type="button" onClick={() => toggleContentType(t)}
+                    className={`text-xs px-3 py-1.5 rounded-lg border transition-colors capitalize ${
+                      selected
+                        ? 'bg-orange-100 border-orange-300 text-orange-700 font-medium'
+                        : 'bg-card border-border text-muted-foreground hover:bg-accent'
+                    }`}>
+                    {t}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="hub-label">Followers</label>
+              <input type="number" min={0} step={1} className="hub-input" value={form.followers}
+                onChange={e => setForm(f => ({ ...f, followers: count(e.target.value) }))} />
+            </div>
+            <div>
+              <label className="hub-label">Inv. posts</label>
+              <input type="number" min={0} step={1} className="hub-input" value={form.inventoryPosts}
+                onChange={e => setForm(f => ({ ...f, inventoryPosts: count(e.target.value) }))} />
+            </div>
+            <div>
+              <label className="hub-label">Inv. stories</label>
+              <input type="number" min={0} step={1} className="hub-input" value={form.inventoryStories}
+                onChange={e => setForm(f => ({ ...f, inventoryStories: count(e.target.value) }))} />
+            </div>
+          </div>
+          <div>
+            <label className="hub-label">Notes</label>
+            <textarea className="hub-input resize-none" rows={2} value={form.notes}
+              onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+          </div>
+        </div>
+        {error && <div className="px-4 py-2 text-xs text-rose-700 bg-rose-50 border-t border-rose-200">{error}</div>}
+        <div className="flex items-center justify-end gap-2 p-4 border-t border-border">
+          <button onClick={onClose} disabled={saving} className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent disabled:opacity-40">Cancel</button>
+          <button onClick={save} disabled={!canSave}
+            className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed">
+            {saving ? 'Saving…' : 'Save changes'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
