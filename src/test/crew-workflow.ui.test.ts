@@ -139,18 +139,20 @@ describe("Team Lead — their own team, their own team's projects", () => {
     expect(layer).not.toContain("Pending Approval");
   });
 
-  it("allocates a deliverable among their own team — and can reassign it", async () => {
+  /* Assigning is not limited by team (product decision, Oct 2026): a lead picks
+     from the whole crew, on any project. Running another team's project —
+     its schedule and dates — is still that team's lead's. */
+  it("allocates a deliverable to anyone in the crew — another team included — and can reassign it", async () => {
     const h = await boot(901);
     const cell = h.ev<string>("delivOwnerCell(proj(7001),deliv(8003))");
-    expect(cell).toContain('value="902"');
-    expect(cell).toContain('value="903"');
-    expect(cell).not.toContain('value="905"');
+    for (const id of ["902", "903", "905"]) expect(cell).toContain(`value="${id}"`);
     expect(h.ev<string>("delivOwnerCell(proj(7001),deliv(8002))")).toMatch(/value="902" selected/);
   });
 
-  it("is offered nothing to allocate on another team's project", async () => {
+  it("assigns on another team's project, but does not run it", async () => {
     const h = await boot(904);
-    expect(h.ev<string>("delivOwnerCell(proj(7001),deliv(8003))")).not.toContain("<select");
+    expect(h.ev<string>("delivOwnerCell(proj(7001),deliv(8003))")).toContain("<select");
+    expect(h.ev<boolean>("canAssignOn(proj(7001))")).toBe(true);
     expect(h.ev<boolean>("canScheduleWork(proj(7001))")).toBe(false);
     expect(h.ev<boolean>("canEditDueDates(proj(7001))")).toBe(false);
   });
@@ -249,21 +251,32 @@ describe("Notifications — clickable, routed and segmented for leads", () => {
   });
 });
 
-describe("Review — the project's lead, never your own work", () => {
-  it("each lead's queue holds their own team's submissions only", async () => {
+/* Product decision (Oct 2026): ANY Team Lead approves, on any project. The
+   Coordinator and employees never do, and nobody approves their own work. */
+describe("Review — any Team Lead, never your own work", () => {
+  it("every lead's queue holds every team's submissions — except their own", async () => {
     const h = await boot(901);
-    expect(h.ev<number[]>("pendingVersionReviews().map(x=>x.d.id)")).toEqual([8001]);   // 8005 is their own
+    let q = h.ev<number[]>("pendingVersionReviews().map(x=>x.d.id)");
+    expect(q).toContain(8001);
+    expect(q).toContain(8004);            // Team B's
+    expect(q).not.toContain(8005);        // their own
     h.as(904);
-    expect(h.ev<number[]>("pendingVersionReviews().map(x=>x.d.id)")).toEqual([8004]);
+    q = h.ev<number[]>("pendingVersionReviews().map(x=>x.d.id)");
+    for (const id of [8001, 8004, 8005]) expect(q).toContain(id);   // Team A's, their own team's, 901's
     h.as(902);
+    expect(h.ev<number[]>("pendingVersionReviews().map(x=>x.d.id)")).toEqual([]);
+    h.as(906);
     expect(h.ev<number[]>("pendingVersionReviews().map(x=>x.d.id)")).toEqual([]);
   });
 
-  it("the drawer offers Approve to the project's lead only", async () => {
+  it("the drawer offers Approve to every Team Lead — not to employees or the Coordinator", async () => {
     const h = await boot(901);
     h.ev("drawerDeliverable(8001)");
     expect(h.doc.getElementById("drawer")!.innerHTML).toContain('data-act="approveVersion"');
-    for (const who of [904, 902, 906]) {
+    h.as(904);
+    h.ev("drawerDeliverable(8001)");
+    expect(h.doc.getElementById("drawer")!.innerHTML, "another team's lead was not offered Approve").toContain('data-act="approveVersion"');
+    for (const who of [902, 906]) {
       h.as(who);
       h.ev("drawerDeliverable(8001)");
       expect(h.doc.getElementById("drawer")!.innerHTML, `user ${who} was offered Approve`).not.toContain('data-act="approveVersion"');
@@ -276,8 +289,8 @@ describe("Review — the project's lead, never your own work", () => {
     expect(h.doc.getElementById("drawer")!.innerHTML).not.toContain('data-act="approveVersion"');
   });
 
-  it("the board refuses another team's lead, an owner, a missing version and an unapproved delivery", async () => {
-    const h = await boot(904);
+  it("the board refuses the Coordinator, an owner, a missing version and an unapproved delivery", async () => {
+    const h = await boot(906);
     expect(h.ev<boolean>("applyDelivStatus(deliv(8001),'approved')")).toBe(false);
     h.as(901);
     expect(h.ev<boolean>("applyDelivStatus(deliv(8005),'approved')")).toBe(false);   // own deliverable
@@ -289,9 +302,223 @@ describe("Review — the project's lead, never your own work", () => {
     expect(h.writes().filter((c) => c.url.includes("/status")), "a refused move still reached the server").toEqual([]);
   });
 
-  it("the board lets the project's lead approve a submitted version", async () => {
-    const h = await boot(901);
+  it("the board lets any Team Lead approve a submitted version — another team's included", async () => {
+    const h = await boot(904);
     expect(h.ev<boolean>("applyDelivStatus(deliv(8001),'approved')")).toBe(true);
     expect(h.writes().some((c) => c.url.endsWith("/deliverables/8001/status"))).toBe(true);
+  });
+
+  it("the project status menu lets another team's lead approve a proposal — and nothing else", async () => {
+    const h = await boot(904);
+    h.ev("proj(7001).status='proposed'");
+    expect(h.ev<string[]>("MENUS.projStatus({pid:'7001'}).filter(i=>i.label).map(i=>i.label)")).toEqual(["Approved"]);
+    h.ev("proj(7001).status='in_production'");
+    expect(h.ev<string[]>("MENUS.projStatus({pid:'7001'}).filter(i=>i.label).map(i=>i.label)")).toEqual([]);
+    h.as(901);   // the project's own lead runs it
+    expect(h.ev<string[]>("MENUS.projStatus({pid:'7001'}).filter(i=>i.label).length")).toBeGreaterThan(0);
+  });
+});
+
+/* ── Assign work is where deliverables are made ──────────────────────────────
+   One button on a project, not two. Assign work creates the deliverable the
+   work produces (or takes on one already on the project), and everyone the lead
+   picks works on it: it is in each of their My Days, not only the owner's. */
+describe("Assign work — creates the deliverable and shares it with everyone assigned", () => {
+  /* Fill and submit the dialog the way a lead would. */
+  async function openFor(h: Awaited<ReturnType<typeof boot>>, pid: number) {
+    h.ev(`openAssignWork(${pid})`);
+    const doc = h.doc;
+    const pick = (uid: number) => (doc.querySelector(`#aw-users .chip[data-uid="${uid}"]`) as HTMLElement).click();
+    return { doc, pick };
+  }
+
+  it("the project offers Assign work only — no separate + Deliverable button", async () => {
+    const h = await boot(901);
+    const page = h.ev<string>("viewProject(7001,'overview')");
+    expect(page).toContain('data-act="assignWork"');
+    expect(page, "the project header still offers + Deliverable").not.toContain("Deliverable</button>");
+    const tab = h.ev<string>("viewProject(7001,'deliverables')");
+    expect(tab).not.toContain('data-act="newDeliverable"');
+    expect(tab).toContain('data-act="assignWork"');
+    expect(h.ev<boolean>("typeof openNewDeliverable==='undefined'")).toBe(true);
+  });
+
+  it("is offered to every Team Lead and to employees on the project — not the Coordinator, not someone off it", async () => {
+    const h = await boot(904);   // another team's lead
+    expect(h.ev<string>("viewProject(7001,'overview')")).toContain('data-act="assignWork"');
+    h.as(906);                   // the Coordinator routes, never assigns
+    expect(h.ev<string>("viewProject(7001,'overview')")).not.toContain('data-act="assignWork"');
+    h.as(905);                   // an employee who is not on 7001
+    expect(h.ev<boolean>("canAssignOn(proj(7001))")).toBe(false);
+    h.ev("DB.project_assignments.push({id:99009,project_id:7001,user_id:905,is_project_manager:false,removed_at:null})");
+    expect(h.ev<boolean>("canAssignOn(proj(7001))")).toBe(true);   // now on its crew
+    expect(h.ev<string>("viewProject(7001,'overview')")).toContain('data-act="assignWork"');
+  });
+
+  it("an employee on a project picks from the whole crew; the Coordinator picks nobody but themselves", async () => {
+    const h = await boot(903);
+    const ids = h.ev<number[]>("assignableMembers().map(u=>u.id)");
+    for (const id of [901, 902, 904, 905]) expect(ids).toContain(id);
+    h.as(906);
+    expect(h.ev<number[]>("assignableMembers().map(u=>u.id)")).toEqual([906]);
+  });
+
+  it("crew buttons: another team's lead may add crew, but removing crew and editing shoots stay with the project's lead", async () => {
+    const h = await boot(904);
+    const page = h.ev<string>("viewProject(7001,'overview')");
+    expect(page).toContain('data-act="assignCrew"');
+    expect(page, "another team's lead was offered Remove from project").not.toContain("Remove from project");
+    h.as(901);
+    expect(h.ev<string>("viewProject(7001,'overview')")).toContain('data-act="assignCrew"');
+  });
+
+  it("'Assign to project' on a person's page now works: it adds them to the chosen project", async () => {
+    const h = await boot(901);
+    const page = h.ev<string>("viewTeamMember(905)");
+    expect(page).toMatch(/data-act="assignMemberToProject" data-uid="905"/);
+    h.ev("ACTIONS.assignMemberToProject({uid:'905'})");
+    const sel = h.doc.querySelector("#amp-project") as HTMLSelectElement;
+    expect(sel, "no project picker opened").not.toBeNull();
+    sel.value = "7001";
+    h.ev("ACTIONS.confirmMemberToProject({uid:'905'})");
+    const post = h.writes().find((c) => c.url.endsWith("/projects/7001/assignments"));
+    expect(post?.body).toEqual({ user_id: "zcw-905" });
+  });
+
+  it("opened from a project, the project is fixed and a new deliverable is the default", async () => {
+    const h = await boot(901);
+    const { doc } = await openFor(h, 7001);
+    const projField = doc.querySelector("#aw-project") as HTMLInputElement;
+    expect(projField.type).toBe("hidden");
+    expect(projField.value).toBe("7001");
+    expect(doc.querySelector("#modal-layer select#aw-project"), "the project is still a choice").toBeNull();
+    expect((doc.querySelector("#aw-dmode button.on") as HTMLElement).dataset.m).toBe("new");
+    expect((doc.querySelector("#aw-dnew") as HTMLElement).hidden).toBe(false);
+    expect(doc.querySelector("#aw-dtype")).not.toBeNull();
+    // The Drive link follows the form convention: a URL keyboard, the type untouched.
+    const drive = doc.querySelector("#aw-ddrive") as HTMLInputElement;
+    expect(drive.getAttribute("inputmode")).toBe("url");
+    expect(drive.type).not.toBe("url");
+  });
+
+  it("the owner is one of the people picked, and follows the selection", async () => {
+    const h = await boot(901);
+    const { doc, pick } = await openFor(h, 7001);
+    const owner = () => doc.querySelector("#aw-owner") as HTMLSelectElement;
+    expect(owner().disabled).toBe(true);
+    pick(902); pick(903);
+    expect([...owner().options].map((o) => o.value)).toEqual(["902", "903"]);
+    expect(owner().value).toBe("902");
+    owner().value = "903";
+    pick(902);   // un-pick the first: the owner they chose stays
+    expect(owner().value).toBe("903");
+    expect([...owner().options].map((o) => o.value)).toEqual(["903"]);
+  });
+
+  it("sends one request that creates the deliverable, owned by the pick, for everyone assigned", async () => {
+    const h = await boot(901);
+    const { doc, pick } = await openFor(h, 7001);
+    (doc.querySelector("#aw-title") as HTMLInputElement).value = "Edit the aftermovie";
+    (doc.querySelector("#aw-dtitle") as HTMLInputElement).value = "Festival aftermovie";
+    (doc.querySelector("#aw-ddrive") as HTMLInputElement).value = "https://drive.google.com/folder";
+    pick(902); pick(903);
+    (doc.querySelector("#aw-owner") as HTMLSelectElement).value = "903";
+    h.ev("ACTIONS.createWork()");
+    const post = h.writes().find((c) => c.url.endsWith("/projects/7001/work"));
+    expect(post, "no Assign work request").toBeTruthy();
+    const body = post!.body as Record<string, unknown>;
+    expect(body.assignees).toEqual(["zcw-902", "zcw-903"]);
+    expect(body.owner_id).toBe("zcw-903");
+    expect(body.new_deliverable).toMatchObject({ title: "Festival aftermovie", drive_url: "https://drive.google.com/folder" });
+    expect(body.deliverable_id).toBeUndefined();
+    expect(h.writes().some((c) => c.url.includes("/deliverables") && c.method === "POST"
+      && c.url.endsWith("/projects/7001/deliverables")), "a second, separate create was sent").toBe(false);
+  });
+
+  it("refuses a Drive link that is not Google Drive, before asking the server", async () => {
+    const h = await boot(901);
+    const { doc, pick } = await openFor(h, 7001);
+    (doc.querySelector("#aw-title") as HTMLInputElement).value = "Edit";
+    (doc.querySelector("#aw-ddrive") as HTMLInputElement).value = "https://example.com/x";
+    pick(902);
+    h.ev("ACTIONS.createWork()");
+    expect(h.writes().some((c) => c.url.endsWith("/work"))).toBe(false);
+  });
+
+  it("can take on a deliverable already on the project instead of making a second one", async () => {
+    const h = await boot(901);
+    const { doc, pick } = await openFor(h, 7001);
+    h.ev("ACTIONS.awDelivMode({m:'existing'})");
+    expect((doc.querySelector("#aw-dnew") as HTMLElement).hidden).toBe(true);
+    (doc.querySelector("#aw-deliv") as HTMLSelectElement).value = "8003";   // Instagram Reel, unassigned
+    (doc.querySelector("#aw-title") as HTMLInputElement).value = "Cut the reel";
+    pick(903);
+    h.ev("ACTIONS.createWork()");
+    const body = h.writes().find((c) => c.url.endsWith("/projects/7001/work"))!.body as Record<string, unknown>;
+    expect(body.deliverable_id).toBe(8003);
+    expect(body.new_deliverable).toBeUndefined();
+    expect(body.owner_id).toBe("zcw-903");
+  });
+
+  it("with No deliverable, it is plain work and names no owner", async () => {
+    const h = await boot(901);
+    const { doc, pick } = await openFor(h, 7001);
+    h.ev("ACTIONS.awDelivMode({m:'none'})");
+    expect((doc.querySelector("#aw-ownerf") as HTMLElement).hidden).toBe(true);
+    (doc.querySelector("#aw-title") as HTMLInputElement).value = "Team meeting";
+    pick(902);
+    h.ev("ACTIONS.createWork()");
+    const body = h.writes().find((c) => c.url.endsWith("/projects/7001/work"))!.body as Record<string, unknown>;
+    expect(body.new_deliverable).toBeUndefined();
+    expect(body.deliverable_id).toBeUndefined();
+    expect(body.owner_id).toBeUndefined();
+  });
+
+  /* A deliverable worked on by two people: 8002 is owned by 902, and the work
+     row assigned by the lead names both 902 and 903. */
+  const SHARED = `DB.assignments.push({id:77001,project_id:7001,work_type_id:DB.work_types[0].id,deliverable_id:8002,
+    title:'Edit the aftermovie',assigned_by:901,priority:'normal',status:'not_started',start_date:TODAY,due_date:TODAY,
+    assignees:[902,903]});`;
+
+  it("is in a teammate's My Day, marked whose it is, with Submit — not only the owner's", async () => {
+    const h = await boot(903);
+    h.ev(SHARED);
+    const day = h.ev<string>("viewMyDay()");
+    expect(day).toContain("Aftermovie");
+    expect(day).toContain("with Emp");
+    expect(day).toMatch(/data-act="submitVersion" data-did="8002"/);
+    expect(h.ev<boolean>("teamDelivIds(903).has(8002)")).toBe(true);
+    // …and the owner sees how many are on it.
+    h.as(902);
+    expect(h.ev<string>("viewMyDay()")).toContain("＋1 on it");
+  });
+
+  it("puts the work in Today's assignments for each assignee, once — even when the deliverable is also scheduled today", async () => {
+    const h = await boot(902);
+    h.ev(SHARED);
+    h.ev("deliv(8002).scheduled_date=TODAY");
+    const today = h.ev<Array<Record<string, unknown>>>("myAssignments(902)").filter((a) => a.deliverable_id === 8002);
+    expect(today).toHaveLength(1);
+    expect(today[0]._deliverable).toBeFalsy();   // the work row, which carries the deliverable
+    h.as(903);
+    expect(h.ev<Array<Record<string, unknown>>>("myAssignments(903)").filter((a) => a.deliverable_id === 8002)).toHaveLength(1);
+  });
+
+  it("an old drawer row that never named the owner gives nobody the deliverable", async () => {
+    const h = await boot(903);
+    h.ev(`DB.assignments.push({id:77002,project_id:7001,work_type_id:DB.work_types[0].id,deliverable_id:8002,
+      title:'Aftermovie',assigned_by:901,priority:'normal',status:'not_started',start_date:TODAY,due_date:TODAY,assignees:[903]});`);
+    expect(h.ev<boolean>("teamDelivIds(903).has(8002)")).toBe(false);
+    expect(h.ev<string>("viewMyDay()")).not.toMatch(/data-did="8002"/);
+    expect(h.ev<Array<Record<string, unknown>>>("myAssignments(903)").some((a) => a.deliverable_id === 8002)).toBe(false);
+  });
+
+  it("nobody on the deliverable is offered its review — a lead on the team included", async () => {
+    const h = await boot(901);
+    h.ev(`DB.assignments.push({id:77003,project_id:7001,work_type_id:DB.work_types[0].id,deliverable_id:8001,
+      title:'Photos',assigned_by:901,priority:'normal',status:'not_started',start_date:TODAY,due_date:TODAY,assignees:[902,901]});`);
+    expect(h.ev<boolean>("onDelivTeam(deliv(8001))")).toBe(true);
+    expect(h.ev<number[]>("pendingVersionReviews().map(x=>x.d.id)")).not.toContain(8001);
+    expect(h.ev<boolean>("applyDelivStatus(deliv(8001),'approved')")).toBe(false);
   });
 });
