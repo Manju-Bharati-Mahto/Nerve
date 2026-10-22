@@ -2862,8 +2862,7 @@ const DL=(project_id,type,title,owner_id,due,status,o={})=>{
   return Object.assign({id:++_d,project_id,deliverable_type_id:type,title,owner_id,due_date:due,
     completed_at:(status==='delivered'?due:null),quantity_target:null,quantity_delivered:null,
     unit:t.default_unit,spec_notes:'',weight:t.default_weight,status,
-    social_status:'na',social_post_url:null,social_posted_at:null,
-    mail_status:'na',mail_sent_at:null,deleted_at:null,
+    deleted_at:null,
     /* Project scope by default — a TL/PM schedules it to make it today's work. */
     scheduled_date:null,priority:'normal',estimated_hours:null,approval_status:'pending',
     due_offset_days:null,due_date_source:'offset',
@@ -2878,21 +2877,19 @@ DB.deliverables = [
   DL(1,13,'Raw Archive — Convocation 2026',17,'2026-08-18','not_started',{quantity_target:2400,unit:'GB'}),
   DL(1,9,'Continuous Recording — all 3 halls',10,'2026-08-17','not_started',{quantity_target:36,unit:'hours'}),
   /* 2 YEEP (in_review) */
-  DL(2,2,'Edited Photos — YEEP 2026',6,'2026-07-25','delivered',{quantity_target:900,quantity_delivered:964,
-     social_status:'posted',social_post_url:'https://instagram.com/p/YEEP26-gallery',social_posted_at:'2026-07-25',mail_status:'sent',mail_sent_at:'2026-07-25'}),
+  DL(2,2,'Edited Photos — YEEP 2026',6,'2026-07-25','delivered',{quantity_target:900,quantity_delivered:964}),
   DL(2,5,'Aftermovie — YEEP 2026',4,'2026-08-05','in_review',{quantity_target:3,unit:'minutes',spec_notes:'Dean wants the pitch-final winner moment at 1:40.'}),
   DL(2,6,'Highlight Reel — YEEP 2026',18,'2026-07-30','changes_requested',{quantity_target:1,unit:'minutes'}),
-  DL(2,12,'Social Posts — YEEP 2026',9,'2026-07-22','delivered',{quantity_target:8,quantity_delivered:8,social_status:'posted',
-     social_post_url:'https://instagram.com/p/YEEP26-day3',social_posted_at:'2026-07-22'}),
+  DL(2,12,'Social Posts — YEEP 2026',9,'2026-07-22','delivered',{quantity_target:8,quantity_delivered:8}),
   DL(2,13,'Raw Archive — YEEP 2026',17,'2026-07-23','delivered',{quantity_target:820,quantity_delivered:846,unit:'GB'}),
   /* 3 Bhajan Sandhya */
-  DL(3,2,'Edited Photos — Bhajan Sandhya',13,'2026-07-19','delivered',{quantity_target:300,quantity_delivered:318,mail_status:'sent',mail_sent_at:'2026-07-19'}),
+  DL(3,2,'Edited Photos — Bhajan Sandhya',13,'2026-07-19','delivered',{quantity_target:300,quantity_delivered:318}),
   DL(3,9,'Continuous Recording — Bhajan Sandhya',16,'2026-07-16','delivered',{quantity_target:6,unit:'hours',quantity_delivered:6}),
-  DL(3,7,'Reel — Bhajan Sandhya highlights',15,'2026-07-24','in_progress',{quantity_target:2,social_status:'scheduled'}),
+  DL(3,7,'Reel — Bhajan Sandhya highlights',15,'2026-07-24','in_progress',{quantity_target:2}),
   /* 4 NSS Camp (delivered) */
-  DL(4,2,'Edited Photos — NSS Camp',8,'2026-07-16','delivered',{quantity_target:600,quantity_delivered:612,mail_status:'sent',mail_sent_at:'2026-07-16'}),
+  DL(4,2,'Edited Photos — NSS Camp',8,'2026-07-16','delivered',{quantity_target:600,quantity_delivered:612}),
   DL(4,4,'Documentary — NSS Special Camp',18,'2026-07-24','approved',{quantity_target:1,unit:'videos',spec_notes:'8 min documentary for the NSS state submission.'}),
-  DL(4,12,'Social Posts — NSS Camp',9,'2026-07-14','delivered',{quantity_target:6,quantity_delivered:6,social_status:'posted',social_post_url:'https://instagram.com/p/NSS26'}),
+  DL(4,12,'Social Posts — NSS Camp',9,'2026-07-14','delivered',{quantity_target:6,quantity_delivered:6}),
   DL(4,13,'Raw Archive — NSS Camp',17,'2026-07-14','delivered',{quantity_target:410,quantity_delivered:410,unit:'GB'}),
   /* 5 Bengaluru tour (in_production, live) */
   DL(5,2,'Edited Photos — Bengaluru Tour',13,'2026-08-05','in_progress',{quantity_target:700}),
@@ -2915,14 +2912,14 @@ DB.deliverables = [
   /* 9 Design walkthrough */
   DL(9,4,'Walkthrough Film — Faculty of Design',7,'2026-07-24','changes_requested',{quantity_target:1,unit:'videos',
      spec_notes:'Dean asked for the textile studio to lead, not ceramics.'}),
-  DL(9,2,'Edited Photos — Design studios',6,'2026-07-22','delivered',{quantity_target:180,quantity_delivered:194,mail_status:'sent',mail_sent_at:'2026-07-23'}),
+  DL(9,2,'Edited Photos — Design studios',6,'2026-07-22','delivered',{quantity_target:180,quantity_delivered:194}),
   /* 10 July social calendar */
-  DL(10,7,'July Reels — batch 1 (wk 27)',15,'2026-07-08','delivered',{quantity_target:6,quantity_delivered:6,social_status:'posted',social_post_url:'https://instagram.com/parul.university'}),
-  DL(10,7,'July Reels — batch 2 (wk 28)',7,'2026-07-15','delivered',{quantity_target:6,quantity_delivered:5,social_status:'posted'}),
-  DL(10,7,'July Reels — batch 3 (wk 29)',18,'2026-07-22','approved',{quantity_target:6,social_status:'scheduled'}),
+  DL(10,7,'July Reels — batch 1 (wk 27)',15,'2026-07-08','delivered',{quantity_target:6,quantity_delivered:6}),
+  DL(10,7,'July Reels — batch 2 (wk 28)',7,'2026-07-15','delivered',{quantity_target:6,quantity_delivered:5}),
+  DL(10,7,'July Reels — batch 3 (wk 29)',18,'2026-07-22','approved',{quantity_target:6}),
   DL(10,7,'July Reels — batch 4 (wk 30)',15,'2026-07-29','in_progress',{quantity_target:4}),
   DL(10,12,'July Story Sets',9,'2026-07-31','in_progress',{quantity_target:40,quantity_delivered:31}),
-  DL(10,8,'July Outreach Mailer',9,'2026-07-27','in_review',{quantity_target:2,mail_status:'pending'}),
+  DL(10,8,'July Outreach Mailer',9,'2026-07-27','in_review',{quantity_target:2}),
   /* 11 Aug social calendar */
   DL(11,7,'August Reels — plan & shot list',9,'2026-08-03','not_started',{quantity_target:22}),
   /* 12 Hostel reel series (proposed) */
@@ -2936,22 +2933,22 @@ DB.deliverables = [
   DL(14,2,'Edited Photos — Freshers (11 faculty sets)',8,'2026-07-27','changes_requested',{quantity_target:1200,
      spec_notes:'Split into 11 faculty folders — last delivery had them merged.'}),
   DL(14,6,'Highlight Reel — Freshers 2026',18,'2026-07-30','in_progress',{quantity_target:2,unit:'minutes'}),
-  DL(14,12,'Social Posts — Freshers',9,'2026-07-24','delivered',{quantity_target:9,quantity_delivered:9,social_status:'posted'}),
+  DL(14,12,'Social Posts — Freshers',9,'2026-07-24','delivered',{quantity_target:9,quantity_delivered:9}),
   DL(14,13,'Raw Archive — Freshers',17,'2026-07-25','delivered',{quantity_target:520,quantity_delivered:531,unit:'GB'}),
   /* 15 White coat */
-  DL(15,2,'Edited Photos — White Coat Ceremony',13,'2026-07-13','delivered',{quantity_target:400,quantity_delivered:421,mail_status:'sent',mail_sent_at:'2026-07-13'}),
-  DL(15,7,'Recap Reel — White Coat',15,'2026-07-15','delivered',{quantity_target:1,quantity_delivered:1,social_status:'posted'}),
+  DL(15,2,'Edited Photos — White Coat Ceremony',13,'2026-07-13','delivered',{quantity_target:400,quantity_delivered:421}),
+  DL(15,7,'Recap Reel — White Coat',15,'2026-07-15','delivered',{quantity_target:1,quantity_delivered:1}),
   /* 16 Techfest teaser */
   DL(16,7,'Teaser Reels — Vibrance (×5)',15,'2026-09-01','not_started',{quantity_target:5}),
   DL(16,4,'Announcement Film — Vibrance',7,'2026-09-06','not_started',{quantity_target:1,unit:'videos'}),
   /* 17 Placement stories */
   DL(17,4,'Placement Story — Ananya (Deloitte)',4,'2026-08-04','not_started',{quantity_target:1,unit:'videos'}),
-  DL(17,4,'Placement Story — Rehan (Infosys)',11,'2026-07-18','delivered',{quantity_target:1,quantity_delivered:1,unit:'videos',social_status:'posted'}),
-  DL(17,4,'Placement Story — Nidhi (KPMG)',11,'2026-07-04','delivered',{quantity_target:1,quantity_delivered:1,unit:'videos',social_status:'posted'}),
+  DL(17,4,'Placement Story — Rehan (Infosys)',11,'2026-07-18','delivered',{quantity_target:1,quantity_delivered:1,unit:'videos'}),
+  DL(17,4,'Placement Story — Nidhi (KPMG)',11,'2026-07-04','delivered',{quantity_target:1,quantity_delivered:1,unit:'videos'}),
   /* 18 Kisan Mela (completed) */
-  DL(18,2,'Edited Photos — Kisan Mela',13,'2026-07-02','delivered',{quantity_target:350,quantity_delivered:362,mail_status:'sent',mail_sent_at:'2026-07-02'}),
+  DL(18,2,'Edited Photos — Kisan Mela',13,'2026-07-02','delivered',{quantity_target:350,quantity_delivered:362}),
   DL(18,10,'Drone Footage — Kisan Mela',12,'2026-07-01','delivered',{quantity_target:10,quantity_delivered:11,unit:'clips'}),
-  DL(18,7,'Recap Reel — Kisan Mela (90s)',15,'2026-07-05','delivered',{quantity_target:1,quantity_delivered:1,social_status:'posted'}),
+  DL(18,7,'Recap Reel — Kisan Mela (90s)',15,'2026-07-05','delivered',{quantity_target:1,quantity_delivered:1}),
   /* 19 Internal equipment audit */
   DL(19,14,'QR Label Set — 32 items',17,'2026-07-31','in_progress',{quantity_target:32,quantity_delivered:26,unit:'items'}),
   DL(19,14,'Condition Grading Sheet',8,'2026-08-04','not_started',{quantity_target:1,unit:'items'}),
@@ -2961,11 +2958,11 @@ DB.deliverables = [
   DL(21,2,'Edited Photos — Moot Court Nationals',6,'2026-07-18','in_review',{quantity_target:280}),
   DL(21,7,'Recap Reel — Moot Court',18,'2026-07-20','not_started',{quantity_target:1}),
   /* 22 Physio camp (completed) */
-  DL(22,2,'Edited Photos — Wellness Camp',8,'2026-07-08','delivered',{quantity_target:120,quantity_delivered:126,mail_status:'sent',mail_sent_at:'2026-07-08'}),
+  DL(22,2,'Edited Photos — Wellness Camp',8,'2026-07-08','delivered',{quantity_target:120,quantity_delivered:126}),
   /* 24/25 archives */
   DL(24,2,'Edited Photos — Convocation 2025',8,'2025-08-24','delivered',{quantity_target:2100,quantity_delivered:2183}),
-  DL(24,5,'Aftermovie — Convocation 2025',4,'2025-09-02','delivered',{quantity_target:4,quantity_delivered:4,unit:'minutes',social_status:'posted'}),
-  DL(25,5,'Aftermovie — Vibrance 2025',4,'2025-10-02','delivered',{quantity_target:3,quantity_delivered:3,unit:'minutes',social_status:'posted'}),
+  DL(24,5,'Aftermovie — Convocation 2025',4,'2025-09-02','delivered',{quantity_target:4,quantity_delivered:4,unit:'minutes'}),
+  DL(25,5,'Aftermovie — Vibrance 2025',4,'2025-10-02','delivered',{quantity_target:3,quantity_delivered:3,unit:'minutes'}),
   DL(26,2,'Edited Photos — Republic Day 2026',13,'2026-01-30','delivered',{quantity_target:200,quantity_delivered:214}),
   /* 27 on hold */
   DL(27,2,'Edited Photos — Pharmacy Symposium',6,'2026-07-10','in_progress',{quantity_target:150,spec_notes:'Held — poster session postponed.'})
@@ -9521,7 +9518,7 @@ const auditText=a=>auditLine(a).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replac
    repeat every column, so only fields whose value moved are kept; keys, ids,
    timestamps and template names are bookkeeping, not news. */
 const AUDIT_FIELD={status:'Status',smc_status:'SMC status',approval_status:'Approval',review_status:'Review',
-  dispatch_status:'Dispatch',mail_status:'Email',social_status:'Social post',social_post_url:'Post link',
+  dispatch_status:'Dispatch',
   drive_url:'Drive link',recipient:'Sent to',dispatch_recipient:'Sent to',subject:'Subject',dispatch_subject:'Subject',
   title:'Title',name:'Name',work_type:'Work type',capacity_role:'Role',role:'Role',due_date:'Due',priority:'Priority',
   quantity_target:'Target',quantity_delivered:'Delivered',version_no:'Version',owner_id:'Owner',user_id:'Person',
@@ -10855,8 +10852,6 @@ function delivRow(d){
     ${(()=>{const as=delivAssignees(d.id);
       return as.length?`<span class="asg-set">${as.map(a=>assigneeChip(a,false)).join('')}</span>`
         :d.owner_id?'':`<span class="chip mut" title="No owner, team or SMC member yet">Unassigned</span>`;})()}
-    ${d.social_status!=='na'?`<span class="chip" title="Social media status">◍ ${esc(d.social_status)}</span>`:''}
-    ${d.mail_status!=='na'?`<span class="chip" title="Mail status">✉ ${esc(d.mail_status)}</span>`:''}
     ${d.due_date?`<span class="${over?'status st-danger':'chip'}">${over?'⚑ ':''}${D.fmt(d.due_date)}</span>`:''}
     ${statusPill(DELIV_STATUS,d.status)}</button>`;
 }
@@ -10869,7 +10864,7 @@ function projDeliverablesTab(p,dls){
           title="Deliverables are created by assigning the work that produces them">＋ Assign work</button>`:""}</div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl m-cards pj-cards">
       <thead><tr><th>Type</th><th>Title</th><th>Owner</th><th>Scheduled</th><th>Due</th><th>Qty</th><th>Versions</th>
-        <th>Social</th><th>Mail</th><th>Status</th><th class="num">Actions</th></tr></thead>
+        <th>Status</th><th class="num">Actions</th></tr></thead>
       <tbody>${dls.map(d=>{
         const vs=DB.deliverable_versions.filter(v=>v.deliverable_id===d.id);
         const latest=vs.sort((a,b)=>b.version_no-a.version_no)[0];
@@ -10892,8 +10887,6 @@ function projDeliverablesTab(p,dls){
             : `<span style="${over?'color:var(--danger);font-weight:700':''}">${D.fmt(d.due_date)}</span>`}</td>
           <td class="small" data-m="hide">${d.quantity_target?`${d.quantity_delivered||0}/${d.quantity_target}<div class="t-sub">${esc(d.unit||'')}</div>`:'—'}</td>
           <td data-m="hide">${vs.length?`<span class="chip">v${latest.version_no} · ${latest.review_status==='pending'?'◔':latest.review_status==='approved'?'✔':'↩'}</span>`:'<span class="mut3">—</span>'}</td>
-          <td class="small" data-m="hide">${d.social_status==='posted'?`<a href="${esc(d.social_post_url||'#')}" target="_blank" rel="noopener" data-stop>◍ posted</a>`:esc(d.social_status)}</td>
-          <td class="small" data-m="hide">${esc(d.mail_status)}</td>
           <td data-m="aside">${statusPill(DELIV_STATUS,d.status)}
             ${d.status==='delivered'?(()=>{const ap=DELIV_APPROVAL[d.approval_status||'pending']||DELIV_APPROVAL.pending;
               return `<div class="t-sub"><span class="status ${ap.c}" style="font-size:10px"><span class="si">${sIco(ap)}</span>${ap.l}</span></div>`;})():''}</td>
@@ -19921,23 +19914,6 @@ function drawerDeliverable(id){
           </div></div>`).join('')}</div>`:
         `<div class="empty" style="padding:20px"><p>No versions submitted yet.</p></div>`}
 
-      <div class="sec-head"><span class="sec-title">Delivery</span></div>
-      <div class="grid g2 mb4">
-        <div class="card"><div class="card-body tight">
-          <div class="xsmall mut3 b mb2">SOCIAL MEDIA</div>
-          <select class="inp" data-act="setSocial" data-did="${d.id}" onchange="ACTIONS.setSocial({did:${d.id}},this)">
-            ${['na','scheduled','posted'].map(v=>`<option value="${v}" ${d.social_status===v?'selected':''}>${({na:'Not applicable',scheduled:'Scheduled',posted:'Posted'})[v]}</option>`).join('')}</select>
-          ${d.social_post_url?`<a class="small mt2" style="display:block" href="${esc(d.social_post_url)}" target="_blank" rel="noopener">${esc(d.social_post_url)}</a>`:''}
-          ${d.social_posted_at?`<div class="xsmall mut3 mt1">posted ${D.fmt(d.social_posted_at)}</div>`:''}
-        </div></div>
-        <div class="card"><div class="card-body tight">
-          <div class="xsmall mut3 b mb2">MAIL</div>
-          <select class="inp" onchange="ACTIONS.setMail({did:${d.id}},this)">
-            ${['na','pending','sent'].map(v=>`<option value="${v}" ${d.mail_status===v?'selected':''}>${({na:'Not applicable',pending:'Pending',sent:'Sent'})[v]}</option>`).join('')}</select>
-          ${d.mail_sent_at?`<div class="xsmall mut3 mt1">sent ${D.fmt(d.mail_sent_at)}</div>`:''}
-        </div></div>
-      </div>
-
       ${links.length?`<div class="sec-head"><span class="sec-title">Drive links</span></div>
         <div class="mb4">${links.map(l=>`<div class="list-row" style="cursor:default">
           <span>⛁</span><span class="lr-main"><b>${esc(l.label)}</b><span class="mono xsmall trunc">${esc(l.url)}</span></span>
@@ -21713,7 +21689,7 @@ const ACTIONS = {
           title:nd.title||dt.name,owner_id:payload.owner_id,due_date:payload.due_date,
           completed_at:null,quantity_target:null,quantity_delivered:null,unit:dt.default_unit,spec_notes:'',
           weight:dt.default_weight||1,status:'not_started',priority:payload.priority,scheduled_date:null,
-          social_status:'na',social_post_url:null,social_posted_at:null,mail_status:'na',mail_sent_at:null,deleted_at:null});
+          deleted_at:null});
       } else if(did&&payload.owner_id){
         const dl=deliv(did); if(dl) dl.owner_id=payload.owner_id;
       }
@@ -22002,7 +21978,7 @@ const ACTIONS = {
         owner_id:null,due_date:d.due_date,completed_at:null,quantity_target:null,
         quantity_delivered:null,unit:dt.default_unit,spec_notes:'',weight:1,status:'not_started',
         priority:d.priority,estimated_hours:d.estimated_hours,
-        social_status:'na',social_post_url:null,social_posted_at:null,mail_status:'na',mail_sent_at:null,deleted_at:null});
+        deleted_at:null});
       made++;});
     audit(S.me,'project.created','project',id,null,{name,status:p.status,deliverables_created:made});
     /* The project goes to a TEAM. The server resolves that team's lead and makes
@@ -22174,16 +22150,6 @@ const ACTIONS = {
     drawerDeliverable(dl.id);render();toast('Marked delivered','ok');
     moSync(MO_API.post('/deliverables/'+dl.id+'/deliver',{}), ()=>drawerDeliverable(dl.id));
   },
-  setSocial:(d,n)=>{const dl=deliv(+d.did);const before=dl.social_status;dl.social_status=n.value;
-    if(n.value==='posted'){dl.social_posted_at=TODAY;if(!dl.social_post_url)dl.social_post_url='https://instagram.com/parul.university';}
-    audit(S.me,'deliverable.social_updated','deliverable',dl.id,{social_status:before},{social_status:n.value});
-    toast('Social status: '+n.value,'ok');
-    moSync(MO_API.patch('/deliverables/'+dl.id,{social_status:n.value,social_post_url:dl.social_post_url}));},
-  setMail:(d,n)=>{const dl=deliv(+d.did);const before=dl.mail_status;dl.mail_status=n.value;
-    if(n.value==='sent')dl.mail_sent_at=TODAY;
-    audit(S.me,'deliverable.mail_updated','deliverable',dl.id,{mail_status:before},{mail_status:n.value});
-    toast('Mail status: '+n.value,'ok');
-    moSync(MO_API.patch('/deliverables/'+dl.id,{mail_status:n.value}));},
   copyLink:(d)=>{const l=DB.drive_links.find(x=>x.entity_type==='deliverable'&&x.entity_id===+d.did);
     if(l)ACTIONS.copyURL({url:l.url});},
   copyURL:(d)=>{navigator.clipboard&&navigator.clipboard.writeText(d.url);

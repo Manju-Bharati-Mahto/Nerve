@@ -1773,9 +1773,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
          the project's lead / Admin   everything below, due date included
          the project's owner / PM     the plan: assignment, schedule, scope —
                                       but a due date is the lead's (as /due-date)
-         the deliverable's owner      their execution: quantity, social, mail
-         the Coordinator              the hand-off side: social, mail */
-    const EXECUTION = ["quantity_delivered", "social_status", "social_post_url", "mail_status"];
+         the deliverable's owner      their execution: quantity */
+    const EXECUTION = ["quantity_delivered"];
     const PLAN = ["title", "owner_id", "scheduled_date", "priority", "estimated_hours", "quantity_target", "spec_notes"];
     const allowed = new Set<string>();
     const pid = Number(d.project_id);
@@ -1784,7 +1783,6 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (await worksOnDeliverable(u, id)) EXECUTION.forEach((k) => allowed.add(k));
     // Choosing who carries it is assigning — open to whoever may assign here.
     if (await canAssignOnProject(u, pid)) allowed.add("owner_id");
-    if (await isCoordinator(u)) ["social_status", "social_post_url", "mail_status"].forEach((k) => allowed.add(k));
     const asked = [...PLAN, ...EXECUTION, "due_date"].filter((k) => k in b);
     const refused = asked.filter((k) => !allowed.has(k));
     if (refused.length)
