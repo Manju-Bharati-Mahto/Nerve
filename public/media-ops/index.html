@@ -11082,7 +11082,7 @@ function viewPipeline(){
           const over=d.due_date&&d.due_date<TODAY&&!['delivered'].includes(d.status);
           const p=proj(d.project_id);
           return `<div class="kb-card" draggable="true" data-drag="deliverable:${d.id}" data-drawer="deliverable:${d.id}">
-            <div class="kc-top"><span class="code">${p.code}</span>
+            <div class="kc-top"><span class="code" title="${esc(p.code||'')}">${esc(p.name||p.code||'')}</span>
               <span style="color:${ptype(p.project_type_id).color}">${dtype(d.deliverable_type_id).icon}</span>
               ${over?`<span class="status st-danger" style="height:18px;font-size:10px"><span class="si">⚑</span>${D.diff(TODAY,d.due_date)}d</span>`:''}
               ${kcMove('delivMenu',`data-did="${d.id}"`,d.title)}</div>
