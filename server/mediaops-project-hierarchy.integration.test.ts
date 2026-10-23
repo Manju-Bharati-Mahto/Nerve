@@ -232,12 +232,11 @@ maybe("creating a project", () => {
     expect(n.rows[0].c).toBe(1);
   });
 
-  it("leaves a Coordinator's unrouted project OWNERLESS rather than on their own desk", async () => {
-    // owner_id IS NULL is what the pipeline already reads as "needs assignment".
+  it("refuses a Coordinator's project that names no team, rather than leaving it on nobody's desk", async () => {
+    // Routing is the Coordinator's whole part in a project, so it is never optional for them.
     const r = await newProject("coord");
-    const p = await projectRow(Number((r.body.project as Record<string, unknown>).id));
-    expect(p.owner_id).toBeNull();
-    expect(p.team_id).toBeNull();
+    expect(r.status).toBe(400);
+    expect(r.body.project).toBeUndefined();
   });
 
   it("records the routing in the existing audit trail", async () => {

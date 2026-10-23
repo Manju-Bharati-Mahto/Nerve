@@ -168,6 +168,7 @@ async function cleanup() {
   await pool.query(`DELETE FROM mo_audit_logs WHERE actor_id LIKE '${PX}-%'`);
   await pool.query(`DELETE FROM mo_notifications WHERE user_id LIKE '${PX}-%'`);
   await pool.query(`DELETE FROM mo_projects WHERE name LIKE '${PX}%'`);
+  await pool.query(`DELETE FROM mo_academic_years WHERE label LIKE '${PX}%'`);
   await pool.query(`DELETE FROM mo_boards WHERE name LIKE '${PX} %'`);
   await pool.query(`DELETE FROM mo_team_members WHERE user_id LIKE '${PX}-%'`);
   await pool.query(`DELETE FROM mo_teams WHERE name LIKE '${PX} %'`);
@@ -1340,5 +1341,150 @@ maybe("PATCH /cards/:id — Team Leads and Admins only, and a synced move obeys 
     expect([await columnOf(cid), (await deliv(did)).status]).toEqual([plainCol, "in_review"]);
     const r = await as("leadA", "PATCH", `/cards/${cid}`, { column_id: plainCol, title: `${PX} renamed` });
     expect([r.status, r.body.synced]).toEqual([200, null]);
+  });
+});
+
+/* ── Projects: create, edit, re-route, crew, activity ─────────────────────── */
+
+maybe("projects — creating, editing and re-routing follow the rules", () => {
+  const fresh = (actor: ActorName, extra: Record<string, unknown> = {}) => as(actor, "POST", "/projects", {
+    name: `${PX} rules ${Math.random().toString(36).slice(2, 8)}`, project_type_id: projectTypeId,
+    start_date: "2026-10-01", end_date: "2026-10-10", ...extra });
+  const pidOf = (r: { body: Record<string, unknown> }) => Number((r.body.project as Record<string, unknown>).id);
+  const pmOf = (pid: number) => pool.query(
+    `SELECT user_id FROM mo_project_assignments WHERE project_id=$1 AND is_project_manager AND removed_at IS NULL`,
+    [pid]).then((r) => r.rows.map((x) => x.user_id));
+
+  it("a Coordinator must say which team the project is for", async () => {
+    const r = await fresh("coord");
+    expect([r.status, r.body.message]).toEqual([400, "Choose the team this project is for."]);
+    expect((await fresh("coord", { team_id: teamA })).status).toBe(201);
+  });
+
+  it("the academic year picked is the one stored, and duplicates are per year", async () => {
+    const past = Number((await one(
+      `INSERT INTO mo_academic_years (label, start_date, end_date, is_current)
+       VALUES ('${PX} 2019-20','2019-06-01','2020-05-31',false) RETURNING id`)).id);
+    const name = `${PX} same name ${Math.random().toString(36).slice(2, 8)}`;
+    const r = await fresh("coord", { name, team_id: teamA, academic_year_id: past });
+    expect(r.status).toBe(201);
+    expect(Number((await project(pidOf(r))).academic_year_id)).toBe(past);
+    // The same project in the current year is not a duplicate of last year's.
+    const now = await fresh("coord", { name, team_id: teamA });
+    expect(now.status).toBe(201);
+    expect(Number((await project(pidOf(now))).academic_year_id)).not.toBe(past);
+    expect((await fresh("coord", { name, team_id: teamA, academic_year_id: past })).status).toBe(409);
+    expect((await fresh("coord", { team_id: teamA, academic_year_id: 99999999 })).status).toBe(400);
+  });
+
+  it("a priority outside urgent, high, normal and low is a 400 everywhere, never a 500", async () => {
+    const msg = "Priority must be urgent, high, normal or low.";
+    const bad = { priority: "medium" };
+    expect([(await fresh("coord", { team_id: teamA, ...bad })).body.message]).toEqual([msg]);
+    expect((await fresh("coord", { team_id: teamA,
+      deliverables: [{ title: "Edited Photos", deliverable_type_id: dtype, ...bad }] })).status).toBe(400);
+    const { pid, dids } = await routed(teamA);
+    const patch = await as("leadA", "PATCH", `/projects/${pid}`, bad);
+    expect([patch.status, patch.body.message]).toEqual([400, msg]);
+    expect((await as("leadA", "PATCH", `/projects/${pid}`, { priority: null })).status).toBe(400);
+    expect((await as("leadA", "PATCH", `/deliverables/${dids[0]}`, bad)).status).toBe(400);
+    expect((await as("leadA", "POST", `/projects/${pid}/work`, { work_type_id: workTypeId,
+      title: `${PX} work`, assignees: [ACTORS.empA1.id], ...bad })).status).toBe(400);
+    expect((await as("leadA", "PATCH", `/projects/${pid}`, { priority: "urgent" })).status).toBe(200);
+    expect((await project(pid)).priority).toBe("urgent");
+  });
+
+  it("re-routing: the Coordinator or an Admin moves it, the new lead takes over and is told", async () => {
+    const { pid } = await routed(teamA);
+    expect((await as("leadA", "PATCH", `/projects/${pid}`, { team_id: teamB })).status).toBe(403);
+    expect((await as("coord", "PATCH", `/projects/${pid}`, { team_id: teamB })).status).toBe(200);
+    const p = await project(pid);
+    expect([Number(p.team_id), p.owner_id]).toEqual([teamB, ACTORS.leadB.id]);
+    expect(await pmOf(pid)).toEqual([ACTORS.leadB.id]);
+    expect((await notes(ACTORS.leadB.id, "project", pid)).map((n) => n.title)).toContain("You are leading a project");
+    expect((await as("admin", "PATCH", `/projects/${pid}`, { team_id: teamA })).status).toBe(200);
+    expect(await pmOf(pid)).toEqual([ACTORS.leadA.id]);
+    // Moving it is not un-routing it.
+    expect((await as("coord", "PATCH", `/projects/${pid}`, { team_id: null })).status).toBe(400);
+    expect(Number((await project(pid)).team_id)).toBe(teamA);
+  });
+
+  it("an employee's own project: every deliverable on it is theirs", async () => {
+    const r = await fresh("empA1", { deliverables: [
+      { title: "Edited Photos", deliverable_type_id: dtype }, { title: "Edited Photos (2)", deliverable_type_id: dtype }] });
+    expect(r.status).toBe(201);
+    const owners = (await pool.query(`SELECT owner_id FROM mo_deliverables WHERE project_id=$1`, [pidOf(r)])).rows;
+    expect(owners.map((o) => o.owner_id)).toEqual([ACTORS.empA1.id, ACTORS.empA1.id]);
+  });
+
+  it("deliverable types reach the client in the order the Admin set", async () => {
+    const r = await as("admin", "GET", "/state");
+    const types = (r.body.deliverable_types as Array<{ id: number | string; sort_order: number }>)
+      .map((t) => [Number(t.sort_order ?? 0), Number(t.id)]);
+    const sorted = [...types].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    expect(types).toEqual(sorted);
+  });
+});
+
+maybe("project crew — adding people, and who may name a PM", () => {
+  const pmOf = (pid: number) => pool.query(
+    `SELECT user_id FROM mo_project_assignments WHERE project_id=$1 AND is_project_manager AND removed_at IS NULL`,
+    [pid]).then((r) => r.rows.map((x) => x.user_id));
+  const onCrew = (pid: number, uid: string) => one(
+    `SELECT 1 AS ok FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`, [pid, uid]);
+
+  it("another team's lead and a crew employee add people, but cannot make anyone the PM", async () => {
+    const { pid } = await routed(teamA);
+    // A project with no PM is the case where a forged flag would have stuck.
+    await pool.query(`UPDATE mo_project_assignments SET is_project_manager=false WHERE project_id=$1`, [pid]);
+    expect((await as("leadB", "POST", `/projects/${pid}/assignments`,
+      { user_id: ACTORS.leadB.id, is_project_manager: true })).status).toBe(403);
+    const add = await as("leadB", "POST", `/projects/${pid}/assignments`, { user_id: ACTORS.empA1.id });
+    expect([add.status, add.body.added]).toEqual([201, true]);
+    expect((await as("empA1", "POST", `/projects/${pid}/assignments`,
+      { user_id: ACTORS.empA2.id, is_project_manager: true })).status).toBe(403);
+    expect(await pmOf(pid)).toEqual([]);
+    expect(await onCrew(pid, ACTORS.empA2.id)).toBeUndefined();
+    // The project's own lead may name one.
+    const ok = await as("leadA", "POST", `/projects/${pid}/assignments`,
+      { user_id: ACTORS.empA2.id, is_project_manager: true });
+    expect(ok.status).toBe(201);
+    expect(await pmOf(pid)).toEqual([ACTORS.empA2.id]);
+    expect((await notes(ACTORS.empA2.id, "project", pid)).map((n) => n.title)).toEqual(["You are the PM on a project"]);
+  });
+
+  it("a second PM is refused out loud: nobody added, nobody told", async () => {
+    const { pid } = await routed(teamA);
+    const r = await as("leadA", "POST", `/projects/${pid}/assignments`,
+      { user_id: ACTORS.empA1.id, is_project_manager: true });
+    expect(r.status).toBe(409);
+    expect(await pmOf(pid)).toEqual([ACTORS.leadA.id]);
+    expect(await onCrew(pid, ACTORS.empA1.id)).toBeUndefined();
+    expect(await notes(ACTORS.empA1.id, "project", pid)).toEqual([]);
+  });
+});
+
+maybe("project activity — only this project's history, with who did it", () => {
+  it("each kind of record is matched against its own ids", async () => {
+    const { pid, dids } = await routed(teamA);
+    const other = await routed(teamB);
+    // An event on ANOTHER project's shoot/assignment whose id happens to equal this project's deliverable id.
+    for (const t of ["shoot", "assignment"])
+      await pool.query(
+        `INSERT INTO mo_audit_logs (actor_id, action, entity_type, entity_id, after)
+         VALUES ($1,$2,$3,$4,$5)`, [ACTORS.admin.id, `${t}.probe`, t, dids[0], JSON.stringify({ project: other.pid })]);
+    await pool.query(
+      `INSERT INTO mo_audit_logs (actor_id, action, entity_type, entity_id) VALUES ($1,'deliverable.probe','deliverable',$2)`,
+      [ACTORS.leadA.id, dids[0]]);
+    const r = await as("leadA", "GET", `/projects/${pid}/activity`);
+    expect(r.status).toBe(200);
+    const rows = r.body.activity as Array<{ action: string; actor: string | null }>;
+    const actions = rows.map((x) => x.action);
+    expect(actions).toContain("deliverable.probe");
+    expect(actions).toContain("project.created");
+    expect(actions).not.toContain("shoot.probe");
+    expect(actions).not.toContain("assignment.probe");
+    expect(rows.find((x) => x.action === "project.created")?.actor).toBe(ACTORS.coord.full_name);
+    expect(rows.find((x) => x.action === "deliverable.probe")?.actor).toBe(ACTORS.leadA.full_name);
   });
 });

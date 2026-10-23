@@ -209,6 +209,13 @@ function inventoryScopeSql(scope: InventoryScope, params: unknown[], col = "i.sc
    scope predicate goes in as one more entry — beside the caller's filters,
    never instead of one. An unrestricted caller adds nothing at all, which is
    what keeps the Admin's query plan identical to the one it was before. */
+/* The four priorities the projects, deliverables and assignments tables
+   accept (their CHECK constraints). Anything else used to reach the INSERT
+   and come back as a 500; it is refused up front instead. Not sending a
+   priority (or sending an empty one) is fine — the caller's default applies. */
+const PRIORITIES = ["urgent", "high", "normal", "low"];
+const PRIORITY_ERROR = "Priority must be urgent, high, normal or low.";
+const badPriority = (v: unknown) => v != null && v !== "" && !PRIORITIES.includes(String(v));
 /* ── Phase 17J: telling the right custodians, once ──────────────────────────
    ONE INSERT, AND IT IS ITS OWN DEDUPLICATION. The condition below is the same
    one runMediaOpsAutomations() has always used: an UNREAD notification with the
@@ -924,7 +931,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // 'mo-uN'); to_jsonb keeps DATE/timestamp columns as clean strings (no tz drift).
   const uidToInt = (v: unknown) =>
     typeof v === "string" && v.startsWith("mo-u") ? parseInt(v.slice(4), 10) : v;
-  const STATE: [string, string, string | null, string[]][] = [
+  const STATE: [string, string, string | null, string[], string?][] = [
     ["projects", "mo_projects", "deleted_at IS NULL", ["owner_id", "created_by"]],
     ["project_assignments", "mo_project_assignments", "removed_at IS NULL", ["user_id", "assigned_by"]],
     // Orphan guard (G1): never ship deliverables whose parent project is deleted.
@@ -996,7 +1003,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // picker/template in the operational UI. Archived rows are excluded (cannot be
     // selected); disabled rows ship and are filtered by is_active client-side.
     ["project_types", "mo_project_types", "archived_at IS NULL", []],
-    ["deliverable_types", "mo_deliverable_types", "archived_at IS NULL", []],
+    // In the order the Admin set: the New project and Assign work pickers list them as sent.
+    ["deliverable_types", "mo_deliverable_types", "archived_at IS NULL", [], "sort_order, id"],
     ["task_categories", "mo_task_categories", "archived_at IS NULL", []],
     ["project_templates", "mo_project_templates", "archived_at IS NULL", []],
     ["template_deliverables", "mo_template_deliverables", null, []],
@@ -1051,8 +1059,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const roleMap: Record<string, string> = { super_admin: "admin", admin: "admin", sub_admin: "team_lead", user: "employee" };
 
     const out: Record<string, unknown> = {};
-    for (const [key, table, where, refs] of STATE) {
-      const { rows } = await pool.query(`SELECT to_jsonb(t) AS row FROM ${table} t${where ? " WHERE " + where : ""}`);
+    for (const [key, table, where, refs, order] of STATE) {
+      const { rows } = await pool.query(
+        `SELECT to_jsonb(t) AS row FROM ${table} t${where ? " WHERE " + where : ""}${order ? " ORDER BY " + order : ""}`);
       out[key] = rows.map((r) => {
         const o = r.row as Record<string, unknown>;
         for (const f of refs) o[f] = toInt(o[f]);
@@ -1408,15 +1417,16 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   app.get(`${P}/projects/:id/activity`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
+    /* Each entity type is matched against ITS OWN ids. One pooled id set let a
+       shoot whose id equalled one of this project's deliverable ids pull
+       another project's shoot history into this feed. */
     const { rows } = await pool.query(
       `SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor
          FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
         WHERE (a.entity_type='project' AND a.entity_id=$1)
-           OR (a.entity_type IN ('deliverable','shoot','assignment')
-               AND a.entity_id IN (
-                 SELECT d.id FROM mo_deliverables d WHERE d.project_id=$1
-                 UNION SELECT s.id FROM mo_shoots s WHERE s.project_id=$1
-                 UNION SELECT g.id FROM mo_assignments g WHERE g.project_id=$1))
+           OR (a.entity_type='deliverable' AND a.entity_id IN (SELECT d.id FROM mo_deliverables d WHERE d.project_id=$1))
+           OR (a.entity_type='shoot' AND a.entity_id IN (SELECT s.id FROM mo_shoots s WHERE s.project_id=$1))
+           OR (a.entity_type='assignment' AND a.entity_id IN (SELECT g.id FROM mo_assignments g WHERE g.project_id=$1))
         ORDER BY a.occurred_at DESC LIMIT 60`, [id]);
     res.json({ activity: rows });
   }));
@@ -1502,11 +1512,22 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!typeId) return sendError(res, 400, "Project type is required.");
     const start = (b.start_date as string) || null, end = (b.end_date as string) || null;
     if (start && end && end < start) return sendError(res, 400, "VR-6: end date must be on or after start date.");
+    if (badPriority(b.priority) || (Array.isArray(b.deliverables)
+        && (b.deliverables as Array<Record<string, unknown>>).some((d) => badPriority(d?.priority))))
+      return sendError(res, 400, PRIORITY_ERROR);
+    /* The academic year the creator picked is the one stored; only a project
+       sent without one falls back to the current year. */
+    const ayId = b.academic_year_id
+      ? (await pool.query(`SELECT id FROM mo_academic_years WHERE id=$1 AND archived_at IS NULL`,
+          [Number(b.academic_year_id) || 0])).rows[0]?.id ?? null
+      : (await pool.query(`SELECT id FROM mo_academic_years WHERE is_current LIMIT 1`)).rows[0]?.id ?? null;
+    if (b.academic_year_id && ayId === null) return sendError(res, 400, "Unknown academic year.");
     // VR-6 / AUTO-6: block EXACT duplicates (same name + type + academic year, live).
     // Fuzzy near-duplicates only warn (client dupCheck + /ai/duplicates), per spec.
     const dup = await pool.query(
-      `SELECT code FROM mo_projects WHERE deleted_at IS NULL AND lower(name)=lower($1) AND project_type_id=$2 LIMIT 1`,
-      [name, typeId]);
+      `SELECT code FROM mo_projects WHERE deleted_at IS NULL AND lower(name)=lower($1) AND project_type_id=$2
+          AND academic_year_id IS NOT DISTINCT FROM $3 LIMIT 1`,
+      [name, typeId, ayId]);
     if (dup.rows[0] && b.force_duplicate !== true)
       return sendError(res, 409, `AUTO-6/VR-6: an identical project already exists (${dup.rows[0].code}). Rename it, or merge into the existing project.`);
     /* Who may create a project. The Operations Coordinator owns intake, so they
@@ -1523,6 +1544,10 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       return sendError(res, 403, "Only Media Crew may create a project.");
     if (isEmployee && b.team_id)
       return sendError(res, 403, "An employee's project is assigned to themselves — only the Coordinator routes a project to a team.");
+    /* The Coordinator's whole part in a project is routing it: a project they
+       raise names the team it is for. (An Admin may still raise one unrouted.) */
+    if (isCoord && !isMoAdmin(u) && !b.team_id)
+      return sendError(res, 400, "Choose the team this project is for.");
 
     /* ── Team assignment ────────────────────────────────────────────────────
        The hierarchy is Coordinator/Admin → Team → Team Lead → Employee. A
@@ -1577,7 +1602,6 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // Every id a Team Lead or Admin names must still be someone they may assign.
     if (!isCoord && !(await assertAssignable(res, u, named))) return;
     const gated = false;   // TL/Admin only ⇒ projects are created active
-    const ay = await pool.query(`SELECT id FROM mo_academic_years WHERE is_current LIMIT 1`);
     // Academic Unit is master data — validate the reference and refuse a unit
     // that is archived or disabled (it may still be shown on old projects, but
     // must not be selectable for new work).
@@ -1588,15 +1612,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       if (!au.is_active || au.archived_at) return sendError(res, 400, "That academic unit is archived or disabled — pick an active one.");
     }
     /* Production ownership belongs to the Team Lead when a team was chosen. A
-       Coordinator is Created By and nothing more, so a project they raise with
-       no team is left OWNERLESS — which the pipeline already reads as "needs
-       assignment" — rather than silently landing in their lap. */
+       Coordinator is Created By and nothing more — and always names a team
+       (checked above) — so ownership never lands in their lap. */
     const ownerId = leadId ?? (isCoord && !isMoAdmin(u) ? null : u.id);
     const ins = await pool.query(
       `INSERT INTO mo_projects (department_id, campus_id, academic_year_id, project_type_id, code, name, description,
          academic_unit_id, status, priority, owner_id, created_by, start_date, end_date, type_meta, source, team_id)
        VALUES (1,1,$1,$2,${PENDING_CODE},$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'app',$13) RETURNING id`,
-      [ay.rows[0]?.id ?? null, typeId, name, String(b.description ?? ""), unitId,
+      [ayId, typeId, name, String(b.description ?? ""), unitId,
        gated ? "proposed" : "planning", (b.priority as string) || "normal", ownerId, u.id, start, end,
        JSON.stringify(b.type_meta ?? {}), teamId]);
     const id = Number(ins.rows[0].id); // pg returns BIGINT as a string — coerce before arithmetic
@@ -1682,6 +1705,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       }
     }
 
+    /* An employee's own project has nobody else to give its work to: every
+       deliverable on it is theirs from the start, not "unassigned". */
+    if (isEmployee)
+      await pool.query(`UPDATE mo_deliverables SET owner_id=$1 WHERE project_id=$2 AND owner_id IS NULL`, [u.id, id]);
+
     // Anyone named on a deliverable joins the crew, as on every other assignment path.
     for (const r of (await pool.query(
       `SELECT DISTINCT owner_id FROM mo_deliverables WHERE project_id=$1 AND owner_id IS NOT NULL`, [id])).rows)
@@ -1751,10 +1779,29 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!(await assertAssignable(res, u, [String(b.user_id)]))) return;
     if (!(await pool.query(`SELECT 1 FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [id])).rows[0])
       return sendError(res, 404, "Project not found.");
+    /* Adding someone to the crew is assigning; making them the PM hands them
+       the running of the project, so it takes someone who runs it already.
+       Another team's lead, or a crew employee, may add people — not a PM. */
+    const asPm = !!b.is_project_manager;
+    if (asPm && !(await canManageProject(u, id)))
+      return sendError(res, 403, "Only the project's Team Lead, owner/PM or an Admin may name its PM.");
+    /* One PM per project (idx_mo_one_pm). A second used to vanish inside the
+       bare ON CONFLICT DO NOTHING — nobody added, 201 returned, and a "you are
+       the PM" notice sent all the same. The conflict target now names only the
+       crew index (same person twice), so a PM clash is reported. */
+    if (asPm && (await pool.query(
+      `SELECT 1 FROM mo_project_assignments
+        WHERE project_id=$1 AND is_project_manager AND removed_at IS NULL AND user_id<>$2`, [id, String(b.user_id)])).rows[0])
+      return sendError(res, 409, "This project already has a PM — change the owner to hand it over.");
     const ins = await pool.query(
       `INSERT INTO mo_project_assignments (project_id, user_id, capacity_role_id, is_project_manager, assigned_by)
-       VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-      [id, String(b.user_id), b.capacity_role_id ? Number(b.capacity_role_id) : null, !!b.is_project_manager, u.id]);
+       VALUES ($1,$2,$3,$4,$5) ON CONFLICT (project_id, user_id) WHERE removed_at IS NULL DO NOTHING`,
+      [id, String(b.user_id), b.capacity_role_id ? Number(b.capacity_role_id) : null, asPm, u.id])
+      .catch((e: { code?: string }) => {
+        if (e.code === "23505") return null;   // a PM named at the same instant
+        throw e;
+      });
+    if (!ins) return sendError(res, 409, "This project already has a PM — change the owner to hand it over.");
     /* The modal posts everyone it shows ticked, the existing crew included.
        Someone already on the crew is neither re-added nor told again. */
     const added = (ins.rowCount ?? 0) > 0;
@@ -1767,7 +1814,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       await pool.query(
         `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
          VALUES ($1,'assignment',$2,$3,'project',$4)`,
-        [String(b.user_id), b.is_project_manager ? "You are the PM on a project" : "You are on a project",
+        [String(b.user_id), asPm ? "You are the PM on a project" : "You are on a project",
          `${u.full_name ?? "Your Team Lead"} added you to “${p?.name ?? "a project"}”.`, id]).catch(() => {});
     }
     res.status(201).json({ ok: true, added });
@@ -1846,6 +1893,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const refused = asked.filter((k) => !allowed.has(k));
     if (refused.length)
       return sendError(res, 403, `You can't change ${refused.join(", ").replace(/_/g, " ")} on this deliverable.`);
+    if ("priority" in b && !PRIORITIES.includes(String(b.priority))) return sendError(res, 400, PRIORITY_ERROR);
     // Re-owning a deliverable is an assignment — same team scope as everything else.
     if ("owner_id" in b && b.owner_id && String(b.owner_id) !== String(d.owner_id)
         && !(await assertAssignable(res, u, [String(b.owner_id)]))) return;
@@ -1875,6 +1923,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const b = req.body as Record<string, unknown>;
     const date = b.scheduled_date == null || b.scheduled_date === "" ? null : String(b.scheduled_date);
     if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return sendError(res, 400, "scheduled_date must be YYYY-MM-DD (or null to unschedule).");
+    if (badPriority(b.priority)) return sendError(res, 400, PRIORITY_ERROR);
     // Scheduling implies an assignee — that person is who it shows up for.
     const owner = b.owner_id ? String(b.owner_id) : String(cur.owner_id ?? "");
     if (date && !owner) return sendError(res, 400, "Assign an owner before scheduling this deliverable.");
@@ -2421,6 +2470,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const assignees = [...new Set((Array.isArray(b.assignees) ? b.assignees : []).map((r) => String(toUid(r))))];
     if (!assignees.length) return sendError(res, 400, "Assign the work to at least one member.");
     if (!(await assertAssignable(res, u, assignees))) return;
+    if (badPriority(b.priority)) return sendError(res, 400, PRIORITY_ERROR);
     const priority = ["urgent", "high", "normal", "low"].includes(String(b.priority)) ? String(b.priority) : "normal";
     const startDate = (b.start_date as string) || null, dueDate = (b.due_date as string) || null;
     if (startDate && dueDate && dueDate < startDate)
@@ -11896,6 +11946,11 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       return sendError(res, 400, "VR-6: name must be 3–120 characters.");
     if (b.start_date && b.end_date && String(b.end_date) < String(b.start_date))
       return sendError(res, 400, "VR-6: end date must be on or after start date.");
+    // priority is NOT NULL, so an edit must send one of the four — never null or ''.
+    if ("priority" in b && !PRIORITIES.includes(String(b.priority))) return sendError(res, 400, PRIORITY_ERROR);
+    if ("academic_year_id" in b && b.academic_year_id != null
+        && !(await pool.query(`SELECT 1 FROM mo_academic_years WHERE id=$1`, [Number(b.academic_year_id) || 0])).rows[0])
+      return sendError(res, 400, "Unknown academic year.");
     // Changing the academic unit may only target an active, non-archived unit.
     // Leaving it untouched keeps a historical (possibly archived) reference intact.
     if ("academic_unit_id" in b && b.academic_unit_id != null &&
@@ -11911,6 +11966,10 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
        their project to another team, and nobody else moves it at all. */
     if ("team_id" in b && Number(b.team_id ?? 0) !== Number(cur.team_id ?? 0) && !(isCoord || isMoAdmin(u)))
       return sendError(res, 403, "Only the Coordinator or an Admin may change which team a project is routed to.");
+    /* Re-routing moves a project to another team; it never un-routes one. A
+       Coordinator's project always names its team, as it did when created. */
+    if ("team_id" in b && !b.team_id && cur.team_id && isCoord && !isMoAdmin(u))
+      return sendError(res, 400, "Choose the team this project is for.");
     if ("team_id" in b && b.team_id != null && Number(b.team_id) !== Number(cur.team_id)) {
       const t = await resolveTeamLead(Number(b.team_id));
       if ("error" in t) return sendError(res, 400, t.error);
@@ -12086,6 +12145,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     if (!(await assertAssignable(res, u, assignees))) return;
     if (b.start_date && b.due_date && String(b.due_date) < String(b.start_date))
       return sendError(res, 400, "Due date must be on or after the start date.");
+    if (badPriority(b.priority)) return sendError(res, 400, PRIORITY_ERROR);
     const priority = ["urgent", "high", "normal", "low"].includes(String(b.priority)) ? String(b.priority) : "normal";
     const status = ["not_started", "in_progress", "done", "blocked", "cancelled"].includes(String(b.status)) ? String(b.status) : "not_started";
     const ins = await pool.query(
@@ -12117,6 +12177,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const b = req.body as Record<string, unknown>;
     // Assignees may only move the status; TL/Admin/creator may edit everything.
     const cols = priv ? ["title", "priority", "status", "start_date", "due_date", "start_time", "end_time", "notes"] : ["status"];
+    if (priv && "priority" in b && !PRIORITIES.includes(String(b.priority))) return sendError(res, 400, PRIORITY_ERROR);
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
     for (const k of cols) if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
     if (fields.length) { vals.push(id); await pool.query(`UPDATE mo_assignments SET ${fields.join(",")} WHERE id=$${i}`, vals); }
@@ -17981,6 +18042,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     if (!prof) return sendError(res, 404, "That SMC member could not be found.");
     if (!prof.is_active) return sendError(res, 409, "That SMC member is inactive and cannot receive assignments.");
 
+    if (badPriority(b.priority)) return sendError(res, 400, PRIORITY_ERROR);
     const date = String(b.start_date ?? proj.start_date ?? "").slice(0, 10) || null;
     const unit = Number(b.academic_unit_id) || proj.academic_unit_id || prof.academic_unit_id || null;
     // §31 — a conflict is reported, not blocked; management decides.
@@ -17997,7 +18059,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
          deliverables_required, submission_deadline, smc_status)
        VALUES ($1,$2,$3,$4,'not_started',$5,$6,$7,$8,true,$9,$10,$11,$12,$13,'assigned') RETURNING id`,
       [projectId, String(b.title ?? proj.name ?? "SMC coverage").trim(), actor.id,
-       String(b.priority ?? "normal"), date, b.start_time || null, b.end_time || null,
+       String(b.priority || "normal"), date, b.start_time || null, b.end_time || null,
        String(b.instructions ?? "").trim() || null, unit, String(b.venue ?? "").trim() || null,
        String(b.coverage_requirements ?? "").trim() || null,
        String(b.deliverables_required ?? "").trim() || null, b.submission_deadline || null]);
