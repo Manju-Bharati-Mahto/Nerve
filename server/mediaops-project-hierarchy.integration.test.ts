@@ -409,17 +409,21 @@ maybe("TEST 11/12/13 — allocation belongs to the Team Lead", () => {
   });
 
   it("the lead may assign someone from another team", async () => {
-    const r = await as("leadA", "PATCH", `/deliverables/${delivId}`, { owner_id: ACTORS.empB1.id });
+    // It has an owner already, so taking it off them is confirmed (Q10).
+    const r = await as("leadA", "PATCH", `/deliverables/${delivId}`, { owner_id: ACTORS.empB1.id, confirm_reassign: true });
     expect(r.status).toBe(200);
     expect((await deliverablesOf(pid))[0].owner_id).toBe(ACTORS.empB1.id);
   });
 
   it("reassignment stays inside the team and is auditable", async () => {
-    const r = await as("leadA", "PATCH", `/deliverables/${delivId}`, { owner_id: ACTORS.empA2.id });
+    const r = await as("leadA", "PATCH", `/deliverables/${delivId}`, { owner_id: ACTORS.empA2.id, confirm_reassign: true });
     expect(r.status).toBe(200);
     const a = await pool.query(
       `SELECT count(*)::int c FROM mo_audit_logs WHERE action='deliverable.updated' AND entity_id=$1`, [delivId]);
     expect(a.rows[0].c).toBeGreaterThan(0);
+    const re = await pool.query(
+      `SELECT after FROM mo_audit_logs WHERE action='deliverable.reassigned' AND entity_id=$1 ORDER BY id DESC LIMIT 1`, [delivId]);
+    expect(re.rows[0].after).toEqual({ from: ACTORS.empB1.id, to: ACTORS.empA2.id, via: "edit" });
   });
 });
 

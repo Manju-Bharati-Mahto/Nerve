@@ -972,6 +972,11 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
 #modal-layer{position:fixed;inset:0;z-index:90;display:none;place-items:center;padding:var(--s4);
   background:var(--overlay);backdrop-filter:blur(2px)}
 #modal-layer.on{display:grid}
+/* The reassign question opens over whatever asked it (Assign work, the drawer
+   picker, Schedule), so that form is still there, as filled, after Cancel. */
+#rsg-layer{position:fixed;inset:0;z-index:95;display:grid;place-items:center;padding:var(--s4);
+  background:var(--overlay)}
+#rsg-layer .modal{width:min(440px,100%)}
 .modal{background:var(--surface);border-radius:var(--r-xl);box-shadow:var(--sh-3);width:min(560px,100%);
   max-height:88vh;display:flex;flex-direction:column;border:1px solid var(--border);
   animation:pop 180ms var(--ease)}
@@ -11431,7 +11436,7 @@ function delivOwnerCell(p,d){
   return `<select class="inp deliv-owner" data-did="${d.id}"
       onchange="ACTIONS.assignDeliverable({did:${d.id}},this)"
       style="height:26px;font-size:11.5px;width:auto;min-width:132px;max-width:260px;padding:0 6px"
-      title="${d.owner_id?esc(personLabel(d.owner_id))+' — reassign to anyone in the Media Crew':'Assign this deliverable to anyone in the Media Crew'}">
+      title="${d.owner_id?'Reassign deliverable — owned by '+esc(personLabel(d.owner_id)):'Assign this deliverable to anyone in the Media Crew'}">
     ${ownerOptions(d.owner_id,opts,'Assign…')}</select>`;
 }
 /* Options for an owner picker. An owner who is no longer active stays shown —
@@ -11442,6 +11447,45 @@ function ownerOptions(cur,opts,blank){
   return (cur?'':`<option value="" selected>${esc(blank)}</option>`)
     +(gone?`<option value="${cur}" selected disabled>${esc(personLabel(cur))} (inactive)</option>`:'')
     +opts.map(u=>`<option value="${u.id}" ${u.id===cur?'selected':''}>${esc(personLabel(u.id))}</option>`).join('');
+}
+/* Reassigning a deliverable — taking it off the person who owns it — is
+   asked first, everywhere it can happen: "Current owner: A → New owner: B".
+   Resolves true to go ahead, false on Cancel, Escape or a click outside.
+   The server asks the same question (409 reassign_confirm) of anything sent
+   without confirm_reassign, so a page that did not know about the owner is
+   asked by moReassign() below instead of failing. */
+function confirmReassign(title,fromName,toName){
+  return new Promise(resolve=>{
+    const prev=$('#rsg-layer'); if(prev) prev.remove();
+    const layer=el(`<div id="rsg-layer" role="alertdialog" aria-modal="true" aria-labelledby="rsg-h">
+      <div class="modal"><div class="mo-head"><div><h2 id="rsg-h">Reassign deliverable</h2>
+          <p>${esc(title||'This deliverable')}</p></div></div>
+        <div class="mo-body"><p class="rsg-line">Current owner: <b>${esc(fromName||'someone else')}</b>
+          → New owner: <b>${esc(toName||'someone else')}</b></p>
+          <p class="small mut">Both of them are told. Versions already submitted stay with whoever submitted them.</p></div>
+        <div class="mo-foot"><button class="btn" data-rsg="no">Cancel</button>
+          <button class="btn primary" data-rsg="yes">Reassign deliverable</button></div></div></div>`);
+    const key=e=>{ if(e.key==='Escape'){ e.stopPropagation(); e.preventDefault(); done(false); } };
+    const done=ok=>{ window.removeEventListener('keydown',key,true); layer.remove(); resolve(ok); };
+    layer.onclick=e=>{ const b=e.target.closest('[data-rsg]');
+      if(b) done(b.dataset.rsg==='yes'); else if(e.target===layer) done(false); };
+    window.addEventListener('keydown',key,true);
+    document.body.appendChild(layer);
+    const go=layer.querySelector('[data-rsg="yes"]'); if(go) setTimeout(()=>go.focus(),30);
+  });
+}
+/* Send an owner change. `send(confirmed)` makes the request; `confirmed` says
+   whether the person has already agreed to take it off its owner. If the
+   server knows of an owner the page did not, it asks here and sends again —
+   or answers {cancelled:true} when they decline, and nothing is changed. */
+async function moReassign(title,toName,send,confirmed){
+  try{ return await send(!!confirmed); }
+  catch(e){
+    const co=!confirmed&&e&&e.body&&e.body.code==='reassign_confirm'&&e.body.current_owner;
+    if(!co) throw e;
+    if(!(await confirmReassign(title,co.full_name,toName))) return {cancelled:true};
+    return await send(true);
+  }
 }
 
 function projShootsTab(p,shoots){
@@ -20924,7 +20968,8 @@ const WORK_TEMPLATES={
         <div class="hint">You can assign anyone in the Media Crew.
           Everyone you pick sees the deliverable in their My Day and can upload versions of it.</div></div>
       <div class="field" id="aw-ownerf"><label class="lbl">Owner <span class="mut3">(accountable — submits it for review)</span></label>
-        <select class="inp" id="aw-owner" disabled><option value="">Pick who to assign first</option></select></div>
+        <select class="inp" id="aw-owner" disabled onchange="ACTIONS.awReassignHint()"><option value="">Pick who to assign first</option></select>
+        <div class="hint" id="aw-reassign" hidden></div></div>
       <div class="row">
         <div class="field"><label class="lbl">Start date</label><input class="inp" type="date" id="aw-start"></div>
         <div class="field"><label class="lbl">Due date</label><input class="inp" type="date" id="aw-due"></div>
@@ -21245,18 +21290,30 @@ const ACTIONS = {
   dasgSave:async(d,n)=>{
     const uid=DASG.pick[d.did];
     if(!uid){ toast('Choose someone to assign.','bad'); return; }
-    if(n){ n.disabled=true; n.textContent='Assigning…'; }   // blocks a double-click
+    /* Someone else owns it: say who it goes from and to, and ask, before
+       anything is sent. Cancel leaves the picker open as it was. */
+    const cur=d.kind==='crew'?(DASG.byDeliv[d.did]||{}).crew:null;
+    const pick=((DASG.list||{}).crew||[]).find(m=>String(m.id)===String(uid))||{};
+    const title=(deliv(+d.did)||{}).title;
+    const asked=!!cur&&String(cur.user_id)!==String(uid);
+    if(asked&&!(await confirmReassign(title,cur.full_name,pick.full_name)))return;
+    const label=cur?'Reassign':'Assign';
+    if(n){ n.disabled=true; n.textContent=asked?'Reassigning…':'Assigning…'; }   // blocks a double-click
     try{
-      const r=await MO_API.post('/deliverables/'+d.did+'/assignee',{kind:d.kind,user_id:uid});
+      const r=d.kind==='crew'
+        ?await moReassign(title,pick.full_name,c=>MO_API.post('/deliverables/'+d.did+'/assignee',
+            {kind:d.kind,user_id:uid,...(c?{confirm_reassign:true}:{})}),asked)
+        :await MO_API.post('/deliverables/'+d.did+'/assignee',{kind:d.kind,user_id:uid});
+      if(r&&r.cancelled){ if(n){ n.disabled=false; n.textContent=label; } return; }
       closeModal();
       toast(r&&r.unchanged?'That person is already assigned'
-        :(d.kind==='smc'?'SMC member assigned':'Team member assigned'),'ok');
+        :(d.kind==='smc'?'SMC member assigned':asked?'Deliverable reassigned':'Team member assigned'),'ok');
       await loadDelivAssignees(d.did,true);
       /* The assignment lives in mo_assignments, which the SPA holds in DB — pull
          it so My Day and the board reflect this without a browser refresh. */
       hydrateFromServer().then(()=>{ if(typeof render==='function') render(); });
     }catch(e){
-      if(n){ n.disabled=false; n.textContent='Assign'; }
+      if(n){ n.disabled=false; n.textContent=label; }
       toast(smcError(e),'bad');
     }
   },
@@ -22272,13 +22329,33 @@ const ACTIONS = {
     sel.innerHTML=ids.length?ids.map(id=>`<option value="${id}" ${id===pick?'selected':''}>${esc(personLabel(id))}</option>`).join('')
       :'<option value="">Pick who to assign first</option>';
     sel.disabled=!ids.length;
+    ACTIONS.awReassignHint();
   },
-  createWork:()=>{
+  /* The deliverable taken on already has an owner and someone else is named:
+     that is a reassignment, said here and confirmed on Assign. */
+  awReassign:()=>{
+    if(awDelivModeNow()!=='existing') return null;
+    const dl=deliv(+($('#aw-deliv')||{}).value), to=+($('#aw-owner')||{}).value;
+    return dl&&dl.owner_id&&to&&to!==dl.owner_id?{dl,to}:null;
+  },
+  awReassignHint:()=>{
+    const h=$('#aw-reassign'); if(!h) return;
+    const r=ACTIONS.awReassign();
+    h.hidden=!r;
+    h.textContent=r?'Reassign deliverable — Current owner: '+personLabel(r.dl.owner_id)
+      +' → New owner: '+personLabel(r.to)+'. You confirm this before it is sent.':'';
+  },
+  createWork:async()=>{
     const wt=workType($('#aw-type').value); if(!wt){toast('Pick a work type','bad');return;}
     const pid=+$('#aw-project').value;
     const tpl=workTemplateFor(wt);
     const {err,payload}=tpl.collect();
     if(err){toast(err,'bad');return;}
+    /* Taking an existing deliverable off its owner is asked first; Cancel
+       leaves Assign work open, as filled. */
+    const re=wt.form_template!=='shoot'&&payload.deliverable_id&&payload.owner_id
+      ?(d=>d&&d.owner_id&&d.owner_id!==payload.owner_id?d:null)(deliv(payload.deliverable_id)):null;
+    if(re&&!(await confirmReassign(re.title,personLabel(re.owner_id),personLabel(payload.owner_id))))return;
     /* Optimistic local write mirrors what the server will store, so My Day and
        the project timeline update immediately; moSync reconciles. */
     if(wt.form_template==='shoot'){
@@ -22318,9 +22395,10 @@ const ACTIONS = {
     }
     closeModal();render();
     toast(wt.name+' assigned','ok');
-    moSync(MO_API.post('/projects/'+pid+'/work',{work_type_id:wt.id,...payload,
+    moSync(moReassign(re?re.title:(deliv(payload.deliverable_id)||{}).title,
+      payload.owner_id?personLabel(payload.owner_id):'',c=>MO_API.post('/projects/'+pid+'/work',{work_type_id:wt.id,...payload,
       assignees:(payload.assignees||[]).map(u=>ruid(u)),crew:(payload.crew||[]).map(u=>ruid(u)),
-      ...(payload.owner_id?{owner_id:ruid(payload.owner_id)}:{})}));
+      ...(payload.owner_id?{owner_id:ruid(payload.owner_id)}:{}),...(c?{confirm_reassign:true}:{})}),!!re));
   },
   newCard:(d)=>openNewCard(d&&d.bid),
   booking:(d)=>openBooking(d&&d.eid,d&&d.sid),
@@ -22738,12 +22816,19 @@ const ACTIONS = {
   /* Team Lead allocates a deliverable to one of their people. Goes through the
      ordinary deliverable PATCH, which re-runs the same team scoping server-side
      — the picker's contents are a convenience, never the authority. */
-  assignDeliverable:(d,n)=>{
+  /* Taking it off someone who owns it is asked first (confirmReassign); on
+     Cancel the select goes back to the owner it still has. */
+  assignDeliverable:async(d,n)=>{
     const uid=n.value; if(!uid)return;
     const dl=DB.deliverables.find(x=>x.id===+d.did); if(!dl)return;
-    dl.owner_id=uidOf(uid);
-    moSync(MO_API.patch('/deliverables/'+d.did,{owner_id:ruid(uidOf(uid))}),
-      ()=>{render();toast(dl.title+' → '+user(uidOf(uid)).full_name,'ok');});
+    const to=uidOf(uid), from=dl.owner_id;
+    if(String(from)===String(to))return;
+    if(from&&!(await confirmReassign(dl.title,personLabel(from),personLabel(to)))){
+      n.value=String(from); return; }
+    dl.owner_id=to;
+    moSync(moReassign(dl.title,personLabel(to),
+        c=>MO_API.patch('/deliverables/'+d.did,{owner_id:ruid(to),...(c?{confirm_reassign:true}:{})}),!!from),
+      r=>{ if(r&&r.cancelled)return; render();toast(dl.title+' → '+user(to).full_name,'ok');});
   },
   postComment:(d)=>{
     const box=$('#newcomment');if(!box||!box.value.trim())return;
@@ -26498,7 +26583,7 @@ const ACTIONS = {
         <button class="btn primary" data-act="confirmSchedule" data-did="${dl.id}">Save schedule</button></div>`);
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
   },
-  confirmSchedule:(d)=>{
+  confirmSchedule:async(d)=>{
     const dl=DB.deliverables.find(x=>x.id===+d.did); if(!dl)return;
     /* Only a person actually picked changes the owner: saving a schedule never
        names someone by default. */
@@ -26506,6 +26591,10 @@ const ACTIONS = {
     const changed=!!picked&&picked!==dl.owner_id, owner=picked||dl.owner_id||null;
     const hours=$('#sd-hours').value?+$('#sd-hours').value:null, pri=$('#sd-pri').value;
     if(date&&!owner)return fieldError('#sd-owner','Pick who does it before scheduling it.');
+    /* A different owner takes it off the one it has: asked first, and Cancel
+       leaves this dialog open as filled. */
+    const asked=changed&&!!dl.owner_id;
+    if(asked&&!(await confirmReassign(dl.title,personLabel(dl.owner_id),personLabel(picked))))return;
     const before={scheduled_date:dl.scheduled_date,owner_id:dl.owner_id};
     Object.assign(dl,{scheduled_date:date,owner_id:owner,estimated_hours:hours,priority:pri});
     audit(S.me,date?'deliverable.scheduled':'deliverable.unscheduled','deliverable',dl.id,before,
@@ -26513,8 +26602,9 @@ const ACTIONS = {
     closeModal();render();
     toast(date?`Scheduled for ${D.fmt(date)}. It appears in ${esc(user(owner).full_name.split(' ')[0])}'s Today's Assignments that day`
                :'Unscheduled, back to the project backlog','ok');
-    moSync(MO_API.post('/deliverables/'+dl.id+'/schedule',
-      {scheduled_date:date,...(changed?{owner_id:ruid(owner)}:{}),estimated_hours:hours,priority:pri}));
+    moSync(moReassign(dl.title,personLabel(owner),c=>MO_API.post('/deliverables/'+dl.id+'/schedule',
+      {scheduled_date:date,...(changed?{owner_id:ruid(owner)}:{}),estimated_hours:hours,priority:pri,
+       ...(c?{confirm_reassign:true}:{})}),asked));
   },
   newAssignment:(d)=>{
     const pid=+d.pid;
@@ -27964,7 +28054,7 @@ function delivAssignSection(did){
     </dl>
     <div class="f gap2 wrap mb3">
       ${(()=>{const dl=deliv(+did);return dl&&canAssignOn(proj(dl.project_id))?`<button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="crew">
-        ${a.crew?'Change owner':'Assign an owner'}</button>`:'';})()}
+        ${a.crew?'Reassign deliverable':'Assign an owner'}</button>`:'';})()}
       ${canAssignSmc(deliv(+did))?`<button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="smc">
         ${a.smc?'Change SMC member':'Assign to SMC member'}</button>`:''}
     </div></div>`;
@@ -27973,13 +28063,14 @@ function delivAssignSection(did){
 async function dasgModal(did,kind){
   const cur=(DASG.byDeliv[did]||{})[kind];
   DASG.pick[did]=cur?cur.user_id:'';
-  modal(`<div class="mo-head"><div><h2>${kind==='smc'?'Assign to SMC Member':'Assign to Team Member'}</h2>
+  const re=kind==='crew'&&!!cur;   // it has an owner: picking someone else reassigns it
+  modal(`<div class="mo-head"><div><h2>${kind==='smc'?'Assign to SMC Member':re?'Reassign deliverable':'Assign to Team Member'}</h2>
       <p>${kind==='smc'?'SMC members cover institute-level work through their own workflow.'
         :'Media Crew members receive this in their assignments.'}</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
     <div class="mo-body"><div id="dasg-body"><div class="small mut3">Loading members…</div></div></div>
     <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
-      <button class="btn primary" id="dasg-go" data-act="dasgSave" data-did="${did}" data-kind="${kind}" disabled>Assign</button></div>`,
+      <button class="btn primary" id="dasg-go" data-act="dasgSave" data-did="${did}" data-kind="${kind}" disabled>${re?'Reassign':'Assign'}</button></div>`,
     {size:'wide'});
   smcWire();
   let list;

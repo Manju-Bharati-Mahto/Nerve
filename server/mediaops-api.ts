@@ -865,7 +865,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   async function deliverableAssigned(actor: CurrentUser, d: { id: number; project_id: number; title: string },
                                      from: string | null, to: string | null,
-                                     opts: { notifyIncoming?: boolean; skipAssignmentId?: number; reassign?: boolean } = {}) {
+                                     opts: { notifyIncoming?: boolean; skipAssignmentId?: number; reassign?: boolean;
+                                             via?: string; req?: express.Request } = {}) {
     if (from === to) return;
     if (to) await addToProjectCrew(Number(d.project_id), to, actor.id);
     const linked = (await pool.query(
@@ -889,12 +890,16 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        VALUES ($1,'assignment',$2,$3,'deliverable',$4)`, [uid, title, body, d.id]).catch(() => {});
     /* A reassignment (someone took the work off its owner) names both people,
        and both are always told — the outgoing owner whether or not they stay
-       on the team. */
+       on the team. The trail records who it went from and to, and by which
+       path (via), whatever that path also records of its own. A caller that
+       tells the incoming owner itself (Assign work) passes notifyIncoming:false. */
     if (opts.reassign && from && to) {
+      if (opts.req) await audit(actor, "deliverable.reassigned", "deliverable", Number(d.id),
+        { owner_id: from }, { from, to, via: opts.via ?? null }, opts.req);
       const names = new Map((await pool.query(`SELECT id, full_name FROM users WHERE id = ANY($1)`, [[from, to]]))
         .rows.map((r) => [String(r.id), String(r.full_name ?? "")]));
       const by = actor.full_name ?? "Your Team Lead";
-      if (to !== actor.id)
+      if (to !== actor.id && opts.notifyIncoming !== false)
         await say(to, "Reassigned to you", `${by} reassigned “${d.title}” to you (was ${names.get(from) || "someone else"}).`);
       if (from !== actor.id) {
         const stays = (await deliverableTeamIds(Number(d.id))).has(from);
@@ -910,6 +915,28 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        left the deliverable's team is told it is no longer theirs. */
     if (from && from !== actor.id && !(await deliverableTeamIds(Number(d.id))).has(from))
       await say(from, "Assignment reassigned", `“${d.title}” is no longer assigned to you.`);
+  }
+
+  /* Taking a deliverable off the person who owns it is a reassignment, and
+     whoever does it says so: confirm_reassign:true, sent once they have been
+     shown who has it now. Without it nothing changes and the answer (409
+     reassign_confirm) names the current owner, so the page can ask. A first
+     assignment, or picking the same owner again, never asks. Call it after the
+     permission and eligibility checks, so a refusal is never dressed up as a
+     question. True when it has answered. */
+  async function reassignUnconfirmed(res: express.Response, d: { title?: unknown; owner_id?: unknown },
+                                     to: string | null, body: Record<string, unknown>): Promise<boolean> {
+    const from = d.owner_id ? String(d.owner_id) : null;
+    if (!from || from === to || body.confirm_reassign === true) return false;
+    const owner = (await pool.query(`SELECT full_name FROM users WHERE id=$1`, [from])).rows[0];
+    const name = owner?.full_name ? String(owner.full_name) : null;
+    res.status(409).json({
+      code: "reassign_confirm",
+      message: `“${String(d.title ?? "This deliverable")}” is ${name ? `${name}'s` : "already assigned"}. `
+        + `Confirm that you want to reassign it; ${name ?? "the current owner"} and the new owner are both told.`,
+      current_owner: { id: from, full_name: name },
+    });
+    return true;
   }
 
   // Per-user module access (allowed_modules). Admins bypass; NULL = unrestricted
@@ -1971,6 +1998,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // Re-owning a deliverable is an assignment — same team scope as everything else.
     if ("owner_id" in b && b.owner_id && String(b.owner_id) !== String(d.owner_id)
         && !(await assertAssignable(res, u, [String(b.owner_id)]))) return;
+    if ("owner_id" in b && await reassignUnconfirmed(res, d, b.owner_id ? String(b.owner_id) : null, b)) return;
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
     for (const k of asked) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
     if (!fields.length) return res.json({ deliverable: d });
@@ -1978,7 +2006,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const { rows } = await pool.query(`UPDATE mo_deliverables SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals);
     if ("owner_id" in b)
       await deliverableAssigned(u, rows[0], d.owner_id ? String(d.owner_id) : null,
-        rows[0].owner_id ? String(rows[0].owner_id) : null);
+        rows[0].owner_id ? String(rows[0].owner_id) : null, { reassign: true, via: "edit", req });
     await audit(u, "deliverable.updated", "deliverable", id, d, rows[0], req);
     res.json({ deliverable: rows[0] });
   }));
@@ -2003,6 +2031,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (date && !owner) return sendError(res, 400, "Assign an owner before scheduling this deliverable.");
     if (b.owner_id && String(b.owner_id) !== String(cur.owner_id)
         && !(await assertAssignable(res, u, [String(b.owner_id)]))) return;
+    if (b.owner_id && await reassignUnconfirmed(res, cur, String(b.owner_id), b)) return;
     const { rows } = await pool.query(
       `UPDATE mo_deliverables SET scheduled_date=$1, owner_id=COALESCE($2, owner_id),
          estimated_hours=COALESCE($3, estimated_hours), priority=COALESCE($4, priority)
@@ -2011,7 +2040,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        b.estimated_hours != null && b.estimated_hours !== "" ? Number(b.estimated_hours) : null,
        b.priority ? String(b.priority) : null, id]);
     if (b.owner_id)
-      await deliverableAssigned(u, rows[0], cur.owner_id ? String(cur.owner_id) : null, String(rows[0].owner_id));
+      await deliverableAssigned(u, rows[0], cur.owner_id ? String(cur.owner_id) : null, String(rows[0].owner_id),
+        { reassign: true, via: "schedule", req });
     await audit(u, date ? "deliverable.scheduled" : "deliverable.unscheduled", "deliverable", id,
       { scheduled_date: cur.scheduled_date, owner_id: cur.owner_id },
       { scheduled_date: date, owner_id: rows[0].owner_id }, req);
@@ -2583,6 +2613,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       if (!existing) return sendError(res, 400, "That deliverable is not on this project.");
       if (["delivered", "not_required", "cancelled"].includes(String(existing.status)))
         return sendError(res, 400, `That deliverable is ${String(existing.status).replace("_", " ")} — it can no longer take new work.`);
+      // Naming a different owner takes it off the one it has: asked first, like any reassignment.
+      if (await reassignUnconfirmed(res, existing, ownerId, b)) return;
     }
     if (nd) {
       const typeId = Number(nd.deliverable_type_id);
@@ -2652,15 +2684,18 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
     /* Taking on an existing deliverable with a different owner is a
        reassignment: the shared path swaps the owner on the deliverable's
-       EARLIER team rows and tells the outgoing owner. The row just inserted is
-       skipped — it is exactly the people the lead picked, and swapping on it
-       would drop the outgoing owner from work they were just given. The
-       incoming owner hears about it below, once. */
+       EARLIER team rows and tells the outgoing owner who has it now. The row
+       just inserted is skipped — it is exactly the people the lead picked, and
+       swapping on it would drop the outgoing owner from work they were just
+       given. The incoming owner hears about it below, once, in the work's own
+       notice. */
+    const reassignedFrom = existing && existing.owner_id && String(existing.owner_id) !== ownerId
+      ? String(existing.owner_id) : null;
     if (existing && String(existing.owner_id ?? "") !== ownerId) {
       await pool.query(`UPDATE mo_deliverables SET owner_id=$1, updated_at=NOW() WHERE id=$2`, [ownerId, existing.id]);
       await deliverableAssigned(u, existing as { id: number; project_id: number; title: string },
         existing.owner_id ? String(existing.owner_id) : null, ownerId,
-        { notifyIncoming: false, skipAssignmentId: Number(assignment.id) });
+        { notifyIncoming: false, skipAssignmentId: Number(assignment.id), reassign: true, via: "assign_work", req });
       await audit(u, "deliverable.assigned", "deliverable", Number(existing.id),
         { owner_id: existing.owner_id }, { owner_id: ownerId, via: "assign_work" }, req);
     }
@@ -2694,10 +2729,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        whether they own it or are working on it with someone. */
     const ownerName = ownerId
       ? (await pool.query(`SELECT full_name FROM users WHERE id=$1`, [ownerId])).rows[0]?.full_name ?? "the owner" : "";
+    const wasName = reassignedFrom
+      ? (await pool.query(`SELECT full_name FROM users WHERE id=$1`, [reassignedFrom])).rows[0]?.full_name ?? "someone else" : "";
     for (const uid of assignees) {
       if (uid === u.id) continue;
       const by = u.full_name ?? "Your Team Lead";
       const body = !target ? `${by} assigned “${title}”.`
+        : uid === ownerId && reassignedFrom
+          ? `${by} assigned “${title}” and reassigned “${target.title}” to you (was ${wasName}). You submit it for review.`
         : uid === ownerId ? `${by} assigned “${title}”. You own “${target.title}” and submit it for review.`
         : `${by} assigned “${title}”. You are working on “${target.title}” with ${ownerName}.`;
       await pool.query(
@@ -9213,7 +9252,7 @@ async function allocateInternalCode(
          RETURNING id, project_id, title`, [reassignTo, realId]);
       for (const d of r1.rows)
         await deliverableAssigned(u, { id: Number(d.id), project_id: Number(d.project_id), title: String(d.title) },
-          realId, reassignTo, { reassign: true });
+          realId, reassignTo, { reassign: true, via: "account_removal", req });
       const r2 = await pool.query(
         `UPDATE mo_projects SET owner_id=$1 WHERE owner_id=$2
            AND status NOT IN ('completed','archived','cancelled') AND deleted_at IS NULL`, [reassignTo, realId]);
@@ -11395,7 +11434,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
         if (r.status !== 200) return sendError(res, r.status, r.message ?? "");
       } else if (d.role === "owner") {
         await pool.query(`UPDATE mo_deliverables SET owner_id=$1, updated_at=NOW() WHERE id=$2`, [to, d.id]);
-        await deliverableAssigned(u, { id: d.id, project_id: pid, title: d.title }, uid, to ?? null, { reassign: true });
+        await deliverableAssigned(u, { id: d.id, project_id: pid, title: d.title }, uid, to ?? null,
+          { reassign: true, via: "crew_removal", req });
       } else {
         // A team member: off its team rows, with their replacement in their place.
         const rows = (await pool.query(
@@ -18648,9 +18688,10 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       if (!(await assertAssignable(res, u, [memberId]))) return;
       const from = d.owner_id ? String(d.owner_id) : null;
       if (from === memberId) return res.json({ ok: true, unchanged: true, kind });
+      if (await reassignUnconfirmed(res, d, memberId, b)) return;
       const { rows } = await pool.query(
         `UPDATE mo_deliverables SET owner_id=$1, updated_at=NOW() WHERE id=$2 RETURNING *`, [memberId, did]);
-      await deliverableAssigned(u, rows[0], from, memberId);
+      await deliverableAssigned(u, rows[0], from, memberId, { reassign: true, via: "assignee", req });
       await audit(u, "deliverable.assigned", "deliverable", did, { owner_id: from },
         { owner_id: memberId, kind }, req);
       const who = (await pool.query(

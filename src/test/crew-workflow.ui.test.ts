@@ -624,7 +624,10 @@ describe("Assign work — creates the deliverable and shares it with everyone as
     expect((doc.querySelector("#aw-due") as HTMLInputElement).value).toBe("2026-11-30");
     (doc.querySelector("#aw-title") as HTMLInputElement).value = "Cut it";
     pick(903);
-    h.ev("ACTIONS.createWork()");
+    // Emp Arjun in Emp Anika's place is a reassignment, confirmed first.
+    const done = h.ev<Promise<unknown>>("ACTIONS.createWork()");
+    (doc.querySelector('#rsg-layer [data-rsg="yes"]') as HTMLElement).click();
+    await done;
     expect(h.ev<string>("deliv(8002).due_date"), "the deliverable is due when the work is due").toBe("2026-11-30");
   });
 
@@ -1313,5 +1316,115 @@ describe("Assign crew — ticking adds, unticking removes", () => {
     h.ev("ACTIONS.assignProject({pid:'7001'})");
     expect((h.doc.querySelector('#pa-crew .chip[data-uid="903"]') as HTMLButtonElement).disabled).toBe(true);
     expect((h.doc.querySelector('#pa-crew .chip[data-uid="905"]') as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+describe("Reassign deliverable — the current owner is named, and it is asked first", () => {
+  const tick = () => new Promise((r) => setTimeout(r, 30));
+  const dialog = (h: Awaited<ReturnType<typeof boot>>) => h.doc.getElementById("rsg-layer");
+  const answer = (h: Awaited<ReturnType<typeof boot>>, yes: boolean) =>
+    (h.doc.querySelector(`#rsg-layer [data-rsg="${yes ? "yes" : "no"}"]`) as HTMLElement).click();
+  const sent = (h: Awaited<ReturnType<typeof boot>>, tail: string) =>
+    h.writes().filter((c) => c.url.endsWith(tail)).map((c) => c.body as Record<string, unknown>);
+
+  it("the owner select says Reassign deliverable; Cancel puts it back, Reassign sends it confirmed", async () => {
+    const h = await boot(901);
+    const cell = h.ev<string>("delivOwnerCell(proj(7001),deliv(8002))");
+    expect(cell).toContain('title="Reassign deliverable — owned by Emp Anika · Event Team"');
+    h.doc.body.insertAdjacentHTML("beforeend", cell);
+    const sel = h.doc.querySelector('select.deliv-owner[data-did="8002"]') as HTMLSelectElement;
+    sel.value = "903";
+    sel.dispatchEvent(new h.dom.window.Event("change"));
+    expect(dialog(h)!.textContent).toContain("Current owner: Emp Anika · Event Team");
+    expect(dialog(h)!.textContent).toContain("→ New owner: Emp Arjun · Event Team");
+    answer(h, false);
+    await tick();
+    expect(dialog(h)).toBeNull();
+    expect(sel.value, "the select still shows who owns it").toBe("902");
+    expect(h.ev<number>("deliv(8002).owner_id")).toBe(902);
+    expect(sent(h, "/deliverables/8002")).toEqual([]);
+    sel.value = "903";
+    sel.dispatchEvent(new h.dom.window.Event("change"));
+    answer(h, true);
+    await tick();
+    expect(sent(h, "/deliverables/8002")).toEqual([{ owner_id: "zcw-903", confirm_reassign: true }]);
+  });
+
+  it("a first assignment is not asked about and sends no confirmation", async () => {
+    const h = await boot(901);
+    expect(h.ev<string>("delivOwnerCell(proj(7001),deliv(8003))")).toContain('title="Assign this deliverable');
+    h.ev("ACTIONS.assignDeliverable({did:8003},{value:'903'})");
+    await tick();
+    expect(dialog(h)).toBeNull();
+    expect(sent(h, "/deliverables/8003")).toEqual([{ owner_id: "zcw-903" }]);
+  });
+
+  it("the drawer offers Reassign deliverable and asks before it posts", async () => {
+    const h = await boot(901);
+    h.ev(`DASG.byDeliv[8002]={crew:{user_id:'zcw-902',full_name:'Emp Anika'},smc:null,team:[]};
+          DASG.list={crew:[{id:'zcw-903',full_name:'Emp Arjun'}],smc:[]}; DASG.pick[8002]='zcw-903';`);
+    expect(h.ev<string>("delivAssignSection(8002)")).toContain("Reassign deliverable");
+    const done = h.ev<Promise<unknown>>("ACTIONS.dasgSave({did:'8002',kind:'crew'})");
+    expect(dialog(h)!.textContent).toMatch(/Current owner: Emp Anika\s*→ New owner: Emp Arjun/);
+    answer(h, false);
+    await done;
+    expect(sent(h, "/deliverables/8002/assignee")).toEqual([]);
+    const again = h.ev<Promise<unknown>>("ACTIONS.dasgSave({did:'8002',kind:'crew'})");
+    answer(h, true);
+    await again;
+    expect(sent(h, "/deliverables/8002/assignee")).toEqual([{ kind: "crew", user_id: "zcw-903", confirm_reassign: true }]);
+  });
+
+  it("Assign work names the reassignment, keeps the form on Cancel and sends it confirmed", async () => {
+    const h = await boot(901);
+    h.ev("openAssignWork(7001); ACTIONS.awDelivMode({m:'existing'})");
+    (h.doc.querySelector("#aw-deliv") as HTMLSelectElement).value = "8002";
+    h.ev("ACTIONS.awDelivPick()");
+    (h.doc.querySelector("#aw-title") as HTMLInputElement).value = "Grade it";
+    (h.doc.querySelector('#aw-users .chip[data-uid="903"]') as HTMLElement).click();
+    const hint = h.doc.querySelector("#aw-reassign") as HTMLElement;
+    expect(hint.hidden).toBe(false);
+    expect(hint.textContent).toContain("Reassign deliverable — Current owner: Emp Anika · Event Team → New owner: Emp Arjun");
+    const first = h.ev<Promise<unknown>>("ACTIONS.createWork()");
+    answer(h, false);
+    await first;
+    expect(h.doc.querySelector("#aw-title"), "Assign work closed on Cancel").not.toBeNull();
+    expect(sent(h, "/projects/7001/work")).toEqual([]);
+    const second = h.ev<Promise<unknown>>("ACTIONS.createWork()");
+    answer(h, true);
+    await second;
+    expect(sent(h, "/projects/7001/work")[0]).toMatchObject({ deliverable_id: 8002, owner_id: "zcw-903", confirm_reassign: true });
+  });
+
+  it("Schedule with a new owner asks too", async () => {
+    const h = await boot(901);
+    h.ev("ACTIONS.scheduleDeliv({did:'8002'})");
+    (h.doc.querySelector("#sd-owner") as HTMLSelectElement).value = "903";
+    const done = h.ev<Promise<unknown>>("ACTIONS.confirmSchedule({did:'8002'})");
+    expect(dialog(h)!.textContent).toContain("Current owner: Emp Anika");
+    answer(h, true);
+    await done;
+    expect(sent(h, "/deliverables/8002/schedule")[0]).toMatchObject({ owner_id: "zcw-903", confirm_reassign: true });
+  });
+
+  it("an owner the page did not know about: the server's answer is asked about, then sent confirmed", async () => {
+    const h = await boot(901);
+    const calls: Array<Record<string, unknown>> = [];
+    (h.dom.window as unknown as { fetch: unknown }).fetch = async (input: string, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : null;
+      if (String(input).endsWith("/deliverables/8003")) {
+        calls.push(body);
+        if (!body.confirm_reassign)
+          return { ok: false, status: 409, json: async () => ({ code: "reassign_confirm",
+            message: "Already owned.", current_owner: { id: "zcw-905", full_name: "Emp Bela" } }) } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({}) } as Response;
+    };
+    h.ev("ACTIONS.assignDeliverable({did:8003},{value:'903'})");
+    await tick();
+    expect(dialog(h)!.textContent).toContain("Current owner: Emp Bela");
+    answer(h, true);
+    await tick();
+    expect(calls).toEqual([{ owner_id: "zcw-903" }, { owner_id: "zcw-903", confirm_reassign: true }]);
   });
 });

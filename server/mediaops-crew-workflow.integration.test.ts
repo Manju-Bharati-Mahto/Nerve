@@ -305,16 +305,19 @@ maybe("team lead — allocates inside their own team, on their own team's projec
      team's lead's. */
   it("7 — Team A's lead may assign a Team B employee, by either path", async () => {
     expect((await as("leadA", "PATCH", `/deliverables/${a.dids[2]}`, { owner_id: ACTORS.empB1.id })).status).toBe(200);
+    // dids[1] already has an owner: taking it off them is confirmed (Q10).
     expect((await as("leadA", "POST", `/deliverables/${a.dids[1]}/assignee`,
-      { kind: "crew", user_id: ACTORS.empB1.id })).status).toBe(201);
+      { kind: "crew", user_id: ACTORS.empB1.id, confirm_reassign: true })).status).toBe(201);
     expect((await deliv(a.dids[2])).owner_id).toBe(ACTORS.empB1.id);
   });
 
   it("8 — Team A's lead assigns on Team B's project, but does not run or review it", async () => {
     const d = b.dids[0];
     // Assigning — open to every lead.
-    expect((await as("leadA", "PATCH", `/deliverables/${d}`, { owner_id: ACTORS.empA1.id })).status).toBe(200);
-    expect((await as("leadA", "POST", `/deliverables/${d}/assignee`, { kind: "crew", user_id: ACTORS.empB1.id })).status).toBe(201);
+    expect((await as("leadA", "PATCH", `/deliverables/${d}`,
+      { owner_id: ACTORS.empA1.id, confirm_reassign: true })).status).toBe(200);
+    expect((await as("leadA", "POST", `/deliverables/${d}/assignee`,
+      { kind: "crew", user_id: ACTORS.empB1.id, confirm_reassign: true })).status).toBe(201);
     expect((await deliv(d)).owner_id).toBe(ACTORS.empB1.id);
     expect((await as("leadA", "POST", `/projects/${b.pid}/work`,
       { work_type_id: workTypeId, title: `${PX} task`, assignees: [ACTORS.empA1.id] })).status).toBe(201);
@@ -990,7 +993,8 @@ maybe("assign work — creates the deliverable and gives it a team", () => {
     const r = await work("leadA", pid, { assignees: [ACTORS.empA1.id, ACTORS.empA2.id], owner_id: ACTORS.empA1.id,
       new_deliverable: { deliverable_type_id: dtype } });
     const did = Number((r.body.deliverable as Record<string, unknown>).id);
-    expect((await as("leadA", "PATCH", `/deliverables/${did}`, { owner_id: ACTORS.leadA.id })).status).toBe(200);
+    expect((await as("leadA", "PATCH", `/deliverables/${did}`,
+      { owner_id: ACTORS.leadA.id, confirm_reassign: true })).status).toBe(200);
     expect((await teamRow(did))[0].users).toEqual([ACTORS.empA2.id, ACTORS.leadA.id].sort());
     expect((await as("empA2", "POST", `/deliverables/${did}/versions`, drive("keep"))).status).toBe(201);
     expect((await as("empA1", "POST", `/deliverables/${did}/versions`, drive("gone"))).status).toBe(403);
@@ -1178,13 +1182,21 @@ maybe("notifications — payload, recipients, no duplicates", () => {
       expect(await titles(who, "deliverable", did), who).toContain("Your deliverable was dispatched");
   });
 
-  it("handing ownership to a teammate does not tell the old owner it is no longer theirs", async () => {
+  /* Q10: a reassignment always tells the old owner who has it now — handed to
+     a teammate, it also says they are still on the team, never that the work
+     is no longer theirs. */
+  it("handing ownership to a teammate tells the old owner who has it, and that they remain on its team", async () => {
     const { pid, did } = await teamed();
     const r = await work("leadA", pid, { assignees: [ACTORS.empA2.id, ACTORS.empA1.id], owner_id: ACTORS.empA2.id,
-      deliverable_id: did });
+      deliverable_id: did, confirm_reassign: true });
     expect(r.status).toBe(201);
     expect((await deliv(did)).owner_id).toBe(ACTORS.empA2.id);
-    expect(await titles("empA1", "deliverable", did)).not.toContain("Assignment reassigned");
+    const told = (await pool.query(`SELECT body FROM mo_notifications WHERE user_id=$1 AND entity_type='deliverable'
+                                       AND entity_id=$2 AND title='Assignment reassigned'`, [ACTORS.empA1.id, did])).rows;
+    expect(told).toHaveLength(1);
+    expect(told[0].body).toContain(ACTORS.empA2.full_name);
+    expect(told[0].body).toContain("You remain on its team.");
+    expect(told[0].body).not.toContain("no longer assigned to you");
   });
 
   it("the review reminder waits for its threshold instead of following the submission notice", async () => {
