@@ -865,7 +865,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   async function deliverableAssigned(actor: CurrentUser, d: { id: number; project_id: number; title: string },
                                      from: string | null, to: string | null,
-                                     opts: { notifyIncoming?: boolean; skipAssignmentId?: number } = {}) {
+                                     opts: { notifyIncoming?: boolean; skipAssignmentId?: number; reassign?: boolean } = {}) {
     if (from === to) return;
     if (to) await addToProjectCrew(Number(d.project_id), to, actor.id);
     const linked = (await pool.query(
@@ -887,6 +887,22 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const say = (uid: string, title: string, body: string) => pool.query(
       `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
        VALUES ($1,'assignment',$2,$3,'deliverable',$4)`, [uid, title, body, d.id]).catch(() => {});
+    /* A reassignment (someone took the work off its owner) names both people,
+       and both are always told — the outgoing owner whether or not they stay
+       on the team. */
+    if (opts.reassign && from && to) {
+      const names = new Map((await pool.query(`SELECT id, full_name FROM users WHERE id = ANY($1)`, [[from, to]]))
+        .rows.map((r) => [String(r.id), String(r.full_name ?? "")]));
+      const by = actor.full_name ?? "Your Team Lead";
+      if (to !== actor.id)
+        await say(to, "Reassigned to you", `${by} reassigned “${d.title}” to you (was ${names.get(from) || "someone else"}).`);
+      if (from !== actor.id) {
+        const stays = (await deliverableTeamIds(Number(d.id))).has(from);
+        await say(from, "Assignment reassigned",
+          `${by} reassigned “${d.title}” to ${names.get(to) || "someone else"}.${stays ? " You remain on its team." : ""}`);
+      }
+      return;
+    }
     if (to && to !== actor.id && opts.notifyIncoming !== false)
       await say(to, "New assignment", `${actor.full_name ?? "Your Team Lead"} assigned “${d.title}” to you.`);
     /* Handing ownership to a teammate does not take the old owner off the
@@ -2700,11 +2716,19 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // POST /projects/:id/shoots endpoint was the second, divergent creation path
   // (no work type, no assignable-crew check, no attribution) and is gone.
 
-  /** A shoot is project work: Admin, or the lead of the project it belongs to. */
+  /** A shoot is project work: Admin, or the lead of the project it belongs to.
+      Deleting one is theirs alone. */
   async function leadsShootProject(actor: CurrentUser, shootId: number): Promise<boolean> {
     if (isMoAdmin(actor)) return true;
     const s = (await pool.query(`SELECT project_id FROM mo_shoots WHERE id=$1`, [shootId])).rows[0];
     return !!s && await isTeamLeadOfProject(actor, Number(s.project_id));
+  }
+
+  /** Editing a shoot and taking people off it is running the project, so the
+      project's owner/PM may do it as well as its lead or an Admin. */
+  async function managesShootProject(actor: CurrentUser, shootId: number): Promise<boolean> {
+    const s = (await pool.query(`SELECT project_id FROM mo_shoots WHERE id=$1`, [shootId])).rows[0];
+    return !!s && await canManageProject(actor, Number(s.project_id));
   }
 
   // A2 — soft-delete a shoot (BR-13). The project's lead or Admin.
@@ -2720,7 +2744,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   app.patch(`${P}/shoots/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
-    if (!(await leadsShootProject(u, id))) return sendError(res, 403, "Only the project's Team Lead or an Admin may edit a shoot.");
+    if (!(await managesShootProject(u, id)))
+      return sendError(res, 403, "Only the project's Team Lead, its owner/PM or an Admin may edit a shoot.");
     const b = req.body as Record<string, unknown>;
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
     for (const k of ["title", "shoot_date", "call_time", "end_time", "location", "notes", "status"])
@@ -9102,12 +9127,12 @@ async function allocateInternalCode(
     res.json({ deliverable: rows[0] });
   }));
 
-  // Delete a project (soft) — #11. TL/Admin.
+  // Delete a project (soft) — #11. Admin only: a lead cancels or archives a
+  // project they run, but removing one from every view is an Admin's call.
   app.delete(`${P}/projects/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
-    if (!(isMoAdmin(u) || await isTeamLeadOfProject(u, id)))
-      return sendError(res, 403, "Only the project's Team Lead or an Admin may delete a project.");
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may delete a project.");
     // G1: cascade the soft-delete so no orphans pollute the Library/Workload.
     await pool.query(`UPDATE mo_projects SET deleted_at=NOW() WHERE id=$1`, [id]);
     await pool.query(`UPDATE mo_deliverables SET deleted_at=NOW() WHERE project_id=$1 AND deleted_at IS NULL`, [id]);
@@ -9179,9 +9204,16 @@ async function allocateInternalCode(
     // Entirely the Admin's choice — removal proceeds either way.
     let reassigned = 0;
     if (reassignTo && reassignTo !== realId) {
+      /* Each deliverable changes hands the way every other owner change does
+         (deliverableAssigned): the new owner joins the crew and takes the old
+         owner's place on its team, and is told who it came from. */
       const r1 = await pool.query(
-        `UPDATE mo_deliverables SET owner_id=$1 WHERE owner_id=$2
-           AND status NOT IN ('delivered','not_required','cancelled') AND deleted_at IS NULL`, [reassignTo, realId]);
+        `UPDATE mo_deliverables SET owner_id=$1, updated_at=NOW() WHERE owner_id=$2
+           AND status NOT IN ('delivered','not_required','cancelled') AND deleted_at IS NULL
+         RETURNING id, project_id, title`, [reassignTo, realId]);
+      for (const d of r1.rows)
+        await deliverableAssigned(u, { id: Number(d.id), project_id: Number(d.project_id), title: String(d.title) },
+          realId, reassignTo, { reassign: true });
       const r2 = await pool.query(
         `UPDATE mo_projects SET owner_id=$1 WHERE owner_id=$2
            AND status NOT IN ('completed','archived','cancelled') AND deleted_at IS NULL`, [reassignTo, realId]);
@@ -11251,23 +11283,175 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     res.json({ ok: true });
   }));
 
-  // Remove a crew member from a project (#3). TL/Admin.
+  /* ── Taking someone off a project ──────────────────────────────────────────
+     Running the project (canManageProject: Admin, its lead, its owner/PM)
+     includes choosing its crew. The project's owner and its PM are not taken
+     off this way — hand the project or the PM role on first.
+
+     Removal never strands work. What blocks it is a live deliverable of this
+     project the person carries — they own it or are on its team — anything not
+     delivered, not required or cancelled. The one removing them resolves each
+     first: hands it to someone else, takes them off its team (the owner carries
+     on), or closes it as not required / cancelled. Their open plain work and
+     upcoming shoots on this project are then let go. Delivered work, the
+     versions they submitted and every historical record are never touched. */
+  const CLOSED_DELIV = ["delivered", "not_required", "cancelled"];
+  type Blocking = { id: number; title: string; status: string; role: "owner" | "team" };
+  async function crewRemovalImpact(pid: number, uid: string) {
+    const live = (await pool.query(
+      `SELECT id, title, status, owner_id FROM mo_deliverables
+        WHERE project_id=$1 AND deleted_at IS NULL AND status <> ALL($2) ORDER BY id`, [pid, CLOSED_DELIV])).rows;
+    const blocking: Blocking[] = [];
+    for (const d of live) {
+      const owns = String(d.owner_id ?? "") === uid;
+      if (owns || (await deliverableTeamIds(Number(d.id))).has(uid))
+        blocking.push({ id: Number(d.id), title: String(d.title), status: String(d.status), role: owns ? "owner" : "team" });
+    }
+    const n = async (sql: string) => Number((await pool.query(sql, [pid, uid])).rows[0]?.n ?? 0);
+    const [work, shoots, versions, delivered] = await Promise.all([
+      n(`SELECT count(*) n FROM mo_assignments a JOIN mo_assignment_users au ON au.assignment_id=a.id AND au.user_id=$2
+          WHERE a.project_id=$1 AND a.deliverable_id IS NULL AND a.status NOT IN ('done','cancelled')`),
+      n(`SELECT count(*) n FROM mo_shoot_crew c JOIN mo_shoots s ON s.id=c.shoot_id
+          WHERE s.project_id=$1 AND c.user_id=$2 AND s.shoot_date >= CURRENT_DATE AND s.deleted_at IS NULL`),
+      n(`SELECT count(*) n FROM mo_deliverable_versions v JOIN mo_deliverables d ON d.id=v.deliverable_id
+          WHERE d.project_id=$1 AND v.submitted_by=$2`),
+      n(`SELECT count(*) n FROM mo_deliverables WHERE project_id=$1 AND status='delivered' AND deleted_at IS NULL
+            AND (owner_id=$2 OR delivered_by=$2)`),
+    ]);
+    return { blocking, info: { work_items: work, upcoming_shoots: shoots }, history: { versions, delivered } };
+  }
+
+  /** What taking this person off the project would touch — drives the removal dialog. */
+  app.get(`${P}/projects/:id/assignments/:uid/impact`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const pid = parseInt(getSingleParam(req.params.id), 10);
+    if (!(await canManageProject(u, pid)))
+      return sendError(res, 403, "Only the project's Team Lead, its owner/PM or an Admin may take people off it.");
+    res.json(await crewRemovalImpact(pid, String(getSingleParam(req.params.uid))));
+  }));
+
+  /* Body (optional): resolutions — one per blocking deliverable:
+       { deliverable_id, reassign_to }          hand it (or their team place) to someone
+       { deliverable_id, remove_from_team }     a team member only: the owner carries on
+       { deliverable_id, status }               'not_required' or 'cancelled'
+     Every resolution is checked before any is applied, so a refused request
+     changes nothing. */
   app.delete(`${P}/projects/:id/assignments/:uid`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const pid = parseInt(getSingleParam(req.params.id), 10);
-    if (!(isMoAdmin(u) || await isTeamLeadOfProject(u, pid)))
-      return sendError(res, 403, "Only the project's Team Lead or an Admin may change assignments.");
-    const uid = getSingleParam(req.params.uid);
-    await pool.query(`UPDATE mo_project_assignments SET removed_at=NOW() WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`, [pid, uid]);
-    await audit(u, "project.assignment_removed", "project", pid, null, { user_id: uid }, req);
-    res.json({ ok: true });
+    if (!(await canManageProject(u, pid)))
+      return sendError(res, 403, "Only the project's Team Lead, its owner/PM or an Admin may take people off it.");
+    const uid = String(getSingleParam(req.params.uid));
+    const p = (await pool.query(`SELECT id, name, owner_id FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [pid])).rows[0];
+    if (!p) return sendError(res, 404, "Project not found.");
+    const name = String((await pool.query(`SELECT full_name FROM users WHERE id=$1`, [uid])).rows[0]?.full_name ?? "This person");
+    if (String(p.owner_id ?? "") === uid)
+      return sendError(res, 400, `${name} owns this project — hand it to someone else before taking them off.`);
+    if ((await pool.query(`SELECT 1 FROM mo_project_assignments
+                            WHERE project_id=$1 AND user_id=$2 AND is_project_manager AND removed_at IS NULL`, [pid, uid])).rows[0])
+      return sendError(res, 400, `${name} is this project's PM — make someone else PM before taking them off.`);
+
+    const { blocking } = await crewRemovalImpact(pid, uid);
+    const raw = (req.body as Record<string, unknown> | undefined)?.resolutions;
+    // The moves changeDeliverableStatus allows into each closed state.
+    const CLOSE_FROM: Record<string, string[]> = {
+      not_required: ["not_started", "in_progress"],
+      cancelled: ["not_started", "in_progress", "in_review", "changes_requested"],
+    };
+    const plan = new Map<number, { d: Blocking; to?: string; status?: string }>();
+    for (const r of (Array.isArray(raw) ? raw : []) as Array<Record<string, unknown>>) {
+      const d = blocking.find((x) => x.id === Number(r?.deliverable_id));
+      if (!d) return sendError(res, 400, `${name} is not working on that deliverable here.`);
+      if (r.reassign_to != null && r.reassign_to !== "") {
+        const to = String(toUid(r.reassign_to));
+        if (to === uid) return sendError(res, 400, `Choose someone other than ${name} for “${d.title}”.`);
+        if (!(await assertAssignable(res, u, [to]))) return;
+        if (!(await pool.query(`SELECT 1 FROM users WHERE id=$1 AND team='media' AND COALESCE(status,'active')='active'`, [to])).rows[0])
+          return sendError(res, 403, `“${d.title}” can only go to an active member of the Media Crew.`);
+        plan.set(d.id, { d, to });
+      } else if (r.remove_from_team === true && d.role === "team") {
+        plan.set(d.id, { d });
+      } else if (typeof r.status === "string" && CLOSE_FROM[r.status]) {
+        if (!CLOSE_FROM[r.status].includes(d.status))
+          return sendError(res, 400, `“${d.title}” is ${d.status.replace(/_/g, " ")} and cannot be marked ${r.status.replace(/_/g, " ")} now — hand it to someone instead.`);
+        plan.set(d.id, { d, status: r.status });
+      } else {
+        return sendError(res, 400, `Say what happens to “${d.title}”: hand it to someone, or close it.`);
+      }
+    }
+    const blocked = (open: Blocking[]) => res.status(409).json({
+      code: "active_deliverables",
+      message: `${name} is still working on ${open.map((d) => `“${d.title}”`).join(", ")} here. `
+        + `Hand ${open.length === 1 ? "it" : "each"} to someone else or close ${open.length === 1 ? "it" : "them"} first.`,
+      deliverables: open,
+    });
+    const unresolved = blocking.filter((d) => !plan.has(d.id));
+    if (unresolved.length) return blocked(unresolved);
+
+    const by = u.full_name ?? "Your Team Lead";
+    for (const { d, to, status } of plan.values()) {
+      if (status) {
+        const r = await changeDeliverableStatus(u, d.id, status, "", req);
+        if (r.status !== 200) return sendError(res, r.status, r.message ?? "");
+      } else if (d.role === "owner") {
+        await pool.query(`UPDATE mo_deliverables SET owner_id=$1, updated_at=NOW() WHERE id=$2`, [to, d.id]);
+        await deliverableAssigned(u, { id: d.id, project_id: pid, title: d.title }, uid, to ?? null, { reassign: true });
+      } else {
+        // A team member: off its team rows, with their replacement in their place.
+        const rows = (await pool.query(
+          `SELECT a.id FROM mo_assignments a JOIN mo_assignment_users au ON au.assignment_id=a.id AND au.user_id=$2
+            WHERE a.deliverable_id=$1 AND NOT COALESCE(a.is_smc,false) AND a.status <> 'cancelled'`, [d.id, uid])).rows;
+        for (const row of rows) {
+          await pool.query(`DELETE FROM mo_assignment_users WHERE assignment_id=$1 AND user_id=$2`, [row.id, uid]);
+          if (to) await pool.query(
+            `INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [row.id, to]);
+        }
+        if (to) {
+          await addToProjectCrew(pid, to, u.id);
+          if (to !== u.id) await pool.query(
+            `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+             VALUES ($1,'assignment','New assignment',$2,'deliverable',$3)`,
+            [to, `${by} put you on “${d.title}” in place of ${name}.`, d.id]).catch(() => {});
+        }
+      }
+    }
+    const still = (await crewRemovalImpact(pid, uid)).blocking;
+    if (still.length) return blocked(still);
+
+    const crew = await pool.query(
+      `UPDATE mo_project_assignments SET removed_at=NOW() WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`, [pid, uid]);
+    // Open work on this project lets them go — never a row of closed (delivered) work.
+    const work = await pool.query(
+      `DELETE FROM mo_assignment_users au USING mo_assignments a
+        WHERE au.assignment_id=a.id AND au.user_id=$2 AND a.project_id=$1 AND a.status NOT IN ('done','cancelled')
+          AND (a.deliverable_id IS NULL OR EXISTS (SELECT 1 FROM mo_deliverables d
+                                                    WHERE d.id=a.deliverable_id AND d.status <> ALL($3)))`,
+      [pid, uid, CLOSED_DELIV]);
+    const shoots = await pool.query(
+      `DELETE FROM mo_shoot_crew WHERE user_id=$2 AND shoot_id IN
+         (SELECT id FROM mo_shoots WHERE project_id=$1 AND shoot_date >= CURRENT_DATE)`, [pid, uid]);
+    // Nothing to take them off: say so rather than report a removal that did nothing.
+    if (!crew.rowCount && !work.rowCount && !shoots.rowCount && !plan.size)
+      return sendError(res, 404, `${name} is not on this project.`);
+    if (uid !== u.id)
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'assignment','Taken off a project',$2,'project',$3)`,
+        [uid, `${by} took you off “${p.name}”.`, pid]).catch(() => {});
+    await audit(u, "project.assignment_removed", "project", pid, null, {
+      user_id: uid,
+      resolutions: [...plan.values()].map(({ d, to, status }) =>
+        ({ deliverable_id: d.id, ...(to ? { reassign_to: to } : status ? { status } : { remove_from_team: true }) })),
+    }, req);
+    res.json({ ok: true, resolved: plan.size });
   }));
 
   // Remove a crew member from a shoot (#7).
   app.delete(`${P}/shoots/:id/crew/:uid`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const sid = parseInt(getSingleParam(req.params.id), 10);
-    if (!(await leadsShootProject(u, sid))) return sendError(res, 403, "Only the project's Team Lead or an Admin may change shoot crew.");
+    if (!(await managesShootProject(u, sid)))
+      return sendError(res, 403, "Only the project's Team Lead, its owner/PM or an Admin may take people off a shoot.");
     const uid = getSingleParam(req.params.uid);
     await pool.query(`DELETE FROM mo_shoot_crew WHERE shoot_id=$1 AND user_id=$2`, [sid, uid]);
     await audit(u, "shoot.crew_removed", "shoot", sid, null, { user_id: uid }, req);

@@ -3808,9 +3808,11 @@ function leadsProject(p){
   if(p.team_id==null)return p.owner_id===S.me;
   return activeTeams().some(t=>String(t.id)===String(p.team_id)&&t.lead_user_id===S.me);
 }
-/* Who may take someone off a shoot — mirrors DELETE /shoots/:id/crew/:uid
-   (leadsShootProject): an Admin or the project's own lead. */
-const canEditShootCrew=p=>isAdmin()||leadsProject(p);
+/* Who may edit a shoot or take someone off it — mirrors PATCH /shoots/:id and
+   DELETE /shoots/:id/crew/:uid (managesShootProject): whoever runs the
+   project. Deleting a shoot stays with its lead or an Admin (canDeleteShoot). */
+const canEditShootCrew=p=>canRunProject(p);
+const canDeleteShoot=p=>isAdmin()||leadsProject(p);
 /* Who reviews and approves deliverables, and approves proposed projects —
    mirrors canReviewProject(): an Admin or ANY Team Lead, on any project.
    Nobody approves work they are on; callers add !onDelivTeam(d) and the
@@ -3834,8 +3836,21 @@ function canRunProject(p){return !!p&&(isAdmin()||leadsProject(p)||p.owner_id===
    record. Changing its team (re-routing) is the Coordinator's or an Admin's. */
 function canEditProjectDetails(p){return !!p&&(isCoord()||canRunProject(p));}
 function canRerouteProject(p){return !!p&&(isCoord()||isAdmin());}
-/* DELETE /projects/:id: an Admin or the project's own lead. */
-function canDeleteProject(p){return !!p&&(isAdmin()||leadsProject(p));}
+/* DELETE /projects/:id: an Admin only. A lead cancels or archives instead. */
+function canDeleteProject(p){return !!p&&isAdmin();}
+/* DELETE /projects/:id/assignments/:uid: whoever runs the project, on anyone
+   on it but its owner and its PM (hand those roles on first). */
+function canRemoveFromProject(p,a){
+  return canRunProject(p)&&!!a&&!a.is_smc&&!a.is_project_manager&&a.user_id!==p.owner_id;
+}
+/* What blocks taking someone off a project — mirrors crewRemovalImpact(): every
+   live deliverable of it they own or are on the team of, until it is handed
+   on or closed. */
+function removalBlocking(pid,uid){
+  return DB.deliverables.filter(d=>d.project_id===pid&&!d.deleted_at&&!DELIV_DONE.includes(d.status)
+      &&(d.owner_id===uid||onDelivTeam(d,uid)))
+    .map(d=>({id:d.id,title:d.title,status:d.status,role:d.owner_id===uid?'owner':'team'}));
+}
 /* POST /projects/:id/status: the moves this person may make from where the
    project is. Approving a proposal is an approval (any Team Lead or Admin);
    every other move is running it; archiving and un-archiving are an Admin's. */
@@ -11258,9 +11273,9 @@ function projOverview(p,dls,crew,shoots,pr){
               :'<span class="small mut3">No deliverables</span>';})()}</td>
             <td class="num" data-m="hide">${((perPerson[a.user_id]||0)/60).toFixed(1)}h</td>
             <td class="num" data-m="aside">${statusPill(PRESENCE_MAP(),presence(a.user_id))}
-              ${/* only a crew row has a project assignment to remove; someone here only
-                   through a deliverable would be "removed" and still listed */
-                (a.on_crew&&(isAdmin()||leadsProject(p))&&!a.is_project_manager)?`<span class="icon-btn" role="button" title="Remove from project" style="color:var(--danger)"
+              ${/* someone here only through a deliverable is taken off it too:
+                   the removal dialog has what they carry handed on first */
+                canRemoveFromProject(p,a)?`<span class="icon-btn" role="button" title="Remove from project" style="color:var(--danger)"
                 onclick="event.stopPropagation();event.preventDefault();ACTIONS.removeAssignment({pid:${p.id},uid:${a.user_id}})">${ic('trash')}</span>`:''}</td></tr>`).join('')}
           </tbody></table></div></div></div>
     </div>
@@ -11450,9 +11465,9 @@ function projShootsTab(p,shoots){
             :bk.length?bk.map(b2=>`<span class="chip" title="${esc((b2.make||'')+' '+(b2.model||''))}">${esc(b2.asset_tag)}</span>`).join(' ')
             :'<span class="mut3">none</span>'}</td>
           <td data-m="actions"><span class="chip">${esc(s.status)}</span>
-            ${(isAdmin()||leadsProject(p))?`<span class="nowrap" onclick="event.stopPropagation()">
-              <button class="btn xs" onclick="ACTIONS.editShoot({sid:${s.id}})">✎</button>
-              <button class="btn xs" style="color:var(--danger)" onclick="ACTIONS.deleteShoot({sid:${s.id}})">${ic('trash')}</button></span>`:''}</td></tr>`;}).join('')
+            ${canEditShootCrew(p)?`<span class="nowrap" onclick="event.stopPropagation()">
+              <button class="btn xs" title="Edit shoot" onclick="ACTIONS.editShoot({sid:${s.id}})">✎</button>
+              ${canDeleteShoot(p)?`<button class="btn xs" title="Delete shoot" style="color:var(--danger)" onclick="ACTIONS.deleteShoot({sid:${s.id}})">${ic('trash')}</button>`:''}</span>`:''}</td></tr>`;}).join('')
         ||'<tr><td colspan="7" class="tbl-empty">No shoots. A multi-day event has many shoot sessions with different crews and gear.</td></tr>'}
       </tbody></table></div></div></div>`;
 }
@@ -22659,9 +22674,56 @@ const ACTIONS = {
     closeModal();
     moSync(MO_API.post('/shoots/'+d.sid+'/crew',{crew:uids}), ()=>{render();toast('Shoot crew assigned','ok');});
   },
+  /* Take one person (the crew trash) or several (unticked in Assign crew) off
+     a project. Whatever live deliverable they still carry there blocks it until
+     it is handed to someone or closed, so the dialog asks about each one and
+     Remove stays off until every one has an answer. The server re-checks. */
   removeAssignment:(d)=>{
-    if(!confirm('Remove this member from the project?'))return;
-    moSync(MO_API.del('/projects/'+d.pid+'/assignments/'+ruid(+d.uid)), ()=>{render();toast('Removed from project','ok');});
+    const pid=+d.pid, uids=String(d.uid).split(',').map(uidOf);
+    S._rm={pid,uids,pick:{},blk:Object.fromEntries(uids.map(uid=>[uid,removalBlocking(pid,uid)]))};
+    ACTIONS.renderRemoval();
+    // The server's list is the authority: take it when it arrives.
+    if(window.__MO_LIVE__) uids.forEach(uid=>MO_API.get('/projects/'+pid+'/assignments/'+ruid(uid)+'/impact')
+      .then(r=>{ if(S._rm&&S._rm.pid===pid&&r&&Array.isArray(r.blocking)){S._rm.blk[uid]=r.blocking;ACTIONS.renderRemoval();} })
+      .catch(()=>{}));
+  },
+  renderRemoval:()=>{
+    const R=S._rm; if(!R)return;
+    const p=proj(R.pid), people=assignableMembers();
+    const choices=(uid,b)=>[['','Choose…'],
+      ...people.filter(x=>x.id!==uid).map(x=>['to:'+x.id,(b.role==='owner'?'Hand it to ':'Put in their place: ')+personLabel(x.id)]),
+      ...(b.role==='team'?[['drop','Take them off its team — the owner carries on']]:[]),
+      ...((DELIV_TRANSITIONS[b.status]||[]).includes('not_required')?[['st:not_required','Not required']]:[]),
+      ...((DELIV_TRANSITIONS[b.status]||[]).includes('cancelled')?[['st:cancelled','Cancel the deliverable']]:[])];
+    const person=uid=>{const blk=R.blk[uid]||[];
+      return `<div class="mb3"><div class="t-main">${personChipText(uid)}</div>
+        ${blk.length?`<p class="small mut">Still working on ${blk.length===1?'a deliverable':blk.length+' deliverables'} here. Say what happens to each before they come off.</p>
+          ${blk.map(b=>`<div class="field"><label class="lbl" for="rm-${uid}-${b.id}">${esc(b.title)} · ${esc((DELIV_STATUS[b.status]||{l:b.status}).l)} · ${b.role==='owner'?'Owner':'On its team'}</label>
+            <select class="inp" id="rm-${uid}-${b.id}" data-key="${uid}:${b.id}" onchange="ACTIONS.rmPick(this)">
+              ${choices(uid,b).map(([v,l])=>`<option value="${v}" ${R.pick[uid+':'+b.id]===v?'selected':''}>${esc(l)}</option>`).join('')}</select></div>`).join('')}`
+        :'<p class="small mut">Nothing open here to hand on.</p>'}</div>`;};
+    modal(`<div class="mo-head"><div><h2>Take ${R.uids.length===1?esc(user(R.uids[0]).full_name):R.uids.length+' people'} off ${esc(p.name)}</h2>
+        <p>Their open tasks and upcoming shoots here are let go. Delivered work and the versions they submitted stay as they are.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">${R.uids.map(person).join('')}</div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn danger" id="rm-go" data-act="confirmRemoval" ${ACTIONS.rmReady()?'':'disabled'}>Remove</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  rmPick:(n)=>{ if(!S._rm)return; S._rm.pick[n.dataset.key]=n.value;
+    const go=$('#rm-go'); if(go) go.disabled=!ACTIONS.rmReady(); },
+  rmReady:()=>{ const R=S._rm;
+    return !!R&&R.uids.every(uid=>(R.blk[uid]||[]).every(b=>!!R.pick[uid+':'+b.id])); },
+  confirmRemoval:()=>{
+    const R=S._rm; if(!R||!ACTIONS.rmReady())return;
+    const resolutions=uid=>(R.blk[uid]||[]).map(b=>{const v=R.pick[uid+':'+b.id];
+      return v==='drop'?{deliverable_id:b.id,remove_from_team:true}
+        :v.startsWith('st:')?{deliverable_id:b.id,status:v.slice(3)}
+        :{deliverable_id:b.id,reassign_to:ruid(uidOf(v.slice(3)))};});
+    S._rm=null; closeModal();
+    moSync(Promise.all(R.uids.map(uid=>MO_API.req('DELETE','/projects/'+R.pid+'/assignments/'+ruid(uid),
+        {resolutions:resolutions(uid)}))),
+      ()=>toast(R.uids.length===1?user(R.uids[0]).full_name+' taken off the project':R.uids.length+' people taken off the project','ok'));
   },
   removeShootCrew:(d)=>{
     const sid=+d.sid, uid=uidOf(d.uid);
@@ -26240,13 +26302,21 @@ const ACTIONS = {
     closeModal();render();
     moSync(MO_API.post('/crew/'+ruid(uidOf(d.uid))+'/modules',{allowed_modules:mods}),()=>{render();toast('Module access updated','ok');});
   },
+  /* Ticked = on the crew. Ticking adds someone; unticking takes them off,
+     through the same removal dialog as the crew trash. The project's owner and
+     PM stay ticked, and someone who assigns here without running the project
+     can add people but not take anyone off. */
   assignProject:(d)=>{
-    const p=proj(+d.pid);
+    const p=proj(+d.pid), runs=canRunProject(p);
+    const fixed=u=>isOnProject(p.id,u.id)&&(!runs||u.id===p.owner_id||isPMof(p.id,u.id));
     modal(`<div class="mo-head"><div><h2>Assign crew: ${esc(p.name)}</h2>
         <p>Assigned crew see this project in their dashboard.</p></div>
         <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
-      <div class="mo-body"><div class="f wrap gap2" id="pa-crew">${assignableMembers().map(u=>`<button type="button" class="chip ${isOnProject(p.id,u.id)?'sel':''}" data-uid="${u.id}" onclick="this.classList.toggle('sel')">${esc(u.full_name)}</button>`).join('')}</div>
-        <div class="hint mt2">You can assign anyone in the Media Crew.</div></div>
+      <div class="mo-body"><div class="f wrap gap2" id="pa-crew">${assignableMembers().map(u=>{const on=isOnProject(p.id,u.id);
+          return `<button type="button" class="chip ${on?'sel':''}" data-uid="${u.id}" data-on="${on?1:0}"
+            ${fixed(u)?`disabled title="${runs?"The project's owner and PM stay on it":"Only whoever runs the project can take people off it"}"`:''}
+            onclick="this.classList.toggle('sel')">${personChipText(u.id)}</button>`;}).join('')}</div>
+        <div class="hint mt2">You can assign anyone in the Media Crew.${runs?' Untick someone to take them off the project.':''}</div></div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" data-act="confirmAssign" data-pid="${p.id}">Assign</button></div>`);
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
@@ -26272,10 +26342,16 @@ const ACTIONS = {
       ()=>{render();toast(user(+d.uid).full_name+' added to '+proj(pid).name,'ok');});
   },
   confirmAssign:(d)=>{
-    const uids=$$('#pa-crew .chip.sel').map(c=>ruid(+c.dataset.uid));
-    if(!uids.length){toast('Select at least one crew member','bad');return;}
+    const chips=$$('#pa-crew .chip'), sel=c=>c.classList.contains('sel'), was=c=>c.dataset.on==='1';
+    // Only people actually added are posted; people unticked go through removal.
+    const added=chips.filter(c=>sel(c)&&!was(c)).map(c=>uidOf(c.dataset.uid));
+    const dropped=chips.filter(c=>!sel(c)&&was(c)).map(c=>uidOf(c.dataset.uid));
+    if(!added.length&&!dropped.length){toast('No change to the crew','warn');return;}
     closeModal();
-    moSync(Promise.all(uids.map(uid=>MO_API.post('/projects/'+d.pid+'/assignments',{user_id:uid}))), ()=>{render();toast(uids.length+' crew assigned','ok');});
+    if(added.length)
+      moSync(Promise.all(added.map(uid=>MO_API.post('/projects/'+d.pid+'/assignments',{user_id:ruid(uid)}))),
+        ()=>{render();toast(added.length===1?user(added[0]).full_name+' added to the crew':added.length+' people added to the crew','ok');});
+    if(dropped.length) ACTIONS.removeAssignment({pid:d.pid,uid:dropped.join(',')});
   },
   deleteProject:(d)=>{
     if(!confirm('Delete this project? It is removed from active views.'))return;

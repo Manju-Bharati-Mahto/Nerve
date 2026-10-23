@@ -877,8 +877,13 @@ describe("Controls — offered exactly what the server allows", () => {
     expect(state()).toMatchObject({ "Edit details": false, "Delete project": false, "Cancel project": false });
     expect(h.ev<string>("projList(visibleProjects())")).not.toContain("ACTIONS.deleteProject({pid:7001})");
     h.as(901);
-    expect(state()).toMatchObject({ "Edit details": true, "Delete project": true, "Cancel project": true });
+    // The lead runs it — and cancels it — but only an Admin deletes a project.
+    expect(state()).toMatchObject({ "Edit details": true, "Delete project": false, "Cancel project": true });
+    expect(h.ev<string>("projList(visibleProjects())")).not.toContain("ACTIONS.deleteProject({pid:7001})");
+    h.as(907);
+    expect(state()).toMatchObject({ "Delete project": true });
     expect(h.ev<string>("projList(visibleProjects())")).toContain("ACTIONS.deleteProject({pid:7001})");
+    h.as(901);
     h.ev("ACTIONS.editProject({pid:'7001'})");
     expect(h.doc.getElementById("ep-team"), "a lead was offered re-routing").toBeNull();
     h.ev("closeModal()");
@@ -1073,14 +1078,38 @@ describe("My Day, the drawer, lists and crew — one answer per question", () =>
     expect(h.ev<string>("projActivityTab(proj(7001))")).toContain("Coord Chitra");
   });
 
-  it("the crew trash icon is only on real crew rows", async () => {
+  it("the crew trash is on everyone but the owner and PM, for whoever runs the project", async () => {
     const h = await boot(907);
     h.ev(`DB.project_assignments.push({id:99201,project_id:7001,user_id:903,is_project_manager:false,removed_at:null});
       DB.assignments.push({id:77201,project_id:7001,deliverable_id:8003,work_type_id:DB.work_types[0].id,title:'x',
         status:'not_started',assignees:[905]})`);
     const page = h.ev<string>("viewProject(7001,'overview')");
     expect(page).toContain("removeAssignment({pid:7001,uid:903})");
-    expect(page).not.toContain("removeAssignment({pid:7001,uid:905})");
+    // On it only through a deliverable: taken off through the same dialog, not left listed.
+    expect(page).toContain("removeAssignment({pid:7001,uid:905})");
+    expect(page, "the owner/PM").not.toContain("removeAssignment({pid:7001,uid:901})");
+    h.as(904);   // another team's lead assigns here but does not run it
+    expect(h.ev<string>("viewProject(7001,'overview')")).not.toContain("removeAssignment(");
+  });
+
+  it("whoever runs the project edits a shoot and takes people off it; deleting it stays with the lead", async () => {
+    const h = await boot(903);
+    h.ev(`DB.shoots.push({id:9502,project_id:7001,title:'Prize night',shoot_date:TODAY,call_time:'18:00',end_time:'21:00',
+      location:'Hall',location_url:'',status:'planned',deleted_at:null});
+      DB.shoot_crew.push({shoot_id:9502,user_id:902,capacity_role_id:null});
+      DB.project_assignments.find(a=>a.id===99001).is_project_manager=false;
+      DB.project_assignments.push({id:99202,project_id:7001,user_id:903,is_project_manager:true,removed_at:null})`);
+    const tab = h.ev<string>("projShootsTab(proj(7001),DB.shoots.filter(s=>s.project_id===7001))");
+    expect(tab).toContain("ACTIONS.editShoot({sid:9502})");
+    expect(tab, "the PM deletes no shoot").not.toContain("ACTIONS.deleteShoot({sid:9502})");
+    h.ev("drawerShoot(9502)");
+    expect(h.doc.querySelector("#drawer [data-act=removeShootCrew]")).not.toBeNull();
+    h.as(901);
+    expect(h.ev<string>("projShootsTab(proj(7001),DB.shoots.filter(s=>s.project_id===7001))"))
+      .toContain("ACTIONS.deleteShoot({sid:9502})");
+    h.as(902);   // on the shoot, not running the project
+    expect(h.ev<string>("projShootsTab(proj(7001),DB.shoots.filter(s=>s.project_id===7001))"))
+      .not.toContain("ACTIONS.editShoot({sid:9502})");
   });
 
   it("the project's lead or an Admin can take someone off a shoot; another lead cannot", async () => {
@@ -1192,5 +1221,97 @@ describe("review follow-ups — what the page offers matches what the server hon
   it("My Day's Awaiting review chip says who reviews: any Team Lead or Admin, not the PM", () => {
     expect(HTML).not.toContain("the project PM must review it");
     expect(HTML).toContain("Any Team Lead or Admin who is not working on it reviews it. You cannot approve your own version.");
+  });
+});
+
+describe("taking someone off a project — nothing they carry is stranded", () => {
+  const tick = () => new Promise((r) => setTimeout(r, 30));
+  const removal = (h: Awaited<ReturnType<typeof boot>>) =>
+    h.writes().filter((c) => c.method === "DELETE" && c.url.includes("/projects/7001/assignments/"));
+
+  it("each open deliverable needs an answer before Remove is offered, and the answers are sent", async () => {
+    const h = await boot(907);
+    h.ev("ACTIONS.removeAssignment({pid:7001,uid:902})");
+    const go = () => h.doc.getElementById("rm-go") as HTMLButtonElement;
+    const pick = (id: string, v: string) => {
+      const sel = h.doc.getElementById(id) as HTMLSelectElement;
+      sel.value = v; sel.dispatchEvent(new h.dom.window.Event("change"));
+    };
+    // Emp Anika owns Edited Photos (in review) and Aftermovie (not started).
+    expect(h.doc.getElementById("rm-902-8001")).not.toBeNull();
+    expect(h.doc.getElementById("rm-902-8002")).not.toBeNull();
+    expect(go().disabled).toBe(true);
+    const inReview = [...(h.doc.getElementById("rm-902-8001") as HTMLSelectElement).options].map((o) => o.value);
+    expect(inReview).toContain("st:cancelled");
+    expect(inReview, "in review cannot become not required").not.toContain("st:not_required");
+    expect(inReview, "nobody hands work back to the person leaving").not.toContain("to:902");
+    expect(inReview, "an owner is handed on, not dropped").not.toContain("drop");
+    pick("rm-902-8001", "to:903");
+    expect(go().disabled).toBe(true);
+    pick("rm-902-8002", "st:not_required");
+    expect(go().disabled).toBe(false);
+    go().click();
+    await tick();
+    const [call] = removal(h);
+    expect(call.url).toMatch(/\/projects\/7001\/assignments\/zcw-902$/);
+    expect(call.body).toEqual({ resolutions: [
+      { deliverable_id: 8001, reassign_to: "zcw-903" }, { deliverable_id: 8002, status: "not_required" }] });
+  });
+
+  it("a team member may simply come off the team; someone with nothing open is removed at once", async () => {
+    const h = await boot(901);
+    h.ev(`DB.project_assignments.push({id:99203,project_id:7001,user_id:905,is_project_manager:false,removed_at:null});
+      DB.assignments.push({id:77202,project_id:7001,deliverable_id:8002,work_type_id:DB.work_types[0].id,title:'cut',
+        status:'in_progress',assignees:[902,903]})`);
+    h.ev("ACTIONS.removeAssignment({pid:7001,uid:903})");
+    const sel = h.doc.getElementById("rm-903-8002") as HTMLSelectElement;
+    expect([...sel.options].map((o) => o.value)).toContain("drop");
+    h.ev("closeModal()");
+    h.ev("ACTIONS.removeAssignment({pid:7001,uid:905})");
+    expect(h.doc.querySelector("#modal-layer select")).toBeNull();
+    (h.doc.getElementById("rm-go") as HTMLButtonElement).click();
+    await tick();
+    expect(removal(h).map((c) => c.body)).toEqual([{ resolutions: [] }]);
+  });
+
+  it("the server's list replaces the page's guess when it answers", async () => {
+    const h = await boot(907);
+    h.ev(`window.fetch=async(u,i)=>({ok:true,status:200,json:async()=>String(u).endsWith('/impact')
+      ?{blocking:[{id:8003,title:'Instagram Reel',status:'in_progress',role:'team'}]}:{}})`);
+    h.ev("ACTIONS.removeAssignment({pid:7001,uid:903})");
+    await tick();
+    expect(h.doc.getElementById("rm-903-8003")).not.toBeNull();
+    expect((h.doc.getElementById("rm-go") as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("Assign crew — ticking adds, unticking removes", () => {
+  it("posts only people added, sends people unticked through removal, and names each person's team", async () => {
+    const h = await boot(907);
+    h.ev(`DB.project_assignments.push({id:99204,project_id:7001,user_id:903,is_project_manager:false,removed_at:null})`);
+    h.ev("ACTIONS.assignProject({pid:'7001'})");
+    const chip = (uid: number) => h.doc.querySelector(`#pa-crew .chip[data-uid="${uid}"]`) as HTMLButtonElement;
+    expect(chip(905).textContent).toContain("Video Team");
+    expect(chip(903).classList.contains("sel")).toBe(true);
+    expect(chip(901).disabled, "the owner/PM cannot be unticked").toBe(true);
+    chip(903).click();               // untick someone already on it
+    chip(905).click();               // tick someone new
+    h.ev("ACTIONS.confirmAssign({pid:'7001'})");
+    await new Promise((r) => setTimeout(r, 30));
+    const posts = h.writes().filter((c) => c.method === "POST" && c.url.endsWith("/projects/7001/assignments"));
+    expect(posts.map((c) => c.body)).toEqual([{ user_id: "zcw-905" }]);
+    // The unticked person is not removed silently: the removal dialog asks first.
+    expect(h.doc.querySelector("#modal-layer h2")?.textContent).toContain("Emp Arjun");
+    expect(h.writes().some((c) => c.method === "DELETE")).toBe(false);
+    // The toast counts real additions only: one person, not everyone ticked.
+    expect(h.doc.querySelector("#toasts")?.textContent ?? "").toContain("Emp Bela added to the crew");
+  });
+
+  it("someone who assigns without running the project cannot untick anyone", async () => {
+    const h = await boot(904);
+    h.ev(`DB.project_assignments.push({id:99205,project_id:7001,user_id:903,is_project_manager:false,removed_at:null})`);
+    h.ev("ACTIONS.assignProject({pid:'7001'})");
+    expect((h.doc.querySelector('#pa-crew .chip[data-uid="903"]') as HTMLButtonElement).disabled).toBe(true);
+    expect((h.doc.querySelector('#pa-crew .chip[data-uid="905"]') as HTMLButtonElement).disabled).toBe(false);
   });
 });
