@@ -3872,7 +3872,10 @@ function projectStatusMoves(p){
   const runs=canRunProject(p);
   return (PROJ_TRANSITIONS[p.status]||[]).filter(s=>
     p.status==='proposed'&&s==='approved'?canReviewDeliverables(p)
-    :s==='archived'?isAdmin():runs);
+    :s==='archived'?isAdmin()
+    /* Completing is closing: offered once every deliverable is out or signed
+       off — or to an Admin, who closes it anyway with a reason. */
+    :s==='completed'&&p.status!=='archived'?runs&&(isAdmin()||!projectClosureBlockers(p).length):runs);
 }
 function canChangeProjectStatus(p,to){const m=projectStatusMoves(p);return to?m.includes(to):m.length>0;}
 /* POST /deliverables/:id/versions: the people on it, the project's lead or an
@@ -4322,7 +4325,7 @@ const wtype = id=>(DB.work_types||[]).find(w=>w.id===id)
 const PROJ_STATUS = {
   proposed:{l:'Proposed',c:'st-neutral',i:'◌',ico:'pending'}, approved:{l:'Approved',c:'st-info',i:'✓',ico:'check'},
   planning:{l:'Planning',c:'st-info',i:'◔',ico:'clipboard'}, in_production:{l:'In Production',c:'st-brand',i:'▶',ico:'play'},
-  in_review:{l:'In Review',c:'st-warn',i:'◎',ico:'eye'}, delivered:{l:'Delivered',c:'st-success',i:'⤴',ico:'check'},
+  in_review:{l:'In Review',c:'st-warn',i:'◎',ico:'eye'}, delivered:{l:'Ready to dispatch',c:'st-success',i:'⤴',ico:'check'},
   completed:{l:'Completed',c:'st-success',i:'✔',ico:'check'}, archived:{l:'Archived',c:'st-neutral',i:'⛁',ico:'archive'},
   on_hold:{l:'On Hold',c:'st-warn',i:'‖',ico:'pause'}, cancelled:{l:'Cancelled',c:'st-danger',i:'✕',ico:'x'}
 };
@@ -4433,6 +4436,58 @@ function projectProgress(pid){
   const done={not_started:0,in_progress:.35,in_review:.6,changes_requested:.5,approved:.85,delivered:1};
   const tw=ds.reduce((s,d)=>s+d.weight,0);
   return Math.round(ds.reduce((s,d)=>s+d.weight*(done[d.status]||0),0)/tw*100);
+}
+/* Q8 — what keeps a project from being completed. Each live deliverable has
+   gone out (dispatched) or been signed off (delivered and approved), and none
+   was sent back. Mirrors closureBlocker() on the server, which decides. */
+function delivClosureBlocker(d){
+  if(['changes_requested','rejected'].includes(d.approval_status))return 'was sent back for changes';
+  if(d.status==='delivered')return d.approval_status==='approved'?'':'is waiting for sign-off';
+  if(d.status!=='approved')return 'is not finished yet';
+  return ['delivered','archived'].includes(d.dispatch_status)?'':'has not been dispatched yet';
+}
+const liveDeliverables=pid=>projectDeliverables(pid).filter(d=>!['not_required','cancelled'].includes(d.status));
+function projectClosureBlockers(p){
+  return p?liveDeliverables(p.id).map(d=>({d,why:delivClosureBlocker(d)})).filter(x=>x.why):[];
+}
+/* Q9 — the status a project's deliverables move it to, for display: the
+   server's syncProjectProgress() rule, applied to what this page holds, so a
+   project reads right before the next sync. Forward only, except that a
+   project ready to dispatch goes back to production when work is sent back
+   or added. Proposed, on hold, cancelled, completed and archived are people's
+   decisions; in review is set by hand. Nothing is stored. */
+const PROJ_AUTO_RANK={planning:0,approved:0,in_production:1,in_review:2,delivered:3,completed:4};
+function projProgress(p){
+  if(!p)return '';
+  const from=p.status;
+  if(!(from in PROJ_AUTO_RANK)||from==='completed')return from;
+  const ds=liveDeliverables(p.id);
+  if(!ds.length||ds.every(d=>d.status==='not_started'))return from;
+  const to=!ds.every(d=>['approved','delivered'].includes(d.status))?'in_production'
+    :ds.some(d=>delivClosureBlocker(d))?'delivered':'completed';
+  if(from==='delivered'&&to==='in_production')return to;
+  return PROJ_AUTO_RANK[to]>PROJ_AUTO_RANK[from]?to:from;
+}
+/* Completing a project that still has open work: only an Admin is offered
+   it (projectStatusMoves), and only with a reason, which the server records.
+   The dialog names what is still open, so the reason answers it. */
+function closeProjectOverride(p){
+  const open=projectClosureBlockers(p);
+  modal(`<div class="mo-head"><div><h2>Complete with work still open?</h2>
+      <p>${esc(p.name)} is not finished. Give a reason to complete it anyway; it is kept with the project's history.</p></div></div>
+    <div class="mo-body"><ul class="small mb3" id="cp-open">${open.slice(0,8).map(x=>`<li>“${esc(x.d.title)}” ${esc(x.why)}</li>`).join('')}
+      ${open.length>8?`<li>and ${open.length-8} more</li>`:''}</ul>
+      <textarea class="inp" id="cp-reason" placeholder="Why is it complete anyway?"></textarea></div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn primary" id="cp-go">Complete anyway</button></div>`);
+  $('#cp-go').onclick=()=>{
+    const reason=($('#cp-reason')?.value||'').trim();
+    if(!reason){toast('Say why it is complete anyway.','bad');return;}
+    const before=p.status;p.status='completed';
+    audit(S.me,'project.completed_override','project',p.id,{status:before},{status:'completed',reason});
+    closeModal();render();toast(p.name+' completed','ok');
+    moSync(MO_API.post('/projects/'+p.id+'/status',{status:'completed',override_reason:reason}));
+  };
 }
 function projectHours(pid){
   const rids=DB.daily_reports.map(r=>r.id);
@@ -9288,7 +9343,7 @@ function projectFolderCard(p){
   const tone={planning:'var(--fill-violet)',approved:'var(--fill-green)',in_review:'var(--fill-amber)'}[p.status]||'var(--fill-brand)';
   return `<button class="pcard" data-go="#/media/projects/${p.id}" title="Open ${esc(p.name)}">
     <span class="pc-top"><span class="pc-ico" style="--pc:${esc(t.color||'var(--brand-500)')}">${mIco(t.icon)||ic('folder')}</span>
-      ${statusPill(PROJ_STATUS,p.status)}</span>
+      ${statusPill(PROJ_STATUS,projProgress(p))}</span>
     <span class="pc-title">${esc(p.name)}</span>
     <span class="pc-meta"><span class="code">${esc(p.code||'')}</span> • ${esc(t.name)}</span>
     <span class="pc-prog">
@@ -9682,6 +9737,7 @@ function auditTarget(a){
    changed as "Label: before → after". Ids, enum keys and JSON stay out. */
 const AUDIT_VERB={
   'project.created':'created','project.updated':'updated','project.deleted':'deleted','project.status_changed':'moved',
+  'project.status_auto':'moved','project.completed_override':'closed',
   'project.assignment_added':'added {who} to','project.assignment_removed':'removed {who} from',
   'project.lead_assigned':'assigned a Team Lead to','project.team_assigned':'assigned a team to',
   'project.due_dates_recalculated':'recalculated due dates for',
@@ -10296,7 +10352,7 @@ function viewMyDay(){
       <button class="list-row" data-go="#/media/projects/${p.id}">
         <span style="font-size:15px;color:${ptype(p.project_type_id).color}">${ptype(p.project_type_id).icon}</span>
         <span class="lr-main"><b>${esc(p.name)}</b><span><span class="code">${p.code}</span> · ${esc(ptype(p.project_type_id).name)}</span></span>
-        ${statusPill(PROJ_STATUS,p.status)}
+        ${statusPill(PROJ_STATUS,projProgress(p))}
       </button>`).join(''):`<div class="empty" style="padding:20px"><p>No projects assigned to you yet.</p></div>`}
     </div>${myProjects.length>6?`<button class="card-link" data-act="myProjectsAll">See all ${plural(myProjects.length,'project')} ${ic('right')}</button>`:''}</div>`;
 
@@ -10736,7 +10792,7 @@ function viewProjects(){
       mode==='timeline'?projTimeline(ps):mode==='calendar'?projCalendar(ps):projGallery(ps)}`;
 }
 function projList(ps){
-  const groups={};ps.forEach(p=>(groups[p.status]=groups[p.status]||[]).push(p));
+  const groups={};ps.forEach(p=>{const s=projProgress(p);(groups[s]=groups[s]||[]).push(p);});
   const order=['proposed','approved','planning','in_production','in_review','delivered','completed','on_hold','cancelled','archived'];
   return order.filter(s=>groups[s]).map(s=>`
     <div class="sec"><div class="sec-head">${statusPill(PROJ_STATUS,s)}
@@ -10775,7 +10831,7 @@ function projTable(ps){
         return `<tr class="click" data-go="#/media/projects/${p.id}">
         <td class="t-main">${esc(p.name)}</td><td class="code">${p.code}</td>
         <td><span class="chip"><span class="dot" style="background:${ptype(p.project_type_id).color}"></span>${esc(ptype(p.project_type_id).name)}</span></td>
-        <td class="small">${esc(aunitName(p.academic_unit_id))}</td><td>${statusPill(PROJ_STATUS,p.status)}</td><td>${priTag(p.priority)}</td>
+        <td class="small">${esc(aunitName(p.academic_unit_id))}</td><td>${statusPill(PROJ_STATUS,projProgress(p))}</td><td>${priTag(p.priority)}</td>
         <td><div class="f ac gap2">${bar(projectProgress(p.id))}<span class="xsmall">${projectProgress(p.id)}%</span></div></td>
         <td>${avatar(p.owner_id,'sm')}</td>
         <td class="small">${D.fmt(p.start_date)}</td><td class="small">${D.fmt(p.end_date)}</td>
@@ -10795,12 +10851,15 @@ const kcMove = (menu,attrs,label)=>`<button class="icon-btn kc-move m-only" data
   data-menu="${menu}" ${attrs} aria-label="Move ${esc(label||'card')}">${ic('kebab')}</button>`;
 
 function projKanban(ps){
-  const cols=['proposed','approved','planning','in_production','in_review','delivered','completed'];
+  /* Nothing creates a proposed project any more: its column shows only while
+     a legacy one is still waiting to be approved or cancelled. */
+  const cols=['proposed','approved','planning','in_production','in_review','delivered','completed']
+    .filter(c=>c!=='proposed'||ps.some(p=>p.status==='proposed'));
   return `<div class="note mb3"><span class="hide-m">Drag a card to change status.</span>
     <span class="m-only">Tap ⋯ on a card to change its status.</span>
     ${ps.some(p=>canChangeProjectStatus(p))?'':'You have read-only access to status here.'}</div>
     <div class="kb">${cols.map(c=>{
-      const list=ps.filter(p=>p.status===c);
+      const list=ps.filter(p=>projProgress(p)===c);
       return `<div class="kb-col" data-drop="projstatus:${c}">
         <div class="kb-col-head"><span class="kt">${statusPill(PROJ_STATUS,c)}</span><span class="kc">${list.length}</span></div>
         <div class="kb-cards">${list.map(p=>{const pr=projectProgress(p.id);
@@ -11005,7 +11064,7 @@ function pcEvHTML(day,ev,back){
   const lead=p.owner_id?user(p.owner_id):null, tm=p.team_id?team(p.team_id):null, rq=reqs().find(r=>r.project_id===p.id);
   return head(k==='pe'?'var(--warn)':t.color,p.name,
       `${k==='ps'?'Starts':k==='pe'?'Ends':'In progress'} · ${esc(D.fmt(p.start_date))} – ${esc(D.fmt(p.end_date))}`)
-    +`<div class="pcal-kv">${row('Status',statusPill(PROJ_STATUS,p.status))}${row('Type',esc(t.name))}
+    +`<div class="pcal-kv">${row('Status',statusPill(PROJ_STATUS,projProgress(p)))}${row('Type',esc(t.name))}
       ${row('Team',tm&&tm.id?esc(tm.name):'')}${row('Lead',lead?esc(lead.full_name):'')}${row('Priority',priTag(p.priority))}
       ${rq?row('Request',`<span class="code">${esc(rq.code||'')}</span> ${esc(rq.event_name||rq.institute||'')}`):''}
       ${row('Deliverables',dl.length?`${done} of ${dl.length} approved or delivered`:'<span class="mut3">None yet</span>')}</div>
@@ -11025,7 +11084,7 @@ function projGallery(ps){
           <div class="f wrap gap2 mb2"><span class="tag">${esc(ayear(p.academic_year_id))}</span>
             <span class="tag">${esc(t.name)}</span></div>
           <div class="between"><span class="xsmall mut3">${dl.filter(d=>d.status==='delivered').length}/${dl.length} delivered</span>
-            ${statusPill(PROJ_STATUS,p.status)}</div></div></div>`;}).join('')}</div>`;
+            ${statusPill(PROJ_STATUS,projProgress(p))}</div></div></div>`;}).join('')}</div>`;
 }
 /* ==========================================================================
    PROJECT PAGE (§7.3 FR-3.5, wireframe W4) — tabs over one record
@@ -11058,7 +11117,7 @@ function viewProject(id,tab){
         <h1 class="page-title">${esc(p.name)}</h1>
         <div class="f wrap gap2 ac mt2">
           <span class="chip" style="border-color:${t.color}"><span class="dot" style="background:${t.color}"></span>${esc(t.name)}</span>
-          <button class="btn sm" data-menu="projStatus" data-pid="${p.id}" ${editable?'':'disabled'}>${statusPill(PROJ_STATUS,p.status)} ▾</button>
+          <button class="btn sm" data-menu="projStatus" data-pid="${p.id}" ${editable?'':'disabled'}>${statusPill(PROJ_STATUS,projProgress(p))} ▾</button>
           ${priTag(p.priority)}
           <span class="chip">${esc(aunitName(p.academic_unit_id))}${aunitIsRetired(p.academic_unit_id)?' · archived':''}</span>
           <span class="chip">${esc(ayear(p.academic_year_id))}</span>
@@ -18732,7 +18791,7 @@ function anProjects(from){
       <tbody>${ps.map(p=>{const ds=projectDeliverables(p.id);
         return `<tr class="click" data-go="#/media/projects/${p.id}">
         <td><div class="t-main">${esc(p.name)}</div><div class="t-sub code">${p.code}</div></td>
-        <td class="small">${esc(ptype(p.project_type_id).name)}</td><td>${statusPill(PROJ_STATUS,p.status)}</td>
+        <td class="small">${esc(ptype(p.project_type_id).name)}</td><td>${statusPill(PROJ_STATUS,projProgress(p))}</td>
         <td class="num">${projectProgress(p.id)}%</td>
         <td class="num">${ds.filter(d=>d.status==='delivered').length}/${ds.length}</td>
         <td class="num">${projectHours(p.id).toFixed(0)}h</td>
@@ -20358,7 +20417,8 @@ function admUsers(){
 function admPermissions(){
   const caps=[
     ['Submit / edit own report & tasks','S','S','S'],['View reports','S','T','✓'],['Flag / approve / return reports','—','T','✓'],
-    ['Unlock past report','—','T','✓'],['Create project','✓ (→ approval)','✓','✓'],['Approve proposed projects','—','T','✓'],
+    ['Unlock past report','—','T','✓'],['Create project','✓ (they own it)','T','✓'],['Approve an older proposed project','—','✓','✓'],
+    ['Complete a project with work still open (reason recorded)','—','—','✓'],
     ['Edit project (owner / PMᴰ)','own / PM only','T','✓'],['Change project status','own / PM only','T','✓'],
     ['Assign team to projects / shoots','—','T','✓'],['Archive / unarchive projects','—','—','✓'],
     ['Create / edit deliverables','on own projects','T','✓'],['Submit deliverable version','owner','✓','✓'],
@@ -26899,6 +26959,7 @@ const MENUS = {
     if(!allowed.length) return [{label_only:"Status changes: the project's Team Lead, owner/PM or an Admin"}];
     return [{label_only:'Allowed from '+PROJ_STATUS[p.status].l},
       ...allowed.map(s=>({label:PROJ_STATUS[s].l,icon:PROJ_STATUS[s].i,fn:()=>{
+        if(s==='completed'&&p.status!=='archived'&&projectClosureBlockers(p).length)return closeProjectOverride(p);
         const before=p.status;p.status=s;
         if(s==='archived')p.archived_at=TODAY;
         audit(S.me,'project.status_changed','project',p.id,{status:before},{status:s});
@@ -27082,7 +27143,10 @@ function wireDnD(){
         if(p.status===did)return;
         if(!(PROJ_TRANSITIONS[p.status]||[]).includes(did)){
           toast(''+PROJ_STATUS[p.status].l+' → '+PROJ_STATUS[did].l+' is not a valid transition','bad');return;}
-        if(!canChangeProjectStatus(p,did)){toast('you cannot change this project’s status','bad');return;}
+        if(!canChangeProjectStatus(p,did)){toast(did==='completed'&&projectClosureBlockers(p).length
+          ?'This project can’t be completed yet: '+projectClosureBlockers(p).slice(0,3).map(x=>'“'+x.d.title+'” '+x.why).join('; ')
+          :'you cannot change this project’s status','bad');return;}
+        if(did==='completed'&&p.status!=='archived'&&projectClosureBlockers(p).length)return closeProjectOverride(p);
         const before=p.status;p.status=did;
         audit(S.me,'project.status_changed','project',p.id,{status:before},{status:did});
         render();toast(p.name+' → '+PROJ_STATUS[did].l,'ok');
