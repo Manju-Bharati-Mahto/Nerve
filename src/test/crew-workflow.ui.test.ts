@@ -195,8 +195,11 @@ describe("Notifications — clickable, routed and segmented for leads", () => {
 
   it("notifSource classifies notifications by role of their sender", async () => {
     const h = await boot(901);
-    const assign = (nk: string, et: string) => h.ev<string>(`notifSource({kind:'${nk}',entity_type:'${et}'})`);
-    expect(assign("assignment", "project")).toBe("coord");
+    const assign = (nk: string, et: string, title = "") =>
+      h.ev<string>(`notifSource({kind:'${nk}',entity_type:'${et}',title:'${title}'})`);
+    expect(assign("assignment", "project", "You are leading a new project")).toBe("coord");
+    // Being put on a project's crew is a lead's or teammate's doing — the Coordinator never assigns.
+    expect(assign("assignment", "project", "You are on a project")).toBe("team");
     expect(assign("assignment", "team")).toBe("coord");
     expect(assign("assignment", "deliverable")).toBe("team");  // from a teammate (the lead)
     expect(assign("review", "deliverable")).toBe("team");
@@ -248,6 +251,98 @@ describe("Notifications — clickable, routed and segmented for leads", () => {
     expect(h.ev<boolean>("DB.notifications[0].is_read")).toBe(true);
     // And one write back to the server.
     expect(h.writes().some((c) => c.url.endsWith("/notifications/read"))).toBe(true);
+  });
+
+  it("a notification with the server's string ids still opens, and is marked read", async () => {
+    const h = await boot(902);
+    // pg sends BIGINT columns as strings; /state hands them over as they come.
+    const n = h.ev<{ id: unknown; entity_id: unknown; user_id: unknown }>(
+      `normNotif({id:'43534',user_id:902,kind:'assignment',entity_type:'deliverable',entity_id:'8001',title:'Editing assigned to you',body:'',created_at:TODAY+'T09:00:00Z',is_read:false})`);
+    expect(n).toMatchObject({ id: 43534, entity_id: 8001, user_id: 902 });
+    // And a raw string row (an older server, or anything not normalised) is still found by its id.
+    h.ev(`DB.notifications=[{id:'43534',user_id:902,kind:'assignment',entity_type:'deliverable',entity_id:'8001',title:'Editing assigned to you',body:'',created_at:TODAY+'T09:00:00Z',is_read:false}]`);
+    h.ev(`ACTIONS.openNotif({nid:'43534'})`);
+    expect(h.ev<boolean>("DB.notifications[0].is_read")).toBe(true);
+    expect(h.doc.getElementById("drawer")!.classList.contains("on")).toBe(true);
+    expect(h.doc.getElementById("drawer")!.textContent).toContain("Edited Photos");
+    const read = h.writes().find((c) => c.url.endsWith("/notifications/read"));
+    expect(read?.body).toEqual({ id: "43534" });
+  });
+
+  it("each notice opens what it is about: the deliverable its work is on, or its project", async () => {
+    const h = await boot(901);
+    h.ev(`DB.assignments=[{id:'61',project_id:'7001',deliverable_id:8002,title:'Edit'},{id:'62',project_id:'7002',deliverable_id:null,title:'Recce'}]`);
+    const keys = (e: string) => Object.keys(h.ev<Record<string, unknown>>(`notifTarget(${e})`) || {}).join(",");
+    expect(keys(`{entity_type:'assignment',entity_id:'61'}`)).toBe("drawer");
+    expect(h.ev<string>(`notifTarget({entity_type:'assignment',entity_id:'62'}).hash`)).toBe("#/media/projects/7002");
+    // A deliverable this page has not loaded goes to its project when the notice names one.
+    expect(h.ev<string>(`notifTarget({entity_type:'deliverable',entity_id:999999,project_id:7001}).hash`)).toBe("#/media/projects/7001");
+    expect(h.ev<string>(`notifTarget({entity_type:'team',entity_id:'9001'}).hash`)).toBe("#/media/team/9001");
+    h.ev(`DB.notifications=[{id:5,user_id:901,kind:'assignment',entity_type:'assignment',entity_id:'61',title:'Edit assigned to you',body:'',created_at:TODAY+'T09:00:00Z',is_read:false}]`);
+    h.ev(`ACTIONS.openNotif({nid:'5'})`);
+    expect(h.doc.getElementById("drawer")!.textContent).toContain("Aftermovie");
+  });
+
+  it("says minutes or hours ago for today, and 'Yesterday' only for the day before", async () => {
+    const h = await boot(902);
+    const tz = process.env.TZ;
+    process.env.TZ = "Asia/Kolkata";   // 05:30 ahead of the server's UTC stamps
+    try {
+      // 00:01 here today is 18:31 UTC yesterday — the stamp the old label read as "Yesterday".
+      const when = (localExpr: string) =>
+        h.ev<string>(`(()=>{const t=new Date();${localExpr};return notifWhen({created_at:t.toISOString()});})()`);
+      const earlyToday = when("t.setHours(0,1,0,0)");
+      expect(earlyToday).toMatch(/^(just now|\d+m ago|\d+h ago)$/);
+      expect(when("t.setMinutes(t.getMinutes()-11)")).toMatch(/^(11m ago|Yesterday, \d\d:\d\d)$/);
+      expect(when("t.setDate(t.getDate()-1);t.setHours(23,0,0,0)")).toBe("Yesterday, 23:00");
+      expect(when("t.setDate(t.getDate()-2);t.setHours(12,0,0,0)")).not.toContain("Yesterday");
+    } finally {
+      if (tz === undefined) delete process.env.TZ; else process.env.TZ = tz;
+    }
+  });
+
+  it("the bell shows the server's unread count, and each row names its project", async () => {
+    const h = await boot(902);
+    h.ev(`DB.notifications=[
+      {id:1,user_id:902,kind:'assignment',entity_type:'deliverable',entity_id:8001,project_name:'Annual Cultural Festival',title:'Photos assigned to you',body:'',created_at:TODAY+'T09:00:00Z',is_read:false},
+      {id:2,user_id:902,kind:'assignment',entity_type:'deliverable',entity_id:8004,title:'Photos assigned to you',body:'',created_at:TODAY+'T09:00:00Z',is_read:false}];
+      DB.notifications_unread=120; paintBell();`);
+    expect(h.doc.getElementById("bell-count")!.textContent).toBe("120");
+    h.ev(`ACTIONS.openNotif({nid:1})`);
+    expect(h.doc.getElementById("bell-count")!.textContent).toBe("119");
+    // Without the server's count, the rows held are counted.
+    h.ev(`DB.notifications_unread=null; paintBell();`);
+    expect(h.doc.getElementById("bell-count")!.textContent).toBe("1");
+    const page = h.ev<string>("viewNotifications()");
+    expect(page).toContain("Annual Cultural Festival");
+    expect(page).toContain("Sports Week Teaser");   // named from the deliverable this page holds
+  });
+
+  it("the page offers no switches that do nothing, and promises no push or email", async () => {
+    const h = await boot(901);
+    h.ev(`DB.notifications=[{id:1,user_id:901,kind:'review',entity_type:'deliverable',entity_id:8001,title:'Version submitted',body:'',created_at:TODAY+'T09:00:00Z',is_read:false}]`);
+    const page = h.ev<string>("viewNotifications()");
+    expect(page).not.toMatch(/class="switch/);
+    expect(page).not.toMatch(/push|e-?mail|WhatsApp/i);
+  });
+
+  it("new notices reach the bell without a reload — on returning to the window", async () => {
+    const h = await boot(902);
+    const w = h.dom.window as unknown as { fetch: unknown };
+    const gets: string[] = [];
+    w.fetch = async (input: RequestInfo | URL) => {
+      gets.push(String(input));
+      return { ok: true, status: 200, json: async () => (String(input).endsWith("/notifications")
+        ? { notifications: [{ id: "77", user_id: "real-uuid", kind: "review", entity_type: "deliverable", entity_id: "8001",
+            title: "Changes requested", body: "", created_at: new Date().toISOString(), is_read: false }], unread: 3 }
+        : {}) } as Response;
+    };
+    h.dom.window.dispatchEvent(new h.dom.window.Event("focus"));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(gets.some((u) => u.endsWith("/notifications"))).toBe(true);
+    expect(h.ev<unknown>("DB.notifications[0].id")).toBe(77);
+    expect(h.ev<unknown>("DB.notifications[0].user_id")).toBe(902);
+    expect(h.doc.getElementById("bell-count")!.textContent).toBe("3");
   });
 });
 

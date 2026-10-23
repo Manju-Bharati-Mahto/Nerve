@@ -3584,6 +3584,43 @@ function notify(user_id,kind,title,body,et,eid,ago){
   DB.notifications.push({id:++_n,user_id,kind,title,body,entity_type:et,entity_id:eid,
     is_read:ago>48,created_at:new Date(Date.now()-(ago||0)*36e5).toISOString()});
 }
+/* The server's ids are BIGINT columns, and pg hands those over as strings
+   ("43533"). Every lookup here compares numbers, so a row is made numeric the
+   moment it arrives — a string id is what left every notification dead to a tap. */
+function normNotif(n,uid){
+  const num=v=>{const x=Number(v);return v!=null&&v!==''&&Number.isFinite(x)?x:v;};
+  return {...n,id:num(n.id),entity_id:n.entity_id==null?null:num(n.entity_id),
+    user_id:uid!==undefined?uid:num(n.user_id)};
+}
+/* The bell's number. The server counts every unread notice (the list it sends
+   is capped); without that count, the rows this page holds are counted. */
+function notifUnread(){
+  if(typeof DB.notifications_unread==='number') return DB.notifications_unread;
+  return DB.notifications.filter(n=>n.user_id===S.me&&!n.is_read).length;
+}
+function paintBell(){
+  const b=$('#bell-count'); if(!b) return;
+  const un=notifUnread(); b.textContent=un; b.style.display=un?'grid':'none';
+}
+/* New notices reach the bell without a reload: on returning to the window and
+   about once a minute while it is in view. Only the notifications are fetched,
+   and the page is re-drawn only when it is the Notifications page with nothing
+   open over it. */
+let _notifAt=0;
+function refreshNotifications(){
+  /* A Creator Network member has no Media Ops inbox to ask for. */
+  if(!window.__MO_LIVE__||document.hidden||DB.my_module_group==='creator') return Promise.resolve();
+  const now=Date.now(); if(now-_notifAt<15000) return Promise.resolve();
+  _notifAt=now;
+  return MO_API.get('/notifications').then(r=>{
+    if(!r||!Array.isArray(r.notifications)) return;
+    DB.notifications=r.notifications.map(n=>normNotif(n,S.me));
+    DB.notifications_unread=typeof r.unread==='number'?r.unread:null;
+    paintBell();
+    if(S.route==='#/media/notifications'&&!['#modal-layer','#drawer','#palette'].some(q=>{const e=$(q);return e&&e.classList.contains('on');}))
+      render();
+  }).catch(()=>{});
+}
 (function seedNotifs(){
   notify(1,'approval','Version 3 awaiting your review','Admissions Brand Film — v3 submitted by Priya Shah','deliverable',27,2);
   notify(1,'overdue','Equipment overdue — 4 days','Canon EOS 5D Mark IV (EQ-CAM-006) held by Yash Panchal since 20 Jul','equipment',6,6);
@@ -5463,8 +5500,7 @@ function renderNav(){
   $('#me-av').style.backgroundImage="url('"+avatarURL(S.me)+"')";
   $('#me-av').title=u.full_name+' · '+({admin:'Admin',team_lead:'Team Lead',coordinator:'Coordinator',employee:'Employee'})[u.role];
   $('#me-name').textContent=u.full_name.split(' ')[0]+' '+u.full_name.split(' ').slice(-1)[0][0]+'.';
-  const un=DB.notifications.filter(n=>n.user_id===S.me&&!n.is_read).length;
-  $('#bell-count').textContent=un; $('#bell-count').style.display=un?'grid':'none';
+  paintBell();
   const bell=$('#btn-bell'); if(bell) bell.style.display=(isMobileLayout()&&DB.my_module_group==='creator')?'none':'';
   renderDisplayButton();
   /* A sidebar entry's own route keeps its label; an Admin section or a page with
@@ -5607,7 +5643,7 @@ function moreGroups(){
   /* Account: the shell controls, reachable from the sheet rather than the topbar. */
   const acct=[];
   if(!(DB.my_module_group==='creator')) acct.push({act:'moreNotifications',i:'bell',l:'Notifications',
-    badge:()=>DB.notifications.filter(n=>n.user_id===S.me&&!n.is_read).length||''});
+    badge:()=>notifUnread()||''});
   acct.push({act:'moreProfile',i:'user',l:'Profile'});
   if(moduleAllowed('kiosk')&&moduleAllowed('equipment')) acct.push({act:'moreKiosk',i:'kiosk',l:'Kiosk mode'});
   /* An installed app has no address bar to reload from, so leaving is the only
@@ -18869,14 +18905,21 @@ const notifKind=k=>NOTIF_KIND[k]||{l:auditWords(k)||'Notice',ic:'bell'};
    if the server sent a kind the client has not caught up with. */
 function notifTarget(n){
   const id=n.entity_id!=null?Number(n.entity_id):null;
+  /* A deliverable opens in its drawer. One this page has not loaded cannot, so
+     the reader goes to its project instead when the notice names one. */
+  const toDeliv=(did,pid)=>{
+    const d=did!=null?deliv(Number(did)):null;
+    if(d) return {drawer:()=>drawerDeliverable(d.id)};
+    return pid?{hash:'#/media/projects/'+Number(pid)}:null;
+  };
   switch(String(n.entity_type||'')){
     case 'project':        return id?{hash:'#/media/projects/'+id}:null;
-    case 'deliverable':    return id?{drawer:()=>drawerDeliverable(id)}:null;
+    case 'deliverable':    return id?toDeliv(id,n.project_id):null;
     case 'deliverable_version': {
       /* The version row's deliverable is what the reviewer wants to open; the
          version itself has no page of its own. */
-      const dl=(DB.deliverable_versions||[]).find(v=>v.id===id);
-      return dl?{drawer:()=>drawerDeliverable(dl.deliverable_id)}:null;
+      const dl=(DB.deliverable_versions||[]).find(v=>String(v.id)===String(id));
+      return dl?toDeliv(dl.deliverable_id,n.project_id):null;
     }
     case 'shoot':          return id?{drawer:()=>drawerShoot(id)}:null;
     case 'equipment':      return id?{async:(cb)=>withAsset(id,(e)=>{ if(e&&e.asset_tag) cb('#/media/equipment/'+e.asset_tag); })}:null;
@@ -18887,11 +18930,12 @@ function notifTarget(n){
     case 'request':        return {hash:'#/media/requests'};
     case 'casting_request':return {hash:'#/media/casting'};
     case 'assignment': {
-      /* An mo_assignments row — jump to its project. The row itself is
-         rendered inside the project page, so taking the reader there puts
-         the right card in front of them. */
-      const a=(DB.assignments||[]).find(x=>x.id===id);
-      return a&&a.project_id?{hash:'#/media/projects/'+a.project_id}:{hash:'#/media/my-day'};
+      /* An mo_assignments row — the deliverable it is work on, when it is on
+         one; otherwise its project, where the row itself is rendered. */
+      const a=(DB.assignments||[]).find(x=>String(x.id)===String(id));
+      if(!a) return {hash:'#/media/my-day'};
+      return (a.deliverable_id!=null&&toDeliv(a.deliverable_id,null))
+        ||(a.project_id?{hash:'#/media/projects/'+Number(a.project_id)}:{hash:'#/media/my-day'});
     }
     case 'team':           return id?{hash:'#/media/team/'+id}:{hash:'#/media/team'};
     case 'kra':            return {hash:'#/media/performance'};
@@ -18905,8 +18949,11 @@ function notifTarget(n){
    your team" (versions submitted, work handed back) vs. the automation chatter. */
 function notifSource(n){
   const k=String(n.kind||''), e=String(n.entity_type||'');
-  // A Coordinator or Admin routed a project / team to the Team Lead.
-  if(k==='assignment' && (e==='project' || e==='team')) return 'coord';
+  /* A project or team routed to the Team Lead ("You are leading…", "You now
+     lead…"). Being added to a project's crew is a teammate's doing — the
+     Coordinator never assigns — so that notice stays with the team. */
+  if(k==='assignment' && e==='team') return 'coord';
+  if(k==='assignment' && e==='project') return /^You are leading/.test(String(n.title||''))?'coord':'team';
   // A Coordinator intake / casting request / request-converted event.
   if(k==='casting' || k==='request') return 'coord';
   // Dispatch is the Coordinator telling an owner "your work went out".
@@ -18924,16 +18971,36 @@ const NOTIF_SOURCE={
 /* Day-bucket for the "daily brief" grouping — a short English label so a
    Team Lead can see at a glance what landed today and what came in earlier. */
 function notifDayBucket(n){
-  const d=String(n.created_at||'').slice(0,10); if(!d) return 'Earlier';
-  const t=rtoday();
+  /* The reader's own calendar day. Stamps arrive in UTC, so the first ten
+     characters of one are yesterday's date until 05:30 here — which is how a
+     notice eleven minutes old was filed under "Yesterday". */
+  const at=D.at(n.created_at); if(!at) return 'Earlier';
+  const d=D.iso(at), t=D.iso(Date.now());
   if(d===t) return 'Today';
   if(d===D.add(t,-1)) return 'Yesterday';
   if(d>=D.add(t,-7)) return 'This week';
   return 'Earlier';
 }
+/* When, in the words a reader uses: minutes or hours ago today, "Yesterday"
+   only for the previous calendar day, then the plain relative age or date. */
+function notifWhen(n){
+  const b=notifDayBucket(n);
+  if(b==='Today') return D.since(n.created_at);
+  if(b==='Yesterday') return 'Yesterday, '+D.time(n.created_at);
+  return D.since(n.created_at);
+}
+/* The project a notice is about, so two deliverables with the same title can
+   be told apart. The server names it; a row from an older server falls back
+   to the project this page already holds. */
+function notifProject(n){
+  if(n.project_name) return String(n.project_name);
+  const id=n.entity_id!=null?Number(n.entity_id):null, et=String(n.entity_type||'');
+  const pid=et==='project'?id:et==='deliverable'?(deliv(id)||{}).project_id:null;
+  const p=pid!=null?DB.projects.find(x=>x.id===pid):null;
+  return p&&p.name?p.name:'';
+}
 function viewNotifications(){
   const mine=DB.notifications.filter(n=>n.user_id===S.me).sort((a,b)=>(D.at(b.created_at)||0)-(D.at(a.created_at)||0));
-  const kinds=[...new Set(mine.map(n=>n.kind))];
   /* Role-aware segmentation. A Team Lead sees three cards: the Coordinator /
      Admin's work on top (what the user asked for — a "daily brief" surface),
      then their team's traffic, then the automations. Everyone else sees one
@@ -18943,7 +19010,7 @@ function viewNotifications(){
       data-act="openNotif" data-nid="${n.id}" title="Open">
     <span class="nk-ico" aria-hidden="true" style="color:${notifKind(n.kind).c||'var(--info)'}">${ic(notifKind(n.kind).ic)}</span>
     <span class="lr-main"><b>${esc(n.title)}</b><span>${esc(n.body)}</span>
-      <span class="xsmall mut3">${esc(notifDayBucket(n))} · ${esc(D.since(n.created_at))}</span></span>
+      <span class="xsmall mut3">${notifProject(n)?esc(notifProject(n))+' · ':''}<span title="${esc(D.fmtAt(n.created_at))}">${esc(notifWhen(n))}</span></span></span>
     <span class="chip">${esc(notifKind(n.kind).l)}</span>
     ${!n.is_read?'<span style="width:7px;height:7px;border-radius:50%;background:var(--brand-500)"></span>':''}
   </button>`;
@@ -18977,26 +19044,10 @@ function viewNotifications(){
   }
   return `<div class="page-head">
       <div><div class="crumb">Notifications</div><h1 class="page-title">Notifications</h1>
-      <div class="page-sub">Push notifications are held between 22:00 and 07:00 and delivered afterwards.</div></div>
+      <div class="page-sub">Work handed to you, reviews and reminders. Tap one to open it.</div></div>
       <div class="page-actions"><button class="btn" data-act="markAllRead">Mark all read</button></div></div>
 
-    <div class="grid g21">
-      <div class="fc gap4">${main}</div>
-      <div class="fc gap4">
-        <div class="card"><div class="card-head"><h3>Channels</h3></div>
-          <div class="card-body">
-            ${[['In-app centre','always on, cannot be disabled',true],['Web / PWA push','opt-in, quiet hours honoured',true],
-               ['Email','daily digest by default; instant for approvals and overdues',true],
-               ['WhatsApp','not used as a system channel',false]].map(([l,s,on])=>`
-              <div class="switch-row"><div class="sr-txt"><b>${l}</b><span>${s}</span></div>
-                <span class="switch ${on?'on':''}" ${l.includes('WhatsApp')?'style="opacity:.4;pointer-events:none"':''}></span></div>`).join('')}
-          </div></div>
-        <div class="card"><div class="card-head"><h3>Per-kind preferences</h3></div>
-          <div class="card-body">${kinds.map(k=>`<div class="switch-row">
-            <div class="sr-txt"><b>${esc(notifKind(k).l)}</b><span>${DB.notifications.filter(n=>n.kind===k).length} in the last 30 days</span></div>
-            <span class="switch on"></span></div>`).join('')}</div>
-          </div>
-      </div></div>`;
+    <div class="fc gap4">${main}</div>`;
 }
 /* ==========================================================================
    ADMIN + MODULE 13 AUDIT LOGS
@@ -26179,9 +26230,11 @@ const ACTIONS = {
     closeModal();
     moSync(Promise.all(posts),()=>{render();toast((phase==='self'?'Self':'Manager')+' review submitted','ok');});
   },
-  markAllRead:()=>{DB.notifications.filter(n=>n.user_id===S.me).forEach(n=>n.is_read=true);render();toast('All marked read','ok');
+  markAllRead:()=>{DB.notifications.filter(n=>n.user_id===S.me).forEach(n=>n.is_read=true);DB.notifications_unread=0;render();toast('All marked read','ok');
     if(window.__MO_LIVE__)MO_API.post('/notifications/read',{}).catch(()=>{});},
-  openNotif:(d)=>{const n=DB.notifications.find(x=>x.id===+d.nid);if(!n)return;
+  /* Matched as text: data-nid is a string, and a row's id may be either. */
+  openNotif:(d)=>{const n=DB.notifications.find(x=>String(x.id)===String(d.nid));if(!n)return;
+    if(!n.is_read&&typeof DB.notifications_unread==='number') DB.notifications_unread=Math.max(0,DB.notifications_unread-1);
     n.is_read=true;
     if(window.__MO_LIVE__)MO_API.post('/notifications/read',{id:n.id}).catch(()=>{});
     /* Routing is in notifTarget() — one definition for the bell list, the full
@@ -27590,6 +27643,8 @@ async function hydrateFromServer(){
   /* The caller's own interface preferences (e.g. the order of the Projects views). */
   DB.my_prefs=st.my_prefs&&typeof st.my_prefs==='object'&&!Array.isArray(st.my_prefs)?st.my_prefs:{};
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
+  DB.notifications=DB.notifications.map(n=>normNotif(n));
+  DB.notifications_unread=typeof st.notifications_unread==='number'?st.notifications_unread:null;
 
   /* WHAT THE SERVER NO LONGER SENDS MUST NOT FALL BACK TO THE SEED.
 
@@ -27837,9 +27892,11 @@ function moOfflineCard(){
     else console.warn('[Media Ops] server hydration failed — running on seed data:', e.message);
   }
   render();
-  /* Live counters refresh — FR-1.1 requires ≤ 60 s */
-  setInterval(()=>{if(S.route==='#/media/home'&&!$('#modal-layer').classList.contains('on')&&
-    !$('#drawer').classList.contains('on')&&!$('#palette').classList.contains('on')){/* silent no-op re-render guard */}},60000);
+  /* The bell keeps up while the app stays open: about every minute, and on
+     coming back to the window. It asks nothing of a page on sample data. */
+  setInterval(()=>refreshNotifications(),60000);
+  addEventListener('focus',()=>refreshNotifications());
+  addEventListener('visibilitychange',()=>{ if(!document.hidden) refreshNotifications(); });
   setTimeout(()=>{
     /* A creator IS live and IS signed in — they simply have no Media Ops
        project to count. Telling them to sign in would be both wrong and
