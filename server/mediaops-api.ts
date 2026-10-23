@@ -2003,14 +2003,27 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
          (Admins included: nobody signs off their own work);
        · approving needs a version waiting for review; changes can be asked for
          on a pending version or on one already approved (sent back);
-       · approval queues the deliverable for dispatch; changes pull it out. */
-  async function reviewDeliverable(u: CurrentUser, d: Record<string, unknown>, outcome: "approved" | "changes_requested",
-                                   comment: string, req: express.Request): Promise<{ status: number; message?: string }> {
+       · approval queues the deliverable for dispatch; changes pull it out;
+       · cancelled, not-required and delivered work is out of review: a
+         pending version left on it is not a question anyone answers here
+         (delivered work has its own sign-off, POST /approval). */
+  async function reviewerRefusal(u: CurrentUser, d: Record<string, unknown>): Promise<{ status: number; message: string } | null> {
     if (!(await canReviewProject(u, Number(d.project_id))))
       return { status: 403, message: "Only a Team Lead or an Admin may review a deliverable." };
-    const team = await deliverableTeamIds(Number(d.id));
-    if (team.has(u.id))
+    if ((await deliverableTeamIds(Number(d.id))).has(u.id))
       return { status: 403, message: "BR-5: you cannot review a deliverable you are assigned to." };
+    return null;
+  }
+
+  async function reviewDeliverable(u: CurrentUser, d: Record<string, unknown>, outcome: "approved" | "changes_requested",
+                                   comment: string, req: express.Request): Promise<{ status: number; message?: string }> {
+    const refused = await reviewerRefusal(u, d);
+    if (refused) return refused;
+    if (d.status === "delivered")
+      return { status: 400, message: "This deliverable has been delivered — sign it off or send it back from its sign-off instead." };
+    if (d.status === "cancelled" || d.status === "not_required")
+      return { status: 400, message: "This deliverable is no longer needed, so there is nothing to review." };
+    const team = await deliverableTeamIds(Number(d.id));
     const v = (await pool.query(
       `SELECT * FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [d.id])).rows[0];
     if (!v) return { status: 400, message: "No version to review — the owner submits one first." };
@@ -8745,25 +8758,34 @@ async function allocateInternalCode(
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
     const b = req.body as Record<string, unknown>;
+    // Boards are the Team Leads' and Admins' (FR-14.1), as creating a card is.
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Boards are Admin/Team-Lead only (FR-14.1).");
     const cur = await pool.query(`SELECT * FROM mo_cards WHERE id=$1`, [id]);
     if (!cur.rows[0]) return sendError(res, 404, "Card not found.");
+    /* FR-14.2 two-way sync: moving a linked card to a status-mapped column moves
+       the deliverable — through the same rules as POST /deliverables/:id/status
+       (review, who may, valid moves). It used to write the status straight in,
+       so dragging to an "approved" column approved work with no review. When
+       the deliverable may not move, the card does not move either. */
+    let synced: string | null = null;
+    if ("column_id" in b && cur.rows[0].linked_entity_type === "deliverable" && cur.rows[0].linked_entity_id) {
+      const info = await pool.query(
+        `SELECT bd.sync_status, col.maps_to_status, d.status FROM mo_boards bd
+           JOIN mo_board_columns col ON col.id=$1 AND col.board_id=bd.id
+           JOIN mo_deliverables d ON d.id=$3
+          WHERE bd.id=$2`, [Number(b.column_id), cur.rows[0].board_id, cur.rows[0].linked_entity_id]);
+      const maps = info.rows[0]?.maps_to_status;
+      if (info.rows[0]?.sync_status && maps && maps !== info.rows[0].status) {
+        const r = await changeDeliverableStatus(u, Number(cur.rows[0].linked_entity_id), String(maps), "", req);
+        if (r.status !== 200) return sendError(res, r.status, r.message ?? "");
+        synced = maps;
+      }
+    }
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
     for (const k of ["column_id", "sort_order", "title", "description", "priority", "due_date"])
       if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
     if (b.archived === true) { fields.push(`archived_at=CURRENT_DATE`); }
     if (fields.length) { vals.push(id); await pool.query(`UPDATE mo_cards SET ${fields.join(",")} WHERE id=$${i}`, vals); }
-    // FR-14.2 two-way sync: moving a linked card to a status-mapped column updates the object.
-    let synced: string | null = null;
-    if ("column_id" in b) {
-      const info = await pool.query(
-        `SELECT bd.sync_status, col.maps_to_status FROM mo_boards bd
-           JOIN mo_board_columns col ON col.id=$1 WHERE bd.id=$2`, [Number(b.column_id), cur.rows[0].board_id]);
-      const maps = info.rows[0]?.maps_to_status;
-      if (info.rows[0]?.sync_status && maps && cur.rows[0].linked_entity_type === "deliverable" && cur.rows[0].linked_entity_id) {
-        await pool.query(`UPDATE mo_deliverables SET status=$1 WHERE id=$2`, [maps, cur.rows[0].linked_entity_id]);
-        synced = maps;
-      }
-    }
     await audit(u, "card.updated", "card", id, cur.rows[0], b, req);
     res.json({ ok: true, synced });
   }));
@@ -8795,44 +8817,57 @@ async function allocateInternalCode(
   // machine. The two verdicts on the board (approved, changes requested) are
   // not status edits: they ARE the review, so they go through reviewDeliverable()
   // and obey exactly the rules the drawer does.
-  app.post(`${P}/deliverables/:id/status`, asyncHandler(async (req, res) => {
-    const u = requireMedia(res); if (!u) return;
-    const id = parseInt(getSingleParam(req.params.id), 10);
-    const to = String((req.body as Record<string, unknown>).status ?? "");
+  /* One implementation behind POST /deliverables/:id/status and a linked card
+     moved on a status-synced board (PATCH /cards/:id), so a drag on either
+     board obeys the same rules. Who is asking is checked before whether the
+     move is valid: someone with no say over the deliverable is told so, not
+     what state it is in. */
+  async function changeDeliverableStatus(u: CurrentUser, id: number, to: string, comment: string,
+                                         req: express.Request): Promise<{ status: number; message?: string }> {
     const d = (await pool.query(`SELECT d.*, dt.review_exempt FROM mo_deliverables d JOIN mo_deliverable_types dt ON dt.id=d.deliverable_type_id WHERE d.id=$1`, [id])).rows[0];
-    if (!d) return sendError(res, 404, "Deliverable not found.");
+    if (!d) return { status: 404, message: "Deliverable not found." };
     // Lifecycle (PRD §3): Assigned → In Progress → Submitted → Approved → Delivered.
     // A review-exempt type skips the review and is delivered straight from work.
+    // In review is reached only by submitting a version (POST /versions), and
+    // delivered work is sent back from its sign-off (POST /approval).
     const DELIV: Record<string, string[]> = {
       not_started: ["in_progress", "delivered", "not_required", "cancelled"],
-      in_progress: ["in_review", "delivered", "not_required", "cancelled"],
+      in_progress: ["delivered", "not_required", "cancelled"],
       in_review: ["approved", "changes_requested", "delivered", "cancelled"],
-      changes_requested: ["in_progress", "in_review", "approved", "cancelled"],
+      changes_requested: ["in_progress", "approved", "cancelled"],
       approved: ["delivered", "changes_requested"],
-      delivered: ["changes_requested"],   // a reviewer can send delivered work back
+      delivered: [],
       not_required: ["not_started"], cancelled: ["not_started"],
     };
-    if (!(DELIV[d.status] ?? []).includes(to)) return sendError(res, 400, `BR-1: ${d.status} → ${to} is not a valid transition.`);
+    const invalid = { status: 400, message: `${String(d.status).replace(/_/g, " ")} → ${to.replace(/_/g, " ")} is not a valid move.` };
 
     if (to === "approved" || to === "changes_requested") {
-      const r = await reviewDeliverable(u, d, to, "", req);
-      if (r.status !== 200) return sendError(res, r.status, r.message ?? "");
-      return res.json({ ok: true, status: to });
+      const refused = await reviewerRefusal(u, d);
+      if (refused) return refused;
+      // Closed work falls through: reviewDeliverable says why it is out of review.
+      if (!(DELIV[d.status] ?? []).includes(to) && !["delivered", "cancelled", "not_required"].includes(d.status))
+        return invalid;
+      return reviewDeliverable(u, d, to, comment, req);
     }
-    /* Delivered is reached through review: an approved deliverable is delivered,
-       and only a review-exempt type is delivered straight from work. This was
-       the road round the reviewer — mark your own work delivered, skip review. */
-    if (to === "delivered" && d.status !== "approved" && !d.review_exempt)
-      return sendError(res, 400, "Submit a version for review — only an approved deliverable can be delivered.");
     // The owner drives their own execution; scope changes (not required,
     // cancelled, and back) are the project's to make.
     const isOwner = await worksOnDeliverable(u, id);   // owner or team: the people doing it
     const manages = await canManageProject(u, Number(d.project_id));
     const ownerMoves = ["in_progress", "in_review", "delivered"];
     if (!(manages || (isOwner && ownerMoves.includes(to))))
-      return sendError(res, 403, isOwner
+      return { status: 403, message: isOwner
         ? "Only the project's Team Lead or PM may change this deliverable's scope."
-        : "You can only update deliverables assigned to you.");
+        : "You can only update deliverables assigned to you." };
+    /* In review means a version is waiting for a reviewer. Setting the status
+       alone left work "in review" with nothing to review: no reviewer told,
+       nothing to approve, and no way back out for the team. */
+    if (to === "in_review") return { status: 400, message: "Submit a version to send it for review." };
+    if (!(DELIV[d.status] ?? []).includes(to)) return invalid;
+    /* Delivered is reached through review: an approved deliverable is delivered,
+       and only a review-exempt type is delivered straight from work. This was
+       the road round the reviewer — mark your own work delivered, skip review. */
+    if (to === "delivered" && d.status !== "approved" && !d.review_exempt)
+      return { status: 400, message: "Submit a version for review — only an approved deliverable can be delivered." };
     // Delivering stamps who/when and re-opens the approval gate for the reviewer.
     const delivering = to === "delivered";
     await pool.query(
@@ -8846,6 +8881,17 @@ async function allocateInternalCode(
       { status: d.status }, { status: to, delivered_by: delivering ? u.id : undefined }, req);
     // Tell the project's reviewer there is something to look at.
     if (delivering) await tellSignOffNeeded(u, d);
+    return { status: 200 };
+  }
+
+  app.post(`${P}/deliverables/:id/status`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    const to = String(b.status ?? "");
+    // A send-back from the board says what to fix, as the drawer's does.
+    const r = await changeDeliverableStatus(u, id, to, String(b.comment ?? "").trim(), req);
+    if (r.status !== 200) return sendError(res, r.status, r.message ?? "");
     res.json({ ok: true, status: to });
   }));
 
@@ -8937,7 +8983,7 @@ async function allocateInternalCode(
       one(`SELECT count(*) n FROM mo_projects WHERE owner_id=$1 AND status NOT IN ('completed','archived','cancelled') AND deleted_at IS NULL`),
       one(`SELECT count(*) n FROM mo_deliverables WHERE owner_id=$1 AND status NOT IN ('delivered','not_required','cancelled') AND deleted_at IS NULL`),
       one(`SELECT count(*) n FROM mo_deliverable_versions v JOIN mo_deliverables d ON d.id=v.deliverable_id
-            WHERE v.review_status='pending' AND d.owner_id=$1`),
+            WHERE v.review_status='pending' AND d.owner_id=$1 AND d.status='in_review' AND d.deleted_at IS NULL`),
       one(`SELECT count(*) n FROM mo_assignment_users au JOIN mo_assignments a ON a.id=au.assignment_id
             WHERE au.user_id=$1 AND a.status NOT IN ('done','cancelled')`),
       one(`SELECT count(*) n FROM mo_daily_reports WHERE user_id=$1`),

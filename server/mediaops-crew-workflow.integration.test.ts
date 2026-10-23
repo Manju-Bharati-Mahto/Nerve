@@ -168,6 +168,7 @@ async function cleanup() {
   await pool.query(`DELETE FROM mo_audit_logs WHERE actor_id LIKE '${PX}-%'`);
   await pool.query(`DELETE FROM mo_notifications WHERE user_id LIKE '${PX}-%'`);
   await pool.query(`DELETE FROM mo_projects WHERE name LIKE '${PX}%'`);
+  await pool.query(`DELETE FROM mo_boards WHERE name LIKE '${PX} %'`);
   await pool.query(`DELETE FROM mo_team_members WHERE user_id LIKE '${PX}-%'`);
   await pool.query(`DELETE FROM mo_teams WHERE name LIKE '${PX} %'`);
   await pool.query(`DELETE FROM mo_user_profiles WHERE user_id LIKE '${PX}-%'`);
@@ -1203,5 +1204,141 @@ maybe("notifications — payload, recipients, no duplicates", () => {
     const s = await as("empA2", "GET", "/state");
     const bodies = (s.body.comments as Array<Record<string, unknown>>).map((c) => c.body);
     expect(bodies).toContain(`${PX} trim the intro`);
+  });
+});
+
+/* ── The status machine: one road into review, and closed work stays closed ── */
+
+maybe("status moves — a version is the only way into review, and closed work is not reviewed", () => {
+  const versionOf = (did: number) => one(
+    `SELECT review_status, review_comment FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [did]);
+
+  it("/status cannot put work in review; submitting a version does", async () => {
+    const { did } = await ownedBy("empA1");
+    await as("empA1", "POST", `/deliverables/${did}/status`, { status: "in_progress" });
+    for (const who of ["empA1", "leadA"] as const) {
+      const r = await as(who, "POST", `/deliverables/${did}/status`, { status: "in_review" });
+      expect(r.status, who).toBe(400);
+      expect(r.body.message).toBe("Submit a version to send it for review.");
+    }
+    expect((await deliv(did)).status).toBe("in_progress");
+    expect((await as("empA1", "POST", `/deliverables/${did}/versions`, drive("ir1"))).status).toBe(201);
+    expect((await deliv(did)).status).toBe("in_review");
+  });
+
+  it("/status answers who may before whether the move is valid", async () => {
+    const { did } = await ownedBy("empA1");
+    // not_started → in_review / approved are invalid moves; these callers have no say at all.
+    expect((await as("empB1", "POST", `/deliverables/${did}/status`, { status: "in_review" })).status).toBe(403);
+    expect((await as("coord", "POST", `/deliverables/${did}/status`, { status: "approved" })).status).toBe(403);
+    expect((await as("empA1", "POST", `/deliverables/${did}/status`, { status: "approved" })).status).toBe(403);
+    expect((await deliv(did)).status).toBe("not_started");
+  });
+
+  it("a send-back through /status carries its comment to the version and the team", async () => {
+    const { did } = await ownedBy("empA1");
+    await as("empA1", "POST", `/deliverables/${did}/versions`, drive("cr1"));
+    const r = await as("leadB", "POST", `/deliverables/${did}/status`, { status: "changes_requested", comment: "Fix the colour grade" });
+    expect(r.status).toBe(200);
+    expect(await versionOf(did)).toEqual({ review_status: "changes_requested", review_comment: "Fix the colour grade" });
+    const n = await one(`SELECT body FROM mo_notifications WHERE user_id=$1 AND entity_type='deliverable' AND entity_id=$2
+                          AND title LIKE 'Changes requested%'`, [ACTORS.empA1.id, did]);
+    expect(String(n?.body)).toContain("Fix the colour grade");
+  });
+
+  it("cancelled, not-required and delivered work is not reviewed, and leaves the reviews count", async () => {
+    const { did } = await ownedBy("empA1");
+    await as("empA1", "POST", `/deliverables/${did}/versions`, drive("cl1"));
+    const reviews = async () => Number(((await as("admin", "GET", `/crew/${ACTORS.empA1.id}/impact`)).body
+      .active as Record<string, unknown>).reviews);
+    const before = await reviews();
+    // The project's lead cancels it while the version is still pending.
+    expect((await as("leadA", "POST", `/deliverables/${did}/status`, { status: "cancelled" })).status).toBe(200);
+    expect(await reviews()).toBe(before - 1);
+    for (const closed of ["cancelled", "not_required", "delivered"]) {
+      await pool.query(`UPDATE mo_deliverables SET status=$1, dispatch_status='none' WHERE id=$2`, [closed, did]);
+      for (const outcome of ["approved", "changes_requested"]) {
+        expect((await as("leadB", "POST", `/deliverables/${did}/review`, { outcome, comment: "x" })).status, `${closed} /review ${outcome}`).toBe(400);
+        expect((await as("leadB", "POST", `/deliverables/${did}/status`, { status: outcome, comment: "x" })).status, `${closed} /status ${outcome}`).toBe(400);
+      }
+      const after = await deliv(did);
+      expect([after.status, after.dispatch_status], closed).toEqual([closed, "none"]);
+    }
+    expect((await versionOf(did)).review_status).toBe("pending");
+  });
+
+  it("a post-delivery send-back needs a note; the whole team hears the sign-off", async () => {
+    const { pid } = await routed(teamA, []);
+    const w = await as("leadA", "POST", `/projects/${pid}/work`, { work_type_id: workTypeId, title: `${PX} cut`,
+      assignees: [ACTORS.empA1.id, ACTORS.empA2.id], owner_id: ACTORS.empA1.id, new_deliverable: { deliverable_type_id: dtype } });
+    const did = Number((w.body.deliverable as Record<string, unknown>).id);
+    await as("empA1", "POST", `/deliverables/${did}/versions`, drive("so1"));
+    await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "approved" });
+    await as("empA1", "POST", `/deliverables/${did}/deliver`, {});
+    for (const to of ["changes_requested", "rejected"]) {
+      const r = await as("leadB", "POST", `/deliverables/${did}/approval`, { approval_status: to, note: "  " });
+      expect([r.status, r.body.message], to).toEqual([400, "Say what needs to change."]);
+    }
+    expect((await as("leadB", "POST", `/deliverables/${did}/approval`, { approval_status: "approved" })).status).toBe(200);
+    for (const who of ["empA1", "empA2"] as const)
+      expect((await notes(ACTORS[who].id, "deliverable", did)).map((n) => n.title), who).toContain("Deliverable approved");
+  });
+});
+
+/* ── Boards: a linked card moves its deliverable only as /status would ───── */
+
+maybe("PATCH /cards/:id — Team Leads and Admins only, and a synced move obeys the review rules", () => {
+  let board = 0, approvedCol = 0, restartCol = 0, plainCol = 0;
+  const card = async (did: number) => Number((await one(
+    `INSERT INTO mo_cards (board_id, column_id, title, linked_entity_type, linked_entity_id, created_by)
+     VALUES ($1,$2,$3,'deliverable',$4,$5) RETURNING id`, [board, plainCol, `${PX} card`, did, ACTORS.leadA.id])).id);
+  const columnOf = async (cid: number) => Number((await one(`SELECT column_id FROM mo_cards WHERE id=$1`, [cid])).column_id);
+
+  beforeAll(async () => {
+    board = Number((await one(`INSERT INTO mo_boards (name, is_management, sync_status, created_by)
+                               VALUES ($1, true, true, $2) RETURNING id`, [`${PX} War Room`, ACTORS.leadA.id])).id);
+    const col = async (name: string, maps: string | null, i: number) => Number((await one(
+      `INSERT INTO mo_board_columns (board_id, name, sort_order, maps_to_status) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [board, name, i, maps])).id);
+    plainCol = await col("Inbox", null, 0);
+    restartCol = await col("To arrange", "not_started", 1);
+    approvedCol = await col("Confirmed", "approved", 2);
+  });
+
+  it("an employee or the Coordinator cannot move a card", async () => {
+    const { did } = await ownedBy("empA1");
+    const cid = await card(did);
+    for (const who of ["empA1", "coord"] as const)
+      expect((await as(who, "PATCH", `/cards/${cid}`, { column_id: approvedCol })).status, who).toBe(403);
+    expect(await columnOf(cid)).toBe(plainCol);
+    expect((await deliv(did)).status).toBe("not_started");
+  });
+
+  it("dragging to an approved column is the review: refused for the team, and without a version", async () => {
+    const bare = await ownedBy("empA1");
+    const bareCard = await card(bare.did);
+    expect((await as("leadB", "PATCH", `/cards/${bareCard}`, { column_id: approvedCol })).status).toBe(400);
+    expect([await columnOf(bareCard), (await deliv(bare.did)).status]).toEqual([plainCol, "not_started"]);
+
+    const own = await ownedBy("leadB");
+    await as("leadB", "POST", `/deliverables/${own.did}/versions`, drive("cd1"));
+    const ownCard = await card(own.did);
+    expect((await as("leadB", "PATCH", `/cards/${ownCard}`, { column_id: approvedCol })).status).toBe(403);
+    expect([await columnOf(ownCard), (await deliv(own.did)).status]).toEqual([plainCol, "in_review"]);
+
+    const r = await as("leadA", "PATCH", `/cards/${ownCard}`, { column_id: approvedCol });
+    expect([r.status, r.body.synced]).toEqual([200, "approved"]);
+    const d = await deliv(own.did);
+    expect([await columnOf(ownCard), d.status, d.dispatch_status]).toEqual([approvedCol, "approved", "queued"]);
+  });
+
+  it("an invalid move is refused and the card stays; an unmapped column just moves the card", async () => {
+    const { did } = await ownedBy("empA1");
+    await as("empA1", "POST", `/deliverables/${did}/versions`, drive("cd2"));
+    const cid = await card(did);
+    expect((await as("leadA", "PATCH", `/cards/${cid}`, { column_id: restartCol })).status).toBe(400);
+    expect([await columnOf(cid), (await deliv(did)).status]).toEqual([plainCol, "in_review"]);
+    const r = await as("leadA", "PATCH", `/cards/${cid}`, { column_id: plainCol, title: `${PX} renamed` });
+    expect([r.status, r.body.synced]).toEqual([200, null]);
   });
 });
