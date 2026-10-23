@@ -499,12 +499,12 @@ describe("Assign work — creates the deliverable and shares it with everyone as
     expect(h.ev<string>("viewProject(7001,'overview')")).toContain('data-act="assignWork"');
   });
 
-  it("an employee on a project picks from the whole crew; the Coordinator picks nobody but themselves", async () => {
+  it("an employee on a project picks from the whole crew; the Coordinator picks nobody (not a production worker)", async () => {
     const h = await boot(903);
     const ids = h.ev<number[]>("assignableMembers().map(u=>u.id)");
     for (const id of [901, 902, 904, 905]) expect(ids).toContain(id);
     h.as(906);
-    expect(h.ev<number[]>("assignableMembers().map(u=>u.id)")).toEqual([906]);
+    expect(h.ev<number[]>("assignableMembers().map(u=>u.id)")).toEqual([]);
   });
 
   it("crew buttons: another team's lead may add crew, but removing crew and editing shoots stay with the project's lead", async () => {

@@ -698,20 +698,21 @@ maybe("Phase 2 — the self-naming, bypass and routing holes stay closed", () =>
     expect(Number(leadNotes.rows[0].c)).toBe(0);
   });
 
-  it("adding a deliverable with an owner notifies them, and they join the project crew", async () => {
+  /* Adding scope is not assigning it (owner's rule, Q3): an owner_id in the
+     request is ignored, nobody is told they have work, and nobody joins the
+     crew — the deliverable waits, unassigned, for its lead to allocate. */
+  it("adding a deliverable never names an owner — an owner_id sent is ignored", async () => {
     const { pid } = await routed(teamA);
     const r = await as("leadA", "POST", `/projects/${pid}/deliverables`,
       { title: `${PX} new`, deliverable_type_id: dtype, owner_id: ACTORS.empA2.id });
     expect(r.status).toBe(201);
     const did = Number((r.body.deliverable as Record<string, unknown>).id);
-    const n = await pool.query(
-      `SELECT title FROM mo_notifications WHERE user_id=$1 AND entity_type='deliverable' AND entity_id=$2`,
-      [ACTORS.empA2.id, did]);
-    expect(n.rows.map((x) => x.title)).toContain("New assignment");
+    expect((await deliv(did)).owner_id).toBeNull();
+    expect(await notes(ACTORS.empA2.id, "deliverable", did)).toEqual([]);
     const crew = await pool.query(
       `SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`,
       [pid, ACTORS.empA2.id]);
-    expect(crew.rowCount).toBe(1);
+    expect(crew.rowCount).toBe(0);
   });
 });
 

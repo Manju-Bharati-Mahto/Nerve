@@ -1748,6 +1748,14 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
     SELECT 'casting_manager','Casting Manager','Maintains the casting library: records, tags, collections, consent and casting requests.'
      WHERE NOT EXISTS (SELECT 1 FROM mo_duty_flags WHERE code='casting_manager')`);
 
+  // Production worker is a duty too (D4). Admins and the Coordinator run and
+  // route the work, so they are left out of every assignment list — unless an
+  // Admin gives them this, for the ones who also shoot or edit.
+  await pool.query(`
+    INSERT INTO mo_duty_flags (code, name, description)
+    SELECT 'production_worker','Production worker','May be assigned production work despite an Admin/Coordinator role.'
+     WHERE NOT EXISTS (SELECT 1 FROM mo_duty_flags WHERE code='production_worker')`);
+
   /* ═══ SMC — Social Media Council ══════════════════════════════════════════
      The institute-level coverage network. Deliberately built ON the existing
      entities rather than beside them, because a parallel event system is the

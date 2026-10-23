@@ -308,9 +308,11 @@ maybe("TEST 4/14 — individual assignment is not the Coordinator's to make", ()
     expect((await newProject("coord", { team_id: teamA, owner_id: ACTORS.empA1.id })).status).toBe(403);
   });
 
-  it("the Coordinator's assignable scope is themselves — never the directory", async () => {
+  /* Never the directory — and not even themselves unless an Admin has made
+     them a production worker (Q5). */
+  it("the Coordinator's assignable scope is never the directory — nobody, unflagged", async () => {
     const r = await as("coord", "GET", "/members/assignable");
-    expect((r.body.members as Array<{ id: string }>).map((m) => m.id)).toEqual([ACTORS.coord.id]);
+    expect((r.body.members as Array<{ id: string }>).map((m) => m.id)).toEqual([]);
   });
 
   it("TEST 14 — an employee who is not on the project cannot assign work on it", async () => {
@@ -392,8 +394,9 @@ maybe("TEST 11/12/13 — allocation belongs to the Team Lead", () => {
     const ids = (r.body.members as Array<{ id: string }>).map((m) => m.id);
     for (const who of [ACTORS.empA1.id, ACTORS.empA2.id, ACTORS.empB1.id, ACTORS.leadA.id]) expect(ids).toContain(who);
     expect(ids, "a removed account is offered").not.toContain(`${PX}-deadlead`);
+    expect(ids, "an unflagged Coordinator is offered").not.toContain(ACTORS.coord.id);
     const c = await as("coord", "GET", "/members/assignable");
-    expect((c.body.members as Array<{ id: string }>).map((m) => m.id)).toEqual([ACTORS.coord.id]);
+    expect((c.body.members as Array<{ id: string }>).map((m) => m.id)).toEqual([]);
   });
 
   it("TEST 11 — the lead assigns the deliverable to one of their people", async () => {

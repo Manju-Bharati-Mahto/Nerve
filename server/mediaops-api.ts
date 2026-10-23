@@ -668,25 +668,35 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   // ── Assignable-member scoping (§16) ──────────────────────────────────────
   // Who may this actor put on a project, a deliverable or a task?
-  //   Admin                 → every media crew member.
-  //   Team Lead, Employee   → every ACTIVE media crew member. Product decision
+  //   Admin                 → every ACTIVE production worker.
+  //   Team Lead, Employee   → every ACTIVE production worker. Product decision
   //                           (Oct 2026): assigning is not limited to your own
   //                           team — a lead, or an employee on a project, may
   //                           hand work to anyone in the crew.
-  //   Coordinator           → themselves only. The Coordinator routes projects
-  //                           to teams and never names individuals.
+  //   Coordinator           → themselves only, and only as a production worker.
+  //                           The Coordinator routes projects to teams and
+  //                           never names individuals.
   //   SMC member            → themselves only. SMC is a separate network.
-  // Enforced server-side on every assignment path; the UI merely mirrors it.
+  // A production worker is anyone on the Media Crew who is not an Admin or the
+  // Coordinator — those run and route the work rather than do it — unless an
+  // Admin has given them the 'production_worker' duty (D4: a duty, never a 4th
+  // role). Enforced server-side on every assignment path; the UI mirrors it.
+  const PRODUCTION_WORKER_SQL = `
+    SELECT u.id, u.full_name,
+           (u.role IN ('admin','super_admin') OR COALESCE(pr.mo_role,'')='coordinator') AS runs_work,
+           EXISTS (SELECT 1 FROM mo_user_duties d JOIN mo_duty_flags f ON f.id=d.duty_flag_id
+                    WHERE d.user_id=u.id AND f.code='production_worker'
+                      AND f.is_active AND f.archived_at IS NULL) AS flagged
+      FROM users u LEFT JOIN mo_user_profiles pr ON pr.user_id=u.id
+     WHERE u.team='media' AND COALESCE(u.status,'active')='active'`;
   async function assignableMemberIds(actor: CurrentUser): Promise<Set<string>> {
     const role = moRoleOf(actor);
-    if (role === "admin") {
-      const { rows } = await pool.query(`SELECT id FROM users WHERE team='media'`);
-      return new Set(rows.map((r) => String(r.id)));
-    }
-    if (actor.team !== "media" || await isCoordinator(actor)) return new Set<string>([actor.id]);
-    const { rows } = await pool.query(
-      `SELECT id FROM users WHERE team='media' AND COALESCE(status,'active')='active'`);
-    return new Set([actor.id, ...rows.map((r) => String(r.id))]);
+    if (role !== "admin" && actor.team !== "media") return new Set<string>([actor.id]);
+    const workers = (await pool.query(PRODUCTION_WORKER_SQL)).rows
+      .filter((r) => !r.runs_work || r.flagged).map((r) => String(r.id));
+    if (role === "admin") return new Set(workers);
+    if (await isCoordinator(actor)) return new Set(workers.filter((id) => id === actor.id));
+    return new Set([actor.id, ...workers]);
   }
 
   /* ── Who may ASSIGN on a project ───────────────────────────────────────────
@@ -736,6 +746,15 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const allowed = await assignableMemberIds(actor);
     const bad = wanted.filter((id) => !allowed.has(id));
     if (bad.length) {
+      /* Someone this actor could otherwise pick, left out only because they
+         run the work (Admin, Coordinator) and carry no production duty. */
+      const mayPickOthers = isMoAdmin(actor) || (actor.team === "media" && !(await isCoordinator(actor)));
+      const runner = (await pool.query(`${PRODUCTION_WORKER_SQL} AND u.id = ANY($1::text[])`, [bad])).rows
+        .find((r) => r.runs_work && !r.flagged && (mayPickOthers || String(r.id) === actor.id));
+      if (runner) {
+        sendError(res, 403, `${runner.full_name} is not marked as a production worker.`);
+        return false;
+      }
       // Any Team Lead, and an employee on the project, may assign anyone active in the crew.
       sendError(res, 403, actor.team !== "media" || await isCoordinator(actor)
         ? "The Operations Coordinator routes work; a Team Lead assigns it."
@@ -1928,40 +1947,79 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     approved: ["delivered", "changes_requested"], delivered: [], not_required: ["not_started"], cancelled: ["not_started"],
   };
 
+  /* ── Add deliverable on an existing project ─────────────────────────────
+     Scope grows after creation, so the people who shape it may add to it: the
+     project's lead, owner/PM or an Admin (canManageProject), and the
+     Coordinator, whose intake job this is. Adding is not assigning: the row is
+     created UNASSIGNED whatever the request says — the lead (or whoever may
+     assign here) decides who does it, with Assign work. The one exception is
+     an employee's own project, where every deliverable is theirs from the
+     start, exactly as POST /projects stores it. One field names the work: its
+     type, whose name is the title ("Reel (2)" for a second one). A finished
+     project takes no new scope. */
   app.post(`${P}/projects/:id/deliverables`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
+    if (!(await requireModule(res, u, "projects"))) return;
     const pid = parseInt(getSingleParam(req.params.id), 10);
-    // §16: "Create/edit deliverables" — the project's lead, Admin, or its owner/PM.
-    if (!(await canManageProject(u, pid)))
-      return sendError(res, 403, "§16: only the project's Team Lead, owner/PM or an Admin may add deliverables.");
+    const proj = (await pool.query(
+      `SELECT id, name, status, owner_id, team_id FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [pid])).rows[0];
+    if (!proj) return sendError(res, 404, "Project not found.");
+    if (!(await canManageProject(u, pid) || await isCoordinator(u)))
+      return sendError(res, 403, "Only the project's Team Lead, its owner or PM, the Coordinator or an Admin may add deliverables.");
+    if (["completed", "archived", "cancelled"].includes(String(proj.status)))
+      return sendError(res, 400, `This project is ${proj.status} — reopen it before adding deliverables.`);
     const b = req.body as Record<string, unknown>;
-    // Naming an owner is an assignment — same team scope as every other path.
-    if (b.owner_id && !(await assertAssignable(res, u, [String(b.owner_id)]))) return;
-    const title = String(b.title ?? "").trim();
-    if (!title) return sendError(res, 400, "Title is required.");
-    const typeId = Number(b.deliverable_type_id);
+    const typeRow = (await pool.query(
+      `SELECT id, name FROM mo_deliverable_types WHERE id=$1 AND archived_at IS NULL`, [Number(b.deliverable_type_id)])).rows[0];
+    if (!typeRow) return sendError(res, 400, "Choose a deliverable type.");
+    if (b.priority != null && b.priority !== "" && !PRIORITIES.includes(String(b.priority)))
+      return sendError(res, 400, PRIORITY_ERROR);
+    const pr = b.priority ? String(b.priority) : "normal";
+    const est = b.estimated_hours != null && b.estimated_hours !== "" && !Number.isNaN(Number(b.estimated_hours))
+      ? Number(b.estimated_hours) : null;
+    if (est !== null && est < 0) return sendError(res, 400, "Effort cannot be negative.");
+    const due = b.due_date ? String(b.due_date).slice(0, 10) : null;
+    if (due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) return sendError(res, 400, "The due date is not a valid date.");
+    // The title is the type's name, numbered when the project already has one.
+    let title = String(b.title ?? "").trim();
+    if (title.length > 160) return sendError(res, 400, "A deliverable title must be 160 characters or fewer.");
+    if (!title) {
+      const taken = new Set((await pool.query(
+        `SELECT lower(title) t FROM mo_deliverables WHERE project_id=$1 AND deleted_at IS NULL`, [pid])).rows.map((r) => r.t));
+      const base = String(typeRow.name);
+      title = base;
+      for (let n = 2; taken.has(title.toLowerCase()); n++) title = `${base} (${n})`;
+    }
+    const isEmployee = !isMoAdmin(u) && !isMoTL(u) && !(await isCoordinator(u));
+    const owner = isEmployee && proj.team_id == null && String(proj.owner_id) === u.id ? u.id : null;
     const ins = await pool.query(
-      `INSERT INTO mo_deliverables (project_id, deliverable_type_id, title, owner_id, due_date, quantity_target, unit, spec_notes, weight, status)
-       SELECT $1,$2,$3,$4,$5,$6, dt.default_unit, $7, dt.default_weight, 'not_started'
+      `INSERT INTO mo_deliverables (project_id, deliverable_type_id, title, owner_id, due_date, quantity_target, unit,
+         spec_notes, weight, status, priority, estimated_hours, due_date_source)
+       SELECT $1,$2,$3,$4,$5,$6, dt.default_unit, $7, dt.default_weight, 'not_started', $8, $9, 'manual'
        FROM mo_deliverable_types dt WHERE dt.id=$2 RETURNING *`,
-      [pid, typeId, title, (b.owner_id as string) || u.id, (b.due_date as string) || null,
-       b.quantity_target ? Number(b.quantity_target) : null, String(b.spec_notes ?? "")]);
-    // Robustness: the INSERT…SELECT yields no row when the type id doesn't exist —
-    // answer 400, not a crash (found via a deleted lookup type).
-    if (!ins.rows[0]) return sendError(res, 400, "Invalid deliverable type.");
-    /* Naming an owner HERE is an assignment, so it joins the project crew and
-       the owner is notified — same consequences every other assignment path
-       has. Before this call, adding a deliverable with an owner notified
-       nobody, so the person it was assigned to found out by accident. */
-    if (ins.rows[0].owner_id)
-      await deliverableAssigned(u, ins.rows[0], null, String(ins.rows[0].owner_id));
+      [pid, typeRow.id, title, owner, due, b.quantity_target ? Number(b.quantity_target) : null,
+       String(b.spec_notes ?? ""), pr, est]);
+    const d = ins.rows[0];
     // #7: optional Drive link attached to the new deliverable.
     const url = String(b.drive_url ?? "").trim();
     if (url && /^https:\/\/(drive|docs)\.google\.com\//.test(url))
       await pool.query(`INSERT INTO mo_drive_links (entity_type, entity_id, label, url, added_by, validation_status, last_validated_at)
-        VALUES ('deliverable',$1,$2,$3,$4,'ok',NOW())`, [ins.rows[0].id, title, url, u.id]);
-    await audit(u, "deliverable.created", "deliverable", ins.rows[0].id, null, { title }, req);
-    res.status(201).json({ deliverable: ins.rows[0] });
+        VALUES ('deliverable',$1,$2,$3,$4,'ok',NOW())`, [d.id, title, url, u.id]);
+    /* Whoever allocates the project's work hears there is more of it: the
+       team's lead and the project's owner — not the person who added it. */
+    const lead = proj.team_id == null ? null : (await pool.query(
+      `SELECT t.lead_user_id FROM mo_teams t JOIN users us ON us.id=t.lead_user_id
+        WHERE t.id=$1 AND COALESCE(us.status,'active')='active'`, [proj.team_id])).rows[0]?.lead_user_id;
+    const tell = new Set([lead, proj.owner_id].filter(Boolean).map(String));
+    tell.delete(u.id);
+    for (const uid of tell)
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'assignment',$2,$3,'deliverable',$4)`,
+        [uid, "Deliverable added", `${u.full_name ?? "Someone"} added “${title}” to ${proj.name}. Nobody is assigned to it yet.`,
+         Number(d.id)]).catch(() => {});
+    await audit(u, "deliverable.created", "deliverable", d.id, null, { title, project_id: pid }, req);
+    res.status(201).json({ deliverable: d });
   }));
 
   app.patch(`${P}/deliverables/:id`, asyncHandler(async (req, res) => {

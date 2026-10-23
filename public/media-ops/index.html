@@ -3783,14 +3783,22 @@ function assignableTeams(){
   }).filter(t=>!isTL()||t.lead_user_id===S.me);
 }
 
+/* An Admin or the Coordinator runs the work rather than doing it, so they are
+   in no assignment list unless an Admin gave them the 'production_worker' duty
+   — the same test assignableMemberIds() applies on the server. */
+function productionEligible(x){
+  if(!x||(x.role!=='admin'&&x.role!=='coordinator'))return !!x;
+  const f=(DB.duty_flags||[]).find(d=>d.code==='production_worker'&&d.is_active!==false);
+  return !!f&&(DB.user_duties||[]).some(d=>d.user_id===x.id&&d.duty_flag_id===f.id);
+}
 /* Who this person may put on work — mirrors assignableMemberIds() on the
    server. Admins, Team Leads and employees pick from the whole active crew
    (assigning is not limited to your own team). The Coordinator routes projects
    and never names individuals, and an SMC member is not Media Crew: both get
-   only themselves. */
+   only themselves. Everyone is filtered to production workers. */
 function assignableMembers(uid=S.me){
   const u=user(uid)||{};
-  const active=DB.users.filter(x=>x.is_active);
+  const active=DB.users.filter(x=>x.is_active&&productionEligible(x));
   if(u.role==='admin')return active;
   if(u.role==='coordinator'||(uid===S.me&&amSmcMember()))return active.filter(x=>x.id===uid);
   return active;
@@ -11061,6 +11069,8 @@ function viewProject(id,tab){
       <div class="page-actions">
         <span class="f ac gap2"><span class="small mut3">Owner</span>${avatar(p.owner_id,'sm')}
           <span class="small b">${esc(user(p.owner_id).full_name)}</span></span>
+        ${canAddDeliverable(p)?`<button class="btn sm" data-act="addDeliverable" data-pid="${p.id}"
+          title="Add what this project has to produce — unassigned until someone is given it">＋ Add deliverable</button>`:''}
         ${canAssignWorkOn(p)?`<button class="btn sm primary" data-act="assignWork" data-pid="${p.id}"
           title="Assign work to anyone in the Media Crew, with a new or existing deliverable or none">＋ Assign work</button>`:''}
         <button class="btn sm" data-menu="projMore" data-pid="${p.id}">⋯</button>
@@ -11378,8 +11388,10 @@ function projDeliverablesTab(p,dls){
   return `<div class="card"><div class="card-head"><h3>Deliverables</h3>
       
       <div class="ca">
+        ${canAddDeliverable(p)?`<button class="btn xs" data-act="addDeliverable" data-pid="${p.id}"
+          title="Add what this project has to produce — unassigned until someone is given it">＋ Add deliverable</button>`:""}
         ${canAssignWorkOn(p)?`<button class="btn xs primary" data-act="assignWork" data-pid="${p.id}"
-          title="Deliverables are created by assigning the work that produces them">＋ Assign work</button>`:""}</div></div>
+          title="Give someone the work, on a new or existing deliverable">＋ Assign work</button>`:""}</div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl m-cards pj-cards">
       <thead><tr><th>Deliverable</th><th>Owner</th><th>Scheduled</th><th>Due</th><th>Qty</th><th>Versions</th>
         <th>Status</th><th class="num">Actions</th></tr></thead>
@@ -20849,6 +20861,57 @@ function openNewProject(){
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=e=>{e.stopPropagation();ACTIONS[n.dataset.act](n.dataset,n);});
   ACTIONS.npDelivSync();
 }
+/* ── One deliverable row — New project and Add deliverable share it ───────
+   ONE field says what the deliverable is: its type (Photos — Edited,
+   Aftermovie, Reel…). The title is the type's name; a second of the same type
+   on the project becomes "… (2)". A free-text title beside the type was two
+   fields for one fact, and read as a choice between them. Every field carries
+   a visible label, and says when it may be left empty. */
+function delivRowHtml(types){
+  const lbl=t=>`<span class="xsmall mut3">${t}</span>`, col='display:flex;flex-direction:column;gap:2px';
+  return `<div class="f gap2 wrap" style="align-items:flex-end">
+      <label style="${col};flex:1 1 220px">${lbl('Type')}
+        <select class="inp np-d-type" style="height:34px;font-size:13px" aria-label="Deliverable type">
+          ${types.map(t=>`<option value="${t.id}">${t.icon||''} ${esc(t.name)}</option>`).join('')}</select></label>
+      <label style="${col}">${lbl('Priority')}
+        <select class="inp np-d-pri" style="height:30px;font-size:12px;width:auto">${priOptions()}</select></label>
+      <label style="${col}">${lbl('Due (optional)')}
+        <input class="inp np-d-due" type="date" style="height:30px;font-size:12px;width:auto"></label>
+      <label style="${col}">${lbl('Effort h (optional)')}
+        <input class="inp np-d-est" type="number" min="0" step="0.5" placeholder="—"
+          style="height:30px;font-size:12px;width:64px;text-align:center"></label>
+      <button type="button" class="icon-btn np-d-del" title="Remove this deliverable" style="color:var(--danger);margin-left:auto">${ic('trash')}</button></div>`;
+}
+/* The next free title for a type on a project: its name, then "(2)", "(3)"…
+   — the numbering POST /projects/:id/deliverables applies. */
+function nextDelivTitle(base,taken){
+  let t=base;
+  for(let n=2;taken.has(t.toLowerCase());n++)t=`${base} (${n})`;
+  return t;
+}
+/* POST /projects/:id/deliverables: whoever runs the project, and the
+   Coordinator — never on a finished project. */
+function canAddDeliverable(p){
+  return !!p&&!p.deleted_at&&!p.archived_at&&!['archived','cancelled','completed'].includes(p.status)
+    &&(isCoord()||canRunProject(p));
+}
+/* ＋ Add deliverable on an existing project: New project's rows, nothing more.
+   Adding scope is not assigning it — each row is created unassigned, and the
+   project's lead (who is told) decides who does it. */
+function openAddDeliverable(pid){
+  const p=proj(+pid); if(!canAddDeliverable(p))return;
+  modal(`<div class="mo-head"><div><h2>Add deliverable</h2><p>${esc(p.name)} · added unassigned — the project’s lead decides who does it.</p></div>
+      <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+    <div class="mo-body">
+      <div class="field">
+        <div class="between mb2"><label class="lbl" style="margin:0">Deliverables</label>
+          <button type="button" class="btn xs" data-act="npAddDeliverable">＋ Another</button></div>
+        <div id="np-delivs"></div></div></div>
+    <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn primary ml-auto" data-act="saveDeliverables" data-pid="${p.id}">Add</button></div>`,{size:'wide'});
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=e=>{e.stopPropagation();ACTIONS[n.dataset.act](n.dataset,n);});
+  ACTIONS.npAddDeliverable();
+}
 function openBooking(eid,sid){
   const shoots=DB.shoots.filter(s=>s.shoot_date>=TODAY);
   modal(`<div class="mo-head"><div><h2>Book equipment</h2>
@@ -22616,18 +22679,7 @@ const ACTIONS = {
     const row=document.createElement('div');
     row.className='np-d';
     row.style.cssText='border:1px solid var(--border);border-radius:var(--r);padding:10px;margin-bottom:8px;background:var(--surface-2)';
-    /* ONE field says what the deliverable is: its type (Photos — Edited,
-       Aftermovie, Reel…). The title is the type's name; a second of the same
-       type on this project becomes "… (2)". A free-text title beside the type
-       was two fields for one fact, and read as a choice between them. */
-    row.innerHTML=`<div class="f gap2 wrap ac">
-        <select class="inp np-d-type" style="height:34px;font-size:13px;flex:1 1 220px" aria-label="Deliverable type">
-          ${types.map(t=>`<option value="${t.id}">${t.icon||''} ${esc(t.name)}</option>`).join('')}</select>
-        <select class="inp np-d-pri" style="height:30px;font-size:12px;width:auto">${priOptions()}</select>
-        <input class="inp np-d-due" type="date" style="height:30px;font-size:12px;width:auto" title="Due date">
-        <span class="f ac gap1"><input class="inp np-d-est" type="number" min="0" step="0.5" placeholder="—"
-          style="height:30px;font-size:12px;width:64px;text-align:center" title="Estimated effort"><span class="xsmall mut3">h</span></span>
-        <button type="button" class="icon-btn np-d-del" title="Remove this deliverable" style="color:var(--danger);margin-left:auto">${ic('trash')}</button></div>`;
+    row.innerHTML=delivRowHtml(types);
     row.querySelector('.np-d-del').onclick=()=>{row.remove();ACTIONS.npDelivSync();};
     box.appendChild(row);
     if(!n)row.querySelector('.np-d-type').focus();
@@ -22637,6 +22689,31 @@ const ACTIONS = {
     const box=$('#np-delivs'); if(!box)return;
     if(!box.querySelectorAll('.np-d').length)
       box.innerHTML='<div class="np-d-empty small mut3" style="padding:10px 0">No deliverables added.</div>';
+  },
+  addDeliverable:(d)=>openAddDeliverable(d.pid),
+  saveDeliverables:(d)=>{
+    const p=proj(+d.pid); if(!canAddDeliverable(p))return;
+    const rows=$$('#np-delivs .np-d');
+    if(!rows.length){toast('Add at least one deliverable','bad');return;}
+    const taken=new Set(DB.deliverables.filter(x=>x.project_id===p.id&&!x.deleted_at).map(x=>String(x.title).toLowerCase()));
+    const body=rows.map(r=>{
+      const typeId=+r.querySelector('.np-d-type').value;
+      const title=nextDelivTitle(dtype(typeId).name||'Deliverable',taken); taken.add(title.toLowerCase());
+      return {title,deliverable_type_id:typeId,priority:r.querySelector('.np-d-pri').value,
+        due_date:r.querySelector('.np-d-due').value||null,
+        estimated_hours:+(r.querySelector('.np-d-est').value||0)||null};
+    });
+    /* The optimistic copy is what the server stores: unassigned, except on an
+       employee's own project, where the work is theirs. */
+    const owner=isEmp()&&!p.team_id&&p.owner_id===S.me?S.me:null;
+    body.forEach(b=>{const dt=dtype(b.deliverable_type_id);
+      DB.deliverables.push({id:Math.max(...DB.deliverables.map(x=>x.id))+1,project_id:p.id,
+        deliverable_type_id:b.deliverable_type_id,title:b.title,owner_id:owner,due_date:b.due_date,completed_at:null,
+        quantity_target:null,quantity_delivered:null,unit:dt.default_unit,spec_notes:'',weight:1,status:'not_started',
+        priority:b.priority,estimated_hours:b.estimated_hours,deleted_at:null});});
+    closeModal();render();
+    moSync((async()=>{for(const b of body)await MO_API.post('/projects/'+p.id+'/deliverables',b);})());
+    toast(`Added ${body.length} deliverable${body.length===1?'':'s'} to ${p.name}`,'ok');
   },
   createProject:()=>{
     const name=$('#np-name').value.trim();
