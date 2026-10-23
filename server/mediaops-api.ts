@@ -232,6 +232,34 @@ async function notifyOnce(userId: string, kind: string, title: string, body: str
   } catch { return 0; }   /* notifications must never break the flow */
 }
 
+/* ONE PERSON'S BELL — what /state and GET /notifications both send.
+
+   id and entity_id are BIGINT, which pg hands back as strings; the client
+   matches a tapped notice to its row and its target by number, so a string id
+   opened nothing. Both are cast here. project_name names the project the notice
+   is about (directly, or through its deliverable, shoot or work row) so the
+   bell can say where. The list stays capped at 50; `unread` is the real count,
+   which a capped list cannot give once someone has more than 50 waiting. */
+async function notificationFeed(userId: string): Promise<{ notifications: Array<Record<string, unknown>>; unread: number }> {
+  const { rows } = await pool.query(
+    `SELECT n.id::int AS id, n.user_id, n.kind, n.title, n.body, n.entity_type,
+            n.entity_id::int AS entity_id, n.is_read, n.created_at,
+            COALESCE(pp.name, pd.name, ps.name, pa.name) AS project_name
+       FROM mo_notifications n
+       LEFT JOIN mo_projects pp ON n.entity_type = 'project' AND pp.id = n.entity_id
+       LEFT JOIN mo_deliverables d ON n.entity_type = 'deliverable' AND d.id = n.entity_id
+       LEFT JOIN mo_projects pd ON pd.id = d.project_id
+       LEFT JOIN mo_shoots s ON n.entity_type = 'shoot' AND s.id = n.entity_id
+       LEFT JOIN mo_projects ps ON ps.id = s.project_id
+       LEFT JOIN mo_assignments a ON n.entity_type = 'assignment' AND a.id = n.entity_id
+       LEFT JOIN mo_projects pa ON pa.id = a.project_id
+      WHERE n.user_id = $1
+      ORDER BY n.created_at DESC, n.id DESC LIMIT 50`, [userId]);
+  const unread = (await pool.query(
+    `SELECT COUNT(*)::int AS c FROM mo_notifications WHERE user_id=$1 AND NOT is_read`, [userId])).rows[0].c as number;
+  return { notifications: rows, unread };
+}
+
 /* WHO RUNS THE CUPBOARD THIS ASSET LIVES IN. Equipment custodians and media
    leadership, filtered through the SAME scopeAllows() every read uses — a
    maintenance notice carries an asset tag, and an asset tag is exactly what
@@ -810,7 +838,10 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        VALUES ($1,'assignment',$2,$3,'deliverable',$4)`, [uid, title, body, d.id]).catch(() => {});
     if (to && to !== actor.id && opts.notifyIncoming !== false)
       await say(to, "New assignment", `${actor.full_name ?? "Your Team Lead"} assigned “${d.title}” to you.`);
-    if (from && from !== actor.id)
+    /* Handing ownership to a teammate does not take the old owner off the
+       work: Assign work may pick them again. Only someone who has actually
+       left the deliverable's team is told it is no longer theirs. */
+    if (from && from !== actor.id && !(await deliverableTeamIds(Number(d.id))).has(from))
       await say(from, "Assignment reassigned", `“${d.title}” is no longer assigned to you.`);
   }
 
@@ -1244,6 +1275,18 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
            assigned before assignment added them to the crew still needs the
            thread their Team Lead's feedback lives in. */
         for (const d of arr("deliverables")) if (Number(d.owner_id) === meInt && !d.deleted_at) myProjects.add(Number(d.project_id));
+        /* So is being on its team (deliverableTeamIds' rule): Assign work can
+           put someone on a deliverable who is later taken off the crew, and
+           they still do the work and get its review notices. */
+        for (const r of (await pool.query(
+          `SELECT DISTINCT d.project_id FROM mo_deliverables d
+             JOIN mo_assignments a ON a.deliverable_id = d.id
+                                  AND NOT COALESCE(a.is_smc,false) AND a.status <> 'cancelled'
+             JOIN mo_assignment_users au ON au.assignment_id = a.id AND au.user_id = $1
+            WHERE d.deleted_at IS NULL AND d.owner_id IS NOT NULL
+              AND EXISTS (SELECT 1 FROM mo_assignment_users o
+                           WHERE o.assignment_id = a.id AND o.user_id = d.owner_id)`, [u.id])).rows)
+          myProjects.add(Number(r.project_id));
         const myDeliverables = new Set(arr("deliverables")
           .filter((d) => myProjects.has(Number(d.project_id))).map((d) => Number(d.id)));
         out.comments = arr("comments").filter((c) =>
@@ -1292,8 +1335,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     for (const r of fireRows.rows) if (r.rk) fires[r.rk] = r.c;
     for (const ar of (out.automation_rules as Array<Record<string, unknown>>)) ar.fires_30d = fires[String(ar.rule_key)] ?? 0;
     // Server-persisted notifications for this user (written by the automation engine).
-    const notifs = await pool.query(`SELECT * FROM mo_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, [u.id]);
-    out.notifications = notifs.rows.map((n) => ({ ...n, user_id: idMap.get(u.id) }));
+    const feed = await notificationFeed(u.id);
+    out.notifications = feed.notifications.map((n) => ({ ...n, user_id: idMap.get(u.id) }));
+    out.notifications_unread = feed.unread;
     // The prototype expects a tags array on each project (seed had one); real
     // projects have none — default to [] so viewProject's `p.tags.map` never crashes.
     for (const p of (out.projects as Array<Record<string, unknown>>)) if (!Array.isArray(p.tags)) p.tags = [];
@@ -1620,13 +1664,21 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
           ? Number(raw.estimated_hours) : null;
         // A Coordinator never names an owner (blocked above); a TL/Admin may.
         const dOwner = raw.owner_id ? String(raw.owner_id) : null;
-        await pool.query(
+        const dIns = await pool.query(
           `INSERT INTO mo_deliverables (project_id, deliverable_type_id, title, owner_id, due_date, unit, weight,
              status, priority, estimated_hours, due_date_source)
            SELECT $1,$2,$3,$4,$5, dt.default_unit, 1,'not_started',$6,$7,'manual'
-             FROM mo_deliverable_types dt WHERE dt.id=$2`,
+             FROM mo_deliverable_types dt WHERE dt.id=$2 RETURNING id`,
           [id, typeRow.id, title, dOwner, (raw.due_date as string) || null, pr, est]);
         made++;
+        /* An owner named here is being given the work, exactly as Assign work
+           gives it, so they hear about it the same way. */
+        if (dOwner && dOwner !== u.id && dIns.rows[0])
+          await pool.query(
+            `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+             VALUES ($1,'assignment',$2,$3,'deliverable',$4)`,
+            [dOwner, "New assignment", `${u.full_name ?? "Your Team Lead"} assigned “${title}” on ${name} to you.`,
+             Number(dIns.rows[0].id)]).catch(() => {});
       }
     }
 
@@ -1699,10 +1751,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!(await assertAssignable(res, u, [String(b.user_id)]))) return;
     if (!(await pool.query(`SELECT 1 FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [id])).rows[0])
       return sendError(res, 404, "Project not found.");
-    await pool.query(
+    const ins = await pool.query(
       `INSERT INTO mo_project_assignments (project_id, user_id, capacity_role_id, is_project_manager, assigned_by)
        VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
       [id, String(b.user_id), b.capacity_role_id ? Number(b.capacity_role_id) : null, !!b.is_project_manager, u.id]);
+    /* The modal posts everyone it shows ticked, the existing crew included.
+       Someone already on the crew is neither re-added nor told again. */
+    const added = (ins.rowCount ?? 0) > 0;
+    if (!added) return res.status(201).json({ ok: true, added });
     await audit(u, "project.assignment_added", "project", id, null, { user_id: b.user_id }, req);
     /* The new crew member learns they are on the project. The notification
        opens the project directly (notifTarget maps entity_type='project'). */
@@ -1714,7 +1770,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         [String(b.user_id), b.is_project_manager ? "You are the PM on a project" : "You are on a project",
          `${u.full_name ?? "Your Team Lead"} added you to “${p?.name ?? "a project"}”.`, id]).catch(() => {});
     }
-    res.status(201).json({ ok: true });
+    res.status(201).json({ ok: true, added });
   }));
 
   // ═════════════════════════ DELIVERABLES (§7.4) ══════════════════════════
@@ -1920,11 +1976,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     await pool.query(`UPDATE mo_deliverables SET status='in_review' WHERE id=$1`, [id]);
     await audit(u, "deliverable.version_submitted", "deliverable_version", ins.rows[0].id, null, { version_no: next }, req);
     /* The project's reviewer hears about it — one person, not every Team Lead.
-       If the resolved reviewer is also the deliverable's owner (a lead who
-       assigned the work to themselves), they are ineligible to review their
-       own: tell the Admins instead so the item does not vanish into the
-       reviewer's own queue they cannot action. */
-    for (const rid of await reviewerIdsFor(Number(d.project_id), team))
+       If the resolved reviewer is on the deliverable's team or IS the
+       submitter (a lead pushing a version for their crew), they cannot review
+       it: tell the Admins instead so the item does not vanish into a queue
+       its reviewer cannot action. */
+    for (const rid of await reviewerIdsFor(Number(d.project_id), [...team, u.id]))
       if (rid !== u.id)
         await pool.query(
           `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
@@ -1988,6 +2044,22 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     return { status: 200 };
   }
 
+  /* Delivered work waits for a sign-off, so whoever can give it is told —
+     the project's lead, or the Admins when that lead is on the deliverable's
+     team or delivered it (nobody signs off their own work). Both ways of
+     marking it delivered, the drawer's /deliver and the board's /status,
+     come through here; /deliver used to tell nobody. */
+  async function tellSignOffNeeded(u: CurrentUser, d: Record<string, unknown>) {
+    const team = await deliverableTeamIds(Number(d.id));
+    for (const rid of await reviewerIdsFor(Number(d.project_id), [...team, u.id]))
+      if (rid !== u.id)
+        await pool.query(
+          `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+           VALUES ($1,'review',$2,$3,'deliverable',$4)`,
+          [rid, "Deliverable delivered — needs review",
+            `${u.full_name ?? "A crew member"} marked “${d.title}” as delivered.`, Number(d.id)]).catch(() => {});
+  }
+
   // Review latest version — the drawer's Approve / Request changes.
   app.post(`${P}/deliverables/:id/review`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
@@ -2028,6 +2100,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       delivered_by=$2, approval_status='pending',
       quantity_delivered=COALESCE(quantity_delivered, quantity_target) WHERE id=$1`, [id, u.id]);
     await audit(u, "deliverable.delivered", "deliverable", id, { status: d.rows[0].status }, { status: "delivered" }, req);
+    await tellSignOffNeeded(u, d.rows[0]);
     res.json({ ok: true });
   }));
 
@@ -2300,8 +2373,18 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
            VALUES ($1,$2,$3,$4,$5,$5,'reserved',$2)`,
           [Number(raw), u.id, shoot.id, pid, b.shoot_date]).catch(() => {/* clashes surface via AC-7 */});
       }
+      /* A shoot is assigned work like any other: its crew join the project's
+         crew and are told now, not first by the reminder the day before. */
+      for (const uid of crew) await addToProjectCrew(pid, uid, u.id);
       await audit(u, "work.assigned", "shoot", shoot.id, null,
-        { work_type: wt.name, form_template: wt.form_template, title: shoot.title, date: shoot.shoot_date }, req);
+        { work_type: wt.name, form_template: wt.form_template, title: shoot.title, date: shoot.shoot_date, crew }, req);
+      for (const uid of new Set(crew))
+        if (uid !== u.id)
+          await pool.query(
+            `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+             VALUES ($1,'assignment',$2,$3,'shoot',$4)`,
+            [uid, "You are on a shoot",
+              `${u.full_name ?? "Your Team Lead"} added you to “${shoot.title}” on ${dOnly(shoot.shoot_date)}.`, shoot.id]).catch(() => {});
       return res.status(201).json({ kind: "shoot", work_type: wt, shoot });
     }
 
@@ -8762,14 +8845,7 @@ async function allocateInternalCode(
     await audit(u, "deliverable.status_changed", "deliverable", id,
       { status: d.status }, { status: to, delivered_by: delivering ? u.id : undefined }, req);
     // Tell the project's reviewer there is something to look at.
-    if (delivering)
-      for (const rid of await reviewerIdsFor(Number(d.project_id)))
-        if (rid !== u.id)
-          await pool.query(
-            `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
-             VALUES ($1,'review',$2,$3,'deliverable',$4)`,
-            [rid, "Deliverable delivered — needs review",
-              `${u.full_name ?? "A crew member"} marked “${d.title}” as delivered.`, id]).catch(() => {});
+    if (delivering) await tellSignOffNeeded(u, d);
     res.json({ ok: true, status: to });
   }));
 
@@ -8791,28 +8867,44 @@ async function allocateInternalCode(
     const to = String((req.body as Record<string, unknown>).approval_status ?? "");
     if (!["approved", "changes_requested", "rejected", "pending"].includes(to))
       return sendError(res, 400, "approval_status must be approved, changes_requested, rejected or pending.");
-    const note = String((req.body as Record<string, unknown>).note ?? "");
+    const note = String((req.body as Record<string, unknown>).note ?? "").trim();
     // "Needs revision" pulls the work back into the employee's active list.
     const backToWork = to === "changes_requested" || to === "rejected";
+    // The team has to know what to fix, so a send-back always says it.
+    if (backToWork && !note) return sendError(res, 400, "Say what needs to change.");
     const { rows } = await pool.query(
       `UPDATE mo_deliverables SET approval_status=$1, approved_by=$2, approved_at=NOW(),
          status = CASE WHEN $3 THEN 'changes_requested' ELSE status END,
          updated_at = NOW()
        WHERE id=$4 RETURNING *`, [to, u.id, backToWork, id]);
-    // Sent back after delivery: it is no longer ready to hand over.
-    if (backToWork)
+    /* Sent back after delivery: it is no longer ready to hand over, and the
+       version it was approved on is no longer the answer. Marking that
+       version sent back, with the note, is what takes the item out of
+       "Delivered outputs" and shows the team the comment in My Day — the
+       same record a review's Request changes leaves. */
+    if (backToWork) {
       await pool.query(
         `UPDATE mo_deliverables SET dispatch_status='none', queued_at=NULL
           WHERE id=$1 AND dispatch_status='queued'`, [id]);
+      await pool.query(
+        `UPDATE mo_deliverable_versions SET review_status='changes_requested', reviewed_by=$2,
+           reviewed_at=NOW(), review_comment=$3
+          WHERE id = (SELECT id FROM mo_deliverable_versions WHERE deliverable_id=$1
+                       ORDER BY version_no DESC LIMIT 1)`, [id, u.id, note]);
+    }
     await audit(u, "deliverable.approval_changed", "deliverable", id,
       { approval_status: d.approval_status, status: d.status },
       { approval_status: to, approved_by: u.id, approved_by_role: moRoleOf(u), note }, req);
-    if (d.owner_id && String(d.owner_id) !== u.id)
-      await pool.query(
-        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
-         VALUES ($1,'review',$2,$3,'deliverable',$4)`,
-        [d.owner_id, to === "approved" ? "Deliverable approved" : "Changes requested",
-          `${u.full_name ?? "Your reviewer"} set “${d.title}” to ${to.replace("_", " ")}.${note ? " " + note : ""}`, id]).catch(() => {});
+    // The sign-off reaches everyone working on it, not only its owner.
+    if (to !== "pending")
+      for (const uid of await deliverableTeamIds(id))
+        if (uid !== u.id)
+          await pool.query(
+            `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+             VALUES ($1,'review',$2,$3,'deliverable',$4)`,
+            [uid, to === "approved" ? "Deliverable approved" : "Changes requested",
+              `${u.full_name ?? "Your reviewer"} ${to === "approved" ? "signed off" : "sent back"} “${d.title}”.${note ? " " + note : ""}`,
+              id]).catch(() => {});
     res.json({ deliverable: rows[0] });
   }));
 
@@ -10621,11 +10713,13 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     await audit(u, "deliverable.dispatched", "deliverable", id,
       { dispatch_status: d.dispatch_status },
       { dispatch_status: "delivered", recipient, drive_url: v.drive_url ?? null, subject: String(b.subject ?? "") }, req);
-    if (d.owner_id && d.owner_id !== u.id)
-      await pool.query(
-        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
-         VALUES ($1,'deliverable',$2,$3,'deliverable',$4)`,
-        [d.owner_id, "Your deliverable was dispatched", `${d.title} was sent to ${recipient}.`, id]);
+    // Everyone who made it hears that it went out, not only its owner.
+    for (const uid of await deliverableTeamIds(id))
+      if (uid !== u.id)
+        await pool.query(
+          `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+           VALUES ($1,'deliverable',$2,$3,'deliverable',$4)`,
+          [uid, "Your deliverable was dispatched", `${d.title} was sent to ${recipient}.`, id]).catch(() => {});
     res.json({ deliverable: upd.rows[0] });
   }));
 
@@ -10990,8 +11084,13 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
        without this the crew would learn about it only from AUTO-10's T-24h
        reminder, which the Phase 1 review flagged (no time to raise a clash). */
     const shoot = (await pool.query(`SELECT title, shoot_date FROM mo_shoots WHERE id=$1`, [sid])).rows[0];
+    /* The modal posts the whole crew, people already on it included; only
+       someone this call actually adds is told. */
+    const added: string[] = [];
     for (const uid of crew) {
-      await pool.query(`INSERT INTO mo_shoot_crew (shoot_id, user_id, capacity_role_id) VALUES ($1,$2,2) ON CONFLICT DO NOTHING`, [sid, uid]);
+      const ins = await pool.query(`INSERT INTO mo_shoot_crew (shoot_id, user_id, capacity_role_id) VALUES ($1,$2,2) ON CONFLICT DO NOTHING`, [sid, uid]);
+      if (!ins.rowCount) continue;
+      added.push(uid);
       if (uid !== u.id && shoot)
         await pool.query(
           `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
@@ -10999,8 +11098,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
           [uid, "You are on a shoot",
             `${u.full_name ?? "Your Team Lead"} added you to “${shoot.title}” on ${dOnly(shoot.shoot_date)}.`, sid]).catch(() => {});
     }
-    await audit(u, "shoot.crew_added", "shoot", sid, null, { users: crew }, req);
-    res.status(201).json({ ok: true });
+    await audit(u, "shoot.crew_added", "shoot", sid, null, { users: added }, req);
+    res.status(201).json({ ok: true, added: added.length });
   }));
 
   // Update own profile photo (edit-avatar from the profile dialog — #5).
@@ -11915,8 +12014,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
   // Notifications (§18) — the feed is written by the automation engine.
   app.get(`${P}/notifications`, asyncHandler(async (_req, res) => {
     const u = requireMedia(res); if (!u) return;
-    const { rows } = await pool.query(`SELECT * FROM mo_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, [u.id]);
-    res.json({ notifications: rows });
+    res.json(await notificationFeed(u.id));
   }));
   app.post(`${P}/notifications/read`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
@@ -18302,8 +18400,10 @@ async function reviewerIdsForDb(projectId: number, exclude: string | Iterable<st
        LEFT JOIN users o ON o.id = p.owner_id
       WHERE p.id = $1`, [projectId])).rows[0];
   if (r?.lead && !out.has(String(r.lead))) return [String(r.lead)];
+  // An Admin on the team (or the submitter) cannot review it either.
   return (await pool.query(
-    `SELECT id FROM users WHERE team='media' AND role IN ('admin','super_admin')`)).rows.map((x) => String(x.id));
+    `SELECT id FROM users WHERE team='media' AND role IN ('admin','super_admin')`)).rows
+    .map((x) => String(x.id)).filter((id) => !out.has(id));
 }
 
 export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; notified: number;
@@ -18385,16 +18485,29 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
      lead, with the deliverable's own owner excluded (a lead cannot review
      their own; the fallback picks up Admins). Projects not being driven are
      skipped — the overdue sweep already does. */
+  /* It is a REMINDER: it waits the rule's own remind_h (24 h unless an Admin
+     changed it) after the version went in. Without the wait it fired on the
+     next pass, seconds after the submission notice had already told the
+     reviewer. The submitter is excluded as /versions excludes them. */
   if (ruleOn("AUTO-4")) {
+    const cfg = (await pool.query(`SELECT config FROM mo_automation_rules WHERE rule_key='AUTO-4'`)).rows[0]?.config;
+    const remindH = Number((cfg as { remind_h?: unknown } | undefined)?.remind_h);
     const rows = (await pool.query(
-      `SELECT d.id, d.title, d.project_id, d.owner_id
+      `SELECT d.id, d.title, d.project_id, d.owner_id, v.submitted_by
          FROM mo_deliverables d
          JOIN mo_projects p ON p.id = d.project_id
+         JOIN LATERAL (SELECT review_status, submitted_by, submitted_at FROM mo_deliverable_versions
+                        WHERE deliverable_id = d.id ORDER BY version_no DESC LIMIT 1) v ON true
         WHERE d.status='in_review' AND d.deleted_at IS NULL
-          AND p.deleted_at IS NULL AND p.status NOT IN ('cancelled','on_hold','archived')`)).rows;
-    for (const d of rows)
-      for (const rid of await reviewerIdsForDb(Number(d.project_id), await deliverableTeamIdsDb(Number(d.id))))
+          AND v.review_status = 'pending' AND v.submitted_at <= NOW() - $1::numeric * INTERVAL '1 hour'
+          AND p.deleted_at IS NULL AND p.status NOT IN ('cancelled','on_hold','archived')`,
+      [Number.isFinite(remindH) && remindH > 0 ? remindH : 24])).rows;
+    for (const d of rows) {
+      const exclude = await deliverableTeamIdsDb(Number(d.id));
+      if (d.submitted_by) exclude.add(String(d.submitted_by));
+      for (const rid of await reviewerIdsForDb(Number(d.project_id), exclude))
         await notify(rid, "approval", "Awaiting your review", `“${d.title}” has a version pending`, "deliverable", d.id);
+    }
   }
 
   /* AUTO-3 — overdue equipment. The seeded rule reads "Holder → +custodian on
