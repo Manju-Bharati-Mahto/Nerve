@@ -8213,6 +8213,16 @@ const DISPATCH={
   sent:{l:'Email sent',c:'st-info',i:'✉',ico:'mail'}, delivered:{l:'Delivered',c:'st-success',i:'✔',ico:'check'},
   archived:{l:'Archived',c:'st-neutral',i:'⛁',ico:'archive'}
 };
+/* Where a deliverable stands with Operations, in words, for the project's
+   Deliverables tab and the drawer: "Dispatched 24 Oct 26 to …", "… · Archived".
+   '' before it is queued, and again once a send-back takes it out. */
+function dispatchNote(d){
+  const st=d&&d.dispatch_status;
+  if(st==='queued')return DISPATCH.queued.l;
+  if(!['sent','delivered','archived'].includes(st))return '';
+  const sent=d.dispatched_at?'Dispatched '+D.fmt(dOf(d.dispatched_at))+(d.dispatch_recipient?' to '+d.dispatch_recipient:''):'';
+  return st==='archived'?(sent?sent+' · Archived':'Archived'):sent||DISPATCH[st].l;
+}
 const reqs      = ()=>(DB.requests||[]);
 const meetings  = ()=>(DB.meetings||[]);
 const vendorActs= ()=>(DB.vendor_activities||[]);
@@ -8419,7 +8429,7 @@ function openRequestForm(rid){
           <input class="inp" id="rq-req" value="${v('requirement')}" placeholder="e.g. Full-day photo + video coverage"></div>
         <div class="field"><label class="lbl">Likely project type</label>
           <select class="inp" id="rq-type"><option value="">— decide at conversion —</option>
-            ${DB.project_types.filter(t=>!t.archived_at).map(t=>`<option value="${t.id}" ${r&&r.project_type_id===t.id?'selected':''}>${t.icon} ${esc(t.name)}</option>`).join('')}</select>
+            ${catalogOrder(DB.project_types.filter(t=>!t.archived_at)).map(t=>`<option value="${t.id}" ${r&&r.project_type_id===t.id?'selected':''}>${t.icon} ${esc(t.name)}</option>`).join('')}</select>
           <div class="hint">Decides which template, and therefore which deliverables, conversion creates.</div></div>
         <div class="field"><label class="lbl">Priority</label>
           <select class="inp" id="rq-pri">${priOptions(r&&r.priority)}</select></div>
@@ -9748,7 +9758,7 @@ const AUDIT_VERB={
   'deliverable.reassigned':'reassigned',
   'deliverable.approval_changed':'reviewed','deliverable.due_date_changed':'changed the due date of',
   'deliverable.link_copied':'copied the Drive link of','deliverable.version_reviewed':'reviewed',
-  'deliverable.version_submitted':'uploaded',
+  'deliverable.version_submitted':'submitted',
   'work.assigned':'assigned {t} to {who}','assignment.created':'created','assignment.updated':'updated',
   'assignment.deleted':'deleted','smc.assignment_created':'assigned {t} to {who}',
   'smc.assignment_accepted':'accepted the SMC task','smc.assignment_cancelled':'cancelled the SMC task',
@@ -9816,8 +9826,11 @@ function auditName(a){
   switch(a.entity_type){
     case 'project':{const p=find('projects');return p?p.name:row;}
     case 'deliverable':{const d=find('deliverables');return d?d.title:row;}
+    /* "v2 of Photos": the project feed sends the number and the title, for a
+       version this page never loaded. */
     case 'deliverable_version':{const v=find('deliverable_versions'),
-      d=v&&(DB.deliverables||[]).find(x=>String(x.id)===String(v.deliverable_id));return d?d.title+' v'+v.version_no:row;}
+      d=v&&(DB.deliverables||[]).find(x=>String(x.id)===String(v.deliverable_id));
+      return d?'v'+v.version_no+' of '+d.title:a.deliverable_title?'v'+a.version_no+' of '+a.deliverable_title:row;}
     case 'daily_report':{const r=find('daily_reports');return r?'the daily report for '+D.fmt(r.report_date):'';}
     case 'equipment_item':{const l=assetLabel(id);return /#\d+$/.test(l)?'':l;}
     case 'user':return named(user(id));
@@ -9842,7 +9855,13 @@ function auditWho(a){
   const ns=ids.map(id=>user(id)).filter(u=>u&&u!==UNKNOWN_PERSON).map(u=>u.full_name);
   return ns.length>1?ns.slice(0,-1).join(', ')+' and '+ns[ns.length-1]:ns[0]||'';
 }
-function auditTpl(a){const v=AUDIT_VERB[a.action]||auditVerbGuess(a.action);return v.includes('{t}')?v:v+' {t}';}
+/* A version's review says its verdict: "approved v2 of …", "requested changes on v1 of …". */
+const AUDIT_VERDICT={approved:'approved',changes_requested:'requested changes on'};
+function auditTpl(a){
+  const v=(a.action==='deliverable.version_reviewed'&&AUDIT_VERDICT[(a.after||{}).review_status])
+    ||AUDIT_VERB[a.action]||auditVerbGuess(a.action);
+  return v.includes('{t}')?v:v+' {t}';
+}
 /* The sentence after the actor's name, escaped. wrapT styles the named thing. */
 function auditLine(a,wrapT){
   const who=auditWho(a)||(String(a.action).includes('smc')?'an SMC member':'a crew member');
@@ -9862,12 +9881,17 @@ const AUDIT_FIELD={status:'Status',smc_status:'SMC status',approval_status:'Appr
   quantity_target:'Target',quantity_delivered:'Delivered',version_no:'Version',owner_id:'Owner',user_id:'Person',
   holder:'Holder',holder_id:'Holder',assignees:'Assigned to',delivered_by:'Delivered by',approved_by:'Approved by',
   random_sample_pct:'Random sample',spec_notes:'Notes',review_comment:'Comment',shoot_date:'Shoot date',
-  start_date:'Starts',end_date:'Ends',event_level:'Event level',from:'From',to:'To',via:'How'};
-const AUDIT_PERSON=/^(user_id|owner_id|holder|holder_id|assignees|delivered_by|approved_by|dispatched_by|reviewed_by|assigned_by|lead|new_lead|member|reassigned_to)$/;
+  start_date:'Starts',end_date:'Ends',event_level:'Event level',from:'From',to:'To',via:'How',
+  changed_by:'Changed by',edited_by:'Edited by',decided_by:'Decided by'};
+const AUDIT_PERSON=/^(user_id|owner_id|holder|holder_id|assignees|delivered_by|approved_by|dispatched_by|reviewed_by|assigned_by|changed_by|edited_by|decided_by|lead|new_lead|member|reassigned_to)$/;
 /* A reassignment's trail says who it went from and to — people only there:
    other rows (a leave request's dates) use the same keys for other things. */
-const auditPerson=(a,k)=>AUDIT_PERSON.test(k)||(a.action==='deliverable.reassigned'&&(k==='from'||k==='to'));
-const AUDIT_SKIP=/^(id|kind|ip|user_agent|form_template|due_date_source|due_offset_days)$|_id$|_at$|_uid$/;
+/* Assign work records the people it put on a new deliverable as its "team". */
+const auditTeamPeople=(a,k)=>k==='team'&&a.action==='deliverable.created';
+const auditPerson=(a,k)=>AUDIT_PERSON.test(k)||(a.action==='deliverable.reassigned'&&(k==='from'||k==='to'))
+  ||auditTeamPeople(a,k);
+/* The role someone acted in ("approved_by_role") is bookkeeping: their name says who. */
+const AUDIT_SKIP=/^(id|kind|ip|user_agent|form_template|due_date_source|due_offset_days)$|_id$|_at$|_uid$|_by_role$/;
 function auditStatusMap(k,et){
   if(k==='smc_status')return SMC_STATUS;
   if(k==='approval_status')return DELIV_APPROVAL;
@@ -9883,7 +9907,7 @@ function auditVal(k,v,et,person=AUDIT_PERSON.test(k)){
   if(typeof v==='boolean')return v?'Yes':'No';
   if(person){const u=user(v);return u&&u!==UNKNOWN_PERSON?u.full_name:'someone';}
   if(/status$/.test(k)){const m=(auditStatusMap(k,et)||{})[v];return m&&m.l&&m.l!=='—'?m.l:auditWords(v);}
-  if(/^(priority|event_level|condition|outcome|via)$/.test(k))return auditWords(v);
+  if(/^(priority|event_level|condition|outcome|via)$|_role$/.test(k))return auditWords(v);
   if(typeof v==='string'&&/^\d{4}-\d\d-\d\d(T|$)/.test(v))
     return /date$/.test(k)||v.length===10?D.fmt(D.iso(D.at(v))):D.fmtAt(v);
   if(/_pct$/.test(k))return v+'%';
@@ -9894,6 +9918,9 @@ function auditChanges(a){
   const tpl=auditTpl(a), used=[];
   if(tpl.includes('{who}'))used.push('user_id','assignees','holder');
   if(a.action==='deliverable.reassigned')used.push('owner_id');   // From says it
+  // "approved v2 of …" already says the number and the verdict.
+  if(a.entity_type==='deliverable_version'&&auditName(a)){used.push('version_no');
+    if(AUDIT_VERDICT[f.review_status])used.push('review_status');}
   ['title','name'].forEach(k=>{if(f[k]!=null&&(b[k]==null||b[k]===f[k]))used.push(k);});
   const out=[];
   [...new Set([...Object.keys(b),...Object.keys(f)])]
@@ -9903,7 +9930,7 @@ function auditChanges(a){
       if(had&&has&&JSON.stringify(b[k])===JSON.stringify(f[k]))return;
       const p=auditPerson(a,k), ov=had?auditVal(k,b[k],a.entity_type,p):'', nv=has?auditVal(k,f[k],a.entity_type,p):'';
       if(!ov&&!nv)return;
-      const l=AUDIT_FIELD[k]||auditWords(k);
+      const l=auditTeamPeople(a,k)?'Assigned to':AUDIT_FIELD[k]||auditWords(k);
       out.push(had&&has?l+': '+ov+' → '+nv:has?l+': '+nv:l+' was '+ov);
     });
   return out.slice(0,6);
@@ -10127,9 +10154,10 @@ const PRI_COLOR={urgent:'var(--danger)',high:'var(--warn)',normal:'var(--info)',
 /* Every priority picker lists them most urgent first; Normal stays the default. */
 const PRIORITIES=['urgent','high','normal','low'];
 const priOptions=(sel)=>PRIORITIES.map(x=>`<option value="${x}"${x===(sel||'normal')?' selected':''}>${x[0].toUpperCase()+x.slice(1)}</option>`).join('');
+/* A catalogue (deliverable or project types) in the order the Admin set. */
+const catalogOrder=list=>list.slice().sort((a,b)=>(a.sort_order??0)-(b.sort_order??0)||a.id-b.id);
 /* Deliverable types a picker offers, in the catalogue's own order. */
-const pickableDelivTypes=()=>DB.deliverable_types.filter(t=>t.is_active!==false&&!t.archived_at)
-  .slice().sort((a,b)=>(a.sort_order??0)-(b.sort_order??0)||a.id-b.id);
+const pickableDelivTypes=()=>catalogOrder(DB.deliverable_types.filter(t=>t.is_active!==false&&!t.archived_at));
 /* Badge for a queue row: work type for tasks and shoots, deliverable type for
    scheduled project scope. Both are Admin-configurable master data. */
 function workBadge(a){
@@ -11485,7 +11513,8 @@ function projDeliverablesTab(p,dls){
           <td data-m="hide">${vs.length?`<span class="chip">v${latest.version_no} · ${latest.review_status==='pending'?'◔':latest.review_status==='approved'?'✔':'↩'}</span>`:'<span class="mut3">—</span>'}</td>
           <td data-m="aside">${statusPill(DELIV_STATUS,d.status)}
             ${d.status==='delivered'?(()=>{const ap=DELIV_APPROVAL[d.approval_status||'pending']||DELIV_APPROVAL.pending;
-              return `<div class="t-sub"><span class="status ${ap.c}" style="font-size:10px"><span class="si">${sIco(ap)}</span>${ap.l}</span></div>`;})():''}</td>
+              return `<div class="t-sub"><span class="status ${ap.c}" style="font-size:10px"><span class="si">${sIco(ap)}</span>${ap.l}</span></div>`;})():''}
+            ${dispatchNote(d)?`<div class="t-sub small mut" data-dispatch>${esc(dispatchNote(d))}</div>`:''}</td>
           <td class="num pj-acts" data-stop data-m="actions">
             ${canSignOff(d)?
               `<button class="btn xs primary" data-act="reviewDelivered" data-did="${d.id}" data-v="approved">✔ Approve</button>
@@ -20606,6 +20635,7 @@ function drawerDeliverable(id){
         <dt>Due date</dt><dd style="${over?'color:var(--danger);font-weight:700':''}">${d.due_date
           ?`${D.fmt(d.due_date)} <span class="mut3 small">(${D.rel(d.due_date)})</span>`:'<span class="mut3">No due date</span>'}</dd>
         ${d.completed_at?`<dt>Completed</dt><dd>${D.fmt(d.completed_at)}</dd>`:''}
+        ${dispatchNote(d)?`<dt>Dispatch</dt><dd data-dispatch>${esc(dispatchNote(d))}</dd>`:''}
         ${d.quantity_target?`<dt>Quantity</dt><dd>${d.quantity_delivered||0} / ${d.quantity_target} ${esc(d.unit||'')}
           ${bar(Math.round((d.quantity_delivered||0)/d.quantity_target*100))}</dd>`:''}
         ${d.spec_notes?`<dt>Spec notes</dt><dd class="small">${esc(d.spec_notes)}</dd>`:''}
@@ -20883,7 +20913,7 @@ function npHelpLine(){
   return 'It is your own project. You assign the work after creating it.';
 }
 function openNewProject(){
-  const types=DB.project_types.filter(t=>t.is_active);
+  const types=catalogOrder(DB.project_types.filter(t=>t.is_active));
   modal(`<div class="mo-head"><div><h2>New project</h2>
       <p>${npHelpLine()}</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
@@ -21653,7 +21683,7 @@ const ACTIONS = {
       <div class="mo-body">
         <div class="row">
           <div class="field"><label class="lbl">Project type <span class="req">*</span></label>
-            <select class="inp" id="cv-type">${DB.project_types.filter(t=>!t.archived_at).map(t=>
+            <select class="inp" id="cv-type">${catalogOrder(DB.project_types.filter(t=>!t.archived_at)).map(t=>
               `<option value="${t.id}" ${r.project_type_id===t.id?'selected':''}>${t.icon} ${esc(t.name)}</option>`).join('')}</select>
             <div class="hint">Decides which template (and therefore which deliverables) are created.</div></div>
           <div class="field"><label class="lbl">Route to team <span class="req">*</span></label>

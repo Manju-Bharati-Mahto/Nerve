@@ -1172,10 +1172,12 @@ maybe("notifications — payload, recipients, no duplicates", () => {
     expect([bare.status, bare.body.message]).toEqual([400, "Say what needs to change."]);
     expect((await as("leadB", "POST", `/deliverables/${did}/approval`,
       { approval_status: "changes_requested", note: "Tighten the opening" })).status).toBe(200);
+    // Its own title: not the version's "Changes requested on …".
+    const sentBack = `Sent back after delivery: ${(await deliv(did)).title}`;
     for (const who of ["empA1", "empA2"] as const)
-      expect(await titles(who, "deliverable", did), who).toContain("Changes requested");
-    const body = (await one(`SELECT body FROM mo_notifications WHERE user_id=$1 AND entity_id=$2 AND title='Changes requested'
-                              ORDER BY id DESC LIMIT 1`, [ACTORS.empA2.id, did])).body;
+      expect(await titles(who, "deliverable", did), who).toContain(sentBack);
+    const body = (await one(`SELECT body FROM mo_notifications WHERE user_id=$1 AND entity_id=$2 AND title=$3
+                              ORDER BY id DESC LIMIT 1`, [ACTORS.empA2.id, did, sentBack])).body;
     expect(String(body)).toContain("Tighten the opening");
     // The version it was approved on is sent back, with the note, so My Day shows it.
     const v = await one(`SELECT review_status, review_comment FROM mo_deliverable_versions WHERE deliverable_id=$1
@@ -1189,7 +1191,7 @@ maybe("notifications — payload, recipients, no duplicates", () => {
     await as("empA2", "POST", `/deliverables/${did}/deliver`, {});
     expect((await as("leadB", "POST", `/deliverables/${did}/approval`, { approval_status: "approved" })).status).toBe(200);
     for (const who of ["empA1", "empA2"] as const)
-      expect(await titles(who, "deliverable", did), who).toContain("Deliverable approved");
+      expect(await titles(who, "deliverable", did), who).toContain(`Signed off: ${(await deliv(did)).title}`);
   });
 
   it("dispatch tells everyone on the deliverable", async () => {
@@ -1317,7 +1319,7 @@ maybe("status moves — a version is the only way into review, and closed work i
     }
     expect((await as("leadB", "POST", `/deliverables/${did}/approval`, { approval_status: "approved" })).status).toBe(200);
     for (const who of ["empA1", "empA2"] as const)
-      expect((await notes(ACTORS[who].id, "deliverable", did)).map((n) => n.title), who).toContain("Deliverable approved");
+      expect((await notes(ACTORS[who].id, "deliverable", did)).map((n) => n.title), who).toContain(`Signed off: ${(await deliv(did)).title}`);
   });
 });
 

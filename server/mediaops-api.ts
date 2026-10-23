@@ -251,6 +251,12 @@ async function notifyOnce(userId: string, kind: string, title: string, body: str
    bell can say where; project_id lets a notice whose deliverable the page has
    not loaded still open that project. The list stays capped at 50; `unread` is the real count,
    which a capped list cannot give once someone has more than 50 waiting. */
+/* Older notices were stored with the rule that sent them in brackets —
+   "… today's report (AUTO-1)." People never see rule codes, so the feed drops
+   them as it reads; the stored rows are left as they are. */
+const NOTICE_CODE = /\s*\((?:\s*(?:(?:AUTO|BR|VR|FR)-[0-9][\w.-]*|§\s*[\d.]+)\s*[,;/]?)+\)/g;
+const plainNotice = (s: unknown): unknown => (typeof s === "string" ? s.replace(NOTICE_CODE, "") : s);
+
 async function notificationFeed(userId: string): Promise<{ notifications: Array<Record<string, unknown>>; unread: number }> {
   const { rows } = await pool.query(
     `SELECT n.id::int AS id, n.user_id, n.kind, n.title, n.body, n.entity_type,
@@ -267,6 +273,7 @@ async function notificationFeed(userId: string): Promise<{ notifications: Array<
        LEFT JOIN mo_projects pa ON pa.id = a.project_id
       WHERE n.user_id = $1
       ORDER BY n.created_at DESC, n.id DESC LIMIT 50`, [userId]);
+  for (const r of rows) { r.title = plainNotice(r.title); r.body = plainNotice(r.body); }
   const unread = (await pool.query(
     `SELECT COUNT(*)::int AS c FROM mo_notifications WHERE user_id=$1 AND NOT is_read`, [userId])).rows[0].c as number;
   return { notifications: rows, unread };
@@ -1184,7 +1191,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // Admin configuration (CRUD engine) — the DB is the source of truth for every
     // picker/template in the operational UI. Archived rows are excluded (cannot be
     // selected); disabled rows ship and are filtered by is_active client-side.
-    ["project_types", "mo_project_types", "archived_at IS NULL", []],
+    // In the order the Admin set: the New project Type picker lists them as sent.
+    ["project_types", "mo_project_types", "archived_at IS NULL", [], "sort_order, id"],
     // In the order the Admin set: the New project and Assign work pickers list them as sent.
     ["deliverable_types", "mo_deliverable_types", "archived_at IS NULL", [], "sort_order, id"],
     ["task_categories", "mo_task_categories", "archived_at IS NULL", []],
@@ -1604,15 +1612,34 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!(await seesProject(u, id))) return sendError(res, 403, PROJECT_HIDDEN);
     /* Each entity type is matched against ITS OWN ids. One pooled id set let a
        shoot whose id equalled one of this project's deliverable ids pull
-       another project's shoot history into this feed. */
+       another project's shoot history into this feed.
+       A version's submission and its review are the project's story too: they
+       are recorded against the version, so they come in through its
+       deliverable, with the version number and the deliverable's title so the
+       feed can say "v2 of Photos" without having loaded either. */
     const { rows } = await pool.query(
-      `SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor
+      `SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor,
+              v.version_no, vd.title AS deliverable_title, v.review_status AS v_review_status, v.review_comment AS v_review_comment
          FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
+         LEFT JOIN mo_deliverable_versions v ON a.entity_type='deliverable_version' AND v.id=a.entity_id
+         LEFT JOIN mo_deliverables vd ON vd.id=v.deliverable_id
         WHERE (a.entity_type='project' AND a.entity_id=$1)
            OR (a.entity_type='deliverable' AND a.entity_id IN (SELECT d.id FROM mo_deliverables d WHERE d.project_id=$1))
+           OR (a.entity_type='deliverable_version' AND a.entity_id IN (SELECT x.id FROM mo_deliverable_versions x
+                 JOIN mo_deliverables d ON d.id=x.deliverable_id WHERE d.project_id=$1))
            OR (a.entity_type='shoot' AND a.entity_id IN (SELECT s.id FROM mo_shoots s WHERE s.project_id=$1))
            OR (a.entity_type='assignment' AND a.entity_id IN (SELECT g.id FROM mo_assignments g WHERE g.project_id=$1))
         ORDER BY a.occurred_at DESC LIMIT 60`, [id]);
+    /* A review recorded before its comment was written into the trail still
+       says what to change: the version's own comment, while that verdict is
+       still the version's verdict. Read-time only — the trail is not rewritten. */
+    for (const r of rows) {
+      const after = r.after as Record<string, unknown> | null;
+      if (r.action === "deliverable.version_reviewed" && after && after.review_comment == null
+          && r.v_review_comment && after.review_status === r.v_review_status)
+        r.after = { ...after, review_comment: r.v_review_comment };
+      delete r.v_review_status; delete r.v_review_comment;
+    }
     res.json({ activity: rows });
   }));
 
@@ -1857,16 +1884,19 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        pipeline reads as "unassigned". */
     if (Array.isArray(b.deliverables)) {
       for (const raw of b.deliverables as Array<Record<string, unknown>>) {
-        const title = String(raw.title ?? "").trim();
-        if (!title) continue;                       // an empty row the creator never filled in
+        let title = String(raw.title ?? "").trim();
+        // An empty row the creator never filled in. A row that gives only its
+        // type is a deliverable of that type, named after it below.
+        if (!title && !raw.deliverable_type_id) continue;
         if (title.length > 160) return sendError(res, 400, "A deliverable title must be 160 characters or fewer.");
         // The type comes from the existing catalogue; an unknown or archived id
         // is refused rather than silently coerced.
         const typeRow = raw.deliverable_type_id
-          ? (await pool.query(`SELECT id FROM mo_deliverable_types WHERE id=$1 AND archived_at IS NULL`,
+          ? (await pool.query(`SELECT id, name FROM mo_deliverable_types WHERE id=$1 AND archived_at IS NULL`,
               [Number(raw.deliverable_type_id)])).rows[0]
-          : (await pool.query(`SELECT id FROM mo_deliverable_types WHERE archived_at IS NULL ORDER BY id LIMIT 1`)).rows[0];
+          : (await pool.query(`SELECT id, name FROM mo_deliverable_types WHERE archived_at IS NULL ORDER BY id LIMIT 1`)).rows[0];
         if (!typeRow) return sendError(res, 400, "Unknown deliverable type.");
+        if (!title) title = await typeTitle(id, String(typeRow.name));
         const pr = ["urgent", "high", "normal", "low"].includes(String(raw.priority)) ? String(raw.priority) : "normal";
         const est = raw.estimated_hours != null && raw.estimated_hours !== "" && !Number.isNaN(Number(raw.estimated_hours))
           ? Number(raw.estimated_hours) : null;
@@ -2045,6 +2075,17 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     approved: ["delivered", "changes_requested"], delivered: [], not_required: ["not_started"], cancelled: ["not_started"],
   };
 
+  /* A deliverable given only its type is named after the type, numbered when
+     the project already has one by that name: "Reel", "Reel (2)". One rule for
+     New project's rows and Add deliverable. */
+  async function typeTitle(projectId: number, typeName: string): Promise<string> {
+    const taken = new Set((await pool.query(
+      `SELECT lower(title) t FROM mo_deliverables WHERE project_id=$1 AND deleted_at IS NULL`, [projectId])).rows.map((r) => r.t));
+    let title = typeName;
+    for (let n = 2; taken.has(title.toLowerCase()); n++) title = `${typeName} (${n})`;
+    return title;
+  }
+
   /* ── Add deliverable on an existing project ─────────────────────────────
      Scope grows after creation, so the people who shape it may add to it: the
      project's lead, owner/PM or an Admin (canManageProject), and the
@@ -2081,13 +2122,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // The title is the type's name, numbered when the project already has one.
     let title = String(b.title ?? "").trim();
     if (title.length > 160) return sendError(res, 400, "A deliverable title must be 160 characters or fewer.");
-    if (!title) {
-      const taken = new Set((await pool.query(
-        `SELECT lower(title) t FROM mo_deliverables WHERE project_id=$1 AND deleted_at IS NULL`, [pid])).rows.map((r) => r.t));
-      const base = String(typeRow.name);
-      title = base;
-      for (let n = 2; taken.has(title.toLowerCase()); n++) title = `${base} (${n})`;
-    }
+    if (!title) title = await typeTitle(pid, String(typeRow.name));
     const isEmployee = !isMoAdmin(u) && !isMoTL(u) && !(await isCoordinator(u));
     const owner = isEmployee && proj.team_id == null && String(proj.owner_id) === u.id ? u.id : null;
     const ins = await pool.query(
@@ -2375,7 +2410,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
           WHERE id=$1 AND dispatch_status='queued'`, [d.id]);
     await syncProjectProgress(Number(d.project_id));
     await audit(u, "deliverable.version_reviewed", "deliverable_version", v.id,
-      { review_status: v.review_status }, { review_status: outcome }, req);
+      { review_status: v.review_status }, { review_status: outcome, ...(comment ? { review_comment: comment } : {}) }, req);
     // The verdict reaches everyone working on it, not only its owner.
     for (const uid of team)
       if (uid !== u.id)
@@ -9351,7 +9386,9 @@ async function allocateInternalCode(
           await pool.query(
             `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
              VALUES ($1,'review',$2,$3,'deliverable',$4)`,
-            [uid, to === "approved" ? "Deliverable approved" : "Changes requested",
+            /* Its own title: "Approved: …" is the version's review, and a
+               send-back after delivery is not the same as changes on a draft. */
+            [uid, to === "approved" ? `Signed off: ${d.title}` : `Sent back after delivery: ${d.title}`,
               `${u.full_name ?? "Your reviewer"} ${to === "approved" ? "signed off" : "sent back"} “${d.title}”.${note ? " " + note : ""}`,
               id]).catch(() => {});
     res.json({ deliverable: rows[0] });
