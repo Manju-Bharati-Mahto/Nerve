@@ -318,6 +318,18 @@ maybe("closing a project — every deliverable out or signed off", () => {
     expect((await dispatch(dids[0])).status).toBe(400);
   });
 
+  it("work sent back at sign-off, resubmitted and approved again, is dispatchable and can close", async () => {
+    const { pid, dids } = await project(1);
+    await approve(dids[0]);
+    expect((await deliver(dids[0])).status).toBe(200);
+    expect((await signOff(dids[0], "changes_requested", "Colour is off")).status).toBe(200);
+    await approve(dids[0]);
+    const d = await one(`SELECT status, approval_status, dispatch_status FROM mo_deliverables WHERE id=$1`, [dids[0]]);
+    expect(d).toMatchObject({ status: "approved", approval_status: "pending", dispatch_status: "queued" });
+    expect((await dispatch(dids[0])).status).toBe(200);
+    expect(await status(pid)).toBe("completed");
+  });
+
   it("refuses to complete with a delivered item waiting for sign-off, naming it; then allows it", async () => {
     const { pid, dids } = await project(2);
     await approve(dids[0]);

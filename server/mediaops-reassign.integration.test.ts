@@ -277,6 +277,11 @@ maybe("reassigning a deliverable — asked first, then both people told", () => 
     expect(r.status).toBe(403);
     const p = await as("leadA", "PATCH", `/deliverables/${did}`, { owner_id: ACTORS.outsider.id, confirm_reassign: true });
     expect(p.status).toBe(403);
+    // An Admin without the production-worker duty is not eligible either (Q5).
+    const a = await as("leadA", "POST", `/deliverables/${did}/assignee`, { kind: "crew", user_id: ACTORS.admin.id });
+    expect(a.status).toBe(403);
+    expect(a.body.code).not.toBe("reassign_confirm");
+    expect(JSON.stringify(a.body)).toContain("ZRY Admin is not marked as a production worker.");
     expect(await ownerOf(did)).toBe(ACTORS.empA1.id);
   });
 

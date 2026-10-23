@@ -2358,7 +2358,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       return { status: 400, message: "There is no version waiting for review." };
     await pool.query(`UPDATE mo_deliverable_versions SET review_status=$1, reviewed_by=$2, reviewed_at=NOW(), review_comment=$3 WHERE id=$4`,
       [outcome, u.id, comment, v.id]);
-    await pool.query(`UPDATE mo_deliverables SET status=$1, updated_at=NOW() WHERE id=$2`, [outcome, d.id]);
+    /* Approving a new version answers a sign-off send-back, so the send-back
+       no longer holds it: without this, the item would be queued (and the
+       Coordinator told) while /dispatch and closing still refused it. */
+    await pool.query(
+      `UPDATE mo_deliverables SET status=$1, updated_at=NOW(),
+         approval_status = CASE WHEN $1='approved' AND approval_status IN ('changes_requested','rejected')
+                                THEN 'pending' ELSE approval_status END
+        WHERE id=$2`, [outcome, d.id]);
     // Approval is the creative verdict; it also hands the item to Operations.
     if (outcome === "approved") await queueForDispatch(d);
     // Changes requested on something already queued pulls it back out.

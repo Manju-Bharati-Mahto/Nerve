@@ -23022,6 +23022,8 @@ const ACTIONS = {
     dl.dispatch_status=dl.dispatch_status==='none'||!dl.dispatch_status?'queued':dl.dispatch_status;
     v.review_status='approved';v.reviewed_by=S.me;v.reviewed_at=TODAY;
     dl.status='approved';
+    // A new approved version answers a sign-off send-back (the server does the same).
+    if(['changes_requested','rejected'].includes(dl.approval_status))dl.approval_status='pending';
     audit(S.me,'deliverable.version_reviewed','deliverable_version',v.id,{review_status:'pending'},{review_status:'approved'});
     render();refreshDelivDrawer(dl.id);toast('v'+v.version_no+' approved. Everyone on it has been told','ok');
     moSync(MO_API.post('/deliverables/'+dl.id+'/review',{outcome:'approved'}), ()=>refreshDelivDrawer(dl.id));

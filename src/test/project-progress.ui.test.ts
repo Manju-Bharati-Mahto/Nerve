@@ -171,3 +171,17 @@ describe("no new proposals", () => {
     expect(m).not.toContain("Approve proposed projects");
   });
 });
+
+describe("a sign-off send-back is answered by the next approval", () => {
+  it("approving the resubmitted version clears the send-back, so the item is ready to dispatch again", async () => {
+    const h = await boot(913);
+    h.ev(`__dl(8103,'in_review',{approval_status:'changes_requested'});
+      DB.deliverable_versions.push({id:98103,deliverable_id:8103,version_no:2,review_status:'pending',
+        submitted_by:912,submitted_at:TODAY,drive_url:'https://drive.google.com/zpg-8103'})`);
+    h.ev("ACTIONS.approveVersion({did:'8103'})");
+    expect(h.ev<string>("deliv(8103).approval_status")).toBe("pending");
+    expect(h.ev<string>("deliv(8103).dispatch_status")).toBe("queued");
+    expect(h.ev<string>("delivClosureBlocker(deliv(8103))")).toBe("has not been dispatched yet");
+    expect(h.writes().find((c) => c.url.endsWith("/deliverables/8103/review"))?.body).toEqual({ outcome: "approved" });
+  });
+});
