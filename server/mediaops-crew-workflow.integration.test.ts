@@ -1061,6 +1061,15 @@ maybe("notifications — payload, recipients, no duplicates", () => {
     (await notes(ACTORS[actor].id, entityType, id)).map((n) => String(n.title));
   const admins = async () => (await pool.query(
     `SELECT id FROM users WHERE team='media' AND role IN ('admin','super_admin')`)).rows.map((r) => String(r.id));
+  /* The Admins there both before and after an act: suites running alongside
+     add and remove their own Admins, and one added after it (or gone before
+     the check) was never going to show the notice. */
+  const adminsAround = async (act: () => Promise<void>) => {
+    const before = await admins();
+    await act();
+    const after = new Set(await admins());
+    return before.filter((a) => after.has(a));
+  };
 
   it("the bell gets numeric ids, the project's name and the true unread count", async () => {
     const { pid, did } = await teamed();
@@ -1122,9 +1131,11 @@ maybe("notifications — payload, recipients, no duplicates", () => {
 
   it("a version the project's own lead submits goes to the Admins, never back to that lead", async () => {
     const { did } = await teamed();
-    expect((await as("leadA", "POST", `/deliverables/${did}/versions`, drive("lead-push"))).status).toBe(201);
+    const told = await adminsAround(async () => {
+      expect((await as("leadA", "POST", `/deliverables/${did}/versions`, drive("lead-push"))).status).toBe(201);
+    });
     expect(await titles("leadA", "deliverable", did)).toEqual([]);
-    for (const a of await admins())
+    for (const a of told)
       expect((await notes(a, "deliverable", did)).map((n) => n.title), a).toContain("Version submitted for review");
   });
 
@@ -1139,9 +1150,11 @@ maybe("notifications — payload, recipients, no duplicates", () => {
     const second = await teamed();
     await as("empA1", "POST", `/deliverables/${second.did}/versions`, drive("d2"));
     await as("leadB", "POST", `/deliverables/${second.did}/review`, { outcome: "approved" });
-    expect((await as("leadA", "POST", `/deliverables/${second.did}/deliver`, {})).status).toBe(200);
+    const told = await adminsAround(async () => {
+      expect((await as("leadA", "POST", `/deliverables/${second.did}/deliver`, {})).status).toBe(200);
+    });
     expect(await titles("leadA", "deliverable", second.did)).not.toContain("Deliverable delivered — needs review");
-    for (const a of await admins())
+    for (const a of told)
       expect((await notes(a, "deliverable", second.did)).map((n) => n.title), a).toContain("Deliverable delivered — needs review");
   });
 
