@@ -648,6 +648,82 @@ async function allowsModule(u: CurrentUser, key: string): Promise<boolean> {
   return (await effectiveModules(u)).includes(key);
 }
 
+/* ── Project progress follows its deliverables (Q8, Q9) ───────────────────
+   Approval, dispatch and sign-off are three separate acts, and a project is
+   finished only when each of its live deliverables (not deleted, not marked
+   not-needed or cancelled) has gone out or been signed off:
+     · dispatched (dispatch_status delivered|archived), or marked delivered;
+     · marked delivered means signed off — approval_status 'approved';
+     · nothing sent back (approval_status changes_requested|rejected).
+   closureBlocker() names what still holds one deliverable, in plain words. */
+type LiveDeliverable = { id: number; title: string; status: string; approval_status: string; dispatch_status: string };
+
+function closureBlocker(d: LiveDeliverable): string | null {
+  if (["changes_requested", "rejected"].includes(d.approval_status)) return "was sent back for changes";
+  if (d.status === "delivered") return d.approval_status === "approved" ? null : "is waiting for sign-off";
+  if (d.status !== "approved") return "is not finished yet";
+  return ["delivered", "archived"].includes(d.dispatch_status) ? null : "has not been dispatched yet";
+}
+
+async function liveDeliverablesOf(projectId: number): Promise<LiveDeliverable[]> {
+  return (await pool.query(
+    `SELECT id, title, status, approval_status, dispatch_status FROM mo_deliverables
+      WHERE project_id=$1 AND deleted_at IS NULL AND status NOT IN ('not_required','cancelled')
+      ORDER BY id`, [projectId])).rows as LiveDeliverable[];
+}
+
+/** Each live deliverable that keeps the project from being completed, and why. */
+async function projectClosureBlockers(projectId: number): Promise<Array<{ id: number; title: string; reason: string }>> {
+  return (await liveDeliverablesOf(projectId)).flatMap((d) => {
+    const reason = closureBlocker(d);
+    return reason ? [{ id: Number(d.id), title: String(d.title), reason }] : [];
+  });
+}
+
+/* The status a project's deliverables point at, or null for "leave it":
+     none live, or none started             → no change
+     started, not every one approved        → in_production
+     all approved/delivered, some still out → delivered ("Ready to dispatch")
+     all dispatched or signed off           → completed                    */
+function projectProgressTarget(ds: LiveDeliverable[]): { status: string; rule: string } | null {
+  if (!ds.length || ds.every((d) => d.status === "not_started")) return null;
+  if (!ds.every((d) => ["approved", "delivered"].includes(d.status)))
+    return { status: "in_production", rule: "work has started and not every deliverable is approved" };
+  if (ds.some((d) => closureBlocker(d)))
+    return { status: "delivered", rule: "every deliverable is approved and some still wait for dispatch or sign-off" };
+  return { status: "completed", rule: "every deliverable has been dispatched or signed off" };
+}
+
+/* Forward-only automation. Only these statuses are ever moved by it, and only
+   forward — with one way back: a project that was ready to dispatch returns
+   to production when work on it is sent back or new work is added. Proposed,
+   on hold, cancelled, completed and archived are people's decisions and are
+   never touched; in_review is set by hand only (automation may move past it). */
+const PROJECT_AUTO_RANK: Record<string, number> = { planning: 0, approved: 0, in_production: 1, in_review: 2, delivered: 3, completed: 4 };
+
+/** Move a project to where its deliverables say it is, if that is allowed. */
+async function syncProjectProgress(projectId: number): Promise<string | null> {
+  if (!Number.isFinite(projectId) || projectId <= 0) return null;
+  try {
+    const p = (await pool.query(`SELECT status FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [projectId])).rows[0];
+    const from = p ? String(p.status) : "";
+    if (!(from in PROJECT_AUTO_RANK) || from === "completed") return null;
+    const target = projectProgressTarget(await liveDeliverablesOf(projectId));
+    if (!target || target.status === from) return null;
+    const sentBack = from === "delivered" && target.status === "in_production";
+    if (!sentBack && PROJECT_AUTO_RANK[target.status] <= PROJECT_AUTO_RANK[from]) return null;
+    const upd = await pool.query(
+      `UPDATE mo_projects SET status=$2, updated_at=NOW() WHERE id=$1 AND status=$3 AND deleted_at IS NULL`,
+      [projectId, target.status, from]);
+    if (!upd.rowCount) return null;
+    await pool.query(
+      `INSERT INTO mo_audit_logs (actor_id, actor_role, action, entity_type, entity_id, before, after)
+       VALUES (NULL,'system','project.status_auto','project',$1,$2,$3)`,
+      [projectId, JSON.stringify({ status: from }), JSON.stringify({ status: target.status, rule: target.rule })]).catch(() => {});
+    return target.status;
+  } catch { return null; /* progress must never break the write that triggered it */ }
+}
+
 export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   const { asyncHandler, sendError, getSingleParam } = h;
   /* See the note on Handlers.kioskPinLimiter: absent means "no extra budget",
@@ -1865,12 +1941,34 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (from === "archived" && !isMoAdmin(u)) return sendError(res, 403, "Only an Admin may restore an archived project.");
     if (!(PROJ_TRANSITIONS[from] ?? []).includes(to))
       return sendError(res, 400, `${from} → ${to} is not a valid move.`);
+    /* Completing is closing: every live deliverable has gone out or been
+       signed off (projectClosureBlockers). An Admin may close it anyway, but
+       only with a reason, which goes on the record. Un-archiving returns a
+       project that was already completed, so it is not a new closure. */
+    let override: { reason: string; open: Array<{ id: number; title: string; reason: string }> } | null = null;
+    if (to === "completed" && from !== "archived") {
+      const open = await projectClosureBlockers(id);
+      if (open.length) {
+        const reason = String((req.body as Record<string, unknown>).override_reason ?? "").trim();
+        const list = open.slice(0, 5).map((o) => `“${o.title}” ${o.reason}`).join("; ")
+          + (open.length > 5 ? `; and ${open.length - 5} more` : "");
+        if (!isMoAdmin(u))
+          return sendError(res, 400, `This project can't be completed yet: ${list}.`);
+        if (!reason)
+          return sendError(res, 400, `This project can't be completed yet: ${list}. To close it anyway, give a reason.`);
+        override = { reason, open };
+      }
+    }
     await pool.query(
       `UPDATE mo_projects SET status=$1,
          archived_at=CASE WHEN $1='archived' THEN NOW() WHEN $3 THEN NULL ELSE archived_at END,
          updated_at=NOW() WHERE id=$2`, [to, id, from === "archived"]);
-    await audit(u, from === "archived" ? "project.unarchived" : (to === "archived" ? "project.archived" : "project.status_changed"),
-      "project", id, { status: from }, { status: to }, req);
+    if (override)
+      await audit(u, "project.completed_override", "project", id, { status: from },
+        { status: to, reason: override.reason, still_open: override.open.map((o) => `${o.title} ${o.reason}`) }, req);
+    else
+      await audit(u, from === "archived" ? "project.unarchived" : (to === "archived" ? "project.archived" : "project.status_changed"),
+        "project", id, { status: from }, { status: to }, req);
     res.json({ ok: true, status: to });
   }));
 
@@ -2018,6 +2116,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
          VALUES ($1,'assignment',$2,$3,'deliverable',$4)`,
         [uid, "Deliverable added", `${u.full_name ?? "Someone"} added “${title}” to ${proj.name}. Nobody is assigned to it yet.`,
          Number(d.id)]).catch(() => {});
+    // New scope on a project that was ready to dispatch puts it back in production.
+    await syncProjectProgress(pid);
     await audit(u, "deliverable.created", "deliverable", d.id, null, { title, project_id: pid }, req);
     res.status(201).json({ deliverable: d });
   }));
@@ -2185,6 +2285,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        VALUES ($1,$2,$3,$4,$5,'pending') RETURNING *`,
       [id, next, url, String((req.body as Record<string, unknown>).note ?? ""), u.id]);
     await pool.query(`UPDATE mo_deliverables SET status='in_review' WHERE id=$1`, [id]);
+    await syncProjectProgress(Number(d.project_id));
     await audit(u, "deliverable.version_submitted", "deliverable_version", ins.rows[0].id, null, { version_no: next }, req);
     /* The project's reviewer hears about it — one person, not every Team Lead.
        If the resolved reviewer is on the deliverable's team or IS the
@@ -2265,6 +2366,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       await pool.query(
         `UPDATE mo_deliverables SET dispatch_status='none', queued_at=NULL
           WHERE id=$1 AND dispatch_status='queued'`, [d.id]);
+    await syncProjectProgress(Number(d.project_id));
     await audit(u, "deliverable.version_reviewed", "deliverable_version", v.id,
       { review_status: v.review_status }, { review_status: outcome }, req);
     // The verdict reaches everyone working on it, not only its owner.
@@ -2337,6 +2439,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     await pool.query(`UPDATE mo_deliverables SET status='delivered', completed_at=CURRENT_DATE,
       delivered_by=$2, approval_status='pending',
       quantity_delivered=COALESCE(quantity_delivered, quantity_target) WHERE id=$1`, [id, u.id]);
+    await syncProjectProgress(Number(d.rows[0].project_id));
     await audit(u, "deliverable.delivered", "deliverable", id, { status: d.rows[0].status }, { status: "delivered" }, req);
     await tellSignOffNeeded(u, d.rows[0]);
     // Dispatch does not wait for the sign-off: exempt work is ready once delivered.
@@ -2458,10 +2561,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        JSON.stringify(b.evidence ?? [])]);
     await refreshReportTotal(rid);
     // Lifecycle: logging the first work against a deliverable starts it.
-    if (b.deliverable_id)
-      await pool.query(
+    if (b.deliverable_id) {
+      const started = await pool.query(
         `UPDATE mo_deliverables SET status='in_progress', updated_at=NOW()
-          WHERE id=$1 AND status='not_started'`, [Number(b.deliverable_id)]);
+          WHERE id=$1 AND status='not_started' RETURNING project_id`, [Number(b.deliverable_id)]);
+      if (started.rows[0]) await syncProjectProgress(Number(started.rows[0].project_id));
+    }
     await audit(u, "report.task_logged", "daily_report", rid, null, { minutes: mins }, req);
     // Adding a task to an already-submitted report re-opens its review.
     const re = await touchReportAfterEdit(u, rid, req);
@@ -2803,6 +2908,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         [uid, `${wt.name} assigned to you`, body, target ? "deliverable" : "assignment",
          target ? target.id : assignment.id]).catch(() => {});
     }
+    if (deliverable) await syncProjectProgress(pid);
     res.status(201).json({ kind: "assignment", work_type: wt, assignment, deliverable: target ?? null });
   }));
 
@@ -9143,6 +9249,7 @@ async function allocateInternalCode(
          approval_status = CASE WHEN $2 THEN 'pending' ELSE approval_status END,
          updated_at = NOW()
        WHERE id=$4`, [to, delivering, u.id, id]);
+    await syncProjectProgress(Number(d.project_id));
     await audit(u, "deliverable.status_changed", "deliverable", id,
       { status: d.status }, { status: to, delivered_by: delivering ? u.id : undefined }, req);
     // Tell the project's reviewer there is something to look at.
@@ -9208,6 +9315,7 @@ async function allocateInternalCode(
           WHERE id = (SELECT id FROM mo_deliverable_versions WHERE deliverable_id=$1
                        ORDER BY version_no DESC LIMIT 1)`, [id, u.id, note]);
     }
+    await syncProjectProgress(Number(d.project_id));
     await audit(u, "deliverable.approval_changed", "deliverable", id,
       { approval_status: d.approval_status, status: d.status },
       { approval_status: to, approved_by: u.id, approved_by_role: moRoleOf(u), note }, req);
@@ -11040,6 +11148,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       `UPDATE mo_deliverables SET dispatch_status='delivered', dispatch_recipient=$1, dispatch_subject=$2,
          dispatch_notes=$3, dispatched_by=$4, dispatched_at=NOW() WHERE id=$5 RETURNING *`,
       [recipient, String(b.subject ?? ""), String(b.notes ?? ""), u.id, id]);
+    await syncProjectProgress(Number(d.project_id));
     await audit(u, "deliverable.dispatched", "deliverable", id,
       { dispatch_status: d.dispatch_status },
       { dispatch_status: "delivered", recipient, drive_url: v?.drive_url ?? null, subject: String(b.subject ?? "") }, req);
@@ -11058,7 +11167,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const u = requireMedia(res); if (!u) return;
     if (!(await coordOnly(res, u))) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
-    const d = (await pool.query(`SELECT dispatch_status FROM mo_deliverables WHERE id=$1`, [id])).rows[0];
+    const d = (await pool.query(`SELECT dispatch_status, project_id FROM mo_deliverables WHERE id=$1`, [id])).rows[0];
     if (!d) return sendError(res, 404, "Deliverable not found.");
     // Archiving closes a dispatch, so the refusal names what is actually missing.
     if (d.dispatch_status === "archived")
@@ -11066,6 +11175,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     if (d.dispatch_status !== "delivered")
       return sendError(res, 400, "This deliverable has not been dispatched yet — dispatch it first, then archive it.");
     await pool.query(`UPDATE mo_deliverables SET dispatch_status='archived' WHERE id=$1`, [id]);
+    await syncProjectProgress(Number(d.project_id));
     await audit(u, "deliverable.archived", "deliverable", id, { dispatch_status: "delivered" }, { dispatch_status: "archived" }, req);
     res.json({ ok: true });
   }));

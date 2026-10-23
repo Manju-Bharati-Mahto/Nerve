@@ -256,6 +256,11 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
       archived_at TIMESTAMPTZ, deleted_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
+  /* Nothing proposes a project any more: every creation path writes
+     'planning', so the column default says the same. 'proposed' stays a valid
+     value for the rows that already hold it, which a Team Lead or an Admin can
+     still approve or cancel. Idempotent; existing rows are untouched. */
+  await pool.query(`ALTER TABLE mo_projects ALTER COLUMN status SET DEFAULT 'planning'`);
   // ── Migration: faculty_served (free text) → mo_academic_units FK ──────────
   // Idempotent and lossless: every distinct legacy value becomes a unit, every
   // project is re-pointed at it, and only then is the old column dropped.
