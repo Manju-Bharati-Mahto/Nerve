@@ -121,11 +121,59 @@ describe("Team Lead — their own team, their own team's projects", () => {
     expect(opts).toEqual(["9001"]);
   });
 
-  it("New project offers the Coordinator every team, and leaving it unrouted", async () => {
+  it("New project offers the Coordinator every team, and does not create one without a team", async () => {
     const h = await boot(906);
     h.ev("openNewProject()");
-    const opts = [...h.doc.querySelectorAll("#np-team option")].map((o) => (o as HTMLOptionElement).value);
+    const sel = h.doc.querySelector("#np-team") as HTMLSelectElement;
+    const opts = [...sel.options].map((o) => o.value);
     expect(opts).toEqual(["", "9001", "9002"]);
+    expect(sel.value, "a team (or no team) was chosen for the Coordinator").toBe("");
+    expect(sel.options[0].disabled, "'no team' is still a choice").toBe(true);
+    (h.doc.querySelector("#np-name") as HTMLInputElement).value = "Convocation 2026";
+    h.ev("ACTIONS.createProject()");
+    expect(h.writes().some((c) => c.url.endsWith("/projects")), "created with no team").toBe(false);
+    expect(h.doc.querySelector("#np-team-err")?.textContent).toBe("Choose the team this project is for.");
+    sel.value = "9002";
+    h.ev("ACTIONS.createProject()");
+    const post = h.writes().find((c) => c.url.endsWith("/projects"));
+    expect(post?.body).toMatchObject({ team_id: 9002, academic_year_id: expect.any(Number) });
+  });
+
+  it("New project asks Admin for a team too, with 'no team' as a deliberate choice", async () => {
+    const h = await boot(907);
+    h.ev("openNewProject()");
+    const sel = h.doc.querySelector("#np-team") as HTMLSelectElement;
+    expect([...sel.options].map((o) => o.value)).toEqual(["", "9001", "9002", "none"]);
+    expect(sel.value).toBe("");
+    (h.doc.querySelector("#np-name") as HTMLInputElement).value = "Convocation 2026";
+    h.ev("ACTIONS.createProject()");
+    expect(h.writes().some((c) => c.url.endsWith("/projects"))).toBe(false);
+    sel.value = "none";
+    h.ev("ACTIONS.createProject()");
+    expect(h.writes().find((c) => c.url.endsWith("/projects"))?.body).toMatchObject({ team_id: null });
+  });
+
+  it("New project: one help line per role, no internal codes, types in catalogue order, priorities most urgent first", async () => {
+    const h = await boot(906);
+    const help = () => { h.ev("openNewProject()"); return h.doc.querySelector("#modal-layer .mo-head p")!.textContent; };
+    expect(help()).toMatch(/team’s lead .* assigns the work/);
+    h.as(901); expect(help()).toBe("It is for your team. You assign the work after creating it.");
+    h.as(902); expect(help()).toBe("It is your own project. You assign the work after creating it.");
+    h.as(906); help();
+    h.ev("ACTIONS.npAddDeliverable(); ACTIONS.npAddDeliverable()");
+    const layer = h.doc.getElementById("modal-layer")!;
+    expect(layer.textContent).not.toMatch(/Team Lead will assign|Team Lead’s call|lead will assign/);
+    const typeIds = [...layer.querySelectorAll(".np-d-type option")].slice(0, 99).map((o) => +(o as HTMLOptionElement).value);
+    const order = h.ev<number[]>("DB.deliverable_types.filter(t=>t.is_active!==false&&!t.archived_at).sort((a,b)=>(a.sort_order??0)-(b.sort_order??0)||a.id-b.id).map(t=>t.id)");
+    expect(typeIds.slice(0, order.length)).toEqual(order);
+    expect([...layer.querySelectorAll("#np-pri option")].map((o) => (o as HTMLOptionElement).value)).toEqual(["urgent", "high", "normal", "low"]);
+    expect((layer.querySelector("#np-pri") as HTMLSelectElement).value).toBe("normal");
+    const name = layer.querySelector("#np-name") as HTMLInputElement;
+    name.value = "Annual Cultural Festival";
+    h.ev("ACTIONS.dupCheck({},document.querySelector('#np-name'))");
+    const warn = layer.querySelector("#np-dup")!.textContent!;
+    expect(warn).toContain("Annual Cultural Festival");
+    expect(warn).not.toMatch(/AUTO-\d/);
   });
 
   it("New project is offered to an employee, assigned to them, with no team to pick", async () => {
@@ -135,7 +183,7 @@ describe("Team Lead — their own team, their own team's projects", () => {
     expect(h.doc.querySelectorAll("#np-team option").length, "an employee was offered teams").toBe(0);
     expect((h.doc.getElementById("np-team") as HTMLInputElement).value).toBe("");
     const layer = h.doc.getElementById("modal-layer")!.innerHTML;
-    expect(layer).toContain("assigned to you");
+    expect(layer).toContain("your own project");
     expect(layer).not.toContain("Pending Approval");
   });
 
@@ -516,7 +564,6 @@ describe("Assign work — creates the deliverable and shares it with everyone as
     const h = await boot(901);
     const { doc, pick } = await openFor(h, 7001);
     (doc.querySelector("#aw-title") as HTMLInputElement).value = "Edit the aftermovie";
-    (doc.querySelector("#aw-dtitle") as HTMLInputElement).value = "Festival aftermovie";
     (doc.querySelector("#aw-ddrive") as HTMLInputElement).value = "https://drive.google.com/folder";
     pick(902); pick(903);
     (doc.querySelector("#aw-owner") as HTMLSelectElement).value = "903";
@@ -526,7 +573,8 @@ describe("Assign work — creates the deliverable and shares it with everyone as
     const body = post!.body as Record<string, unknown>;
     expect(body.assignees).toEqual(["zcw-902", "zcw-903"]);
     expect(body.owner_id).toBe("zcw-903");
-    expect(body.new_deliverable).toMatchObject({ title: "Festival aftermovie", drive_url: "https://drive.google.com/folder" });
+    expect(body.new_deliverable).toEqual({ deliverable_type_id: expect.any(Number), drive_url: "https://drive.google.com/folder" });
+    expect(doc.querySelector("#aw-dtitle"), "a second title field for the deliverable").toBeNull();
     expect(body.deliverable_id).toBeUndefined();
     expect(h.writes().some((c) => c.url.includes("/deliverables") && c.method === "POST"
       && c.url.endsWith("/projects/7001/deliverables")), "a second, separate create was sent").toBe(false);
@@ -555,6 +603,100 @@ describe("Assign work — creates the deliverable and shares it with everyone as
     expect(body.deliverable_id).toBe(8003);
     expect(body.new_deliverable).toBeUndefined();
     expect(body.owner_id).toBe("zcw-903");
+  });
+
+  it("taking on an existing deliverable starts at its due date and says who owns it now", async () => {
+    const h = await boot(901);
+    h.ev("deliv(8002).due_date='2026-12-05'");
+    const { doc, pick } = await openFor(h, 7001);
+    h.ev("ACTIONS.awDelivMode({m:'existing'})");
+    const sel = doc.querySelector("#aw-deliv") as HTMLSelectElement;
+    sel.value = "8002";
+    h.ev("ACTIONS.awDelivPick()");
+    expect((doc.querySelector("#aw-due") as HTMLInputElement).value).toBe("2026-12-05");
+    expect(doc.querySelector("#aw-dcur")!.textContent).toContain("Emp Anika · Event Team");
+    sel.value = "8003";   // unowned, no due date of its own
+    h.ev("deliv(8003).due_date=null; ACTIONS.awDelivPick()");
+    expect((doc.querySelector("#aw-due") as HTMLInputElement).value).toBe("");
+    expect(doc.querySelector("#aw-dcur")!.textContent).toBe("No owner yet.");
+    // A date the lead typed is theirs: picking another deliverable keeps it.
+    (doc.querySelector("#aw-due") as HTMLInputElement).value = "2026-11-30";
+    sel.value = "8002"; h.ev("ACTIONS.awDelivPick()");
+    expect((doc.querySelector("#aw-due") as HTMLInputElement).value).toBe("2026-11-30");
+    (doc.querySelector("#aw-title") as HTMLInputElement).value = "Cut it";
+    pick(903);
+    h.ev("ACTIONS.createWork()");
+    expect(h.ev<string>("deliv(8002).due_date"), "the deliverable is due when the work is due").toBe("2026-11-30");
+  });
+
+  it("people are told apart by their team, and priorities run most urgent first", async () => {
+    const h = await boot(901);
+    h.ev("DB.users.unshift({id:908,real_id:'zcw-908',role:'employee',full_name:'Emp Anika',initials:'ZZ',color:'#888',is_active:true,designation:''}); DB.team_members.push({team_id:9002,user_id:908})");
+    const { doc, pick } = await openFor(h, 7001);
+    const chip = (uid: number) => doc.querySelector(`#aw-users .chip[data-uid="${uid}"]`)!.textContent;
+    expect(chip(902)).toBe("Emp Anika · Event Team");
+    expect(chip(908)).toBe("Emp Anika · Video Team");
+    pick(902); pick(908);
+    expect([...(doc.querySelector("#aw-owner") as HTMLSelectElement).options].map((o) => o.text))
+      .toEqual(["Emp Anika · Event Team", "Emp Anika · Video Team"]);
+    expect([...doc.querySelectorAll("#aw-pri option")].map((o) => (o as HTMLOptionElement).value)).toEqual(["urgent", "high", "normal", "low"]);
+    expect((doc.querySelector("#aw-pri") as HTMLSelectElement).value).toBe("normal");
+    const cell = h.ev<string>("delivOwnerCell(proj(7001),deliv(8002))");
+    expect(cell).toContain("Emp Anika · Event Team");
+    expect(cell).toContain("Emp Anika · Video Team");
+    expect(cell).not.toMatch(/your team/);
+  });
+
+  it("a completed project is not offered Assign work, and never opens on another project", async () => {
+    const h = await boot(901);
+    h.ev("proj(7001).status='completed'");
+    for (const tab of ["overview", "deliverables", "shoots"])
+      expect(h.ev<string>(`viewProject(7001,'${tab}')`), tab).not.toContain('data-act="assignWork" data-pid');
+    h.ev("openAssignWork(7001)");
+    expect(h.doc.querySelector("#aw-project"), "the dialog opened on a different project").toBeNull();
+    h.ev("proj(7001).status='in_production'");
+    expect(h.ev<string>("viewProject(7001,'overview')")).toContain('data-act="assignWork" data-pid="7001"');
+  });
+
+  it("from the Shoots tab, Assign work opens on a shoot", async () => {
+    const h = await boot(901);
+    expect(h.ev<string>("viewProject(7001,'shoots')")).toMatch(/data-act="assignWork" data-pid="7001" data-tpl="shoot"/);
+    h.ev("ACTIONS.assignWork({pid:'7001',tpl:'shoot'})");
+    const type = h.doc.querySelector("#aw-type") as HTMLSelectElement;
+    expect(h.ev<string>(`workType(${type.value}).form_template`)).toBe("shoot");
+    expect(h.doc.querySelector("#aw-date"), "the shoot fields are not shown").not.toBeNull();
+  });
+
+  it("the owner picker stays when the owner has been deactivated", async () => {
+    const h = await boot(901);
+    h.ev("user(902).is_active=false");
+    const cell = h.ev<string>("delivOwnerCell(proj(7001),deliv(8002))");
+    expect(cell).toContain('class="inp deliv-owner"');
+    expect(cell).toMatch(/value="902" selected disabled>Emp Anika · Event Team \(inactive\)/);
+  });
+
+  it("saving a schedule never makes someone the owner by default", async () => {
+    const h = await boot(901);
+    h.ev("ACTIONS.scheduleDeliv({did:'8003'})");   // Instagram Reel, unowned
+    const sel = h.doc.querySelector("#sd-owner") as HTMLSelectElement;
+    expect(sel.value, "a person was preselected").toBe("");
+    (h.doc.querySelector("#sd-date") as HTMLInputElement).value = "2026-11-02";
+    h.ev("ACTIONS.confirmSchedule({did:'8003'})");
+    expect(h.writes().some((c) => c.url.endsWith("/schedule")), "scheduled with nobody to do it").toBe(false);
+    expect(h.ev<unknown>("deliv(8003).owner_id")).toBeNull();
+    // With no date it saves, and still names nobody.
+    (h.doc.querySelector("#sd-date") as HTMLInputElement).value = "";
+    h.ev("ACTIONS.confirmSchedule({did:'8003'})");
+    const body = h.writes().find((c) => c.url.endsWith("/deliverables/8003/schedule"))!.body as Record<string, unknown>;
+    expect(body.owner_id).toBeUndefined();
+    expect(h.ev<unknown>("deliv(8003).owner_id")).toBeNull();
+    // An owned one keeps its owner without sending it again.
+    h.ev("ACTIONS.scheduleDeliv({did:'8002'})");
+    (h.doc.querySelector("#sd-date") as HTMLInputElement).value = "2026-11-02";
+    h.ev("ACTIONS.confirmSchedule({did:'8002'})");
+    const b2 = h.writes().find((c) => c.url.endsWith("/deliverables/8002/schedule"))!.body as Record<string, unknown>;
+    expect(b2).toMatchObject({ scheduled_date: "2026-11-02" });
+    expect(b2.owner_id).toBeUndefined();
   });
 
   it("with No deliverable, it is plain work and names no owner", async () => {
