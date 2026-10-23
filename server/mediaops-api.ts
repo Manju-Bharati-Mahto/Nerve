@@ -2148,6 +2148,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        delivered straight from work). Before this check, calling /deliver after
        a reviewer's post-delivery send-back silently re-flipped status back to
        delivered — the Phase 1 P1 "undo send-back" bypass. */
+    if (d.rows[0].status === "in_review")
+      return sendError(res, 400, "A version is awaiting review — it can be delivered once a reviewer approves it.");
     if (!(d.rows[0].status === "approved" || (d.rows[0].review_exempt && d.rows[0].status === "in_progress")))
       return sendError(res, 400, "This deliverable is not ready to deliver. Submit a version for review first — a reviewer approves, then it is delivered.");
     if (!d.rows[0].review_exempt) {
@@ -2574,6 +2576,22 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       await audit(u, "deliverable.assigned", "deliverable", Number(existing.id),
         { owner_id: existing.owner_id }, { owner_id: ownerId, via: "assign_work" }, req);
     }
+    /* The deliverable is due when the work is due — the same rule as a new
+       one. A date it already has is moved only by someone who runs the
+       project (the same people who move it in the drawer); anyone else's
+       work date fills an empty one and leaves a set one alone. */
+    if (existing && dueDate && dueDate !== dOnly(existing.due_date)
+        && (!existing.due_date || await canManageProject(u, pid))) {
+      await pool.query(
+        `UPDATE mo_deliverables SET due_date=$1, due_date_source='manual', updated_at=NOW() WHERE id=$2`,
+        [dueDate, existing.id]);
+      await audit(u, "deliverable.due_date_changed", "deliverable", Number(existing.id),
+        { due_date: dOnly(existing.due_date), due_date_source: existing.due_date_source },
+        { due_date: dueDate, due_date_source: "manual", changed_by: u.id, via: "assign_work" }, req);
+    }
+    // The answer is the deliverable as it now stands, owner and date included.
+    if (existing)
+      existing = (await pool.query(`SELECT * FROM mo_deliverables WHERE id=$1`, [existing.id])).rows[0] ?? existing;
     const target = deliverable ?? existing;
     for (const uid of assignees) await addToProjectCrew(pid, uid, u.id);
     if (deliverable)
@@ -10780,7 +10798,9 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const u = requireMedia(res); if (!u) return;
     if (!(await coordOnly(res, u))) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
-    const d = (await pool.query(`SELECT * FROM mo_deliverables WHERE id=$1`, [id])).rows[0];
+    const d = (await pool.query(
+      `SELECT d.*, dt.review_exempt FROM mo_deliverables d
+         JOIN mo_deliverable_types dt ON dt.id=d.deliverable_type_id WHERE d.id=$1`, [id])).rows[0];
     if (!d) return sendError(res, 404, "Deliverable not found.");
     const v = (await pool.query(
       `SELECT review_status, drive_url FROM mo_deliverable_versions WHERE deliverable_id=$1
@@ -10790,8 +10810,12 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
        status: a reviewer could /approval reject or send a delivered item back
        and the Operations side could still ship it, because the version was
        still 'approved'. Approval queues it (dispatch_status='queued'); a
-       sent-back item is 'none' and no longer eligible. */
-    if (v?.review_status !== "approved")
+       sent-back item is 'none' and no longer eligible.
+       A review-exempt type (raw footage, a recording) never goes through a
+       version review: once delivered it is ready to go out, and the checks
+       below still refuse it after a sign-off sent it back. */
+    const exemptDelivered = !!d.review_exempt && d.status === "delivered";
+    if (!exemptDelivered && v?.review_status !== "approved")
       return sendError(res, 400, "Only a deliverable whose latest version is approved can be dispatched.");
     if (!["approved", "delivered"].includes(String(d.status)))
       return sendError(res, 400, "This deliverable is not ready to dispatch. The reviewer must approve it first.");
@@ -10808,7 +10832,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       [recipient, String(b.subject ?? ""), String(b.notes ?? ""), u.id, id]);
     await audit(u, "deliverable.dispatched", "deliverable", id,
       { dispatch_status: d.dispatch_status },
-      { dispatch_status: "delivered", recipient, drive_url: v.drive_url ?? null, subject: String(b.subject ?? "") }, req);
+      { dispatch_status: "delivered", recipient, drive_url: v?.drive_url ?? null, subject: String(b.subject ?? "") }, req);
     // Everyone who made it hears that it went out, not only its owner.
     for (const uid of await deliverableTeamIds(id))
       if (uid !== u.id)
@@ -10826,8 +10850,11 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const id = parseInt(getSingleParam(req.params.id), 10);
     const d = (await pool.query(`SELECT dispatch_status FROM mo_deliverables WHERE id=$1`, [id])).rows[0];
     if (!d) return sendError(res, 404, "Deliverable not found.");
+    // Archiving closes a dispatch, so the refusal names what is actually missing.
+    if (d.dispatch_status === "archived")
+      return sendError(res, 400, "This deliverable is already archived.");
     if (d.dispatch_status !== "delivered")
-      return sendError(res, 400, "Only a delivered deliverable can be archived.");
+      return sendError(res, 400, "This deliverable has not been dispatched yet — dispatch it first, then archive it.");
     await pool.query(`UPDATE mo_deliverables SET dispatch_status='archived' WHERE id=$1`, [id]);
     await audit(u, "deliverable.archived", "deliverable", id, { dispatch_status: "delivered" }, { dispatch_status: "archived" }, req);
     res.json({ ok: true });
@@ -12171,22 +12198,58 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
        SMC coverage keeps its long-standing rule (any Team Lead). */
     const priv = isMoAdmin(u) || cur.assigned_by === u.id || isMoTL(u);
     if (!priv && !isAssignee) return sendError(res, 403, "You can't change this assignment.");
-    const b0 = req.body as Record<string, unknown>;
-    if (priv && !cur.is_smc && Array.isArray(b0.assignees)
-        && !(await assertAssignable(res, u, (b0.assignees as unknown[]).map(String)))) return;
     const b = req.body as Record<string, unknown>;
+    const people = priv && Array.isArray(b.assignees)
+      ? [...new Set((b.assignees as unknown[]).map((r) => String(toUid(r))))] : null;
+    if (people && !cur.is_smc && !(await assertAssignable(res, u, people))) return;
+    /* Work on a deliverable is that deliverable's team: the row that names its
+       owner is what makes everyone else on it a teammate (deliverableTeamIds).
+       Rewriting the people must keep the owner on it, or the team silently
+       dissolves — changing the owner is the drawer's Change owner. */
+    const linked = people && cur.deliverable_id && !cur.is_smc
+      ? (await pool.query(`SELECT id, project_id, title, owner_id FROM mo_deliverables WHERE id=$1`,
+          [cur.deliverable_id])).rows[0] ?? null : null;
+    if (linked && !people!.length) return sendError(res, 400, "Assign the work to at least one member.");
+    if (linked?.owner_id && !people!.includes(String(linked.owner_id)))
+      return sendError(res, 400, "The deliverable's owner must stay on this work. Change the owner first if someone else should own it.");
+    const teamBefore = linked ? await deliverableTeamIds(Number(linked.id)) : new Set<string>();
+    const rowBefore = people ? (await pool.query(
+      `SELECT user_id FROM mo_assignment_users WHERE assignment_id=$1`, [id])).rows.map((r) => String(r.user_id)) : [];
     // Assignees may only move the status; TL/Admin/creator may edit everything.
     const cols = priv ? ["title", "priority", "status", "start_date", "due_date", "start_time", "end_time", "notes"] : ["status"];
     if (priv && "priority" in b && !PRIORITIES.includes(String(b.priority))) return sendError(res, 400, PRIORITY_ERROR);
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
     for (const k of cols) if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
     if (fields.length) { vals.push(id); await pool.query(`UPDATE mo_assignments SET ${fields.join(",")} WHERE id=$${i}`, vals); }
-    if (priv && Array.isArray(b.assignees)) {
+    if (people) {
       await pool.query(`DELETE FROM mo_assignment_users WHERE assignment_id=$1`, [id]);
-      for (const uid of (b.assignees as unknown[]).map(String))
+      for (const uid of people)
         await pool.query(`INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [id, uid]);
     }
     await audit(u, "assignment.updated", "assignment", id, cur, b, req);
+    /* As Assign work does: whoever is added joins the project's crew and is
+       told once; whoever is taken off is told it is no longer theirs — for a
+       deliverable, only once they have left its team altogether. */
+    if (people && !cur.is_smc && String("status" in b ? b.status : cur.status) !== "cancelled") {
+      const by = u.full_name ?? "Your Team Lead";
+      const title = String(("title" in b ? b.title : cur.title) ?? "");
+      const teamAfter = linked ? await deliverableTeamIds(Number(linked.id)) : new Set<string>();
+      const say = (uid: string, head: string, body: string) => pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'assignment',$2,$3,$4,$5)`,
+        [uid, head, body, linked ? "deliverable" : "assignment", linked ? Number(linked.id) : id]).catch(() => {});
+      for (const uid of people.filter((x) => !rowBefore.includes(x))) {
+        if (cur.project_id) await addToProjectCrew(Number(cur.project_id), uid, u.id);
+        if (uid !== u.id)
+          await say(uid, "New assignment", linked
+            ? `${by} added you to “${title}”. You are working on “${linked.title}”.`
+            : `${by} assigned “${title}” to you.`);
+      }
+      for (const uid of rowBefore.filter((x) => !people.includes(x))) {
+        if (uid === u.id || (linked && (!teamBefore.has(uid) || teamAfter.has(uid)))) continue;
+        await say(uid, "Assignment reassigned", `“${linked ? linked.title : title}” is no longer assigned to you.`);
+      }
+    }
     res.json({ ok: true });
   }));
 

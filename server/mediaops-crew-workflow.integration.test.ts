@@ -1488,3 +1488,88 @@ maybe("project activity — only this project's history, with who did it", () =>
     expect(rows.find((x) => x.action === "deliverable.probe")?.actor).toBe(ACTORS.leadA.full_name);
   });
 });
+
+maybe("assign work on an existing deliverable, delivering, dispatch and archive", () => {
+  const work = (actor: ActorName, pid: number, extra: Record<string, unknown>) =>
+    as(actor, "POST", `/projects/${pid}/work`, { work_type_id: workTypeId, title: `${PX} cut the reel`, ...extra });
+  const onCrew = (pid: number, uid: string) => one(
+    `SELECT 1 AS ok FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`, [pid, uid]);
+  const teamOf = (did: number) => pool.query(
+    `SELECT DISTINCT au.user_id FROM mo_assignments a JOIN mo_assignment_users au ON au.assignment_id=a.id
+      WHERE a.deliverable_id=$1 AND a.status<>'cancelled' ORDER BY au.user_id`, [did]).then((r) => r.rows.map((x) => x.user_id));
+
+  it("an existing deliverable takes the work's due date, and the answer is the deliverable as stored", async () => {
+    const { pid, dids } = await routed(teamA, ["Archive Data"]);
+    await pool.query(`UPDATE mo_deliverables SET due_date=NULL WHERE id=$1`, [dids[0]]);
+    // Another team's lead may assign here; an empty date is filled by their work's date.
+    const r = await work("leadB", pid, { assignees: [ACTORS.empB1.id], deliverable_id: dids[0], due_date: "2026-10-22" });
+    expect(r.status).toBe(201);
+    const body = r.body.deliverable as Record<string, unknown>;
+    expect(body.owner_id).toBe(ACTORS.empB1.id);
+    expect(body.due_date).not.toBeNull();
+    expect(dayOf((await deliv(dids[0])).due_date)).toBe("2026-10-22");
+    // …but a date already set moves only for someone who runs the project.
+    expect((await work("leadB", pid, { assignees: [ACTORS.empB1.id], deliverable_id: dids[0],
+      due_date: "2026-10-25" })).status).toBe(201);
+    expect(dayOf((await deliv(dids[0])).due_date)).toBe("2026-10-22");
+    expect((await work("leadA", pid, { assignees: [ACTORS.empB1.id], deliverable_id: dids[0],
+      due_date: "2026-10-28" })).status).toBe(201);
+    expect(dayOf((await deliv(dids[0])).due_date)).toBe("2026-10-28");
+  });
+
+  it("changing a work row's people keeps the owner on it, brings newcomers in once and tells who left", async () => {
+    const { pid } = await routed(teamA, []);
+    const r = await work("leadA", pid, { assignees: [ACTORS.empA1.id, ACTORS.empA2.id], owner_id: ACTORS.empA1.id,
+      new_deliverable: { deliverable_type_id: dtype } });
+    const did = Number((r.body.deliverable as Record<string, unknown>).id);
+    const aid = Number((r.body.assignment as Record<string, unknown>).id);
+    // Leaving the owner out would dissolve the team: refused, nothing changes.
+    const bad = await as("leadA", "PATCH", `/assignments/${aid}`, { assignees: [ACTORS.empA2.id] });
+    expect([bad.status, String(bad.body.message)]).toEqual([400, expect.stringContaining("owner must stay")]);
+    expect(await teamOf(did)).toEqual([ACTORS.empA1.id, ACTORS.empA2.id].sort());
+
+    expect((await as("leadA", "PATCH", `/assignments/${aid}`,
+      { assignees: [ACTORS.empA1.id, ACTORS.empB1.id, ACTORS.empB1.id] })).status).toBe(200);
+    expect(await teamOf(did)).toEqual([ACTORS.empA1.id, ACTORS.empB1.id].sort());
+    expect(await onCrew(pid, ACTORS.empB1.id)).toBeTruthy();
+    expect((await notes(ACTORS.empB1.id, "deliverable", did)).map((n) => n.title)).toEqual(["New assignment"]);
+    expect((await notes(ACTORS.empA2.id, "deliverable", did)).map((n) => n.title)).toContain("Assignment reassigned");
+    // The owner, who stayed, hears nothing new.
+    expect((await notes(ACTORS.empA1.id, "deliverable", did)).map((n) => n.title))
+      .not.toContain("Assignment reassigned");
+  });
+
+  it("delivering while a version awaits review says so", async () => {
+    const { did } = await ownedBy("empA1");
+    expect((await as("empA1", "POST", `/deliverables/${did}/versions`, drive("p10"))).status).toBe(201);
+    const r = await as("empA1", "POST", `/deliverables/${did}/deliver`, {});
+    expect([r.status, String(r.body.message)]).toEqual([400, expect.stringContaining("awaiting review")]);
+  });
+
+  it("a delivered review-exempt deliverable is dispatched and archived without a version", async () => {
+    if (!exemptType) return;
+    const { did } = await ownedBy("empA1");
+    await pool.query(`UPDATE mo_deliverables SET deliverable_type_id=$1, status='in_progress' WHERE id=$2`, [exemptType, did]);
+    expect((await as("empA1", "POST", `/deliverables/${did}/status`, { status: "delivered" })).status).toBe(200);
+    // Not dispatched yet: archiving says what is missing.
+    const early = await as("coord", "POST", `/deliverables/${did}/archive`, {});
+    expect([early.status, String(early.body.message)]).toEqual([400, expect.stringContaining("not been dispatched")]);
+    expect((await as("leadB", "POST", `/deliverables/${did}/approval`, { approval_status: "approved" })).status).toBe(200);
+    expect((await as("coord", "POST", `/deliverables/${did}/dispatch`, { recipient: "Library" })).status).toBe(200);
+    expect((await as("coord", "POST", `/deliverables/${did}/archive`, {})).status).toBe(200);
+    const again = await as("coord", "POST", `/deliverables/${did}/archive`, {});
+    expect([again.status, again.body.message]).toEqual([400, "This deliverable is already archived."]);
+    expect((await deliv(did)).dispatch_status).toBe("archived");
+  });
+
+  it("a review-exempt deliverable sent back after delivery is not dispatched", async () => {
+    if (!exemptType) return;
+    const { did } = await ownedBy("empA1");
+    await pool.query(`UPDATE mo_deliverables SET deliverable_type_id=$1, status='in_progress' WHERE id=$2`, [exemptType, did]);
+    await as("empA1", "POST", `/deliverables/${did}/status`, { status: "delivered" });
+    expect((await as("leadB", "POST", `/deliverables/${did}/approval`,
+      { approval_status: "changes_requested", note: "Missing the second camera" })).status).toBe(200);
+    expect((await as("coord", "POST", `/deliverables/${did}/dispatch`, { recipient: "Library" })).status).toBe(400);
+    expect((await deliv(did)).dispatch_status).toBe("none");
+  });
+});
