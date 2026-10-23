@@ -114,8 +114,12 @@ async function makePM(pid: number, who: ActorName) {
     `INSERT INTO mo_project_assignments (project_id, user_id, is_project_manager, assigned_by)
      VALUES ($1,$2,false,$3) ON CONFLICT (project_id, user_id) WHERE removed_at IS NULL DO NOTHING`,
     [pid, ACTORS[who].id, ACTORS.admin.id]);
-  await pool.query(`UPDATE mo_project_assignments SET is_project_manager=(user_id=$2)
-                     WHERE project_id=$1 AND removed_at IS NULL`, [pid, ACTORS[who].id]);
+  /* Two statements: the single-PM index is checked row by row, so one UPDATE
+     flipping both rows fails whenever it reaches the new PM first. */
+  await pool.query(`UPDATE mo_project_assignments SET is_project_manager=false
+                     WHERE project_id=$1 AND removed_at IS NULL AND user_id<>$2`, [pid, ACTORS[who].id]);
+  await pool.query(`UPDATE mo_project_assignments SET is_project_manager=true
+                     WHERE project_id=$1 AND removed_at IS NULL AND user_id=$2`, [pid, ACTORS[who].id]);
 }
 
 async function seed() {
