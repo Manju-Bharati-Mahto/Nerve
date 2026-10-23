@@ -8137,11 +8137,15 @@ const followups = ()=>(DB.followups||[]);
 const dOf = v=>{const s=String(v||''), d=s.length>10?D.at(s):null; return d?D.iso(d):s.slice(0,10);};
 /* Every deliverable whose latest version is approved but which has not yet been
    dispatched — the coordinator's primary queue. Derived from the SAME approval
-   the Team Lead recorded; there is no second approval concept. */
+   the Team Lead recorded; there is no second approval concept. A review-exempt
+   type has no version to approve: delivered, it is ready to go out, as the
+   server's /dispatch already allows (older ones were never marked queued). */
 function dispatchQueue(){
-  return DB.deliverables.filter(d=>!d.deleted_at&&['queued','sent'].includes(d.dispatch_status||'none')
-    &&(latestVersion(d.id)||{}).review_status==='approved')
-    .sort((a,b)=>String(a.queued_at||'')<String(b.queued_at||'')?-1:1);
+  const exemptReady=d=>d.status==='delivered'&&!!dtype(d.deliverable_type_id).review_exempt
+    &&['none','queued','sent'].includes(d.dispatch_status||'none');
+  return DB.deliverables.filter(d=>!d.deleted_at&&(exemptReady(d)||(['queued','sent'].includes(d.dispatch_status||'none')
+    &&(latestVersion(d.id)||{}).review_status==='approved')))
+    .sort((a,b)=>String(a.queued_at||a.completed_at||'')<String(b.queued_at||b.completed_at||'')?-1:1);
 }
 const dispatchedToday = ()=>DB.deliverables.filter(d=>dOf(d.dispatched_at)===TODAY);
 const requestsToday   = ()=>reqs().filter(r=>dOf(r.created_at)===TODAY);
@@ -8672,7 +8676,7 @@ function dispatchRow(d){
       <span class="dc-ico">${dtype(d.deliverable_type_id).icon}</span>
       <b class="dc-title" data-drawer="deliverable:${d.id}">${esc(d.title)}</b>
       ${late?`<span class="status st-danger"><span class="si">⚑</span>${waited}d overdue</span>`
-            :statusPill(DISPATCH,d.dispatch_status||'queued')}
+            :statusPill(DISPATCH,d.dispatch_status&&d.dispatch_status!=='none'?d.dispatch_status:'queued')}
     </div>
     <div class="dc-grid">
       ${kv('Project',`<span class="code">${esc(p.code||'—')}</span> ${esc(p.name)}`)}
@@ -19094,6 +19098,7 @@ const NOTIF_KIND={
   approval:{l:'Approval',ic:'check',c:'var(--warn)'}, overdue:{l:'Overdue',ic:'alert',c:'var(--danger)'},
   automation:{l:'Automation',ic:'zap',c:'var(--cat-2)'}, digest:{l:'Weekly digest',ic:'file'},
   deliverable:{l:'Deliverable',ic:'diamond'}, review:{l:'Review',ic:'eye'}, due:{l:'Due soon',ic:'clock'},
+  dispatch:{l:'Ready to dispatch',ic:'send'},
   duplicate:{l:'Possible duplicate',ic:'copy'}, smc_assignment:{l:'SMC assignment',ic:'megaphone'},
   smc_submission:{l:'SMC submission',ic:'upload'}, assignment:{l:'Assignment',ic:'clipboard'},
   project:{l:'Project',ic:'folder'}, request:{l:'Request',ic:'inbox'}, reminder:{l:'Reminder',ic:'bell'},
@@ -19109,6 +19114,9 @@ const notifKind=k=>NOTIF_KIND[k]||{l:auditWords(k)||'Notice',ic:'bell'};
    not re-implemented at each call site. Falls back to the Notifications page
    if the server sent a kind the client has not caught up with. */
 function notifTarget(n){
+  /* "Ready to dispatch" is about the queue, not the one item: it opens where
+     the Coordinator sends it. */
+  if(String(n.kind||'')==='dispatch') return {hash:'#/media/dispatch'};
   const id=n.entity_id!=null?Number(n.entity_id):null;
   /* A deliverable opens in its drawer. One this page has not loaded cannot, so
      the reader goes to its project instead when the notice names one. */
@@ -22760,6 +22768,7 @@ const ACTIONS = {
     const dl=deliv(+d.did);
     if(!canMarkDelivered(dl)){toast(delivMoveRefusal(dl,'delivered'),'bad');return;}
     dl.status='delivered';dl.completed_at=TODAY;dl.approval_status='pending';dl.delivered_by=S.me;
+    if(dtype(dl.deliverable_type_id).review_exempt&&(dl.dispatch_status||'none')==='none'){dl.dispatch_status='queued';dl.queued_at=TODAY;}
     if(dl.quantity_target&&!dl.quantity_delivered)dl.quantity_delivered=dl.quantity_target;
     audit(S.me,'deliverable.delivered','deliverable',dl.id,{status:'approved'},{status:'delivered',completed_at:TODAY});
     drawerDeliverable(dl.id);render();toast('Marked delivered','ok');
@@ -26755,7 +26764,8 @@ function applyDelivStatus(dl,s){
   if(s==='changes_requested'){ACTIONS.requestChanges({did:dl.id});return true;}
   if(s==='approved'){ACTIONS.approveVersion({did:dl.id});return true;}
   const before=dl.status;dl.status=s;
-  if(s==='delivered'){dl.completed_at=TODAY;dl.approval_status='pending';dl.delivered_by=S.me;}
+  if(s==='delivered'){dl.completed_at=TODAY;dl.approval_status='pending';dl.delivered_by=S.me;
+    if(dtype(dl.deliverable_type_id).review_exempt&&(dl.dispatch_status||'none')==='none'){dl.dispatch_status='queued';dl.queued_at=TODAY;}}
   audit(S.me,'deliverable.status_changed','deliverable',dl.id,{status:before},{status:s});
   render();refreshDelivDrawer(dl.id);toast('Status → '+DELIV_STATUS[s].l,'ok');
   moSync(MO_API.post('/deliverables/'+dl.id+'/status',{status:s}),()=>refreshDelivDrawer(dl.id));

@@ -350,6 +350,23 @@ async function isCoordinator(u: CurrentUser): Promise<boolean> {
   return r?.mo_role === "coordinator";
 }
 
+/* WHO IN OPERATIONS HEARS THAT A PROJECT'S WORK IS READY TO GO OUT. The
+   Coordinator who turned the request into this project, else the one who
+   created it, else — a project an Admin or a lead started — every Coordinator.
+   Only active Coordinators count, so a departed one does not swallow it. */
+async function responsibleCoordinatorIds(projectId: number): Promise<string[]> {
+  const coordinators = async (sql: string, params: unknown[]) => (await pool.query(
+    `SELECT DISTINCT c.uid FROM (${sql}) c
+       JOIN users u ON u.id = c.uid AND u.team='media' AND (u.status IS NULL OR u.status='active')
+       JOIN mo_user_profiles pr ON pr.user_id = c.uid AND pr.mo_role='coordinator'`,
+    params)).rows.map((r) => String(r.uid));
+  const converter = await coordinators(`SELECT converted_by AS uid FROM mo_requests WHERE project_id=$1`, [projectId]);
+  if (converter.length) return converter;
+  const creator = await coordinators(`SELECT created_by AS uid FROM mo_projects WHERE id=$1`, [projectId]);
+  if (creator.length) return creator;
+  return coordinators(`SELECT user_id AS uid FROM mo_user_profiles`, []);
+}
+
 /* Has an administrator explicitly granted this user a module?
 
    allowed_modules is NULL for "role based" and an array once an admin has set it
@@ -2105,6 +2122,20 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     return null;
   }
 
+  /* Ready to go out: the item joins the dispatch queue and the Coordinator
+     responsible for its project is told — once, when it joins. Approval queues
+     reviewed work; a review-exempt type is queued when it is delivered. A
+     submitted version tells nobody in Operations; only this does. */
+  async function queueForDispatch(d: Record<string, unknown>) {
+    const q = await pool.query(
+      `UPDATE mo_deliverables SET dispatch_status='queued', queued_at=NOW()
+        WHERE id=$1 AND dispatch_status='none'`, [d.id]);
+    if (!q.rowCount) return;
+    for (const cid of await responsibleCoordinatorIds(Number(d.project_id)))
+      await notifyOnce(cid, "dispatch", `Ready to dispatch: ${d.title}`,
+        "It is waiting in the dispatch queue.", "deliverable", Number(d.id));
+  }
+
   async function reviewDeliverable(u: CurrentUser, d: Record<string, unknown>, outcome: "approved" | "changes_requested",
                                    comment: string, req: express.Request): Promise<{ status: number; message?: string }> {
     const refused = await reviewerRefusal(u, d);
@@ -2124,10 +2155,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       [outcome, u.id, comment, v.id]);
     await pool.query(`UPDATE mo_deliverables SET status=$1, updated_at=NOW() WHERE id=$2`, [outcome, d.id]);
     // Approval is the creative verdict; it also hands the item to Operations.
-    if (outcome === "approved")
-      await pool.query(
-        `UPDATE mo_deliverables SET dispatch_status='queued', queued_at=NOW()
-          WHERE id=$1 AND dispatch_status='none'`, [d.id]);
+    if (outcome === "approved") await queueForDispatch(d);
     // Changes requested on something already queued pulls it back out.
     if (outcome === "changes_requested")
       await pool.query(
@@ -2207,6 +2235,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       quantity_delivered=COALESCE(quantity_delivered, quantity_target) WHERE id=$1`, [id, u.id]);
     await audit(u, "deliverable.delivered", "deliverable", id, { status: d.rows[0].status }, { status: "delivered" }, req);
     await tellSignOffNeeded(u, d.rows[0]);
+    // Dispatch does not wait for the sign-off: exempt work is ready once delivered.
+    if (d.rows[0].review_exempt) await queueForDispatch(d.rows[0]);
     res.json({ ok: true });
   }));
 
@@ -8995,6 +9025,7 @@ async function allocateInternalCode(
       { status: d.status }, { status: to, delivered_by: delivering ? u.id : undefined }, req);
     // Tell the project's reviewer there is something to look at.
     if (delivering) await tellSignOffNeeded(u, d);
+    if (delivering && d.review_exempt) await queueForDispatch(d);
     return { status: 200 };
   }
 
