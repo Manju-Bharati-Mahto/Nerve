@@ -1062,6 +1062,7 @@ maybe("notifications — payload, recipients, no duplicates", () => {
     expect(row, "the Assign work notice, with a numeric entity_id").toBeTruthy();
     expect(typeof row!.id).toBe("number");
     expect(row!.project_name).toBe(String((await project(pid)).name));
+    expect(row!.project_id, "so an unloaded deliverable can still open its project").toBe(Number(pid));
     const unread = Number((await one(
       `SELECT COUNT(*)::int c FROM mo_notifications WHERE user_id=$1 AND NOT is_read`, [ACTORS.empA2.id])).c);
     expect(g.body.unread).toBe(unread);

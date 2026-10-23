@@ -245,13 +245,15 @@ async function notifyOnce(userId: string, kind: string, title: string, body: str
    matches a tapped notice to its row and its target by number, so a string id
    opened nothing. Both are cast here. project_name names the project the notice
    is about (directly, or through its deliverable, shoot or work row) so the
-   bell can say where. The list stays capped at 50; `unread` is the real count,
+   bell can say where; project_id lets a notice whose deliverable the page has
+   not loaded still open that project. The list stays capped at 50; `unread` is the real count,
    which a capped list cannot give once someone has more than 50 waiting. */
 async function notificationFeed(userId: string): Promise<{ notifications: Array<Record<string, unknown>>; unread: number }> {
   const { rows } = await pool.query(
     `SELECT n.id::int AS id, n.user_id, n.kind, n.title, n.body, n.entity_type,
             n.entity_id::int AS entity_id, n.is_read, n.created_at,
-            COALESCE(pp.name, pd.name, ps.name, pa.name) AS project_name
+            COALESCE(pp.name, pd.name, ps.name, pa.name) AS project_name,
+            COALESCE(pp.id, pd.id, ps.id, pa.id)::int AS project_id
        FROM mo_notifications n
        LEFT JOIN mo_projects pp ON n.entity_type = 'project' AND pp.id = n.entity_id
        LEFT JOIN mo_deliverables d ON n.entity_type = 'deliverable' AND d.id = n.entity_id
@@ -8827,7 +8829,7 @@ async function allocateInternalCode(
     const id = parseInt(getSingleParam(req.params.id), 10);
     const b = req.body as Record<string, unknown>;
     // Boards are the Team Leads' and Admins' (FR-14.1), as creating a card is.
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Boards are Admin/Team-Lead only (FR-14.1).");
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or an Admin may move cards.");
     const cur = await pool.query(`SELECT * FROM mo_cards WHERE id=$1`, [id]);
     if (!cur.rows[0]) return sendError(res, 404, "Card not found.");
     /* FR-14.2 two-way sync: moving a linked card to a status-mapped column moves

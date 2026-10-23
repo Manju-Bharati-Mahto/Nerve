@@ -9889,8 +9889,12 @@ function latestVersion(did){
    version's review, or on delivered work sent back at sign-off. */
 function changeRequestLine(d,v){
   const who=uid=>uid?esc((user(uid).full_name||'A reviewer').split(' ')[0]):'A reviewer';
-  if(['changes_requested','in_progress'].includes(d.status)&&['changes_requested','rejected'].includes(d.approval_status))
-    return `<div class="dlv-note">↩ ${who(d.approved_by)} sent it back after delivery${d.approval_note?': '+esc(d.approval_note):''}</div>`;
+  if(['changes_requested','in_progress'].includes(d.status)&&['changes_requested','rejected'].includes(d.approval_status)){
+    /* The server keeps the sign-off note as the latest version's review
+       comment; approval_note is this page's copy until the next load. */
+    const note=d.approval_note||(v&&v.review_status==='changes_requested'?v.review_comment:'');
+    return `<div class="dlv-note">↩ ${who(d.approved_by)} sent it back after delivery${note?': '+esc(note):''}</div>`;
+  }
   if(v&&v.review_status==='changes_requested')
     return `<div class="dlv-note">↩ ${who(v.reviewed_by)} asked for changes to v${v.version_no}${v.review_comment?': '+esc(v.review_comment):''}</div>`;
   return '';

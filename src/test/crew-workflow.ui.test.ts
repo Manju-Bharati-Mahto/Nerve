@@ -865,6 +865,10 @@ describe("Controls — offered exactly what the server allows", () => {
     h.as(902);
     expect(h.ev<boolean>("isDeliveredOutput(deliv(8002))")).toBe(false);
     expect(h.ev<string>("viewMyDay()")).toContain("Lead sent it back after delivery: Wrong logo at the end");
+    /* After a reload the note comes from the version the server sent back. */
+    h.ev(`delete deliv(8002).approval_note;Object.assign(DB.deliverable_versions.find(v=>v.id===88002),
+      {review_status:'changes_requested',review_comment:'Logo from the server',reviewed_by:904});`);
+    expect(h.ev<string>("viewMyDay()")).toContain("Lead sent it back after delivery: Logo from the server");
   });
 
   it("project ⋯: another team's lead runs nothing; the Coordinator edits details and can re-route", async () => {
