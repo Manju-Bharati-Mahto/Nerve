@@ -834,6 +834,8 @@ table.tbl tbody tr:hover{background:var(--surface-2)}
 table.tbl tbody tr.click{cursor:pointer}
 table.tbl tbody tr:last-child td{border-bottom:none}
 table.tbl td.num,table.tbl th.num{text-align:right;font-variant-numeric:tabular-nums}
+/* A row's action buttons wrap inside their cell instead of pushing the table past its card. */
+table.tbl td.pj-acts{min-width:150px}
 /* Equipment catalog: one table, a header row per category, so every column
    keeps the same x from the first category to the last. */
 table.eq-cat tr.eq-grp th{position:static;padding:10px 14px;background:var(--surface-2);color:var(--text);
@@ -2407,7 +2409,8 @@ const D = {
   isWorking:s=>{const w=D.dow(s);return w!==0;},           // Sunday off; Sat is a working day at PU
   fmt:s=>{if(!s)return '—';const d=D.parse(s);return d.getDate()+' '+['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()]+' '+String(d.getFullYear()).slice(2);},
   fmtLong:s=>{if(!s)return '—';const d=D.parse(s);return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]+', '+d.getDate()+' '+['January','February','March','April','May','June','July','August','September','October','November','December'][d.getMonth()]+' '+d.getFullYear();},
-  rel:s=>{const n=D.diff(s,TODAY);if(n===0)return 'today';if(n===1)return 'tomorrow';if(n===-1)return 'yesterday';
+  /* No date has no distance from today: '' rather than "NaNd ago". */
+  rel:s=>{if(!s)return '';const n=D.diff(s,TODAY);if(n===0)return 'today';if(n===1)return 'tomorrow';if(n===-1)return 'yesterday';
     return n>0?'in '+n+'d':Math.abs(n)+'d ago';},
   month:s=>['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][D.parse(s).getMonth()]+" '"+String(D.parse(s).getFullYear()).slice(2),
   /* D.rel() answers in DAYS because it is used for due dates, and D.parse()
@@ -3805,6 +3808,9 @@ function leadsProject(p){
   if(p.team_id==null)return p.owner_id===S.me;
   return activeTeams().some(t=>String(t.id)===String(p.team_id)&&t.lead_user_id===S.me);
 }
+/* Who may take someone off a shoot — mirrors DELETE /shoots/:id/crew/:uid
+   (leadsShootProject): an Admin or the project's own lead. */
+const canEditShootCrew=p=>isAdmin()||leadsProject(p);
 /* Who reviews and approves deliverables, and approves proposed projects —
    mirrors canReviewProject(): an Admin or ANY Team Lead, on any project.
    Nobody approves work they are on; callers add !onDelivTeam(d) and the
@@ -5102,21 +5108,26 @@ function priTag(p){
   return `<span class="pri pri-${p}">${ic(x[0])}${x[1]}</span>`;}
 function money(n){return '₹'+Number(n).toLocaleString('en-IN');}
 
-function toast(msg,kind='',action){
+/* opts.passing marks a notice nobody acts on (the start-up "signed in"
+   line): it is short-lived and goes the moment a dialog or drawer opens, so it
+   never sits over their footer buttons. */
+function toast(msg,kind='',action,opts={}){
   const id='t'+(++S.toastId);
   const ic=kind==='ok'?'✔':kind==='bad'?'✕':kind==='warn'?'⚠':'ⓘ';
   const node=el(`<div class="toast ${kind}" ${kind==='bad'&&isMobileLayout()?'role="alert"':''} id="${id}"><span class="ti">${ic}</span><span>${esc(msg)}</span>${action?`<button data-act="undo">${esc(action.label)}</button>`:''}</div>`);
+  if(opts.passing)node.dataset.passing='1';
   $('#toasts').appendChild(node);
   if(action)node.querySelector('[data-act=undo]').onclick=()=>{action.fn();node.remove();};
-  setTimeout(()=>{node.classList.add('out');setTimeout(()=>node.remove(),220);},action?6000:3400);
+  setTimeout(()=>{node.classList.add('out');setTimeout(()=>node.remove(),220);},action?6000:opts.passing?2000:3400);
 }
+const dropPassingToasts=()=>document.querySelectorAll('#toasts [data-passing]').forEach(n=>n.remove());
 let _modalOv=null;
 function modal(html,opts={}){
   const layer=$('#modal-layer'), mob=isMobileLayout();
   /* A sheet for a short prompt (no text field, or size 'small'); a full-screen
      surface for a form, so the keyboard has room and the footer stays put. */
   const kind = mob ? (opts.mobile || ((opts.size==='small'||!/<input|<textarea/i.test(html)) ? 'sheet' : 'full')) : '';
-  layer.dataset.mkind=kind; layer.dataset.dirty='';
+  layer.dataset.mkind=kind; layer.dataset.dirty=''; dropPassingToasts();
   layer.innerHTML=`<div class="modal ${opts.size||''}" ${mob?'tabindex="-1"':''}>${html}</div>`;
   layer.classList.add('on');
   const box=layer.querySelector('.modal');
@@ -5153,7 +5164,7 @@ function closeModal(){
 let _drawerOv=null;
 function openDrawer(html){
   const dr=$('#drawer');
-  dr.innerHTML=html; dr.classList.add('on'); $('#scrim').classList.add('on');
+  dr.innerHTML=html; dr.classList.add('on'); $('#scrim').classList.add('on'); dropPassingToasts();
   dr.removeAttribute('inert'); dr.removeAttribute('aria-hidden');
   if(isMobileLayout()){
     mInputAttrs(dr);
@@ -9414,7 +9425,8 @@ function pendingApprovalsWidget(){
             [5,6,4,7].includes(d.deliverable_type_id)?'video':[2,1,11].includes(d.deliverable_type_id)?'image':'file')}</span>
             <span class="t-main" style="font-size:13px">${esc(d.title.split('—')[0].trim())} v${v.version_no}</span></div></td>
           <td class="hide-sm small mut">${esc(proj(d.project_id).name)}</td>
-          <td>${avatar(v.submitted_by,'sm')}</td>
+          <td><div class="f ac gap2">${avatar(v.submitted_by,'sm')}<div><div class="small">${esc(personName(v.submitted_by))}</div>
+            ${v.submitted_at?`<div class="t-sub">${esc(D.fmt(v.submitted_at))}</div>`:''}</div></div></td>
           <td><div style="font-size:12.5px;font-weight:600;color:${late?'var(--danger)':soon?'var(--warn)':'var(--text)'}">${D.fmt(d.due_date)}</div>
             <div class="t-sub" style="color:${late?'var(--danger)':soon?'var(--warn)':'var(--text-3)'}">${late?'Overdue':D.rel(d.due_date)}</div></td>
           <td data-stop><button class="btn xs" data-drawer="deliverable:${d.id}">Review</button></td></tr>`;}).join('')
@@ -9759,7 +9771,7 @@ const AUDIT_FIELD={status:'Status',smc_status:'SMC status',approval_status:'Appr
   holder:'Holder',holder_id:'Holder',assignees:'Assigned to',delivered_by:'Delivered by',approved_by:'Approved by',
   random_sample_pct:'Random sample',spec_notes:'Notes',review_comment:'Comment',shoot_date:'Shoot date',
   start_date:'Starts',end_date:'Ends',event_level:'Event level'};
-const AUDIT_PERSON=/^(user_id|owner_id|holder|holder_id|assignees|delivered_by|approved_by|dispatched_by|reviewed_by|assigned_by)$/;
+const AUDIT_PERSON=/^(user_id|owner_id|holder|holder_id|assignees|delivered_by|approved_by|dispatched_by|reviewed_by|assigned_by|lead|new_lead|member|reassigned_to)$/;
 const AUDIT_SKIP=/^(id|kind|ip|user_agent|form_template|due_date_source|due_offset_days)$|_id$|_at$|_uid$/;
 function auditStatusMap(k,et){
   if(k==='smc_status')return SMC_STATUS;
@@ -9858,6 +9870,9 @@ function inSchedule(a,date){
    Uses the REAL current date (rtoday), since scheduling uses real dates rather
    than the prototype's fixed demo TODAY. */
 const DELIV_DONE=['delivered','not_required','cancelled'];
+/* A work row is finished once its deliverable is approved: what is left
+   (delivering, dispatch) is not the crew's day. */
+const WORK_CLOSED=['approved',...DELIV_DONE];
 /* Latest submitted version — the one currently under review, or the approved one. */
 function latestVersion(did){
   return DB.deliverable_versions.filter(v=>v.deliverable_id===did)
@@ -9958,6 +9973,8 @@ function myAssignments(uid=S.me,date,opts={}){
        assignee on its dates. An old drawer row linked to a deliverable is not
        work anyone was given — it stays out, as it always has. */
     &&(!a.deliverable_id||isTeamRow(a,deliv(a.deliverable_id)))
+    /* Work whose deliverable is approved or closed has nothing left to do today. */
+    &&!(a.deliverable_id&&WORK_CLOSED.includes((deliv(a.deliverable_id)||{}).status))
     &&inSchedule(a,date)
     /* an ad-hoc task counts as logged once its project has a log entry today */
     &&!(a.project_id&&logged.projects.has(a.project_id))
@@ -9966,7 +9983,7 @@ function myAssignments(uid=S.me,date,opts={}){
      second time because it is also scheduled for today. */
   const viaWork=new Set(tasks.map(a=>a.deliverable_id).filter(Boolean));
   const delivs=scheduledDeliverables(uid,date)
-    .filter(d=>!logged.delivs.has(d.id)&&!viaWork.has(d.id))
+    .filter(d=>!logged.delivs.has(d.id)&&!viaWork.has(d.id)&&!WORK_CLOSED.includes(d.status))
     .map(d=>({
       id:'d'+d.id, deliverable_id:d.id, project_id:d.project_id, title:d.title,
       priority:d.priority||'normal', status:d.status==='not_started'?'not_started':'in_progress',
@@ -10024,13 +10041,17 @@ function assignmentCard(a){
   const p=proj(a.project_id), b=workBadge(a);
   const tpl=a._deliverable?null:workTemplateFor(wtype(a.work_type_id));
   const st=ASSIGN_STATUS[a.status]||ASSIGN_STATUS.not_started;
+  /* ONE status per piece of work: work on a deliverable shows the deliverable's
+     status and has no select of its own — it moves by submitting a version and
+     by review, in the deliverable's drawer. */
+  const dl=a.deliverable_id&&!a._shoot?deliv(a.deliverable_id):null;
   const time=a.start_time?esc(a.start_time)+(a.end_time?'–'+esc(a.end_time):''):'';
   return `<div class="asg">
     <div class="asg-top">
       <span class="pri-dot" style="background:${PRI_COLOR[a.priority]||'var(--info)'}" title="${esc(a.priority||'normal')} priority"></span>
       <span class="chip wt-badge">${esc(b.icon)} ${esc(b.label)}</span>
       <b class="asg-title">${esc(a.title)}</b>
-      <span class="status ${st.c}"><span class="si">${sIco(st)}</span>${st.l}</span>
+      ${dl?statusPill(DELIV_STATUS,dl.status):`<span class="status ${st.c}"><span class="si">${sIco(st)}</span>${st.l}</span>`}
     </div>
     <div class="asg-meta">
       <span><span class="code">${esc(p.code||'')}</span> ${esc(p.name)}</span>
@@ -10048,7 +10069,7 @@ function assignmentCard(a){
       <button class="btn xs" title="Log work on this: project${a.deliverable_id?' & deliverable':''} pre-filled"
         onclick="ACTIONS.logWork({pid:${a.project_id},did:${a.deliverable_id||0}})">✎ Log</button>
       ${a._deliverable||a.deliverable_id?`<button class="btn xs" data-drawer="deliverable:${a.deliverable_id}">Open</button>`:''}
-      ${tpl&&tpl.actions?tpl.actions(a):''}
+      ${tpl&&tpl.actions&&!dl?tpl.actions(a):''}
     </div>
   </div>`;
 }
@@ -10106,7 +10127,9 @@ function viewMyDay(){
   const myDelivered=mineDeliv.filter(isDeliveredOutput)
     .sort((a,b)=>String(b.completed_at||'')<String(a.completed_at||'')?-1:1);
   const expects=expectsReport(S.me,TODAY);
-  const myProjects=userProjects(S.me);
+  /* Newest first (ids are issued in creation order): the project someone was
+     just put on is the one they are looking for. */
+  const myProjects=userProjects(S.me).slice().sort((a,b)=>b.id-a.id);
   const prog=dayProgress(S.me);
   const mins=tasks.reduce((s,t)=>s+t.minutes,0);
   const submitted=r&&['submitted','approved','flagged','auto_approved'].includes(r.status);
@@ -10237,7 +10260,7 @@ function viewMyDay(){
         <span class="lr-main"><b>${esc(p.name)}</b><span><span class="code">${p.code}</span> · ${esc(ptype(p.project_type_id).name)}</span></span>
         ${statusPill(PROJ_STATUS,p.status)}
       </button>`).join(''):`<div class="empty" style="padding:20px"><p>No projects assigned to you yet.</p></div>`}
-    </div></div>`;
+    </div>${myProjects.length>6?`<button class="card-link" data-act="myProjectsAll">See all ${plural(myProjects.length,'project')} ${ic('right')}</button>`:''}</div>`;
 
   const cGear=`<div class="card">
     <div class="card-head"><h3>Equipment I hold</h3>
@@ -10660,7 +10683,7 @@ function viewProjects(){
         <button class="btn sm" data-menu="filterStatus">Status${f.status.length?` · ${f.status.length}`:''} ▾</button>
         <button class="btn sm" data-menu="filterUnit">Academic unit${f.unit.length?` · ${f.unit.length}`:''} ▾</button>
         <button class="btn sm" data-menu="filterPriority">Priority${f.priority.length?` · ${f.priority.length}`:''} ▾</button>
-        <button class="btn sm" data-menu="filterYear">${esc(ayear(f.year))} ▾</button>
+        <button class="btn sm" data-menu="filterYear">${f.year?esc(ayear(f.year)):'All years'} ▾</button>
         <button class="btn sm ${f.mine?'primary':''}" data-act="projMine">${isTL()?'My team':'Only mine'}</button>
         ${(f.type.length||f.status.length||f.unit.length||f.priority.length||f.q||f.mine)?`<button class="btn sm ghost" data-act="projClear">Clear</button>`:''}
         <span class="ml-auto f gap2 ac">
@@ -11225,7 +11248,9 @@ function projOverview(p,dls,crew,shoots,pr){
               :'<span class="small mut3">No deliverables</span>';})()}</td>
             <td class="num" data-m="hide">${((perPerson[a.user_id]||0)/60).toFixed(1)}h</td>
             <td class="num" data-m="aside">${statusPill(PRESENCE_MAP(),presence(a.user_id))}
-              ${((isAdmin()||leadsProject(p))&&!a.is_project_manager)?`<span class="icon-btn" role="button" title="Remove from project" style="color:var(--danger)"
+              ${/* only a crew row has a project assignment to remove; someone here only
+                   through a deliverable would be "removed" and still listed */
+                (a.on_crew&&(isAdmin()||leadsProject(p))&&!a.is_project_manager)?`<span class="icon-btn" role="button" title="Remove from project" style="color:var(--danger)"
                 onclick="event.stopPropagation();event.preventDefault();ACTIONS.removeAssignment({pid:${p.id},uid:${a.user_id}})">${ic('trash')}</span>`:''}</td></tr>`).join('')}
           </tbody></table></div></div></div>
     </div>
@@ -11250,12 +11275,10 @@ function projOverview(p,dls,crew,shoots,pr){
 
       <div class="card"><div class="card-head"><h3>Latest activity</h3></div>
         <div class="card-body"><div class="tl">
-          ${DB.audit_logs.filter(a=>(a.entity_type==='project'&&a.entity_id===p.id)).slice(0,5).map(a=>`
-            <div class="tl-item"><span class="tl-dot tone-brand"></span>
-              <div class="tl-head">${avatar(a.actor_id,'xs')}<b>${esc(user(a.actor_id).full_name.split(' ')[0])}</b>
-                <span class="mut">${auditLine(a)}</span></div>
-              <div class="tl-body">${esc(D.fmtAt(a.occurred_at))}</div></div>`).join('')
-            ||'<div class="small mut3">No recorded changes yet.</div>'}
+          ${(()=>{const rows=projActivityRows(p);
+            return !rows?'<div class="small mut3">Loading activity…</div>'
+              :rows.slice(0,5).map(r=>auditTlItem(r.a,r.who,r.face)).join('')
+              ||'<div class="small mut3">No recorded changes yet.</div>';})()}
         </div></div></div>
     </div></div>`;
 }
@@ -11269,7 +11292,7 @@ function PRESENCE_MAP(){return {present:{l:'Present',c:'st-success',i:'●',ico:
    from designation, team, capacity role, owner or creator. */
 function projectPeople(pid,dls,crew){
   const byId=new Map();
-  (crew||[]).forEach(a=>byId.set(a.user_id,{...a,is_smc:false,deliverables:[]}));
+  (crew||[]).forEach(a=>byId.set(a.user_id,{...a,is_smc:false,on_crew:true,deliverables:[]}));
   (dls||[]).forEach(d=>delivAssignees(d.id).forEach(a=>{
     if(!byId.has(a.uid))
       byId.set(a.uid,{user_id:a.uid,capacity_role_id:null,is_project_manager:false,
@@ -11328,16 +11351,17 @@ function projDeliverablesTab(p,dls){
         ${canAssignWorkOn(p)?`<button class="btn xs primary" data-act="assignWork" data-pid="${p.id}"
           title="Deliverables are created by assigning the work that produces them">＋ Assign work</button>`:""}</div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl m-cards pj-cards">
-      <thead><tr><th>Type</th><th>Title</th><th>Owner</th><th>Scheduled</th><th>Due</th><th>Qty</th><th>Versions</th>
+      <thead><tr><th>Deliverable</th><th>Owner</th><th>Scheduled</th><th>Due</th><th>Qty</th><th>Versions</th>
         <th>Status</th><th class="num">Actions</th></tr></thead>
       <tbody>${dls.map(d=>{
         const vs=DB.deliverable_versions.filter(v=>v.deliverable_id===d.id);
         const latest=vs.sort((a,b)=>b.version_no-a.version_no)[0];
         const over=d.due_date&&d.due_date<TODAY&&!['delivered','not_required','cancelled'].includes(d.status);
         return `<tr class="click" data-drawer="deliverable:${d.id}">
-          <td data-m="hide"><span title="${esc(dtype(d.deliverable_type_id).name)}" style="font-size:15px">${dtype(d.deliverable_type_id).icon}</span>
-            <span class="small">${esc(dtype(d.deliverable_type_id).name)}</span></td>
-          <td class="t-main" data-m="title">${esc(d.title)}</td>
+          <td data-m="title"><div class="f ac gap2"><span title="${esc(dtype(d.deliverable_type_id).name)}" style="font-size:15px">${dtype(d.deliverable_type_id).icon}</span>
+            <div><div class="t-main">${esc(d.title)}</div>${/* the type, only when the title does not already say it */
+              String(d.title).trim().replace(/\s*\(\d+\)$/,'')!==dtype(d.deliverable_type_id).name
+              ?`<div class="t-sub">${esc(dtype(d.deliverable_type_id).name)}</div>`:''}</div></div></td>
           <td class="m-only" data-m="meta">${esc(dtype(d.deliverable_type_id).name)}${d.owner_id?' · '+esc(user(d.owner_id).full_name.split(' ')[0]):''}${d.due_date&&!canEditDueDates(p)?` · <span style="${over?'color:var(--danger);font-weight:700':''}">due ${D.fmt(d.due_date)}</span>`:''}${d.quantity_target?` · ${d.quantity_delivered||0}/${d.quantity_target} ${esc(d.unit||'')}`:''}${vs.length?` · v${latest.version_no}`:''}</td>
           <td data-stop data-m="${d.owner_id?'hide':'actions'}">${delivOwnerCell(p,d)}</td>
           <td class="small" data-m="hide">${d.scheduled_date
@@ -11355,7 +11379,7 @@ function projDeliverablesTab(p,dls){
           <td data-m="aside">${statusPill(DELIV_STATUS,d.status)}
             ${d.status==='delivered'?(()=>{const ap=DELIV_APPROVAL[d.approval_status||'pending']||DELIV_APPROVAL.pending;
               return `<div class="t-sub"><span class="status ${ap.c}" style="font-size:10px"><span class="si">${sIco(ap)}</span>${ap.l}</span></div>`;})():''}</td>
-          <td class="num nowrap" data-stop data-m="actions">
+          <td class="num pj-acts" data-stop data-m="actions">
             ${canSignOff(d)?
               `<button class="btn xs primary" data-act="reviewDelivered" data-did="${d.id}" data-v="approved">✔ Approve</button>
                <button class="btn xs" data-act="reviewDelivered" data-did="${d.id}" data-v="changes_requested">↩ Revise</button>`:''}
@@ -11446,33 +11470,36 @@ function projFilesTab(p){
     <div class="card-foot">Roadmap H1: Drive folder auto-provisioning per project using <span class="mono">drive.file</span> scope. The platform never gets blanket content access.</div>
   </div>`;
 }
-function projActivityTab(p){
-  /* FR-3.5 — the activity feed comes from the SERVER's append-only audit trail
-     (per-object subset, FR-13.3), not the session-local log. */
+/* A project's activity, newest first — ONE source for the Activity tab and the
+   Overview's "Latest activity", so the two never disagree. FR-3.5: live, it is
+   the SERVER's append-only audit trail (per-object subset, FR-13.3), not the
+   session-local log. null while that answer is on its way. */
+function projActivityRows(p){
   if(window.__MO_LIVE__){
-    if(!S._projAct||S._projAct.pid!==p.id){
-      S._projAct={pid:p.id,rows:null};
-      MO_API.get('/projects/'+p.id+'/activity').then(r=>{S._projAct={pid:p.id,rows:r.activity};render();}).catch(()=>{});
-      return `<div class="card"><div class="card-body"><div class="empty" style="padding:32px"><p>Loading activity…</p></div></div></div>`;
+    if(!S._projAct||S._projAct.pid!==p.id||S._projAct.stale){
+      const keep=S._projAct&&S._projAct.pid===p.id?S._projAct.rows:null;
+      S._projAct={pid:p.id,rows:keep};
+      MO_API.get('/projects/'+p.id+'/activity').then(r=>{S._projAct={pid:p.id,rows:r.activity||[]};render();}).catch(()=>{});
     }
-    const rows=S._projAct.rows||[];
-    return `<div class="card"><div class="card-head"><h3>Activity</h3>
-        </div>
-      <div class="card-body"><div class="tl">
-        ${rows.map(a=>{const who=a.actor||'System', u=DB.users.find(x=>x.full_name===who);
-          return auditTlItem(a,who,u?avatar(u.id,'xs'):'');}).join('')||'<div class="small mut3">No recorded changes yet. Actions on this project and its deliverables will appear here.</div>'}
-      </div></div></div>`;
+    if(!S._projAct.rows) return null;
+    return S._projAct.rows.map(a=>{const who=a.actor||'System', u=DB.users.find(x=>x.full_name===who);
+      return {a,who,face:u?avatar(u.id,'xs'):''};});
   }
   const acts=DB.audit_logs.filter(a=>(a.entity_type==='project'&&a.entity_id===p.id));
   const dlIds=projectDeliverables(p.id).map(d=>d.id);
   const more=DB.audit_logs.filter(a=>a.entity_type==='deliverable_version'&&
     dlIds.includes((DB.deliverable_versions.find(v=>v.id===a.entity_id)||{}).deliverable_id));
-  const all=[...acts,...more].sort((a,b)=>a.occurred_at<b.occurred_at?1:-1);
+  return [...acts,...more].sort((a,b)=>a.occurred_at<b.occurred_at?1:-1)
+    .map(a=>({a,who:user(a.actor_id).full_name,face:avatar(a.actor_id,'xs')}));
+}
+function projActivityTab(p){
+  const rows=projActivityRows(p);
+  if(!rows) return `<div class="card"><div class="card-body"><div class="empty" style="padding:32px"><p>Loading activity…</p></div></div></div>`;
   return `<div class="card"><div class="card-head"><h3>Activity</h3>
       </div>
     <div class="card-body"><div class="tl">
-      ${all.map(a=>auditTlItem(a,user(a.actor_id).full_name,avatar(a.actor_id,'xs'))).join('')
-      ||'<div class="small mut3">No recorded changes.</div>'}
+      ${rows.map(r=>auditTlItem(r.a,r.who,r.face)).join('')
+      ||'<div class="small mut3">No recorded changes yet. Actions on this project and its deliverables will appear here.</div>'}
     </div></div></div>`;
 }
 function projCommentsTab(p){
@@ -11495,11 +11522,17 @@ function projCommentsTab(p){
 /* ==========================================================================
    MODULE 4 — PRODUCTION PIPELINE BOARD (§7.4 FR-4.6, wireframe W6)
    ========================================================================== */
+/* The deliverables this person's board holds before any filter. §16: "View
+   pipeline board — Employee: OWN ITEMS" — on its team, or PM of the parent. */
+function pipeScope(){
+  const ds=DB.deliverables.filter(d=>!d.deleted_at);
+  if(!isEmp()) return ds;
+  const mine=teamDelivIds(S.me);
+  return ds.filter(d=>mine.has(d.id)||isPMof(d.project_id));
+}
 function viewPipeline(){
   const f=S.filters.pipe||(S.filters.pipe={type:[],owner:[],unit:[],ptype:[],q:''});
-  let ds=DB.deliverables.filter(d=>!d.deleted_at);
-  /* §16: "View pipeline board — Employee: OWN ITEMS" — owner or PM of the parent. */
-  if(isEmp()){const mine=teamDelivIds(S.me);ds=ds.filter(d=>mine.has(d.id)||isPMof(d.project_id));}
+  let ds=pipeScope();
   if(f.q){const q=f.q.toLowerCase();ds=ds.filter(d=>(d.title+' '+proj(d.project_id).name).toLowerCase().includes(q));}
   if(f.type.length)ds=ds.filter(d=>f.type.includes(d.deliverable_type_id));
   if(f.owner.length)ds=ds.filter(d=>f.owner.includes(d.owner_id));
@@ -20385,8 +20418,10 @@ function drawerDeliverable(id){
       <button class="icon-btn" onclick="closeDrawer()">✕</button></div>
     <div class="dr-body">
       <dl class="kv mb4">
-        <dt>Owner</dt><dd class="f ac gap2">${avatar(d.owner_id,'xs')} ${esc(user(d.owner_id).full_name)}</dd>
-        <dt>Due date</dt><dd style="${over?'color:var(--danger);font-weight:700':''}">${D.fmt(d.due_date)} <span class="mut3 small">(${D.rel(d.due_date)})</span></dd>
+        <dt>Owner</dt><dd class="f ac gap2">${d.owner_id!=null?`${avatar(d.owner_id,'xs')} ${esc(user(d.owner_id).full_name)}`
+          :'<span class="mut3">No owner yet</span>'}</dd>
+        <dt>Due date</dt><dd style="${over?'color:var(--danger);font-weight:700':''}">${d.due_date
+          ?`${D.fmt(d.due_date)} <span class="mut3 small">(${D.rel(d.due_date)})</span>`:'<span class="mut3">No due date</span>'}</dd>
         ${d.completed_at?`<dt>Completed</dt><dd>${D.fmt(d.completed_at)}</dd>`:''}
         ${d.quantity_target?`<dt>Quantity</dt><dd>${d.quantity_delivered||0} / ${d.quantity_target} ${esc(d.unit||'')}
           ${bar(Math.round((d.quantity_delivered||0)/d.quantity_target*100))}</dd>`:''}
@@ -20497,14 +20532,16 @@ function drawerShoot(id){
         return `<div class="list-row" style="cursor:default">${avatarP(c.user_id,'sm')}
           <span class="lr-main"><b>${esc(caprole(c.capacity_role_id))}</b><span>${esc(user(c.user_id).designation)}</span></span>
           ${conflict?'<span class="status st-danger"><span class="si">⚠</span>On leave</span>':
-            '<span class="status st-success"><span class="si">✓</span>Available</span>'}</div>`;}).join('')}</div>
+            '<span class="status st-success"><span class="si">✓</span>Available</span>'}
+          ${canEditShootCrew(p)?`<button class="icon-btn" title="Take ${esc(user(c.user_id).full_name)} off this shoot" style="color:var(--danger)"
+            data-act="removeShootCrew" data-sid="${s.id}" data-uid="${c.user_id}">${ic('trash')}</button>`:''}</div>`;}).join('')}</div>
       <div class="sec-head"><span class="sec-title">Equipment booked</span></div>
       <div class="mb4">${bk.map(b=>
         `<div class="list-row" style="cursor:default"><span>${ecat(b.category_id).icon}</span>
           <span class="lr-main"><b>${esc((b.make||'')+' '+(b.model||''))}</b><span class="code">${esc(b.asset_tag)}</span></span>
           <span class="chip">${esc(b.status)}</span></div>`).join('')||
         '<div class="empty" style="padding:18px"><p>No equipment booked for this shoot.</p></div>'}</div>
-      <div class="note">AUTO-10 sends the crew a reminder 24h before with call time, location and the kit list;
+      <div class="note">The crew gets a reminder 24h before with call time, location and the kit list;
         unfilled crew slots alert the Team Lead.</div>
     </div>
     <div class="dr-foot">
@@ -22247,6 +22284,9 @@ const ACTIONS = {
     S._pq=setTimeout(()=>{const pos=n.selectionStart;render();const i=document.querySelector('[data-act=projQ]');
       if(i){i.focus();i.setSelectionRange(pos,pos);}},260);},
   projMine:()=>{projectFilters().mine=!projectFilters().mine;render();},
+  /* My Day's "See all": the Projects page, narrowed to mine. */
+  myProjectsAll:()=>{Object.assign(projectFilters(),{q:'',type:[],status:[],unit:[],priority:[],owner:[],year:null,mine:true});
+    if(location.hash==='#/media/projects')render();else location.hash='#/media/projects';},
   projClear:()=>{S.filters.proj={q:'',type:[],status:[],unit:[],priority:[],owner:[],year:3,mine:false};render();},
   projSort:(d)=>{const s=S.sort.projects||{k:'end_date',d:1};
     S.sort.projects=s.k===d.k?{k:d.k,d:-s.d}:{k:d.k,d:1};render();},
@@ -22587,7 +22627,14 @@ const ACTIONS = {
     moSync(MO_API.del('/projects/'+d.pid+'/assignments/'+ruid(+d.uid)), ()=>{render();toast('Removed from project','ok');});
   },
   removeShootCrew:(d)=>{
-    moSync(MO_API.del('/shoots/'+d.sid+'/crew/'+ruid(+d.uid)), ()=>{render();toast('Removed from shoot','ok');});
+    const sid=+d.sid, uid=uidOf(d.uid);
+    if(!confirm('Take '+user(uid).full_name+' off this shoot?'))return;
+    DB.shoot_crew=DB.shoot_crew.filter(c=>!(c.shoot_id===sid&&String(c.user_id)===String(uid)));
+    if($('#drawer').classList.contains('on'))drawerShoot(sid);
+    render();
+    moSync(MO_API.del('/shoots/'+sid+'/crew/'+ruid(uid)), ()=>{
+      if($('#drawer').classList.contains('on'))drawerShoot(sid);
+      toast('Taken off the shoot','ok');});
   },
   /* Team Lead allocates a deliverable to one of their people. Goes through the
      ordinary deliverable PATCH, which re-runs the same team scoping server-side
@@ -23952,7 +23999,7 @@ const ACTIONS = {
     const id=Math.max(...DB.leave_requests.map(l=>l.id))+1;
     DB.leave_requests.push({id,user_id:S.me,...payload,status:'pending',decided_by:null,decided_at:null,decision_note:''});
     audit(S.me,'leave.requested','leave_request',id,null,{from,to});
-    closeModal();render();toast('Request submitted. AUTO-4 reminds your approver at 24h.','ok');
+    closeModal();render();toast('Request submitted. Your approver is reminded if it waits more than a day.','ok');
     moSync(MO_API.post('/leave',{...payload,replacement_user_id:payload.replacement_user_id?ruid(+payload.replacement_user_id):null}));
   },
   cancelLeave:(d)=>{
@@ -23996,7 +24043,7 @@ const ACTIONS = {
     render();
     moSync(MO_API.post('/leave/'+d.lid+'/decision',{decision:d.v,note:l.decision_note||''}));
     toast(d.v==='approved'?
-      'Approved.'+(shoots.length?' AUTO-12 created a replacement-suggestion task for '+shoots.length+' shoot(s).':''):
+      'Approved.'+(shoots.length?' A task to find a replacement was created for '+plural(shoots.length,'shoot')+'.':''):
       'Rejected. The requester is notified with your note.', d.v==='approved'?'ok':'warn');
   },
   assignReplacement:(d)=>{
@@ -26547,8 +26594,9 @@ const MENUS = {
     fn:()=>{const f=projectFilters();const i=f.unit.indexOf(x.id);i>=0?f.unit.splice(i,1):f.unit.push(x.id);render();}})),
   filterPriority:()=>['urgent','high','normal','low'].map(p=>({label:p,on:projectFilters().priority.includes(p),
     fn:()=>{const f=projectFilters();const i=f.priority.indexOf(p);i>=0?f.priority.splice(i,1):f.priority.push(p);render();}})),
-  filterYear:()=>DB.academic_years.map(a=>({label:a.label,on:projectFilters().year===a.id,
-    fn:()=>{projectFilters().year=a.id;render();}})),
+  filterYear:()=>[{label:'All years',on:!projectFilters().year,fn:()=>{projectFilters().year=null;render();}},
+    ...DB.academic_years.map(a=>({label:a.label,on:projectFilters().year===a.id,
+    fn:()=>{projectFilters().year=a.id;render();}}))],
   columnConfig:()=>['Project','Code','Type','Academic Unit','Status','Priority','Progress','Owner','Start','End']
     .map(c=>({label:c,on:true,fn:()=>toast('Column config persists per saved view','ok')})),
   projStatus:(d)=>{
@@ -26619,8 +26667,13 @@ const MENUS = {
   },
   pipeType:()=>DB.deliverable_types.map(t=>({label:t.name,icon:t.icon,on:S.filters.pipe.type.includes(t.id),
     fn:()=>{const f=S.filters.pipe;const i=f.type.indexOf(t.id);i>=0?f.type.splice(i,1):f.type.push(t.id);render();}})),
-  pipeOwner:()=>DB.users.filter(u=>u.is_active).map(u=>({label:u.full_name,on:S.filters.pipe.owner.includes(u.id),
-    fn:()=>{const f=S.filters.pipe;const i=f.owner.indexOf(u.id);i>=0?f.owner.splice(i,1):f.owner.push(u.id);render();}})),
+  /* Only people who own something on this board (and anyone already ticked,
+     so they can be unticked): picking anyone else could only empty it. */
+  pipeOwner:()=>{const f0=S.filters.pipe||(S.filters.pipe={type:[],owner:[],unit:[],ptype:[],q:''});
+    const on=new Set([...pipeScope().map(d=>d.owner_id),...f0.owner]);
+    return DB.users.filter(u=>on.has(u.id))
+      .sort((a,b)=>String(a.full_name).localeCompare(String(b.full_name))).map(u=>({label:u.full_name,on:S.filters.pipe.owner.includes(u.id),
+    fn:()=>{const f=S.filters.pipe;const i=f.owner.indexOf(u.id);i>=0?f.owner.splice(i,1):f.owner.push(u.id);render();}}));},
   pipeUnit:()=>activeUnits().map(x=>({label:x.name,on:S.filters.pipe.unit.includes(x.id),
     fn:()=>{const f=S.filters.pipe;const i=f.unit.indexOf(x.id);i>=0?f.unit.splice(i,1):f.unit.push(x.id);render();}})),
   pipePtype:()=>DB.project_types.map(t=>({label:t.name,icon:t.icon,on:S.filters.pipe.ptype.includes(t.id),
@@ -27780,7 +27833,6 @@ function delivAssignSection(did){
   return `<div data-dasg="${did}">
     <div class="sec-head"><span class="sec-title">Assignment</span></div>
     <dl class="kv mb3">
-      <dt>Owner</dt><dd>${line(a.crew&&a.crew.full_name, a.crew&&a.crew.designation)}</dd>
       ${(a.team||[]).length?`<dt>Working with</dt><dd>${(a.team||[]).map(t=>line(t.full_name,t.designation)).join('')}</dd>`:''}
       <dt>SMC member</dt><dd>${line(a.smc&&a.smc.full_name, a.smc&&a.smc.institute)}</dd>
     </dl>
@@ -27907,7 +27959,9 @@ async function hydrateFromServer(){
   // Notifications are now server-persisted (written by the automation engine) and
   // arrive via /state; only synthesize client-side if the server didn't send any.
   DB.audit_logs=[]; DB.activity=[];
-  S._recentAct=null; S._projAct=null;   // re-fetch scoped activity feeds after writes
+  /* re-fetch scoped activity feeds after writes; a project's feed keeps
+     showing what it has meanwhile, so its Overview does not blink to "Loading". */
+  S._recentAct=null; if(S._projAct) S._projAct.stale=true;
   if(!Array.isArray(st.notifications)) genNotifications();
   window.__MO_LIVE__=true;
   return {projects:(st.projects||[]).length, reports:(st.daily_reports||[]).length};
@@ -28135,10 +28189,10 @@ function moOfflineCard(){
     /* A creator IS live and IS signed in — they simply have no Media Ops
        project to count. Telling them to sign in would be both wrong and
        alarming. */
-    if(creatorShell) return toast(`Creator Network · signed in as ${me().full_name}.`,'ok');
+    if(creatorShell) return toast(`Creator Network · signed in as ${me().full_name}.`,'ok',null,{passing:true});
     toast(live
       ? `Live · ${live.projects} projects and ${live.reports} daily reports from the server. Signed in as ${me().full_name}.`
-      : 'Running on seed data. Sign in to Nerve to load live data.', live?'ok':'warn');
+      : 'Running on seed data. Sign in to Nerve to load live data.', live?'ok':'warn', null, live?{passing:true}:{});
   },700);
   moCheckUpdate();
 })();

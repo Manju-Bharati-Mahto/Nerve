@@ -957,3 +957,153 @@ describe("Controls — offered exactly what the server allows", () => {
     expect(all).toBeGreaterThanOrEqual(ids.length);
   });
 });
+
+describe("My Day, the drawer, lists and crew — one answer per question", () => {
+  const WORK = `DB.assignments.push({id:77101,project_id:7001,work_type_id:DB.work_types[0].id,deliverable_id:8002,
+    title:'Edit the aftermovie',assigned_by:901,priority:'normal',status:'not_started',start_date:TODAY,due_date:TODAY,
+    assignees:[902,903]}); deliv(8002).status='in_review';`;
+
+  it("work on a deliverable shows the deliverable's status, with no second status select", async () => {
+    const h = await boot(902);
+    h.ev(WORK);
+    const card = h.ev<string>("assignmentCard(myAssignments(902).find(a=>a.id===77101))");
+    expect(card).toContain("In Review");
+    expect(card).not.toContain("asg-sel");
+    expect(card).not.toContain("Not started");
+  });
+
+  it("Today's assignments drops work whose deliverable is approved, delivered, not required or cancelled", async () => {
+    const h = await boot(902);
+    h.ev(WORK);
+    for (const st of ["approved", "delivered", "not_required", "cancelled"]) {
+      h.ev(`deliv(8002).status='${st}'`);
+      expect(h.ev<unknown[]>("myAssignments(902).map(a=>a.id)"), st).not.toContain(77101);
+    }
+    h.ev("deliv(8002).status='changes_requested'");
+    expect(h.ev<unknown[]>("myAssignments(902).map(a=>a.id)")).toContain(77101);
+    // A deliverable scheduled for today and already approved is not today's work either.
+    h.ev("deliv(8001).status='approved'");
+    expect(h.ev<unknown[]>("myAssignments(902).map(a=>a.id)")).not.toContain("d8001");
+  });
+
+  it("the drawer says 'No due date' and 'No owner yet', never NaN, and names the owner once", async () => {
+    const h = await boot(901);
+    h.ev("deliv(8003).due_date=null; DASG.byDeliv[8003]={crew:null,team:[],smc:null}; drawerDeliverable(8003)");
+    const dr = h.doc.querySelector("#drawer")!;
+    expect(dr.textContent).toContain("No due date");
+    expect(dr.textContent).not.toContain("NaN");
+    expect(dr.textContent).toContain("No owner yet");
+    expect(dr.innerHTML.match(/<dt>Owner<\/dt>/g)).toHaveLength(1);
+    expect(h.ev<string>("D.rel(null)")).toBe("");
+    h.ev("DASG.byDeliv[8002]={crew:{user_id:'zcw-902',full_name:'Emp Anika'},team:[],smc:null}; drawerDeliverable(8002)");
+    expect(dr.innerHTML.match(/<dt>Owner<\/dt>/g)).toHaveLength(1);
+    expect(dr.textContent).toContain("Emp Anika");
+  });
+
+  it("no toast carries an internal rule code", () => {
+    const toasts = HTML.split("\n").filter((l) => /toast\(/.test(l));
+    expect(toasts.filter((l) => /\b(AUTO|BR|FR)-\d/.test(l))).toEqual([]);
+  });
+
+  it("My projects lists the newest first and links to all of them", async () => {
+    const h = await boot(902);
+    h.ev(`for(let i=0;i<7;i++){DB.projects.push({id:7100+i,name:'Proj '+i,code:'MC-'+(7100+i),team_id:9001,owner_id:901,
+      project_type_id:DB.project_types[0].id,status:'in_production',priority:'normal',academic_year_id:2,deleted_at:null,tags:[]});
+      DB.project_assignments.push({id:99100+i,project_id:7100+i,user_id:902,is_project_manager:false,removed_at:null});}`);
+    const page = h.ev<string>("viewMyDay()");
+    expect(page.indexOf("MC-7106")).toBeGreaterThan(-1);
+    expect(page.indexOf("MC-7106")).toBeLessThan(page.indexOf("MC-7105"));
+    expect(page).not.toContain("MC-7100<");
+    expect(page).toContain('data-act="myProjectsAll"');
+    h.ev("ACTIONS.myProjectsAll()");
+    expect(h.ev<boolean>("projectFilters().mine")).toBe(true);
+    // Every year: a project from another academic year is still one of mine.
+    expect(h.ev<number[]>("filteredProjects().map(p=>p.id)")).toEqual(expect.arrayContaining([7100, 7106]));
+  });
+
+  it("the start-up notice is short-lived and leaves when a dialog or drawer opens", async () => {
+    const h = await boot(902);
+    h.ev("document.querySelector('#toasts').innerHTML=''");
+    h.ev("toast('Signed in','ok',null,{passing:true}); toast('Saved','ok')");
+    expect(h.doc.querySelectorAll("#toasts .toast")).toHaveLength(2);
+    h.ev("modal('<div class=\"mo-head\"><h2>x</h2></div><div class=\"mo-foot\"><button class=\"btn\">Cancel</button></div>')");
+    const left = [...h.doc.querySelectorAll("#toasts .toast")].map((n) => n.textContent);
+    expect(left.join(" ")).toContain("Saved");
+    expect(left.join(" ")).not.toContain("Signed in");
+    h.ev("closeModal(); toast('Signed in','ok',null,{passing:true}); drawerDeliverable(8001)");
+    expect(h.doc.querySelector("#toasts [data-passing]")).toBeNull();
+  });
+
+  it("the Deliverables tab has one Deliverable column and an Actions cell that wraps", async () => {
+    const h = await boot(901);
+    h.ev("deliv(8002).title=dtype(deliv(8002).deliverable_type_id).name");
+    const tab = h.ev<string>("projDeliverablesTab(proj(7001),projectDeliverables(7001))");
+    expect(tab).not.toContain("<th>Title</th>");
+    expect(tab).not.toContain("<th>Type</th>");
+    expect(tab).toContain("<th>Deliverable</th>");
+    expect(tab).not.toMatch(/class="num nowrap" data-stop data-m="actions"/);
+    // A row titled after its type does not print the type a second time.
+    const name = h.ev<string>("dtype(deliv(8002).deliverable_type_id).name");
+    const row = tab.slice(tab.indexOf("deliverable:8002"), tab.indexOf("</tr>", tab.indexOf("deliverable:8002")));
+    expect(row.split(`>${name}<`).length - 1).toBe(1);
+  });
+
+  it("Pending approvals names who asked for the review", async () => {
+    const h = await boot(904);
+    expect(h.ev<string>("pendingApprovalsWidget()")).toMatch(/>Emp Anika</);
+  });
+
+  it("Overview's Latest activity and the Activity tab read the same rows, with names not ids", async () => {
+    const h = await boot(906);
+    h.ev(`window.__MO_LIVE__=false; DB.audit_logs.unshift({id:66001,actor_id:906,action:'project.team_assigned',entity_type:'project',
+      entity_id:7001,before:null,after:{team_id:9001,team:'Event Team',lead:'zcw-901'},occurred_at:TODAY+'T08:00:00Z'})`);
+    const over = h.ev<string>("viewProject(7001,'overview')");
+    const act = h.ev<string>("projActivityTab(proj(7001))");
+    for (const html of [over, act]) {
+      expect(html).toContain("Lead Alpha");
+      expect(html).not.toContain("zcw-901");
+    }
+    // Live: the Overview shows the server's feed, the same one the Activity tab does.
+    h.ev(`window.__MO_LIVE__=true; S._projAct={pid:7001,rows:[{action:'project.created',actor:'Coord Chitra',
+      entity_type:'project',entity_id:7001,before:null,after:{},occurred_at:TODAY+'T07:00:00Z'}]}`);
+    expect(h.ev<string>("viewProject(7001,'overview')")).toContain("Coord Chitra");
+    expect(h.ev<string>("projActivityTab(proj(7001))")).toContain("Coord Chitra");
+  });
+
+  it("the crew trash icon is only on real crew rows", async () => {
+    const h = await boot(907);
+    h.ev(`DB.project_assignments.push({id:99201,project_id:7001,user_id:903,is_project_manager:false,removed_at:null});
+      DB.assignments.push({id:77201,project_id:7001,deliverable_id:8003,work_type_id:DB.work_types[0].id,title:'x',
+        status:'not_started',assignees:[905]})`);
+    const page = h.ev<string>("viewProject(7001,'overview')");
+    expect(page).toContain("removeAssignment({pid:7001,uid:903})");
+    expect(page).not.toContain("removeAssignment({pid:7001,uid:905})");
+  });
+
+  it("the project's lead or an Admin can take someone off a shoot; another lead cannot", async () => {
+    const h = await boot(904);
+    h.ev(`DB.shoots.push({id:9501,project_id:7001,title:'Festival day',shoot_date:TODAY,call_time:'09:00',end_time:'12:00',
+      location:'Main ground',location_url:'',status:'scheduled',deleted_at:null});
+      DB.shoot_crew.push({shoot_id:9501,user_id:902,capacity_role_id:null})`);
+    h.ev("drawerShoot(9501)");
+    expect(h.doc.querySelector("#drawer [data-act=removeShootCrew]")).toBeNull();
+    h.as(901);
+    h.ev("drawerShoot(9501)");
+    const btn = h.doc.querySelector<HTMLElement>("#drawer [data-act=removeShootCrew]");
+    expect(btn).not.toBeNull();
+    btn!.click();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(h.writes().some((c) => c.method === "DELETE" && c.url.endsWith("/shoots/9501/crew/zcw-902"))).toBe(true);
+    expect(h.ev<number>("DB.shoot_crew.filter(c=>c.shoot_id===9501).length")).toBe(0);
+  });
+
+  it("the pipeline Owner filter lists only people who own something on that board", async () => {
+    const h = await boot(902);
+    const names = h.ev<string[]>("MENUS.pipeOwner().map(i=>i.label)");
+    expect(names).toContain("Emp Anika");
+    expect(names).not.toContain("Emp Bela");
+    expect(names).not.toContain("Coord Chitra");
+    h.as(907);
+    expect(h.ev<string[]>("MENUS.pipeOwner().map(i=>i.label)")).toContain("Emp Bela");
+  });
+});
