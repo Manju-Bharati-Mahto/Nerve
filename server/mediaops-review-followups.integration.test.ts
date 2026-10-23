@@ -94,7 +94,7 @@ const drive = (n: string | number) => ({ drive_url: `https://drive.google.com/${
 const titles = (who: ActorName, entityType: string, entityId: number) => pool.query(
   `SELECT title FROM mo_notifications WHERE user_id=$1 AND entity_type=$2 AND entity_id=$3 ORDER BY id`,
   [ACTORS[who].id, entityType, entityId]).then((r) => r.rows.map((x) => String(x.title)));
-const CODE = /\b(BR|VR|AUTO|FR)-\d/;
+const CODE = /\b(BR|VR|AUTO|FR)-\d|§\s?\d|\bP\d\b/;
 
 /** A project routed to `team` by the Coordinator, with one deliverable owned by `owner`. */
 async function routed(team: number, owner: ActorName | null = "empA1") {
@@ -253,6 +253,25 @@ maybe("delivered — one rule for who marks it, and nobody signs off their own h
     expect((await deliv(did)).approval_status).toBe("pending");
     expect((await as("leadB", "POST", `/deliverables/${did}/approval`, { approval_status: "approved" })).status).toBe(200);
   });
+
+  it("WHEN it may be delivered is one rule: the board refuses what the drawer refuses, in the same words", async () => {
+    const exempt = await one(`SELECT id FROM mo_deliverable_types WHERE archived_at IS NULL AND review_exempt ORDER BY id LIMIT 1`);
+    if (!exempt) return;
+    const { did } = await routed(teamA);
+    await pool.query(`UPDATE mo_deliverables SET deliverable_type_id=$1, status='not_started' WHERE id=$2`, [exempt.id, did]);
+    const viaStatus = await as("empA1", "POST", `/deliverables/${did}/status`, { status: "delivered" });
+    const viaDeliver = await as("empA1", "POST", `/deliverables/${did}/deliver`);
+    expect(viaStatus.status).toBe(400);
+    expect([viaStatus.status, viaStatus.body.message]).toEqual([viaDeliver.status, viaDeliver.body.message]);
+    // Out of review is refused the same way too.
+    await pool.query(`UPDATE mo_deliverables SET status='in_review' WHERE id=$1`, [did]);
+    const reviewing = await as("empA1", "POST", `/deliverables/${did}/status`, { status: "delivered" });
+    expect([reviewing.status, String(reviewing.body.message)]).toEqual([400, expect.stringContaining("awaiting review")]);
+    expect((await deliv(did)).status).toBe("in_review");
+    // From work in progress, an exempt item is delivered on either route.
+    await pool.query(`UPDATE mo_deliverables SET status='in_progress' WHERE id=$1`, [did]);
+    expect((await as("empA1", "POST", `/deliverables/${did}/status`, { status: "delivered" })).status).toBe(200);
+  });
 });
 
 /* ── The review reminder ──────────────────────────────────────────────────── */
@@ -344,15 +363,20 @@ maybe("refusals — plain words, no internal codes", () => {
 /* The routes above are samples. Every refusal and notice the API writes is a
    literal in these files, so none of them may carry an internal code. */
 describe("refusals — no internal code in any message the server sends", () => {
-  it("no sendError, message or notice text names BR-, VR-, AUTO- or FR- rules", () => {
+  it("no sendError, message or notice text names BR-, VR-, AUTO-, FR- rules, a § or a P# finding", () => {
     const offenders: string[] = [];
+    const named = /["'`][^"'`]*(\b(BR|VR|AUTO|FR)-\d|§\s?\d|\bP\d\b)[^"'`]*["'`]/;
+    // Comments, and a refusal's machine-readable `code` field, are not read by anyone.
+    const strip = (line: string) => /^\s*\*/.test(line) ? ""
+      : line.replace(/\/\/.*$/, "").replace(/\/\*.*?\*\//g, "").replace(/code: "[^"]*"/g, "");
     for (const file of ["server/mediaops-api.ts", "server/equipment-rules.ts"]) {
-      readFileSync(file, "utf8").split("\n").forEach((line, i) => {
-        // Comments, and a refusal's machine-readable `code` field, are not read by anyone.
-        const code = line.replace(/\/\/.*$/, "").replace(/\/\*.*?\*\//g, "").replace(/code: "[^"]*"/g, "");
-        if (/^\s*\*/.test(line)) return;
-        if (/(sendError|message:|notify\(|throw new Error)/.test(code) && /["'`][^"'`]*\b(BR|VR|AUTO|FR)-\d[^"'`]*["'`]/.test(code))
-          offenders.push(`${file}:${i + 1}: ${line.trim()}`);
+      const lines = readFileSync(file, "utf8").split("\n");
+      lines.forEach((line, i) => {
+        const code = strip(line);
+        if (!/(sendError|message:|notify\(|throw new Error)/.test(code)) return;
+        // A call left open at the end of the line carries its text on the next: `sendError(res, 403,\n  "…")`.
+        const statement = /[,(?:+]\s*$/.test(code) ? `${code} ${strip(lines[i + 1] ?? "")}` : code;
+        if (named.test(statement)) offenders.push(`${file}:${i + 1}: ${line.trim()}`);
       });
     }
     expect(offenders).toEqual([]);

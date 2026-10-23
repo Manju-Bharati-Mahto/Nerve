@@ -2394,6 +2394,23 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
      marking it delivered, the drawer's /deliver and the board's /status,
      come through here; /deliver used to tell nobody. */
   const DELIVER_REFUSAL = "Only the people assigned to this deliverable, the project's Team Lead or an Admin may mark it delivered.";
+  /* WHEN work may be marked delivered — one rule for the drawer's /deliver
+     and the board's /status: an approved deliverable whose latest version is
+     approved, or a review-exempt type straight from work in progress. Null
+     when it may; otherwise the plain-words reason. (canMarkDelivered mirrors
+     it in the client.) Before this was shared, /status let a review-exempt
+     item jump from not started, or out of review, to delivered. */
+  async function deliverRefusal(d: Record<string, unknown>): Promise<string | null> {
+    if (d.status === "in_review")
+      return "A version is awaiting review — it can be delivered once a reviewer approves it.";
+    if (!(d.status === "approved" || (d.review_exempt && d.status === "in_progress")))
+      return "This deliverable is not ready to deliver. Submit a version for review first — a reviewer approves, then it is delivered.";
+    if (!d.review_exempt) {
+      const v = await pool.query(`SELECT review_status FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [d.id]);
+      if (v.rows[0]?.review_status !== "approved") return "Only an approved latest version can be delivered.";
+    }
+    return null;
+  }
   async function tellSignOffNeeded(u: CurrentUser, d: Record<string, unknown>) {
     const team = await deliverableTeamIds(Number(d.id));
     for (const rid of await reviewerIdsFor(Number(d.project_id), [...team, u.id]))
@@ -2431,14 +2448,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        delivered straight from work). Before this check, calling /deliver after
        a reviewer's post-delivery send-back silently re-flipped status back to
        delivered — the Phase 1 P1 "undo send-back" bypass. */
-    if (d.rows[0].status === "in_review")
-      return sendError(res, 400, "A version is awaiting review — it can be delivered once a reviewer approves it.");
-    if (!(d.rows[0].status === "approved" || (d.rows[0].review_exempt && d.rows[0].status === "in_progress")))
-      return sendError(res, 400, "This deliverable is not ready to deliver. Submit a version for review first — a reviewer approves, then it is delivered.");
-    if (!d.rows[0].review_exempt) {
-      const v = await pool.query(`SELECT review_status FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [id]);
-      if (v.rows[0]?.review_status !== "approved") return sendError(res, 400, "Only an approved latest version can be delivered.");
-    }
+    const notReady = await deliverRefusal(d.rows[0]);
+    if (notReady) return sendError(res, 400, notReady);
     /* approval_status was reset to 'pending' only when /status drove it to
        delivered; this route left stale 'changes_requested' or 'approved' on
        the row, which the Dispatch board reads. Reset it so the Operations
@@ -2522,7 +2533,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const q = req.query as Record<string, string>;
     const date = q.date || new Date().toISOString().slice(0, 10);
     const userId = q.user || u.id;
-    if (userId !== u.id && !(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Out of scope (§16).");
+    if (userId !== u.id && !(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "You can only open your own report.");
     let r = await pool.query(`SELECT * FROM mo_daily_reports WHERE user_id=$1 AND report_date=$2`, [userId, date]);
     if (!r.rows[0]) {
       r = await pool.query(`INSERT INTO mo_daily_reports (user_id, report_date, status) VALUES ($1,$2,'draft') RETURNING *`, [userId, date]);
@@ -9206,9 +9217,9 @@ async function allocateInternalCode(
     // In review is reached only by submitting a version (POST /versions), and
     // delivered work is sent back from its sign-off (POST /approval).
     const DELIV: Record<string, string[]> = {
-      not_started: ["in_progress", "delivered", "not_required", "cancelled"],
+      not_started: ["in_progress", "not_required", "cancelled"],
       in_progress: ["delivered", "not_required", "cancelled"],
-      in_review: ["approved", "changes_requested", "delivered", "cancelled"],
+      in_review: ["approved", "changes_requested", "cancelled"],
       changes_requested: ["in_progress", "approved", "cancelled"],
       approved: ["delivered", "changes_requested"],
       delivered: [],
@@ -9241,12 +9252,15 @@ async function allocateInternalCode(
        alone left work "in review" with nothing to review: no reviewer told,
        nothing to approve, and no way back out for the team. */
     if (to === "in_review") return { status: 400, message: "Submit a version to send it for review." };
-    if (!(DELIV[d.status] ?? []).includes(to)) return invalid;
     /* Delivered is reached through review: an approved deliverable is delivered,
-       and only a review-exempt type is delivered straight from work. This was
-       the road round the reviewer — mark your own work delivered, skip review. */
-    if (to === "delivered" && d.status !== "approved" && !d.review_exempt)
-      return { status: 400, message: "Submit a version for review — only an approved deliverable can be delivered." };
+       and only a review-exempt type is delivered straight from work — the same
+       rule, and the same words, as /deliver. This was the road round the
+       reviewer — mark your own work delivered, skip review. */
+    if (to === "delivered") {
+      const notReady = await deliverRefusal(d);
+      if (notReady) return { status: 400, message: notReady };
+    }
+    if (!(DELIV[d.status] ?? []).includes(to)) return invalid;
     // Delivering stamps who/when and re-opens the approval gate for the reviewer.
     const delivering = to === "delivered";
     await pool.query(
@@ -9311,11 +9325,15 @@ async function allocateInternalCode(
        version it was approved on is no longer the answer. Marking that
        version sent back, with the note, is what takes the item out of
        "Delivered outputs" and shows the team the comment in My Day — the
-       same record a review's Request changes leaves. */
+       same record a review's Request changes leaves.
+       It is no longer ready to go out either — even if it already went: the
+       corrected version is queued (and the Coordinator told) when it is
+       approved again, and the project cannot close until that goes out.
+       dispatched_at, the recipient and the audit row stay as history. */
     if (backToWork) {
       await pool.query(
         `UPDATE mo_deliverables SET dispatch_status='none', queued_at=NULL
-          WHERE id=$1 AND dispatch_status='queued'`, [id]);
+          WHERE id=$1 AND dispatch_status IN ('queued','delivered','archived')`, [id]);
       await pool.query(
         `UPDATE mo_deliverable_versions SET review_status='changes_requested', reviewed_by=$2,
            reviewed_at=NOW(), review_comment=$3
@@ -9411,6 +9429,8 @@ async function allocateInternalCode(
     const b = (req.body ?? {}) as Record<string, unknown>;
     const reassignTo = b.reassign_to ? String(toUid(b.reassign_to)) : null;
     const newLead = b.new_lead ? String(toUid(b.new_lead)) : null;
+    // Whoever takes the work over must be someone work can be assigned to.
+    if (reassignTo && reassignTo !== realId && !(await assertAssignable(res, u, [reassignTo]))) return;
 
     // Optional: hand active work to someone else FIRST, so nothing is orphaned.
     // Entirely the Admin's choice — removal proceeds either way.
@@ -11512,15 +11532,20 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
   const CLOSED_DELIV = ["delivered", "not_required", "cancelled"];
   type Blocking = { id: number; title: string; status: string; role: "owner" | "team" };
   async function crewRemovalImpact(pid: number, uid: string) {
-    const live = (await pool.query(
-      `SELECT id, title, status, owner_id FROM mo_deliverables
-        WHERE project_id=$1 AND deleted_at IS NULL AND status <> ALL($2) ORDER BY id`, [pid, CLOSED_DELIV])).rows;
-    const blocking: Blocking[] = [];
-    for (const d of live) {
-      const owns = String(d.owner_id ?? "") === uid;
-      if (owns || (await deliverableTeamIds(Number(d.id))).has(uid))
-        blocking.push({ id: Number(d.id), title: String(d.title), status: String(d.status), role: owns ? "owner" : "team" });
-    }
+    /* One query for every live deliverable they own or are on the team of —
+       the team test is deliverableTeamIds()'s: a non-SMC, uncancelled row
+       linked to it that also names its owner. */
+    const blocking: Blocking[] = (await pool.query(
+      `SELECT d.id, d.title, d.status, (d.owner_id IS NOT NULL AND d.owner_id=$2) AS owns
+         FROM mo_deliverables d
+        WHERE d.project_id=$1 AND d.deleted_at IS NULL AND d.status <> ALL($3)
+          AND (d.owner_id=$2 OR (d.owner_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM mo_assignments a
+                  JOIN mo_assignment_users au ON au.assignment_id=a.id AND au.user_id=$2
+                 WHERE a.deliverable_id=d.id AND NOT COALESCE(a.is_smc,false) AND a.status <> 'cancelled'
+                   AND EXISTS (SELECT 1 FROM mo_assignment_users o WHERE o.assignment_id=a.id AND o.user_id=d.owner_id))))
+        ORDER BY d.id`, [pid, uid, CLOSED_DELIV])).rows
+      .map((d) => ({ id: Number(d.id), title: String(d.title), status: String(d.status), role: d.owns ? "owner" : "team" }));
     const n = async (sql: string) => Number((await pool.query(sql, [pid, uid])).rows[0]?.n ?? 0);
     const [work, shoots, versions, delivered] = await Promise.all([
       n(`SELECT count(*) n FROM mo_assignments a JOIN mo_assignment_users au ON au.assignment_id=a.id AND au.user_id=$2

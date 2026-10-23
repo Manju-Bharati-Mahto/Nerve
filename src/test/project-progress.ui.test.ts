@@ -184,4 +184,21 @@ describe("a sign-off send-back is answered by the next approval", () => {
     expect(h.ev<string>("delivClosureBlocker(deliv(8103))")).toBe("has not been dispatched yet");
     expect(h.writes().find((c) => c.url.endsWith("/deliverables/8103/review"))?.body).toEqual({ outcome: "approved" });
   });
+
+  it("work already dispatched and then sent back is out of the dispatched state, and is queued again on approval", async () => {
+    const h = await boot(913);
+    h.ev(`__dl(8104,'delivered',{dispatch_status:'delivered',delivered_by:912});
+      DB.deliverable_versions.push({id:98104,deliverable_id:8104,version_no:1,review_status:'approved',
+        submitted_by:912,submitted_at:TODAY,drive_url:'https://drive.google.com/zpg-8104'})`);
+    h.ev("ACTIONS.reviewDelivered({did:'8104',v:'changes_requested'})");
+    h.ev("document.querySelector('#rd-note').value='Wrong logo'");
+    h.ev("ACTIONS.confirmSignOff({did:'8104',v:'changes_requested'})");
+    expect(h.ev<string>("deliv(8104).dispatch_status")).toBe("none");
+    expect(h.ev<string>("delivClosureBlocker(deliv(8104))")).toBe("was sent back for changes");
+    h.ev(`DB.deliverable_versions.push({id:98105,deliverable_id:8104,version_no:2,review_status:'pending',
+        submitted_by:912,submitted_at:TODAY,drive_url:'https://drive.google.com/zpg-8104b'}); deliv(8104).status='in_review'`);
+    h.ev("ACTIONS.approveVersion({did:'8104'})");
+    expect(h.ev<string>("deliv(8104).dispatch_status")).toBe("queued");
+    expect(h.ev<string>("delivClosureBlocker(deliv(8104))")).toBe("has not been dispatched yet");
+  });
 });

@@ -330,6 +330,35 @@ maybe("closing a project — every deliverable out or signed off", () => {
     expect(await status(pid)).toBe("completed");
   });
 
+  it("work dispatched, then sent back at sign-off, is queued again when re-approved and the project waits for it", async () => {
+    // A second item still out keeps the project open while the first goes round again.
+    const { pid, dids } = await project(2);
+    const [did, other] = dids;
+    await approve(other);
+    await approve(did);
+    expect((await dispatch(did)).status).toBe(200);
+    expect((await deliver(did)).status).toBe(200);
+    // The Coordinator has seen the first "Ready to dispatch".
+    await pool.query(`UPDATE mo_notifications SET is_read=true WHERE user_id=$1`, [ACTORS.coord.id]);
+    expect((await signOff(did, "changes_requested", "Wrong logo")).status).toBe(200);
+    const back = await one(`SELECT dispatch_status, queued_at, dispatched_at FROM mo_deliverables WHERE id=$1`, [did]);
+    expect(back.dispatch_status).toBe("none");
+    expect(back.queued_at).toBeNull();
+    expect(back.dispatched_at).not.toBeNull();      // the earlier dispatch stays as history
+    await approve(did);
+    const d = await one(`SELECT status, approval_status, dispatch_status FROM mo_deliverables WHERE id=$1`, [did]);
+    expect(d).toMatchObject({ status: "approved", approval_status: "pending", dispatch_status: "queued" });
+    const told = await pool.query(
+      `SELECT title FROM mo_notifications WHERE user_id=$1 AND kind='dispatch' AND entity_type='deliverable'
+          AND entity_id=$2 AND is_read=false`, [ACTORS.coord.id, did]);
+    expect(told.rows.map((r) => r.title)).toEqual([expect.stringContaining("Ready to dispatch")]);
+    // The other item going out does not close it: the corrected version has not gone yet.
+    expect((await dispatch(other)).status).toBe(200);
+    expect(await status(pid)).not.toBe("completed");
+    expect((await dispatch(did)).status).toBe(200);
+    expect(await status(pid)).toBe("completed");
+  });
+
   it("refuses to complete with a delivered item waiting for sign-off, naming it; then allows it", async () => {
     const { pid, dids } = await project(2);
     await approve(dids[0]);

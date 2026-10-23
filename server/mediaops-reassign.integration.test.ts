@@ -285,6 +285,18 @@ maybe("reassigning a deliverable — asked first, then both people told", () => 
     expect(await ownerOf(did)).toBe(ACTORS.empA1.id);
   });
 
+  it("removing an account cannot hand the work to someone work may not be assigned to", async () => {
+    const pid = await routed();
+    const did = await owned(pid, "gone");
+    // A Coordinator without the production-worker duty is not eligible (Q5).
+    const r = await as("admin", "DELETE", `/crew/${ACTORS.gone.id}`, { reassign_to: ACTORS.coord.id });
+    expect(r.status).toBe(403);
+    expect(JSON.stringify(r.body)).toContain("ZRY Coordinator is not marked as a production worker.");
+    expect(await ownerOf(did)).toBe(ACTORS.gone.id);
+    expect((await one(`SELECT status FROM users WHERE id=$1`, [ACTORS.gone.id])).status).toBe("active");
+    expect(await reassignedTrail(did)).toEqual([]);
+  });
+
   it("removing an account with reassign_to counts as confirmed, tells both and is on the trail", async () => {
     const pid = await routed();
     const did = await owned(pid, "gone");

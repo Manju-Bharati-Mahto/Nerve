@@ -797,8 +797,10 @@ maybe("legacy projects, PMs, shoots and ad-hoc assignments", () => {
     await pool.query(
       `INSERT INTO mo_project_assignments (project_id, user_id, is_project_manager, assigned_by)
        VALUES ($1,$2,false,$3)`, [pid, ACTORS.empA2.id, ACTORS.admin.id]);
-    // promote: the lead stands down so the single-PM index allows it
-    await pool.query(`UPDATE mo_project_assignments SET is_project_manager=(user_id=$2) WHERE project_id=$1`,
+    // promote: the lead stands down first, so the single-PM index (checked row by row) allows it
+    await pool.query(`UPDATE mo_project_assignments SET is_project_manager=false WHERE project_id=$1 AND user_id<>$2`,
+      [pid, ACTORS.empA2.id]);
+    await pool.query(`UPDATE mo_project_assignments SET is_project_manager=true WHERE project_id=$1 AND user_id=$2`,
       [pid, ACTORS.empA2.id]);
     expect((await as("empA2", "POST", `/deliverables/${did}/schedule`, { scheduled_date: "2026-10-04" })).status).toBe(200);
     await as("empA1", "POST", `/deliverables/${did}/versions`, drive("pm1"));

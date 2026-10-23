@@ -1219,7 +1219,10 @@ describe("review follow-ups — what the page offers matches what the server hon
     const page = h.ev<string>("viewTeam()");
     expect(page).toMatch(/data-tid="9002"[^>]*outline/);
     expect(page).not.toMatch(/data-tid="9001"[^>]*outline/);
-  });
+    // For that visit only: later visits to the page are not outlined.
+    await new Promise((r) => setTimeout(r, 4200));
+    expect(h.ev<string>("viewTeam()")).not.toMatch(/data-tid="9002"[^>]*outline/);
+  }, 15000);
 
   it("My Day's Awaiting review chip says who reviews: any Team Lead or Admin, not the PM", () => {
     expect(HTML).not.toContain("the project PM must review it");
@@ -1275,6 +1278,63 @@ describe("taking someone off a project — nothing they carry is stranded", () =
     (h.doc.getElementById("rm-go") as HTMLButtonElement).click();
     await tick();
     expect(removal(h).map((c) => c.body)).toEqual([{ resolutions: [] }]);
+  });
+
+  it("an owner who may not be picked is labelled with why: inactive, or not a production worker", async () => {
+    const h = await boot(901);
+    expect(h.ev<string>("ownerOptions(906,assignableMembers(),'Assign…')")).toMatch(/>Coord Chitra[^<]* \(not a production worker\)</);
+    h.ev("user(903).is_active=false");
+    expect(h.ev<string>("ownerOptions(903,assignableMembers(),'Assign…')")).toMatch(/>Emp Arjun[^<]* \(inactive\)</);
+  });
+
+  it("a reassignment in project Activity names both people and how, never their ids", async () => {
+    const h = await boot(901);
+    const a = `({action:'deliverable.reassigned',entity_type:'deliverable',entity_id:8002,
+      before:{owner_id:902},after:{from:902,to:903,via:'crew_removal'}})`;
+    expect(h.ev<string[]>(`auditChanges(${a})`)).toEqual(["From: Emp Anika", "To: Emp Arjun", "How: Crew removal"]);
+    expect(h.ev<string>(`auditTpl(${a})`)).toBe("reassigned {t}");
+    expect(h.ev<string>(`auditTpl({action:'project.pm_named'})`)).toBe("made {who} PM on {t}");
+    // Other rows keep using from/to for what they are: a leave request's dates are not people.
+    expect(h.ev<string[]>(`auditChanges({action:'leave.requested',entity_type:'leave_request',before:null,
+      after:{from:'2026-11-02',to:'2026-11-03'}})`).join(" ")).not.toContain("someone");
+  });
+
+  it("removing an account offers its work only to people work can be assigned to", async () => {
+    const h = await boot(907);
+    h.ev("renderRemoveModal(902,{active:{projects:0,deliverables:2,reviews:0,assignments:0},has_active_work:true})");
+    const opts = [...(h.doc.getElementById("rm-reassign") as HTMLSelectElement).options].map((o) => o.value);
+    expect(opts).toContain("903");
+    expect(opts, "a Coordinator without the production-worker duty").not.toContain("906");
+    expect(opts, "the person leaving").not.toContain("902");
+  });
+
+  it("nobody coming off in the same go is offered the work", async () => {
+    const h = await boot(907);
+    h.ev("ACTIONS.removeAssignment({pid:7001,uid:'902,903'})");
+    const opts = [...(h.doc.getElementById("rm-902-8001") as HTMLSelectElement).options].map((o) => o.value);
+    expect(opts).not.toContain("to:903");
+    expect(opts).toContain("to:905");
+  });
+
+  it("offline, Remove applies the plan on the page instead of doing nothing", async () => {
+    const h = await boot(907);
+    h.ev(`window.__MO_LIVE__=false;
+      DB.project_assignments.push({id:99205,project_id:7001,user_id:902,is_project_manager:false,removed_at:null})`);
+    h.ev("ACTIONS.removeAssignment({pid:7001,uid:902})");
+    const pick = (id: string, v: string) => {
+      const sel = h.doc.getElementById(id) as HTMLSelectElement;
+      sel.value = v; sel.dispatchEvent(new h.dom.window.Event("change"));
+    };
+    pick("rm-902-8001", "to:905");
+    pick("rm-902-8002", "st:not_required");
+    (h.doc.getElementById("rm-go") as HTMLButtonElement).click();
+    await tick();
+    expect(h.ev<number>("deliv(8001).owner_id")).toBe(905);
+    expect(h.ev<string>("deliv(8002).status")).toBe("not_required");
+    expect(h.ev<boolean>("DB.project_assignments.some(x=>x.project_id===7001&&x.user_id===902&&!x.removed_at)")).toBe(false);
+    expect(h.ev<boolean>("DB.project_assignments.some(x=>x.project_id===7001&&x.user_id===905&&!x.removed_at)")).toBe(true);
+    expect(h.doc.body.textContent).toContain("Emp Anika taken off the project");
+    expect(removal(h)).toEqual([]);
   });
 
   it("the server's list replaces the page's guess when it answers", async () => {

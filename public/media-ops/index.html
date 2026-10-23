@@ -9739,11 +9739,13 @@ const AUDIT_VERB={
   'project.created':'created','project.updated':'updated','project.deleted':'deleted','project.status_changed':'moved',
   'project.status_auto':'moved','project.completed_override':'closed',
   'project.assignment_added':'added {who} to','project.assignment_removed':'removed {who} from',
+  'project.pm_named':'made {who} PM on',
   'project.lead_assigned':'assigned a Team Lead to','project.team_assigned':'assigned a team to',
   'project.due_dates_recalculated':'recalculated due dates for',
   'deliverable.created':'created','deliverable.updated':'updated','deliverable.status_changed':'moved',
   'deliverable.delivered':'delivered','deliverable.dispatched':'dispatched','deliverable.archived':'archived',
   'deliverable.assigned':'assigned {who} to','deliverable.smc_assigned':'assigned {who} from SMC to',
+  'deliverable.reassigned':'reassigned',
   'deliverable.approval_changed':'reviewed','deliverable.due_date_changed':'changed the due date of',
   'deliverable.link_copied':'copied the Drive link of','deliverable.version_reviewed':'reviewed',
   'deliverable.version_submitted':'uploaded',
@@ -9860,8 +9862,11 @@ const AUDIT_FIELD={status:'Status',smc_status:'SMC status',approval_status:'Appr
   quantity_target:'Target',quantity_delivered:'Delivered',version_no:'Version',owner_id:'Owner',user_id:'Person',
   holder:'Holder',holder_id:'Holder',assignees:'Assigned to',delivered_by:'Delivered by',approved_by:'Approved by',
   random_sample_pct:'Random sample',spec_notes:'Notes',review_comment:'Comment',shoot_date:'Shoot date',
-  start_date:'Starts',end_date:'Ends',event_level:'Event level'};
+  start_date:'Starts',end_date:'Ends',event_level:'Event level',from:'From',to:'To',via:'How'};
 const AUDIT_PERSON=/^(user_id|owner_id|holder|holder_id|assignees|delivered_by|approved_by|dispatched_by|reviewed_by|assigned_by|lead|new_lead|member|reassigned_to)$/;
+/* A reassignment's trail says who it went from and to — people only there:
+   other rows (a leave request's dates) use the same keys for other things. */
+const auditPerson=(a,k)=>AUDIT_PERSON.test(k)||(a.action==='deliverable.reassigned'&&(k==='from'||k==='to'));
 const AUDIT_SKIP=/^(id|kind|ip|user_agent|form_template|due_date_source|due_offset_days)$|_id$|_at$|_uid$/;
 function auditStatusMap(k,et){
   if(k==='smc_status')return SMC_STATUS;
@@ -9871,14 +9876,14 @@ function auditStatusMap(k,et){
   return {deliverable:DELIV_STATUS,project:PROJ_STATUS,daily_report:REPORT_STATUS,equipment_item:EQ_STATUS,
     leave_request:LEAVE_STATUS,request:REQ_STATUS,assignment:ASSIGN_STATUS}[et]||null;
 }
-function auditVal(k,v,et){
+function auditVal(k,v,et,person=AUDIT_PERSON.test(k)){
   if(v==null||v==='')return 'none';
-  if(Array.isArray(v))return v.map(x=>auditVal(k,x,et)).join(', ')||'none';
+  if(Array.isArray(v))return v.map(x=>auditVal(k,x,et,person)).join(', ')||'none';
   if(typeof v==='object')return '';
   if(typeof v==='boolean')return v?'Yes':'No';
-  if(AUDIT_PERSON.test(k)){const u=user(v);return u&&u!==UNKNOWN_PERSON?u.full_name:'someone';}
+  if(person){const u=user(v);return u&&u!==UNKNOWN_PERSON?u.full_name:'someone';}
   if(/status$/.test(k)){const m=(auditStatusMap(k,et)||{})[v];return m&&m.l&&m.l!=='—'?m.l:auditWords(v);}
-  if(/^(priority|event_level|condition|outcome)$/.test(k))return auditWords(v);
+  if(/^(priority|event_level|condition|outcome|via)$/.test(k))return auditWords(v);
   if(typeof v==='string'&&/^\d{4}-\d\d-\d\d(T|$)/.test(v))
     return /date$/.test(k)||v.length===10?D.fmt(D.iso(D.at(v))):D.fmtAt(v);
   if(/_pct$/.test(k))return v+'%';
@@ -9888,14 +9893,15 @@ function auditChanges(a){
   const b=a.before&&typeof a.before==='object'?a.before:{}, f=a.after&&typeof a.after==='object'?a.after:{};
   const tpl=auditTpl(a), used=[];
   if(tpl.includes('{who}'))used.push('user_id','assignees','holder');
+  if(a.action==='deliverable.reassigned')used.push('owner_id');   // From says it
   ['title','name'].forEach(k=>{if(f[k]!=null&&(b[k]==null||b[k]===f[k]))used.push(k);});
   const out=[];
   [...new Set([...Object.keys(b),...Object.keys(f)])]
-    .filter(k=>!used.includes(k)&&(AUDIT_PERSON.test(k)||!AUDIT_SKIP.test(k)))
+    .filter(k=>!used.includes(k)&&(auditPerson(a,k)||!AUDIT_SKIP.test(k)))
     .forEach(k=>{
       const had=k in b, has=k in f;
       if(had&&has&&JSON.stringify(b[k])===JSON.stringify(f[k]))return;
-      const ov=had?auditVal(k,b[k],a.entity_type):'', nv=has?auditVal(k,f[k],a.entity_type):'';
+      const p=auditPerson(a,k), ov=had?auditVal(k,b[k],a.entity_type,p):'', nv=has?auditVal(k,f[k],a.entity_type,p):'';
       if(!ov&&!nv)return;
       const l=AUDIT_FIELD[k]||auditWords(k);
       out.push(had&&has?l+': '+ov+' → '+nv:has?l+': '+nv:l+' was '+ov);
@@ -11510,13 +11516,16 @@ function delivOwnerCell(p,d){
       title="${d.owner_id?'Reassign deliverable — owned by '+esc(personLabel(d.owner_id)):'Assign this deliverable to anyone in the Media Crew'}">
     ${ownerOptions(d.owner_id,opts,'Assign…')}</select>`;
 }
-/* Options for an owner picker. An owner who is no longer active stays shown —
-   selected, not pickable — so the picker is still there to replace them. With
-   no owner, a blank first option keeps the browser from naming someone. */
+/* Options for an owner picker. An owner who may no longer be picked stays
+   shown — selected, not pickable — so the picker is still there to replace
+   them, labelled with why: no longer active, or no longer a production worker
+   (an Admin or Coordinator whose duty was revoked). With no owner, a blank
+   first option keeps the browser from naming someone. */
 function ownerOptions(cur,opts,blank){
-  const gone=cur&&!opts.some(u=>u.id===cur);
+  const gone=cur&&!opts.some(u=>u.id===cur), uc=gone?user(cur):null;
+  const why=!uc||!uc.is_active?' (inactive)':!productionEligible(uc)?' (not a production worker)':'';
   return (cur?'':`<option value="" selected>${esc(blank)}</option>`)
-    +(gone?`<option value="${cur}" selected disabled>${esc(personLabel(cur))} (inactive)</option>`:'')
+    +(gone?`<option value="${cur}" selected disabled>${esc(personLabel(cur))}${why}</option>`:'')
     +opts.map(u=>`<option value="${u.id}" ${u.id===cur?'selected':''}>${esc(personLabel(u.id))}</option>`).join('');
 }
 /* Reassigning a deliverable — taking it off the person who owns it — is
@@ -14732,10 +14741,13 @@ function renderRemoveModal(uid,impact){
   const hist=(impact&&impact.history)||{reports:0,audit_entries:0};
   const led=(impact&&impact.leads_teams)||[];
   const hot=!!(impact&&impact.has_active_work);
-  /* Anyone still active is a candidate to take the work on. */
+  /* Anyone still active is a candidate to lead a team; only someone work can
+     be assigned to (a production worker) may take their work on. */
   const others=DB.users.filter(x=>x.is_active&&x.id!==uid)
     .sort((x,y)=>x.full_name.localeCompare(y.full_name));
   const leadPool=others.filter(x=>['team_lead','admin'].includes(x.role));
+  const takers=assignableMembers().filter(x=>x.id!==uid)
+    .sort((x,y)=>x.full_name.localeCompare(y.full_name));
   const row=(l,n)=>`<div class="between small" style="padding:3px 0">
     <span>${esc(l)}</span><span class="chip ${n?'warnchip':''}">${n}</span></div>`;
 
@@ -14757,7 +14769,7 @@ function renderRemoveModal(uid,impact){
         </div></div>
         <div class="field"><label class="lbl">Reassign active work to <span class="mut3">(optional)</span></label>
           <select class="inp" id="rm-reassign"><option value="">Leave it unassigned</option>
-            ${others.map(x=>`<option value="${x.id}">${esc(x.full_name)} · ${esc(roleMeta(x.role).l)}</option>`).join('')}</select>
+            ${takers.map(x=>`<option value="${x.id}">${esc(x.full_name)} · ${esc(roleMeta(x.role).l)}</option>`).join('')}</select>
           <div class="hint">Moves their open projects and deliverables. Completed work is never touched.</div></div>`
         :`<div class="note mb3">Nothing active is assigned to ${esc(u.full_name.split(' ')[0])}, so nothing needs reassigning.</div>`}
 
@@ -19281,9 +19293,12 @@ function notifTarget(n){
         ||(a.project_id?{hash:'#/media/projects/'+Number(a.project_id)}:{hash:'#/media/my-day'});
     }
     /* A team has no page of its own: #/media/team/<id> is a PERSON's page.
-       It opens Team → Teams & duties with that team's card picked out. */
+       It opens Team → Teams & duties with that team's card picked out — for
+       this visit only: the outline is let go a few seconds later, so the card
+       is not outlined every time the page is opened afterwards. */
     case 'team':           return {hash:'#/media/team',
-      before:()=>{S.tab.team='structure';S._focusTeam=id;},
+      before:()=>{S.tab.team='structure';S._focusTeam=id;
+        setTimeout(()=>{ if(S._focusTeam===id) S._focusTeam=null; },4000);},
       scrollTo:id?'.tm[data-tid="'+id+'"]':null};
     case 'kra':            return {hash:'#/media/performance'};
     case 'user':           return id?{hash:'#/media/team/'+id}:null;
@@ -22904,9 +22919,10 @@ const ACTIONS = {
   },
   renderRemoval:()=>{
     const R=S._rm; if(!R)return;
-    const p=proj(R.pid), people=assignableMembers();
+    // Nobody coming off in this same go can take the work on.
+    const p=proj(R.pid), people=assignableMembers().filter(x=>!R.uids.includes(x.id));
     const choices=(uid,b)=>[['','Choose…'],
-      ...people.filter(x=>x.id!==uid).map(x=>['to:'+x.id,(b.role==='owner'?'Hand it to ':'Put in their place: ')+personLabel(x.id)]),
+      ...people.map(x=>['to:'+x.id,(b.role==='owner'?'Hand it to ':'Put in their place: ')+personLabel(x.id)]),
       ...(b.role==='team'?[['drop','Take them off its team — the owner carries on']]:[]),
       ...((DELIV_TRANSITIONS[b.status]||[]).includes('not_required')?[['st:not_required','Not required']]:[]),
       ...((DELIV_TRANSITIONS[b.status]||[]).includes('cancelled')?[['st:cancelled','Cancel the deliverable']]:[])];
@@ -22935,10 +22951,41 @@ const ACTIONS = {
       return v==='drop'?{deliverable_id:b.id,remove_from_team:true}
         :v.startsWith('st:')?{deliverable_id:b.id,status:v.slice(3)}
         :{deliverable_id:b.id,reassign_to:ruid(uidOf(v.slice(3)))};});
+    const done=R.uids.length===1?user(R.uids[0]).full_name+' taken off the project':R.uids.length+' people taken off the project';
     S._rm=null; closeModal();
-    moSync(Promise.all(R.uids.map(uid=>MO_API.req('DELETE','/projects/'+R.pid+'/assignments/'+ruid(uid),
-        {resolutions:resolutions(uid)}))),
-      ()=>toast(R.uids.length===1?user(R.uids[0]).full_name+' taken off the project':R.uids.length+' people taken off the project','ok'));
+    if(!window.__MO_LIVE__){ACTIONS.applyRemovalLocally(R);render();toast(done,'ok');return;}
+    // One after another, so a refusal stops the rest rather than leaving half of them off.
+    moSync(R.uids.reduce((chain,uid)=>chain.then(()=>MO_API.req('DELETE','/projects/'+R.pid+'/assignments/'+ruid(uid),
+        {resolutions:resolutions(uid)})),Promise.resolve()),
+      ()=>toast(done,'ok'));
+  },
+  /* The offline demo has no server to apply the plan, so it is applied here
+     the way DELETE /projects/:id/assignments/:uid does: each deliverable
+     handed on (the new person takes their place on its team, and joins the
+     crew), taken off its team or closed; then they leave the crew, their open
+     tasks and their upcoming shoots on this project. */
+  applyRemovalLocally:(R)=>{
+    const joinCrew=uid=>{ if(!DB.project_assignments.some(x=>x.project_id===R.pid&&x.user_id===uid&&!x.removed_at))
+      DB.project_assignments.push({id:Math.max(0,...DB.project_assignments.map(a=>a.id))+1,project_id:R.pid,user_id:uid,
+        capacity_role_id:null,is_project_manager:false,assigned_by:S.me,assigned_at:TODAY,removed_at:null}); };
+    R.uids.forEach(uid=>{
+      (R.blk[uid]||[]).forEach(b=>{
+        const v=R.pick[uid+':'+b.id]||'', dl=deliv(b.id); if(!dl)return;
+        if(v.startsWith('st:')){dl.status=v.slice(3);return;}
+        const to=v.startsWith('to:')?uidOf(v.slice(3)):null;
+        (DB.assignments||[]).filter(a=>isTeamRow(a,dl)&&(a.assignees||[]).includes(uid)).forEach(a=>{
+          a.assignees=a.assignees.filter(x=>x!==uid); if(to!=null&&!a.assignees.includes(to))a.assignees.push(to);});
+        if(b.role==='owner')dl.owner_id=to;
+        if(to!=null)joinCrew(to);
+      });
+      DB.project_assignments.filter(x=>x.project_id===R.pid&&x.user_id===uid&&!x.removed_at).forEach(x=>x.removed_at=TODAY);
+      (DB.assignments||[]).filter(a=>a.project_id===R.pid&&!['done','cancelled'].includes(a.status)&&(a.assignees||[]).includes(uid)
+          &&!(a.deliverable_id&&DELIV_DONE.includes((deliv(a.deliverable_id)||{}).status)))
+        .forEach(a=>{a.assignees=a.assignees.filter(x=>x!==uid);});
+      const later=new Set(DB.shoots.filter(x=>x.project_id===R.pid&&x.shoot_date>=TODAY).map(x=>x.id));
+      DB.shoot_crew=DB.shoot_crew.filter(c=>!(later.has(c.shoot_id)&&c.user_id===uid));
+      audit(S.me,'project.assignment_removed','project',R.pid,null,{user_id:uid});
+    });
   },
   removeShootCrew:(d)=>{
     const sid=+d.sid, uid=uidOf(d.uid);
@@ -26677,7 +26724,11 @@ const ACTIONS = {
     if(back&&!note){toast('Say what needs to change.','bad');return;}
     const before={approval_status:dl.approval_status,status:dl.status};
     dl.approval_status=to; dl.approved_by=S.me;
-    if(back){dl.status='changes_requested';dl.approval_note=note;}
+    /* Sent back, it is no longer ready to go out — even if it already went:
+       the corrected version is queued again when it is approved, and the
+       project waits for that dispatch. The earlier dispatch stays as history. */
+    if(back){dl.status='changes_requested';dl.approval_note=note;
+      if(['queued','delivered','archived'].includes(dl.dispatch_status)){dl.dispatch_status='none';dl.queued_at=null;}}
     audit(S.me,'deliverable.approval_changed','deliverable',dl.id,before,{approval_status:to,approved_by:S.me});
     if(back)closeModal();
     render();refreshDelivDrawer(dl.id);
