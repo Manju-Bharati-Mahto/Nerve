@@ -400,7 +400,9 @@ describe("Review — any Team Lead, never your own work", () => {
   it("the board lets any Team Lead approve a submitted version — another team's included", async () => {
     const h = await boot(904);
     expect(h.ev<boolean>("applyDelivStatus(deliv(8001),'approved')")).toBe(true);
-    expect(h.writes().some((c) => c.url.endsWith("/deliverables/8001/status"))).toBe(true);
+    // The board's Approved is the approve path itself — the version is approved, not just the status.
+    const w = h.writes().find((c) => c.url.endsWith("/deliverables/8001/review"));
+    expect(w?.body).toEqual({ outcome: "approved" });
   });
 
   it("the project status menu lets another team's lead approve a proposal — and nothing else", async () => {
@@ -615,5 +617,201 @@ describe("Assign work — creates the deliverable and shares it with everyone as
     expect(h.ev<boolean>("onDelivTeam(deliv(8001))")).toBe(true);
     expect(h.ev<number[]>("pendingVersionReviews().map(x=>x.d.id)")).not.toContain(8001);
     expect(h.ev<boolean>("applyDelivStatus(deliv(8001),'approved')")).toBe(false);
+  });
+});
+
+/* ── Offered exactly what the server allows ───────────────────────────────────
+   One helper per server gate, asked by every control that ends at that route:
+   a control nobody can use is not shown, and one the rules allow is reachable.
+   8002 "Aftermovie" is on Lead Alpha's project 7001 and owned by Emp Anika. */
+describe("Controls — offered exactly what the server allows", () => {
+  const moves = "MENUS.delivMenu({did:'8002'}).filter(i=>i.fn&&String(i.label).startsWith('→')).map(i=>i.label)";
+
+  it("the deliverable ⋯ menu offers each person only the moves the server accepts", async () => {
+    const h = await boot(906);
+    expect(h.ev<string[]>(moves), "the Coordinator was offered a move").toEqual([]);
+    h.as(904);
+    expect(h.ev<string[]>(moves), "another team's lead was offered scope moves").toEqual([]);
+    h.as(902);
+    expect(h.ev<string[]>(moves)).toEqual(["→ In Progress"]);
+    h.as(901);
+    expect(h.ev<string[]>(moves)).toEqual(["→ In Progress", "→ Not Required", "→ Cancelled"]);
+    // The project table's ⋯ (Cancel / Not required) follows the same rule.
+    h.as(902);
+    expect(h.ev<string[]>("(()=>{let it=[];const m=window.menu;window.menu=(n,x)=>{it=x;};"
+      + "ACTIONS.delivAction({did:'8002'},null);window.menu=m;return it.map(i=>i.label);})()")).toEqual(["Open drawer"]);
+  });
+
+  it("a refused move never reaches the server", async () => {
+    const h = await boot(904);
+    expect(h.ev<boolean>("applyDelivStatus(deliv(8002),'cancelled')")).toBe(false);
+    h.as(906);
+    expect(h.ev<boolean>("applyDelivStatus(deliv(8002),'in_progress')")).toBe(false);
+    expect(h.writes()).toEqual([]);
+  });
+
+  it("the pipeline lets only someone with a move drag the card", async () => {
+    const h = await boot(906);
+    expect(h.ev<string>("viewPipeline()")).not.toContain('data-drag="deliverable:8002"');
+    h.as(901);
+    expect(h.ev<string>("viewPipeline()")).toContain('data-drag="deliverable:8002"');
+  });
+
+  it("→ In review opens Submit a version; it never sets the status alone", async () => {
+    const h = await boot(902);
+    h.ev("deliv(8002).status='in_progress'");
+    expect(h.ev<string[]>(moves)).toContain("→ In Review");
+    h.ev("applyDelivStatus(deliv(8002),'in_review')");
+    expect(h.doc.getElementById("modal-layer")!.innerHTML).toContain("Submit v1 for review");
+    expect(h.doc.getElementById("modal-layer")!.innerHTML).toContain("Any Team Lead or Admin");
+    expect(h.writes()).toEqual([]);
+  });
+
+  it("→ Changes requested asks the reviewer what to change, and sends it", async () => {
+    const h = await boot(904);
+    expect(h.ev<string[]>("MENUS.delivMenu({did:'8001'}).filter(i=>i.fn&&String(i.label).startsWith('→')).map(i=>i.label)"))
+      .toEqual(expect.arrayContaining(["→ Approved", "→ Changes Requested"]));
+    h.ev("applyDelivStatus(deliv(8001),'changes_requested')");
+    const modal = h.doc.getElementById("modal-layer")!;
+    expect(modal.innerHTML).not.toMatch(/P4|version trail/);
+    h.ev("ACTIONS.confirmChanges({did:'8001'})");
+    expect(h.writes(), "sent with no note").toEqual([]);
+    (h.doc.getElementById("rc-note") as HTMLTextAreaElement).value = "Colour is off in the second half";
+    h.ev("ACTIONS.confirmChanges({did:'8001'})");
+    expect(h.writes().find((c) => c.url.endsWith("/deliverables/8001/review"))?.body)
+      .toEqual({ outcome: "changes_requested", comment: "Colour is off in the second half" });
+    // …and the team reads it in My Day, with who asked.
+    h.as(902);
+    expect(h.ev<string>("viewMyDay()")).toContain("Lead asked for changes to v1: Colour is off in the second half");
+  });
+
+  it("a status changed from the drawer shows in the drawer at once", async () => {
+    const h = await boot(901);
+    h.ev("drawerDeliverable(8002)");
+    h.ev("applyDelivStatus(deliv(8002),'not_required')");
+    expect(h.doc.querySelector("#drawer .dr-head")!.innerHTML).toContain("Not Required");
+  });
+
+  it("✔ Mark delivered is offered to the people on it and the project's lead — not the Coordinator or another lead", async () => {
+    const h = await boot(902);
+    h.ev(`deliv(8002).status='approved';DB.deliverable_versions.push({id:88002,deliverable_id:8002,version_no:1,
+      review_status:'approved',submitted_by:902,submitted_at:TODAY+'T08:00:00Z',drive_url:'https://drive.google.com/d'});`);
+    for (const [who, offered] of [[902, true], [901, true], [907, true], [904, false], [906, false]] as const) {
+      h.as(who);
+      h.ev("drawerDeliverable(8002)");
+      expect(h.doc.getElementById("drawer")!.innerHTML.includes('data-act="markDelivered"'), `user ${who}`).toBe(offered);
+    }
+  });
+
+  it("delivered work: ✔ Approve / ↩ Revise in the drawer for a lead off its team; Revise needs a note and reopens it in My Day", async () => {
+    const h = await boot(904);
+    h.ev(`deliv(8002).status='delivered';deliv(8002).approval_status='pending';DB.deliverable_versions.push({id:88002,
+      deliverable_id:8002,version_no:1,review_status:'approved',submitted_by:902,submitted_at:TODAY+'T08:00:00Z',drive_url:'https://drive.google.com/d'});`);
+    for (const [who, offered] of [[904, true], [907, true], [902, false], [906, false]] as const) {
+      h.as(who);
+      h.ev("drawerDeliverable(8002)");
+      expect(h.doc.getElementById("drawer")!.innerHTML.includes('data-act="reviewDelivered"'), `user ${who}`).toBe(offered);
+    }
+    h.as(904);
+    h.ev("ACTIONS.reviewDelivered({did:'8002',v:'changes_requested'})");
+    h.ev("ACTIONS.confirmSignOff({did:'8002',v:'changes_requested'})");
+    expect(h.writes(), "sent back with no note").toEqual([]);
+    (h.doc.getElementById("rd-note") as HTMLTextAreaElement).value = "Wrong logo at the end";
+    h.ev("ACTIONS.confirmSignOff({did:'8002',v:'changes_requested'})");
+    expect(h.writes().find((c) => c.url.endsWith("/deliverables/8002/approval"))?.body)
+      .toEqual({ approval_status: "changes_requested", note: "Wrong logo at the end" });
+    h.as(902);
+    expect(h.ev<boolean>("isDeliveredOutput(deliv(8002))")).toBe(false);
+    expect(h.ev<string>("viewMyDay()")).toContain("Lead sent it back after delivery: Wrong logo at the end");
+  });
+
+  it("project ⋯: another team's lead runs nothing; the Coordinator edits details and can re-route", async () => {
+    const h = await boot(904);
+    const state = () => Object.fromEntries(h.ev<Array<{ label: string; disabled?: boolean }>>("MENUS.projMore({pid:'7001'})")
+      .filter((i) => i.label).map((i) => [i.label, !i.disabled]));
+    expect(state()).toMatchObject({ "Edit details": false, "Delete project": false, "Cancel project": false });
+    expect(h.ev<string>("projList(visibleProjects())")).not.toContain("ACTIONS.deleteProject({pid:7001})");
+    h.as(901);
+    expect(state()).toMatchObject({ "Edit details": true, "Delete project": true, "Cancel project": true });
+    expect(h.ev<string>("projList(visibleProjects())")).toContain("ACTIONS.deleteProject({pid:7001})");
+    h.ev("ACTIONS.editProject({pid:'7001'})");
+    expect(h.doc.getElementById("ep-team"), "a lead was offered re-routing").toBeNull();
+    h.ev("closeModal()");
+    h.as(906);
+    expect(state()).toMatchObject({ "Edit details": true, "Delete project": false, "Cancel project": false });
+    h.ev("ACTIONS.editProject({pid:'7001'})");
+    const team = h.doc.getElementById("ep-team") as HTMLSelectElement;
+    expect(team, "the Coordinator has no Team field").not.toBeNull();
+    team.value = "9002";
+    h.ev("ACTIONS.saveProjectEdit({pid:'7001'})");
+    expect(h.writes().find((c) => c.url.endsWith("/projects/7001") && c.method === "PATCH")?.body)
+      .toMatchObject({ team_id: 9002 });
+    // Re-routed: the new team's lead now owns it.
+    expect(h.ev<number>("proj(7001).owner_id")).toBe(904);
+  });
+
+  it("the Projects board lets only those who run a project drag it", async () => {
+    const h = await boot(904);
+    expect(h.ev<string>("projKanban([proj(7001)])")).not.toContain('data-drag="project:7001"');
+    h.as(901);
+    expect(h.ev<string>("projKanban([proj(7001)])")).toContain('data-drag="project:7001"');
+  });
+
+  it("Assign to SMC member is not offered to the Coordinator or a crew employee", async () => {
+    const h = await boot(906);
+    h.ev("DASG.byDeliv[8002]={crew:null,smc:null,team:[]}");
+    expect(h.ev<string>("delivAssignSection(8002)")).not.toContain('data-kind="smc"');
+    h.as(903);
+    expect(h.ev<string>("delivAssignSection(8002)")).not.toContain('data-kind="smc"');
+    h.as(904);
+    expect(h.ev<string>("delivAssignSection(8002)")).toContain('data-kind="smc"');
+  });
+
+  it("a Production Board card: only leads and Admins move it, and a synced move obeys the review", async () => {
+    const h = await boot(902);
+    h.ev(`DB.boards.push({id:9901,name:'Edit board',description:'',sync_status:true});
+      DB.board_columns.push({id:9910,board_id:9901,name:'Doing',sort_order:1,maps_to_status:null},
+                            {id:9911,board_id:9901,name:'Approved',sort_order:2,maps_to_status:'approved'});
+      DB.cards.push({id:9921,board_id:9901,column_id:9910,title:'Photos',labels:[],checklist:[],sort_order:1,
+                     linked_entity_type:'deliverable',linked_entity_id:8005});`);
+    h.ev("moveCardToColumn(9921,9911)");
+    expect(h.ev<number>("DB.cards.find(c=>c.id===9921).column_id"), "an employee moved a card").toBe(9910);
+    h.as(901);   // 8005 is Lead Alpha's own deliverable: they may not approve it
+    h.ev("moveCardToColumn(9921,9911)");
+    expect(h.ev<number>("DB.cards.find(c=>c.id===9921).column_id")).toBe(9910);
+    expect(h.ev<string>("deliv(8005).status")).toBe("in_review");
+    expect(h.writes()).toEqual([]);
+    h.as(904);
+    h.ev("moveCardToColumn(9921,9911)");
+    expect(h.ev<number>("DB.cards.find(c=>c.id===9921).column_id")).toBe(9911);
+  });
+
+  it("Home's Pending Approvals: only for reviewers, every waiting version, newest first, and 'View all' opens In review", async () => {
+    const h = await boot(902);
+    h.ev("DB.project_assignments.push({id:99009,project_id:7001,user_id:902,is_project_manager:true,removed_at:null})");
+    expect(h.ev<string>("viewDashboard()"), "an employee PM was shown an approvals queue").not.toContain("Pending Approvals");
+    h.as(906);
+    expect(h.ev<string>("viewDashboard()")).not.toContain("Pending Approvals");
+    h.as(904);
+    // Five more submissions, the newest last: none may be cut off, and cancelled work drops out.
+    h.ev(`for(let i=0;i<5;i++){DB.deliverables.push({id:8100+i,project_id:7001,deliverable_type_id:window.__T,title:'Clip '+i,
+      owner_id:903,due_date:TODAY,status:'in_review',deleted_at:null,approval_status:'pending'});
+      DB.deliverable_versions.push({id:88100+i,deliverable_id:8100+i,version_no:1,review_status:'pending',submitted_by:903,
+      submitted_at:TODAY+'T1'+i+':00:00Z',drive_url:'https://drive.google.com/x'});}
+      deliv(8104).status='cancelled';`);
+    const ids = h.ev<number[]>("pendingVersionReviews().map(x=>x.d.id)");
+    expect(ids).toEqual(expect.arrayContaining([8001, 8004, 8005, 8100, 8101, 8102, 8103]));
+    expect(ids).not.toContain(8104);
+    expect(ids.indexOf(8103)).toBeLessThan(ids.indexOf(8100));
+    const html = h.ev<string>("pendingApprovalsWidget()");
+    for (const id of [8001, 8100, 8103]) expect(html).toContain(`deliverable:${id}`);
+    h.ev("ACTIONS.viewApprovals()");
+    expect(h.ev<string[]>("S.filters.pipe.status")).toEqual(["in_review"]);
+    const pipe = h.ev<string>("viewPipeline()");
+    expect(pipe).not.toContain("deliverable:8002");
+    // The tile counts what is on the board, not one reviewer's own queue.
+    const all = h.ev<number>("pendingVersions(DB.deliverables).length");
+    expect(pipe).toContain(`${all} versions pending`);
+    expect(all).toBeGreaterThanOrEqual(ids.length);
   });
 });

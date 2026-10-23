@@ -3812,10 +3812,109 @@ function leadsProject(p){
 function canReviewDeliverables(p){return isAdmin()||isTL();}
 /* Who may schedule or allocate a deliverable: Admin, the project's lead, or its
    owner/PM. Mirrors canManageProject() behind /schedule and /assignee. */
-function canScheduleWork(p){return isAdmin()||leadsProject(p)||!!(p&&(p.owner_id===S.me||isPMof(p.id)));}
+function canScheduleWork(p){return canRunProject(p);}
 /* Who may edit a deliverable due date (PRD §5) — mirrors the server's
    canEditProjectDates(): Admin, or the project's own lead. The server re-checks. */
 function canEditDueDates(p){return isAdmin()||leadsProject(p);}
+/* ══ WHAT THE SERVER ALLOWS — one helper per gate ════════════════════════════
+   Each helper copies one server check, and every control that ends at that
+   route asks it: the ⋯ menus, drag and drop, the phone Move sheet, the drawer
+   footer, the list icons. A control is offered only when the server will
+   honour it; the server still decides. */
+/* canManageProject(): Admin, the project's own lead, or its owner/PM. Running
+   the project — status moves, scope, scheduling — and nothing more. */
+function canRunProject(p){return !!p&&(isAdmin()||leadsProject(p)||p.owner_id===S.me||isPMof(p.id));}
+/* PATCH /projects/:id: whoever runs it, and the Coordinator, who keeps the
+   record. Changing its team (re-routing) is the Coordinator's or an Admin's. */
+function canEditProjectDetails(p){return !!p&&(isCoord()||canRunProject(p));}
+function canRerouteProject(p){return !!p&&(isCoord()||isAdmin());}
+/* DELETE /projects/:id: an Admin or the project's own lead. */
+function canDeleteProject(p){return !!p&&(isAdmin()||leadsProject(p));}
+/* POST /projects/:id/status: the moves this person may make from where the
+   project is. Approving a proposal is an approval (any Team Lead or Admin);
+   every other move is running it; archiving and un-archiving are an Admin's. */
+function projectStatusMoves(p){
+  if(!p||(p.status==='archived'&&!isAdmin()))return [];
+  const runs=canRunProject(p);
+  return (PROJ_TRANSITIONS[p.status]||[]).filter(s=>
+    p.status==='proposed'&&s==='approved'?canReviewDeliverables(p)
+    :s==='archived'?isAdmin():runs);
+}
+function canChangeProjectStatus(p,to){const m=projectStatusMoves(p);return to?m.includes(to):m.length>0;}
+/* POST /deliverables/:id/versions: the people on it, the project's lead or an
+   Admin — on work that is still open. */
+function canSubmitVersion(dl){
+  return !!dl&&['not_started','in_progress','changes_requested'].includes(dl.status)
+    &&(onDelivTeam(dl)||isAdmin()||leadsProject(proj(dl.project_id)));
+}
+/* reviewDeliverable(): an Admin or any Team Lead — not someone on its team, not
+   the latest version's submitter, and only while there is a version and the
+   work is still in production. */
+function canReviewDeliverable(dl){
+  if(!dl||['delivered','not_required','cancelled'].includes(dl.status))return false;
+  if(!canReviewDeliverables(proj(dl.project_id))||onDelivTeam(dl))return false;
+  const v=latestVersion(dl.id);
+  return !!v&&v.submitted_by!==S.me;
+}
+/* POST /deliverables/:id/deliver: the people on it, the project's lead or an
+   Admin; an approved latest version, or a review-exempt type in progress. */
+function canMarkDelivered(dl){
+  if(!dl||!(onDelivTeam(dl)||isAdmin()||leadsProject(proj(dl.project_id))))return false;
+  const exempt=!!dtype(dl.deliverable_type_id).review_exempt;
+  if(dl.status==='in_progress')return exempt;
+  if(dl.status!=='approved')return false;
+  const v=latestVersion(dl.id);
+  return exempt||(!!v&&v.review_status==='approved');
+}
+/* POST /deliverables/:id/approval: the sign-off on delivered work — any Team
+   Lead or Admin who is not on its team, while it waits for one. */
+function canSignOff(dl){
+  return !!dl&&dl.status==='delivered'&&(dl.approval_status||'pending')==='pending'
+    &&canReviewDeliverables(proj(dl.project_id))&&!onDelivTeam(dl);
+}
+/* POST /deliverables/:id/assignee {kind:'smc'}: Admin, any Team Lead, or the
+   project's owner/PM. */
+function canAssignSmc(dl){
+  const p=dl&&proj(dl.project_id);
+  return !!p&&(isAdmin()||isTL()||p.owner_id===S.me||isPMof(p.id));
+}
+/* POST /deliverables/:id/status — every move offered for this deliverable.
+   In review is reached by submitting a version, and the two verdicts are the
+   review itself, so those three open their dialogs (applyDelivStatus). Scope
+   moves — not required, cancelled, back to not started — run the project. */
+function allowedDelivMoves(dl){
+  if(!dl)return [];
+  const runs=canRunProject(proj(dl.project_id)), v=latestVersion(dl.id);
+  return (DELIV_TRANSITIONS[dl.status]||[]).filter(s=>{
+    switch(s){
+      case 'in_review': return canSubmitVersion(dl);
+      case 'approved': return canReviewDeliverable(dl)&&v.review_status==='pending';
+      case 'changes_requested': return canReviewDeliverable(dl);
+      case 'delivered': return canMarkDelivered(dl);
+      case 'in_progress': return runs||onDelivTeam(dl);
+      default: return runs;
+    }
+  });
+}
+/* Why a move is not offered — said in the words the server would use. */
+function delivMoveRefusal(dl,s){
+  if(!(DELIV_TRANSITIONS[dl.status]||[]).includes(s))
+    return 'Not a valid transition: '+DELIV_STATUS[dl.status].l+' → '+DELIV_STATUS[s].l;
+  const v=latestVersion(dl.id);
+  if(s==='approved'||s==='changes_requested'){
+    if(!canReviewDeliverables(proj(dl.project_id)))return 'only a Team Lead or an Admin may review it';
+    if(onDelivTeam(dl))return 'you cannot review a deliverable you are assigned to';
+    if(!v)return 'there is no version to review. Someone on it submits one first';
+    if(v.submitted_by===S.me)return 'you submitted the latest version. Someone else must review it';
+    return 'there is no version waiting for review. Someone on it submits one first';
+  }
+  if(s==='in_review')return "only the people on it, the project's Team Lead or an Admin may submit a version";
+  if(s==='delivered')return onDelivTeam(dl)||isAdmin()||leadsProject(proj(dl.project_id))
+    ?'only an approved deliverable can be delivered'
+    :"only the people on it, the project's Team Lead or an Admin may mark it delivered";
+  if(s==='in_progress')return 'you can only update deliverables assigned to you';
+  return "only the project's Team Lead, owner/PM or an Admin may change this deliverable's scope";
+}
 const isPMof = (pid,uid=S.me)=>DB.project_assignments.some(a=>a.project_id===pid&&a.user_id===uid&&a.is_project_manager&&!a.removed_at);
 /* §16: projects on which the current user may CREATE deliverables — the ones they
    run (Admin, the project's lead, its owner/PM), as POST /projects/:id/deliverables. */
@@ -6783,14 +6882,23 @@ function pendingReportsToday(){
 }
 function deliverablesDue(from,to){return DB.deliverables.filter(d=>d.due_date>=from&&d.due_date<=to&&
   !['delivered','not_required','cancelled'].includes(d.status));}
+/* The versions waiting for a reviewer: the LATEST version of each deliverable
+   in review — an older one was superseded, and cancelled, not-required or
+   delivered work is out of review (delivered work has its own sign-off). The
+   same set the pipeline shows under In review, so the counts agree. Most
+   urgent first: by due date, then the newest submission. */
+function pendingVersions(ds){
+  return ds.filter(d=>!d.deleted_at&&d.status==='in_review').map(d=>{
+    const v=latestVersion(d.id);
+    return v&&v.review_status==='pending'?{v,d,age:D.diff(TODAY,String(v.submitted_at||TODAY).slice(0,10))}:null;})
+    .filter(Boolean)
+    .sort((a,b)=>String(a.d.due_date||'9')<String(b.d.due_date||'9')?-1:String(a.d.due_date||'9')>String(b.d.due_date||'9')?1
+      :String(b.v.submitted_at||'').localeCompare(String(a.v.submitted_at||'')));
+}
+/* The reviews that are MINE to give: any project, as a Team Lead or an Admin —
+   never one I am on, and never a version I submitted (canReviewDeliverable). */
 function pendingVersionReviews(){
-  return DB.deliverable_versions.filter(v=>v.review_status==='pending').map(v=>{
-    const d=deliv(v.deliverable_id);if(!d)return null;
-    return {v,d,age:D.diff(TODAY,v.submitted_at.slice(0,10))};}).filter(Boolean)
-    /* The reviews that are MINE to give: projects I lead (or all, as Admin) —
-       never another team's, and never my own deliverable or version. */
-    .filter(x=>canReviewDeliverables(proj(x.d.project_id))&&!onDelivTeam(x.d)&&x.v.submitted_by!==S.me)
-    .sort((a,b)=>b.age-a.age);
+  return pendingVersions(DB.deliverables).filter(x=>canReviewDeliverable(x.d));
 }
 function flaggedReports(){return visibleReports().filter(r=>r.status==='flagged')
   .map(r=>({r,age:D.diff(TODAY,r.report_date)})).sort((a,b)=>b.age-a.age);}
@@ -9060,7 +9168,7 @@ function viewDashboard(){
 
   <div class="grid g2 sec">
     ${upcomingShootsWidget()}
-    ${(!isEmp()||DB.project_assignments.some(a=>a.user_id===S.me&&a.is_project_manager&&!a.removed_at))?pendingApprovalsWidget():""}
+    ${canReviewDeliverables()?pendingApprovalsWidget():""}
   </div>
 
   ${(()=>{
@@ -9277,14 +9385,13 @@ function upcomingShootsWidget(){
 
 /* Pending approvals — FR-1.7 */
 function pendingApprovalsWidget(){
-  /* §16/FR-1.7: TL/Admin see all; an employee sees this ONLY as PM, scoped to their PM projects. */
-  let _revs=pendingVersionReviews();
-  if(isEmp())_revs=_revs.filter(({d})=>isPMof(d.project_id));
-  const revs=_revs.slice(0,4);
+  /* Every version waiting on this reviewer, most urgent first — shown only to
+     those who review (Home asks canReviewDeliverables()). */
+  const revs=pendingVersionReviews();
   const TINT={5:'v',6:'v',4:'v',7:'v',2:'t',1:'t',11:'t',12:'a',8:'a',10:'b',3:'b',9:'b',13:'g',14:'g'};
   return `<div class="card">
     <div class="card-head"><h3>Pending Approvals</h3>
-      </div>
+      <div class="ca"><span class="chip">${revs.length}</span></div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>Deliverable</th><th class="hide-sm">Project</th><th>Requested</th><th>Due Date</th><th>Action</th></tr></thead>
       <tbody>${revs.map(({v,d,age})=>{
@@ -9300,7 +9407,7 @@ function pendingApprovalsWidget(){
           <td data-stop><button class="btn xs" data-drawer="deliverable:${d.id}">Review</button></td></tr>`;}).join('')
         ||'<tr><td colspan="5" class="tbl-empty">Nothing waiting on a reviewer.</td></tr>'}
       </tbody></table></div></div>
-    <button class="card-link" data-go="#/media/pipeline">View all approvals ${ic('right')}</button></div>`;
+    <button class="card-link" data-act="viewApprovals">View all approvals ${ic('right')}</button></div>`;
 }
 
 /* W1 — Needs attention: flagged reports, overdue deliverables, blocked tasks, idle projects */
@@ -9747,9 +9854,22 @@ function latestVersion(did){
    has been approved by a TL/Admin. Pressing Deliver in My Day submits a
    version for review — it never delivers, so nothing can skip the reviewer.
    status==='delivered' also qualifies: review-exempt types and historical rows
-   reach delivered through the drawer's "Mark delivered" step. */
+   reach delivered through the drawer's "Mark delivered" step.
+   Sent back at sign-off, the work is open again although its last version
+   was approved: it belongs with the team's open work, not here. */
+/* My Day's "what to change" line: who asked, and what they said — on a
+   version's review, or on delivered work sent back at sign-off. */
+function changeRequestLine(d,v){
+  const who=uid=>uid?esc((user(uid).full_name||'A reviewer').split(' ')[0]):'A reviewer';
+  if(['changes_requested','in_progress'].includes(d.status)&&['changes_requested','rejected'].includes(d.approval_status))
+    return `<div class="dlv-note">↩ ${who(d.approved_by)} sent it back after delivery${d.approval_note?': '+esc(d.approval_note):''}</div>`;
+  if(v&&v.review_status==='changes_requested')
+    return `<div class="dlv-note">↩ ${who(v.reviewed_by)} asked for changes to v${v.version_no}${v.review_comment?': '+esc(v.review_comment):''}</div>`;
+  return '';
+}
 function isDeliveredOutput(d){
   if(d.status==='delivered')return true;
+  if(d.status==='changes_requested'||d.status==='in_progress')return false;
   const v=latestVersion(d.id);
   return !!v&&v.review_status==='approved';
 }
@@ -10040,8 +10160,7 @@ function viewMyDay(){
           <span class="${over?'st-danger-txt':''}">${over?'⚑ ':''}due ${D.fmt(d.due_date)}</span>
           ${withWho}
         </div>
-        ${v&&v.review_status==='changes_requested'&&v.review_comment
-          ? `<div class="dlv-note">↩ ${esc(v.review_comment)}</div>`:''}
+        ${changeRequestLine(d,v)}
         <div class="dlv-acts">
           ${canSubmit
             ? `<button class="btn xs primary" data-act="submitVersion" data-did="${d.id}"
@@ -10555,7 +10674,7 @@ function projList(ps){
             <span class="hide-sm chip pj-dl" title="Deliverables delivered">${dl.filter(d=>d.status==='delivered').length}/${dl.length} ◆</span>
             <span class="hide-sm">${avStack(crew,3)}</span>
             ${priTag(p.priority)}
-            ${(can('project.status')||isAdmin())?`<span class="icon-btn" role="button" title="Delete project" style="flex:0 0 auto;color:var(--danger)"
+            ${canDeleteProject(p)?`<span class="icon-btn" role="button" title="Delete project" style="flex:0 0 auto;color:var(--danger)"
               onclick="event.stopPropagation();event.preventDefault();ACTIONS.deleteProject({pid:${p.id}})">${ic('trash')}</span>`
               :'<span class="hide-sm" aria-hidden="true"></span>'/* keeps the delete column, so the grid is the same for every role */}</button>`;}).join('')}
       </div></div></div>`).join('')||`<div class="empty"><div class="e-ico">◌</div><h4>No projects match</h4>
@@ -10599,14 +10718,14 @@ function projKanban(ps){
   const cols=['proposed','approved','planning','in_production','in_review','delivered','completed'];
   return `<div class="note mb3"><span class="hide-m">Drag a card to change status.</span>
     <span class="m-only">Tap ⋯ on a card to change its status.</span>
-    ${can('project.status')?'':'You have read-only access to status here.'}</div>
+    ${ps.some(p=>canChangeProjectStatus(p))?'':'You have read-only access to status here.'}</div>
     <div class="kb">${cols.map(c=>{
       const list=ps.filter(p=>p.status===c);
       return `<div class="kb-col" data-drop="projstatus:${c}">
         <div class="kb-col-head"><span class="kt">${statusPill(PROJ_STATUS,c)}</span><span class="kc">${list.length}</span></div>
         <div class="kb-cards">${list.map(p=>{const pr=projectProgress(p.id);
           const crew=DB.project_assignments.filter(a=>a.project_id===p.id&&!a.removed_at).map(a=>a.user_id);
-          return `<div class="kb-card" draggable="true" data-drag="project:${p.id}" data-go="#/media/projects/${p.id}">
+          return `<div class="kb-card" ${canChangeProjectStatus(p)?`draggable="true" data-drag="project:${p.id}"`:''} data-go="#/media/projects/${p.id}">
             <div class="kc-top"><span class="chip" style="border-color:${ptype(p.project_type_id).color}">
               <span class="dot" style="background:${ptype(p.project_type_id).color}"></span>${esc(ptype(p.project_type_id).name)}</span>
               ${p.priority==='urgent'||p.priority==='high'?priTag(p.priority):''}
@@ -10840,7 +10959,7 @@ function viewProject(id,tab){
   const shoots=DB.shoots.filter(s=>s.project_id===p.id);
   /* One request for the gear of every shoot on this page, not one per row. */
   shootKitLoad(shoots.map(s=>s.id));
-  const editable=can('project.edit',{project_id:p.id})&&!['archived'].includes(p.status);
+  const editable=canChangeProjectStatus(p);
   const tabs=[['overview','Overview',0],['deliverables','Deliverables',dls.length],['shoots','Shoots',shoots.length],
     /* Phase 17H — a project's equipment. Offered to anyone who holds the
        Equipment module; what they SEE inside is decided by inventory scope, on
@@ -11218,7 +11337,7 @@ function projDeliverablesTab(p,dls){
             ${d.status==='delivered'?(()=>{const ap=DELIV_APPROVAL[d.approval_status||'pending']||DELIV_APPROVAL.pending;
               return `<div class="t-sub"><span class="status ${ap.c}" style="font-size:10px"><span class="si">${sIco(ap)}</span>${ap.l}</span></div>`;})():''}</td>
           <td class="num nowrap" data-stop data-m="actions">
-            ${d.status==='delivered'&&(d.approval_status||'pending')==='pending'&&canReviewDeliverables(p)&&d.owner_id!==S.me?
+            ${canSignOff(d)?
               `<button class="btn xs primary" data-act="reviewDelivered" data-did="${d.id}" data-v="approved">✔ Approve</button>
                <button class="btn xs" data-act="reviewDelivered" data-did="${d.id}" data-v="changes_requested">↩ Revise</button>`:''}
             ${DB.drive_links.filter(l=>l.entity_type==='deliverable'&&l.entity_id===d.id).length?
@@ -11362,6 +11481,7 @@ function viewPipeline(){
   if(f.owner.length)ds=ds.filter(d=>f.owner.includes(d.owner_id));
   if(f.unit.length)ds=ds.filter(d=>f.unit.includes(proj(d.project_id).academic_unit_id));
   if(f.ptype.length)ds=ds.filter(d=>f.ptype.includes(proj(d.project_id).project_type_id));
+  if((f.status||[]).length)ds=ds.filter(d=>f.status.includes(d.status));
   const cols=['not_started','in_progress','in_review','changes_requested','approved','delivered'];
   const over=ds.filter(d=>d.due_date&&d.due_date<TODAY&&!['delivered','not_required','cancelled'].includes(d.status));
   const flight=ds.filter(d=>!['delivered','not_required','cancelled'].includes(d.status));
@@ -11379,7 +11499,7 @@ function viewPipeline(){
         ${canOwnProjects().length?`<button class="btn primary" data-act="assignWork">${ic('plus')} Assign work</button>`:''}`,
       kpis:[kpi('In flight',flight.length,{meta:`across ${plural(nProj,'project')}`}),
         kpi('Overdue',over.length,{tone:over.length?'alert':'',meta:over.length?'oldest '+oldest+'d':'clean'}),
-        kpi('Awaiting review',inReview,{meta:`${pendingVersionReviews().length} versions pending`}),
+        kpi('Awaiting review',inReview,{meta:`${pendingVersions(ds).length} versions pending`}),
         kpi('Delivered (30d)',done30.length,{meta:`weighted ${done30.reduce((s,d)=>s+d.weight,0)}`})]})}
 
     <div class="card mb4"><div class="card-body tight"><div class="f wrap gap2 ac">
@@ -11388,7 +11508,8 @@ function viewPipeline(){
       <button class="btn sm" data-menu="pipeOwner">Owner${f.owner.length?' · '+f.owner.length:''} ▾</button>
       <button class="btn sm" data-menu="pipeUnit">Academic unit${f.unit.length?' · '+f.unit.length:''} ▾</button>
       <button class="btn sm" data-menu="pipePtype">Project type${f.ptype.length?' · '+f.ptype.length:''} ▾</button>
-      ${(f.q||f.type.length||f.owner.length||f.unit.length||f.ptype.length)?'<button class="btn sm ghost" data-act="pipeClear">Clear</button>':''}
+      ${(f.status||[]).length?`<span class="chip">Status: ${f.status.map(x=>esc(DELIV_STATUS[x].l)).join(', ')}</span>`:''}
+      ${(f.q||f.type.length||f.owner.length||f.unit.length||f.ptype.length||(f.status||[]).length)?'<button class="btn sm ghost" data-act="pipeClear">Clear</button>':''}
       <span class="ml-auto small mut3">${ds.length} deliverables</span>
     </div></div></div>
 
@@ -11401,7 +11522,9 @@ function viewPipeline(){
         <div class="kb-cards">${list.map(d=>{
           const over=d.due_date&&d.due_date<TODAY&&!['delivered'].includes(d.status);
           const p=proj(d.project_id);
-          return `<div class="kb-card" draggable="true" data-drag="deliverable:${d.id}" data-drawer="deliverable:${d.id}">
+          /* Draggable only by someone with a move to make on it. */
+          const movable=allowedDelivMoves(d).length>0;
+          return `<div class="kb-card" ${movable?`draggable="true" data-drag="deliverable:${d.id}"`:''} data-drawer="deliverable:${d.id}">
             <div class="kc-top"><span class="code" title="${esc(p.code||'')}">${esc(p.name||p.code||'')}</span>
               <span style="color:${ptype(p.project_type_id).color}">${dtype(d.deliverable_type_id).icon}</span>
               ${over?`<span class="status st-danger" style="height:18px;font-size:10px"><span class="si">⚑</span>${D.diff(TODAY,d.due_date)}d</span>`:''}
@@ -18669,10 +18792,10 @@ function viewBoards(){
           <span class="kc ${c.wip_limit&&cards.length>c.wip_limit?'wip-over':''}">${cards.length}${c.wip_limit?'/'+c.wip_limit:''}</span></div>
         <div class="kb-cards">${cards.map(card=>{
           const done=card.checklist.filter(i=>i.is_done).length;
-          return `<div class="kb-card" draggable="true" data-drag="card:${card.id}" data-drawer="card:${card.id}">
+          return `<div class="kb-card" ${canMoveCards()?`draggable="true" data-drag="card:${card.id}"`:''} data-drawer="card:${card.id}">
             ${card.labels.length?`<div class="f gap1 mb2">${card.labels.map(l=>{const lb=DB.labels.find(x=>x.id===l);
               return `<span style="height:5px;width:26px;border-radius:3px;background:${lb.color}" title="${esc(lb.name)}"></span>`;}).join('')}</div>`:''}
-            ${kcMove('cardMove',`data-cid="${card.id}"`,card.title)}
+            ${canMoveCards()?kcMove('cardMove',`data-cid="${card.id}"`,card.title):''}
             <div class="kc-title">${esc(card.title)}</div>
             ${card.linked_entity_type?`<div class="mb2"><span class="chip">${card.linked_entity_type==='project'?'▤':'◆'}
               ${esc(card.linked_entity_type==='project'?proj(card.linked_entity_id).name:(deliv(card.linked_entity_id)||{title:'—'}).title).slice(0,30)}
@@ -20217,7 +20340,7 @@ function drawerDeliverable(id){
   const links=DB.drive_links.filter(l=>l.entity_type==='deliverable'&&l.entity_id===id);
   const cs=DB.comments.filter(c=>c.entity_type==='deliverable'&&c.entity_id===id);
   const over=d.due_date&&d.due_date<TODAY&&!['delivered','not_required','cancelled'].includes(d.status);
-  const canApprove=canReviewDeliverables(proj(d.project_id))&&latest&&latest.submitted_by!==S.me&&!onDelivTeam(d);
+  const canApprove=canReviewDeliverable(d);
   /* Review follows the version, not the status: Pending Approvals lists every
      pending version, and the server reviews the latest whatever the status.
      Closed work is the exception: approving would set a delivered item back to
@@ -20293,8 +20416,12 @@ function drawerDeliverable(id){
          <button class="btn" data-act="requestChanges" data-did="${d.id}">↩ Request changes</button>`:''}
       ${awaiting&&latest.submitted_by===S.me?
         `<span class="small mut3" style="align-self:center">You submitted this version. Someone else must approve it.</span>`:''}
-      ${d.status==='approved'?`<button class="btn primary" data-act="markDelivered" data-did="${d.id}">✔ Mark delivered</button>`:''}
-      ${t.review_exempt&&d.status==='in_progress'?`<button class="btn" data-act="markDelivered" data-did="${d.id}">✔ Mark delivered (review-exempt)</button>`:''}
+      ${canMarkDelivered(d)?(d.status==='approved'
+        ?`<button class="btn primary" data-act="markDelivered" data-did="${d.id}">✔ Mark delivered</button>`
+        :`<button class="btn" data-act="markDelivered" data-did="${d.id}">✔ Mark delivered (review-exempt)</button>`):''}
+      ${canSignOff(d)?
+        `<button class="btn primary" data-act="reviewDelivered" data-did="${d.id}" data-v="approved">✔ Approve</button>
+         <button class="btn" data-act="reviewDelivered" data-did="${d.id}" data-v="changes_requested">↩ Revise</button>`:''}
       <button class="btn ghost ml-auto" data-menu="delivMenu" data-did="${d.id}">⋯</button>
     </div>`);
   wirePage();
@@ -22088,6 +22215,9 @@ const ACTIONS = {
     S._pipq=setTimeout(()=>{const pos=n.selectionStart;render();
       const i=document.querySelector('[oninput*=pipeQ]');if(i){i.focus();i.setSelectionRange(pos,pos);}},280);},
   pipeClear:()=>{S.filters.pipe={type:[],owner:[],unit:[],ptype:[],q:''};render();},
+  /* Home's "View all approvals": the pipeline, narrowed to what is in review. */
+  viewApprovals:()=>{S.filters.pipe={type:[],owner:[],unit:[],ptype:[],q:'',status:['in_review']};
+    if(location.hash==='#/media/pipeline')render();else location.hash='#/media/pipeline';},
   calView:(d)=>{S.cal.view=d.v;render();},
   /* Phone month grid: a day's dots jump to that day in the list below. */
   calDay:(d)=>{const el=document.querySelector(`.cal-day[data-d="${d.d}"]`);if(!el)return;
@@ -22443,7 +22573,7 @@ const ACTIONS = {
           <input class="inp" id="sv-url" placeholder="https://drive.google.com/file/d/…"></div>
         <div class="field"><label class="lbl">Note to reviewer</label>
           <textarea class="inp" id="sv-note" placeholder="What changed since the last version?"></textarea></div>
-        <div class="note">Reviewer must be the project PM, a Team Lead or Admin, and never you.</div></div>
+        <div class="note">Any Team Lead or Admin who is not working on it reviews it, never you. The project's Team Lead is told it is waiting.</div></div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" data-act="confirmVersion" data-did="${dl.id}" data-v="${next}">Submit v${next}</button></div>`);
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
@@ -22460,25 +22590,23 @@ const ACTIONS = {
     const _sv={drive_url:url,note:$('#sv-note').value.trim()};
     closeModal();drawerDeliverable(dl.id);render();
     moSync(MO_API.post('/deliverables/'+dl.id+'/versions',_sv), ()=>drawerDeliverable(dl.id));
-    toast('v'+d.v+' submitted. AUTO-4 reminds the reviewer at 24h and escalates at 72h.','ok');
+    toast('v'+d.v+' submitted. The project\'s Team Lead has been told it is waiting for review.','ok');
   },
   approveVersion:(d)=>{
     const dl=deliv(+d.did);
     const v=DB.deliverable_versions.filter(x=>x.deliverable_id===dl.id).sort((a,b)=>b.version_no-a.version_no)[0];
-    if(v.submitted_by===S.me){toast('a version cannot be approved by its submitter','bad');return;}
-    if(onDelivTeam(dl)){toast('you cannot approve a deliverable you are assigned to','bad');return;}
-    if(!canReviewDeliverables(proj(dl.project_id))){toast("403: only a Team Lead or an Admin may review","bad");return;}
+    if(!canReviewDeliverable(dl)||v.review_status!=='pending'){toast(delivMoveRefusal(dl,'approved'),'bad');return;}
     dl.dispatch_status=dl.dispatch_status==='none'||!dl.dispatch_status?'queued':dl.dispatch_status;
     v.review_status='approved';v.reviewed_by=S.me;v.reviewed_at=TODAY;
     dl.status='approved';
     audit(S.me,'deliverable.version_reviewed','deliverable_version',v.id,{review_status:'pending'},{review_status:'approved'});
-    drawerDeliverable(dl.id);render();toast('v'+v.version_no+' approved','ok');
-    moSync(MO_API.post('/deliverables/'+dl.id+'/review',{outcome:'approved'}), ()=>drawerDeliverable(dl.id));
+    render();refreshDelivDrawer(dl.id);toast('v'+v.version_no+' approved. Everyone on it has been told','ok');
+    moSync(MO_API.post('/deliverables/'+dl.id+'/review',{outcome:'approved'}), ()=>refreshDelivDrawer(dl.id));
   },
   requestChanges:(d)=>{
     const dl=deliv(+d.did);
     modal(`<div class="mo-head"><div><h2>Request changes</h2>
-        <p>Specific notes travel with the version forever. That is the version trail P4 asked for.</p></div></div>
+        <p>Your note stays with this version. Everyone working on it sees it in My Day, and any of them can resubmit.</p></div></div>
       <div class="mo-body"><textarea class="inp" id="rc-note" placeholder="What needs to change, and why?"></textarea></div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" data-act="confirmChanges" data-did="${dl.id}">Request changes</button></div>`);
@@ -22487,19 +22615,20 @@ const ACTIONS = {
   confirmChanges:(d)=>{
     const dl=deliv(+d.did);
     const v=DB.deliverable_versions.filter(x=>x.deliverable_id===dl.id).sort((a,b)=>b.version_no-a.version_no)[0];
-    v.review_status='changes_requested';v.reviewed_by=S.me;v.reviewed_at=TODAY;v.review_comment=$('#rc-note').value.trim();
+    if(!canReviewDeliverable(dl)){toast(delivMoveRefusal(dl,'changes_requested'),'bad');return;}
+    const note=$('#rc-note').value.trim();
+    if(!note){toast('Say what needs to change.','bad');return;}
+    v.review_status='changes_requested';v.reviewed_by=S.me;v.reviewed_at=TODAY;v.review_comment=note;
     dl.status='changes_requested';
     audit(S.me,'deliverable.version_reviewed','deliverable_version',v.id,{review_status:'pending'},{review_status:'changes_requested'});
-    closeModal();drawerDeliverable(dl.id);render();toast('Changes requested. Owner notified','ok');
-    moSync(MO_API.post('/deliverables/'+dl.id+'/review',{outcome:'changes_requested',comment:v.review_comment}), ()=>drawerDeliverable(dl.id));
+    dl.dispatch_status=dl.dispatch_status==='queued'?'none':dl.dispatch_status;
+    closeModal();render();refreshDelivDrawer(dl.id);toast('Changes requested. Everyone on it has been told','ok');
+    moSync(MO_API.post('/deliverables/'+dl.id+'/review',{outcome:'changes_requested',comment:v.review_comment}), ()=>refreshDelivDrawer(dl.id));
   },
   markDelivered:(d)=>{
-    const dl=deliv(+d.did);const t=dtype(dl.deliverable_type_id);
-    const vs=DB.deliverable_versions.filter(v=>v.deliverable_id===dl.id);
-    const latest=vs.sort((a,b)=>b.version_no-a.version_no)[0];
-    if(!t.review_exempt&&(!latest||latest.review_status!=='approved')){
-      toast('Delivered requires an approved latest version (this type is not review-exempt)','bad');return;}
-    dl.status='delivered';dl.completed_at=TODAY;
+    const dl=deliv(+d.did);
+    if(!canMarkDelivered(dl)){toast(delivMoveRefusal(dl,'delivered'),'bad');return;}
+    dl.status='delivered';dl.completed_at=TODAY;dl.approval_status='pending';
     if(dl.quantity_target&&!dl.quantity_delivered)dl.quantity_delivered=dl.quantity_target;
     audit(S.me,'deliverable.delivered','deliverable',dl.id,{status:'approved'},{status:'delivered',completed_at:TODAY});
     drawerDeliverable(dl.id);render();toast('Marked delivered','ok');
@@ -22534,8 +22663,10 @@ const ACTIONS = {
        at the next reload — and neither one ran the state-machine checks that
        every other status change goes through. applyDelivStatus() is that one
        path: the rules, the audit entry and the POST, in the right order. */
-    {label:'Mark not required',icon:'ban',fn:()=>{const dl=deliv(+d.did);if(dl)applyDelivStatus(dl,'not_required');}},
-    {label:'Cancel deliverable',icon:'x',cls:'danger',fn:()=>{const dl=deliv(+d.did);if(dl)applyDelivStatus(dl,'cancelled');}}
+    /* Scope moves are running the project: offered only when allowed. */
+    ...(()=>{const dl=deliv(+d.did),ok=allowedDelivMoves(dl);return [
+      ...(ok.includes('not_required')?[{label:'Mark not required',icon:'ban',fn:()=>applyDelivStatus(dl,'not_required')}]:[]),
+      ...(ok.includes('cancelled')?[{label:'Cancel deliverable',icon:'x',cls:'danger',fn:()=>applyDelivStatus(dl,'cancelled')}]:[])];})()
   ]),
 
   /* ---- equipment ---- */
@@ -26009,10 +26140,18 @@ const ACTIONS = {
   },
   editProject:(d)=>{
     const p=proj(+d.pid);
+    if(!canEditProjectDetails(p)){toast("only the project's Team Lead, owner/PM, the Coordinator or an Admin may edit it",'bad');return;}
+    /* Re-routing is the Coordinator's or an Admin's: the new team's lead takes
+       the project over and is told. Nobody else sees the field. */
+    const teamField=canRerouteProject(p)?`<div class="field"><label class="lbl">Team</label>
+          <select class="inp" id="ep-team">${p.team_id==null?'<option value="">— No team</option>':''}
+            ${activeTeams().map(t=>`<option value="${t.id}" ${String(p.team_id)===String(t.id)?'selected':''}>${esc(t.name)}</option>`).join('')}</select>
+          <div class="hint">Moving it to another team makes that team's lead its owner, and tells them.</div></div>`:'';
     modal(`<div class="mo-head"><div><h2>Edit project</h2><p>${esc(p.code)}</p></div>
         <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
       <div class="mo-body">
         <div class="field"><label class="lbl">Name <span class="req">*</span></label><input class="inp" id="ep-name" value="${esc(p.name)}"></div>
+        ${teamField}
         <div class="row">
           <div class="field"><label class="lbl">Priority</label><select class="inp" id="ep-pri">
             ${['normal','urgent','high','low'].map(x=>`<option value="${x}" ${p.priority===x?'selected':''}>${x[0].toUpperCase()+x.slice(1)}</option>`).join('')}</select></div>
@@ -26035,9 +26174,18 @@ const ACTIONS = {
       start=$('#ep-start').value, end=$('#ep-end').value, desc=$('#ep-desc').value.trim();
     if(name.length<3||name.length>120){toast('name must be 3–120 characters','bad');return;}
     if(start&&end&&end<start){toast('end date must be on or after start date','bad');return;}
+    const body={name,priority:pri,academic_unit_id:unit,start_date:start,end_date:end,description:desc};
+    const teamSel=$('#ep-team'), team=teamSel&&teamSel.value?+teamSel.value:null;
+    const rerouted=!!teamSel&&team!=null&&String(team)!==String(p.team_id);
+    if(rerouted){
+      body.team_id=team;
+      const t=activeTeams().find(x=>String(x.id)===String(team));
+      p.team_id=team; if(t&&t.lead_user_id)p.owner_id=t.lead_user_id;
+    }
     Object.assign(p,{name,priority:pri,academic_unit_id:unit,start_date:start,end_date:end,description:desc});
     closeModal();render();
-    moSync(MO_API.patch('/projects/'+p.id,{name,priority:pri,academic_unit_id:unit,start_date:start,end_date:end,description:desc}),()=>{render();toast('Project updated','ok');});
+    moSync(MO_API.patch('/projects/'+p.id,body),()=>{render();
+      toast(rerouted?"Project moved. The new team's lead now owns it and has been told":'Project updated','ok');});
   },
   setAssignStatus:(d)=>{
     const a=(DB.assignments||[]).find(x=>x.id===+d.aid); if(a)a.status=d.status; render();
@@ -26058,17 +26206,38 @@ const ACTIONS = {
     const did=+d.did||0, dsel=$('#tl-deliv');
     if(did&&dsel&&[...dsel.options].some(o=>+o.value===did))dsel.value=String(did);
   },
+  /* The sign-off on delivered work (POST /approval). Revise sends it back to
+     its team, so it asks what needs to change: that note is what they read
+     in My Day. */
   reviewDelivered:(d)=>{
     const dl=DB.deliverables.find(x=>x.id===+d.did); if(!dl)return;
-    if(!canReviewDeliverables(proj(dl.project_id))){toast("403: only a Team Lead or an Admin may review","bad");return;}
-    if(onDelivTeam(dl)){toast('you cannot approve a deliverable you are assigned to','bad');return;}
-    const to=d.v;
+    if(!canSignOff(dl)){toast(onDelivTeam(dl)?'you cannot sign off a deliverable you are assigned to'
+      :'only a Team Lead or an Admin who is not on it may sign it off','bad');return;}
+    if(d.v!=='approved'){
+      modal(`<div class="mo-head"><div><h2>Send back for revision</h2>
+          <p>Everyone on “${esc(dl.title)}” sees your note in My Day, and any of them can resubmit.</p></div></div>
+        <div class="mo-body"><textarea class="inp" id="rd-note" placeholder="What needs to change, and why?"></textarea></div>
+        <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+          <button class="btn primary" data-act="confirmSignOff" data-did="${dl.id}" data-v="${esc(d.v)}">Send back</button></div>`);
+      $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+      return;
+    }
+    ACTIONS.confirmSignOff({did:dl.id,v:'approved'});
+  },
+  confirmSignOff:(d)=>{
+    const dl=DB.deliverables.find(x=>x.id===+d.did); if(!dl)return;
+    const to=d.v, back=to==='changes_requested'||to==='rejected';
+    const note=back?($('#rd-note')?.value||'').trim():'';
+    if(back&&!note){toast('Say what needs to change.','bad');return;}
     const before={approval_status:dl.approval_status,status:dl.status};
     dl.approval_status=to; dl.approved_by=S.me;
-    if(to==='changes_requested'||to==='rejected')dl.status='changes_requested';
+    if(back){dl.status='changes_requested';dl.approval_note=note;}
     audit(S.me,'deliverable.approval_changed','deliverable',dl.id,before,{approval_status:to,approved_by:S.me});
-    render();toast(to==='approved'?'Approved. The owner sees this immediately':'Sent back for revision','ok');
-    moSync(MO_API.post('/deliverables/'+dl.id+'/approval',{approval_status:to}));
+    if(back)closeModal();
+    render();refreshDelivDrawer(dl.id);
+    toast(back?'Sent back for revision. Everyone on it has been told':'Signed off. Everyone on it has been told','ok');
+    moSync(MO_API.post('/deliverables/'+dl.id+'/approval',back?{approval_status:to,note}:{approval_status:to}),
+      ()=>refreshDelivDrawer(dl.id));
   },
   saveDueDate:(d,el)=>{
     const dl=DB.deliverables.find(x=>x.id===+d.did); if(!dl)return;
@@ -26325,29 +26494,19 @@ const MENUS = {
   columnConfig:()=>['Project','Code','Type','Academic Unit','Status','Priority','Progress','Owner','Start','End']
     .map(c=>({label:c,on:true,fn:()=>toast('Column config persists per saved view','ok')})),
   projStatus:(d)=>{
-    /* §16: status changes = owner/PM (employee) or TL/Admin — others get a static explanation. */
-    if(!can('project.status',{project_id:+d.pid})&&!isAdmin()&&!isTL()){
-      const p0=proj(+d.pid);
-      if(!(p0&&(p0.owner_id===S.me||isPMof(p0.id))))
-        return [{label_only:'Status changes: project owner/PM, Team Lead or Admin only'}];
-    }
+    /* The moves projectStatusMoves() allows: running the project is its own
+       lead's, owner/PM's or an Admin's; any other Team Lead may still APPROVE
+       a proposal, and nothing else. Mirrors POST /projects/:id/status. */
     const p=proj(+d.pid);
-    /* Running the project (every status move) is its own lead's, owner/PM's or
-       an Admin's. Any other Team Lead may still APPROVE a proposal — that is
-       an approval, open to every lead — and nothing else. Mirrors the server. */
-    const runs=isAdmin()||leadsProject(p)||p.owner_id===S.me||isPMof(p.id);
-    const allowed=runs?(PROJ_TRANSITIONS[p.status]||[])
-      :(canReviewDeliverables(p)&&p.status==='proposed'?['approved']:[]);
+    const allowed=projectStatusMoves(p);
     if(!allowed.length) return [{label_only:"Status changes: the project's Team Lead, owner/PM or an Admin"}];
     return [{label_only:'Allowed from '+PROJ_STATUS[p.status].l},
       ...allowed.map(s=>({label:PROJ_STATUS[s].l,icon:PROJ_STATUS[s].i,fn:()=>{
-        if(s==='archived'&&!can('project.archive')){toast('403: only Admin may archive','bad');return;}
         const before=p.status;p.status=s;
         if(s==='archived')p.archived_at=TODAY;
         audit(S.me,'project.status_changed','project',p.id,{status:before},{status:s});
         render();toast('Status → '+PROJ_STATUS[s].l,'ok');
-        moSync(MO_API.post('/projects/'+p.id+'/status',{status:s}));}})),
-      ...(allowed.length?[]:[{label:'No transitions available',disabled:true}])];
+        moSync(MO_API.post('/projects/'+p.id+'/status',{status:s}));}}))];
   },
   /* Users & Roles row: the less frequent actions, so Edit and Equipment keep
      the row's own column narrow enough to stay on the card. */
@@ -26376,23 +26535,25 @@ const MENUS = {
     const p=proj(+d.pid);
     return [
       {label:'Assign crew',icon:'users',disabled:!canAssignOn(p),fn:()=>ACTIONS.assignProject(d)},
-      {label:'Edit details',icon:'edit',disabled:!(isAdmin()||isTL()||p.owner_id===S.me||isPMof(p.id)),fn:()=>ACTIONS.editProject(d)},
+      {label:'Edit details',icon:'edit',disabled:!canEditProjectDetails(p),fn:()=>ACTIONS.editProject(d)},
       {label:'Add Drive link',icon:'link',fn:()=>ACTIONS.addLink(d)},
       {sep:true},
-      {label:'Delete project',icon:'trash',cls:'danger',disabled:!(can('project.status')||isAdmin()),fn:()=>ACTIONS.deleteProject(d)},
-      {label:'Archive project',icon:'archive',disabled:!can('project.archive'),
+      {label:'Delete project',icon:'trash',cls:'danger',disabled:!canDeleteProject(p),fn:()=>ACTIONS.deleteProject(d)},
+      {label:'Archive project',icon:'archive',disabled:!canChangeProjectStatus(p,'archived'),
        fn:()=>{p.status='archived';p.archived_at=TODAY;
          audit(S.me,'project.archived','project',p.id,{status:'completed'},{status:'archived'});
          render();toast('Archived. Read-only except for Admin, always searchable in the Library','ok');
          moSync(MO_API.post('/projects/'+p.id+'/status',{status:'archived'}));}},
-      {label:'Cancel project',icon:'x',cls:'danger',disabled:!can('project.status',{project_id:p.id}),
+      {label:'Cancel project',icon:'x',cls:'danger',disabled:!canChangeProjectStatus(p,'cancelled'),
        fn:()=>{p.status='cancelled';render();toast('Cancelled','warn');
          moSync(MO_API.post('/projects/'+p.id+'/status',{status:'cancelled'}));}}];
   },
   delivMenu:(d)=>{
     const dl=deliv(+d.did);
+    /* Only the moves this person may make (allowedDelivMoves) — the same list
+       the pipeline drag and the phone Move sheet offer. */
     return [{label_only:'Status: '+DELIV_STATUS[dl.status].l},
-      ...(DELIV_TRANSITIONS[dl.status]||[]).map(s=>({label:'→ '+DELIV_STATUS[s].l,icon:DELIV_STATUS[s].i,
+      ...allowedDelivMoves(dl).map(s=>({label:'→ '+DELIV_STATUS[s].l,icon:DELIV_STATUS[s].i,
         fn:()=>{applyDelivStatus(dl,s);}})),
       {sep:true},
       {label:'Copy Drive link',icon:'copy',fn:()=>ACTIONS.copyLink({did:dl.id})},
@@ -26413,7 +26574,7 @@ const MENUS = {
     const cols=DB.board_columns.filter(x=>x.board_id===c.board_id).sort((a,b)=>a.sort_order-b.sort_order);
     return [{label_only:'Move to column'},
       ...cols.map(col=>({label:col.name,on:col.id===c.column_id,
-        disabled:col.id===c.column_id,fn:()=>moveCardToColumn(c.id,col.id)}))];
+        disabled:col.id===c.column_id||!!cardMoveRefusal(c,col),fn:()=>moveCardToColumn(c.id,col.id)}))];
   },
   boardSwitch:()=>DB.boards.map(b=>({label:b.name,icon:'▥',on:b.id===S.board,fn:()=>{S.board=b.id;render();}})),
   periodPick:()=>[{label_only:'Reporting period'},
@@ -26435,28 +26596,27 @@ const MENUS = {
   }
 };
 function applyDelivStatus(dl,s){
-  const t=dtype(dl.deliverable_type_id);
-  const vs=DB.deliverable_versions.filter(v=>v.deliverable_id===dl.id).sort((a,b)=>b.version_no-a.version_no);
-  const latest=vs[0];
-  /* The board's verdicts ARE the review (the server sends them through the same
-     reviewDeliverable() as the drawer), so they obey the same rules — Admins too. */
-  if(s==='approved'||s==='changes_requested'){
-    if(!canReviewDeliverables(proj(dl.project_id))){
-      toast("only a Team Lead or an Admin may review it",'bad');return false;}
-    if(onDelivTeam(dl)){toast('you cannot review a deliverable you are assigned to','bad');return false;}
-    if(latest&&latest.submitted_by===S.me){
-      toast('you submitted the latest version. Someone else must review it','bad');return false;}
-    if(s==='approved'&&(!latest||latest.review_status!=='pending')){
-      toast('there is no version waiting for review. The owner submits one first','bad');return false;}
-  }
-  if(s==='delivered'&&!t.review_exempt&&dl.status!=='approved'){
-    toast('only an approved deliverable can be delivered','bad');return false;}
+  /* Only the moves allowedDelivMoves() offers — the server's rules, Admins
+     included — and the review moves go through the review itself: In review
+     is a version submitted, Changes requested carries the reviewer's note, and
+     Approved is the approve path. */
+  if(!allowedDelivMoves(dl).includes(s)){toast(delivMoveRefusal(dl,s),'bad');return false;}
+  if(s==='in_review'){ACTIONS.submitVersion({did:dl.id});return true;}
+  if(s==='changes_requested'){ACTIONS.requestChanges({did:dl.id});return true;}
+  if(s==='approved'){ACTIONS.approveVersion({did:dl.id});return true;}
   const before=dl.status;dl.status=s;
   if(s==='delivered')dl.completed_at=TODAY;
   audit(S.me,'deliverable.status_changed','deliverable',dl.id,{status:before},{status:s});
-  render();toast('Status → '+DELIV_STATUS[s].l,'ok');
-  moSync(MO_API.post('/deliverables/'+dl.id+'/status',{status:s}));
+  render();refreshDelivDrawer(dl.id);toast('Status → '+DELIV_STATUS[s].l,'ok');
+  moSync(MO_API.post('/deliverables/'+dl.id+'/status',{status:s}),()=>refreshDelivDrawer(dl.id));
   return true;
+}
+/* A status changed from the deliverable's own drawer (its ⋯ menu) shows at
+   once: the drawer is drawn again when it is the one on screen. */
+function refreshDelivDrawer(id){
+  const dr=$('#drawer');
+  if(dr&&dr.classList.contains('on')&&dr.querySelector('.dr-foot [data-menu="delivMenu"][data-did="'+id+'"]'))
+    drawerDeliverable(id);
 }
 
 /* ==========================================================================
@@ -26466,16 +26626,33 @@ function applyDelivStatus(dl,s){
    phone. It was written inline in the drop handler; it lives here so the two
    paths cannot drift apart — the board's two-way sync in particular is a rule
    that must not exist in two copies. */
+/* PATCH /cards/:id: boards are Team Leads' and Admins'. A linked card on a
+   status-synced board moves its deliverable by the rules of
+   POST /deliverables/:id/status — who may, which moves, review included, and
+   In review only by a version. When the deliverable may not move, neither
+   does the card. */
+function canMoveCards(){return isAdmin()||isTL();}
+function cardMoveRefusal(c,col2){
+  if(!canMoveCards())return "only a Team Lead or an Admin may move cards";
+  const b=DB.boards.find(x=>x.id===c.board_id)||{};
+  const dl=c.linked_entity_type==='deliverable'?deliv(c.linked_entity_id):null;
+  const to=col2.maps_to_status;
+  if(!b.sync_status||!to||!dl||dl.status===to)return '';
+  if(to==='in_review')return 'Submit a version to send it for review.';
+  return allowedDelivMoves(dl).includes(to)?'':delivMoveRefusal(dl,to);
+}
 function moveCardToColumn(cardId,colId){
   const c=DB.cards.find(x=>x.id===cardId);
   const col2=DB.board_columns.find(x=>x.id===colId);
   if(!c||!col2||c.column_id===colId) return;
+  const no=cardMoveRefusal(c,col2);
+  if(no){toast(no,'bad');return;}
   c.column_id=colId;
   const b=DB.boards.find(x=>x.id===c.board_id);
   let synced='';
   if(b.sync_status&&col2.maps_to_status&&c.linked_entity_type==='deliverable'){
     const dl=deliv(c.linked_entity_id);
-    if(dl){dl.status=col2.maps_to_status;synced=' · linked deliverable synced to '+DELIV_STATUS[col2.maps_to_status].l;}
+    if(dl&&dl.status!==col2.maps_to_status){dl.status=col2.maps_to_status;synced=' · linked deliverable synced to '+DELIV_STATUS[col2.maps_to_status].l;}
   }
   audit(S.me,'card.moved','card',c.id,null,{column:col2.name});
   render();toast('Moved to '+col2.name+synced,'ok');
@@ -26498,9 +26675,10 @@ function wireDnD(){
       const [skind,sid]=src.split(':'), [dkind,did]=col.dataset.drop.split(':');
       if(skind==='project'&&dkind==='projstatus'){
         const p=proj(+sid);
-        if(!can('project.status',{project_id:p.id})){toast('403: you cannot change this project’s status','bad');return;}
+        if(p.status===did)return;
         if(!(PROJ_TRANSITIONS[p.status]||[]).includes(did)){
           toast(''+PROJ_STATUS[p.status].l+' → '+PROJ_STATUS[did].l+' is not a valid transition','bad');return;}
+        if(!canChangeProjectStatus(p,did)){toast('you cannot change this project’s status','bad');return;}
         const before=p.status;p.status=did;
         audit(S.me,'project.status_changed','project',p.id,{status:before},{status:did});
         render();toast(p.name+' → '+PROJ_STATUS[did].l,'ok');
@@ -26508,9 +26686,7 @@ function wireDnD(){
       }
       else if(skind==='deliverable'&&dkind==='delivstatus'){
         const dl=deliv(+sid);
-        if(!(DELIV_TRANSITIONS[dl.status]||[]).includes(did)){
-          toast('Not a valid transition: '+DELIV_STATUS[dl.status].l+' → '+DELIV_STATUS[did].l,'bad');return;}
-        applyDelivStatus(dl,did);
+        if(dl&&dl.status!==did)applyDelivStatus(dl,did);
       }
       else if(skind==='card'&&dkind==='cardcol'){ moveCardToColumn(+sid,+did); }
     });
@@ -27553,8 +27729,8 @@ function delivAssignSection(did){
     <div class="f gap2 wrap mb3">
       ${(()=>{const dl=deliv(+did);return dl&&canAssignOn(proj(dl.project_id))?`<button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="crew">
         ${a.crew?'Change owner':'Assign an owner'}</button>`:'';})()}
-      <button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="smc">
-        ${a.smc?'Change SMC member':'Assign to SMC member'}</button>
+      ${canAssignSmc(deliv(+did))?`<button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="smc">
+        ${a.smc?'Change SMC member':'Assign to SMC member'}</button>`:''}
     </div></div>`;
 }
 
