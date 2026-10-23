@@ -1182,6 +1182,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       };
     });
     out.me = idMap.get(u.id);
+    /* The caller's own interface preferences (the order of the Projects views,
+       …) — for every role, and never anyone else's. */
+    out.my_prefs = (await pool.query(`SELECT prefs FROM mo_user_prefs WHERE user_id=$1`, [u.id])).rows[0]?.prefs ?? {};
     // ── §16 / AC-10 scoping (server-side, not just UI) ─────────────────────
     // HR-ish data is scoped by role: employee = own only, team_lead = own +
     // members of teams they lead, admin = all. Production data (projects,
@@ -1773,9 +1776,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
          the project's lead / Admin   everything below, due date included
          the project's owner / PM     the plan: assignment, schedule, scope —
                                       but a due date is the lead's (as /due-date)
-         the deliverable's owner      their execution: quantity, social, mail
-         the Coordinator              the hand-off side: social, mail */
-    const EXECUTION = ["quantity_delivered", "social_status", "social_post_url", "mail_status"];
+         the deliverable's owner      their execution: quantity */
+    const EXECUTION = ["quantity_delivered"];
     const PLAN = ["title", "owner_id", "scheduled_date", "priority", "estimated_hours", "quantity_target", "spec_notes"];
     const allowed = new Set<string>();
     const pid = Number(d.project_id);
@@ -1784,7 +1786,6 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (await worksOnDeliverable(u, id)) EXECUTION.forEach((k) => allowed.add(k));
     // Choosing who carries it is assigning — open to whoever may assign here.
     if (await canAssignOnProject(u, pid)) allowed.add("owner_id");
-    if (await isCoordinator(u)) ["social_status", "social_post_url", "mail_status"].forEach((k) => allowed.add(k));
     const asked = [...PLAN, ...EXECUTION, "due_date"].filter((k) => k in b);
     const refused = asked.filter((k) => !allowed.has(k));
     if (refused.length)
@@ -11009,6 +11010,32 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     await pool.query(`UPDATE users SET avatar_url=$1 WHERE id=$2`, [(b.avatar_url as string) || null, u.id]);
     await audit(u, "user.avatar_updated", "user", null, null, null, req);
     res.json({ ok: true });
+  }));
+
+  /* A person's own interface preferences. Known keys only, each validated, and
+     merged into what is stored rather than replacing it.
+       projects_view_order  each of the six Projects views exactly once; the
+                            first is where the Projects page opens for them. */
+  const PROJECT_VIEWS = ["list", "table", "kanban", "timeline", "calendar", "gallery"];
+  app.patch(`${P}/me/preferences`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const next: Record<string, unknown> = {};
+    if ("projects_view_order" in b) {
+      const v = b.projects_view_order;
+      if (!Array.isArray(v) || v.length !== PROJECT_VIEWS.length || new Set(v.map(String)).size !== v.length
+          || !v.every((x) => PROJECT_VIEWS.includes(String(x))))
+        return sendError(res, 400, `projects_view_order must list each view once: ${PROJECT_VIEWS.join(", ")}.`);
+      next.projects_view_order = v.map(String);
+    }
+    const unknown = Object.keys(b).filter((k) => !(k in next));
+    if (unknown.length) return sendError(res, 400, `Unknown preference: ${unknown.join(", ")}.`);
+    if (!Object.keys(next).length) return sendError(res, 400, "Nothing to save.");
+    const r = await pool.query(
+      `INSERT INTO mo_user_prefs (user_id, prefs) VALUES ($1, $2::jsonb)
+       ON CONFLICT (user_id) DO UPDATE SET prefs = mo_user_prefs.prefs || EXCLUDED.prefs, updated_at = NOW()
+       RETURNING prefs`, [u.id, JSON.stringify(next)]);
+    res.json({ prefs: r.rows[0].prefs });
   }));
 
   // Generic lookup CRUD (Settings — #2). Admin-editable, no deploy (NFR-10).

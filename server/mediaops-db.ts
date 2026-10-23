@@ -449,9 +449,6 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
       weight SMALLINT NOT NULL DEFAULT 1,
       status TEXT NOT NULL DEFAULT 'not_started' CHECK (status IN
         ('not_started','in_progress','in_review','changes_requested','approved','delivered','not_required','cancelled')),
-      social_status TEXT NOT NULL DEFAULT 'na' CHECK (social_status IN ('na','scheduled','posted')),
-      social_post_url TEXT, social_posted_at DATE,
-      mail_status TEXT NOT NULL DEFAULT 'na' CHECK (mail_status IN ('na','pending','sent')), mail_sent_at DATE,
       -- Scheduling: a deliverable is project scope, NOT today's work. It only
       -- surfaces in an assignee's Today's Assignments once a TL/PM schedules it
       -- for a date. NULL scheduled_date = backlog (project page only).
@@ -461,6 +458,13 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
       approval_status TEXT NOT NULL DEFAULT 'pending' CHECK (approval_status IN ('pending','approved','changes_requested','rejected')),
       deleted_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
+  // The Social Media / Mail "Delivery" status fields were dropped from the
+  // Media Crew workflow; remove them from databases that still carry them.
+  // DROP COLUMN takes their CHECK constraints with it.
+  await pool.query(`ALTER TABLE mo_deliverables
+    DROP COLUMN IF EXISTS social_status, DROP COLUMN IF EXISTS social_post_url,
+    DROP COLUMN IF EXISTS social_posted_at, DROP COLUMN IF EXISTS mail_status,
+    DROP COLUMN IF EXISTS mail_sent_at`);
   // Existing DBs: add the scheduling/model columns if they predate this feature.
   // Admin-configurable default: how many days after the project end date this
   // type is normally due. Pre-fills project creation; never overwritten by a
@@ -1437,6 +1441,15 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
       id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
       user_id TEXT REFERENCES users(id), module TEXT, name TEXT, filters JSONB NOT NULL DEFAULT '{}'::JSONB,
       is_shared BOOLEAN NOT NULL DEFAULT false
+    )`);
+  /* One row per person: their own interface preferences as a JSON object —
+     e.g. projects_view_order, the order of the Projects page's views, the
+     first being where the page opens for them. Only ever read by its owner. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_user_prefs (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      prefs JSONB NOT NULL DEFAULT '{}'::JSONB,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_import_batches (

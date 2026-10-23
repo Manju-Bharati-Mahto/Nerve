@@ -44,7 +44,7 @@ const FIXTURES = `
                               {id:99002,project_id:7002,user_id:904,is_project_manager:true,removed_at:null});
   const dl=(id,pid,title,owner,sched,status)=>DB.deliverables.push({id,project_id:pid,deliverable_type_id:T.id,title,
     owner_id:owner,scheduled_date:sched,due_date:TODAY,status:status||'not_started',priority:'normal',deleted_at:null,
-    approval_status:'pending',social_status:'na',mail_status:'na',unit:'',quantity_target:null,quantity_delivered:null});
+    approval_status:'pending',unit:'',quantity_target:null,quantity_delivered:null});
   dl(8001,7001,'Edited Photos',902,TODAY,'in_review');
   dl(8002,7001,'Aftermovie',902,null);
   dl(8003,7001,'Instagram Reel',null,null);

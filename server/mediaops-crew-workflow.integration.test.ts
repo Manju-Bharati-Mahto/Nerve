@@ -400,7 +400,6 @@ maybe("employee — sees and executes their own work, and nothing more", () => {
     expect((await as("empB1", "PATCH", `/deliverables/${dids[0]}`, { scheduled_date: "2026-10-04" })).status).toBe(403);
     expect((await as("empA1", "PATCH", `/deliverables/${dids[0]}`, { priority: "urgent" })).status).toBe(403);
     expect((await as("coord", "PATCH", `/deliverables/${dids[0]}`, { due_date: "2026-10-09" })).status).toBe(403);
-    expect((await as("coord", "PATCH", `/deliverables/${dids[0]}`, { mail_status: "sent" })).status).toBe(200);
     const d = await deliv(dids[0]);
     expect([d.title, d.scheduled_date, d.priority]).toEqual(["Edited Photos", null, "normal"]);
   });

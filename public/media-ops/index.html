@@ -1031,6 +1031,11 @@ html[data-theme=dark] .pal-item:hover,html[data-theme=dark] .pal-item.on{backgro
 .menu-item.danger .mi{color:var(--danger)}
 .pri svg{width:12px;height:12px;stroke-width:2.4}
 .btn-group button svg{width:14px;height:14px;vertical-align:-2px}
+/* Reordering the Projects views: the dragged one fades, a bar marks where it lands. */
+.btn-group button[data-vorder]{cursor:grab}
+.btn-group button.vo-drag{opacity:.4}
+.btn-group button.vo-before{box-shadow:inset 3px 0 0 var(--primary)}
+.btn-group button.vo-after{box-shadow:inset -3px 0 0 var(--primary)}
 .menu-item.danger{color:var(--danger)}
 .menu-item.on{background:var(--primary-surface);color:var(--primary-text);font-weight:600}
 html[data-theme=dark] .menu-item.on{background:var(--brand-100)}
@@ -1175,6 +1180,75 @@ html[data-theme=dark] .cal-cell.today{background:var(--brand-50)}
 .cal-ev:hover{filter:brightness(1.1)}
 html[data-theme=dark] .cal-ev{color:var(--text-inv)}
 .cal-more{font-size:10px;color:var(--text-3);font-weight:600;padding-left:4px}
+/* ── The Projects page calendar: today in colour, the rest of the month quiet,
+   "+N more" and the date itself are buttons (a day card / a day view). ── */
+.pcal-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.pcal-bar b{font-size:16px}
+.cal-proj .cal-cell:not(.today) .cal-ev{filter:saturate(.2);opacity:.78;transition:filter .15s,opacity .15s}
+.cal-proj .cal-cell:not(.today):hover .cal-ev{filter:none;opacity:1}
+.cal-proj .cal-cell:not(.today):not(:hover) .cal-num{color:var(--text-3)}
+.cal-proj .cal-cell.today{box-shadow:inset 0 0 0 2px var(--primary)}
+.cal-date{border:0;background:none;font:inherit;color:inherit;cursor:pointer;min-width:24px;height:24px;
+  border-radius:999px;padding:0 6px;display:inline-grid;place-items:center}
+.cal-date:hover{background:var(--surface-3,var(--border))}
+.cal-cell.today .cal-date{background:var(--primary);color:#fff}
+button.cal-more{border:0;background:none;cursor:pointer;text-align:left;border-radius:4px;padding:2px 4px}
+button.cal-more:hover{color:var(--primary-text);background:var(--surface-2)}
+.pcal-pop{position:fixed;z-index:89;width:340px;max-width:calc(100vw - 20px);max-height:min(72vh,560px);overflow:auto;
+  background:var(--surface);border:1px solid var(--border);border-radius:16px;box-shadow:var(--sh-drag,0 14px 40px rgba(0,0,0,.2));
+  padding:12px 12px 10px}
+.pcal-pop-h{display:flex;flex-direction:column;align-items:center;position:relative;padding:2px 0 8px}
+.pcal-pop-x{position:absolute;right:0;top:0}
+.pcal-dow{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);font-weight:700}
+.pcal-big{font-size:28px;font-weight:500;border:0;background:none;color:var(--text);cursor:pointer;border-radius:999px;
+  width:50px;height:50px;display:grid;place-items:center}
+.pcal-big:hover{background:var(--surface-2)}
+.pcal-big.today{background:var(--primary);color:#fff}
+.pcal-row{display:flex;gap:9px;align-items:center;width:100%;padding:6px 8px;border-radius:8px;border:0;background:none;
+  text-align:left;cursor:pointer;font:inherit;font-size:13px;color:var(--text)}
+.pcal-row:hover{background:var(--surface-2)}
+.pcal-row i{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+.pcal-row .pcal-t{color:var(--text-2);flex:0 0 64px;font-size:12px}
+.pcal-row b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.pcal-foot{display:flex;justify-content:space-between;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
+.pcal-ev-h{display:flex;gap:10px;align-items:flex-start;padding-right:28px;position:relative}
+.pcal-ev-h .pcal-pop-x{top:-2px}
+.pcal-sq{width:14px;height:14px;border-radius:4px;margin-top:4px;flex:0 0 auto}
+.pcal-ev-h h3{font-size:16px;margin:0;line-height:1.3}
+.pcal-kv{display:flex;flex-direction:column;gap:6px;margin:10px 0 4px;font-size:12.5px;color:var(--text-2)}
+.pcal-kv>div{display:flex;gap:8px;align-items:baseline}
+.pcal-kv>div>span:first-child{flex:0 0 78px;color:var(--text-3);font-size:11.5px}
+.pcal-dl{display:flex;flex-direction:column;gap:4px;margin-top:4px}
+.pcal-dl>div{display:flex;justify-content:space-between;gap:8px;align-items:center;font-size:12px}
+.pcal-dl>div>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+/* The day view: projects carry dates, not times, so they sit in an all-day
+   strip; shoots carry a call time and a wrap time, so they sit on the hours. */
+.pcal-day{border:1px solid var(--border);border-radius:var(--r-lg);background:var(--surface);overflow:hidden}
+.pcal-d-head{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.pcal-d-head .pcal-d-title{display:flex;align-items:baseline;gap:8px;margin-right:auto}
+.pcal-d-head .pcal-d-title b{font-size:18px}
+.pcal-d-allday{display:grid;grid-template-columns:64px 1fr;border-bottom:1px solid var(--border);background:var(--surface-2)}
+.pcal-d-allday>span{font-size:10.5px;color:var(--text-3);padding:9px 8px;text-align:right;text-transform:uppercase;letter-spacing:.04em}
+.pcal-d-chips{display:flex;flex-wrap:wrap;gap:4px;padding:6px 8px;align-items:center}
+.pcal-d-chip{border:0;color:#fff;background:var(--c);border-radius:5px;padding:3px 8px;font:inherit;font-size:11.5px;
+  cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pcal-d-chip:hover{filter:brightness(1.08)}
+.pcal-d-chip.ongoing{background:color-mix(in srgb,var(--c) 16%,var(--surface));color:var(--text);border-left:3px solid var(--c)}
+.pcal-d-body{max-height:min(66vh,680px);overflow:auto}
+.pcal-d-grid{display:grid;grid-template-columns:64px 1fr}
+.pcal-d-hours{position:relative}
+.pcal-d-hl{position:absolute;right:8px;transform:translateY(-50%);font-size:10.5px;color:var(--text-3);white-space:nowrap}
+.pcal-d-lane{position:relative;border-left:1px solid var(--border);
+  background:repeating-linear-gradient(to bottom,var(--border) 0 1px,transparent 1px 48px)}
+.pcal-d-ev{position:absolute;display:flex;flex-direction:column;justify-content:flex-start;align-items:stretch;
+  border:1px solid var(--surface);background:var(--c);color:#fff;border-radius:6px;
+  padding:3px 7px;text-align:left;font:inherit;font-size:11.5px;line-height:1.3;overflow:hidden;cursor:pointer}
+.pcal-d-ev:hover{filter:brightness(1.08);z-index:2}
+.pcal-d-ev b{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pcal-d-ev span{display:block;opacity:.92;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pcal-d-now{position:absolute;left:0;right:0;height:2px;background:var(--danger);z-index:3;pointer-events:none}
+.pcal-d-now::before{content:"";position:absolute;left:-5px;top:-4px;width:10px;height:10px;border-radius:50%;background:var(--danger)}
+.pcal-d-empty{padding:28px;text-align:center;color:var(--text-3);font-size:13px}
 
 /* ---- Timeline list (versions, activity, day timeline) ---- */
 .tl{position:relative;padding-left:26px}
@@ -2862,8 +2936,7 @@ const DL=(project_id,type,title,owner_id,due,status,o={})=>{
   return Object.assign({id:++_d,project_id,deliverable_type_id:type,title,owner_id,due_date:due,
     completed_at:(status==='delivered'?due:null),quantity_target:null,quantity_delivered:null,
     unit:t.default_unit,spec_notes:'',weight:t.default_weight,status,
-    social_status:'na',social_post_url:null,social_posted_at:null,
-    mail_status:'na',mail_sent_at:null,deleted_at:null,
+    deleted_at:null,
     /* Project scope by default — a TL/PM schedules it to make it today's work. */
     scheduled_date:null,priority:'normal',estimated_hours:null,approval_status:'pending',
     due_offset_days:null,due_date_source:'offset',
@@ -2878,21 +2951,19 @@ DB.deliverables = [
   DL(1,13,'Raw Archive — Convocation 2026',17,'2026-08-18','not_started',{quantity_target:2400,unit:'GB'}),
   DL(1,9,'Continuous Recording — all 3 halls',10,'2026-08-17','not_started',{quantity_target:36,unit:'hours'}),
   /* 2 YEEP (in_review) */
-  DL(2,2,'Edited Photos — YEEP 2026',6,'2026-07-25','delivered',{quantity_target:900,quantity_delivered:964,
-     social_status:'posted',social_post_url:'https://instagram.com/p/YEEP26-gallery',social_posted_at:'2026-07-25',mail_status:'sent',mail_sent_at:'2026-07-25'}),
+  DL(2,2,'Edited Photos — YEEP 2026',6,'2026-07-25','delivered',{quantity_target:900,quantity_delivered:964}),
   DL(2,5,'Aftermovie — YEEP 2026',4,'2026-08-05','in_review',{quantity_target:3,unit:'minutes',spec_notes:'Dean wants the pitch-final winner moment at 1:40.'}),
   DL(2,6,'Highlight Reel — YEEP 2026',18,'2026-07-30','changes_requested',{quantity_target:1,unit:'minutes'}),
-  DL(2,12,'Social Posts — YEEP 2026',9,'2026-07-22','delivered',{quantity_target:8,quantity_delivered:8,social_status:'posted',
-     social_post_url:'https://instagram.com/p/YEEP26-day3',social_posted_at:'2026-07-22'}),
+  DL(2,12,'Social Posts — YEEP 2026',9,'2026-07-22','delivered',{quantity_target:8,quantity_delivered:8}),
   DL(2,13,'Raw Archive — YEEP 2026',17,'2026-07-23','delivered',{quantity_target:820,quantity_delivered:846,unit:'GB'}),
   /* 3 Bhajan Sandhya */
-  DL(3,2,'Edited Photos — Bhajan Sandhya',13,'2026-07-19','delivered',{quantity_target:300,quantity_delivered:318,mail_status:'sent',mail_sent_at:'2026-07-19'}),
+  DL(3,2,'Edited Photos — Bhajan Sandhya',13,'2026-07-19','delivered',{quantity_target:300,quantity_delivered:318}),
   DL(3,9,'Continuous Recording — Bhajan Sandhya',16,'2026-07-16','delivered',{quantity_target:6,unit:'hours',quantity_delivered:6}),
-  DL(3,7,'Reel — Bhajan Sandhya highlights',15,'2026-07-24','in_progress',{quantity_target:2,social_status:'scheduled'}),
+  DL(3,7,'Reel — Bhajan Sandhya highlights',15,'2026-07-24','in_progress',{quantity_target:2}),
   /* 4 NSS Camp (delivered) */
-  DL(4,2,'Edited Photos — NSS Camp',8,'2026-07-16','delivered',{quantity_target:600,quantity_delivered:612,mail_status:'sent',mail_sent_at:'2026-07-16'}),
+  DL(4,2,'Edited Photos — NSS Camp',8,'2026-07-16','delivered',{quantity_target:600,quantity_delivered:612}),
   DL(4,4,'Documentary — NSS Special Camp',18,'2026-07-24','approved',{quantity_target:1,unit:'videos',spec_notes:'8 min documentary for the NSS state submission.'}),
-  DL(4,12,'Social Posts — NSS Camp',9,'2026-07-14','delivered',{quantity_target:6,quantity_delivered:6,social_status:'posted',social_post_url:'https://instagram.com/p/NSS26'}),
+  DL(4,12,'Social Posts — NSS Camp',9,'2026-07-14','delivered',{quantity_target:6,quantity_delivered:6}),
   DL(4,13,'Raw Archive — NSS Camp',17,'2026-07-14','delivered',{quantity_target:410,quantity_delivered:410,unit:'GB'}),
   /* 5 Bengaluru tour (in_production, live) */
   DL(5,2,'Edited Photos — Bengaluru Tour',13,'2026-08-05','in_progress',{quantity_target:700}),
@@ -2915,14 +2986,14 @@ DB.deliverables = [
   /* 9 Design walkthrough */
   DL(9,4,'Walkthrough Film — Faculty of Design',7,'2026-07-24','changes_requested',{quantity_target:1,unit:'videos',
      spec_notes:'Dean asked for the textile studio to lead, not ceramics.'}),
-  DL(9,2,'Edited Photos — Design studios',6,'2026-07-22','delivered',{quantity_target:180,quantity_delivered:194,mail_status:'sent',mail_sent_at:'2026-07-23'}),
+  DL(9,2,'Edited Photos — Design studios',6,'2026-07-22','delivered',{quantity_target:180,quantity_delivered:194}),
   /* 10 July social calendar */
-  DL(10,7,'July Reels — batch 1 (wk 27)',15,'2026-07-08','delivered',{quantity_target:6,quantity_delivered:6,social_status:'posted',social_post_url:'https://instagram.com/parul.university'}),
-  DL(10,7,'July Reels — batch 2 (wk 28)',7,'2026-07-15','delivered',{quantity_target:6,quantity_delivered:5,social_status:'posted'}),
-  DL(10,7,'July Reels — batch 3 (wk 29)',18,'2026-07-22','approved',{quantity_target:6,social_status:'scheduled'}),
+  DL(10,7,'July Reels — batch 1 (wk 27)',15,'2026-07-08','delivered',{quantity_target:6,quantity_delivered:6}),
+  DL(10,7,'July Reels — batch 2 (wk 28)',7,'2026-07-15','delivered',{quantity_target:6,quantity_delivered:5}),
+  DL(10,7,'July Reels — batch 3 (wk 29)',18,'2026-07-22','approved',{quantity_target:6}),
   DL(10,7,'July Reels — batch 4 (wk 30)',15,'2026-07-29','in_progress',{quantity_target:4}),
   DL(10,12,'July Story Sets',9,'2026-07-31','in_progress',{quantity_target:40,quantity_delivered:31}),
-  DL(10,8,'July Outreach Mailer',9,'2026-07-27','in_review',{quantity_target:2,mail_status:'pending'}),
+  DL(10,8,'July Outreach Mailer',9,'2026-07-27','in_review',{quantity_target:2}),
   /* 11 Aug social calendar */
   DL(11,7,'August Reels — plan & shot list',9,'2026-08-03','not_started',{quantity_target:22}),
   /* 12 Hostel reel series (proposed) */
@@ -2936,22 +3007,22 @@ DB.deliverables = [
   DL(14,2,'Edited Photos — Freshers (11 faculty sets)',8,'2026-07-27','changes_requested',{quantity_target:1200,
      spec_notes:'Split into 11 faculty folders — last delivery had them merged.'}),
   DL(14,6,'Highlight Reel — Freshers 2026',18,'2026-07-30','in_progress',{quantity_target:2,unit:'minutes'}),
-  DL(14,12,'Social Posts — Freshers',9,'2026-07-24','delivered',{quantity_target:9,quantity_delivered:9,social_status:'posted'}),
+  DL(14,12,'Social Posts — Freshers',9,'2026-07-24','delivered',{quantity_target:9,quantity_delivered:9}),
   DL(14,13,'Raw Archive — Freshers',17,'2026-07-25','delivered',{quantity_target:520,quantity_delivered:531,unit:'GB'}),
   /* 15 White coat */
-  DL(15,2,'Edited Photos — White Coat Ceremony',13,'2026-07-13','delivered',{quantity_target:400,quantity_delivered:421,mail_status:'sent',mail_sent_at:'2026-07-13'}),
-  DL(15,7,'Recap Reel — White Coat',15,'2026-07-15','delivered',{quantity_target:1,quantity_delivered:1,social_status:'posted'}),
+  DL(15,2,'Edited Photos — White Coat Ceremony',13,'2026-07-13','delivered',{quantity_target:400,quantity_delivered:421}),
+  DL(15,7,'Recap Reel — White Coat',15,'2026-07-15','delivered',{quantity_target:1,quantity_delivered:1}),
   /* 16 Techfest teaser */
   DL(16,7,'Teaser Reels — Vibrance (×5)',15,'2026-09-01','not_started',{quantity_target:5}),
   DL(16,4,'Announcement Film — Vibrance',7,'2026-09-06','not_started',{quantity_target:1,unit:'videos'}),
   /* 17 Placement stories */
   DL(17,4,'Placement Story — Ananya (Deloitte)',4,'2026-08-04','not_started',{quantity_target:1,unit:'videos'}),
-  DL(17,4,'Placement Story — Rehan (Infosys)',11,'2026-07-18','delivered',{quantity_target:1,quantity_delivered:1,unit:'videos',social_status:'posted'}),
-  DL(17,4,'Placement Story — Nidhi (KPMG)',11,'2026-07-04','delivered',{quantity_target:1,quantity_delivered:1,unit:'videos',social_status:'posted'}),
+  DL(17,4,'Placement Story — Rehan (Infosys)',11,'2026-07-18','delivered',{quantity_target:1,quantity_delivered:1,unit:'videos'}),
+  DL(17,4,'Placement Story — Nidhi (KPMG)',11,'2026-07-04','delivered',{quantity_target:1,quantity_delivered:1,unit:'videos'}),
   /* 18 Kisan Mela (completed) */
-  DL(18,2,'Edited Photos — Kisan Mela',13,'2026-07-02','delivered',{quantity_target:350,quantity_delivered:362,mail_status:'sent',mail_sent_at:'2026-07-02'}),
+  DL(18,2,'Edited Photos — Kisan Mela',13,'2026-07-02','delivered',{quantity_target:350,quantity_delivered:362}),
   DL(18,10,'Drone Footage — Kisan Mela',12,'2026-07-01','delivered',{quantity_target:10,quantity_delivered:11,unit:'clips'}),
-  DL(18,7,'Recap Reel — Kisan Mela (90s)',15,'2026-07-05','delivered',{quantity_target:1,quantity_delivered:1,social_status:'posted'}),
+  DL(18,7,'Recap Reel — Kisan Mela (90s)',15,'2026-07-05','delivered',{quantity_target:1,quantity_delivered:1}),
   /* 19 Internal equipment audit */
   DL(19,14,'QR Label Set — 32 items',17,'2026-07-31','in_progress',{quantity_target:32,quantity_delivered:26,unit:'items'}),
   DL(19,14,'Condition Grading Sheet',8,'2026-08-04','not_started',{quantity_target:1,unit:'items'}),
@@ -2961,11 +3032,11 @@ DB.deliverables = [
   DL(21,2,'Edited Photos — Moot Court Nationals',6,'2026-07-18','in_review',{quantity_target:280}),
   DL(21,7,'Recap Reel — Moot Court',18,'2026-07-20','not_started',{quantity_target:1}),
   /* 22 Physio camp (completed) */
-  DL(22,2,'Edited Photos — Wellness Camp',8,'2026-07-08','delivered',{quantity_target:120,quantity_delivered:126,mail_status:'sent',mail_sent_at:'2026-07-08'}),
+  DL(22,2,'Edited Photos — Wellness Camp',8,'2026-07-08','delivered',{quantity_target:120,quantity_delivered:126}),
   /* 24/25 archives */
   DL(24,2,'Edited Photos — Convocation 2025',8,'2025-08-24','delivered',{quantity_target:2100,quantity_delivered:2183}),
-  DL(24,5,'Aftermovie — Convocation 2025',4,'2025-09-02','delivered',{quantity_target:4,quantity_delivered:4,unit:'minutes',social_status:'posted'}),
-  DL(25,5,'Aftermovie — Vibrance 2025',4,'2025-10-02','delivered',{quantity_target:3,quantity_delivered:3,unit:'minutes',social_status:'posted'}),
+  DL(24,5,'Aftermovie — Convocation 2025',4,'2025-09-02','delivered',{quantity_target:4,quantity_delivered:4,unit:'minutes'}),
+  DL(25,5,'Aftermovie — Vibrance 2025',4,'2025-10-02','delivered',{quantity_target:3,quantity_delivered:3,unit:'minutes'}),
   DL(26,2,'Edited Photos — Republic Day 2026',13,'2026-01-30','delivered',{quantity_target:200,quantity_delivered:214}),
   /* 27 on hold */
   DL(27,2,'Edited Photos — Pharmacy Symposium',6,'2026-07-10','in_progress',{quantity_target:150,spec_notes:'Held — poster session postponed.'})
@@ -3551,6 +3622,9 @@ const S = {
      session began two months in the past and today's shoots were invisible
      until you paged forward. */
   cal:{month:TODAY.slice(0,8)+'01',layers:{shoots:1,tours:1,deadlines:1,projects:1,leave:1,bookings:1,holidays:1},view:'month'},
+  /* The Projects page calendar: day — the day open on the hours (null: the
+     month); ongoing — whether that day lists the projects in progress. */
+  projCal:{day:null,ongoing:false},
   reportDate:TODAY, libView:'table', teamTab:'workload', dragging:null,
   /* Directory: which role sections are collapsed, and which have been expanded
      past their first page. Session-scoped by design — a fresh visit starts open. */
@@ -5797,6 +5871,7 @@ function wirePage(){
   $$('[data-menu]').forEach(n=>n.onclick=e=>{e.stopPropagation();MENUS[n.dataset.menu]&&menu(n,MENUS[n.dataset.menu](n.dataset));});
   wireDnD();
   wireTeamDnD();
+  wireViewOrder();
 }
 
 /* ==========================================================================
@@ -9521,7 +9596,7 @@ const auditText=a=>auditLine(a).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replac
    repeat every column, so only fields whose value moved are kept; keys, ids,
    timestamps and template names are bookkeeping, not news. */
 const AUDIT_FIELD={status:'Status',smc_status:'SMC status',approval_status:'Approval',review_status:'Review',
-  dispatch_status:'Dispatch',mail_status:'Email',social_status:'Social post',social_post_url:'Post link',
+  dispatch_status:'Dispatch',
   drive_url:'Drive link',recipient:'Sent to',dispatch_recipient:'Sent to',subject:'Subject',dispatch_subject:'Subject',
   title:'Title',name:'Name',work_type:'Work type',capacity_role:'Role',role:'Role',due_date:'Due',priority:'Priority',
   quantity_target:'Target',quantity_delivered:'Delivered',version_no:'Version',owner_id:'Owner',user_id:'Person',
@@ -10333,14 +10408,54 @@ function filteredProjects(){
   if(f.mine)ps=ps.filter(p=>isOnProject(p.id)||p.owner_id===S.me||leadsProject(p));
   return ps;
 }
+/* The Projects page's six views. Four of them used to be near-identical box
+   glyphs (▤ ▦ ▥ ▩), with Table and Calendar literally the same character. */
+const PROJ_MODES=[['list','List','list'],['table','Table','table'],['kanban','Kanban','board'],
+                  ['timeline','Timeline','timeline'],['calendar','Calendar','calendar'],['gallery','Gallery','gallery']];
+/* EACH PERSON ORDERS THE VIEWS, AND THE FIRST IS WHERE THE PAGE OPENS.
+   The order is theirs, saved on their account (my_prefs.projects_view_order
+   from /state), so it follows them to any device. Anything that is not a
+   clean ordering of the six falls back to the default order. */
+function projViewOrder(){
+  const keys=PROJ_MODES.map(m=>m[0]), o=(DB.my_prefs||{}).projects_view_order;
+  return Array.isArray(o)&&o.length===keys.length&&keys.every(k=>o.includes(k))?o.slice():keys;
+}
+function saveProjViewOrder(order){
+  const was=projViewOrder()[0];
+  DB.my_prefs={...(DB.my_prefs||{}),projects_view_order:order};
+  /* Putting a view first is choosing it, so it opens now as well as next time. */
+  if(order[0]!==was){S.viewMode.projects=order[0];
+    toast(`Projects will open in ${PROJ_MODES.find(m=>m[0]===order[0])[1]} for you`,'ok');}
+  render();
+  MO_API.patch('/me/preferences',{projects_view_order:order})
+    .then(r=>{if(r&&r.prefs)DB.my_prefs=r.prefs;})
+    .catch(e=>toast('Your view order was not saved. '+((e&&e.message)||''),'bad'));
+}
+/* Drag a view onto another to put it before or after it. HTML5 drag does not
+   exist on touch, so the ⋯ beside the views offers the same choice as a menu. */
+function wireViewOrder(){
+  const btns=$$('[data-vorder]'); if(!btns.length)return;
+  let src=null;
+  const clear=()=>btns.forEach(b=>b.classList.remove('vo-before','vo-after'));
+  const side=(b,e)=>{const r=b.getBoundingClientRect();return e.clientX<r.left+r.width/2?'before':'after';};
+  btns.forEach(b=>{
+    b.ondragstart=e=>{src=b.dataset.vorder;b.classList.add('vo-drag');e.dataTransfer.effectAllowed='move';
+      try{e.dataTransfer.setData('text/plain',src);}catch(_){}};
+    b.ondragend=()=>{b.classList.remove('vo-drag');clear();src=null;};
+    b.ondragover=e=>{if(!src)return;e.preventDefault();clear();
+      if(b.dataset.vorder!==src)b.classList.add('vo-'+side(b,e));};
+    b.ondrop=e=>{e.preventDefault();const from=src;clear();if(!from||b.dataset.vorder===from)return;
+      const order=projViewOrder().filter(k=>k!==from);
+      order.splice(order.indexOf(b.dataset.vorder)+(side(b,e)==='after'?1:0),0,from);
+      saveProjViewOrder(order);};
+  });
+}
 function viewProjects(){
-  const mode=S.viewMode.projects||'list';
+  const order=projViewOrder();
+  const mode=S.viewMode.projects||order[0];
   const f=projectFilters();
   const ps=filteredProjects();
-  /* Four of these six used to be near-identical box glyphs (▤ ▦ ▥ ▩), with
-     Table and Calendar literally the same character. */
-  const modes=[['list','List','list'],['table','Table','table'],['kanban','Kanban','board'],
-               ['timeline','Timeline','timeline'],['calendar','Calendar','calendar'],['gallery','Gallery','gallery']];
+  const modes=order.map(k=>PROJ_MODES.find(m=>m[0]===k));
   /* The summary is of every project this viewer can see, not of the filtered
      list below — the filters narrow the list, not the picture. */
   const act=visibleProjects().filter(p=>['planning','in_production','in_review','approved'].includes(p.status));
@@ -10376,7 +10491,9 @@ function viewProjects(){
         ${(f.type.length||f.status.length||f.unit.length||f.priority.length||f.q||f.mine)?`<button class="btn sm ghost" data-act="projClear">Clear</button>`:''}
         <span class="ml-auto f gap2 ac">
           <span class="small mut3">${ps.length} of ${visibleProjects().length}</span>
-          <div class="btn-group">${modes.map(([k,l,i])=>`<button data-act="projMode" data-v="${k}" class="${mode===k?'on':''}" title="${l}">${ic(i)}<span class="hide-sm"> ${l}</span></button>`).join('')}</div>
+          <div class="btn-group">${modes.map(([k,l,i],n)=>`<button data-act="projMode" data-v="${k}" data-vorder="${k}" draggable="true"
+            class="${mode===k?'on':''}" title="${l}${n===0?' — opens first for you':''}. Drag to reorder: the first view is where Projects opens.">${ic(i)}<span class="hide-sm"> ${l}</span></button>`).join('')}</div>
+          <button class="icon-btn" data-menu="projViewDefault" title="Choose where Projects opens for you" aria-label="Choose where Projects opens for you">${ic('kebab')}</button>
         </span>
       </div></div></div>
 
@@ -10482,13 +10599,184 @@ function projTimeline(ps){
     <div class="gantt-today" style="left:calc(230px + (100% - 230px) * ${todayPct/100})" title="Today"></div>
   </div></div>`;
 }
+/* ══ THE PROJECTS PAGE CALENDAR ════════════════════════════════════════════
+
+   A day holds the projects that start or end on it (dates, no time of day)
+   and the shoots booked on it (a call time and a wrap time). The month keeps
+   today in colour and quiets the rest; "+N more" opens the day's card, an
+   event opens a short summary, and the date opens the day on the hours.
+   Events are named by key — ps:/pe:/po: a project starting, ending or in
+   progress, s: a shoot — so a card can be rebuilt from the key alone. */
+let _pcPS=[], _pcPop=null;
+const pcMin=t=>{const m=/^(\d{1,2}):(\d{2})/.exec(String(t||''));return m?(+m[1])*60+(+m[2]):null;};
+const pcClock=m=>{const h=Math.floor(m/60)%24,mm=m%60;
+  return (h%12||12)+(mm?':'+String(mm).padStart(2,'0'):'')+(h<12?'am':'pm');};
+function pcEvents(day,ps=_pcPS){
+  const ids=new Set(ps.map(p=>p.id)), out=[];
+  ps.filter(p=>p.start_date===day).forEach(p=>out.push({ev:'ps:'+p.id,c:ptype(p.project_type_id).color,t:'▶ '+p.name}));
+  ps.filter(p=>p.end_date===day).forEach(p=>out.push({ev:'pe:'+p.id,c:'var(--warn)',t:'⤴ '+p.name+' ends'}));
+  DB.shoots.filter(s=>s.shoot_date===day&&ids.has(s.project_id)).forEach(s=>{
+    const a=pcMin(s.call_time),b=pcMin(s.end_time);
+    out.push({ev:'s:'+s.id,c:ptype(proj(s.project_id).project_type_id).color,t:'◉ '+s.title,
+      from:a,to:a==null?null:(b!=null&&b>a?b:a+60)});});
+  /* All-day first, then shoots by call time — the order a day is read in. */
+  return out.sort((x,y)=>(x.from??-1)-(y.from??-1));
+}
+const pcName=ev=>{const [k,id]=ev.split(':');
+  return k==='s'?(DB.shoots.find(s=>s.id===+id)||{}).title||'Shoot':proj(+id).name;};
+
 function projCalendar(ps){
-  return calendarGrid(S.cal.month,(day)=>{
-    const out=[];
-    ps.filter(p=>p.start_date===day).forEach(p=>out.push({c:ptype(p.project_type_id).color,t:'▶ '+p.name,go:'#/media/projects/'+p.id}));
-    ps.filter(p=>p.end_date===day).forEach(p=>out.push({c:'var(--warn)',t:'⤴ '+p.name+' ends',go:'#/media/projects/'+p.id}));
-    DB.shoots.filter(s=>s.shoot_date===day&&ps.some(p=>p.id===s.project_id)).forEach(s=>out.push({c:'var(--info)',t:'◉ '+s.title,drawer:'shoot:'+s.id}));
-    return out;});
+  _pcPS=ps;
+  if(S.projCal.day) return projCalDayView(ps,S.projCal.day);
+  const m=D.parse(S.cal.month);
+  return `<div class="pcal-bar">
+      <div class="btn-group"><button data-act="calPrev" aria-label="Previous month">${ic('left')}</button>
+        <button data-act="calToday">Today</button>
+        <button data-act="calNext" aria-label="Next month">${ic('right')}</button></div>
+      <b>${m.toLocaleDateString('en-IN',{month:'long',year:'numeric'})}</b>
+      <span class="xsmall mut3 hide-m">Click a date to see that day hour by hour</span></div>
+    ${calendarGrid(S.cal.month,day=>pcEvents(day,ps).map(e=>({...e,
+      attrs:`data-act="projCalEv" data-d="${day}" data-ev="${e.ev}"`})),{proj:true})}`;
+}
+
+function projCalDayView(ps,day){
+  const evs=pcEvents(day,ps), allDay=evs.filter(e=>e.from==null), timed=evs.filter(e=>e.from!=null);
+  const ongoing=ps.filter(p=>p.start_date<day&&p.end_date>day);
+  const H=48; let h0=7,h1=21;
+  timed.forEach(e=>{h0=Math.min(h0,Math.floor(e.from/60));h1=Math.max(h1,Math.ceil(e.to/60));});
+  h1=Math.min(h1,24);
+  /* Overlapping shoots share the width: a run of overlaps is split into as
+     many columns as it needs, and each shoot takes the first one free. */
+  const placed=[]; let run=[], runEnd=-1;
+  const close=()=>{const n=Math.max(...run.map(r=>r.col))+1;run.forEach(r=>r.cols=n);run=[];runEnd=-1;};
+  [...timed].sort((a,b)=>a.from-b.from||b.to-a.to).forEach(e=>{
+    if(run.length&&e.from>=runEnd) close();
+    const taken=new Set(run.filter(r=>r.to>e.from).map(r=>r.col));
+    let col=0; while(taken.has(col)) col++;
+    const r={...e,col}; run.push(r); placed.push(r); runEnd=Math.max(runEnd,e.to);
+  });
+  if(run.length) close();
+  const hours=[];for(let h=h0;h<=h1;h++)hours.push(h);
+  const now=new Date(), nm=now.getHours()*60+now.getMinutes();
+  const chip=(e,cls='')=>`<button class="pcal-d-chip ${cls}" style="--c:${e.c}" data-act="projCalEv" data-d="${day}" data-ev="${e.ev}"
+    title="${esc(e.t)}">${esc(e.t)}</button>`;
+  return `<div class="pcal-day">
+    <div class="pcal-d-head">
+      <div class="btn-group"><button data-act="projCalStep" data-n="-1" aria-label="Previous day">${ic('left')}</button>
+        <button data-act="projCalDay" data-d="${TODAY}">Today</button>
+        <button data-act="projCalStep" data-n="1" aria-label="Next day">${ic('right')}</button></div>
+      <div class="pcal-d-title"><b>${esc(D.fmtLong(day))}</b><span class="small mut3">${esc(D.rel(day))}</span></div>
+      <span class="small mut3">${plural(evs.length,'event')}</span>
+      <button class="btn sm" data-act="projCalMonth">${ic('calendar')} Month</button></div>
+    <div class="pcal-d-allday"><span>All day</span><div class="pcal-d-chips">
+      ${allDay.map(e=>chip(e)).join('')}
+      ${ongoing.length?(S.projCal.ongoing
+        ?ongoing.map(p=>chip({ev:'po:'+p.id,c:ptype(p.project_type_id).color,t:p.name},'ongoing')).join('')
+          +`<button class="btn xs ghost" data-act="projCalOngoing">Hide in progress</button>`
+        :`<button class="btn xs ghost" data-act="projCalOngoing">${plural(ongoing.length,'project')} in progress</button>`):''}
+      ${!allDay.length&&!ongoing.length?'<span class="xsmall mut3">Nothing starts or ends today.</span>':''}</div></div>
+    ${timed.length?'':'<div class="pcal-d-empty">No shoots booked on this day.</div>'}
+    <div class="pcal-d-body"><div class="pcal-d-grid" style="height:${(h1-h0)*H}px">
+      <div class="pcal-d-hours">${hours.map(h=>`<span class="pcal-d-hl" style="top:${(h-h0)*H}px${h===h0?';transform:none':''}">${pcClock(h*60)}</span>`).join('')}</div>
+      <div class="pcal-d-lane" style="height:${(h1-h0)*H}px">
+        ${placed.map(e=>{const top=(e.from-h0*60)/60*H, hgt=Math.max(22,(e.to-e.from)/60*H-2);
+          const s=DB.shoots.find(x=>x.id===+e.ev.slice(2))||{}, p=proj(s.project_id);
+          return `<button class="pcal-d-ev" style="--c:${e.c};top:${top}px;height:${hgt}px;left:calc(${e.col/e.cols*100}% + 2px);width:calc(${100/e.cols}% - 4px)"
+            data-act="projCalEv" data-d="${day}" data-ev="${e.ev}" title="${esc(s.title||'')} · ${pcClock(e.from)} – ${pcClock(e.to)}">
+            <b>${esc(s.title||'Shoot')}</b><span>${pcClock(e.from)} – ${pcClock(e.to)}</span>${hgt>58?`<span>${esc(p.name)}</span>`:''}</button>`;}).join('')}
+        ${day===TODAY&&nm>=h0*60&&nm<=h1*60?`<div class="pcal-d-now" style="top:${(nm-h0*60)/60*H}px"></div>`:''}
+      </div></div></div></div>`;
+}
+
+/* The day's card ("+N more") and an event's summary share one floating card:
+   anchored beside what was clicked on a desktop, a bottom sheet on a phone.
+   Moving between them (an event, back to the day) swaps the card's content. */
+function pcPopClose(){
+  if(!_pcPop)return; const p=_pcPop; _pcPop=null;
+  if(p.mob){closeModal();return;}
+  p.box.remove(); document.removeEventListener('mousedown',p.out,true); document.removeEventListener('keydown',p.key,true);
+}
+function pcPop(anchor,html){
+  if(isMobileLayout()){
+    pcPopClose(); modal(`<div class="mo-body">${html}</div>`,{size:'small'});
+    const box=$('#modal-layer .modal'); _pcPop={box,mob:true}; pcWire(box); return;
+  }
+  let box;
+  if(_pcPop&&!_pcPop.mob&&!anchor){
+    box=_pcPop.box; box.innerHTML=html;
+    const h=box.offsetHeight; if(box.offsetTop+h>innerHeight-10) box.style.top=Math.max(10,innerHeight-h-10)+'px';
+  } else {
+    pcPopClose();
+    box=el(`<div class="pcal-pop" role="dialog">${html}</div>`); document.body.appendChild(box);
+    const out=e=>{if(!box.contains(e.target))pcPopClose();};
+    const key=e=>{if(e.key==='Escape'){e.stopPropagation();pcPopClose();}};
+    document.addEventListener('mousedown',out,true); document.addEventListener('keydown',key,true);
+    _pcPop={box,out,key,mob:false};
+    const r=(anchor||document.body).getBoundingClientRect(), w=box.offsetWidth, h=box.offsetHeight;
+    let left=Math.max(10,Math.min(r.left,innerWidth-w-10)), top=r.top;
+    if(top+h>innerHeight-10) top=Math.max(10,innerHeight-h-10);
+    box.style.left=left+'px'; box.style.top=top+'px';
+  }
+  pcWire(box);
+}
+function pcWire(box){
+  box.querySelectorAll('[data-pc]').forEach(b=>b.onclick=e=>{e.stopPropagation();const x=b.dataset;
+    if(x.pc==='x') return pcPopClose();
+    if(x.pc==='ev') return pcPop(null,pcEvHTML(x.d,x.ev,true));
+    if(x.pc==='list') return pcPop(null,pcDayHTML(x.d));
+    if(x.pc==='day') return ACTIONS.projCalDay({d:x.d});
+    pcPopClose();
+    if(x.pc==='go') location.hash=x.go;
+    else if(x.pc==='drawer') drawerFor(x.k,+x.id);});
+}
+function pcDayHTML(day){
+  const evs=pcEvents(day), d=D.parse(day);
+  return `<div class="pcal-pop-h"><span class="pcal-dow">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]}</span>
+      <button class="pcal-big ${day===TODAY?'today':''}" data-pc="day" data-d="${day}" title="Open this day hour by hour">${d.getDate()}</button>
+      <button class="icon-btn pcal-pop-x" data-pc="x" aria-label="Close">${ic('x')}</button></div>
+    ${evs.length?evs.map(e=>`<button class="pcal-row" data-pc="ev" data-d="${day}" data-ev="${e.ev}">
+        <i style="background:${e.c}"></i>
+        <span class="pcal-t">${e.from!=null?pcClock(e.from):e.ev.startsWith('pe')?'Ends':'Starts'}</span>
+        <b>${esc(pcName(e.ev))}</b></button>`).join('')
+      :'<div class="pcal-d-empty">Nothing on this day.</div>'}
+    <div class="pcal-foot"><span class="xsmall mut3">${plural(evs.length,'event')}</span>
+      <button class="btn xs" data-pc="day" data-d="${day}">Open day view</button></div>`;
+}
+function pcEvHTML(day,ev,back){
+  const [k,raw]=ev.split(':'), id=+raw;
+  const head=(c,title,sub)=>`<div class="pcal-ev-h"><span class="pcal-sq" style="background:${c}"></span>
+      <div style="min-width:0"><h3>${esc(title)}</h3><div class="small mut3">${sub}</div></div>
+      <button class="icon-btn pcal-pop-x" data-pc="x" aria-label="Close">${ic('x')}</button></div>`;
+  const row=(l,v)=>v?`<div><span>${l}</span><span>${v}</span></div>`:'';
+  const backBtn=back?`<button class="btn xs ghost" data-pc="list" data-d="${day}">${ic('left')} ${esc(D.fmtLong(day))}</button>`:'<span></span>';
+  if(k==='s'){
+    const s=DB.shoots.find(x=>x.id===id);
+    if(!s) return head('var(--border)','Shoot not found','It is no longer on the calendar.');
+    const p=proj(s.project_id), a=pcMin(s.call_time), b=pcMin(s.end_time);
+    const crew=(DB.shoot_crew||[]).filter(c=>c.shoot_id===s.id).map(c=>user(c.user_id)).filter(Boolean);
+    return head(ptype(p.project_type_id).color,s.title,
+        `${esc(D.fmtLong(s.shoot_date))}${a!=null?' · '+pcClock(a)+(b!=null&&b>a?' – '+pcClock(b):''):''}`)
+      +`<div class="pcal-kv">${row('Project',esc(p.name))}${row('Location',esc(s.location||''))}${row('Status',esc(s.status||''))}
+        ${row('Crew',crew.length?esc(crew.map(u=>u.full_name).join(', ')):'<span class="mut3">No crew yet</span>')}
+        ${row('Notes',esc(s.notes||''))}</div>
+      <div class="pcal-foot">${backBtn}<span class="f gap2">
+        <button class="btn xs" data-pc="go" data-go="#/media/projects/${p.id}">Project</button>
+        <button class="btn xs primary" data-pc="drawer" data-k="shoot" data-id="${s.id}">Open shoot</button></span></div>`;
+  }
+  const p=DB.projects.find(x=>x.id===id);
+  if(!p) return head('var(--border)','Project not found','It is no longer on the calendar.');
+  const t=ptype(p.project_type_id), dl=projectDeliverables(p.id);
+  const done=dl.filter(d=>['approved','delivered'].includes(d.status)).length;
+  const lead=p.owner_id?user(p.owner_id):null, tm=p.team_id?team(p.team_id):null, rq=reqs().find(r=>r.project_id===p.id);
+  return head(k==='pe'?'var(--warn)':t.color,p.name,
+      `${k==='ps'?'Starts':k==='pe'?'Ends':'In progress'} · ${esc(D.fmt(p.start_date))} – ${esc(D.fmt(p.end_date))}`)
+    +`<div class="pcal-kv">${row('Status',statusPill(PROJ_STATUS,p.status))}${row('Type',esc(t.name))}
+      ${row('Team',tm&&tm.id?esc(tm.name):'')}${row('Lead',lead?esc(lead.full_name):'')}${row('Priority',priTag(p.priority))}
+      ${rq?row('Request',`<span class="code">${esc(rq.code||'')}</span> ${esc(rq.event_name||rq.institute||'')}`):''}
+      ${row('Deliverables',dl.length?`${done} of ${dl.length} approved or delivered`:'<span class="mut3">None yet</span>')}</div>
+    ${dl.length?`<div class="pcal-dl">${dl.slice(0,6).map(d=>`<div><span>${esc(d.title)}</span>${statusPill(DELIV_STATUS,d.status)}</div>`).join('')}
+      ${dl.length>6?`<div class="xsmall mut3">+${dl.length-6} more on the project</div>`:''}</div>`:''}
+    <div class="pcal-foot">${backBtn}<button class="btn xs primary" data-pc="go" data-go="#/media/projects/${p.id}">Open project</button></div>`;
 }
 function projGallery(ps){
   const list=ps.filter(p=>['delivered','completed','archived','in_review'].includes(p.status));
@@ -10855,8 +11143,6 @@ function delivRow(d){
     ${(()=>{const as=delivAssignees(d.id);
       return as.length?`<span class="asg-set">${as.map(a=>assigneeChip(a,false)).join('')}</span>`
         :d.owner_id?'':`<span class="chip mut" title="No owner, team or SMC member yet">Unassigned</span>`;})()}
-    ${d.social_status!=='na'?`<span class="chip" title="Social media status">◍ ${esc(d.social_status)}</span>`:''}
-    ${d.mail_status!=='na'?`<span class="chip" title="Mail status">✉ ${esc(d.mail_status)}</span>`:''}
     ${d.due_date?`<span class="${over?'status st-danger':'chip'}">${over?'⚑ ':''}${D.fmt(d.due_date)}</span>`:''}
     ${statusPill(DELIV_STATUS,d.status)}</button>`;
 }
@@ -10869,7 +11155,7 @@ function projDeliverablesTab(p,dls){
           title="Deliverables are created by assigning the work that produces them">＋ Assign work</button>`:""}</div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl m-cards pj-cards">
       <thead><tr><th>Type</th><th>Title</th><th>Owner</th><th>Scheduled</th><th>Due</th><th>Qty</th><th>Versions</th>
-        <th>Social</th><th>Mail</th><th>Status</th><th class="num">Actions</th></tr></thead>
+        <th>Status</th><th class="num">Actions</th></tr></thead>
       <tbody>${dls.map(d=>{
         const vs=DB.deliverable_versions.filter(v=>v.deliverable_id===d.id);
         const latest=vs.sort((a,b)=>b.version_no-a.version_no)[0];
@@ -10892,8 +11178,6 @@ function projDeliverablesTab(p,dls){
             : `<span style="${over?'color:var(--danger);font-weight:700':''}">${D.fmt(d.due_date)}</span>`}</td>
           <td class="small" data-m="hide">${d.quantity_target?`${d.quantity_delivered||0}/${d.quantity_target}<div class="t-sub">${esc(d.unit||'')}</div>`:'—'}</td>
           <td data-m="hide">${vs.length?`<span class="chip">v${latest.version_no} · ${latest.review_status==='pending'?'◔':latest.review_status==='approved'?'✔':'↩'}</span>`:'<span class="mut3">—</span>'}</td>
-          <td class="small" data-m="hide">${d.social_status==='posted'?`<a href="${esc(d.social_post_url||'#')}" target="_blank" rel="noopener" data-stop>◍ posted</a>`:esc(d.social_status)}</td>
-          <td class="small" data-m="hide">${esc(d.mail_status)}</td>
           <td data-m="aside">${statusPill(DELIV_STATUS,d.status)}
             ${d.status==='delivered'?(()=>{const ap=DELIV_APPROVAL[d.approval_status||'pending']||DELIV_APPROVAL.pending;
               return `<div class="t-sub"><span class="status ${ap.c}" style="font-size:10px"><span class="si">${sIco(ap)}</span>${ap.l}</span></div>`;})():''}</td>
@@ -11082,7 +11366,7 @@ function viewPipeline(){
           const over=d.due_date&&d.due_date<TODAY&&!['delivered'].includes(d.status);
           const p=proj(d.project_id);
           return `<div class="kb-card" draggable="true" data-drag="deliverable:${d.id}" data-drawer="deliverable:${d.id}">
-            <div class="kc-top"><span class="code">${p.code}</span>
+            <div class="kc-top"><span class="code" title="${esc(p.code||'')}">${esc(p.name||p.code||'')}</span>
               <span style="color:${ptype(p.project_type_id).color}">${dtype(d.deliverable_type_id).icon}</span>
               ${over?`<span class="status st-danger" style="height:18px;font-size:10px"><span class="si">⚑</span>${D.diff(TODAY,d.due_date)}d</span>`:''}
               ${kcMove('delivMenu',`data-did="${d.id}"`,d.title)}</div>
@@ -13784,7 +14068,11 @@ function commitKiosk(){
 /* ==========================================================================
    MODULE 11 — UNIFIED CALENDAR
    ========================================================================== */
-function calendarGrid(monthISO,eventsFor){
+function calendarGrid(monthISO,eventsFor,opts={}){
+  /* opts.proj — the Projects page calendar: the date opens a day view, "+N
+     more" opens the day's card, an event opens its summary (e.attrs carries
+     the data-act). The main Calendar passes nothing and is unchanged. */
+  const P=!!opts.proj;
   const first=D.parse(monthISO); first.setDate(1);
   const startDow=first.getDay();
   const start=D.add(D.iso(first),-startDow);
@@ -13794,7 +14082,7 @@ function calendarGrid(monthISO,eventsFor){
      name, not the type. A label without a dash may take two lines. */
   const pill=e=>{const k=e.t.indexOf(' — '),a=k>0?e.t.slice(0,k):e.t,b=k>0?e.t.slice(k+3):'';
     return `<div class="cal-ev" style="background:${e.c}"
-          ${e.go?`data-go="${e.go}"`:''} ${e.drawer?`data-drawer="${e.drawer}"`:''} title="${esc(e.t)}"><span>${esc(a)}</span>${b?`<span class="cal-ev-s">${esc(b)}</span>`:''}</div>`;};
+          ${e.go?`data-go="${e.go}"`:''} ${e.drawer?`data-drawer="${e.drawer}"`:''}${e.attrs?' '+e.attrs:''} title="${esc(e.t)}"><span>${esc(a)}</span>${b?`<span class="cal-ev-s">${esc(b)}</span>`:''}</div>`;};
   /* A phone column is 52px, too narrow for words: each event is a dot, the
      month's days are listed in full under the grid, and a day jumps to its entry. */
   const phone=isMobileLayout(), list=[];
@@ -13807,23 +14095,26 @@ function calendarGrid(monthISO,eventsFor){
         if(hol&&!other&&!evs.some(e=>e.t==='★ '+hol.name)) evs=[{c:'var(--cat-3)',t:'★ '+hol.name},...evs];
         if(evs.length) list.push({d,evs});
         const tag=evs.length?'button':'div';
-        return `<${tag} class="cal-cell ${other?'other':''} ${d===TODAY?'today':''}"${evs.length?` data-act="calDay" data-d="${d}" aria-label="${esc(D.fmtLong(d))}, ${plural(evs.length,'event')}"`:''}>
+        return `<${tag} class="cal-cell ${other?'other':''} ${d===TODAY?'today':''}"${evs.length?` data-act="${P?'projCalDay':'calDay'}" data-d="${d}" aria-label="${esc(D.fmtLong(d))}, ${plural(evs.length,'event')}"`:''}>
         <div class="cal-num">${D.parse(d).getDate()}</div>
         ${evs.slice(0,6).map(e=>`<i class="cal-dot" style="background:${e.c}"></i>`).join('')}
         ${evs.length>6?`<span class="cal-more">+${evs.length-6}</span>`:''}</${tag}>`;
       }
       const evs=eventsFor(d)||[];
+      const num=P?`<button class="cal-date" data-act="projCalDay" data-d="${d}" title="Open ${esc(D.fmtLong(d))}">${D.parse(d).getDate()}</button>`
+        :D.parse(d).getDate();
       return `<div class="cal-cell ${other?'other':''} ${d===TODAY?'today':''}">
-        <div class="cal-num">${D.parse(d).getDate()}${hol?`<span class="tag" style="font-size:9px">${esc(hol.name)}</span>`:''}</div>
+        <div class="cal-num">${num}${hol?`<span class="tag" style="font-size:9px">${esc(hol.name)}</span>`:''}</div>
         ${evs.slice(0,4).map(pill).join('')}
-        ${evs.length>4?`<div class="cal-more">+${evs.length-4} more</div>`:''}</div>`;}).join('');
-  return `<div class="cal">
+        ${evs.length>4?(P?`<button class="cal-more" data-act="projCalMore" data-d="${d}">+${evs.length-4} more</button>`
+          :`<div class="cal-more">+${evs.length-4} more</div>`):''}</div>`;}).join('');
+  return `<div class="cal${P?' cal-proj':''}">
     <div class="cal-dow">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>`<div>${d}</div>`).join('')}</div>
     <div class="cal-grid">${grid}
     </div></div>${phone?`<div class="cal-list">${list.map(({d,evs})=>`<div class="cal-day" data-d="${d}">
       <div class="cal-day-h"><b>${D.fmtLong(d)}</b><span class="xsmall mut3">${D.rel(d)}</span></div>
-      ${evs.map(e=>{const tag=e.go||e.drawer?'button':'div';
-        return `<${tag} class="cal-li" ${e.go?`data-go="${e.go}"`:''} ${e.drawer?`data-drawer="${e.drawer}"`:''}><i style="background:${e.c}"></i><span>${esc(e.t)}</span></${tag}>`;}).join('')}
+      ${evs.map(e=>{const tag=e.go||e.drawer||e.attrs?'button':'div';
+        return `<${tag} class="cal-li" ${e.go?`data-go="${e.go}"`:''} ${e.drawer?`data-drawer="${e.drawer}"`:''}${e.attrs?' '+e.attrs:''}><i style="background:${e.c}"></i><span>${esc(e.t)}</span></${tag}>`;}).join('')}
     </div>`).join('')||'<div class="empty" style="padding:28px"><p>Nothing on the calendar this month.</p></div>'}</div>`:''}`;
 }
 /* ══ THE CALENDAR'S EQUIPMENT LAYER ════════════════════════════════════════
@@ -19921,23 +20212,6 @@ function drawerDeliverable(id){
           </div></div>`).join('')}</div>`:
         `<div class="empty" style="padding:20px"><p>No versions submitted yet.</p></div>`}
 
-      <div class="sec-head"><span class="sec-title">Delivery</span></div>
-      <div class="grid g2 mb4">
-        <div class="card"><div class="card-body tight">
-          <div class="xsmall mut3 b mb2">SOCIAL MEDIA</div>
-          <select class="inp" data-act="setSocial" data-did="${d.id}" onchange="ACTIONS.setSocial({did:${d.id}},this)">
-            ${['na','scheduled','posted'].map(v=>`<option value="${v}" ${d.social_status===v?'selected':''}>${({na:'Not applicable',scheduled:'Scheduled',posted:'Posted'})[v]}</option>`).join('')}</select>
-          ${d.social_post_url?`<a class="small mt2" style="display:block" href="${esc(d.social_post_url)}" target="_blank" rel="noopener">${esc(d.social_post_url)}</a>`:''}
-          ${d.social_posted_at?`<div class="xsmall mut3 mt1">posted ${D.fmt(d.social_posted_at)}</div>`:''}
-        </div></div>
-        <div class="card"><div class="card-body tight">
-          <div class="xsmall mut3 b mb2">MAIL</div>
-          <select class="inp" onchange="ACTIONS.setMail({did:${d.id}},this)">
-            ${['na','pending','sent'].map(v=>`<option value="${v}" ${d.mail_status===v?'selected':''}>${({na:'Not applicable',pending:'Pending',sent:'Sent'})[v]}</option>`).join('')}</select>
-          ${d.mail_sent_at?`<div class="xsmall mut3 mt1">sent ${D.fmt(d.mail_sent_at)}</div>`:''}
-        </div></div>
-      </div>
-
       ${links.length?`<div class="sec-head"><span class="sec-title">Drive links</span></div>
         <div class="mb4">${links.map(l=>`<div class="list-row" style="cursor:default">
           <span>⛁</span><span class="lr-main"><b>${esc(l.label)}</b><span class="mono xsmall trunc">${esc(l.url)}</span></span>
@@ -21713,7 +21987,7 @@ const ACTIONS = {
           title:nd.title||dt.name,owner_id:payload.owner_id,due_date:payload.due_date,
           completed_at:null,quantity_target:null,quantity_delivered:null,unit:dt.default_unit,spec_notes:'',
           weight:dt.default_weight||1,status:'not_started',priority:payload.priority,scheduled_date:null,
-          social_status:'na',social_post_url:null,social_posted_at:null,mail_status:'na',mail_sent_at:null,deleted_at:null});
+          deleted_at:null});
       } else if(did&&payload.owner_id){
         const dl=deliv(did); if(dl) dl.owner_id=payload.owner_id;
       }
@@ -21771,7 +22045,13 @@ const ACTIONS = {
   calLayer:(d)=>{S.cal.layers[d.k]=!S.cal.layers[d.k];render();},
   calPrev:()=>{const m=D.parse(S.cal.month);S.cal.month=D.iso(new Date(m.getFullYear(),m.getMonth()-1,1));render();},
   calNext:()=>{const m=D.parse(S.cal.month);S.cal.month=D.iso(new Date(m.getFullYear(),m.getMonth()+1,1));render();},
-  calToday:()=>{S.cal.month='2026-07-01';render();},
+  calToday:()=>{S.cal.month=TODAY.slice(0,8)+'01';render();},
+  projCalDay:(d)=>{pcPopClose();S.projCal.day=d.d;S.projCal.ongoing=false;S.cal.month=d.d.slice(0,8)+'01';render();},
+  projCalMonth:()=>{pcPopClose();S.projCal.day=null;render();},
+  projCalStep:(d)=>ACTIONS.projCalDay({d:D.add(S.projCal.day||TODAY,+d.n)}),
+  projCalOngoing:()=>{S.projCal.ongoing=!S.projCal.ongoing;render();},
+  projCalMore:(d,n)=>pcPop(n.closest('.cal-cell')||n,pcDayHTML(d.d)),
+  projCalEv:(d,n)=>pcPop(n,pcEvHTML(d.d,d.ev,false)),
   auditFilter:(d,n)=>{S.filters.audit[d.k]=n.value;render();},
 
   /* ---- task logging ---- */
@@ -22002,7 +22282,7 @@ const ACTIONS = {
         owner_id:null,due_date:d.due_date,completed_at:null,quantity_target:null,
         quantity_delivered:null,unit:dt.default_unit,spec_notes:'',weight:1,status:'not_started',
         priority:d.priority,estimated_hours:d.estimated_hours,
-        social_status:'na',social_post_url:null,social_posted_at:null,mail_status:'na',mail_sent_at:null,deleted_at:null});
+        deleted_at:null});
       made++;});
     audit(S.me,'project.created','project',id,null,{name,status:p.status,deliverables_created:made});
     /* The project goes to a TEAM. The server resolves that team's lead and makes
@@ -22174,16 +22454,6 @@ const ACTIONS = {
     drawerDeliverable(dl.id);render();toast('Marked delivered','ok');
     moSync(MO_API.post('/deliverables/'+dl.id+'/deliver',{}), ()=>drawerDeliverable(dl.id));
   },
-  setSocial:(d,n)=>{const dl=deliv(+d.did);const before=dl.social_status;dl.social_status=n.value;
-    if(n.value==='posted'){dl.social_posted_at=TODAY;if(!dl.social_post_url)dl.social_post_url='https://instagram.com/parul.university';}
-    audit(S.me,'deliverable.social_updated','deliverable',dl.id,{social_status:before},{social_status:n.value});
-    toast('Social status: '+n.value,'ok');
-    moSync(MO_API.patch('/deliverables/'+dl.id,{social_status:n.value,social_post_url:dl.social_post_url}));},
-  setMail:(d,n)=>{const dl=deliv(+d.did);const before=dl.mail_status;dl.mail_status=n.value;
-    if(n.value==='sent')dl.mail_sent_at=TODAY;
-    audit(S.me,'deliverable.mail_updated','deliverable',dl.id,{mail_status:before},{mail_status:n.value});
-    toast('Mail status: '+n.value,'ok');
-    moSync(MO_API.patch('/deliverables/'+dl.id,{mail_status:n.value}));},
   copyLink:(d)=>{const l=DB.drive_links.find(x=>x.entity_type==='deliverable'&&x.entity_id===+d.did);
     if(l)ACTIONS.copyURL({url:l.url});},
   copyURL:(d)=>{navigator.clipboard&&navigator.clipboard.writeText(d.url);
@@ -25931,6 +26201,14 @@ const ACTIONS = {
    MENUS
    ========================================================================== */
 const MENUS = {
+  /* Where the Projects page opens: the same choice as dragging a view to the
+     front, for touch screens and keyboards. */
+  projViewDefault:()=>{const order=projViewOrder(), std=PROJ_MODES.map(m=>m[0]);
+    return [{label_only:'Projects opens in…'},
+      ...order.map(k=>{const [,l,i]=PROJ_MODES.find(m=>m[0]===k);
+        return {label:l,icon:i,on:order[0]===k,fn:()=>{if(order[0]!==k)saveProjViewOrder([k,...order.filter(x=>x!==k)]);}};}),
+      {sep:true},
+      {label:'Reset to the standard order',icon:'history',disabled:order.join()===std.join(),fn:()=>saveProjViewOrder(std)}];},
   /* Team card actions (Organization Management). Rename and Change lead both open
      the one team form, so there is a single definition of what a team is. */
   teamMenu:(d)=>{const t=team(+d.tid);
@@ -27309,6 +27587,8 @@ async function hydrateFromServer(){
   /* Server-resolved: may this user use Ask Nerve AI? Render hint only — the
      endpoint enforces the same predicate independently. */
   DB.ai_command=!!st.ai_command;
+  /* The caller's own interface preferences (e.g. the order of the Projects views). */
+  DB.my_prefs=st.my_prefs&&typeof st.my_prefs==='object'&&!Array.isArray(st.my_prefs)?st.my_prefs:{};
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
 
   /* WHAT THE SERVER NO LONGER SENDS MUST NOT FALL BACK TO THE SEED.
