@@ -1442,6 +1442,15 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
       user_id TEXT REFERENCES users(id), module TEXT, name TEXT, filters JSONB NOT NULL DEFAULT '{}'::JSONB,
       is_shared BOOLEAN NOT NULL DEFAULT false
     )`);
+  /* One row per person: their own interface preferences as a JSON object —
+     e.g. projects_view_order, the order of the Projects page's views, the
+     first being where the page opens for them. Only ever read by its owner. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_user_prefs (
+      user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      prefs JSONB NOT NULL DEFAULT '{}'::JSONB,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS mo_import_batches (
       id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

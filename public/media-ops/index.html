@@ -1031,6 +1031,11 @@ html[data-theme=dark] .pal-item:hover,html[data-theme=dark] .pal-item.on{backgro
 .menu-item.danger .mi{color:var(--danger)}
 .pri svg{width:12px;height:12px;stroke-width:2.4}
 .btn-group button svg{width:14px;height:14px;vertical-align:-2px}
+/* Reordering the Projects views: the dragged one fades, a bar marks where it lands. */
+.btn-group button[data-vorder]{cursor:grab}
+.btn-group button.vo-drag{opacity:.4}
+.btn-group button.vo-before{box-shadow:inset 3px 0 0 var(--primary)}
+.btn-group button.vo-after{box-shadow:inset -3px 0 0 var(--primary)}
 .menu-item.danger{color:var(--danger)}
 .menu-item.on{background:var(--primary-surface);color:var(--primary-text);font-weight:600}
 html[data-theme=dark] .menu-item.on{background:var(--brand-100)}
@@ -5866,6 +5871,7 @@ function wirePage(){
   $$('[data-menu]').forEach(n=>n.onclick=e=>{e.stopPropagation();MENUS[n.dataset.menu]&&menu(n,MENUS[n.dataset.menu](n.dataset));});
   wireDnD();
   wireTeamDnD();
+  wireViewOrder();
 }
 
 /* ==========================================================================
@@ -10402,14 +10408,54 @@ function filteredProjects(){
   if(f.mine)ps=ps.filter(p=>isOnProject(p.id)||p.owner_id===S.me||leadsProject(p));
   return ps;
 }
+/* The Projects page's six views. Four of them used to be near-identical box
+   glyphs (▤ ▦ ▥ ▩), with Table and Calendar literally the same character. */
+const PROJ_MODES=[['list','List','list'],['table','Table','table'],['kanban','Kanban','board'],
+                  ['timeline','Timeline','timeline'],['calendar','Calendar','calendar'],['gallery','Gallery','gallery']];
+/* EACH PERSON ORDERS THE VIEWS, AND THE FIRST IS WHERE THE PAGE OPENS.
+   The order is theirs, saved on their account (my_prefs.projects_view_order
+   from /state), so it follows them to any device. Anything that is not a
+   clean ordering of the six falls back to the default order. */
+function projViewOrder(){
+  const keys=PROJ_MODES.map(m=>m[0]), o=(DB.my_prefs||{}).projects_view_order;
+  return Array.isArray(o)&&o.length===keys.length&&keys.every(k=>o.includes(k))?o.slice():keys;
+}
+function saveProjViewOrder(order){
+  const was=projViewOrder()[0];
+  DB.my_prefs={...(DB.my_prefs||{}),projects_view_order:order};
+  /* Putting a view first is choosing it, so it opens now as well as next time. */
+  if(order[0]!==was){S.viewMode.projects=order[0];
+    toast(`Projects will open in ${PROJ_MODES.find(m=>m[0]===order[0])[1]} for you`,'ok');}
+  render();
+  MO_API.patch('/me/preferences',{projects_view_order:order})
+    .then(r=>{if(r&&r.prefs)DB.my_prefs=r.prefs;})
+    .catch(e=>toast('Your view order was not saved. '+((e&&e.message)||''),'bad'));
+}
+/* Drag a view onto another to put it before or after it. HTML5 drag does not
+   exist on touch, so the ⋯ beside the views offers the same choice as a menu. */
+function wireViewOrder(){
+  const btns=$$('[data-vorder]'); if(!btns.length)return;
+  let src=null;
+  const clear=()=>btns.forEach(b=>b.classList.remove('vo-before','vo-after'));
+  const side=(b,e)=>{const r=b.getBoundingClientRect();return e.clientX<r.left+r.width/2?'before':'after';};
+  btns.forEach(b=>{
+    b.ondragstart=e=>{src=b.dataset.vorder;b.classList.add('vo-drag');e.dataTransfer.effectAllowed='move';
+      try{e.dataTransfer.setData('text/plain',src);}catch(_){}};
+    b.ondragend=()=>{b.classList.remove('vo-drag');clear();src=null;};
+    b.ondragover=e=>{if(!src)return;e.preventDefault();clear();
+      if(b.dataset.vorder!==src)b.classList.add('vo-'+side(b,e));};
+    b.ondrop=e=>{e.preventDefault();const from=src;clear();if(!from||b.dataset.vorder===from)return;
+      const order=projViewOrder().filter(k=>k!==from);
+      order.splice(order.indexOf(b.dataset.vorder)+(side(b,e)==='after'?1:0),0,from);
+      saveProjViewOrder(order);};
+  });
+}
 function viewProjects(){
-  const mode=S.viewMode.projects||'list';
+  const order=projViewOrder();
+  const mode=S.viewMode.projects||order[0];
   const f=projectFilters();
   const ps=filteredProjects();
-  /* Four of these six used to be near-identical box glyphs (▤ ▦ ▥ ▩), with
-     Table and Calendar literally the same character. */
-  const modes=[['list','List','list'],['table','Table','table'],['kanban','Kanban','board'],
-               ['timeline','Timeline','timeline'],['calendar','Calendar','calendar'],['gallery','Gallery','gallery']];
+  const modes=order.map(k=>PROJ_MODES.find(m=>m[0]===k));
   /* The summary is of every project this viewer can see, not of the filtered
      list below — the filters narrow the list, not the picture. */
   const act=visibleProjects().filter(p=>['planning','in_production','in_review','approved'].includes(p.status));
@@ -10445,7 +10491,9 @@ function viewProjects(){
         ${(f.type.length||f.status.length||f.unit.length||f.priority.length||f.q||f.mine)?`<button class="btn sm ghost" data-act="projClear">Clear</button>`:''}
         <span class="ml-auto f gap2 ac">
           <span class="small mut3">${ps.length} of ${visibleProjects().length}</span>
-          <div class="btn-group">${modes.map(([k,l,i])=>`<button data-act="projMode" data-v="${k}" class="${mode===k?'on':''}" title="${l}">${ic(i)}<span class="hide-sm"> ${l}</span></button>`).join('')}</div>
+          <div class="btn-group">${modes.map(([k,l,i],n)=>`<button data-act="projMode" data-v="${k}" data-vorder="${k}" draggable="true"
+            class="${mode===k?'on':''}" title="${l}${n===0?' — opens first for you':''}. Drag to reorder: the first view is where Projects opens.">${ic(i)}<span class="hide-sm"> ${l}</span></button>`).join('')}</div>
+          <button class="icon-btn" data-menu="projViewDefault" title="Choose where Projects opens for you" aria-label="Choose where Projects opens for you">${ic('kebab')}</button>
         </span>
       </div></div></div>
 
@@ -26153,6 +26201,14 @@ const ACTIONS = {
    MENUS
    ========================================================================== */
 const MENUS = {
+  /* Where the Projects page opens: the same choice as dragging a view to the
+     front, for touch screens and keyboards. */
+  projViewDefault:()=>{const order=projViewOrder(), std=PROJ_MODES.map(m=>m[0]);
+    return [{label_only:'Projects opens in…'},
+      ...order.map(k=>{const [,l,i]=PROJ_MODES.find(m=>m[0]===k);
+        return {label:l,icon:i,on:order[0]===k,fn:()=>{if(order[0]!==k)saveProjViewOrder([k,...order.filter(x=>x!==k)]);}};}),
+      {sep:true},
+      {label:'Reset to the standard order',icon:'history',disabled:order.join()===std.join(),fn:()=>saveProjViewOrder(std)}];},
   /* Team card actions (Organization Management). Rename and Change lead both open
      the one team form, so there is a single definition of what a team is. */
   teamMenu:(d)=>{const t=team(+d.tid);
@@ -27531,6 +27587,8 @@ async function hydrateFromServer(){
   /* Server-resolved: may this user use Ask Nerve AI? Render hint only — the
      endpoint enforces the same predicate independently. */
   DB.ai_command=!!st.ai_command;
+  /* The caller's own interface preferences (e.g. the order of the Projects views). */
+  DB.my_prefs=st.my_prefs&&typeof st.my_prefs==='object'&&!Array.isArray(st.my_prefs)?st.my_prefs:{};
   keys.forEach(k=>{ if(Array.isArray(st[k])) DB[k]=st[k]; });
 
   /* WHAT THE SERVER NO LONGER SENDS MUST NOT FALL BACK TO THE SEED.
