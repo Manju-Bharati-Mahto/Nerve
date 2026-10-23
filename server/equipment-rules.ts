@@ -123,20 +123,20 @@ export type RuleVerdict = { ok: true } | { ok: false; code: string; message: str
 export function canCheckOut(r: CheckoutRequest): RuleVerdict {
   if (UNSERVICEABLE.includes(r.itemStatus))
     return { ok: false, code: "BR-7_UNSERVICEABLE",
-             message: `BR-7: this item is ${r.itemStatus} and cannot be checked out.` };
+             message: `This item is ${r.itemStatus} and cannot be checked out.` };
 
   if (r.alreadyOut || r.itemStatus === "checked_out")
     return { ok: false, code: "BR-7_ALREADY_OUT",
-             message: "BR-7: this item is already checked out." };
+             message: "This item is already checked out." };
 
   if (r.borrowerWorstOverdueDays >= r.config.block_after_days && r.config.block_after_days > 0)
     return { ok: false, code: "BR-7_OVERDUE_HOLDER",
-             message: `BR-7: blocked — you hold an item ${r.borrowerWorstOverdueDays} days overdue. `
+             message: `Blocked — you hold an item ${r.borrowerWorstOverdueDays} days overdue. `
                     + `New checkouts are blocked at ${r.config.block_after_days} days.` };
 
   if (r.conflictingBookingHolder && r.conflictingBookingHolder !== r.borrowerId)
     return { ok: false, code: "BR-7_BOOKING_CONFLICT",
-             message: "BR-7: this item is reserved by somebody else for today." };
+             message: "This item is reserved by somebody else for today." };
 
   return { ok: true };
 }
@@ -248,6 +248,6 @@ export function canBook(startsAt: string, endsAt: string): RuleVerdict {
   if (endsAt < startsAt)
     return { ok: false, code: "END_BEFORE_START", message: "Booking end must be on or after the start." };
   if (daysBetween(startsAt, endsAt) > MAX_BOOKING_DAYS)
-    return { ok: false, code: "VR-8", message: `VR-8: a booking cannot exceed ${MAX_BOOKING_DAYS} days.` };
+    return { ok: false, code: "VR-8", message: `A booking cannot exceed ${MAX_BOOKING_DAYS} days.` };
   return { ok: true };
 }

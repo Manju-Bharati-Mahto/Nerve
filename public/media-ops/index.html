@@ -3873,10 +3873,12 @@ function canMarkDelivered(dl){
   return exempt||(!!v&&v.review_status==='approved');
 }
 /* POST /deliverables/:id/approval: the sign-off on delivered work — any Team
-   Lead or Admin who is not on its team, while it waits for one. */
+   Lead or Admin who is not on its team and did not mark it delivered, while it
+   waits for one. */
 function canSignOff(dl){
   return !!dl&&dl.status==='delivered'&&(dl.approval_status||'pending')==='pending'
-    &&canReviewDeliverables(proj(dl.project_id))&&!onDelivTeam(dl);
+    &&canReviewDeliverables(proj(dl.project_id))&&!onDelivTeam(dl)
+    &&(dl.delivered_by==null||String(dl.delivered_by)!==String(S.me));
 }
 /* POST /deliverables/:id/assignee {kind:'smc'}: Admin, any Team Lead, or the
    project's owner/PM. */
@@ -10212,7 +10214,7 @@ function viewMyDay(){
             ? `<button class="btn xs primary" data-act="submitVersion" data-did="${d.id}"
                  title="Submit ${v?'v'+(v.version_no+1):'v1'} for your Team Lead's review. A Drive link is required">⤴ Submit${v?' v'+(v.version_no+1):''}</button>`
             : d.status==='in_review'
-              ? `<span class="chip" title="A Team Lead, Admin or the project PM must review it. You cannot approve your own version">◔ Awaiting review</span>`
+              ? `<span class="chip" title="Any Team Lead or Admin who is not working on it reviews it. You cannot approve your own version.">◔ Awaiting review</span>`
               : ''}
           ${exempt?`<button class="btn xs" data-act="markDelivered" data-did="${d.id}"
              title="This deliverable type is review-exempt. It is delivered without a version review">✔ Deliver</button>`:''}
@@ -11280,7 +11282,7 @@ function projOverview(p,dls,crew,shoots,pr){
       <div class="card"><div class="card-head"><h3>Latest activity</h3></div>
         <div class="card-body"><div class="tl">
           ${(()=>{const rows=projActivityRows(p);
-            return !rows?'<div class="small mut3">Loading activity…</div>'
+            return !rows?`<div class="small mut3">${projActivityWait(p)}</div>`
               :rows.slice(0,5).map(r=>auditTlItem(r.a,r.who,r.face)).join('')
               ||'<div class="small mut3">No recorded changes yet.</div>';})()}
         </div></div></div>
@@ -11477,16 +11479,26 @@ function projFilesTab(p){
 /* A project's activity, newest first — ONE source for the Activity tab and the
    Overview's "Latest activity", so the two never disagree. FR-3.5: live, it is
    the SERVER's append-only audit trail (per-object subset, FR-13.3), not the
-   session-local log. null while that answer is on its way. */
+   session-local log. null while that answer is on its way, or when it failed
+   (projActivityWait says which).
+   Each project's answer is kept until a write (hydrateFromServer marks every
+   one stale), so going back to an Overview does not ask the server again. A
+   stale feed keeps showing what it has while the fresh one comes. A failed
+   request is not retried on every render: it waits for Try again or a write. */
 function projActivityRows(p){
   if(window.__MO_LIVE__){
-    if(!S._projAct||S._projAct.pid!==p.id||S._projAct.stale){
-      const keep=S._projAct&&S._projAct.pid===p.id?S._projAct.rows:null;
-      S._projAct={pid:p.id,rows:keep};
-      MO_API.get('/projects/'+p.id+'/activity').then(r=>{S._projAct={pid:p.id,rows:r.activity||[]};render();}).catch(()=>{});
+    const cache=S._projActs||(S._projActs={}), k=String(p.id);
+    let e=cache[k];
+    if(!e||(e.stale&&!e.loading)){
+      const keep=e?e.rows:null;
+      e=cache[k]={rows:keep,loading:true};
+      MO_API.get('/projects/'+p.id+'/activity')
+        /* A write while this was on its way leaves it stale, so it asks again. */
+        .then(r=>{cache[k]={rows:r.activity||[],stale:!!e.stale};},()=>{cache[k]={rows:keep,failed:true};})
+        .then(()=>render());
     }
-    if(!S._projAct.rows) return null;
-    return S._projAct.rows.map(a=>{const who=a.actor||'System', u=DB.users.find(x=>x.full_name===who);
+    if(!e.rows) return null;
+    return e.rows.map(a=>{const who=a.actor||'System', u=DB.users.find(x=>x.full_name===who);
       return {a,who,face:u?avatar(u.id,'xs'):''};});
   }
   const acts=DB.audit_logs.filter(a=>(a.entity_type==='project'&&a.entity_id===p.id));
@@ -11496,9 +11508,16 @@ function projActivityRows(p){
   return [...acts,...more].sort((a,b)=>a.occurred_at<b.occurred_at?1:-1)
     .map(a=>({a,who:user(a.actor_id).full_name,face:avatar(a.actor_id,'xs')}));
 }
+/* What stands in for the feed while projActivityRows has no rows. */
+function projActivityWait(p){
+  const e=(S._projActs||{})[String(p.id)];
+  return e&&e.failed
+    ?`Could not load activity. <button class="btn xs" data-act="retryProjActivity" data-pid="${p.id}">Try again</button>`
+    :'Loading activity…';
+}
 function projActivityTab(p){
   const rows=projActivityRows(p);
-  if(!rows) return `<div class="card"><div class="card-body"><div class="empty" style="padding:32px"><p>Loading activity…</p></div></div></div>`;
+  if(!rows) return `<div class="card"><div class="card-body"><div class="empty" style="padding:32px"><p>${projActivityWait(p)}</p></div></div></div>`;
   return `<div class="card"><div class="card-head"><h3>Activity</h3>
       </div>
     <div class="card-body"><div class="tl">
@@ -17664,7 +17683,9 @@ function teamCard(t,canMng,unassigned){
   const ms=teamMembers(t.id);
   const pool=[...unassigned,...DB.users.filter(u=>u.is_active&&!ms.includes(u.id)&&u.id!==t.lead_user_id
     &&!unassigned.some(x=>x.id===u.id))];
-  return `<div class="tm" data-tid="${t.id}" ${canMng&&!isMobileLayout()?'draggable="true"':''}>
+  /* Opened from a "You now lead …" notice: that team's card is outlined. */
+  const focus=S._focusTeam!=null&&String(S._focusTeam)===String(t.id);
+  return `<div class="tm" data-tid="${t.id}" ${canMng&&!isMobileLayout()?'draggable="true"':''}${focus?' style="outline:2px solid var(--primary);outline-offset:2px"':''}>
     <div class="tm-top">
       ${canMng?'<span class="tm-grip hide-m" title="Drag to reorder">⣿</span>':''}
       <span class="tm-ico" style="background:${teamColor(t)}1f;color:${teamColor(t)}">${esc(teamIcon(t))}</span>
@@ -19121,7 +19142,11 @@ function notifTarget(n){
       return (a.deliverable_id!=null&&toDeliv(a.deliverable_id,null))
         ||(a.project_id?{hash:'#/media/projects/'+Number(a.project_id)}:{hash:'#/media/my-day'});
     }
-    case 'team':           return id?{hash:'#/media/team/'+id}:{hash:'#/media/team'};
+    /* A team has no page of its own: #/media/team/<id> is a PERSON's page.
+       It opens Team → Teams & duties with that team's card picked out. */
+    case 'team':           return {hash:'#/media/team',
+      before:()=>{S.tab.team='structure';S._focusTeam=id;},
+      scrollTo:id?'.tm[data-tid="'+id+'"]':null};
     case 'kra':            return {hash:'#/media/performance'};
     case 'user':           return id?{hash:'#/media/team/'+id}:null;
     default:               return null;
@@ -20579,15 +20604,15 @@ function drawerCard(id){
         <span class="ml-auto chip">${c.checklist.filter(i=>i.is_done).length}/${c.checklist.length}</span></div>
         <div class="mb4">${bar(Math.round(c.checklist.filter(i=>i.is_done).length/c.checklist.length*100))}
         ${c.checklist.map((i,ix)=>`<label class="chk mt3" style="display:flex">
-          <input type="checkbox" ${i.is_done?'checked':''} onchange="ACTIONS.toggleCheck({cid:${c.id},ix:${ix}})">
+          <input type="checkbox" ${i.is_done?'checked':''} ${canMoveCards()?`onchange="ACTIONS.toggleCheck({cid:${c.id},ix:${ix}})"`:'disabled'}>
           <span style="${i.is_done?'text-decoration:line-through;opacity:.6':''}">${esc(i.text)}</span></label>`).join('')}</div>`:''}
       <div class="sec-head"><span class="sec-title">Activity</span></div>
       <div class="small mut3">Card created by ${esc(user(c.created_by).full_name)}. Moving a linked card
         ${(DB.boards.find(b=>b.id===c.board_id)||{}).sync_status?'updates':'does not update'} the linked object’s status
         (per-board setting).</div>
     </div>
-    <div class="dr-foot"><button class="btn" data-act="editCard" data-cid="${c.id}">Edit</button>
-      <button class="btn ghost" data-act="archiveCard" data-cid="${c.id}">Archive</button></div>`);
+    ${canMoveCards()?`<div class="dr-foot"><button class="btn" data-act="editCard" data-cid="${c.id}">Edit</button>
+      <button class="btn ghost" data-act="archiveCard" data-cid="${c.id}">Archive</button></div>`:''}`);
   wirePage();
 }
 
@@ -22734,7 +22759,7 @@ const ACTIONS = {
   markDelivered:(d)=>{
     const dl=deliv(+d.did);
     if(!canMarkDelivered(dl)){toast(delivMoveRefusal(dl,'delivered'),'bad');return;}
-    dl.status='delivered';dl.completed_at=TODAY;dl.approval_status='pending';
+    dl.status='delivered';dl.completed_at=TODAY;dl.approval_status='pending';dl.delivered_by=S.me;
     if(dl.quantity_target&&!dl.quantity_delivered)dl.quantity_delivered=dl.quantity_target;
     audit(S.me,'deliverable.delivered','deliverable',dl.id,{status:'approved'},{status:'delivered',completed_at:TODAY});
     drawerDeliverable(dl.id);render();toast('Marked delivered','ok');
@@ -24064,7 +24089,10 @@ const ACTIONS = {
   },
 
   /* ---- boards ---- */
-  toggleCheck:(d)=>{const c=DB.cards.find(x=>x.id===d.cid);
+  /* Cards are changed by Team Leads and Admins only (PATCH /cards and the
+     checklist toggle refuse anyone else), so the drawer offers these to them. */
+  toggleCheck:(d)=>{if(!canMoveCards())return toast(CARD_EDIT_REFUSAL,'bad');
+    const c=DB.cards.find(x=>x.id===d.cid);
     c.checklist[d.ix].is_done=!c.checklist[d.ix].is_done;drawerCard(c.id);
     moSync(MO_API.post('/cards/'+d.cid+'/checklist/'+d.ix+'/toggle',{}), ()=>drawerCard(d.cid));},
   /* The toast this replaces promised assignees, labels, checklists and
@@ -24073,6 +24101,7 @@ const ACTIONS = {
      whose other half silently discards what you type. Assignees and checklist
      items keep their own live controls elsewhere on the drawer. */
   editCard:(d)=>{
+    if(!canMoveCards())return toast(CARD_EDIT_REFUSAL,'bad');
     const c=(DB.cards||[]).find(x=>x.id===+d.cid); if(!c)return;
     modal(`<div class="mo-head"><div><h2>Edit card</h2></div>
         <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
@@ -24094,6 +24123,7 @@ const ACTIONS = {
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
   },
   editCardSave:(d)=>{
+    if(!canMoveCards())return toast(CARD_EDIT_REFUSAL,'bad');
     const c=(DB.cards||[]).find(x=>x.id===+d.cid); if(!c)return;
     const title=$('#ec-title').value.trim();
     if(!title){fieldError('#ec-title','Give the card a title.');return;}
@@ -24104,7 +24134,8 @@ const ACTIONS = {
     render();
     moSync(MO_API.patch('/cards/'+d.cid,body),()=>toast('Card updated','ok'));
   },
-  archiveCard:(d)=>{const c=DB.cards.find(x=>x.id===+d.cid);c.archived_at=TODAY;closeDrawer();render();toast('Card archived','ok');
+  archiveCard:(d)=>{if(!canMoveCards())return toast(CARD_EDIT_REFUSAL,'bad');
+    const c=DB.cards.find(x=>x.id===+d.cid);c.archived_at=TODAY;closeDrawer();render();toast('Card archived','ok');
     moSync(MO_API.patch('/cards/'+d.cid,{archived:true}));},
   boardSettings:(d)=>{
     const b=DB.boards.find(x=>x.id===+d.bid);
@@ -26508,6 +26539,7 @@ const ACTIONS = {
     closeModal();
     moSync(Promise.all(posts),()=>{render();toast((phase==='self'?'Self':'Manager')+' review submitted','ok');});
   },
+  retryProjActivity:(d)=>{const e=(S._projActs||{})[String(d.pid)];if(e){e.stale=true;e.failed=false;}render();},
   markAllRead:()=>{DB.notifications.filter(n=>n.user_id===S.me).forEach(n=>n.is_read=true);DB.notifications_unread=0;render();toast('All marked read','ok');
     if(window.__MO_LIVE__)MO_API.post('/notifications/read',{}).catch(()=>{});},
   /* Matched as text: data-nid is a string, and a row's id may be either. */
@@ -26519,13 +26551,16 @@ const ACTIONS = {
        page and anywhere else a notification can be tapped. */
     const t=notifTarget(n);
     if(t){
+      if(t.before) t.before();
       if(t.hash) location.hash=t.hash;
       else if(t.drawer) t.drawer();
       /* Boundary: opening a notification is a user action, so an equipment
          asset is fetched on tap rather than kept in memory for every asset. */
       else if(t.async) t.async((hash)=>{ location.hash=hash; });
     }
-    render();}
+    render();
+    if(t&&t.scrollTo) setTimeout(()=>{const el=$(t.scrollTo);
+      if(el) try{ el.scrollIntoView({block:'center',behavior:'auto'}); }catch(_){} },60);}
 };
 
 /* ==========================================================================
@@ -26720,7 +26755,7 @@ function applyDelivStatus(dl,s){
   if(s==='changes_requested'){ACTIONS.requestChanges({did:dl.id});return true;}
   if(s==='approved'){ACTIONS.approveVersion({did:dl.id});return true;}
   const before=dl.status;dl.status=s;
-  if(s==='delivered')dl.completed_at=TODAY;
+  if(s==='delivered'){dl.completed_at=TODAY;dl.approval_status='pending';dl.delivered_by=S.me;}
   audit(S.me,'deliverable.status_changed','deliverable',dl.id,{status:before},{status:s});
   render();refreshDelivDrawer(dl.id);toast('Status → '+DELIV_STATUS[s].l,'ok');
   moSync(MO_API.post('/deliverables/'+dl.id+'/status',{status:s}),()=>refreshDelivDrawer(dl.id));
@@ -26747,6 +26782,7 @@ function refreshDelivDrawer(id){
    In review only by a version. When the deliverable may not move, neither
    does the card. */
 function canMoveCards(){return isAdmin()||isTL();}
+const CARD_EDIT_REFUSAL='Only a Team Lead or an Admin may change cards.';
 function cardMoveRefusal(c,col2){
   if(!canMoveCards())return "only a Team Lead or an Admin may move cards";
   const b=DB.boards.find(x=>x.id===c.board_id)||{};
@@ -27965,7 +28001,7 @@ async function hydrateFromServer(){
   DB.audit_logs=[]; DB.activity=[];
   /* re-fetch scoped activity feeds after writes; a project's feed keeps
      showing what it has meanwhile, so its Overview does not blink to "Loading". */
-  S._recentAct=null; if(S._projAct) S._projAct.stale=true;
+  S._recentAct=null; Object.values(S._projActs||{}).forEach(e=>{e.stale=true;});
   if(!Array.isArray(st.notifications)) genNotifications();
   window.__MO_LIVE__=true;
   return {projects:(st.projects||[]).length, reports:(st.daily_reports||[]).length};

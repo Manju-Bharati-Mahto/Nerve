@@ -3464,7 +3464,7 @@ async function seedMediaOpsLookups() {
   await pool.query(`INSERT INTO mo_duty_flags (code, name, description) VALUES
     ('equipment_custodian','Equipment Custodian','Handles the camera cupboard: damage reports, maintenance, disputes.'),
     ('report_reviewer','Report Reviewer','Receives flagged daily reports for their scope in addition to the Team Lead.'),
-    ('project_manager','Project Manager','Per-project duty set on the project, not the user (BR-2).'),
+    ('project_manager','Project Manager','Per-project duty set on the project, not the user.'),
     ('kiosk_operator','Kiosk Operator','May reset a kiosk device and reprint QR labels.')`);
   await pool.query(`INSERT INTO mo_skills (name, category) VALUES
     ('Photography','Capture'),('Videography','Capture'),('Drone Piloting','Capture'),('Editing','Post'),

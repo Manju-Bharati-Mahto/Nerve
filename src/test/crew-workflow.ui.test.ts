@@ -229,7 +229,7 @@ describe("Notifications — clickable, routed and segmented for leads", () => {
       ["leave_request", 1, "#/media/leave"],
       ["request", 1, "#/media/requests"],
       ["casting_request", 1, "#/media/casting"],
-      ["team", 9001, "#/media/team/9001"],
+      ["team", 9001, "#/media/team"],
       ["kra", 1, "#/media/performance"],
       ["maintenance", 1, "#/media/equipment"],
     ];
@@ -325,7 +325,6 @@ describe("Notifications — clickable, routed and segmented for leads", () => {
     expect(h.ev<string>(`notifTarget({entity_type:'assignment',entity_id:'62'}).hash`)).toBe("#/media/projects/7002");
     // A deliverable this page has not loaded goes to its project when the notice names one.
     expect(h.ev<string>(`notifTarget({entity_type:'deliverable',entity_id:999999,project_id:7001}).hash`)).toBe("#/media/projects/7001");
-    expect(h.ev<string>(`notifTarget({entity_type:'team',entity_id:'9001'}).hash`)).toBe("#/media/team/9001");
     h.ev(`DB.notifications=[{id:5,user_id:901,kind:'assignment',entity_type:'assignment',entity_id:'61',title:'Edit assigned to you',body:'',created_at:TODAY+'T09:00:00Z',is_read:false}]`);
     h.ev(`ACTIONS.openNotif({nid:'5'})`);
     expect(h.doc.getElementById("drawer")!.textContent).toContain("Aftermovie");
@@ -1068,8 +1067,8 @@ describe("My Day, the drawer, lists and crew — one answer per question", () =>
       expect(html).not.toContain("zcw-901");
     }
     // Live: the Overview shows the server's feed, the same one the Activity tab does.
-    h.ev(`window.__MO_LIVE__=true; S._projAct={pid:7001,rows:[{action:'project.created',actor:'Coord Chitra',
-      entity_type:'project',entity_id:7001,before:null,after:{},occurred_at:TODAY+'T07:00:00Z'}]}`);
+    h.ev(`window.__MO_LIVE__=true; S._projActs={7001:{rows:[{action:'project.created',actor:'Coord Chitra',
+      entity_type:'project',entity_id:7001,before:null,after:{},occurred_at:TODAY+'T07:00:00Z'}]}}`);
     expect(h.ev<string>("viewProject(7001,'overview')")).toContain("Coord Chitra");
     expect(h.ev<string>("projActivityTab(proj(7001))")).toContain("Coord Chitra");
   });
@@ -1109,5 +1108,89 @@ describe("My Day, the drawer, lists and crew — one answer per question", () =>
     expect(names).not.toContain("Coord Chitra");
     h.as(907);
     expect(h.ev<string[]>("MENUS.pipeOwner().map(i=>i.label)")).toContain("Emp Bela");
+  });
+});
+
+/* ── Pass-2 review follow-ups: every control offered works for that person ── */
+describe("review follow-ups — what the page offers matches what the server honours", () => {
+  const card = `(()=>{const b=DB.boards[0], col=DB.board_columns.find(c=>c.board_id===b.id);
+    DB.cards.push({id:99901,board_id:b.id,column_id:col.id,title:'Poster run',description:'',labels:[],assignees:[],
+      checklist:[{text:'Proof',is_done:false}],priority:'normal',due_date:null,created_by:901,archived_at:null});})()`;
+
+  it("the card drawer offers Edit, Archive and the checklist only to a Team Lead or an Admin", async () => {
+    const h = await boot(906);
+    h.ev(card);
+    h.ev("drawerCard(99901)");
+    const drawer = () => h.doc.getElementById("drawer")!.innerHTML;
+    expect(drawer()).not.toContain('data-act="editCard"');
+    expect(drawer()).not.toContain('data-act="archiveCard"');
+    expect(drawer()).not.toContain("toggleCheck");
+    // Reached anyway, nothing is changed and nothing is posted.
+    h.ev("ACTIONS.toggleCheck({cid:99901,ix:0}); ACTIONS.archiveCard({cid:'99901'})");
+    expect(h.ev<boolean>("DB.cards.find(c=>c.id===99901).checklist[0].is_done")).toBe(false);
+    expect(h.ev<unknown>("DB.cards.find(c=>c.id===99901).archived_at")).toBeNull();
+    expect(h.writes().some((c) => c.url.includes("/cards/"))).toBe(false);
+    h.as(901);
+    h.ev("drawerCard(99901)");
+    expect(drawer()).toContain('data-act="editCard"');
+    expect(drawer()).toContain('data-act="archiveCard"');
+    expect(drawer()).toContain("toggleCheck");
+  });
+
+  it("whoever marked work delivered is not offered its sign-off", async () => {
+    const h = await boot(904);
+    h.ev("Object.assign(deliv(8002),{status:'delivered',approval_status:'pending',delivered_by:904})");
+    expect(h.ev<boolean>("canSignOff(deliv(8002))")).toBe(false);
+    h.ev("deliv(8002).delivered_by=902");
+    expect(h.ev<boolean>("canSignOff(deliv(8002))")).toBe(true);
+  });
+
+  it("a project's activity is asked for once, says so when it fails, and tries again on request", async () => {
+    const h = await boot(907);
+    let asks = 0;
+    (h.dom.window as unknown as { fetch: unknown }).fetch = async (input: RequestInfo | URL) => {
+      if (!/\/projects\/\d+\/activity$/.test(String(input)))
+        return { ok: true, status: 200, json: async () => ({}) } as Response;
+      asks++;
+      if (asks === 1) return { ok: false, status: 500, json: async () => ({ message: "Server error." }) } as Response;
+      return { ok: true, status: 200, json: async () => ({ activity: [{ action: "project.created", actor: "Coord Chitra",
+        entity_type: "project", entity_id: 7001, before: null, after: {}, occurred_at: "2026-01-01T07:00:00Z" }] }) } as Response;
+    };
+    const settle = () => new Promise((r) => setTimeout(r, 50));
+    h.ev("viewProject(7001,'overview')");
+    await settle();
+    expect(h.ev<string>("viewProject(7001,'overview')")).toContain("Could not load activity");
+    expect(h.ev<string>("projActivityTab(proj(7001))")).toContain("retryProjActivity");
+    expect(asks).toBe(1);
+    // Try again re-renders the page it is on — here, the project's Overview.
+    h.ev("ACTIONS.retryProjActivity({pid:'7001'}); viewProject(7001,'overview')");
+    await settle();
+    expect(asks).toBe(2);
+    expect(h.ev<string>("viewProject(7001,'overview')")).toContain("Coord Chitra");
+    // Another project and back: the first is not asked for again until a write.
+    h.ev("viewProject(7002,'overview')");
+    await settle();
+    h.ev("viewProject(7001,'overview')");
+    expect(asks).toBe(3);
+    h.ev("Object.values(S._projActs).forEach(e=>{e.stale=true;}); viewProject(7001,'overview')");
+    await settle();
+    expect(asks).toBe(4);
+  });
+
+  it("a 'You now lead' notice opens that team on Teams & duties, not a person's page", async () => {
+    const h = await boot(901);
+    h.ev(`DB.notifications=[{id:7,user_id:901,kind:'assignment',entity_type:'team',entity_id:9002,
+      title:'You now lead Video Team',body:'',created_at:TODAY+'T09:00:00Z',is_read:false}]`);
+    h.ev("ACTIONS.openNotif({nid:'7'})");
+    expect(h.dom.window.location.hash).toBe("#/media/team");
+    expect(h.ev<string>("S.tab.team")).toBe("structure");
+    const page = h.ev<string>("viewTeam()");
+    expect(page).toMatch(/data-tid="9002"[^>]*outline/);
+    expect(page).not.toMatch(/data-tid="9001"[^>]*outline/);
+  });
+
+  it("My Day's Awaiting review chip says who reviews: any Team Lead or Admin, not the PM", () => {
+    expect(HTML).not.toContain("the project PM must review it");
+    expect(HTML).toContain("Any Team Lead or Admin who is not working on it reviews it. You cannot approve your own version.");
   });
 });
