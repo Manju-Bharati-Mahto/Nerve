@@ -681,12 +681,15 @@ maybe("Phase 2 — the self-naming, bypass and routing holes stay closed", () =>
       `UPDATE mo_deliverables SET owner_id=$1 WHERE project_id=$2 RETURNING id`,
       [ACTORS.leadA.id, pid]);
     const did = Number(own.rows[0].id);
-    /* The Admins as they stand when the version goes in: suites running
-       alongside add their own Admins, and one added after the submit was
-       never going to be told. */
-    const admins = await pool.query(`SELECT id FROM users WHERE team='media' AND role IN ('admin','super_admin')`);
+    /* The Admins there both before and after the version goes in: suites
+       running alongside add and remove their own Admins, and one added after
+       the submit, or gone before the check, was never going to be told. */
+    const adminIds = async () => (await pool.query(
+      `SELECT id FROM users WHERE team='media' AND role IN ('admin','super_admin')`)).rows.map((r) => String(r.id));
+    const before = await adminIds();
     await as("leadA", "POST", `/deliverables/${did}/versions`, drive("own"));
-    for (const a of admins.rows) {
+    const after = new Set(await adminIds());
+    for (const a of before.filter((id) => after.has(id)).map((id) => ({ id }))) {
       const n = await pool.query(
         `SELECT COUNT(*)::int c FROM mo_notifications WHERE user_id=$1 AND entity_type='deliverable' AND entity_id=$2`,
         [a.id, did]);
