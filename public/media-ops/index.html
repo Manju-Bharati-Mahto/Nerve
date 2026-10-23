@@ -1175,6 +1175,75 @@ html[data-theme=dark] .cal-cell.today{background:var(--brand-50)}
 .cal-ev:hover{filter:brightness(1.1)}
 html[data-theme=dark] .cal-ev{color:var(--text-inv)}
 .cal-more{font-size:10px;color:var(--text-3);font-weight:600;padding-left:4px}
+/* ── The Projects page calendar: today in colour, the rest of the month quiet,
+   "+N more" and the date itself are buttons (a day card / a day view). ── */
+.pcal-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.pcal-bar b{font-size:16px}
+.cal-proj .cal-cell:not(.today) .cal-ev{filter:saturate(.2);opacity:.78;transition:filter .15s,opacity .15s}
+.cal-proj .cal-cell:not(.today):hover .cal-ev{filter:none;opacity:1}
+.cal-proj .cal-cell:not(.today):not(:hover) .cal-num{color:var(--text-3)}
+.cal-proj .cal-cell.today{box-shadow:inset 0 0 0 2px var(--primary)}
+.cal-date{border:0;background:none;font:inherit;color:inherit;cursor:pointer;min-width:24px;height:24px;
+  border-radius:999px;padding:0 6px;display:inline-grid;place-items:center}
+.cal-date:hover{background:var(--surface-3,var(--border))}
+.cal-cell.today .cal-date{background:var(--primary);color:#fff}
+button.cal-more{border:0;background:none;cursor:pointer;text-align:left;border-radius:4px;padding:2px 4px}
+button.cal-more:hover{color:var(--primary-text);background:var(--surface-2)}
+.pcal-pop{position:fixed;z-index:89;width:340px;max-width:calc(100vw - 20px);max-height:min(72vh,560px);overflow:auto;
+  background:var(--surface);border:1px solid var(--border);border-radius:16px;box-shadow:var(--sh-drag,0 14px 40px rgba(0,0,0,.2));
+  padding:12px 12px 10px}
+.pcal-pop-h{display:flex;flex-direction:column;align-items:center;position:relative;padding:2px 0 8px}
+.pcal-pop-x{position:absolute;right:0;top:0}
+.pcal-dow{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3);font-weight:700}
+.pcal-big{font-size:28px;font-weight:500;border:0;background:none;color:var(--text);cursor:pointer;border-radius:999px;
+  width:50px;height:50px;display:grid;place-items:center}
+.pcal-big:hover{background:var(--surface-2)}
+.pcal-big.today{background:var(--primary);color:#fff}
+.pcal-row{display:flex;gap:9px;align-items:center;width:100%;padding:6px 8px;border-radius:8px;border:0;background:none;
+  text-align:left;cursor:pointer;font:inherit;font-size:13px;color:var(--text)}
+.pcal-row:hover{background:var(--surface-2)}
+.pcal-row i{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+.pcal-row .pcal-t{color:var(--text-2);flex:0 0 64px;font-size:12px}
+.pcal-row b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.pcal-foot{display:flex;justify-content:space-between;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
+.pcal-ev-h{display:flex;gap:10px;align-items:flex-start;padding-right:28px;position:relative}
+.pcal-ev-h .pcal-pop-x{top:-2px}
+.pcal-sq{width:14px;height:14px;border-radius:4px;margin-top:4px;flex:0 0 auto}
+.pcal-ev-h h3{font-size:16px;margin:0;line-height:1.3}
+.pcal-kv{display:flex;flex-direction:column;gap:6px;margin:10px 0 4px;font-size:12.5px;color:var(--text-2)}
+.pcal-kv>div{display:flex;gap:8px;align-items:baseline}
+.pcal-kv>div>span:first-child{flex:0 0 78px;color:var(--text-3);font-size:11.5px}
+.pcal-dl{display:flex;flex-direction:column;gap:4px;margin-top:4px}
+.pcal-dl>div{display:flex;justify-content:space-between;gap:8px;align-items:center;font-size:12px}
+.pcal-dl>div>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+/* The day view: projects carry dates, not times, so they sit in an all-day
+   strip; shoots carry a call time and a wrap time, so they sit on the hours. */
+.pcal-day{border:1px solid var(--border);border-radius:var(--r-lg);background:var(--surface);overflow:hidden}
+.pcal-d-head{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.pcal-d-head .pcal-d-title{display:flex;align-items:baseline;gap:8px;margin-right:auto}
+.pcal-d-head .pcal-d-title b{font-size:18px}
+.pcal-d-allday{display:grid;grid-template-columns:64px 1fr;border-bottom:1px solid var(--border);background:var(--surface-2)}
+.pcal-d-allday>span{font-size:10.5px;color:var(--text-3);padding:9px 8px;text-align:right;text-transform:uppercase;letter-spacing:.04em}
+.pcal-d-chips{display:flex;flex-wrap:wrap;gap:4px;padding:6px 8px;align-items:center}
+.pcal-d-chip{border:0;color:#fff;background:var(--c);border-radius:5px;padding:3px 8px;font:inherit;font-size:11.5px;
+  cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pcal-d-chip:hover{filter:brightness(1.08)}
+.pcal-d-chip.ongoing{background:color-mix(in srgb,var(--c) 16%,var(--surface));color:var(--text);border-left:3px solid var(--c)}
+.pcal-d-body{max-height:min(66vh,680px);overflow:auto}
+.pcal-d-grid{display:grid;grid-template-columns:64px 1fr}
+.pcal-d-hours{position:relative}
+.pcal-d-hl{position:absolute;right:8px;transform:translateY(-50%);font-size:10.5px;color:var(--text-3);white-space:nowrap}
+.pcal-d-lane{position:relative;border-left:1px solid var(--border);
+  background:repeating-linear-gradient(to bottom,var(--border) 0 1px,transparent 1px 48px)}
+.pcal-d-ev{position:absolute;display:flex;flex-direction:column;justify-content:flex-start;align-items:stretch;
+  border:1px solid var(--surface);background:var(--c);color:#fff;border-radius:6px;
+  padding:3px 7px;text-align:left;font:inherit;font-size:11.5px;line-height:1.3;overflow:hidden;cursor:pointer}
+.pcal-d-ev:hover{filter:brightness(1.08);z-index:2}
+.pcal-d-ev b{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pcal-d-ev span{display:block;opacity:.92;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pcal-d-now{position:absolute;left:0;right:0;height:2px;background:var(--danger);z-index:3;pointer-events:none}
+.pcal-d-now::before{content:"";position:absolute;left:-5px;top:-4px;width:10px;height:10px;border-radius:50%;background:var(--danger)}
+.pcal-d-empty{padding:28px;text-align:center;color:var(--text-3);font-size:13px}
 
 /* ---- Timeline list (versions, activity, day timeline) ---- */
 .tl{position:relative;padding-left:26px}
@@ -3548,6 +3617,9 @@ const S = {
      session began two months in the past and today's shoots were invisible
      until you paged forward. */
   cal:{month:TODAY.slice(0,8)+'01',layers:{shoots:1,tours:1,deadlines:1,projects:1,leave:1,bookings:1,holidays:1},view:'month'},
+  /* The Projects page calendar: day — the day open on the hours (null: the
+     month); ongoing — whether that day lists the projects in progress. */
+  projCal:{day:null,ongoing:false},
   reportDate:TODAY, libView:'table', teamTab:'workload', dragging:null,
   /* Directory: which role sections are collapsed, and which have been expanded
      past their first page. Session-scoped by design — a fresh visit starts open. */
@@ -10479,13 +10551,184 @@ function projTimeline(ps){
     <div class="gantt-today" style="left:calc(230px + (100% - 230px) * ${todayPct/100})" title="Today"></div>
   </div></div>`;
 }
+/* ══ THE PROJECTS PAGE CALENDAR ════════════════════════════════════════════
+
+   A day holds the projects that start or end on it (dates, no time of day)
+   and the shoots booked on it (a call time and a wrap time). The month keeps
+   today in colour and quiets the rest; "+N more" opens the day's card, an
+   event opens a short summary, and the date opens the day on the hours.
+   Events are named by key — ps:/pe:/po: a project starting, ending or in
+   progress, s: a shoot — so a card can be rebuilt from the key alone. */
+let _pcPS=[], _pcPop=null;
+const pcMin=t=>{const m=/^(\d{1,2}):(\d{2})/.exec(String(t||''));return m?(+m[1])*60+(+m[2]):null;};
+const pcClock=m=>{const h=Math.floor(m/60)%24,mm=m%60;
+  return (h%12||12)+(mm?':'+String(mm).padStart(2,'0'):'')+(h<12?'am':'pm');};
+function pcEvents(day,ps=_pcPS){
+  const ids=new Set(ps.map(p=>p.id)), out=[];
+  ps.filter(p=>p.start_date===day).forEach(p=>out.push({ev:'ps:'+p.id,c:ptype(p.project_type_id).color,t:'▶ '+p.name}));
+  ps.filter(p=>p.end_date===day).forEach(p=>out.push({ev:'pe:'+p.id,c:'var(--warn)',t:'⤴ '+p.name+' ends'}));
+  DB.shoots.filter(s=>s.shoot_date===day&&ids.has(s.project_id)).forEach(s=>{
+    const a=pcMin(s.call_time),b=pcMin(s.end_time);
+    out.push({ev:'s:'+s.id,c:ptype(proj(s.project_id).project_type_id).color,t:'◉ '+s.title,
+      from:a,to:a==null?null:(b!=null&&b>a?b:a+60)});});
+  /* All-day first, then shoots by call time — the order a day is read in. */
+  return out.sort((x,y)=>(x.from??-1)-(y.from??-1));
+}
+const pcName=ev=>{const [k,id]=ev.split(':');
+  return k==='s'?(DB.shoots.find(s=>s.id===+id)||{}).title||'Shoot':proj(+id).name;};
+
 function projCalendar(ps){
-  return calendarGrid(S.cal.month,(day)=>{
-    const out=[];
-    ps.filter(p=>p.start_date===day).forEach(p=>out.push({c:ptype(p.project_type_id).color,t:'▶ '+p.name,go:'#/media/projects/'+p.id}));
-    ps.filter(p=>p.end_date===day).forEach(p=>out.push({c:'var(--warn)',t:'⤴ '+p.name+' ends',go:'#/media/projects/'+p.id}));
-    DB.shoots.filter(s=>s.shoot_date===day&&ps.some(p=>p.id===s.project_id)).forEach(s=>out.push({c:'var(--info)',t:'◉ '+s.title,drawer:'shoot:'+s.id}));
-    return out;});
+  _pcPS=ps;
+  if(S.projCal.day) return projCalDayView(ps,S.projCal.day);
+  const m=D.parse(S.cal.month);
+  return `<div class="pcal-bar">
+      <div class="btn-group"><button data-act="calPrev" aria-label="Previous month">${ic('left')}</button>
+        <button data-act="calToday">Today</button>
+        <button data-act="calNext" aria-label="Next month">${ic('right')}</button></div>
+      <b>${m.toLocaleDateString('en-IN',{month:'long',year:'numeric'})}</b>
+      <span class="xsmall mut3 hide-m">Click a date to see that day hour by hour</span></div>
+    ${calendarGrid(S.cal.month,day=>pcEvents(day,ps).map(e=>({...e,
+      attrs:`data-act="projCalEv" data-d="${day}" data-ev="${e.ev}"`})),{proj:true})}`;
+}
+
+function projCalDayView(ps,day){
+  const evs=pcEvents(day,ps), allDay=evs.filter(e=>e.from==null), timed=evs.filter(e=>e.from!=null);
+  const ongoing=ps.filter(p=>p.start_date<day&&p.end_date>day);
+  const H=48; let h0=7,h1=21;
+  timed.forEach(e=>{h0=Math.min(h0,Math.floor(e.from/60));h1=Math.max(h1,Math.ceil(e.to/60));});
+  h1=Math.min(h1,24);
+  /* Overlapping shoots share the width: a run of overlaps is split into as
+     many columns as it needs, and each shoot takes the first one free. */
+  const placed=[]; let run=[], runEnd=-1;
+  const close=()=>{const n=Math.max(...run.map(r=>r.col))+1;run.forEach(r=>r.cols=n);run=[];runEnd=-1;};
+  [...timed].sort((a,b)=>a.from-b.from||b.to-a.to).forEach(e=>{
+    if(run.length&&e.from>=runEnd) close();
+    const taken=new Set(run.filter(r=>r.to>e.from).map(r=>r.col));
+    let col=0; while(taken.has(col)) col++;
+    const r={...e,col}; run.push(r); placed.push(r); runEnd=Math.max(runEnd,e.to);
+  });
+  if(run.length) close();
+  const hours=[];for(let h=h0;h<=h1;h++)hours.push(h);
+  const now=new Date(), nm=now.getHours()*60+now.getMinutes();
+  const chip=(e,cls='')=>`<button class="pcal-d-chip ${cls}" style="--c:${e.c}" data-act="projCalEv" data-d="${day}" data-ev="${e.ev}"
+    title="${esc(e.t)}">${esc(e.t)}</button>`;
+  return `<div class="pcal-day">
+    <div class="pcal-d-head">
+      <div class="btn-group"><button data-act="projCalStep" data-n="-1" aria-label="Previous day">${ic('left')}</button>
+        <button data-act="projCalDay" data-d="${TODAY}">Today</button>
+        <button data-act="projCalStep" data-n="1" aria-label="Next day">${ic('right')}</button></div>
+      <div class="pcal-d-title"><b>${esc(D.fmtLong(day))}</b><span class="small mut3">${esc(D.rel(day))}</span></div>
+      <span class="small mut3">${plural(evs.length,'event')}</span>
+      <button class="btn sm" data-act="projCalMonth">${ic('calendar')} Month</button></div>
+    <div class="pcal-d-allday"><span>All day</span><div class="pcal-d-chips">
+      ${allDay.map(e=>chip(e)).join('')}
+      ${ongoing.length?(S.projCal.ongoing
+        ?ongoing.map(p=>chip({ev:'po:'+p.id,c:ptype(p.project_type_id).color,t:p.name},'ongoing')).join('')
+          +`<button class="btn xs ghost" data-act="projCalOngoing">Hide in progress</button>`
+        :`<button class="btn xs ghost" data-act="projCalOngoing">${plural(ongoing.length,'project')} in progress</button>`):''}
+      ${!allDay.length&&!ongoing.length?'<span class="xsmall mut3">Nothing starts or ends today.</span>':''}</div></div>
+    ${timed.length?'':'<div class="pcal-d-empty">No shoots booked on this day.</div>'}
+    <div class="pcal-d-body"><div class="pcal-d-grid" style="height:${(h1-h0)*H}px">
+      <div class="pcal-d-hours">${hours.map(h=>`<span class="pcal-d-hl" style="top:${(h-h0)*H}px${h===h0?';transform:none':''}">${pcClock(h*60)}</span>`).join('')}</div>
+      <div class="pcal-d-lane" style="height:${(h1-h0)*H}px">
+        ${placed.map(e=>{const top=(e.from-h0*60)/60*H, hgt=Math.max(22,(e.to-e.from)/60*H-2);
+          const s=DB.shoots.find(x=>x.id===+e.ev.slice(2))||{}, p=proj(s.project_id);
+          return `<button class="pcal-d-ev" style="--c:${e.c};top:${top}px;height:${hgt}px;left:calc(${e.col/e.cols*100}% + 2px);width:calc(${100/e.cols}% - 4px)"
+            data-act="projCalEv" data-d="${day}" data-ev="${e.ev}" title="${esc(s.title||'')} · ${pcClock(e.from)} – ${pcClock(e.to)}">
+            <b>${esc(s.title||'Shoot')}</b><span>${pcClock(e.from)} – ${pcClock(e.to)}</span>${hgt>58?`<span>${esc(p.name)}</span>`:''}</button>`;}).join('')}
+        ${day===TODAY&&nm>=h0*60&&nm<=h1*60?`<div class="pcal-d-now" style="top:${(nm-h0*60)/60*H}px"></div>`:''}
+      </div></div></div></div>`;
+}
+
+/* The day's card ("+N more") and an event's summary share one floating card:
+   anchored beside what was clicked on a desktop, a bottom sheet on a phone.
+   Moving between them (an event, back to the day) swaps the card's content. */
+function pcPopClose(){
+  if(!_pcPop)return; const p=_pcPop; _pcPop=null;
+  if(p.mob){closeModal();return;}
+  p.box.remove(); document.removeEventListener('mousedown',p.out,true); document.removeEventListener('keydown',p.key,true);
+}
+function pcPop(anchor,html){
+  if(isMobileLayout()){
+    pcPopClose(); modal(`<div class="mo-body">${html}</div>`,{size:'small'});
+    const box=$('#modal-layer .modal'); _pcPop={box,mob:true}; pcWire(box); return;
+  }
+  let box;
+  if(_pcPop&&!_pcPop.mob&&!anchor){
+    box=_pcPop.box; box.innerHTML=html;
+    const h=box.offsetHeight; if(box.offsetTop+h>innerHeight-10) box.style.top=Math.max(10,innerHeight-h-10)+'px';
+  } else {
+    pcPopClose();
+    box=el(`<div class="pcal-pop" role="dialog">${html}</div>`); document.body.appendChild(box);
+    const out=e=>{if(!box.contains(e.target))pcPopClose();};
+    const key=e=>{if(e.key==='Escape'){e.stopPropagation();pcPopClose();}};
+    document.addEventListener('mousedown',out,true); document.addEventListener('keydown',key,true);
+    _pcPop={box,out,key,mob:false};
+    const r=(anchor||document.body).getBoundingClientRect(), w=box.offsetWidth, h=box.offsetHeight;
+    let left=Math.max(10,Math.min(r.left,innerWidth-w-10)), top=r.top;
+    if(top+h>innerHeight-10) top=Math.max(10,innerHeight-h-10);
+    box.style.left=left+'px'; box.style.top=top+'px';
+  }
+  pcWire(box);
+}
+function pcWire(box){
+  box.querySelectorAll('[data-pc]').forEach(b=>b.onclick=e=>{e.stopPropagation();const x=b.dataset;
+    if(x.pc==='x') return pcPopClose();
+    if(x.pc==='ev') return pcPop(null,pcEvHTML(x.d,x.ev,true));
+    if(x.pc==='list') return pcPop(null,pcDayHTML(x.d));
+    if(x.pc==='day') return ACTIONS.projCalDay({d:x.d});
+    pcPopClose();
+    if(x.pc==='go') location.hash=x.go;
+    else if(x.pc==='drawer') drawerFor(x.k,+x.id);});
+}
+function pcDayHTML(day){
+  const evs=pcEvents(day), d=D.parse(day);
+  return `<div class="pcal-pop-h"><span class="pcal-dow">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]}</span>
+      <button class="pcal-big ${day===TODAY?'today':''}" data-pc="day" data-d="${day}" title="Open this day hour by hour">${d.getDate()}</button>
+      <button class="icon-btn pcal-pop-x" data-pc="x" aria-label="Close">${ic('x')}</button></div>
+    ${evs.length?evs.map(e=>`<button class="pcal-row" data-pc="ev" data-d="${day}" data-ev="${e.ev}">
+        <i style="background:${e.c}"></i>
+        <span class="pcal-t">${e.from!=null?pcClock(e.from):e.ev.startsWith('pe')?'Ends':'Starts'}</span>
+        <b>${esc(pcName(e.ev))}</b></button>`).join('')
+      :'<div class="pcal-d-empty">Nothing on this day.</div>'}
+    <div class="pcal-foot"><span class="xsmall mut3">${plural(evs.length,'event')}</span>
+      <button class="btn xs" data-pc="day" data-d="${day}">Open day view</button></div>`;
+}
+function pcEvHTML(day,ev,back){
+  const [k,raw]=ev.split(':'), id=+raw;
+  const head=(c,title,sub)=>`<div class="pcal-ev-h"><span class="pcal-sq" style="background:${c}"></span>
+      <div style="min-width:0"><h3>${esc(title)}</h3><div class="small mut3">${sub}</div></div>
+      <button class="icon-btn pcal-pop-x" data-pc="x" aria-label="Close">${ic('x')}</button></div>`;
+  const row=(l,v)=>v?`<div><span>${l}</span><span>${v}</span></div>`:'';
+  const backBtn=back?`<button class="btn xs ghost" data-pc="list" data-d="${day}">${ic('left')} ${esc(D.fmtLong(day))}</button>`:'<span></span>';
+  if(k==='s'){
+    const s=DB.shoots.find(x=>x.id===id);
+    if(!s) return head('var(--border)','Shoot not found','It is no longer on the calendar.');
+    const p=proj(s.project_id), a=pcMin(s.call_time), b=pcMin(s.end_time);
+    const crew=(DB.shoot_crew||[]).filter(c=>c.shoot_id===s.id).map(c=>user(c.user_id)).filter(Boolean);
+    return head(ptype(p.project_type_id).color,s.title,
+        `${esc(D.fmtLong(s.shoot_date))}${a!=null?' · '+pcClock(a)+(b!=null&&b>a?' – '+pcClock(b):''):''}`)
+      +`<div class="pcal-kv">${row('Project',esc(p.name))}${row('Location',esc(s.location||''))}${row('Status',esc(s.status||''))}
+        ${row('Crew',crew.length?esc(crew.map(u=>u.full_name).join(', ')):'<span class="mut3">No crew yet</span>')}
+        ${row('Notes',esc(s.notes||''))}</div>
+      <div class="pcal-foot">${backBtn}<span class="f gap2">
+        <button class="btn xs" data-pc="go" data-go="#/media/projects/${p.id}">Project</button>
+        <button class="btn xs primary" data-pc="drawer" data-k="shoot" data-id="${s.id}">Open shoot</button></span></div>`;
+  }
+  const p=DB.projects.find(x=>x.id===id);
+  if(!p) return head('var(--border)','Project not found','It is no longer on the calendar.');
+  const t=ptype(p.project_type_id), dl=projectDeliverables(p.id);
+  const done=dl.filter(d=>['approved','delivered'].includes(d.status)).length;
+  const lead=p.owner_id?user(p.owner_id):null, tm=p.team_id?team(p.team_id):null, rq=reqs().find(r=>r.project_id===p.id);
+  return head(k==='pe'?'var(--warn)':t.color,p.name,
+      `${k==='ps'?'Starts':k==='pe'?'Ends':'In progress'} · ${esc(D.fmt(p.start_date))} – ${esc(D.fmt(p.end_date))}`)
+    +`<div class="pcal-kv">${row('Status',statusPill(PROJ_STATUS,p.status))}${row('Type',esc(t.name))}
+      ${row('Team',tm&&tm.id?esc(tm.name):'')}${row('Lead',lead?esc(lead.full_name):'')}${row('Priority',priTag(p.priority))}
+      ${rq?row('Request',`<span class="code">${esc(rq.code||'')}</span> ${esc(rq.event_name||rq.institute||'')}`):''}
+      ${row('Deliverables',dl.length?`${done} of ${dl.length} approved or delivered`:'<span class="mut3">None yet</span>')}</div>
+    ${dl.length?`<div class="pcal-dl">${dl.slice(0,6).map(d=>`<div><span>${esc(d.title)}</span>${statusPill(DELIV_STATUS,d.status)}</div>`).join('')}
+      ${dl.length>6?`<div class="xsmall mut3">+${dl.length-6} more on the project</div>`:''}</div>`:''}
+    <div class="pcal-foot">${backBtn}<button class="btn xs primary" data-pc="go" data-go="#/media/projects/${p.id}">Open project</button></div>`;
 }
 function projGallery(ps){
   const list=ps.filter(p=>['delivered','completed','archived','in_review'].includes(p.status));
@@ -13777,7 +14020,11 @@ function commitKiosk(){
 /* ==========================================================================
    MODULE 11 — UNIFIED CALENDAR
    ========================================================================== */
-function calendarGrid(monthISO,eventsFor){
+function calendarGrid(monthISO,eventsFor,opts={}){
+  /* opts.proj — the Projects page calendar: the date opens a day view, "+N
+     more" opens the day's card, an event opens its summary (e.attrs carries
+     the data-act). The main Calendar passes nothing and is unchanged. */
+  const P=!!opts.proj;
   const first=D.parse(monthISO); first.setDate(1);
   const startDow=first.getDay();
   const start=D.add(D.iso(first),-startDow);
@@ -13787,7 +14034,7 @@ function calendarGrid(monthISO,eventsFor){
      name, not the type. A label without a dash may take two lines. */
   const pill=e=>{const k=e.t.indexOf(' — '),a=k>0?e.t.slice(0,k):e.t,b=k>0?e.t.slice(k+3):'';
     return `<div class="cal-ev" style="background:${e.c}"
-          ${e.go?`data-go="${e.go}"`:''} ${e.drawer?`data-drawer="${e.drawer}"`:''} title="${esc(e.t)}"><span>${esc(a)}</span>${b?`<span class="cal-ev-s">${esc(b)}</span>`:''}</div>`;};
+          ${e.go?`data-go="${e.go}"`:''} ${e.drawer?`data-drawer="${e.drawer}"`:''}${e.attrs?' '+e.attrs:''} title="${esc(e.t)}"><span>${esc(a)}</span>${b?`<span class="cal-ev-s">${esc(b)}</span>`:''}</div>`;};
   /* A phone column is 52px, too narrow for words: each event is a dot, the
      month's days are listed in full under the grid, and a day jumps to its entry. */
   const phone=isMobileLayout(), list=[];
@@ -13800,23 +14047,26 @@ function calendarGrid(monthISO,eventsFor){
         if(hol&&!other&&!evs.some(e=>e.t==='★ '+hol.name)) evs=[{c:'var(--cat-3)',t:'★ '+hol.name},...evs];
         if(evs.length) list.push({d,evs});
         const tag=evs.length?'button':'div';
-        return `<${tag} class="cal-cell ${other?'other':''} ${d===TODAY?'today':''}"${evs.length?` data-act="calDay" data-d="${d}" aria-label="${esc(D.fmtLong(d))}, ${plural(evs.length,'event')}"`:''}>
+        return `<${tag} class="cal-cell ${other?'other':''} ${d===TODAY?'today':''}"${evs.length?` data-act="${P?'projCalDay':'calDay'}" data-d="${d}" aria-label="${esc(D.fmtLong(d))}, ${plural(evs.length,'event')}"`:''}>
         <div class="cal-num">${D.parse(d).getDate()}</div>
         ${evs.slice(0,6).map(e=>`<i class="cal-dot" style="background:${e.c}"></i>`).join('')}
         ${evs.length>6?`<span class="cal-more">+${evs.length-6}</span>`:''}</${tag}>`;
       }
       const evs=eventsFor(d)||[];
+      const num=P?`<button class="cal-date" data-act="projCalDay" data-d="${d}" title="Open ${esc(D.fmtLong(d))}">${D.parse(d).getDate()}</button>`
+        :D.parse(d).getDate();
       return `<div class="cal-cell ${other?'other':''} ${d===TODAY?'today':''}">
-        <div class="cal-num">${D.parse(d).getDate()}${hol?`<span class="tag" style="font-size:9px">${esc(hol.name)}</span>`:''}</div>
+        <div class="cal-num">${num}${hol?`<span class="tag" style="font-size:9px">${esc(hol.name)}</span>`:''}</div>
         ${evs.slice(0,4).map(pill).join('')}
-        ${evs.length>4?`<div class="cal-more">+${evs.length-4} more</div>`:''}</div>`;}).join('');
-  return `<div class="cal">
+        ${evs.length>4?(P?`<button class="cal-more" data-act="projCalMore" data-d="${d}">+${evs.length-4} more</button>`
+          :`<div class="cal-more">+${evs.length-4} more</div>`):''}</div>`;}).join('');
+  return `<div class="cal${P?' cal-proj':''}">
     <div class="cal-dow">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>`<div>${d}</div>`).join('')}</div>
     <div class="cal-grid">${grid}
     </div></div>${phone?`<div class="cal-list">${list.map(({d,evs})=>`<div class="cal-day" data-d="${d}">
       <div class="cal-day-h"><b>${D.fmtLong(d)}</b><span class="xsmall mut3">${D.rel(d)}</span></div>
-      ${evs.map(e=>{const tag=e.go||e.drawer?'button':'div';
-        return `<${tag} class="cal-li" ${e.go?`data-go="${e.go}"`:''} ${e.drawer?`data-drawer="${e.drawer}"`:''}><i style="background:${e.c}"></i><span>${esc(e.t)}</span></${tag}>`;}).join('')}
+      ${evs.map(e=>{const tag=e.go||e.drawer||e.attrs?'button':'div';
+        return `<${tag} class="cal-li" ${e.go?`data-go="${e.go}"`:''} ${e.drawer?`data-drawer="${e.drawer}"`:''}${e.attrs?' '+e.attrs:''}><i style="background:${e.c}"></i><span>${esc(e.t)}</span></${tag}>`;}).join('')}
     </div>`).join('')||'<div class="empty" style="padding:28px"><p>Nothing on the calendar this month.</p></div>'}</div>`:''}`;
 }
 /* ══ THE CALENDAR'S EQUIPMENT LAYER ════════════════════════════════════════
@@ -21747,7 +21997,13 @@ const ACTIONS = {
   calLayer:(d)=>{S.cal.layers[d.k]=!S.cal.layers[d.k];render();},
   calPrev:()=>{const m=D.parse(S.cal.month);S.cal.month=D.iso(new Date(m.getFullYear(),m.getMonth()-1,1));render();},
   calNext:()=>{const m=D.parse(S.cal.month);S.cal.month=D.iso(new Date(m.getFullYear(),m.getMonth()+1,1));render();},
-  calToday:()=>{S.cal.month='2026-07-01';render();},
+  calToday:()=>{S.cal.month=TODAY.slice(0,8)+'01';render();},
+  projCalDay:(d)=>{pcPopClose();S.projCal.day=d.d;S.projCal.ongoing=false;S.cal.month=d.d.slice(0,8)+'01';render();},
+  projCalMonth:()=>{pcPopClose();S.projCal.day=null;render();},
+  projCalStep:(d)=>ACTIONS.projCalDay({d:D.add(S.projCal.day||TODAY,+d.n)}),
+  projCalOngoing:()=>{S.projCal.ongoing=!S.projCal.ongoing;render();},
+  projCalMore:(d,n)=>pcPop(n.closest('.cal-cell')||n,pcDayHTML(d.d)),
+  projCalEv:(d,n)=>pcPop(n,pcEvHTML(d.d,d.ev,false)),
   auditFilter:(d,n)=>{S.filters.audit[d.k]=n.value;render();},
 
   /* ---- task logging ---- */
