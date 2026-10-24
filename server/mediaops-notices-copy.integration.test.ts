@@ -162,6 +162,31 @@ maybe("notices — counts in words", () => {
     expect(n?.body).toBe("Fest was assigned to Event Team. 4 deliverables to allocate. 1 project moved.");
     expect((await one(`SELECT body FROM mo_notifications WHERE id=$1`, [id])).body).toContain("deliverable(s)");
   });
+
+  it("an older row's verb agrees with its count, and a word between the count and '(s)' is read too", async () => {
+    const add = async (title: string, body: string) => Number((await pool.query(
+      `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+       VALUES ($1,'assignment',$2,$3,'project',NULL) RETURNING id`, [ACTORS.leadA.id, title, body])).rows[0].id);
+    const one1 = await add("Team removed", "1 project(s) have been handed to you to run.");
+    const two = await add("Team removed", "3 project(s) have been handed to you to run.");
+    const cyc = await add("You are Creator of the Cycle", "Cycle 4 — 80 points. Shared with 2 other creator(s).");
+    const cyc1 = await add("You are Creator of the Cycle", "Cycle 4 — 80 points. Shared with 1 other creator(s).");
+    const mine = await feed("leadA");
+    const body = (id: number) => mine.find((x) => x.id === id)?.body;
+    expect(body(one1)).toBe("1 project has been handed to you to run.");
+    expect(body(two)).toBe("3 projects have been handed to you to run.");
+    expect(body(cyc)).toBe("Cycle 4 — 80 points. Shared with 2 other creators.");
+    expect(body(cyc1)).toBe("Cycle 4 — 80 points. Shared with 1 other creator.");
+  });
+
+  it("an older sign-off request titled 'needs review' reads 'needs sign-off'; the stored row is unchanged", async () => {
+    const id = Number((await pool.query(
+      `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+       VALUES ($1,'review','Deliverable delivered — needs review','Someone marked “Photos” as delivered.','deliverable',NULL)
+       RETURNING id`, [ACTORS.leadA.id])).rows[0].id);
+    expect((await feed("leadA")).find((x) => x.id === id)?.title).toBe("Deliverable delivered — needs sign-off");
+    expect((await one(`SELECT title FROM mo_notifications WHERE id=$1`, [id])).title).toBe("Deliverable delivered — needs review");
+  });
 });
 
 maybe("notices — a submission names its project and says where its version stands", () => {

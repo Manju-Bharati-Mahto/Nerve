@@ -1179,8 +1179,8 @@ maybe("notifications — payload, recipients, no duplicates", () => {
     await as("empA1", "POST", `/deliverables/${did}/versions`, drive("d1"));
     await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "approved" });
     expect((await as("empA2", "POST", `/deliverables/${did}/deliver`, {})).status).toBe(200);
-    expect(await titles("leadA", "deliverable", did)).toContain("Deliverable delivered — needs review");
-    expect(await titles("empA1", "deliverable", did)).not.toContain("Deliverable delivered — needs review");
+    expect(await titles("leadA", "deliverable", did)).toContain("Deliverable delivered — needs sign-off");
+    expect(await titles("empA1", "deliverable", did)).not.toContain("Deliverable delivered — needs sign-off");
 
     const second = await teamed();
     await as("empA1", "POST", `/deliverables/${second.did}/versions`, drive("d2"));
@@ -1188,9 +1188,9 @@ maybe("notifications — payload, recipients, no duplicates", () => {
     const told = await adminsAround(async () => {
       expect((await as("leadA", "POST", `/deliverables/${second.did}/deliver`, {})).status).toBe(200);
     });
-    expect(await titles("leadA", "deliverable", second.did)).not.toContain("Deliverable delivered — needs review");
+    expect(await titles("leadA", "deliverable", second.did)).not.toContain("Deliverable delivered — needs sign-off");
     for (const a of told)
-      expect((await notes(a, "deliverable", second.did)).map((n) => n.title), a).toContain("Deliverable delivered — needs review");
+      expect((await notes(a, "deliverable", second.did)).map((n) => n.title), a).toContain("Deliverable delivered — needs sign-off");
   });
 
   it("a sign-off reaches the whole team, and a send-back must say what to change and carries it", async () => {
@@ -1409,6 +1409,19 @@ maybe("finished work keeps its owner", () => {
     // Work still open is scheduled as before.
     const { did } = await ownedBy("empA1");
     expect((await as("leadA", "POST", `/deliverables/${did}/schedule`, { scheduled_date: "2026-10-30" })).status).toBe(200);
+  });
+
+  it("moving the project's end date re-derives due dates on open work only, never on finished work", async () => {
+    const { pid, dids } = await routed(teamA, ["Edited Photos", "Raw Footage", "Aftermovie"]);
+    await pool.query(`UPDATE mo_deliverables SET due_date_source='offset', due_offset_days=2, due_date='2026-10-12'
+                       WHERE id = ANY($1::int[])`, [dids]);
+    await pool.query(`UPDATE mo_deliverables SET status='delivered', completed_at=NOW() WHERE id=$1`, [dids[1]]);
+    await pool.query(`UPDATE mo_deliverables SET status='approved', dispatch_status='delivered' WHERE id=$1`, [dids[2]]);
+    const r = await as("admin", "PATCH", `/projects/${pid}`, { end_date: "2026-10-20" });
+    expect(r.status).toBe(200);
+    expect(dayOf((await deliv(dids[0])).due_date), "open work follows the project").toBe("2026-10-22");
+    expect(dayOf((await deliv(dids[1])).due_date), "delivered work keeps its date").toBe("2026-10-12");
+    expect(dayOf((await deliv(dids[2])).due_date), "dispatched work keeps its date").toBe("2026-10-12");
   });
 
   it("approved work still waiting to go out can change hands, and finished work can still be edited", async () => {

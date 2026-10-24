@@ -8761,7 +8761,7 @@ function viewCoordDashboard(){
     ${(needsAssignment().length||overdue.length||overdueFollowups().length)?`
     <div class="note warn sec"><b>Needs your attention.</b>
       ${needsAssignment().length?`<a href="#/media/my-day">${plural(needsAssignment().length,'project')} with no Team Lead</a> · `:''}
-      ${overdue.length?`<a href="#/media/dispatch">${overdue.length} dispatch(es) past ${DISPATCH_SLA_DAYS*24}h</a> · `:''}
+      ${overdue.length?`<a href="#/media/dispatch">${plural(overdue.length,'dispatch','dispatches')} past ${DISPATCH_SLA_DAYS*24}h</a> · `:''}
       ${overdueFollowups().length?`${plural(overdueFollowups().length,'overdue follow-up')}`:''}
     </div>`:''}
 
@@ -9521,8 +9521,10 @@ function activityWidget(){
     if(a.action.includes('status'))return 'status';
     if(a.action.includes('damage'))return 'damage';
     return 'other';};
-  /* The words come from auditLine(), one map for the seed and the live feed. */
-  const said=a=>auditLine(a,t=>`<span class="mut">${t}</span>`);
+  /* The words come from auditLine(), one map for the seed and the live feed,
+     and say which project a deliverable or version row is in. */
+  const said=a=>{const pn=auditProjectName(a);
+    return auditLine(a,t=>`<span class="mut">${t}</span>`)+(pn?' on '+esc(pn):'');};
   const when=a=>`<span class="ra-time" title="${esc(D.fmtAt(a.occurred_at))}">${esc(D.since(a.occurred_at))}</span>`;
   /* FR-1.10: live mode reads the SERVER's scoped activity feed (own actions +
      assigned-project activity; admin = department stream). */
@@ -9821,7 +9823,7 @@ function auditTarget(a){
     case 'automation_rule':{const r=DB.automation_rules.find(r=>r.id===a.entity_id);return r?r.rule_key:'a rule';}
     case 'import_batch':return 'the Excel master sheet';
     case 'analytics':return 'the department monthly pack';
-    case 'leave_request':{const l=DB.leave_requests.find(l=>l.id===a.entity_id);return l?'leave for '+user(l.user_id).full_name.split(' ')[0]:'leave';}
+    case 'leave_request':{const l=DB.leave_requests.find(l=>l.id===a.entity_id);return l?'leave for '+user(l.user_id).full_name:'leave';}
     case 'deliverable_type':return dtype(a.entity_id).name;
     case 'shoot':{const sh=DB.shoots.find(x=>x.id===a.entity_id);return sh?sh.title:'a shoot';}
     case 'card':{const c=DB.cards.find(x=>x.id===a.entity_id);return c?c.title:'a card';}
@@ -9845,7 +9847,7 @@ const AUDIT_VERB={
   'deliverable.delivered':'delivered','deliverable.dispatched':'dispatched','deliverable.archived':'archived',
   'deliverable.assigned':'assigned {who} to','deliverable.smc_assigned':'assigned {who} from SMC to',
   'deliverable.reassigned':'reassigned',
-  'deliverable.approval_changed':'signed off','deliverable.due_date_changed':'changed the due date of',
+  'deliverable.approval_changed':'changed the sign-off of','deliverable.due_date_changed':'changed the due date of',
   'deliverable.link_copied':'copied the Drive link of','drive_link.added':'added a Drive link to {t}','deliverable.version_reviewed':'reviewed',
   'deliverable.version_submitted':'submitted',
   'work.assigned':'assigned {t} to {who}','assignment.created':'created','assignment.updated':'updated',
@@ -9923,7 +9925,7 @@ function auditName(a){
     case 'daily_report':{const r=find('daily_reports');return r?'the daily report for '+D.fmt(r.report_date):'';}
     case 'equipment_item':{const l=assetLabel(id);return /#\d+$/.test(l)?'':l;}
     case 'user':return named(user(id));
-    case 'leave_request':{const l=find('leave_requests'),n=l&&named(user(l.user_id));return n?'leave for '+n.split(' ')[0]:'';}
+    case 'leave_request':{const l=find('leave_requests'),n=l&&named(user(l.user_id));return n?'leave for '+n:'';}
     case 'deliverable_type':{const t=find('deliverable_types');return t?t.name:'';}
     case 'automation_rule':{const r=find('automation_rules');return r&&r.name||'';}
     case 'card':{const c=find('cards');return c?c.title:row;}
@@ -9966,8 +9968,9 @@ function auditWho(a){
 }
 /* A version's review says its verdict: "approved v2 of …", "requested changes on v1 of …". */
 const AUDIT_VERDICT={approved:'approved',changes_requested:'requested changes on'};
-/* A sign-off on delivered work says which: "signed off …", "sent … back after delivery". */
-const AUDIT_SIGNOFF={approved:'signed off',changes_requested:'sent {t} back after delivery',rejected:'sent {t} back after delivery'};
+/* A sign-off on delivered work says which: "signed off …", "sent … back after
+   delivery", "reset the sign-off of …"; anything else is "changed the sign-off of". */
+const AUDIT_SIGNOFF={approved:'signed off',pending:'reset the sign-off of',changes_requested:'sent {t} back after delivery',rejected:'sent {t} back after delivery'};
 function auditTpl(a){
   const v=(a.action==='deliverable.version_reviewed'&&AUDIT_VERDICT[(a.after||{}).review_status])
     ||(a.action==='deliverable.approval_changed'&&AUDIT_SIGNOFF[(a.after||{}).approval_status])
@@ -10047,7 +10050,9 @@ function auditChanges(a){
       /* A value only on one side that is empty ("Note: none", "Owner: none")
          was never set, and the person who acted is already the headline. */
       if(had!==has&&(had?ov:nv)==='none')return;
-      if(p&&has&&actor&&nv===actor)return;
+      /* "Approved by: <actor>" only repeats the headline; a move to the
+         actor from someone else ("Owner: Priya → Rahul") is news. */
+      if(p&&!had&&has&&actor&&nv===actor)return;
       const l=auditTeamPeople(a,k)?'Assigned to':AUDIT_FIELD[k]||auditWords(k);
       out.push(had&&has?l+': '+ov+' → '+nv:has?l+': '+nv:l+' was '+ov);
     });
@@ -14974,7 +14979,7 @@ function renderRemoveModal(uid,impact){
         </div></div>
         <div class="field"><label class="lbl">Reassign active work to <span class="mut3">(optional)</span></label>
           <select class="inp" id="rm-reassign"><option value="">Leave it unassigned</option>
-            ${takers.map(x=>`<option value="${x.id}">${esc(x.full_name)} · ${esc(roleMeta(x.role).l)}</option>`).join('')}</select>
+            ${takers.map(x=>`<option value="${x.id}">${esc(personLabel(x.id))}</option>`).join('')}</select>
           <div class="hint">Moves their open projects and deliverables. Completed work is never touched.</div></div>`
         :`<div class="note mb3">Nothing active is assigned to ${esc(u.full_name.split(' ')[0])}, so nothing needs reassigning.</div>`}
 
@@ -18055,7 +18060,7 @@ function teamCard(t,canMng,unassigned){
       ${canMng&&pool.length?`<select class="inp" style="height:28px;font-size:12px;max-width:200px"
         onchange="ACTIONS.teamAddMember({tid:${t.id},uid:this.value});this.value=''">
         <option value="">＋ Add member…</option>
-        ${pool.map(u=>`<option value="${u.id}">${esc(u.full_name)}${teamOf(u.id)?' · '+esc(teamOf(u.id).name):''}</option>`).join('')}</select>`:''}
+        ${pool.map(u=>`<option value="${u.id}">${esc(personLabel(u.id))}</option>`).join('')}</select>`:''}
     </div>
   </div>`;
 }
@@ -18078,7 +18083,7 @@ function openTeamForm(tid){
           <input class="inp" id="tf-name" value="${esc(t?t.name:'')}" placeholder="e.g. Content Team"></div>
         <div class="field"><label class="lbl">Team lead <span class="req">*</span></label>
           <select class="inp" id="tf-lead">
-            ${leadPool.map(u=>`<option value="${u.id}" ${t&&t.lead_user_id===u.id?'selected':''}>${esc(u.full_name)} · ${esc((u.role||'').replace('_',' '))}</option>`).join('')}
+            ${leadPool.map(u=>`<option value="${u.id}" ${t&&t.lead_user_id===u.id?'selected':''}>${esc(personLabel(u.id))}</option>`).join('')}
           </select>
           <div class="hint">Exactly one lead per team. Changing it moves review, approval and dashboard
             ownership immediately. No other screen needs updating.</div></div>

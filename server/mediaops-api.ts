@@ -262,10 +262,19 @@ async function notifyOnce(userId: string, kind: string, title: string, body: str
    "… today's report (AUTO-1)." People never see rule codes, so the feed drops
    them as it reads; the stored rows are left as they are. */
 const NOTICE_CODE = /\s*\((?:\s*(?:(?:AUTO|BR|VR|FR)-[0-9][\w.-]*|§\s*[\d.]+)\s*[,;/]?)+\)/g;
-/* Older notices also said "4 deliverable(s)"; they are read as "4 deliverables"
-   (and "1 deliverable"). New ones are written with plural(). */
+/* The title of the notice asking a reviewer to sign off delivered work. */
+const SIGN_OFF_NOTICE = "Deliverable delivered — needs sign-off";
+/* Older notices also said "4 deliverable(s)" or "2 other creator(s)"; they are
+   read as "4 deliverables" (and "1 deliverable", "1 other creator"), with the
+   verb after "N project(s) have" agreeing. New ones are written with plural().
+   A post-delivery sign-off request was once titled "… needs review"; it is
+   sign-off, not review, and reads so. The stored rows are left as they are. */
 const plainNotice = (s: unknown): unknown => (typeof s === "string"
-  ? s.replace(NOTICE_CODE, "").replace(/\b(\d+) ([a-z][a-z-]*)\(s\)/gi, (_m, n: string, w: string) => plural(Number(n), w))
+  ? s.replace(NOTICE_CODE, "")
+    .replace(/^Deliverable delivered — needs review$/, SIGN_OFF_NOTICE)
+    .replace(/\b(\d+) ((?:[a-z][a-z-]*\s)?)([a-z][a-z-]*)\(s\)(\s+have\b)?/gi,
+      (_m, n: string, other: string, w: string, have?: string) =>
+        `${n} ${other}${Number(n) === 1 ? w : w + "s"}${have ? (Number(n) === 1 ? have.replace(/have$/i, "has") : have) : ""}`)
   : s);
 /* "1 deliverable", "4 deliverables" — never "4 deliverable(s)". */
 const plural = (n: number, one: string, many = one + "s"): string => `${n} ${n === 1 ? one : many}`;
@@ -1634,19 +1643,29 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // name the person a row is about ("added Jay Thakkar to …") instead of "a crew member".
   app.get(`${P}/activity/recent`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
+    /* project_name: the project a row about a deliverable or its version is in,
+       read now (as /my-activity does) — so Home can say which project's
+       "Raw Archive" was archived even when the page does not hold it. */
+    const projectOf = `COALESCE(pd.name, pv.name) AS project_name
+           FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
+           LEFT JOIN mo_deliverables d ON a.entity_type = 'deliverable' AND d.id = a.entity_id
+           LEFT JOIN mo_projects pd ON pd.id = d.project_id
+           LEFT JOIN mo_deliverable_versions v ON a.entity_type = 'deliverable_version' AND v.id = a.entity_id
+           LEFT JOIN mo_deliverables dv ON dv.id = v.deliverable_id
+           LEFT JOIN mo_projects pv ON pv.id = dv.project_id`;
     let rows;
     if (isMoAdmin(u)) {
       rows = (await pool.query(
-        `SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor
-           FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
+        `SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor,
+                ${projectOf}
           ORDER BY a.occurred_at DESC LIMIT 20`)).rows;
     } else {
       rows = (await pool.query(
         `WITH my_projects AS (
            SELECT p.id FROM mo_projects p WHERE p.deleted_at IS NULL AND (p.owner_id=$1
              OR EXISTS (SELECT 1 FROM mo_project_assignments a WHERE a.project_id=p.id AND a.user_id=$1 AND a.removed_at IS NULL)))
-         SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor
-           FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
+         SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor,
+                ${projectOf}
           WHERE a.actor_id=$1
              OR (a.entity_type='project' AND a.entity_id IN (SELECT id FROM my_projects))
              OR (a.entity_type='deliverable' AND a.entity_id IN (SELECT d.id FROM mo_deliverables d WHERE d.project_id IN (SELECT id FROM my_projects)))
@@ -2517,7 +2536,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         await pool.query(
           `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
            VALUES ($1,'review',$2,$3,'deliverable',$4)`,
-          [rid, "Deliverable delivered — needs review",
+          [rid, SIGN_OFF_NOTICE,
             `${u.full_name ?? "A crew member"} marked “${d.title}” as delivered.`, Number(d.id)]).catch(() => {});
   }
 
@@ -12624,13 +12643,15 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     vals.push(id);
     const { rows } = await pool.query(`UPDATE mo_projects SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals);
     // §9: moving the project dates re-derives due dates ONLY for deliverables
-    // still tracking their offset. Hand-edited dates ('manual') are left alone.
+    // still tracking their offset. Hand-edited dates ('manual') are left alone,
+    // and so is finished work — the same rule as finishedAs()/datesLocked().
     let recalculated = 0;
     if ("end_date" in b && rows[0].end_date && String(rows[0].end_date) !== String(cur.end_date)) {
       const r = await pool.query(
         `UPDATE mo_deliverables
             SET due_date = ($1::date + COALESCE(due_offset_days,0) * INTERVAL '1 day')::date, updated_at=NOW()
           WHERE project_id=$2 AND due_date_source='offset' AND deleted_at IS NULL
+            AND status <> 'delivered' AND COALESCE(dispatch_status,'none') NOT IN ('sent','delivered','archived')
           RETURNING id`, [rows[0].end_date, id]);
       recalculated = r.rowCount ?? 0;
       if (recalculated)

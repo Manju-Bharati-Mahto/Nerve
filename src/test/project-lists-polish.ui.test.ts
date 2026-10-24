@@ -144,6 +144,39 @@ describe("Activity — only what the headline does not say", () => {
       .toContain("Approved by: Lead Alpha");
   });
 
+  it("work moved to the actor from someone else still says who it moved from", async () => {
+    const h = await boot(921);
+    expect(h.ev<string[]>(`auditChanges({action:'deliverable.assigned',entity_type:'deliverable',entity_id:8201,
+      actor:'Lead Alpha',before:{owner_id:'zpl-922'},after:{owner_id:'zpl-921'}})`)).toContain("Owner: Emp Anika → Lead Alpha");
+  });
+
+  it("a sign-off reset to pending does not read 'signed off'", async () => {
+    const h = await boot(921);
+    const line = (st: string) => h.ev<string>(`auditText({action:'deliverable.approval_changed',entity_type:'deliverable',
+      entity_id:8202,before:{approval_status:'approved'},after:{approval_status:${st}}})`);
+    expect(line("'pending'")).toBe("reset the sign-off of Highlights");
+    expect(line("undefined")).toBe("changed the sign-off of Highlights");
+    expect(line("'approved'")).toBe("signed off Highlights");
+  });
+
+  it("a leave entry names the person in full", async () => {
+    const h = await boot(921);
+    h.ev(`DB.leave_requests.push({id:99701,user_id:922,status:'pending'})`);
+    expect(h.ev<string>(`auditName({entity_type:'leave_request',entity_id:99701})`)).toBe("leave for Emp Anika");
+  });
+
+  it("Home's Recent Activity says which project a deliverable row is in", async () => {
+    const h = await boot(927);
+    h.ev(`S._recentAct={rows:[
+      {action:'deliverable.archived',entity_type:'deliverable',entity_id:999991,actor:'Coord Chitra',
+       occurred_at:'2026-10-24T08:00:00Z',before:null,after:{title:'Raw Archive'},project_name:'Spring Fest'},
+      {action:'deliverable.archived',entity_type:'deliverable',entity_id:8204,actor:'Coord Chitra',
+       occurred_at:'2026-10-24T07:00:00Z',before:null,after:null}]}`);
+    const t = [...h.html(h.ev<string>("activityWidget()")).querySelectorAll(".ra-t")].map((x) => x.textContent);
+    expect(t[0]).toMatch(/Raw Archive on Spring Fest$/);
+    expect(t[1]).toMatch(/Aftermovie on Annual Cultural Festival$/);
+  });
+
   it("an assignment with no deliverable has no 'Owner: none'", async () => {
     const h = await boot(921);
     const ch = h.ev<string[]>(`auditChanges({action:'work.assigned',entity_type:'assignment',entity_id:70,
