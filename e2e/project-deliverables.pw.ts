@@ -5,7 +5,7 @@
    a delivered row's sign-off buttons sat out of view until you scrolled
    sideways. Every column, and every row action, has to be visible without a
    horizontal scroll — on open work (owner picker, due date, Schedule, ⋯) and
-   on delivered work waiting for its sign-off (Approve, Revise, Copy).
+   on delivered work waiting for its sign-off (Sign off, Send back, Copy).
    ═══════════════════════════════════════════════════════════════════════════ */
 import { test, expect } from "@playwright/test";
 import { bootStaff, go } from "./harness";
@@ -50,7 +50,7 @@ test.describe("at 1440 × 900", () => {
       return { table: wrap.scrollWidth, wrap: wrap.clientWidth, right: Math.round(box.right), acts };
     });
     expect(m.table, JSON.stringify(m)).toBeLessThanOrEqual(m.wrap);
-    expect(m.acts.map((a) => a.t)).toEqual(expect.arrayContaining(["◷ Schedule", "✔ Approve", "↩ Revise", "⛁ Copy"]));
+    expect(m.acts.map((a) => a.t)).toEqual(expect.arrayContaining(["◷ Schedule", "✔ Sign off", "↩ Send back", "⧉ Copy"]));
     for (const a of m.acts) {
       expect(a.right, `${a.t} runs past the card`).toBeLessThanOrEqual(m.right);
       expect(a.clipped, `${a.t} is cut off`).toBe(false);
