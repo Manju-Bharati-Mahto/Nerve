@@ -2810,23 +2810,54 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   const toUid = (v: unknown): string | null =>
     v == null ? null : (typeof v === "number" || /^\d+$/.test(String(v))) ? `mo-u${v}` : String(v);
 
+  /* The work type a deliverable of this type is logged as: the one its type
+     names in Settings → Deliverable types, while that one is active and not a
+     shoot; otherwise General Task. Null only when neither exists. */
+  async function workTypeOfDeliverableType(typeId: number) {
+    return (await pool.query(
+      `SELECT wt.* FROM mo_work_types wt
+        WHERE wt.is_active AND wt.archived_at IS NULL AND wt.form_template = 'standard_task'
+          AND (wt.id = (SELECT work_type_id FROM mo_deliverable_types WHERE id = $1) OR lower(wt.name) = 'general task')
+        ORDER BY (wt.id = (SELECT work_type_id FROM mo_deliverable_types WHERE id = $1)) DESC NULLS LAST, wt.id
+        LIMIT 1`, [typeId || 0])).rows[0] ?? null;
+  }
+
   // ── Unified "Assign Work" (§7.5) ─────────────────────────────────────────
-  // One entry point for every kind of assignable work. The chosen work type's
+  // One entry point for every kind of assignable work. The work type's
   // form_template decides which record we write — a shoot or a standard task.
   // Adding a new work type in Settings therefore needs no code change here.
+  //
+  // Work that produces a deliverable has no work-type choice of its own: it is
+  // logged as its deliverable type's work type (mo_deliverable_types.
+  // work_type_id), worked out below once the deliverable is known. Only work
+  // with no deliverable — a meeting, a script, a shoot — names its kind.
   app.post(`${P}/projects/:id/work`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const pid = parseInt(getSingleParam(req.params.id), 10);
     const b = req.body as Record<string, unknown>;
-    if (!b.work_type_id) return sendError(res, 400, "Work type is required.");
-    const wt = (await pool.query(`SELECT * FROM mo_work_types WHERE id=$1`, [Number(b.work_type_id)])).rows[0];
-    if (!wt) return sendError(res, 400, "Unknown work type.");
-    if (!wt.is_active || wt.archived_at) return sendError(res, 400, "That work type is archived or disabled — pick an active one.");
+    const nd = b.new_deliverable && typeof b.new_deliverable === "object" ? b.new_deliverable as Record<string, unknown> : null;
+    const withDeliverable = !!(nd || b.deliverable_id);
+    type WorkTypeRow = { id: number; name: string; form_template: string; is_active: boolean; archived_at: unknown };
+    let wt: WorkTypeRow | null = null;
+    if (withDeliverable) {
+      /* A kind sent alongside a deliverable is not used — the deliverable's
+         type decides — but a shoot cannot produce one: it is its own record. */
+      const sent = b.work_type_id
+        ? (await pool.query(`SELECT form_template FROM mo_work_types WHERE id=$1`, [Number(b.work_type_id)])).rows[0]
+        : null;
+      if (sent && sent.form_template === "shoot")
+        return sendError(res, 400, "A shoot is scheduled on its own — choose No deliverable.");
+    } else {
+      if (!b.work_type_id) return sendError(res, 400, "Choose the kind of work.");
+      wt = (await pool.query(`SELECT * FROM mo_work_types WHERE id=$1`, [Number(b.work_type_id)])).rows[0] ?? null;
+      if (!wt) return sendError(res, 400, "Unknown work type.");
+      if (!wt.is_active || wt.archived_at) return sendError(res, 400, "That work type is archived or disabled — pick an active one.");
+    }
     // Admin, any Team Lead, or an employee who is part of the project.
     if (!(await canAssignOnProject(u, pid)))
       return sendError(res, 403, "You can assign work only on a project you are part of.");
 
-    if (wt.form_template === "shoot") {
+    if (wt && wt.form_template === "shoot") {
       if (!String(b.title ?? "").trim()) return sendError(res, 400, "Title is required.");
       if (!b.shoot_date) return sendError(res, 400, "Date is required.");
       const crew = (Array.isArray(b.crew) ? b.crew : []).map((r) => String(toUid(r)));
@@ -2895,10 +2926,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (startDate && dueDate && dueDate < startDate)
       return sendError(res, 400, "Due date must be on or after the start date.");
 
-    const nd = b.new_deliverable && typeof b.new_deliverable === "object" ? b.new_deliverable as Record<string, unknown> : null;
     if (nd && b.deliverable_id)
       return sendError(res, 400, "Create a new deliverable or take on an existing one — not both.");
-    const withDeliverable = !!(nd || b.deliverable_id);
     const ownerId = withDeliverable ? String(toUid(b.owner_id ?? assignees[0])) : null;
     if (ownerId && !assignees.includes(ownerId))
       return sendError(res, 400, "The deliverable's owner must be one of the people you assign.");
@@ -2938,6 +2967,10 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       // The deliverable is due when the work is due, unless the lead says otherwise.
       ndRow = { typeId, title: dTitle, due: (nd.due_date as string) || dueDate, drive };
     }
+    if (withDeliverable)
+      wt = await workTypeOfDeliverableType(ndRow ? ndRow.typeId : Number(existing?.deliverable_type_id));
+    if (!wt) return sendError(res, 400,
+      "This deliverable type does not say what kind of work it is. An Admin can set it in Settings → Deliverable types.");
 
     /* The deliverable, the work row and its people go in together or not at
        all — half a creation (a deliverable with nobody on it, or work pointing
@@ -12975,8 +13008,13 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     name: string; label: string;
     type: "text" | "textarea" | "select" | "switch" | "color" | "icon" | "date" | "number" | "slug" | "relation";
     required?: boolean; def?: unknown; options?: string[];
-    relation?: { module: string; labelCol: string };
+    /* `where` narrows the options offered AND the values accepted, with
+       `whereMsg` as the refusal when a value falls outside it. */
+    relation?: { module: string; labelCol: string; where?: string; whereMsg?: string };
     showIf?: { field: string; value: unknown };
+    /* Only an Admin may set or change this field, whatever the module's own
+       write rule; anyone else may save the record with it as it stands. */
+    adminOnly?: boolean;
   };
   type CrudModule = {
     key: string; label: string; table: string; fields: CrudField[];
@@ -13025,8 +13063,14 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
         { name: "default_unit", label: "Default unit", type: "text" },
         { name: "review_exempt", label: "Review exempt", type: "switch", def: false },
         { name: "default_due_offset_days", label: "Default due offset (days after project end)", type: "number", def: 5 },
+        /* What work on a deliverable of this type is logged as — Assign work
+           has no work-type choice of its own. A shoot produces no deliverable,
+           so only standard work types are offered. */
+        { name: "work_type_id", label: "Counts as", type: "relation", adminOnly: true,
+          relation: { module: "work_types", labelCol: "name", where: "is_active AND form_template = 'standard_task'",
+                      whereMsg: "Counts as must be an active work type that is not a shoot." } },
         { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
-      cols: ["name", "icon", "default_weight", "default_unit", "default_due_offset_days"],
+      cols: ["name", "icon", "default_weight", "default_unit", "default_due_offset_days", "work_type_id"],
       deps: [{ table: "mo_deliverables", fk: "deliverable_type_id", label: "Deliverables" },
              { table: "mo_template_deliverables", fk: "deliverable_type_id", label: "Template items" }] },
     task_categories: { key: "task_categories", label: "Task Categories", table: "mo_task_categories",
@@ -13122,7 +13166,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       cols: ["name", "icon", "form_template", "sort_order"],
       // Referenced by both record kinds → delete refused once in use; archive instead.
       deps: [{ table: "mo_shoots", fk: "work_type_id", label: "Shoots" },
-             { table: "mo_assignments", fk: "work_type_id", label: "Assigned tasks" }] },
+             { table: "mo_assignments", fk: "work_type_id", label: "Assigned tasks" },
+             { table: "mo_deliverable_types", fk: "work_type_id", label: "Deliverable types" }] },
     academic_units: { key: "academic_units", label: "Academic Units", table: "mo_academic_units",
       fields: [
         { name: "name", label: "Name", type: "text", required: true },
@@ -13228,6 +13273,26 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     }
     return { ok: true, rec };
   }
+  /* The checks crudValidate() cannot make alone: a narrowed relation names a
+     row inside its `where`, and an adminOnly field is set or changed only by
+     an Admin (`cur` is the row being edited; none on create). Returns the
+     refusal, or null. */
+  async function crudGuard(u: CurrentUser, m: CrudModule, rec: Record<string, unknown>,
+                           cur: Record<string, unknown> | null): Promise<{ status: number; msg: string } | null> {
+    for (const f of m.fields) {
+      if (!(f.name in rec)) continue;
+      const v = rec[f.name];
+      if (f.adminOnly && !isMoAdmin(u) && String(v ?? "") !== String(cur?.[f.name] ?? ""))
+        return { status: 403, msg: `Only an Admin can change “${f.label}”.` };
+      if (f.type === "relation" && f.relation?.where && v != null) {
+        const rm = CRUD[f.relation.module];
+        const ok = (await pool.query(
+          `SELECT 1 FROM ${rm.table} WHERE id=$1 AND archived_at IS NULL AND (${f.relation.where})`, [v])).rows[0];
+        if (!ok) return { status: 400, msg: f.relation.whereMsg ?? `${f.label}: pick one from the list.` };
+      }
+    }
+    return null;
+  }
   async function crudDeps(m: CrudModule, id: number): Promise<{ label: string; count: number }[]> {
     const out: { label: string; count: number }[] = [];
     for (const d of m.deps) {
@@ -13248,7 +13313,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
         const ff: Record<string, unknown> = { ...f };
         if (f.type === "relation" && f.relation) {
           const rm = CRUD[f.relation.module];
-          const opts = await pool.query(`SELECT id, ${f.relation.labelCol} AS l FROM ${rm.table} WHERE archived_at IS NULL ORDER BY 2`);
+          const opts = await pool.query(`SELECT id, ${f.relation.labelCol} AS l FROM ${rm.table} WHERE archived_at IS NULL
+            ${f.relation.where ? `AND (${f.relation.where})` : ""} ORDER BY 2`);
           ff.options2 = opts.rows.map((r) => ({ v: Number(r.id), l: r.l }));
         }
         fields.push(ff);
@@ -13319,6 +13385,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
     const v = crudValidate(m, req.body as Record<string, unknown>, false);
     if (!v.ok) return sendError(res, 400, v.msg);
+    const refused = await crudGuard(u, m, v.rec, null);
+    if (refused) return sendError(res, refused.status, refused.msg);
     v.rec.created_by = u.id;
     const keys = Object.keys(v.rec);
     try {
@@ -13343,6 +13411,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     if (!cur) return sendError(res, 404, "Record not found.");
     const v = crudValidate(m, req.body as Record<string, unknown>, true);
     if (!v.ok) return sendError(res, 400, v.msg);
+    const refused = await crudGuard(u, m, v.rec, cur);
+    if (refused) return sendError(res, refused.status, refused.msg);
     const keys = Object.keys(v.rec);
     if (!keys.length) return res.json({ row: cur });
     try {

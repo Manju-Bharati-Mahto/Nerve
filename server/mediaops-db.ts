@@ -426,7 +426,8 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
       ('Photography','photography','▣','standard_task',6),
       ('Videography','videography','▶','standard_task',7),
       ('Animation','animation','◈','standard_task',8),
-      ('Meeting','meeting','☎','standard_task',9)
+      ('Meeting','meeting','☎','standard_task',9),
+      ('Script Writing','script-writing','✎','standard_task',10)
     ) AS x(name, slug, icon, tpl, so)
     WHERE NOT EXISTS (SELECT 1 FROM mo_work_types w WHERE lower(w.name)=lower(x.name))`);
   // Migrate legacy records: every shoot is a 'Shoot'; every pre-existing
@@ -475,6 +476,11 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
   // type is normally due. Pre-fills project creation; never overwritten by a
   // project-level override (PRD §3/§6).
   await pool.query(`ALTER TABLE mo_deliverable_types ADD COLUMN IF NOT EXISTS default_due_offset_days INTEGER NOT NULL DEFAULT 5`);
+  /* The kind of work a deliverable of this type is logged as. Assign work has
+     no work-type choice of its own: work that produces a deliverable counts as
+     its type's work type ("Aftermovie" → Editing). Admin-set in Settings →
+     Deliverable types; seeded below, once the catalogue exists. */
+  await pool.query(`ALTER TABLE mo_deliverable_types ADD COLUMN IF NOT EXISTS work_type_id BIGINT REFERENCES mo_work_types(id)`);
   // Three values kept SEPARATE (PRD §6):
   //   mo_template_deliverables.days_offset_due → template default
   //   mo_deliverables.due_offset_days          → this project's override
@@ -2215,6 +2221,35 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
   await bootstrapAssetFoundation();
   await bootstrapCreatorNetwork();
   await seedMediaOpsLookups();
+  await seedDeliverableWorkTypes();
+}
+
+/* Starter "counts as" for each deliverable type, matched by slug or name and
+   only where none is set yet — an Admin's choice in Settings is never undone
+   by a reboot. Runs after seedMediaOpsLookups(), which fills the catalogue on
+   an empty database. A type left unmatched is logged as General Task by
+   POST /projects/:id/work until an Admin sets one. */
+async function seedDeliverableWorkTypes() {
+  await pool.query(`
+    UPDATE mo_deliverable_types dt SET work_type_id = wt.id
+      FROM (VALUES
+        ('photos-raw','Photos — Raw','Photography'),
+        ('video-raw','Video — Raw','Videography'),
+        ('continuous','Continuous Recording','Videography'),
+        ('drone','Drone Footage','Videography'),
+        ('photos-edited','Photos — Edited','Editing'),
+        ('video-edited','Video — Edited','Editing'),
+        ('aftermovie','Aftermovie','Editing'),
+        ('highlight-reel','Highlight Reel','Editing'),
+        ('reel','Reel / Short','Editing'),
+        ('album','Album Design','Editing'),
+        ('story','Story / Post','Editing'),
+        ('outreach','Outreach Content','General Task'),
+        ('raw-archive','Raw Archive','General Task'),
+        ('other','Other','General Task')
+      ) AS m(slug, name, work_type)
+      JOIN mo_work_types wt ON lower(wt.name) = lower(m.work_type)
+     WHERE dt.work_type_id IS NULL AND (dt.slug = m.slug OR lower(dt.name) = lower(m.name))`);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
