@@ -5330,7 +5330,20 @@ function menu(anchor,items){
   }
   m.querySelectorAll('.menu-item').forEach(b=>b.onclick=()=>{
     if(b.hasAttribute('data-cancel')){closeMenu();return;}
-    const it=items[+b.dataset.i];closeMenu();if(it.fn)it.fn();});
+    const it=items[+b.dataset.i];
+    /* On a phone the sheet owns a history entry, and closing it spends that
+       entry with history.back() — whose popstate lands a moment later. An item
+       that opens a modal or drawer straight away was closed by that popstate
+       (My Preference, Edit details… opened and vanished). So once the sheet had
+       an entry, the item runs after its popstate (or a short fallback). */
+    const handOff=!!(_menuOv&&_menuOv.pushed);
+    closeMenu();
+    if(!it.fn) return;
+    if(!handOff){ it.fn(); return; }
+    let ran=false;
+    const run=()=>{ if(ran) return; ran=true; removeEventListener('popstate',run); it.fn(); };
+    addEventListener('popstate',run);
+    setTimeout(run,400);});
 }
 function closeMenu(){
   $$('.menu-scrim').forEach(s=>s.remove());

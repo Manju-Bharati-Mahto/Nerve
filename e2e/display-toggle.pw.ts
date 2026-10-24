@@ -93,6 +93,16 @@ test.describe("the seg in My Preference", () => {
 test.describe("theme on a phone is remembered", () => {
   test.use(device("iPhone 13"));
 
+  test("the account menu's My Preference opens and stays open on a phone", async ({ page }) => {
+    await bootStaff(page, "admin");
+    await page.click("#btn-role");
+    await page.click('.menu-item:has-text("My Preference")');
+    await page.waitForTimeout(700);   // past the sheet's history pop
+    await expect(page.locator('#modal-layer [data-act="setTheme"][data-v="dark"]')).toBeVisible();
+    await page.click('#modal-layer [data-act="setTheme"][data-v="dark"]');
+    expect(await theme(page)).toBe("dark");
+  });
+
   test("the More sheet seg sets it, writes mo_theme, and survives a reload before paint", async ({ page }) => {
     await bootStaff(page, "admin");
     await page.click('#mobilebar [aria-label="More"]');

@@ -50,7 +50,9 @@ test.describe("the status bar colour", () => {
     await page.click('.menu-item:has-text("Mobile")');
     expect(await themeColor(page), "a phone light bar should match the app's white surface").toBe("#FFFFFF");
 
+    /* The theme seg lives in My Preference, on the account menu (#btn-role). */
     await page.click("#btn-role");
+    await page.click(':is(.menu-item,.m-sheet-row,[role=menuitem]):has-text("My Preference")');
     await page.click('#modal-layer [data-act="setTheme"][data-v="dark"]');
     expect(await themeColor(page), "a dark phone bar should match the dark surface").toBe("#131A24");
   });
