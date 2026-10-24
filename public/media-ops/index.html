@@ -7127,8 +7127,8 @@ function liveStatus(uid,snap){
 }
 /* One employee's day. Reads only what the operational modules read. */
 function employeeToday(uid){
-  const assigned =myAssignments(uid,TODAY,{all:true});
-  const remaining=myAssignments(uid,TODAY);
+  const assigned =myAssignments(uid,TODAY);
+  const remaining=assigned.filter(a=>!a._logged);
   const tasks=todaysLogTasks(uid,TODAY);
   const mins=tasks.reduce((s,t)=>s+t.minutes,0);
   const r=DB.daily_reports.find(x=>x.user_id===uid&&x.report_date===TODAY);
@@ -10103,27 +10103,41 @@ function heatmapWidget(){
    MY DAY (§5.2 · wireframe W2) — the mobile landing screen, shown as a
    real phone frame on desktop so the mobile composition can be reviewed.
    ========================================================================== */
-/* Task/Assignment layer: is `date` within an assignment's schedule? */
-function inSchedule(a,date){
-  if(a.start_date&&a.due_date)return date>=a.start_date&&date<=a.due_date;
-  if(a.start_date)return date>=a.start_date;
-  if(a.due_date)return date<=a.due_date;
-  return true;                                    /* undated → active */
+/* Task/Assignment layer: has the work started by `date`? Assigned work is on
+   the day from its start until it is finished, past its due date too (the
+   card says it is overdue), so nothing given to someone quietly drops off.
+   No start date: from when it was assigned. */
+function startedBy(a,date){
+  const from=String(a.start_date||a.created_at||'').slice(0,10);
+  return !from||date>=from;
 }
-/* Today's Assignments — ONLY work scheduled for the given date.
-   Two sources, both date-scoped:
+/* Today's Assignments — the work that is the user's on the given date.
+   Two sources:
      1. Deliverables the user owns whose scheduled_date IS that date. A deliverable
         is project scope until a TL/PM schedules it; unscheduled and future-dated
         work never appears here, and completed work drops out (but stays on the
         project page).
-     2. Ad-hoc tasks (mo_assignments) scheduled across that date — these are
-        explicitly-scheduled one-off jobs, not project scope.
+     2. Work assigned to them (mo_assignments), from its start date until it is
+        finished — overdue work stays. Work on a deliverable is finished once
+        its Drive link is submitted for review, and back if changes are asked.
    Uses the REAL current date (rtoday), since scheduling uses real dates rather
    than the prototype's fixed demo TODAY. */
 const DELIV_DONE=['delivered','not_required','cancelled'];
-/* A work row is finished once its deliverable is approved: what is left
+/* A deliverable scheduled for the day leaves it once approved: what is left
    (delivering, dispatch) is not the crew's day. */
 const WORK_CLOSED=['approved',...DELIV_DONE];
+/* Work on a deliverable is open until somebody on it submits the Drive link
+   — then it waits for review — and is open again when changes are asked for.
+   The server keeps the work rows' own status in step (done / in progress). */
+const WORK_OPEN=['not_started','in_progress','changes_requested'];
+/* This page's copy of the server's step (syncLinkedWork): a submitted version
+   closes the work rows on the deliverable, changes asked for reopen them.
+   SMC coverage keeps its own lifecycle; cancelled work stays cancelled. */
+function syncLinkedWork(dl,to){
+  for(const a of (DB.assignments||[]))
+    if(a.deliverable_id===dl.id&&!a.is_smc
+      &&(to==='done'?!['done','cancelled'].includes(a.status):a.status==='done')) a.status=to;
+}
 /* Latest submitted version — the one currently under review, or the approved one. */
 function latestVersion(did){
   return DB.deliverable_versions.filter(v=>v.deliverable_id===did)
@@ -10198,9 +10212,9 @@ function todaysLogTasks(uid=S.me,date){
   const r=DB.daily_reports.find(x=>x.user_id===uid&&x.report_date===date);
   return r?DB.report_tasks.filter(t=>t.daily_report_id===r.id):[];
 }
-/* Deliverable / assignment ids the user has ALREADY logged work against today.
-   Once logged, the item moves out of Today's Assignments and lives in the
-   Task Log instead — it must never appear in both (PRD §1). */
+/* Deliverable / project ids the user has ALREADY logged work against today.
+   A logged item stays in Today's assignments, marked logged today: work that
+   takes several days is still the day's work until it is submitted. */
 function loggedTodayKeys(uid=S.me,date){
   const ts=todaysLogTasks(uid,date);
   return {delivs:new Set(ts.map(t=>t.deliverable_id).filter(Boolean)),
@@ -10217,35 +10231,36 @@ function scheduledShoots(uid=S.me,date){
     &&String(s.shoot_date||'').slice(0,10)===date
     &&DB.shoot_crew.some(c=>c.shoot_id===s.id&&c.user_id===uid));
 }
-/* opts.all keeps rows the user has already logged against — used only to size the
-   productivity ring, which needs the day's full scheduled total as its denominator. */
-function myAssignments(uid=S.me,date,opts={}){
+/* Every row carries _logged: the user has logged work on it today. The row
+   stays in the queue either way; the ring counts the logged ones. */
+function myAssignments(uid=S.me,date){
   date=String(date||rtoday()).slice(0,10);
-  const logged=opts.all?{delivs:new Set(),projects:new Set()}:loggedTodayKeys(uid);
+  const logged=loggedTodayKeys(uid);
+  /* an ad-hoc task counts as logged once its project has a log entry today */
+  const isLogged=a=>!!((a.project_id&&logged.projects.has(a.project_id))
+    ||(a.deliverable_id&&logged.delivs.has(a.deliverable_id)));
   const tasks=(DB.assignments||[]).filter(a=>(a.assignees||[]).includes(uid)&&a.status!=='cancelled'
     &&!a.is_smc                       /* drawn by the SMC card, with its own actions */
     /* Work on a deliverable (Assign work's own row) is in the queue for every
-       assignee on its dates. An old drawer row linked to a deliverable is not
-       work anyone was given — it stays out, as it always has. */
-    &&(!a.deliverable_id||isTeamRow(a,deliv(a.deliverable_id)))
-    /* Work whose deliverable is approved or closed has nothing left to do today. */
-    &&!(a.deliverable_id&&WORK_CLOSED.includes((deliv(a.deliverable_id)||{}).status))
-    &&inSchedule(a,date)
-    /* an ad-hoc task counts as logged once its project has a log entry today */
-    &&!(a.project_id&&logged.projects.has(a.project_id))
-    &&!(a.deliverable_id&&logged.delivs.has(a.deliverable_id)));
+       assignee until one of them submits it, and back when changes are asked
+       for. An old drawer row linked to a deliverable is not work anyone was
+       given — it stays out, as it always has. */
+    &&(a.deliverable_id
+      ? isTeamRow(a,deliv(a.deliverable_id))&&WORK_OPEN.includes(deliv(a.deliverable_id).status)
+      : a.status!=='done')
+    &&startedBy(a,date))
+    .map(a=>({...a,_logged:isLogged(a)}));
   /* A deliverable already in the queue through its work row is not listed a
      second time because it is also scheduled for today. */
   const viaWork=new Set(tasks.map(a=>a.deliverable_id).filter(Boolean));
   const delivs=scheduledDeliverables(uid,date)
-    .filter(d=>!logged.delivs.has(d.id)&&!viaWork.has(d.id)&&!WORK_CLOSED.includes(d.status))
+    .filter(d=>!viaWork.has(d.id)&&!WORK_CLOSED.includes(d.status))
     .map(d=>({
       id:'d'+d.id, deliverable_id:d.id, project_id:d.project_id, title:d.title,
       priority:d.priority||'normal', status:d.status==='not_started'?'not_started':'in_progress',
       start_date:d.scheduled_date, due_date:d.due_date, estimated_hours:d.estimated_hours,
-      assignees:[uid], _deliverable:true}));
+      assignees:[uid], _deliverable:true, _logged:logged.delivs.has(d.id)}));
   const shoots=scheduledShoots(uid,date)
-    .filter(s=>!(s.project_id&&logged.projects.has(s.project_id)))
     .map(s=>({
       id:'s'+s.id, shoot_id:s.id, project_id:s.project_id, title:s.title,
       work_type_id:s.work_type_id, priority:'high',
@@ -10253,18 +10268,17 @@ function myAssignments(uid=S.me,date,opts={}){
       start_date:s.shoot_date, due_date:s.shoot_date,
       start_time:s.call_time, end_time:s.end_time,
       assignees:DB.shoot_crew.filter(c=>c.shoot_id===s.id).map(c=>c.user_id),
-      assigned_by:s.created_by, _shoot:s}));
+      assigned_by:s.created_by, _shoot:s, _logged:!!(s.project_id&&logged.projects.has(s.project_id))}));
   /* Call-time first: a shoot anchors the day, so it leads the queue. */
   return [...shoots,...delivs,...tasks];
 }
-/* Productivity ring — how much of today's scheduled work has been logged.
-   Denominator is everything scheduled for the day; numerator is what has left
-   the queue. With nothing scheduled, hours logged stand in so the ring still
+/* Productivity ring — how much of today's work has been logged.
+   Denominator is everything in the day's queue; numerator is what has been
+   logged today. With nothing scheduled, hours logged stand in so the ring still
    reflects a real day's work rather than showing a misleading 0%. */
 function dayProgress(uid=S.me,date){
-  const total=myAssignments(uid,date,{all:true}).length;
-  const left=myAssignments(uid,date).length;
-  if(total)return {pct:Math.round((total-left)/total*100),done:total-left,total};
+  const day=myAssignments(uid,date), total=day.length, done=day.filter(a=>a._logged).length;
+  if(total)return {pct:Math.round(done/total*100),done,total};
   const mins=todaysLogTasks(uid,date).reduce((s,t)=>s+t.minutes,0);
   return {pct:Math.min(100,Math.round(mins/480*100)),done:0,total:0,mins};
 }
@@ -10313,15 +10327,24 @@ function assignmentCard(a){
       <span><span class="code">${esc(p.code||'')}</span> ${esc(p.name)}</span>
       ${time?`<span title="Scheduled time">◷ ${time}</span>`:''}
       ${a.estimated_hours?`<span>~${+a.estimated_hours}h</span>`:''}
-      ${a.due_date&&!a._shoot?`<span>due ${D.fmt(a.due_date)}</span>`:''}
+      ${a.due_date&&!a._shoot?(a.due_date<TODAY
+        ?`<span class="chip overdue">⚑ Overdue · due ${D.fmt(a.due_date)}</span>`
+        :`<span>due ${D.fmt(a.due_date)}</span>`):''}
       ${a.assigned_by?`<span>by ${esc(personName(a.assigned_by))}</span>`:''}
+      ${a._logged?`<span class="chip logged" title="You have logged work on this today">✓ Logged today</span>`:''}
       ${(()=>{/* Work that produces a deliverable names it, and who is on it. */
         const dl=!a._deliverable&&a.deliverable_id?deliv(a.deliverable_id):null; if(!dl) return '';
         const team=[...delivTeam(dl)];
         return `<span class="chip" title="${esc(team.map(id=>user(id).full_name+(id===dl.owner_id?' (owner)':'')).join(', '))}">◆ ${esc(dl.title)}${team.length>1?' · '+team.length+' on it':''}</span>`;})()}
     </div>
     ${tpl&&tpl.card?tpl.card(a):''}
+    ${dl?changeRequestLine(dl,latestVersion(dl.id)):''}
     <div class="asg-acts">
+      ${dl&&WORK_OPEN.includes(dl.status)&&canSubmitVersion(dl)
+        /* The same submission My deliverables offers: one Drive link sends
+           the deliverable for review and takes the work off everyone's day. */
+        ?`<button class="btn xs primary" data-act="submitVersion" data-did="${dl.id}"
+             title="Paste the Google Drive link and send it for review">${submitLabel(dl)}</button>`:''}
       <button class="btn xs" title="Log work on this: project${a.deliverable_id?' & deliverable':''} pre-filled"
         onclick="ACTIONS.logWork({pid:${a.project_id},did:${a.deliverable_id||0}})">✎ Log</button>
       ${a._deliverable||a.deliverable_id?`<button class="btn xs" data-drawer="deliverable:${a.deliverable_id}">Open</button>`:''}
@@ -10603,6 +10626,9 @@ function viewMyDay(){
       .asg-xrow b{font-size:12.5px}
       .asg-k{flex:0 0 42px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3)}
       .asg-acts{display:flex;gap:6px;flex-wrap:wrap;margin:9px 0 0 16px}
+      .asg .dlv-note{margin-left:16px}
+      .chip.overdue{background:var(--danger-bg);border-color:transparent;color:var(--danger)}
+      .chip.logged{background:var(--success-bg);border-color:transparent;color:var(--success)}
       /* select.inp sets width:100%, so match its specificity to size to content. */
       select.asg-sel{height:26px;font-size:11.5px;width:auto;padding:0 26px 0 8px}
 
@@ -23525,6 +23551,7 @@ const ACTIONS = {
       version_no:+d.v,drive_url:url,note:$('#sv-note').value.trim(),submitted_by:S.me,
       submitted_at:D.stamp(),review_status:'pending',reviewed_by:null,reviewed_at:null,review_comment:''});
     dl.status='in_review';
+    syncLinkedWork(dl,'done');
     audit(S.me,'deliverable.version_submitted','deliverable_version',DB.deliverable_versions.length,null,{version_no:+d.v});
     const _sv={drive_url:url,note:$('#sv-note').value.trim()};
     closeModal();drawerDeliverable(dl.id);render();
@@ -23561,6 +23588,7 @@ const ACTIONS = {
     if(!note){toast('Say what needs to change.','bad');return;}
     v.review_status='changes_requested';v.reviewed_by=S.me;v.reviewed_at=TODAY;v.review_comment=note;
     dl.status='changes_requested';
+    syncLinkedWork(dl,'in_progress');
     audit(S.me,'deliverable.version_reviewed','deliverable_version',v.id,{review_status:'pending'},{review_status:'changes_requested'});
     dl.dispatch_status=dl.dispatch_status==='queued'?'none':dl.dispatch_status;
     closeModal();render();refreshDelivDrawer(dl.id);toast('Changes requested. Everyone on it has been told','ok');
@@ -27203,7 +27231,7 @@ const ACTIONS = {
     /* Sent back, it is no longer ready to go out — even if it already went:
        the corrected version is queued again when it is approved, and the
        project waits for that dispatch. The earlier dispatch stays as history. */
-    if(back){dl.status='changes_requested';dl.approval_note=note;
+    if(back){dl.status='changes_requested';dl.approval_note=note;syncLinkedWork(dl,'in_progress');
       if(['queued','delivered','archived'].includes(dl.dispatch_status)){dl.dispatch_status='none';dl.queued_at=null;}}
     audit(S.me,'deliverable.approval_changed','deliverable',dl.id,before,{approval_status:to,approved_by:S.me});
     if(back)closeModal();

@@ -1172,8 +1172,10 @@ describe("My Day, the drawer, lists and crew — one answer per question", () =>
   it("work on a deliverable shows the deliverable's status, with no second status select", async () => {
     const h = await boot(902);
     h.ev(WORK);
+    // In review it has left the day; sent back, it is there with the deliverable's status.
+    h.ev("deliv(8002).status='changes_requested'");
     const card = h.ev<string>("assignmentCard(myAssignments(902).find(a=>a.id===77101))");
-    expect(card).toContain("In review");
+    expect(card).toContain("Changes requested");
     expect(card).not.toContain("asg-sel");
     expect(card).not.toContain("Not started");
   });
