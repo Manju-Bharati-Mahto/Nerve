@@ -2400,6 +2400,25 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ members: rows, scope: moRoleOf(u) });
   }));
 
+  /* The work rows Assign work put on a deliverable follow its versions, so
+     the work and the deliverable never disagree: a submitted version closes
+     the work for everyone on it (it leaves their Today's assignments and
+     waits for review), and changes asked for open it again for all of them.
+     SMC coverage has its own lifecycle and is never touched here. Each row
+     that moves is audited as an ordinary assignment update. */
+  async function syncLinkedWork(u: CurrentUser, deliverableId: number, to: "done" | "in_progress",
+                                req: express.Request) {
+    const { rows } = await pool.query(
+      `UPDATE mo_assignments a SET status=$2
+         FROM (SELECT id, status FROM mo_assignments WHERE deliverable_id=$1 AND NOT COALESCE(is_smc,false)
+                 AND ${to === "done" ? "status NOT IN ('done','cancelled')" : "status='done'"} FOR UPDATE) old
+        WHERE a.id = old.id
+        RETURNING a.id, old.status AS was`, [deliverableId, to]);
+    for (const r of rows)
+      await audit(u, "assignment.updated", "assignment", Number(r.id), { status: r.was },
+        { status: to, via: to === "done" ? "version_submitted" : "changes_requested" }, req);
+  }
+
   // Submit a new immutable version for review.
   app.post(`${P}/deliverables/:id/versions`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
@@ -2431,6 +2450,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     await pool.query(`UPDATE mo_deliverables SET status='in_review' WHERE id=$1`, [id]);
     await syncProjectProgress(Number(d.project_id));
     await audit(u, "deliverable.version_submitted", "deliverable_version", ins.rows[0].id, null, { version_no: next }, req);
+    await syncLinkedWork(u, id, "done", req);
     /* The project's reviewer hears about it — one person, not every Team Lead.
        If the resolved reviewer is on the deliverable's team or IS the
        submitter (a lead pushing a version for their crew), they cannot review
@@ -2523,6 +2543,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     await syncProjectProgress(Number(d.project_id));
     await audit(u, "deliverable.version_reviewed", "deliverable_version", v.id,
       { review_status: v.review_status }, { review_status: outcome, ...(comment ? { review_comment: comment } : {}) }, req);
+    // The work is back on everyone's day until the next version goes in.
+    if (outcome === "changes_requested") await syncLinkedWork(u, Number(d.id), "in_progress", req);
     // The verdict reaches everyone working on it, not only its owner.
     for (const uid of team)
       if (uid !== u.id)
@@ -9524,6 +9546,7 @@ async function allocateInternalCode(
                        ORDER BY version_no DESC LIMIT 1)`, [id, u.id, note]);
     }
     await syncProjectProgress(Number(d.project_id));
+    if (backToWork) await syncLinkedWork(u, id, "in_progress", req);
     await audit(u, "deliverable.approval_changed", "deliverable", id,
       { approval_status: d.approval_status, status: d.status },
       { approval_status: to, approved_by: u.id, approved_by_role: moRoleOf(u), note }, req);

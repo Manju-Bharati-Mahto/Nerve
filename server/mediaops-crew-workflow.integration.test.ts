@@ -1760,3 +1760,68 @@ maybe("assign work on an existing deliverable, delivering, dispatch and archive"
     expect((await deliv(did)).dispatch_status).toBe("none");
   });
 });
+
+maybe("the work follows its deliverable — submitting closes it for everyone, changes open it again", () => {
+  /* Today's assignments and My deliverables are one piece of work: a version
+     submitted from either closes the work rows Assign work put on it, for
+     every assignee; a reviewer asking for changes — on the version, or after
+     delivery — puts the work back on everyone's day. SMC coverage linked to
+     the same deliverable keeps its own lifecycle. */
+  const rowsOf = (did: number) => pool.query(
+    `SELECT id, status, is_smc FROM mo_assignments WHERE deliverable_id=$1 ORDER BY id`, [did])
+    .then((r) => r.rows.map((x) => ({ id: Number(x.id), status: String(x.status), smc: !!x.is_smc })));
+  const crewStatuses = async (did: number) => (await rowsOf(did)).filter((r) => !r.smc).map((r) => r.status);
+  const smcStatuses = async (did: number) => (await rowsOf(did)).filter((r) => r.smc).map((r) => r.status);
+
+  it("closes on submit, reopens on changes requested, stays closed on approval, reopens on a send-back", async () => {
+    const { pid } = await routed(teamA, []);
+    const r = await as("leadA", "POST", `/projects/${pid}/work`, { work_type_id: workTypeId, title: `${PX} aftermovie`,
+      assignees: [ACTORS.empA1.id, ACTORS.empA2.id], owner_id: ACTORS.empA1.id,
+      start_date: "2026-10-01", due_date: "2026-10-05", new_deliverable: { deliverable_type_id: dtype } });
+    expect(r.status).toBe(201);
+    const did = Number((r.body.deliverable as Record<string, unknown>).id);
+    // A second work row on the same deliverable, and SMC coverage linked to it.
+    await pool.query(`INSERT INTO mo_assignments (project_id, title, status, deliverable_id)
+                      VALUES ($1,$2,'in_progress',$3)`, [pid, `${PX} second pass`, did]);
+    await pool.query(`INSERT INTO mo_assignments (project_id, title, status, deliverable_id, is_smc)
+                      VALUES ($1,$2,'in_progress',$3,true), ($1,$4,'done',$3,true)`,
+      [pid, `${PX} smc live`, did, `${PX} smc done`]);
+    expect(await crewStatuses(did)).toEqual(["not_started", "in_progress"]);
+
+    // A teammate, not only the owner, submits — the work closes for both of them.
+    expect((await as("empA2", "POST", `/deliverables/${did}/versions`, drive("w1"))).status).toBe(201);
+    expect(await crewStatuses(did)).toEqual(["done", "done"]);
+    expect(await smcStatuses(did)).toEqual(["in_progress", "done"]);
+    const trail = await pool.query(
+      `SELECT entity_id, before, after FROM mo_audit_logs WHERE action='assignment.updated' AND actor_id=$1
+         AND entity_id = ANY($2::bigint[]) ORDER BY id`,
+      [ACTORS.empA2.id, (await rowsOf(did)).filter((x) => !x.smc).map((x) => x.id)]);
+    expect(trail.rows.map((t) => [t.before.status, t.after.status]))
+      .toEqual([["not_started", "done"], ["in_progress", "done"]]);
+
+    // Changes requested: back on everyone's day.
+    expect((await as("leadA", "POST", `/deliverables/${did}/review`,
+      { outcome: "changes_requested", comment: "Tighten the opening" })).status).toBe(200);
+    expect(await crewStatuses(did)).toEqual(["in_progress", "in_progress"]);
+    expect(await smcStatuses(did)).toEqual(["in_progress", "done"]);
+
+    // v2 closes it again, and approving it does not reopen it.
+    expect((await as("empA1", "POST", `/deliverables/${did}/versions`, drive("w2"))).status).toBe(201);
+    expect(await crewStatuses(did)).toEqual(["done", "done"]);
+    expect((await as("leadA", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(200);
+    expect(await crewStatuses(did)).toEqual(["done", "done"]);
+
+    // Sent back after delivery: the work is open again for both.
+    expect((await as("empA1", "POST", `/deliverables/${did}/deliver`, {})).status).toBe(200);
+    expect(await crewStatuses(did)).toEqual(["done", "done"]);
+    expect((await as("leadA", "POST", `/deliverables/${did}/approval`,
+      { approval_status: "changes_requested", note: "Wrong logo" })).status).toBe(200);
+    expect(await crewStatuses(did)).toEqual(["in_progress", "in_progress"]);
+    expect(await smcStatuses(did)).toEqual(["in_progress", "done"]);
+    // A cancelled row stays cancelled whatever happens next.
+    const ids = (await rowsOf(did)).filter((x) => !x.smc).map((x) => x.id);
+    await pool.query(`UPDATE mo_assignments SET status='cancelled' WHERE id=$1`, [ids[1]]);
+    expect((await as("empA1", "POST", `/deliverables/${did}/versions`, drive("w3"))).status).toBe(201);
+    expect(await crewStatuses(did)).toEqual(["done", "cancelled"]);
+  });
+});
