@@ -302,6 +302,23 @@ maybe("taking someone off a project never strands their work", () => {
     expect(await teamOf(did)).toEqual(before);
   });
 
+  it("work already dispatched does not block, cannot be handed on, and keeps its owner and team", async () => {
+    const pid = await routed();
+    const did = await work(pid, "empA1", ["empA1", "empA3"]);
+    // A Coordinator may send approved work before its owner marks it delivered.
+    await pool.query(`UPDATE mo_deliverables SET status='approved', dispatch_status='delivered' WHERE id=$1`, [did]);
+    const before = await teamOf(did);
+    const impact = await as("leadA", "GET", `/projects/${pid}/assignments/${ACTORS.empA1.id}/impact`);
+    expect(impact.body.blocking).toEqual([]);
+    const handover = await remove("leadA", pid, "empA1", [{ deliverable_id: did, reassign_to: ACTORS.empA2.id }]);
+    expect(handover.status, JSON.stringify(handover.body)).toBe(400);
+    expect((await deliv(did)).owner_id).toBe(ACTORS.empA1.id);
+    expect(await onCrew(pid, "empA1")).toBe(true);
+    expect((await remove("leadA", pid, "empA1")).status).toBe(200);
+    expect((await deliv(did)).owner_id).toBe(ACTORS.empA1.id);
+    expect(await teamOf(did)).toEqual(before);
+  });
+
   it("a team member on an open deliverable is blocked; taken off its team, the owner carries on", async () => {
     const pid = await routed();
     const did = await work(pid, "empA1", ["empA1", "empA3"]);
@@ -340,9 +357,13 @@ maybe("removing an account hands its deliverables on like any other owner change
   it("reassign_to: the new owner takes their place on the team and is told who it came from", async () => {
     const pid = await routed();
     const did = await work(pid, "gone", ["gone", "empA3"]);
+    // Work already dispatched is finished: it keeps the owner who finished it.
+    const sent = await work(pid, "gone");
+    await pool.query(`UPDATE mo_deliverables SET status='approved', dispatch_status='delivered' WHERE id=$1`, [sent]);
     const r = await as("admin", "DELETE", `/crew/${ACTORS.gone.id}`, { reassign_to: ACTORS.empA2.id });
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     expect((await deliv(did)).owner_id).toBe(ACTORS.empA2.id);
+    expect((await deliv(sent)).owner_id).toBe(ACTORS.gone.id);
     expect(await teamOf(did)).toEqual([ACTORS.empA2.id, ACTORS.empA3.id].sort());
     expect(await onCrew(pid, "empA2")).toBe(true);
     const told = await noteBodies("empA2", "deliverable", did);

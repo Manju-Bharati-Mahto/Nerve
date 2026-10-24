@@ -9496,6 +9496,7 @@ async function allocateInternalCode(
       const r1 = await pool.query(
         `UPDATE mo_deliverables SET owner_id=$1, updated_at=NOW() WHERE owner_id=$2
            AND status NOT IN ('delivered','not_required','cancelled') AND deleted_at IS NULL
+           AND dispatch_status NOT IN ('sent','delivered','archived') -- finished work keeps its owner (ownerLocked)
          RETURNING id, project_id, title`, [reassignTo, realId]);
       for (const d of r1.rows)
         await deliverableAssigned(u, { id: Number(d.id), project_id: Number(d.project_id), title: String(d.title) },
@@ -11584,6 +11585,10 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
      upcoming shoots on this project are then let go. Delivered work, the
      versions they submitted and every historical record are never touched. */
   const CLOSED_DELIV = ["delivered", "not_required", "cancelled"];
+  /* Dispatched or archived work is finished whatever its status says — a
+     Coordinator may send approved work before its owner marks it delivered —
+     so, like ownerLocked(), it neither blocks a removal nor changes hands. */
+  const SENT_DISPATCH = ["sent", "delivered", "archived"];
   type Blocking = { id: number; title: string; status: string; role: "owner" | "team" };
   async function crewRemovalImpact(pid: number, uid: string) {
     /* One query for every live deliverable they own or are on the team of —
@@ -11592,13 +11597,13 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const blocking: Blocking[] = (await pool.query(
       `SELECT d.id, d.title, d.status, (d.owner_id IS NOT NULL AND d.owner_id=$2) AS owns
          FROM mo_deliverables d
-        WHERE d.project_id=$1 AND d.deleted_at IS NULL AND d.status <> ALL($3)
+        WHERE d.project_id=$1 AND d.deleted_at IS NULL AND d.status <> ALL($3) AND d.dispatch_status <> ALL($4)
           AND (d.owner_id=$2 OR (d.owner_id IS NOT NULL AND EXISTS (
                 SELECT 1 FROM mo_assignments a
                   JOIN mo_assignment_users au ON au.assignment_id=a.id AND au.user_id=$2
                  WHERE a.deliverable_id=d.id AND NOT COALESCE(a.is_smc,false) AND a.status <> 'cancelled'
                    AND EXISTS (SELECT 1 FROM mo_assignment_users o WHERE o.assignment_id=a.id AND o.user_id=d.owner_id))))
-        ORDER BY d.id`, [pid, uid, CLOSED_DELIV])).rows
+        ORDER BY d.id`, [pid, uid, CLOSED_DELIV, SENT_DISPATCH])).rows
       .map((d) => ({ id: Number(d.id), title: String(d.title), status: String(d.status), role: d.owns ? "owner" : "team" }));
     const n = async (sql: string) => Number((await pool.query(sql, [pid, uid])).rows[0]?.n ?? 0);
     const [work, shoots, versions, delivered] = await Promise.all([
@@ -11714,13 +11719,14 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
 
     const crew = await pool.query(
       `UPDATE mo_project_assignments SET removed_at=NOW() WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`, [pid, uid]);
-    // Open work on this project lets them go — never a row of closed (delivered) work.
+    // Open work on this project lets them go — never a row of closed (delivered or dispatched) work.
     const work = await pool.query(
       `DELETE FROM mo_assignment_users au USING mo_assignments a
         WHERE au.assignment_id=a.id AND au.user_id=$2 AND a.project_id=$1 AND a.status NOT IN ('done','cancelled')
           AND (a.deliverable_id IS NULL OR EXISTS (SELECT 1 FROM mo_deliverables d
-                                                    WHERE d.id=a.deliverable_id AND d.status <> ALL($3)))`,
-      [pid, uid, CLOSED_DELIV]);
+                                                    WHERE d.id=a.deliverable_id AND d.status <> ALL($3)
+                                                      AND d.dispatch_status <> ALL($4)))`,
+      [pid, uid, CLOSED_DELIV, SENT_DISPATCH]);
     const shoots = await pool.query(
       `DELETE FROM mo_shoot_crew WHERE user_id=$2 AND shoot_id IN
          (SELECT id FROM mo_shoots WHERE project_id=$1 AND shoot_date >= CURRENT_DATE)`, [pid, uid]);
