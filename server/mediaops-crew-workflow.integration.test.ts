@@ -168,6 +168,8 @@ async function cleanup() {
   await pool.query(`DELETE FROM mo_audit_logs WHERE actor_id LIKE '${PX}-%'`);
   await pool.query(`DELETE FROM mo_notifications WHERE user_id LIKE '${PX}-%'`);
   await pool.query(`DELETE FROM mo_projects WHERE name LIKE '${PX}%'`);
+  await pool.query(`DELETE FROM mo_smc_profiles WHERE user_id LIKE '${PX}-%'`);
+  await pool.query(`DELETE FROM mo_academic_units WHERE name LIKE '${PX} %'`);
   await pool.query(`DELETE FROM mo_academic_years WHERE label LIKE '${PX}%'`);
   await pool.query(`DELETE FROM mo_boards WHERE name LIKE '${PX} %'`);
   await pool.query(`DELETE FROM mo_team_members WHERE user_id LIKE '${PX}-%'`);
@@ -1015,6 +1017,24 @@ maybe("assign work — creates the deliverable and gives it a team", () => {
     const a = await as("leadA", "GET", `/deliverables/${did}/assignees`);
     expect((a.body.crew as Record<string, unknown>).user_id).toBe(ACTORS.empA1.id);
     expect((a.body.team as Array<Record<string, unknown>>).map((t) => t.user_id)).toEqual([ACTORS.empA2.id]);
+  });
+
+  it("the drawer offers SMC coverage only where the project's institute has an SMC member", async () => {
+    const { pid, dids } = await routed(teamA);
+    const offered = async () => (await as("leadA", "GET", `/deliverables/${dids[0]}/assignees`)).body.smc_available;
+    expect(await offered(), "a project with no institute").toBe(false);
+    const unit = Number((await one(`INSERT INTO mo_academic_units (name, is_active) VALUES ($1, true) RETURNING id`,
+      [`${PX} Institute ${Math.random().toString(36).slice(2, 7)}`])).id);
+    await pool.query(`UPDATE mo_projects SET academic_unit_id=$1 WHERE id=$2`, [unit, pid]);
+    expect(await offered(), "an institute without SMC members").toBe(false);
+    await pool.query(
+      `INSERT INTO mo_smc_profiles (user_id, academic_unit_id, is_active) VALUES ($1,$2,true)
+       ON CONFLICT (user_id) DO UPDATE SET academic_unit_id=EXCLUDED.academic_unit_id, is_active=true`,
+      [ACTORS.empB1.id, unit]);
+    expect(await offered(), "an institute with an active SMC member").toBe(true);
+    await pool.query(`UPDATE mo_smc_profiles SET is_active=false WHERE user_id=$1`, [ACTORS.empB1.id]);
+    expect(await offered(), "only an inactive one").toBe(false);
+    await pool.query(`DELETE FROM mo_smc_profiles WHERE user_id=$1`, [ACTORS.empB1.id]);
   });
 
   it("an employee creates their own project for themselves, then assigns work on it to anyone", async () => {

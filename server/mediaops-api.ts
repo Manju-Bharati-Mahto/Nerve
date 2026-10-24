@@ -18899,7 +18899,13 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
          LEFT JOIN mo_user_profiles p ON p.user_id = us.id
         WHERE us.id = ANY($1::text[]) ORDER BY us.full_name`, [others])).rows
       .map((x) => ({ user_id: x.user_id, full_name: x.full_name, designation: x.designation ?? null })) : [];
-    res.json({ crew, team, smc });
+    /* SMC coverage is offered only where it applies: the project's institute
+       has an active Social Media Coordinator (or one is already on it). */
+    const smc_available = !!smc || (await pool.query(
+      `SELECT 1 FROM mo_deliverables d JOIN mo_projects p ON p.id = d.project_id
+         JOIN mo_smc_profiles sp ON sp.academic_unit_id = p.academic_unit_id AND sp.is_active
+        WHERE d.id = $1 LIMIT 1`, [did])).rowCount! > 0;
+    res.json({ crew, team, smc, smc_available });
   }));
 
   /** Candidates for both pickers, from the existing rosters. */
