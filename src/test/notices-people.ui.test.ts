@@ -119,13 +119,17 @@ describe("Notification tags fit the notice", () => {
 });
 
 describe("Copy", () => {
-  it("Assign work points only an Admin at Settings → Work Types", async () => {
+  /* There is no work type to pick: the deliverable says what the work is, so
+     the dialog neither asks for one first nor sends anyone to Settings for it. */
+  it("Assign work asks for no work type and points nobody at Settings → Work Types", async () => {
     const h = await boot(901);
     h.ev("openAssignWork(7001)");
-    expect(h.doc.getElementById("modal-layer")!.textContent).toContain("Pick the work type first.");
-    expect(h.doc.getElementById("modal-layer")!.textContent).not.toContain("Settings → Work Types");
+    const text = () => h.doc.getElementById("modal-layer")!.textContent!;
+    expect(text()).not.toContain("Pick the work type first");
+    expect(text()).not.toContain("Settings → Work Types");
     h.ev("closeModal(); S.me=907; openAssignWork(7001)");
-    expect(h.doc.getElementById("modal-layer")!.textContent).toContain("Settings → Work Types");
+    expect(text()).not.toContain("Pick the work type first");
+    expect(text()).not.toContain("Settings → Work Types");
   });
 
   it("a start-up notice that arrives after a dialog opened is not shown over it", async () => {

@@ -573,6 +573,7 @@ describe("Assign work — creates the deliverable and shares it with everyone as
     expect(body.assignees).toEqual(["zcw-902", "zcw-903"]);
     expect(body.owner_id).toBe("zcw-903");
     expect(body.new_deliverable).toEqual({ deliverable_type_id: expect.any(Number), drive_url: "https://drive.google.com/folder" });
+    expect(body.work_type_id, "the server works the type out from the deliverable").toBeUndefined();
     expect(doc.querySelector("#aw-dtitle"), "a second title field for the deliverable").toBeNull();
     expect(body.deliverable_id).toBeUndefined();
     expect(h.writes().some((c) => c.url.includes("/deliverables") && c.method === "POST"
@@ -601,6 +602,7 @@ describe("Assign work — creates the deliverable and shares it with everyone as
     const body = h.writes().find((c) => c.url.endsWith("/projects/7001/work"))!.body as Record<string, unknown>;
     expect(body.deliverable_id).toBe(8003);
     expect(body.new_deliverable).toBeUndefined();
+    expect(body.work_type_id, "the server works the type out from the deliverable").toBeUndefined();
     expect(body.owner_id).toBe("zcw-903");
   });
 
@@ -664,8 +666,10 @@ describe("Assign work — creates the deliverable and shares it with everyone as
     const h = await boot(901);
     expect(h.ev<string>("viewProject(7001,'shoots')")).toMatch(/data-act="assignWork" data-pid="7001" data-tpl="shoot"/);
     h.ev("ACTIONS.assignWork({pid:'7001',tpl:'shoot'})");
-    const type = h.doc.querySelector("#aw-type") as HTMLSelectElement;
-    expect(h.ev<string>(`workType(${type.value}).form_template`)).toBe("shoot");
+    expect((h.doc.querySelector("#aw-dmode button.on") as HTMLElement).dataset.m, "a shoot makes no deliverable").toBe("none");
+    const kind = h.doc.querySelector("#aw-kind") as HTMLSelectElement;
+    expect(h.ev<string>(`workType(${kind.value}).form_template`)).toBe("shoot");
+    expect(h.ev<number>(`awKinds().find(w=>w.form_template==='shoot').id`), "not the first shoot kind").toBe(+kind.value);
     expect(h.doc.querySelector("#aw-date"), "the shoot fields are not shown").not.toBeNull();
   });
 
@@ -708,11 +712,146 @@ describe("Assign work — creates the deliverable and shares it with everyone as
     expect((doc.querySelector("#aw-ownerf") as HTMLElement).hidden).toBe(true);
     (doc.querySelector("#aw-title") as HTMLInputElement).value = "Team meeting";
     pick(902);
+    const kindId = +(doc.querySelector("#aw-kind") as HTMLSelectElement).value;
+    expect(kindId, "no kind of work is chosen").toBeGreaterThan(0);
     h.ev("ACTIONS.createWork()");
     const body = h.writes().find((c) => c.url.endsWith("/projects/7001/work"))!.body as Record<string, unknown>;
     expect(body.new_deliverable).toBeUndefined();
     expect(body.deliverable_id).toBeUndefined();
     expect(body.owner_id).toBeUndefined();
+    expect(body.work_type_id, "plain work names its kind").toBe(kindId);
+  });
+
+  /* No work type to pick: the deliverable's type says what the work is
+     (Settings → Deliverable types → Counts as). Only work with no deliverable —
+     a meeting, a script, a shoot — names its kind. */
+  describe("the deliverable is the work type", () => {
+    const wtId = (h: Awaited<ReturnType<typeof boot>>, name: string) =>
+      h.ev<number>(`DB.work_types.find(w=>w.name===${JSON.stringify(name)}).id`);
+    const dtId = (h: Awaited<ReturnType<typeof boot>>, name: string) =>
+      h.ev<number>(`DB.deliverable_types.find(t=>t.name===${JSON.stringify(name)}).id`);
+    const setType = (h: Awaited<ReturnType<typeof boot>>, id: number) => {
+      const sel = h.doc.querySelector("#aw-dtype") as HTMLSelectElement;
+      sel.value = String(id); sel.dispatchEvent(new h.doc.defaultView!.Event("change"));
+    };
+    const kinds = (doc: Document) =>
+      [...doc.querySelectorAll("#aw-kind option")].map((o) => o.textContent!.replace(/^\S+\s/, "").trim());
+
+    it("has no Work type field, and the deliverable comes first", async () => {
+      const h = await boot(901);
+      const { doc } = await openFor(h, 7001);
+      const layer = doc.getElementById("modal-layer")!;
+      expect(layer.querySelector("#aw-type")).toBeNull();
+      expect([...layer.querySelectorAll(".lbl")].map((l) => l.textContent!.trim())).not.toContain("Work type *");
+      expect(layer.textContent).not.toMatch(/Work type/);
+      const first = layer.querySelector(".mo-body .field:not(:has(#aw-project))")!;
+      expect(first.querySelector("#aw-dmode"), "the first field is not the deliverable choice").not.toBeNull();
+      const seg = layer.querySelector("#aw-dmode")!, title = layer.querySelector("#aw-title")!;
+      expect(seg.compareDocumentPosition(title) & 4, "Title comes before the deliverable").toBeTruthy();
+      const segs = [...layer.querySelectorAll("#aw-dmode button")].map((b) => b.textContent!.trim());
+      expect(segs).toHaveLength(3);
+      expect(segs[0]).toBe("New deliverable");
+      expect(segs[1]).toMatch(/^Existing on this project \(\d+\)$/);
+      expect(segs[2]).toBe("No deliverable");
+    });
+
+    it("says what a new deliverable is logged as, following the Type picked", async () => {
+      const h = await boot(901);
+      const { doc } = await openFor(h, 7001);
+      const hint = () => doc.querySelector("#aw-dtype-wt")!.textContent;
+      setType(h, dtId(h, "Aftermovie"));
+      expect(hint()).toBe("Logged as Editing");
+      setType(h, dtId(h, "Photos — Raw"));
+      expect(hint()).toBe("Logged as Photography");
+      setType(h, dtId(h, "Drone Footage"));
+      expect(hint()).toBe("Logged as Videography");
+      // Set to nothing in Settings, it is General Task — as the server logs it.
+      h.ev(`DB.deliverable_types.find(t=>t.name==='Other').work_type_id=null`);
+      setType(h, dtId(h, "Other"));
+      expect(hint()).toBe("Logged as General Task");
+      // An Admin's change in Settings is what the dialog says.
+      h.ev(`DB.deliverable_types.find(t=>t.name==='Aftermovie').work_type_id=${wtId(h, "Animation")}`);
+      setType(h, dtId(h, "Aftermovie"));
+      expect(hint()).toBe("Logged as Animation");
+    });
+
+    it("says what an existing deliverable is logged as, from its type", async () => {
+      const h = await boot(901);
+      h.ev(`deliv(8003).deliverable_type_id=${dtId(h, "Reel / Short")}; deliv(8002).deliverable_type_id=${dtId(h, "Video — Raw")}`);
+      const { doc } = await openFor(h, 7001);
+      h.ev("ACTIONS.awDelivMode({m:'existing'})");
+      const sel = doc.querySelector("#aw-deliv") as HTMLSelectElement;
+      sel.value = "8003"; h.ev("ACTIONS.awDelivPick()");
+      expect(doc.querySelector("#aw-deliv-wt")!.textContent).toBe("Logged as Editing");
+      sel.value = "8002"; h.ev("ACTIONS.awDelivPick()");
+      expect(doc.querySelector("#aw-deliv-wt")!.textContent).toBe("Logged as Videography");
+    });
+
+    it("with No deliverable, offers the kinds no deliverable stands for", async () => {
+      const h = await boot(901);
+      const { doc } = await openFor(h, 7001);
+      expect((doc.querySelector("#aw-dnone") as HTMLElement).hidden, "the kind list shows with a deliverable").toBe(true);
+      h.ev("ACTIONS.awDelivMode({m:'none'})");
+      expect((doc.querySelector("#aw-dnone") as HTMLElement).hidden).toBe(false);
+      const k = kinds(doc);
+      for (const name of ["General Task", "Meeting", "Script Writing", "Animation", "Shoot", "Drone Shoot", "Podcast Recording"])
+        expect(k, name).toContain(name);
+      for (const name of ["Photography", "Editing", "Videography"]) expect(k, name).not.toContain(name);
+    });
+
+    it("choosing a shoot kind shows the shoot form, and another kind brings the task back", async () => {
+      const h = await boot(901);
+      const { doc } = await openFor(h, 7001);
+      h.ev("ACTIONS.awDelivMode({m:'none'})");
+      const kind = doc.querySelector("#aw-kind") as HTMLSelectElement;
+      kind.value = String(wtId(h, "Shoot")); kind.dispatchEvent(new h.doc.defaultView!.Event("change"));
+      for (const id of ["#aw-date", "#aw-call", "#aw-loc", "#aw-gear"]) expect(doc.querySelector(id), id).not.toBeNull();
+      expect(doc.querySelector("#aw-pri"), "the task fields stayed").toBeNull();
+      (doc.querySelector("#aw-title") as HTMLInputElement).value = "Day 1";
+      (doc.querySelector('#aw-users .chip[data-uid="902"]') as HTMLElement).click();
+      h.ev("ACTIONS.createWork()");
+      const body = h.writes().find((c) => c.url.endsWith("/projects/7001/work"))!.body as Record<string, unknown>;
+      expect(body.work_type_id).toBe(wtId(h, "Shoot"));
+      expect(body.shoot_date).toBeTruthy();
+      expect(body.new_deliverable).toBeUndefined();
+    });
+
+    it("going back to a deliverable from a shoot brings the task fields back", async () => {
+      const h = await boot(901);
+      const { doc } = await openFor(h, 7001);
+      h.ev("ACTIONS.awDelivMode({m:'none'})");
+      const kind = doc.querySelector("#aw-kind") as HTMLSelectElement;
+      kind.value = String(wtId(h, "Shoot")); h.ev("ACTIONS.awKindChange()");
+      expect(doc.querySelector("#aw-date")).not.toBeNull();
+      h.ev("ACTIONS.awDelivMode({m:'new'})");
+      expect(doc.querySelector("#aw-date")).toBeNull();
+      expect(doc.querySelector("#aw-pri")).not.toBeNull();
+      expect((doc.querySelector("#aw-ownerf") as HTMLElement).hidden).toBe(false);
+    });
+
+    it("a Meeting sends its kind; work on a new deliverable is stored as the type's work type", async () => {
+      const h = await boot(901);
+      let { doc } = await openFor(h, 7001);
+      h.ev("ACTIONS.awDelivMode({m:'none'})");
+      (doc.querySelector("#aw-kind") as HTMLSelectElement).value = String(wtId(h, "Meeting"));
+      h.ev("ACTIONS.awKindChange()");
+      (doc.querySelector("#aw-title") as HTMLInputElement).value = "Plan the week";
+      (doc.querySelector('#aw-users .chip[data-uid="902"]') as HTMLElement).click();
+      h.ev("ACTIONS.createWork()");
+      const meeting = h.writes().filter((c) => c.url.endsWith("/projects/7001/work")).at(-1)!.body as Record<string, unknown>;
+      expect(meeting.work_type_id).toBe(wtId(h, "Meeting"));
+      expect(h.ev<number>("DB.assignments.at(-1).work_type_id")).toBe(wtId(h, "Meeting"));
+
+      ({ doc } = await openFor(h, 7001));
+      setType(h, dtId(h, "Aftermovie"));
+      (doc.querySelector("#aw-title") as HTMLInputElement).value = "Cut it";
+      (doc.querySelector('#aw-users .chip[data-uid="903"]') as HTMLElement).click();
+      h.ev("ACTIONS.createWork()");
+      const cut = h.writes().filter((c) => c.url.endsWith("/projects/7001/work")).at(-1)!.body as Record<string, unknown>;
+      expect(cut.work_type_id).toBeUndefined();
+      expect(h.ev<number>("DB.assignments.at(-1).work_type_id"), "the local row is not the derived type")
+        .toBe(wtId(h, "Editing"));
+    });
   });
 
   /* A deliverable worked on by two people: 8002 is owned by 902, and the work
@@ -1528,5 +1667,43 @@ describe("Finished work and people's labels — the last review's loose ends", (
     const cell = (id: number) => h.doc.querySelector(`#dsp tr[data-dispatch-did="${id}"] td`)!.textContent!;
     expect(cell(8002).split(type2).length - 1, "type-named: the name once").toBe(1);
     expect(cell(8003)).toContain(type3);
+  });
+});
+
+/* ── Settings → Deliverable types → Counts as ────────────────────────────────
+   What work on a deliverable type is logged as. Shown to anyone who edits the
+   type; changed only by an Admin — a Team Lead's save leaves it as it stands. */
+describe("Settings → Deliverable types — Counts as is an Admin's to change", () => {
+  const META = `S._crudMeta={can:{},icons:[],modules:[{key:'deliverable_types',label:'Deliverable Types',cols:['name'],activeCol:'is_active',
+    deps:[],can:{create:true,update:true,state:true},fields:[
+      {name:'name',label:'Name',type:'text',required:true},
+      {name:'work_type_id',label:'Counts as',type:'relation',adminOnly:true,options2:[{v:5,l:'Editing'},{v:9,l:'Meeting'}]}]}]};
+    crudState().mod='deliverable_types';
+    crudFormModal({id:5,name:'Aftermovie',work_type_id:5});
+    /* Only the request is under test: the reload after a save would ask this
+       stubbed server for the module list it does not have. */
+    crudAfterMutate=()=>{};`;
+
+  it("a Team Lead sees it, cannot change it, and does not send it", async () => {
+    const h = await boot(901);
+    h.ev(META);
+    const sel = h.doc.querySelector("#cf-work_type_id") as HTMLSelectElement;
+    expect(sel.value).toBe("5");
+    expect(sel.disabled).toBe(true);
+    h.ev("ACTIONS.crudSubmit({id:'5'})");
+    const body = h.writes().find((c) => c.url.endsWith("/crud/deliverable_types/5"))!.body as Record<string, unknown>;
+    expect(body.name).toBe("Aftermovie");
+    expect("work_type_id" in body).toBe(false);
+  });
+
+  it("an Admin changes it", async () => {
+    const h = await boot(907);
+    h.ev(META);
+    const sel = h.doc.querySelector("#cf-work_type_id") as HTMLSelectElement;
+    expect(sel.disabled).toBe(false);
+    sel.value = "9";
+    h.ev("ACTIONS.crudSubmit({id:'5'})");
+    const body = h.writes().find((c) => c.url.endsWith("/crud/deliverable_types/5"))!.body as Record<string, unknown>;
+    expect(body.work_type_id).toBe("9");
   });
 });

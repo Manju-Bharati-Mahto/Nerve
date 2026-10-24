@@ -2646,7 +2646,8 @@ DB.work_types = [
   {id:6,department_id:1,name:'Photography',slug:'photography',icon:'▣',form_template:'standard_task',sort_order:6,is_active:true,archived_at:null},
   {id:7,department_id:1,name:'Videography',slug:'videography',icon:'▶',form_template:'standard_task',sort_order:7,is_active:true,archived_at:null},
   {id:8,department_id:1,name:'Animation',slug:'animation',icon:'◈',form_template:'standard_task',sort_order:8,is_active:true,archived_at:null},
-  {id:9,department_id:1,name:'Meeting',slug:'meeting',icon:'☎',form_template:'standard_task',sort_order:9,is_active:true,archived_at:null}
+  {id:9,department_id:1,name:'Meeting',slug:'meeting',icon:'☎',form_template:'standard_task',sort_order:9,is_active:true,archived_at:null},
+  {id:10,department_id:1,name:'Script Writing',slug:'script-writing',icon:'✎',form_template:'standard_task',sort_order:10,is_active:true,archived_at:null}
 ];
 DB.academic_units = [
   {id:1,department_id:1,name:'University-wide',short_name:'University-wide',slug:'university-wide',sort_order:1,is_active:true,archived_at:null},
@@ -2677,22 +2678,22 @@ DB.task_categories = [
   {id:11,department_id:1,name:'Equipment Prep',icon:'▣',is_active:true,sort_order:11},
   {id:12,department_id:1,name:'Scripting',icon:'✎',is_active:true,sort_order:12}
 ];
-/* §11.3 deliverable_types */
+/* §11.3 deliverable_types — work_type_id is what work on one counts as (Assign work). */
 DB.deliverable_types = [
-  {id:1,name:'Photos — Raw',slug:'photos-raw',icon:'▦',default_weight:1,default_unit:'photos',is_active:true,review_exempt:false,sort_order:1,default_due_offset_days:2},
-  {id:2,name:'Photos — Edited',slug:'photos-edited',icon:'▩',default_weight:3,default_unit:'photos',is_active:true,review_exempt:false,sort_order:2,default_due_offset_days:5},
-  {id:3,name:'Video — Raw',slug:'video-raw',icon:'▤',default_weight:1,default_unit:'clips',is_active:true,review_exempt:true,sort_order:3,default_due_offset_days:2},
-  {id:4,name:'Video — Edited',slug:'video-edited',icon:'▶',default_weight:4,default_unit:'videos',is_active:true,review_exempt:false,sort_order:4,default_due_offset_days:10},
-  {id:5,name:'Aftermovie',slug:'aftermovie',icon:'✱',default_weight:8,default_unit:'minutes',is_active:true,review_exempt:false,sort_order:5,default_due_offset_days:12},
-  {id:6,name:'Highlight Reel',slug:'highlight-reel',icon:'✧',default_weight:5,default_unit:'minutes',is_active:true,review_exempt:false,sort_order:6,default_due_offset_days:8},
-  {id:7,name:'Reel / Short',slug:'reel',icon:'❙',default_weight:2,default_unit:'reels',is_active:true,review_exempt:false,sort_order:7,default_due_offset_days:5},
-  {id:8,name:'Outreach Content',slug:'outreach',icon:'✉',default_weight:2,default_unit:'posts',is_active:true,review_exempt:false,sort_order:8,default_due_offset_days:9},
-  {id:9,name:'Continuous Recording',slug:'continuous',icon:'⏺',default_weight:3,default_unit:'hours',is_active:true,review_exempt:true,sort_order:9,default_due_offset_days:3},
-  {id:10,name:'Drone Footage',slug:'drone',icon:'✈',default_weight:3,default_unit:'clips',is_active:true,review_exempt:false,sort_order:10,default_due_offset_days:5},
-  {id:11,name:'Album Design',slug:'album',icon:'❐',default_weight:4,default_unit:'spreads',is_active:true,review_exempt:false,sort_order:11,default_due_offset_days:14},
-  {id:12,name:'Story / Post',slug:'story',icon:'◍',default_weight:1,default_unit:'posts',is_active:true,review_exempt:false,sort_order:12,default_due_offset_days:3},
-  {id:13,name:'Raw Archive',slug:'raw-archive',icon:'⛁',default_weight:1,default_unit:'GB',is_active:true,review_exempt:true,sort_order:13,default_due_offset_days:2},
-  {id:14,name:'Other',slug:'other',icon:'○',default_weight:1,default_unit:'items',is_active:true,review_exempt:false,sort_order:14,default_due_offset_days:5}
+  {id:1,name:'Photos — Raw',slug:'photos-raw',work_type_id:6,icon:'▦',default_weight:1,default_unit:'photos',is_active:true,review_exempt:false,sort_order:1,default_due_offset_days:2},
+  {id:2,name:'Photos — Edited',slug:'photos-edited',work_type_id:5,icon:'▩',default_weight:3,default_unit:'photos',is_active:true,review_exempt:false,sort_order:2,default_due_offset_days:5},
+  {id:3,name:'Video — Raw',slug:'video-raw',work_type_id:7,icon:'▤',default_weight:1,default_unit:'clips',is_active:true,review_exempt:true,sort_order:3,default_due_offset_days:2},
+  {id:4,name:'Video — Edited',slug:'video-edited',work_type_id:5,icon:'▶',default_weight:4,default_unit:'videos',is_active:true,review_exempt:false,sort_order:4,default_due_offset_days:10},
+  {id:5,name:'Aftermovie',slug:'aftermovie',work_type_id:5,icon:'✱',default_weight:8,default_unit:'minutes',is_active:true,review_exempt:false,sort_order:5,default_due_offset_days:12},
+  {id:6,name:'Highlight Reel',slug:'highlight-reel',work_type_id:5,icon:'✧',default_weight:5,default_unit:'minutes',is_active:true,review_exempt:false,sort_order:6,default_due_offset_days:8},
+  {id:7,name:'Reel / Short',slug:'reel',work_type_id:5,icon:'❙',default_weight:2,default_unit:'reels',is_active:true,review_exempt:false,sort_order:7,default_due_offset_days:5},
+  {id:8,name:'Outreach Content',slug:'outreach',work_type_id:1,icon:'✉',default_weight:2,default_unit:'posts',is_active:true,review_exempt:false,sort_order:8,default_due_offset_days:9},
+  {id:9,name:'Continuous Recording',slug:'continuous',work_type_id:7,icon:'⏺',default_weight:3,default_unit:'hours',is_active:true,review_exempt:true,sort_order:9,default_due_offset_days:3},
+  {id:10,name:'Drone Footage',slug:'drone',work_type_id:7,icon:'✈',default_weight:3,default_unit:'clips',is_active:true,review_exempt:false,sort_order:10,default_due_offset_days:5},
+  {id:11,name:'Album Design',slug:'album',work_type_id:5,icon:'❐',default_weight:4,default_unit:'spreads',is_active:true,review_exempt:false,sort_order:11,default_due_offset_days:14},
+  {id:12,name:'Story / Post',slug:'story',work_type_id:5,icon:'◍',default_weight:1,default_unit:'posts',is_active:true,review_exempt:false,sort_order:12,default_due_offset_days:3},
+  {id:13,name:'Raw Archive',slug:'raw-archive',work_type_id:1,icon:'⛁',default_weight:1,default_unit:'GB',is_active:true,review_exempt:true,sort_order:13,default_due_offset_days:2},
+  {id:14,name:'Other',slug:'other',work_type_id:1,icon:'○',default_weight:1,default_unit:'items',is_active:true,review_exempt:false,sort_order:14,default_due_offset_days:5}
 ];
 /* FR-3.2 templates */
 DB.project_templates = [
@@ -19954,7 +19955,9 @@ function crudFormModal(row){
         <input type="hidden" id="${id}" value="${esc(String(v??''))}"></div>`;
       case 'date':return `<input class="inp" type="date" id="${id}" value="${esc(String(v??'').slice(0,10))}">`;
       case 'number':return `<input class="inp" type="number" id="${id}" value="${esc(String(v??''))}">`;
-      case 'relation':return `<select class="inp" id="${id}"><option value="">—</option>${(f.options2||[]).map(o=>`<option value="${o.v}" ${Number(v)===o.v?'selected':''}>${esc(o.l)}</option>`).join('')}</select>`;
+      /* An adminOnly field (a deliverable type's "Counts as") is shown to
+         everyone and set only by an Admin — the server refuses anyone else. */
+      case 'relation':return `<select class="inp" id="${id}"${f.adminOnly&&!isAdmin()?' disabled title="Only an Admin can change this"':''}><option value="">—</option>${(f.options2||[]).map(o=>`<option value="${o.v}" ${Number(v)===o.v?'selected':''}>${esc(o.l)}</option>`).join('')}</select>`;
       case 'slug':return `<input class="inp mono" id="${id}" value="${esc(String(v??''))}" placeholder="auto-generated from name">`;
       default:return `<input class="inp" id="${id}" value="${esc(String(v??''))}" ${f.name==='name'?`oninput="const s=document.getElementById('cf-slug');if(s&&!s.dataset.touched)s.value=this.value.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')"`:''}>`;
     }
@@ -21315,15 +21318,38 @@ function openLeaveRequest(lid){
 }
 /* ══════════════════════════════════════════════════════════════════════════
    UNIFIED "ASSIGN WORK"
-   One dialog for every kind of assignable work. The Work Type is chosen first;
-   its form_template (master data, not code) selects which field set renders and
-   which record the API writes. Adding a work type in Settings needs no code
-   change here — never branch on the type's NAME.
+   One dialog for every kind of assignable work. There is no work-type choice:
+   the deliverable is chosen first, and work on a deliverable is logged as its
+   type's work type (Settings → Deliverable types → Counts as). Only work with
+   no deliverable names its kind — General Task, a meeting, a script, a shoot.
+   The kind's form_template (master data, not code) selects which field set
+   renders and which record the API writes. Adding a work type in Settings
+   needs no code change here — never branch on the type's NAME.
    ══════════════════════════════════════════════════════════════════════════ */
 const activeWorkTypes=()=>(DB.work_types||[])
   .filter(w=>w.is_active&&!w.archived_at)
   .sort((a,b)=>(a.sort_order||0)-(b.sort_order||0)||a.name.localeCompare(b.name));
 const workType=id=>(DB.work_types||[]).find(w=>w.id===+id)||null;
+/* The work type a deliverable of this type is logged as — the server's
+   workTypeOfDeliverableType(): the one its type counts as, while that one is
+   active and not a shoot; otherwise General Task. */
+function delivWorkType(typeId){
+  const t=DB.deliverable_types.find(x=>x.id===+typeId);
+  const std=activeWorkTypes().filter(w=>w.form_template!=='shoot');
+  return (t&&std.find(w=>w.id===+t.work_type_id))||std.find(w=>w.name.toLowerCase()==='general task')||null;
+}
+/* The kinds offered with No deliverable: work no deliverable type counts as
+   (General Task, a meeting, a script) and every shoot. Photography, Editing and
+   the like are the work of a deliverable, chosen by choosing the deliverable. */
+function awKinds(){
+  const mapped=new Set(pickableDelivTypes().map(t=>+t.work_type_id).filter(Boolean));
+  return activeWorkTypes().filter(w=>w.form_template==='shoot'||!mapped.has(w.id)||w.name.toLowerCase()==='general task');
+}
+/* Open deliverables of a project that can take on new work. Finished work —
+   delivered, or already dispatched or archived — keeps the owner who finished
+   it (ownerLocked). */
+const awOpenDelivs=pid=>DB.deliverables.filter(d=>d.project_id===+pid&&!d.deleted_at&&!DELIV_DONE.includes(d.status)
+  &&!['sent','delivered','archived'].includes(d.dispatch_status||'none'));
 
 /* The one hint under Assign work's Deliverable choice, per mode. (Taking on an
    existing deliverable, the line under the pick — who owns it now — is it.) */
@@ -21340,34 +21366,12 @@ const WORK_TEMPLATES={
        deliverable that already exists on the project — one the Coordinator
        added at creation, say — can be taken on instead, so it is not made
        twice. Everyone assigned works on it; the owner is accountable for it. */
-    body(pid){
-      /* Finished work — delivered, or already dispatched or archived — is not
-         offered for new work; it keeps the owner who finished it (ownerLocked). */
-      const open=DB.deliverables.filter(d=>d.project_id===+pid&&!d.deleted_at&&!DELIV_DONE.includes(d.status)
-        &&!['sent','delivered','archived'].includes(d.dispatch_status||'none'));
-      const dtypes=pickableDelivTypes();
+    /* The deliverable choice itself sits above this body (awDelivSection), so
+       switching it keeps what was typed here. */
+    body(){
       return `
       <div class="field"><label class="lbl">Title <span class="req">*</span></label>
         <input class="inp" id="aw-title" placeholder="e.g. Edit convocation highlights"></div>
-      <div class="field"><label class="lbl">Deliverable</label>
-        <div class="seg" id="aw-dmode" role="radiogroup" aria-label="Deliverable">
-          <button type="button" class="on" data-m="new" role="radio" aria-checked="true" onclick="ACTIONS.awDelivMode({m:'new'})">New deliverable</button>
-          ${open.length?`<button type="button" data-m="existing" role="radio" aria-checked="false" onclick="ACTIONS.awDelivMode({m:'existing'})">Existing on this project (${open.length})</button>`:''}
-          <button type="button" data-m="none" role="radio" aria-checked="false" onclick="ACTIONS.awDelivMode({m:'none'})">No deliverable</button></div>
-        <div class="hint" id="aw-dhint">${AW_DHINT.new}</div></div>
-      <div id="aw-dnew">
-        <div class="row">
-          <div class="field"><label class="lbl" for="aw-dtype">Type <span class="req">*</span></label>
-            <select class="inp" id="aw-dtype">${dtypes.map(t=>`<option value="${t.id}">${t.icon?esc(t.icon)+' ':''}${esc(t.name)}</option>`).join('')}</select></div>
-          <div class="field"><label class="lbl">Drive link <span class="mut3">(optional)</span></label>
-            <input class="inp" id="aw-ddrive" inputmode="url" autocapitalize="off" placeholder="https://drive.google.com/… (can add later)"></div>
-        </div>
-      </div>
-      <div id="aw-dexisting" hidden>
-        <div class="field"><label class="lbl" for="aw-deliv">Which one <span class="req">*</span></label>
-          <select class="inp" id="aw-deliv" onchange="ACTIONS.awDelivPick()">${open.map(d=>`<option value="${d.id}">${esc(d.title)} — ${d.owner_id?esc(user(d.owner_id).full_name):'unassigned'}</option>`).join('')}</select>
-          <div class="hint" id="aw-dcur"></div></div>
-      </div>
       <div class="field"><label class="lbl">Assign to <span class="req">*</span></label>
         <div class="f wrap gap2" id="aw-users">${assignableMembers().map(u=>
           `<button type="button" class="chip" data-uid="${u.id}" onclick="ACTIONS.awPick(this)">${personChipText(u.id)}</button>`).join('')}</div>
@@ -21479,6 +21483,50 @@ const WORK_TEMPLATES={
 function workTemplateFor(wt){return (wt&&WORK_TEMPLATES[wt.form_template])||WORK_TEMPLATES.standard_task;}
 /* Which deliverable choice is on in the Assign work dialog: new | existing | none. */
 function awDelivModeNow(){const b=$('#aw-dmode button.on');return b?b.dataset.m:'none';}
+/* The work type the work will be logged as: with a deliverable, its type's;
+   with none, the kind picked. */
+function awWorkTypeNow(){
+  const m=awDelivModeNow();
+  if(m==='none') return workType(($('#aw-kind')||{}).value);
+  if(m==='existing') return delivWorkType((deliv(+($('#aw-deliv')||{}).value)||{}).deliverable_type_id);
+  return delivWorkType(($('#aw-dtype')||{}).value);
+}
+/* The field set below the deliverable choice: a shoot's when No deliverable is
+   a shoot kind, the standard task's otherwise. */
+function awTemplateKey(){
+  const wt=awDelivModeNow()==='none'?awWorkTypeNow():null;
+  return wt&&WORK_TEMPLATES[wt.form_template]?wt.form_template:'standard_task';
+}
+/* The deliverable choice, first in the dialog: make one, take on one already on
+   the project, or none — and then which kind of work it is. */
+function awDelivSection(pid,mode,kindId){
+  const open=awOpenDelivs(pid), dtypes=pickableDelivTypes(), kinds=awKinds();
+  const seg=(m,l)=>`<button type="button"${mode===m?' class="on"':''} data-m="${m}" role="radio" aria-checked="${mode===m}" onclick="ACTIONS.awDelivMode({m:'${m}'})">${l}</button>`;
+  return `
+      <div class="field"><label class="lbl">Deliverable</label>
+        <div class="seg" id="aw-dmode" role="radiogroup" aria-label="Deliverable">
+          ${seg('new','New deliverable')}${open.length?seg('existing',`Existing on this project (${open.length})`):''}${seg('none','No deliverable')}</div>
+        <div class="hint" id="aw-dhint">${AW_DHINT[mode]||''}</div></div>
+      <div id="aw-dnew"${mode==='new'?'':' hidden'}>
+        <div class="row">
+          <div class="field"><label class="lbl" for="aw-dtype">Type <span class="req">*</span></label>
+            <select class="inp" id="aw-dtype" onchange="ACTIONS.awLoggedAs()">${dtypes.map(t=>`<option value="${t.id}">${t.icon?esc(t.icon)+' ':''}${esc(t.name)}</option>`).join('')}</select>
+            <div class="hint" id="aw-dtype-wt"></div></div>
+          <div class="field"><label class="lbl">Drive link <span class="mut3">(optional)</span></label>
+            <input class="inp" id="aw-ddrive" inputmode="url" autocapitalize="off" placeholder="https://drive.google.com/… (can add later)"></div>
+        </div>
+      </div>
+      <div id="aw-dexisting"${mode==='existing'?'':' hidden'}>
+        <div class="field"><label class="lbl" for="aw-deliv">Which one <span class="req">*</span></label>
+          <select class="inp" id="aw-deliv" onchange="ACTIONS.awDelivPick()">${open.map(d=>`<option value="${d.id}">${esc(d.title)} — ${d.owner_id?esc(user(d.owner_id).full_name):'unassigned'}</option>`).join('')}</select>
+          <div class="hint" id="aw-dcur"></div>
+          <div class="hint" id="aw-deliv-wt"></div></div>
+      </div>
+      <div id="aw-dnone"${mode==='none'?'':' hidden'}>
+        <div class="field"><label class="lbl" for="aw-kind">Kind of work <span class="req">*</span></label>
+          <select class="inp" id="aw-kind" onchange="ACTIONS.awKindChange()">${kinds.map(w=>`<option value="${w.id}"${w.id===+kindId?' selected':''}>${w.icon?esc(w.icon)+' ':''}${esc(w.name)}</option>`).join('')}</select></div>
+      </div>`;
+}
 /* The people picked, in the order they were picked — so "the first person you
    pick owns it" means what it says, whatever order the roster is drawn in. */
 function awPicked(){
@@ -21504,30 +21552,30 @@ function openAssignWork(pid,tpl){
   const types=activeWorkTypes();
   /* Only an Admin can reach Settings, so only an Admin is pointed there. */
   if(!types.length){toast(isAdmin()?'No active work types. Add one in Settings → Work Types':'No active work types yet. Ask an Admin to add one','bad');return;}
-  /* From the Shoots tab it opens on a shoot type; otherwise on the first type. */
-  const initial=(tpl&&types.find(w=>w.form_template===tpl))||types[0];
+  /* From the Shoots tab it opens on No deliverable and the first shoot kind;
+     otherwise on a new deliverable. */
+  const shootKind=tpl?awKinds().find(w=>w.form_template===tpl):null;
+  const mode=shootKind?'none':'new';
   const fixed=pid?+pid:null;
   pid=fixed||ps[0].id;
-  modal(`<div class="mo-head"><div><h2>Assign work</h2>
-      <p>Pick the work type first. The form adapts to it.${isAdmin()?' Types are configured in <b>Settings → Work Types</b>.':''}</p></div>
+  modal(`<div class="mo-head"><div><h2>Assign work</h2></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
     <div class="mo-body">
-      <div class="field"><label class="lbl">Work type <span class="req">*</span></label>
-        <select class="inp" id="aw-type" onchange="ACTIONS.awTypeChange()">
-          ${types.map(w=>`<option value="${w.id}"${w===initial?' selected':''}>${w.icon?esc(w.icon)+' ':''}${esc(w.name)}</option>`).join('')}</select></div>
       ${fixed?`<div class="field"><span class="lbl">Project</span>
           <div class="aw-proj"><b>${esc(proj(fixed).name)}</b> <span class="code">${esc(proj(fixed).code||'')}</span></div>
           <input type="hidden" id="aw-project" value="${fixed}"></div>`
         :`<div class="field"><label class="lbl" for="aw-project">Project <span class="req">*</span></label>
-          <select class="inp" id="aw-project" onchange="ACTIONS.awTypeChange()">
+          <select class="inp" id="aw-project" onchange="ACTIONS.awProjectChange()">
             ${ps.map(p=>`<option value="${p.id}" ${pid===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}</select></div>`}
       <style>.aw-proj{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 12px;border:1px solid var(--border);
         border-radius:var(--r);background:var(--surface-2)}</style>
-      <div id="aw-body">${workTemplateFor(initial).body(pid)}</div>
+      <div id="aw-dsel">${awDelivSection(pid,mode,shootKind&&shootKind.id)}</div>
+      <div id="aw-body"></div>
     </div>
     <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn primary" data-act="createWork">Assign work</button></div>`,{size:'wide'});
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=e=>{e.stopPropagation();ACTIONS[n.dataset.act](n.dataset,n);});
+  ACTIONS.awDelivMode({m:mode});
 }
 
 function openNewCard(bid){
@@ -22700,9 +22748,30 @@ const ACTIONS = {
   editTask:(d)=>openTaskLog(+d.tid),
   newProject:()=>openNewProject(),
   assignWork:(d)=>openAssignWork(d&&d.pid,d&&d.tpl),
-  awTypeChange:()=>{
-    const wt=workType($('#aw-type').value), tpl=workTemplateFor(wt);
-    const body=$('#aw-body'); if(body)body.innerHTML=tpl.body($('#aw-project').value);
+  /* The field set follows the deliverable choice: redrawn only when it changes
+     between a shoot's and a standard task's, so typed values stay. `force`
+     redraws it anyway (another project: its crew and dates). */
+  awSyncBody:(force)=>{
+    const body=$('#aw-body'); if(!body) return;
+    const key=awTemplateKey();
+    if(force||body.dataset.tpl!==key){body.innerHTML=WORK_TEMPLATES[key].body($('#aw-project').value);body.dataset.tpl=key;}
+  },
+  /* "Logged as …" under the deliverable picked — what its type counts as. */
+  awLoggedAs:()=>{
+    const say=wt=>wt?'Logged as '+wt.name:'';
+    const t=$('#aw-dtype-wt'), e=$('#aw-deliv-wt');
+    if(t) t.textContent=say(delivWorkType(($('#aw-dtype')||{}).value));
+    if(e) e.textContent=say(delivWorkType((deliv(+($('#aw-deliv')||{}).value)||{}).deliverable_type_id));
+  },
+  awKindChange:()=>{ACTIONS.awSyncBody();ACTIONS.awOwnerSync();},
+  /* Another project has other deliverables: the choice is drawn again for it,
+     keeping the mode (unless it has none to take on) and the kind. */
+  awProjectChange:()=>{
+    const pid=$('#aw-project').value, kind=($('#aw-kind')||{}).value;
+    let m=awDelivModeNow(); if(m==='existing'&&!awOpenDelivs(pid).length) m='new';
+    $('#aw-dsel').innerHTML=awDelivSection(pid,m,kind);
+    ACTIONS.awSyncBody(true);
+    ACTIONS.awDelivMode({m});
   },
   /* Taking on an existing deliverable: say who owns it now, and start the Due
      date at its own — the deliverable is due when the work is due. A date the
@@ -22714,14 +22783,18 @@ const ACTIONS = {
       due.value=dl.due_date?String(dl.due_date).slice(0,10):'';
       due.dataset.prefill=due.value;
     }
+    ACTIONS.awLoggedAs();
     ACTIONS.awOwnerSync();
   },
   awDelivMode:(d)=>{
     $$('#aw-dmode button').forEach(b=>{const on=b.dataset.m===d.m;b.classList.toggle('on',on);b.setAttribute('aria-checked',on?'true':'false');});
-    const nw=$('#aw-dnew'), ex=$('#aw-dexisting'), of=$('#aw-ownerf'), h=$('#aw-dhint');
+    ACTIONS.awSyncBody();
+    const nw=$('#aw-dnew'), ex=$('#aw-dexisting'), no=$('#aw-dnone'), of=$('#aw-ownerf'), h=$('#aw-dhint');
     if(nw) nw.hidden=d.m!=='new';
     if(ex) ex.hidden=d.m!=='existing';
+    if(no) no.hidden=d.m!=='none';
     if(of) of.hidden=d.m==='none';
+    ACTIONS.awLoggedAs();
     /* One hint for the chosen mode. Taking on an existing one, the line under
        the pick (who owns it now) is that hint. */
     if(h){ h.hidden=d.m==='existing'; h.textContent=AW_DHINT[d.m]||''; }
@@ -22762,19 +22835,22 @@ const ACTIONS = {
       +' → New owner: '+personLabel(r.to)+'. You confirm this before it is sent.':'';
   },
   createWork:async()=>{
-    const wt=workType($('#aw-type').value); if(!wt){toast('Pick a work type','bad');return;}
+    /* With a deliverable the server works the type out from it and is not sent
+       one; with none, the kind picked is the work type. */
+    const mode=awDelivModeNow(), wt=awWorkTypeNow();
+    if(mode==='none'&&!wt){toast('Choose the kind of work','bad');return;}
     const pid=+$('#aw-project').value;
-    const tpl=workTemplateFor(wt);
+    const tpl=WORK_TEMPLATES[awTemplateKey()];
     const {err,payload}=tpl.collect();
     if(err){toast(err,'bad');return;}
     /* Taking an existing deliverable off its owner is asked first; Cancel
        leaves Assign work open, as filled. */
-    const re=wt.form_template!=='shoot'&&payload.deliverable_id&&payload.owner_id
+    const re=tpl!==WORK_TEMPLATES.shoot&&payload.deliverable_id&&payload.owner_id
       ?(d=>d&&d.owner_id&&d.owner_id!==payload.owner_id?d:null)(deliv(payload.deliverable_id)):null;
     if(re&&!(await confirmReassign(re.title,personLabel(re.owner_id),personLabel(payload.owner_id))))return;
     /* Optimistic local write mirrors what the server will store, so My Day and
        the project timeline update immediately; moSync reconciles. */
-    if(wt.form_template==='shoot'){
+    if(tpl===WORK_TEMPLATES.shoot){
       const id=Math.max(0,...DB.shoots.map(x=>x.id))+1;
       DB.shoots.push({id,project_id:pid,work_type_id:wt.id,title:payload.title,shoot_date:payload.shoot_date,
         call_time:payload.call_time,end_time:payload.end_time,location:payload.location,location_url:null,
@@ -22803,16 +22879,16 @@ const ACTIONS = {
         if(dl&&payload.due_date&&(!dl.due_date||canRunProject(proj(pid)))) dl.due_date=payload.due_date;
       }
       const id=Math.max(0,...(DB.assignments||[]).map(x=>x.id))+1;
-      (DB.assignments=DB.assignments||[]).push({id,project_id:pid,work_type_id:wt.id,
+      (DB.assignments=DB.assignments||[]).push({id,project_id:pid,work_type_id:wt?wt.id:null,
         deliverable_id:did,title:payload.title,assigned_by:S.me,priority:payload.priority,
         status:'not_started',start_date:payload.start_date,due_date:payload.due_date,start_time:null,end_time:null,
         notes:payload.notes,estimated_hours:null,assignees:payload.assignees.slice()});
-      audit(S.me,'work.assigned','assignment',id,null,{work_type:wt.name,form_template:wt.form_template,title:payload.title});
+      audit(S.me,'work.assigned','assignment',id,null,{work_type:wt?wt.name:null,form_template:'standard_task',title:payload.title});
     }
     closeModal();render();
-    toast(wt.name+' assigned','ok');
+    toast((wt?wt.name:'Work')+' assigned','ok');
     moSync(moReassign(re?re.title:(deliv(payload.deliverable_id)||{}).title,
-      payload.owner_id?personLabel(payload.owner_id):'',c=>MO_API.post('/projects/'+pid+'/work',{work_type_id:wt.id,...payload,
+      payload.owner_id?personLabel(payload.owner_id):'',c=>MO_API.post('/projects/'+pid+'/work',{...(mode==='none'?{work_type_id:wt.id}:{}),...payload,
       assignees:(payload.assignees||[]).map(u=>ruid(u)),crew:(payload.crew||[]).map(u=>ruid(u)),
       ...(payload.owner_id?{owner_id:ruid(payload.owner_id)}:{}),...(c?{confirm_reassign:true}:{})}),!!re));
   },
@@ -24869,7 +24945,7 @@ const ACTIONS = {
   crudEdit:(d)=>{const r=(S._crudData?.rows||[]).find(x=>x.id===+d.id);if(r)crudFormModal(r);},
   crudSubmit:(d)=>{
     const mod=crudModMeta(), payload={};
-    for(const f of mod.fields){const el=$('#cf-'+f.name);if(!el)continue;
+    for(const f of mod.fields){const el=$('#cf-'+f.name);if(!el||el.disabled)continue;
       payload[f.name]=f.type==='switch'?el.checked:el.value;}
     const req=d.id?MO_API.patch('/crud/'+crudState().mod+'/'+d.id,payload):MO_API.post('/crud/'+crudState().mod,payload);
     req.then(()=>{if(d.close||!d.id)closeModal();toast(d.id?'Saved':'Created','ok');crudAfterMutate();})

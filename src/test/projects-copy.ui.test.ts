@@ -226,25 +226,31 @@ describe("Assign work — one label, one hint", () => {
     const layer = h.doc.getElementById("modal-layer")!;
     const labels = () => [...layer.querySelectorAll(".lbl")]
       .filter((l) => !(l.closest("[hidden]"))).map((l) => l.textContent!.trim());
-    const hints = () => [...layer.querySelectorAll("#aw-body .hint")]
+    /* The deliverable choice's hints: the one for the mode, and — with a
+       deliverable — the "Logged as" line under the one picked. */
+    const hints = () => [...layer.querySelectorAll("#aw-dsel .hint")]
       .filter((n) => !(n as HTMLElement).hidden && !n.closest("[hidden]") && n.textContent!.trim())
-      .filter((n) => !n.closest("#aw-ownerf") && n.closest(".field")!.querySelector("#aw-dmode, #aw-dtype, #aw-deliv"));
+      .filter((n) => n.closest(".field")!.querySelector("#aw-dmode, #aw-dtype, #aw-deliv"));
     expect(labels().filter((l) => /^Deliverable/.test(l))).toEqual(["Deliverable"]);
-    expect(hints()).toHaveLength(1);
+    expect(hints().map((n) => n.id)).toEqual(["aw-dhint", "aw-dtype-wt"]);
     h.ev("ACTIONS.awDelivMode({m:'existing'})");
     expect(labels().filter((l) => /^Deliverable/.test(l))).toEqual(["Deliverable"]);
-    expect(hints().map((n) => n.id)).toEqual(["aw-dcur"]);
+    expect(hints().map((n) => n.id)).toEqual(["aw-dcur", "aw-deliv-wt"]);
     h.ev("ACTIONS.awDelivMode({m:'none'})");
     expect(hints().map((n) => n.textContent)).toEqual(["Plain work with no project output."]);
   });
 
-  it("shows no internal form name under Work type", async () => {
+  it("shows no internal form name, whatever kind of work is picked", async () => {
     const h = await boot(901);
     h.ev("openAssignWork(7001)");
     const layer = h.doc.getElementById("modal-layer")!;
     expect(layer.querySelector("#aw-tplhint")).toBeNull();
-    expect(layer.textContent).not.toMatch(/Form:/);
-    h.ev("ACTIONS.awTypeChange()");
-    expect(layer.textContent).not.toMatch(/Form:/);
+    expect(layer.textContent).not.toMatch(/Form:|standard_task/);
+    h.ev("ACTIONS.awDelivMode({m:'none'})");
+    for (const o of [...layer.querySelectorAll("#aw-kind option")] as HTMLOptionElement[]) {
+      (layer.querySelector("#aw-kind") as HTMLSelectElement).value = o.value;
+      h.ev("ACTIONS.awKindChange()");
+      expect(layer.textContent, o.text).not.toMatch(/Form:|standard_task/);
+    }
   });
 });
