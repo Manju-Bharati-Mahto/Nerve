@@ -10347,12 +10347,10 @@ function assignmentCard(a){
     ${tpl&&tpl.card?tpl.card(a):''}
     ${dl?changeRequestLine(dl,latestVersion(dl.id)):''}
     <div class="asg-acts">
-      ${dl&&WORK_OPEN.includes(dl.status)&&canSubmitVersion(dl)
-        /* The same submission My deliverables offers: one Drive link sends
-           the deliverable for review and takes the work off everyone's day. */
-        ?`<button class="btn xs primary" data-act="submitVersion" data-did="${dl.id}"
-             title="Paste the Google Drive link and send it for review">${submitLabel(dl)}</button>`:''}
-      <button class="btn xs" title="Log work on this: project${a.deliverable_id?' & deliverable':''} pre-filled"
+      ${/* No Submit button here: ✎ Log opens Log a task, whose "Submit for
+           review" sends the Drive link (My deliverables keeps its own Submit).
+           Either way the work leaves everyone's day once it is submitted. */''}
+      <button class="btn xs" title="Log work on this${dl&&WORK_OPEN.includes(dl.status)&&canSubmitVersion(dl)?' and submit it for review':''}: project${a.deliverable_id?' & deliverable':''} pre-filled"
         onclick="ACTIONS.logWork({pid:${a.project_id},did:${a.deliverable_id||0}})">✎ Log</button>
       ${a._deliverable||a.deliverable_id?`<button class="btn xs" data-drawer="deliverable:${a.deliverable_id}">Open</button>`:''}
       ${tpl&&tpl.actions&&!dl?tpl.actions(a):''}

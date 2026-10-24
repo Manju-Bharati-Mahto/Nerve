@@ -102,7 +102,8 @@ describe("Today's assignments — work on a deliverable stays until it is submit
       h.as(uid);
       const r = row(h, "Edit the aftermovie")!;
       expect(r.textContent).toContain("Lead Alpha asked for changes to v1: Too dark");
-      expect(r.querySelector('[data-act="submitVersion"][data-did="8201"]')?.textContent).toBe("⤴ Submit v2 for review");
+      // Submitting is done from ✎ Log (Log a task), not from the card itself.
+      expect(r.querySelector('[data-act="submitVersion"]')).toBeNull();
     }
   });
 
@@ -131,19 +132,27 @@ describe("Today's assignments — work on a deliverable stays until it is submit
   });
 });
 
-describe("the Today's assignment card submits the Drive link", () => {
+describe("the Today's assignment card submits the Drive link through ✎ Log", () => {
   const mount = (h: H) => h.ev("location.hash='#/media/my-day'; render()");
   const live = (h: H, title: string) => [...h.doc.querySelectorAll(".card")]
     .find((c) => c.querySelector("h3")?.textContent === title) as HTMLElement;
 
-  it("opens the same modal, posts the version, and the work moves to My deliverables as Awaiting review", async () => {
+  it("the card has no Submit of its own; ✎ Log's Submit for review posts the version and the work moves to My deliverables", async () => {
     const h = await boot(903);
     mount(h);
-    const btn = live(h, "Today’s assignments").querySelector('[data-act="submitVersion"][data-did="8201"]') as HTMLElement;
-    expect(btn.textContent).toBe("⤴ Submit for review");
-    btn.click();
-    (h.doc.getElementById("sv-url") as HTMLInputElement).value = "https://drive.google.com/file/d/aftermovie";
-    (h.doc.querySelector('#modal-layer [data-act="confirmVersion"]') as HTMLElement).click();
+    const card = row(h, "Edit the aftermovie")!;
+    expect(card.querySelector('[data-act="submitVersion"]'), "no Submit button on the card").toBeNull();
+    // My deliverables keeps its own Submit.
+    const mineBefore = [...live(h, "My deliverables").querySelectorAll(".dlv")]
+      .find((d) => d.querySelector(".dlv-title")?.textContent === "Aftermovie") as HTMLElement;
+    expect(mineBefore.querySelector('[data-act="submitVersion"][data-did="8201"]')).not.toBeNull();
+    // ✎ Log opens Log a task with the deliverable linked; its Submit for review opens the form on top.
+    h.ev("ACTIONS.logWork({pid:7001,did:8201})");
+    await new Promise((r) => setTimeout(r, 10));
+    (h.doc.getElementById("tl-submit") as HTMLElement).click();
+    (h.doc.querySelector("#sv-layer #sv-url") as HTMLInputElement).value = "https://drive.google.com/file/d/aftermovie";
+    (h.doc.querySelector('#sv-layer [data-act="confirmVersion"], #sv-layer button.primary') as HTMLElement).click();
+    await new Promise((r) => setTimeout(r, 10));
     const post = h.writes().find((c) => /\/deliverables\/8201\/versions$/.test(c.url));
     expect(post?.method).toBe("POST");
     expect(post?.body).toMatchObject({ drive_url: "https://drive.google.com/file/d/aftermovie" });
@@ -163,8 +172,9 @@ describe("the Today's assignment card submits the Drive link", () => {
     h.ev("ACTIONS.confirmChanges({did:'8201'})");
     expect(h.ev<string>("DB.assignments.find(a=>a.id===77201).status")).toBe("in_progress");
     h.as(902);
-    expect(row(h, "Edit the aftermovie")!.querySelector('[data-act="submitVersion"]')?.textContent)
-      .toBe("⤴ Submit v2 for review");
+    const back = row(h, "Edit the aftermovie")!;
+    expect(back.textContent).toContain("Too dark");
+    expect(back.querySelector('[data-act="submitVersion"]')).toBeNull();
   });
 
   it("submitting from My deliverables clears Today's assignments too", async () => {
@@ -182,7 +192,7 @@ describe("the Today's assignment card submits the Drive link", () => {
   it("a link that is not Google Drive is refused at the field, and nothing changes", async () => {
     const h = await boot(902);
     mount(h);
-    (live(h, "Today’s assignments").querySelector('[data-act="submitVersion"][data-did="8201"]') as HTMLElement).click();
+    h.ev("ACTIONS.submitVersion({did:'8201'})");
     const url = h.doc.getElementById("sv-url") as HTMLInputElement;
     url.value = "https://example.com/aftermovie";
     (h.doc.querySelector('#modal-layer [data-act="confirmVersion"]') as HTMLElement).click();
