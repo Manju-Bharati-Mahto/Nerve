@@ -2296,6 +2296,10 @@ html[data-layout="mobile"] .dc-head{flex-wrap:wrap;row-gap:6px}
 html[data-layout="mobile"] .dc-head > .dc-title{white-space:normal;overflow-wrap:break-word}
 html[data-layout="mobile"] .dc-head:has(> .code:first-child) > .dc-title{flex:1 1 100%;order:-1}
 html[data-layout="mobile"] .dc-head > :is(.code,.chip){white-space:nowrap;overflow-wrap:normal}
+/* The card's foot: the Drive chip, the icon tools and the labelled Dispatch…
+   button wrap rather than push the card wider than a narrow phone. */
+html[data-layout="mobile"] .dc-foot{flex-wrap:wrap;row-gap:6px}
+html[data-layout="mobile"] .dc-acts{flex-wrap:wrap;justify-content:flex-end}
 /* Project deliverables, shoots and team as cards (table.pj-cards): a row of
    controls centres on one line, the aside keeps pill and control at the right
    edge, and a deliverable name uses the card's width before it is cut. */
@@ -4314,11 +4318,17 @@ function teamOf(uid){
     ||(DB.teams||[]).find(t=>DB.team_members.some(m=>m.team_id===t.id&&m.user_id===uid))
     ||null;
 }
-/* What tells two people apart in a picker: their team, else their designation,
-   else their role. The crew has people with the same name. */
+/* What tells two people apart in a picker: their team, else their role in
+   Media Ops — the role the server acts on, never the free-text designation (a
+   Team Lead whose job title says "Coordinator" must not read as one in a list
+   the Coordinator is left out of). The crew has people with the same name: when
+   another active person shares it, their email is added, so two accounts can
+   be told apart. */
 function personTag(uid){
   const u=user(uid)||{}, t=teamOf(uid);
-  return t?t.name:(u.designation||({admin:'Admin',team_lead:'Team Lead',coordinator:'Coordinator',employee:'Employee'})[u.role]||'');
+  const tag=t?t.name:(({admin:'Admin',team_lead:'Team Lead',coordinator:'Coordinator',employee:'Employee'})[u.role]||'');
+  const twin=u.full_name&&u.email&&DB.users.some(x=>x.id!==u.id&&x.is_active!==false&&x.full_name===u.full_name);
+  return twin?(tag?tag+' · ':'')+u.email:tag;
 }
 const personLabel=uid=>{const tag=personTag(uid);return ((user(uid)||{}).full_name||'')+(tag?' · '+tag:'');};
 /* A people chip: the full name, with the team beside it in small type. */
@@ -8225,7 +8235,10 @@ const REQ_STATUS={
 };
 const DISPATCH={
   none:{l:'—',c:'st-neutral',i:'○',ico:'dot'}, queued:{l:'Queued for dispatch',c:'st-warn',i:'◔',ico:'clock'},
-  sent:{l:'Email sent',c:'st-info',i:'✉',ico:'mail'}, delivered:{l:'Delivered',c:'st-success',i:'✔',ico:'check'},
+  sent:{l:'Email sent',c:'st-info',i:'✉',ico:'mail'},
+  /* dispatch_status 'delivered' is the Coordinator's send, recorded with its
+     recipient — "Delivered" is already the crew's word for handing work in. */
+  delivered:{l:'Dispatched',c:'st-success',i:'✔',ico:'check'},
   archived:{l:'Archived',c:'st-neutral',i:'⛁',ico:'archive'}
 };
 /* Where a deliverable stands with Operations, in words, for the project's
@@ -8600,7 +8613,7 @@ function viewDispatch(){
     .sort((a,b)=>String(b.dispatched_at||'').localeCompare(String(a.dispatched_at||'')));
   const archived=DB.deliverables.filter(d=>d.dispatch_status==='archived')
     .sort((a,b)=>String(b.dispatched_at||'').localeCompare(String(a.dispatched_at||'')));
-  const tabs=[['queue','Ready for dispatch',q.length],['delivered','Delivered',delivered.length],['archive','Archive',archived.length]];
+  const tabs=[['queue','Ready for dispatch',q.length],['delivered','Dispatched',delivered.length],['archive','Archive',archived.length]];
   const f=(S.filters.dispatch||(S.filters.dispatch={q:''})).q.toLowerCase();
   const match=d=>!f||((d.title+' '+proj(d.project_id).name+' '+(d.dispatch_recipient||'')).toLowerCase().includes(f));
   const rows=(tab==='queue'?q:tab==='delivered'?delivered:archived).filter(match);
@@ -8613,11 +8626,11 @@ function viewDispatch(){
       live: late?liveChip(`${late} waiting over ${DISPATCH_SLA_DAYS*24}h`,'bad')
           :q.length?liveChip(`${q.length} ready to send`,'info'):liveChip('Queue clear','neutral',false),
       sub:`Approved work, out the door. Nothing is archived without a recorded recipient:
-        ${andList([`<b>${q.length}</b> ready for dispatch`,`<b>${sentToday}</b> sent today`,`<b>${archived.length}</b> archived`])}.`,
+        ${andList([`<b>${q.length}</b> ready for dispatch`,`<b>${sentToday}</b> dispatched today`,`<b>${archived.length}</b> archived`])}.`,
       kpis:[kpi('Ready for dispatch',q.length,{attrs:toTab('queue'),tone:late?'alert':''}),
         kpi('Waiting too long',late,{attrs:toTab('queue'),tone:late?'alert':'',meta:`over ${DISPATCH_SLA_DAYS*24}h in the queue`}),
-        kpi('Sent today',sentToday,{attrs:toTab('delivered')}),
-        kpi('Delivered',delivered.length,{attrs:toTab('delivered'),meta:'not yet archived'}),
+        kpi('Dispatched today',sentToday,{attrs:toTab('delivered')}),
+        kpi('Dispatched',delivered.length,{attrs:toTab('delivered'),meta:'not yet archived'}),
         kpi('Archived',archived.length,{attrs:toTab('archive')})]})}
     <div class="tabs">${tabs.map(([k,l,c])=>`<button data-tab="${k}" data-tabkey="dispatch" class="${tab===k?'on':''}">${l}${c?`<span class="cnt">${c}</span>`:''}</button>`).join('')}</div>
     ${tab!=='queue'?`<div class="search-wrap mb3" style="max-width:360px">
@@ -8629,10 +8642,10 @@ function viewDispatch(){
           :`<div class="empty" style="padding:30px"><div class="e-ico">✔</div>
             <p>Nothing waiting to go out. Approved work arrives here automatically.</p></div>`)
         : (rows.length?`<div class="tbl-wrap"><table class="tbl">
-            <thead><tr><th>Deliverable</th><th>Project</th><th>Approved by</th><th>Delivered by</th>
-              <th>Recipient</th><th>Delivered</th><th>Drive</th><th></th></tr></thead>
+            <thead><tr><th>Deliverable</th><th>Project</th><th>Approved by</th><th>Dispatched by</th>
+              <th>Recipient</th><th>Dispatched</th><th>Drive</th><th></th></tr></thead>
             <tbody>${rows.map(d=>{const v=latestVersion(d.id)||{};
-              return `<tr class="click" data-drawer="deliverable:${d.id}">
+              return `<tr class="click" data-drawer="deliverable:${d.id}" data-dispatch-did="${d.id}"${dispatchFocusStyle(d.id)}>
               <td><div class="t-main">${esc(d.title)}</div><div class="t-sub">${esc(dtype(d.deliverable_type_id).name)}</div></td>
               <td class="small"><span class="code">${esc(proj(d.project_id).code||'')}</span> ${esc(proj(d.project_id).name)}</td>
               <td class="small">${esc(v.reviewed_by?(user(v.reviewed_by)||{full_name:'—'}).full_name:'—')}</td>
@@ -8644,7 +8657,7 @@ function viewDispatch(){
                 ?`<button class="btn xs" data-act="archiveDeliv" data-did="${d.id}">⛁ Archive</button>`
                 :statusPill(DISPATCH,d.dispatch_status)}</td></tr>`;}).join('')}
             </tbody></table></div>`
-          :`<div class="empty" style="padding:30px"><p>Nothing ${tab==='delivered'?'delivered':'archived'} yet${f?' matching that search':''}.</p></div>`)}
+          :`<div class="empty" style="padding:30px"><p>Nothing ${tab==='delivered'?'dispatched':'archived'} yet${f?' matching that search':''}.</p></div>`)}
     </div></div>`;
 }
 
@@ -8778,8 +8791,8 @@ function dispatchRow(d){
      overdue rather than quietly ageing in the queue. */
   const late=waited>=DISPATCH_SLA_DAYS;
   const kv=(k,val)=>`<div class="dc-kv"><span class="dc-k">${esc(k)}</span><span class="dc-v">${val}</span></div>`;
-  const ico=(t,act,attrs)=>`<button class="dc-btn" title="${esc(t)}" data-act="${act}" ${attrs||''}><span>${DC_ICONS[act]}</span></button>`;
-  return `<div class="dc ${late?'late':''}">
+  const ico=(t,act,attrs)=>`<button class="dc-btn" title="${esc(t)}" aria-label="${esc(t)}" data-act="${act}" ${attrs||''}><span>${DC_ICONS[act]}</span></button>`;
+  return `<div class="dc ${late?'late':''}" data-dispatch-did="${d.id}"${dispatchFocusStyle(d.id)}>
     <div class="dc-head">
       <span class="dc-ico">${dtype(d.deliverable_type_id).icon}</span>
       <b class="dc-title" data-drawer="deliverable:${d.id}">${esc(d.title)}</b>
@@ -8803,12 +8816,16 @@ function dispatchRow(d){
               :`<button class="dc-btn" disabled><span>⛁</span></button>`}
         ${ico('Compose email','composeEmail',`data-did="${d.id}"`)}
         ${ico('View history','dispatchHistory',`data-did="${d.id}"`)}
-        <button class="dc-btn go" title="Mark email sent" data-act="markSent" data-did="${d.id}"><span>✓</span></button>
+        <button class="btn sm primary" title="Record who it was sent to" data-act="markSent" data-did="${d.id}">✓ Dispatch…</button>
       </div>
     </div>
   </div>`;
 }
 const DC_ICONS={copyDrive:'⧉',composeEmail:'✉',dispatchHistory:'◷',markSent:'✓'};
+/* Opened from a "Ready to dispatch" notice: that item is outlined, for this
+   visit only (notifTarget lets it go a few seconds later). */
+const dispatchFocusStyle=did=>S._focusDispatch!=null&&String(S._focusDispatch)===String(did)
+  ?' style="outline:2px solid var(--primary);outline-offset:2px"':'';
 /* Hours an approved deliverable may wait before Operations is told (§18). */
 const DISPATCH_SLA_DAYS=1;
 
@@ -8986,16 +9003,16 @@ function viewCoordMyDay(){
             ||`<div class="empty" style="padding:26px"><div class="e-ico">✔</div>
               <p>Nothing waiting. A deliverable appears here the moment a Team Lead approves its latest version.</p></div>`}
           </div>
-          <div class="card-foot">Approved → Queued → Email sent → Delivered → Archived. Nothing skips a step,
+          <div class="card-foot">Approved → Queued → Email sent → Dispatched → Archived. Nothing skips a step,
             so the archive shows exactly who sent what, to whom and when.</div></div>
 
-        <div class="card"><div class="card-head"><h3>Delivered today</h3>
+        <div class="card"><div class="card-head"><h3>Dispatched today</h3>
           <div class="ca"><span class="chip">${dispatchedToday().length}</span></div></div>
           <div class="card-body flush">${dispatchedToday().map(d=>`<div class="list-row" style="cursor:default">
             <span style="font-size:14px">${dtype(d.deliverable_type_id).icon}</span>
             <span class="lr-main"><b>${esc(d.title)}</b>
               <span>${esc(proj(d.project_id).name)} → ${esc(d.dispatch_recipient||'—')}</span>
-              <span class="xsmall mut3">${esc(D.time(d.dispatched_at))} by ${esc((user(d.dispatched_by)||{full_name:'—'}).full_name.split(' ')[0])}</span></span>
+              <span class="xsmall mut3">${esc(D.time(d.dispatched_at))} by ${esc((user(d.dispatched_by)||{full_name:'—'}).full_name)}</span></span>
             ${d.dispatch_status==='delivered'?`<button class="btn xs" data-act="archiveDeliv" data-did="${d.id}">⛁ Archive</button>`:statusPill(DISPATCH,d.dispatch_status)}
           </div>`).join('')||`<div class="empty" style="padding:22px"><p>Nothing dispatched yet today.</p></div>`}
           </div></div>
@@ -10884,7 +10901,7 @@ function projTable(ps){
       <div class="ca"><button class="btn xs" data-act="toggleDensity">Density</button>
       <button class="btn xs" data-menu="columnConfig">Columns</button></div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl ${S.filters.dense?'dense':''}">
-      <thead><tr>${cols.map(([k,l])=>`<th class="sortable" data-act="projSort" data-k="${k}">${l}${sort.k===k?(sort.d>0?' ▲':' ▼'):''}</th>`).join('')}<th class="num">Deliverables</th><th class="num">Hours</th></tr></thead>
+      <thead><tr>${cols.map(([k,l])=>`<th class="sortable" data-act="projSort" data-k="${k}">${l}${sort.k===k?(sort.d>0?' ▲':' ▼'):''}</th>`).join('')}<th class="num">Deliverables</th><th class="num">Hours</th>${isAdmin()?'<th aria-label="Delete"></th>':''}</tr></thead>
       <tbody>${sorted.map(p=>{const dl=projectDeliverables(p.id);
         return `<tr class="click" data-go="#/media/projects/${p.id}">
         <td class="t-main">${esc(p.name)}</td><td class="code">${p.code}</td>
@@ -10894,7 +10911,9 @@ function projTable(ps){
         <td>${avatar(p.owner_id,'sm')}</td>
         <td class="small">${D.fmt(p.start_date)}</td><td class="small">${D.fmt(p.end_date)}</td>
         <td class="num">${dl.filter(d=>d.status==='delivered').length}/${dl.length}</td>
-        <td class="num">${projectHours(p.id).toFixed(0)}h</td></tr>`;}).join('')}
+        <td class="num">${projectHours(p.id).toFixed(0)}h</td>
+        ${isAdmin()?`<td class="num" data-stop>${canDeleteProject(p)?`<button class="icon-btn" title="Delete project" aria-label="Delete project"
+          style="color:var(--danger)" onclick="event.stopPropagation();ACTIONS.deleteProject({pid:${p.id}})">${ic('trash')}</button>`:''}</td>`:''}</tr>`;}).join('')}
       </tbody></table></div></div></div>`;
 }
 /* THE TAP PATH ONTO A KANBAN CARD.
@@ -11079,7 +11098,9 @@ function pcWire(box){
     if(x.pc==='day') return ACTIONS.projCalDay({d:x.d});
     pcPopClose();
     if(x.pc==='go') location.hash=x.go;
-    else if(x.pc==='drawer') drawerFor(x.k,+x.id);});
+    else if(x.pc==='drawer') drawerFor(x.k,+x.id);
+    /* The Admin deletes a project from the calendar as from the List and Table rows. */
+    else if(x.pc==='del') ACTIONS.deleteProject({pid:x.pid});});
 }
 function pcDayHTML(day){
   const evs=pcEvents(day), d=D.parse(day);
@@ -11128,7 +11149,9 @@ function pcEvHTML(day,ev,back){
       ${row('Deliverables',dl.length?`${done} of ${dl.length} approved or delivered`:'<span class="mut3">None yet</span>')}</div>
     ${dl.length?`<div class="pcal-dl">${dl.slice(0,6).map(d=>`<div><span>${esc(d.title)}</span>${statusPill(DELIV_STATUS,d.status)}</div>`).join('')}
       ${dl.length>6?`<div class="xsmall mut3">+${dl.length-6} more on the project</div>`:''}</div>`:''}
-    <div class="pcal-foot">${backBtn}<button class="btn xs primary" data-pc="go" data-go="#/media/projects/${p.id}">Open project</button></div>`;
+    <div class="pcal-foot">${backBtn}<span class="f gap2">
+      ${canDeleteProject(p)?`<button class="btn xs" style="color:var(--danger)" data-pc="del" data-pid="${p.id}">${ic('trash')} Delete project</button>`:''}
+      <button class="btn xs primary" data-pc="go" data-go="#/media/projects/${p.id}">Open project</button></span></div>`;
 }
 function projGallery(ps){
   const list=ps.filter(p=>['delivered','completed','archived','in_review'].includes(p.status));
@@ -11175,7 +11198,7 @@ function viewProject(id,tab){
         <h1 class="page-title">${esc(p.name)}</h1>
         <div class="f wrap gap2 ac mt2">
           <span class="chip" style="border-color:${t.color}"><span class="dot" style="background:${t.color}"></span>${esc(t.name)}</span>
-          <button class="btn sm" data-menu="projStatus" data-pid="${p.id}" ${editable?'':'disabled'}>${statusPill(PROJ_STATUS,projProgress(p))} ▾</button>
+          <button class="btn sm" data-menu="projStatus" data-pid="${p.id}" ${editable?'':'disabled'}>${statusPill(PROJ_STATUS,projProgress(p))}${editable?' ▾':''}</button>
           ${priTag(p.priority)}
           <span class="chip">${esc(aunitName(p.academic_unit_id))}${aunitIsRetired(p.academic_unit_id)?' · archived':''}</span>
           <span class="chip">${esc(ayear(p.academic_year_id))}</span>
@@ -11336,10 +11359,15 @@ function projOverview(p,dls,crew,shoots,pr){
                  member. The board and the team table below use the same test. */
               const unassigned=dls.filter(d=>!d.owner_id&&!delivAssignees(d.id).length
                 &&!['cancelled','not_required'].includes(d.status)).length;
+              /* The owner is the team's lead only when the project is routed to a
+                 team they lead. An employee's own project has no team: it is
+                 theirs, so it reads "Own project" and they are its Owner. */
+              const owner=p.owner_id?user(p.owner_id):null;
+              const own=!t&&!!owner&&owner.role==='employee';
               return `<div class="between"><span class="small mut">Team</span>
-                  <b>${t?esc(t.name):'<span class="mut3">Not assigned</span>'}</b></div>
-                <div class="between"><span class="small mut">Team lead</span>
-                  <b>${p.owner_id?esc((user(p.owner_id)||{full_name:'—'}).full_name):'<span class="mut3">Unassigned</span>'}</b></div>
+                  <b>${t?esc(t.name):own?'Own project':'<span class="mut3">Not assigned</span>'}</b></div>
+                <div class="between"><span class="small mut">${t&&t.lead_user_id===p.owner_id?'Team lead':'Owner'}</span>
+                  <b>${p.owner_id?esc((owner||{full_name:'—'}).full_name):'<span class="mut3">Unassigned</span>'}</b></div>
                 ${dls.length?`<div class="between"><span class="small mut">Assigned</span>
                   <b style="${unassigned?'color:var(--warn)':''}">${dls.length-unassigned}/${dls.length}</b></div>`:''}`;
             })()}
@@ -19330,10 +19358,20 @@ const notifKind=k=>NOTIF_KIND[k]||{l:auditWords(k)||'Notice',ic:'bell'};
    not re-implemented at each call site. Falls back to the Notifications page
    if the server sent a kind the client has not caught up with. */
 function notifTarget(n){
-  /* "Ready to dispatch" is about the queue, not the one item: it opens where
-     the Coordinator sends it. */
-  if(String(n.kind||'')==='dispatch') return {hash:'#/media/dispatch'};
   const id=n.entity_id!=null?Number(n.entity_id):null;
+  /* "Ready to dispatch: <item>" opens the Dispatch page on that item — the tab
+     it is on now, scrolled to and outlined for this visit (as a team notice
+     picks out its team's card). */
+  if(String(n.kind||'')==='dispatch'){
+    const dl=id!=null?deliv(id):null;
+    return {hash:'#/media/dispatch',
+      before:()=>{S.tab.dispatch=dl&&dl.dispatch_status==='delivered'?'delivered'
+          :dl&&dl.dispatch_status==='archived'?'archive':'queue';
+        if(id==null)return;
+        S._focusDispatch=id;
+        setTimeout(()=>{ if(S._focusDispatch===id) S._focusDispatch=null; },4000);},
+      scrollTo:id!=null?'[data-dispatch-did="'+id+'"]':null};
+  }
   /* A deliverable opens in its drawer. One this page has not loaded cannot, so
      the reader goes to its project instead when the notice names one. */
   const toDeliv=(did,pid)=>{
@@ -21002,7 +21040,7 @@ function openNewProject(){
         <div id="np-delivs"></div>
         <div class="hint">Pick what this project has to produce — one row per deliverable.</div></div>
     </div>
-    <div class="mo-foot"><span class="left small mut3">Duplicate scan runs on create</span>
+    <div class="mo-foot">
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn primary" data-act="createProject">Create project</button></div>`,{size:'wide'});
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=e=>{e.stopPropagation();ACTIONS[n.dataset.act](n.dataset,n);});
@@ -21027,7 +21065,8 @@ function delivRowHtml(types){
       <label style="${col}">${lbl('Effort h (optional)')}
         <input class="inp np-d-est" type="number" min="0" step="0.5" placeholder="—"
           style="height:30px;font-size:12px;width:64px;text-align:center"></label>
-      <button type="button" class="icon-btn np-d-del" title="Remove this deliverable" style="color:var(--danger);margin-left:auto">${ic('trash')}</button></div>`;
+      <button type="button" class="icon-btn np-d-del" title="Remove this deliverable" style="color:var(--danger);margin-left:auto">${ic('trash')}</button></div>
+    <div class="xsmall mut3 np-d-name" style="margin-top:4px" hidden></div>`;
 }
 /* The next free title for a type on a project: its name, then "(2)", "(3)"…
    — the numbering POST /projects/:id/deliverables applies. */
@@ -21053,7 +21092,7 @@ function openAddDeliverable(pid){
       <div class="field">
         <div class="between mb2"><label class="lbl" style="margin:0">Deliverables</label>
           <button type="button" class="btn xs" data-act="npAddDeliverable">＋ Another</button></div>
-        <div id="np-delivs"></div></div></div>
+        <div id="np-delivs" data-pid="${p.id}"></div></div></div>
     <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn primary ml-auto" data-act="saveDeliverables" data-pid="${p.id}">Add</button></div>`,{size:'wide'});
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=e=>{e.stopPropagation();ACTIONS[n.dataset.act](n.dataset,n);});
@@ -21136,6 +21175,11 @@ const activeWorkTypes=()=>(DB.work_types||[])
   .sort((a,b)=>(a.sort_order||0)-(b.sort_order||0)||a.name.localeCompare(b.name));
 const workType=id=>(DB.work_types||[]).find(w=>w.id===+id)||null;
 
+/* The one hint under Assign work's Deliverable choice, per mode. (Taking on an
+   existing deliverable, the line under the pick — who owns it now — is it.) */
+const AW_DHINT={
+  new:'Created on this project for the people you assign, named after its type and due when the work is due.',
+  none:'Plain work with no project output.'};
 /* Field sets, keyed by form_template. Each renders its body and collects its payload. */
 const WORK_TEMPLATES={
   standard_task:{
@@ -21157,18 +21201,17 @@ const WORK_TEMPLATES={
           <button type="button" class="on" data-m="new" role="radio" aria-checked="true" onclick="ACTIONS.awDelivMode({m:'new'})">New deliverable</button>
           ${open.length?`<button type="button" data-m="existing" role="radio" aria-checked="false" onclick="ACTIONS.awDelivMode({m:'existing'})">Existing on this project (${open.length})</button>`:''}
           <button type="button" data-m="none" role="radio" aria-checked="false" onclick="ACTIONS.awDelivMode({m:'none'})">No deliverable</button></div>
-        <div class="hint" id="aw-dhint">What this work produces. It is created on this project for the people you assign.</div></div>
+        <div class="hint" id="aw-dhint">${AW_DHINT.new}</div></div>
       <div id="aw-dnew">
         <div class="row">
-          <div class="field"><label class="lbl">Deliverable type <span class="req">*</span></label>
-            <select class="inp" id="aw-dtype">${dtypes.map(t=>`<option value="${t.id}">${t.icon?esc(t.icon)+' ':''}${esc(t.name)}</option>`).join('')}</select>
-            <div class="hint">Named after its type. It is due when the work is due.</div></div>
+          <div class="field"><label class="lbl" for="aw-dtype">Type <span class="req">*</span></label>
+            <select class="inp" id="aw-dtype">${dtypes.map(t=>`<option value="${t.id}">${t.icon?esc(t.icon)+' ':''}${esc(t.name)}</option>`).join('')}</select></div>
           <div class="field"><label class="lbl">Drive link <span class="mut3">(optional)</span></label>
             <input class="inp" id="aw-ddrive" inputmode="url" autocapitalize="off" placeholder="https://drive.google.com/… (can add later)"></div>
         </div>
       </div>
       <div id="aw-dexisting" hidden>
-        <div class="field"><label class="lbl">Deliverable <span class="req">*</span></label>
+        <div class="field"><label class="lbl" for="aw-deliv">Which one <span class="req">*</span></label>
           <select class="inp" id="aw-deliv" onchange="ACTIONS.awDelivPick()">${open.map(d=>`<option value="${d.id}">${esc(d.title)} — ${d.owner_id?esc(user(d.owner_id).full_name):'unassigned'}</option>`).join('')}</select>
           <div class="hint" id="aw-dcur"></div></div>
       </div>
@@ -21317,8 +21360,7 @@ function openAssignWork(pid,tpl){
     <div class="mo-body">
       <div class="field"><label class="lbl">Work type <span class="req">*</span></label>
         <select class="inp" id="aw-type" onchange="ACTIONS.awTypeChange()">
-          ${types.map(w=>`<option value="${w.id}"${w===initial?' selected':''}>${w.icon?esc(w.icon)+' ':''}${esc(w.name)}</option>`).join('')}</select>
-        <div class="hint" id="aw-tplhint">Form: ${esc(workTemplateFor(initial).label)}</div></div>
+          ${types.map(w=>`<option value="${w.id}"${w===initial?' selected':''}>${w.icon?esc(w.icon)+' ':''}${esc(w.name)}</option>`).join('')}</select></div>
       ${fixed?`<div class="field"><span class="lbl">Project</span>
           <div class="aw-proj"><b>${esc(proj(fixed).name)}</b> <span class="code">${esc(proj(fixed).code||'')}</span></div>
           <input type="hidden" id="aw-project" value="${fixed}"></div>`
@@ -21806,13 +21848,13 @@ const ACTIONS = {
     const subject=`${p.name} — ${dl.title}`;
     const body=`Dear team,\n\n${dl.title} for ${p.name} is ready.\n\nDrive link: ${v.drive_url||'(attach link)'}\n\nRegards,\n${me().full_name}\nMedia Operations`;
     window.open('mailto:?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body),'_blank');
-    toast('Email drafted in your mail client. Remember to Mark email sent','ok');
+    toast('Email drafted in your mail client. Once it is sent, record it with Dispatch…','ok');
   },
   markSent:(d)=>{
     const dl=deliv(+d.did); if(!dl)return;
     const p=proj(dl.project_id), v=latestVersion(dl.id)||{};
     modal(`<div class="mo-head"><div><h2>Confirm dispatch</h2>
-        <p>${esc(dl.title)}. Recording this closes the operational loop and writes the archive entry.</p></div>
+        <p>${esc(dl.title)}. This records who it was sent to and moves it to Dispatched. Archive it from there afterwards.</p></div>
         <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
       <div class="mo-body">
         <div class="field"><label class="lbl">Recipient <span class="req">*</span></label>
@@ -21837,6 +21879,8 @@ const ACTIONS = {
       ()=>{loadMyActivity(true);toast('Dispatched to '+to,'ok');});
   },
   archiveDeliv:(d)=>{
+    const dl=deliv(+d.did);
+    if(!confirm(`Archive “${dl?dl.title:'this deliverable'}”? It leaves Dispatched and moves to the Archive tab.`))return;
     moSync(MO_API.post('/deliverables/'+d.did+'/archive',{}).then(()=>hydrateFromServer()),
       ()=>{loadMyActivity(true);toast('Archived','ok');});
   },
@@ -22495,7 +22539,6 @@ const ACTIONS = {
   assignWork:(d)=>openAssignWork(d&&d.pid,d&&d.tpl),
   awTypeChange:()=>{
     const wt=workType($('#aw-type').value), tpl=workTemplateFor(wt);
-    const h=$('#aw-tplhint'); if(h)h.textContent='Form: '+tpl.label;
     const body=$('#aw-body'); if(body)body.innerHTML=tpl.body($('#aw-project').value);
   },
   /* Taking on an existing deliverable: say who owns it now, and start the Due
@@ -22516,9 +22559,9 @@ const ACTIONS = {
     if(nw) nw.hidden=d.m!=='new';
     if(ex) ex.hidden=d.m!=='existing';
     if(of) of.hidden=d.m==='none';
-    if(h) h.textContent=d.m==='new'?'What this work produces. It is created on this project for the people you assign.'
-      :d.m==='existing'?'The people you assign take this deliverable on; the owner you pick becomes accountable for it.'
-      :'Plain work with no project output.';
+    /* One hint for the chosen mode. Taking on an existing one, the line under
+       the pick (who owns it now) is that hint. */
+    if(h){ h.hidden=d.m==='existing'; h.textContent=AW_DHINT[d.m]||''; }
     if(d.m==='existing') ACTIONS.awDelivPick(); else ACTIONS.awOwnerSync();
   },
   /* The owner is one of the people assigned, so the list follows the chips. It
@@ -22828,14 +22871,31 @@ const ACTIONS = {
     row.style.cssText='border:1px solid var(--border);border-radius:var(--r);padding:10px;margin-bottom:8px;background:var(--surface-2)';
     row.innerHTML=delivRowHtml(types);
     row.querySelector('.np-d-del').onclick=()=>{row.remove();ACTIONS.npDelivSync();};
+    row.querySelector('.np-d-type').onchange=()=>ACTIONS.npDelivSync();
     box.appendChild(row);
+    ACTIONS.npDelivSync();
     if(!n)row.querySelector('.np-d-type').focus();
   },
-  /* Redraw the empty state when the last row goes. */
+  /* Redraw the empty state when the last row goes, and say under each repeated
+     type the name it will be created with ("Reel / Short (2)") — numbered after
+     the rows above it and, on an existing project, its deliverables, exactly
+     as nextDelivTitle() names them on save. */
   npDelivSync:()=>{
     const box=$('#np-delivs'); if(!box)return;
-    if(!box.querySelectorAll('.np-d').length)
+    const rows=$$('#np-delivs .np-d');
+    if(!rows.length){
       box.innerHTML='<div class="np-d-empty small mut3" style="padding:10px 0">No deliverables added.</div>';
+      return;
+    }
+    const pid=+box.dataset.pid||null;
+    const taken=new Set(pid?DB.deliverables.filter(x=>x.project_id===pid&&!x.deleted_at).map(x=>String(x.title).toLowerCase()):[]);
+    rows.forEach(r=>{
+      const base=dtype(+r.querySelector('.np-d-type').value).name||'Deliverable';
+      const title=nextDelivTitle(base,taken); taken.add(title.toLowerCase());
+      const hint=r.querySelector('.np-d-name'); if(!hint)return;
+      hint.hidden=title===base;
+      hint.textContent=title===base?'':`Will be named “${title}”`;
+    });
   },
   addDeliverable:(d)=>openAddDeliverable(d.pid),
   saveDeliverables:(d)=>{
@@ -22927,6 +22987,8 @@ const ACTIONS = {
     moSync(MO_API.post('/projects',_np), res=>{ if(res&&res.project) location.hash='#/media/projects/'+res.project.id; });
     toast(gated?'Proposed. Pending approval before it is reportable-against'
       :tname?`Created · ${made} deliverable${made===1?'':'s'} for ${tname}`
+      /* An employee's deliverables are theirs from the start (see above). */
+      :isEmp()?`Created · ${made} deliverable${made===1?'':'s'} · assigned to you`
             :`Created · ${made} deliverable${made===1?'':'s'} · yours to assign`,'ok');
   },
   editShoot:(d)=>{
@@ -27118,9 +27180,12 @@ const MENUS = {
               :{label:'Archive',icon:'archive',disabled:!can.archive,fn:()=>ACTIONS.crudStateAct({id:d.id,a:'archive'})},
       {label:'Delete',icon:'trash',cls:'danger',disabled:!can.delete,fn:()=>ACTIONS.crudDelete(d)}];
   },
+  /* Only what this person can do now: an item they may not use is left out,
+     not shown greyed out with no reason (the Coordinator never assigns crew,
+     deletes, archives or cancels — offering those disabled read as broken). */
   projMore:(d)=>{
     const p=proj(+d.pid);
-    return [
+    const items=[
       {label:'Assign crew',icon:'users',disabled:!canAssignOn(p),fn:()=>ACTIONS.assignProject(d)},
       {label:'Edit details',icon:'edit',disabled:!canEditProjectDetails(p),fn:()=>ACTIONS.editProject(d)},
       {label:'Add Drive link',icon:'link',fn:()=>ACTIONS.addLink(d)},
@@ -27133,7 +27198,9 @@ const MENUS = {
          moSync(MO_API.post('/projects/'+p.id+'/status',{status:'archived'}));}},
       {label:'Cancel project',icon:'x',cls:'danger',disabled:!canChangeProjectStatus(p,'cancelled'),
        fn:()=>{p.status='cancelled';render();toast('Cancelled','warn');
-         moSync(MO_API.post('/projects/'+p.id+'/status',{status:'cancelled'}));}}];
+         moSync(MO_API.post('/projects/'+p.id+'/status',{status:'cancelled'}));}}].filter(x=>!x.disabled);
+    /* A separator with nothing after it is dropped with the items it fenced off. */
+    return items[items.length-1].sep?items.slice(0,-1):items;
   },
   delivMenu:(d)=>{
     const dl=deliv(+d.did);

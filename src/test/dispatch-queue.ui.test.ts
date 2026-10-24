@@ -58,7 +58,7 @@ async function boot(me: number) {
     el.innerHTML = ev<string>(`${fn}()`);
     return el;
   };
-  return { ev, writes, view };
+  return { ev, writes, view, doc: dom.window.document };
 }
 
 const queued = (h: Awaited<ReturnType<typeof boot>>) =>
@@ -110,5 +110,71 @@ describe("The 'Ready to dispatch' notice", () => {
   it("is labelled in plain words", async () => {
     const h = await boot(916);
     expect(h.ev<string>(`notifKind('dispatch').l`)).toBe("Ready to dispatch");
+  });
+});
+
+describe("Dispatch page — one word per meaning", () => {
+  it("the tab, figure and columns for what the Coordinator sent say 'Dispatched'", async () => {
+    const h = await boot(916);
+    const tabs = [...h.view("viewDispatch").querySelectorAll('.tabs [data-tabkey="dispatch"]')].map((b) => b.textContent);
+    expect(tabs.some((t) => /^Dispatched/.test(t!))).toBe(true);
+    expect(tabs.some((t) => /^Delivered/.test(t!))).toBe(false);
+    expect(h.ev<string>("DISPATCH.delivered.l")).toBe("Dispatched");
+    h.ev("S.tab.dispatch='delivered'");
+    const heads = [...h.view("viewDispatch").querySelectorAll("thead th")].map((t) => t.textContent);
+    expect(heads).toContain("Dispatched by");
+    expect(heads).not.toContain("Delivered by");
+    // The Coordinator's My Day uses the same word.
+    const home = h.ev<string>("viewCoordMyDay()");
+    expect(home).toContain("Dispatched today");
+    expect(home).not.toMatch(/Delivered today|Email sent → Delivered/);
+  });
+
+  it("a queued item's main action is a labelled Dispatch… button", async () => {
+    const h = await boot(916);
+    const btn = h.view("viewDispatch").querySelector('[data-act="markSent"][data-did="8101"]')!;
+    expect(btn.textContent).toContain("Dispatch…");
+  });
+
+  it("Confirm dispatch says what happens: it is recorded, not archived", async () => {
+    const h = await boot(916);
+    h.ev("ACTIONS.markSent({did:'8101'})");
+    const text = h.doc.getElementById("modal-layer")!.textContent!;
+    expect(text).not.toMatch(/archive entry|operational loop/);
+    expect(text).toContain("Archive it from there afterwards");
+  });
+
+  it("Archive asks first, naming the item, and does nothing when declined", async () => {
+    const h = await boot(916);
+    const asked: string[] = [];
+    h.ev("window.__answer=false");
+    (h.doc.defaultView as unknown as { confirm: (m: string) => boolean }).confirm =
+      (m: string) => { asked.push(m); return h.ev<boolean>("window.__answer"); };
+    h.ev("ACTIONS.archiveDeliv({did:'8104'})");
+    expect(asked[0]).toContain("Drone Clips");
+    expect(h.writes().some((c) => c.url.endsWith("/deliverables/8104/archive"))).toBe(false);
+    h.ev("window.__answer=true");
+    h.ev("ACTIONS.archiveDeliv({did:'8104'})");
+    expect(h.writes().some((c) => c.url.endsWith("/deliverables/8104/archive"))).toBe(true);
+  });
+});
+
+describe("The 'Ready to dispatch' notice — opens on its item", () => {
+  it("picks out the item it names on the queue, for this visit", async () => {
+    const h = await boot(916);
+    h.ev("S.tab.dispatch='archive'");
+    h.ev("window.__t=notifTarget({kind:'dispatch',entity_type:'deliverable',entity_id:8101,project_id:7101}); window.__t.before()");
+    expect(h.ev<string>("window.__t.scrollTo")).toBe('[data-dispatch-did="8101"]');
+    expect(h.ev<string>("S.tab.dispatch")).toBe("queue");
+    const page = h.view("viewDispatch");
+    expect((page.querySelector('[data-dispatch-did="8101"]') as HTMLElement).style.outline).toContain("2px");
+    expect((page.querySelector('[data-dispatch-did="8102"]') as HTMLElement).style.outline).toBe("");
+  });
+
+  it("an item already dispatched opens on the Dispatched tab", async () => {
+    const h = await boot(916);
+    h.ev("notifTarget({kind:'dispatch',entity_type:'deliverable',entity_id:8104}).before()");
+    expect(h.ev<string>("S.tab.dispatch")).toBe("delivered");
+    expect(h.view("viewDispatch").querySelector('tr[data-dispatch-did="8104"]')).not.toBeNull();
   });
 });

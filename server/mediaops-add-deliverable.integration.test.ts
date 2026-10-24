@@ -34,6 +34,10 @@ const ACTORS = {
   empA1: { id: `${PX}-empA1`, role: "user", team: "media", full_name: "ZDL Emp A1" },
   empA2: { id: `${PX}-empA2`, role: "user", team: "media", full_name: "ZDL Emp A2" },
   gone:  { id: `${PX}-gone`,  role: "user", team: "media", full_name: "ZDL Gone" },
+  /* A Team Lead whose job title reads "Coordinator" (a sub_admin with
+     mo_role team_lead), and a sub_admin whose Media Ops role IS coordinator. */
+  leadT: { id: `${PX}-leadT`, role: "sub_admin", team: "media", full_name: "ZDL Lead Titled" },
+  coordS:{ id: `${PX}-coordS`, role: "sub_admin", team: "media", full_name: "ZDL Coordinator Sub" },
 } as const;
 type ActorName = keyof typeof ACTORS;
 
@@ -113,7 +117,7 @@ async function seed() {
     await pool.query(
       `INSERT INTO mo_user_profiles (user_id, designation, mo_role) VALUES ($1,'probe',$2)
        ON CONFLICT (user_id) DO UPDATE SET mo_role=EXCLUDED.mo_role`,
-      [a.id, name === "admin" ? "admin" : name === "coord" ? "coordinator"
+      [a.id, name === "admin" ? "admin" : name.startsWith("coord") ? "coordinator"
         : name.startsWith("lead") ? "team_lead" : "employee"]);
   }
   const mkTeam = async (name: string, lead: string) => Number((await pool.query(
@@ -304,5 +308,32 @@ maybe("Admins and the Coordinator do production work only when flagged", () => {
       expect(await crewIds("leadA", did)).toContain(ACTORS.coord.id);
       expect((await as("leadA", "PATCH", `/deliverables/${did}`, { owner_id: ACTORS.coord.id })).status).toBe(200);
     } finally { await grant("coord", false); }
+  });
+});
+
+/* ── Q5 — the rule follows the Media Ops role, not the job title ─────────── */
+
+maybe("Who is a production worker is decided by the Media Ops role, and /state agrees", () => {
+  it("a Team Lead titled 'Coordinator' is assignable; a sub_admin who is the Coordinator is not", async () => {
+    await pool.query(`UPDATE mo_user_profiles SET designation='Media Operations Coordinator' WHERE user_id=$1`,
+      [ACTORS.leadT.id]);
+    const listed = ((await as("leadA", "GET", "/members/assignable")).body.members as Array<{ id: string }>)
+      .map((m) => m.id);
+    expect(listed).toContain(ACTORS.leadT.id);
+    expect(listed).not.toContain(ACTORS.coordS.id);
+
+    const pid = await routed(teamA);
+    const did = didOf(await add("leadA", pid));
+    expect((await as("leadA", "PATCH", `/deliverables/${did}`, { owner_id: ACTORS.leadT.id })).status).toBe(200);
+    expect((await as("leadA", "PATCH", `/deliverables/${did}`, { owner_id: ACTORS.coordS.id })).status).toBe(403);
+
+    /* The page decides the same thing from the role /state hands it
+       (productionEligible): the titled lead arrives as a team_lead, the
+       Coordinator as the coordinator — so the client lists exactly whom the
+       server accepts. */
+    const users = (await as("admin", "GET", "/state")).body.users as Array<{ real_id: string; role: string; designation: string }>;
+    const roleOf = (id: string) => users.find((u) => u.real_id === id);
+    expect(roleOf(ACTORS.leadT.id)).toMatchObject({ role: "team_lead", designation: "Media Operations Coordinator" });
+    expect(roleOf(ACTORS.coordS.id)?.role).toBe("coordinator");
   });
 });

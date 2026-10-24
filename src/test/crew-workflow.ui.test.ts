@@ -875,8 +875,12 @@ describe("Controls — offered exactly what the server allows", () => {
 
   it("project ⋯: another team's lead runs nothing; the Coordinator edits details and can re-route", async () => {
     const h = await boot(904);
-    const state = () => Object.fromEntries(h.ev<Array<{ label: string; disabled?: boolean }>>("MENUS.projMore({pid:'7001'})")
-      .filter((i) => i.label).map((i) => [i.label, !i.disabled]));
+    /* The menu holds only what this person can use, so an item left out reads as false. */
+    const state = () => {
+      const on = new Set(h.ev<Array<{ label?: string; disabled?: boolean }>>("MENUS.projMore({pid:'7001'})")
+        .filter((i) => i.label && !i.disabled).map((i) => i.label));
+      return Object.fromEntries(["Edit details", "Delete project", "Cancel project"].map((k) => [k, on.has(k)]));
+    };
     expect(state()).toMatchObject({ "Edit details": false, "Delete project": false, "Cancel project": false });
     expect(h.ev<string>("projList(visibleProjects())")).not.toContain("ACTIONS.deleteProject({pid:7001})");
     h.as(901);
