@@ -1133,6 +1133,8 @@ html[data-theme=dark] .kb-col.over{background:var(--brand-50)}
 .kb-cards{padding:var(--s2);display:flex;flex-direction:column;gap:var(--s2);overflow-y:auto;flex:1;min-height:70px}
 .kb-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:10px;
   box-shadow:var(--sh-1);cursor:grab;transition:box-shadow var(--dur),transform var(--dur);position:relative}
+/* A card with no move for this person opens; it does not invite a drag. */
+.kb-card:not([draggable]){cursor:pointer}
 .kb-card:hover{box-shadow:var(--sh-2);border-color:var(--border-strong)}
 .kb-card.dragging{opacity:.45;box-shadow:var(--sh-drag);transform:rotate(1.5deg)}
 .kb-card .kc-top{display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap}
@@ -2117,6 +2119,10 @@ html[data-layout="mobile"] table.m-cards td[data-m=meta]{grid-column:1 / -1;font
 html[data-layout="mobile"] table.m-cards td[data-m=actions]{grid-column:1 / -1;display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
 html[data-layout="mobile"] table.m-cards td[data-m=actions] .btn{min-height:40px}
 html[data-layout="mobile"] table.m-cards td[data-m=hide]{display:none}
+/* Home's Pending approvals as cards: the project stays (two "Story / Post v1"
+   rows are told apart by it), and Review gets the card's full width. */
+html[data-layout="mobile"] table.pa-cards td.hide-sm{display:block!important}
+html[data-layout="mobile"] table.pa-cards td[data-m=actions] .btn{flex:1 1 auto;justify-content:center}
 /* Library facets fold into one row above the results (details/summary). */
 html[data-layout="mobile"] details.facets>summary{list-style:none;cursor:pointer;min-height:48px}
 html[data-layout="mobile"] details.facets>summary::-webkit-details-marker{display:none}
@@ -3917,6 +3923,12 @@ function canAssignSmc(dl){
   const p=dl&&proj(dl.project_id);
   return !!p&&(isAdmin()||isTL()||p.owner_id===S.me||isPMof(p.id));
 }
+/* Finished work keeps its owner — mirrors ownerLocked() on the server: once
+   delivered, dispatched or archived, nobody is offered a reassignment. */
+function ownerLocked(dl){
+  return !!dl&&!!dl.owner_id&&(dl.status==='delivered'
+    ||['sent','delivered','archived'].includes(dl.dispatch_status||'none'));
+}
 /* POST /deliverables/:id/status — every move offered for this deliverable.
    In review is reached by submitting a version, and the two verdicts are the
    review itself, so those three open their dialogs (applyDelivStatus). Scope
@@ -5286,6 +5298,9 @@ function menu(anchor,items){
       ${it.icon?`<span class="mi">${mIco(it.icon)}</span>`:''}<span>${esc(it.label)}</span>${it.hint?`<span class="mk">${esc(it.hint)}</span>`:''}</button>`).join('');
   const m=el(`<div class="menu ${mob?'as-sheet':''}">${rows}${mob?'<button class="menu-item menu-cancel" data-cancel>Cancel</button>':''}</div>`);
   if(mob){
+    /* A sheet rises over the toast stack: a passing notice must not sit on
+       top of its items (the start-up "Live · …" line did, over Open project). */
+    dropPassingToasts();
     const scrim=el('<div class="menu-scrim"></div>'); scrim.onclick=closeMenu;
     document.body.appendChild(scrim); document.body.appendChild(m);
     _menuOv=ovPush(closeMenu);
@@ -9515,20 +9530,20 @@ function pendingApprovalsWidget(){
   return `<div class="card">
     <div class="card-head"><h3>Pending Approvals</h3>
       <div class="ca"><span class="chip">${revs.length}</span></div></div>
-    <div class="card-body flush"><div class="tbl-wrap"><table class="tbl">
+    <div class="card-body flush"><div class="tbl-wrap"><table class="tbl m-cards pa-cards">
       <thead><tr><th>Deliverable</th><th class="hide-sm">Project</th><th>Requested</th><th>Due Date</th><th>Action</th></tr></thead>
       <tbody>${revs.map(({v,d,age})=>{
         const late=d.due_date&&d.due_date<TODAY, soon=d.due_date&&D.diff(d.due_date,TODAY)<=3;
         return `<tr class="click" data-drawer="deliverable:${d.id}">
-          <td><div class="f ac gap2"><span class="cellico ${TINT[d.deliverable_type_id]||'v'}">${ic(
+          <td data-m="title"><div class="f ac gap2"><span class="cellico ${TINT[d.deliverable_type_id]||'v'}">${ic(
             [5,6,4,7].includes(d.deliverable_type_id)?'video':[2,1,11].includes(d.deliverable_type_id)?'image':'file')}</span>
-            <span class="t-main" style="font-size:13px">${esc(d.title.split('—')[0].trim())} v${v.version_no}</span></div></td>
-          <td class="hide-sm small mut">${esc(proj(d.project_id).name)}</td>
-          <td><div class="f ac gap2">${avatar(v.submitted_by,'sm')}<div><div class="small">${esc(personName(v.submitted_by))}</div>
+            <span class="t-main" style="font-size:13px">${esc(d.title)} · v${v.version_no}</span></div></td>
+          <td class="hide-sm small mut" data-m="meta">${esc(proj(d.project_id).name)}</td>
+          <td data-m="meta"><div class="f ac gap2">${avatar(v.submitted_by,'sm')}<div><div class="small">${esc(personName(v.submitted_by))}</div>
             ${v.submitted_at?`<div class="t-sub">${esc(D.fmt(v.submitted_at))}</div>`:''}</div></div></td>
-          <td><div style="font-size:12.5px;font-weight:600;color:${late?'var(--danger)':soon?'var(--warn)':'var(--text)'}">${D.fmt(d.due_date)}</div>
+          <td data-m="aside"><div style="font-size:12.5px;font-weight:600;color:${late?'var(--danger)':soon?'var(--warn)':'var(--text)'}">${D.fmt(d.due_date)}</div>
             <div class="t-sub" style="color:${late?'var(--danger)':soon?'var(--warn)':'var(--text-3)'}">${late?'Overdue':D.rel(d.due_date)}</div></td>
-          <td data-stop><button class="btn xs" data-drawer="deliverable:${d.id}">Review</button></td></tr>`;}).join('')
+          <td data-stop data-m="actions"><button class="btn xs" data-drawer="deliverable:${d.id}">Review</button></td></tr>`;}).join('')
         ||'<tr><td colspan="5" class="tbl-empty">Nothing waiting on a reviewer.</td></tr>'}
       </tbody></table></div></div>
     <button class="card-link" data-act="viewApprovals">View all approvals ${ic('right')}</button></div>`;
@@ -10011,7 +10026,7 @@ function latestVersion(did){
 /* My Day's "what to change" line: who asked, and what they said — on a
    version's review, or on delivered work sent back at sign-off. */
 function changeRequestLine(d,v){
-  const who=uid=>uid?esc((user(uid).full_name||'A reviewer').split(' ')[0]):'A reviewer';
+  const who=uid=>uid&&user(uid).full_name?esc(personName(uid)):'A reviewer';
   if(['changes_requested','in_progress'].includes(d.status)&&['changes_requested','rejected'].includes(d.approval_status)){
     /* The server keeps the sign-off note as the latest version's review
        comment; approval_note is this page's copy until the next load. */
@@ -10186,7 +10201,7 @@ function assignmentCard(a){
       ${time?`<span title="Scheduled time">◷ ${time}</span>`:''}
       ${a.estimated_hours?`<span>~${+a.estimated_hours}h</span>`:''}
       ${a.due_date&&!a._shoot?`<span>due ${D.fmt(a.due_date)}</span>`:''}
-      ${a.assigned_by?`<span>by ${esc((user(a.assigned_by).full_name||'—').split(' ')[0])}</span>`:''}
+      ${a.assigned_by?`<span>by ${esc(personName(a.assigned_by))}</span>`:''}
       ${(()=>{/* Work that produces a deliverable names it, and who is on it. */
         const dl=!a._deliverable&&a.deliverable_id?deliv(a.deliverable_id):null; if(!dl) return '';
         const team=[...delivTeam(dl)];
@@ -10252,8 +10267,13 @@ function viewMyDay(){
     &&!['not_required','cancelled'].includes(d.status));
   const myDue=mineDeliv.filter(d=>!isDeliveredOutput(d))
     .sort((a,b)=>(a.due_date||'9')<(b.due_date||'9')?-1:1);
+  /* Newest first, by when it last moved: delivered, else approved. completed_at
+     is empty until delivery, so sorting on it alone sank today's approvals
+     below every delivered row. */
+  const outputAt=d=>{const v=latestVersion(d.id);
+    return [d.completed_at,v&&v.reviewed_at].filter(Boolean).map(String).sort().pop()||'';};
   const myDelivered=mineDeliv.filter(isDeliveredOutput)
-    .sort((a,b)=>String(b.completed_at||'')<String(a.completed_at||'')?-1:1);
+    .sort((a,b)=>outputAt(b).localeCompare(outputAt(a))||b.id-a.id);
   const expects=expectsReport(S.me,TODAY);
   /* Newest first (ids are issued in creation order): the project someone was
      just put on is the one they are looking for. */
@@ -10316,7 +10336,7 @@ function viewMyDay(){
          are working on it with them. */
       const team=[...delivTeam(d)].filter(id=>id!==S.me);
       const withWho=d.owner_id!==S.me
-        ? `<span class="chip" title="${esc(user(d.owner_id).full_name||'')} owns it and submits it for review">with ${esc((user(d.owner_id).full_name||'—').split(' ')[0])}</span>`
+        ? `<span class="chip" title="${esc(user(d.owner_id).full_name||'')} owns it and submits it for review">with ${esc(personName(d.owner_id))}</span>`
         : team.length?`<span class="chip" title="${esc(team.map(id=>user(id).full_name).join(', '))}">＋${team.length} on it</span>`:'';
       return `<div class="dlv">
         <div class="dlv-top">
@@ -10334,7 +10354,7 @@ function viewMyDay(){
         <div class="dlv-acts">
           ${canSubmit
             ? `<button class="btn xs primary" data-act="submitVersion" data-did="${d.id}"
-                 title="Submit ${v?'v'+(v.version_no+1):'v1'} for your Team Lead's review. A Drive link is required">⤴ Submit${v?' v'+(v.version_no+1):''}</button>`
+                 title="Submit ${v?'v'+(v.version_no+1):'v1'} for your Team Lead's review. A Drive link is required">${submitLabel(d)}</button>`
             : d.status==='in_review'
               ? `<span class="chip" title="Any Team Lead or Admin who is not working on it reviews it. You cannot approve your own version.">◔ Awaiting review</span>`
               : ''}
@@ -10345,18 +10365,21 @@ function viewMyDay(){
       </div>`;}).join(''):`<div class="empty" style="padding:20px"><p>Nothing open. Every deliverable you work on has been approved.</p></div>`}
     </div></div>`;
 
+  /* Every row the badge counts can be reached: the first eight, then See all. */
+  const delivShown=S.myDelivAll?myDelivered:myDelivered.slice(0,8);
   const cDelivered=`<div class="card">
     <div class="card-head"><h3>Delivered outputs</h3>
       <div class="ca"><span class="chip">${myDelivered.length}</span></div></div>
-    <div class="card-body flush">${myDelivered.length?myDelivered.slice(0,8).map(d=>{
+    <div class="card-body flush">${myDelivered.length?delivShown.map(d=>{
       const link=(DB.drive_links||[]).filter(l=>l.entity_type==='deliverable'&&l.entity_id===d.id).slice(-1)[0];
       const vs=latestVersion(d.id);
-      /* The reviewer's verdict on the version is what put this row here, so show
-         that — not the separate post-delivery approval_status. */
-      const ap=vs&&vs.review_status==='approved'
+      /* Delivered work says Delivered; until then the reviewer's verdict on the
+         version is what put this row here, so show that — not the separate
+         post-delivery approval_status. */
+      const ap=d.status==='delivered'?DELIV_STATUS.delivered
+        : vs&&vs.review_status==='approved'
         ? {l:'Approved v'+vs.version_no,c:'st-success',i:'✔'}
         : (DELIV_APPROVAL[d.approval_status||'pending']||DELIV_APPROVAL.pending);
-      const who=vs&&vs.reviewed_by?user(vs.reviewed_by):null;
       const drive=link?link.url:(vs?vs.drive_url:'');
       return `<div class="dlv">
         <div class="dlv-top">
@@ -10366,16 +10389,17 @@ function viewMyDay(){
         </div>
         <div class="dlv-meta">
           <span><span class="code">${esc(proj(d.project_id).code||'')}</span> ${esc(proj(d.project_id).name)}</span>
-          <span>${vs&&vs.reviewed_at?'approved '+D.fmt(vs.reviewed_at)+(who?' by '+esc((who.full_name||'—').split(' ')[0]):'')
-            :'delivered '+(d.completed_at?D.fmt(d.completed_at):'—')}</span>
-          ${d.status==='delivered'?'<span>· delivered</span>':''}
+          ${vs&&vs.reviewed_at?`<span>approved ${D.fmt(vs.reviewed_at)}${vs.reviewed_by?' by '+esc(personName(vs.reviewed_by)):''}</span>`:''}
+          ${d.status==='delivered'?`<span>delivered ${d.completed_at?D.fmt(d.completed_at):''}</span>`:''}
         </div>
-        ${drive?`<div class="dlv-acts">
-          <a class="btn xs" href="${esc(drive)}" target="_blank" rel="noopener" data-stop title="Open the approved Drive link">⛁ Drive</a>
-          <button class="btn xs" data-drawer="deliverable:${d.id}">Open</button></div>`
-          :`<div class="dlv-acts"><button class="btn xs" data-drawer="deliverable:${d.id}">Open</button></div>`}
+        <div class="dlv-acts">
+          ${canMarkDelivered(d)?`<button class="btn xs primary" data-act="markDelivered" data-did="${d.id}"
+             title="Approved. Mark it delivered once it has gone to whoever asked for it">✔ Mark delivered</button>`:''}
+          ${drive?`<a class="btn xs" href="${esc(drive)}" target="_blank" rel="noopener" data-stop title="Open the approved Drive link">⛁ Drive</a>`:''}
+          <button class="btn xs" data-drawer="deliverable:${d.id}">Open</button></div>
       </div>`;}).join(''):`<div class="empty" style="padding:20px"><p>Nothing here yet. A deliverable lands here once a Team Lead approves its latest version.</p></div>`}
     </div>
+    ${myDelivered.length>8?`<button class="card-link" data-act="myDelivAll">${S.myDelivAll?'Show the latest 8':'See all '+myDelivered.length} ${ic(S.myDelivAll?'up':'down')}</button>`:''}
     </div>`;
 
   /* ── COLUMN 3 — reference: the context I work in, and the gear I hold ──── */
@@ -11461,15 +11485,29 @@ function assigneeChip(a,withName){
     <span class="asg-k ${a.kind==='SMC'?'smc':''}">${a.kind}</span></span>`;
 }
 
+/* A deliverable is named after its type ("Photos — Edited", or "… (2)" for a
+   second one), so wherever the title already says the type, the type is not
+   repeated beside it. */
+function typeIsTitle(d){
+  return String(d.title||'').trim().replace(/\s*\(\d+\)$/,'')===dtype(d.deliverable_type_id).name;
+}
+/* One name for one action, wherever it is offered: the first version is
+   "Submit for review", every later one says which version it is. */
+function submitLabel(dl){
+  const vs=DB.deliverable_versions.filter(v=>v.deliverable_id===dl.id);
+  return vs.length?`⤴ Submit v${Math.max(...vs.map(v=>v.version_no))+1} for review`:'⤴ Submit for review';
+}
 function delivRow(d){
   const over=d.due_date&&d.due_date<TODAY&&!['delivered','not_required','cancelled'].includes(d.status);
   const vs=DB.deliverable_versions.filter(v=>v.deliverable_id===d.id);
+  const sub=[typeIsTitle(d)?'':esc(dtype(d.deliverable_type_id).name),
+    d.owner_id?'owner '+esc(personName(d.owner_id)):'',
+    d.quantity_target?`${d.quantity_delivered||0}/${d.quantity_target} ${esc(d.unit||'')}`:'',
+    vs.length?`v${Math.max(...vs.map(v=>v.version_no))}`:''].filter(Boolean).join(' · ');
   return `<button class="list-row" data-drawer="deliverable:${d.id}">
     <span style="font-size:15px">${dtype(d.deliverable_type_id).icon}</span>
     <span class="lr-main"><b>${esc(d.title)}</b>
-      <span>${esc(dtype(d.deliverable_type_id).name)}${d.owner_id?` · owner ${esc(user(d.owner_id).full_name.split(' ')[0])}`:''}
-        ${d.quantity_target?` · ${d.quantity_delivered||0}/${d.quantity_target} ${esc(d.unit||'')}`:''}
-        ${vs.length?` · v${Math.max(...vs.map(v=>v.version_no))}`:''}</span></span>
+      <span>${sub}</span></span>
     ${(()=>{const as=delivAssignees(d.id);
       return as.length?`<span class="asg-set">${as.map(a=>assigneeChip(a,false)).join('')}</span>`
         :d.owner_id?'':`<span class="chip mut" title="No owner, team or SMC member yet">Unassigned</span>`;})()}
@@ -11495,9 +11533,12 @@ function projDeliverablesTab(p,dls){
         return `<tr class="click" data-drawer="deliverable:${d.id}">
           <td data-m="title"><div class="f ac gap2"><span title="${esc(dtype(d.deliverable_type_id).name)}" style="font-size:15px">${dtype(d.deliverable_type_id).icon}</span>
             <div><div class="t-main">${esc(d.title)}</div>${/* the type, only when the title does not already say it */
-              String(d.title).trim().replace(/\s*\(\d+\)$/,'')!==dtype(d.deliverable_type_id).name
-              ?`<div class="t-sub">${esc(dtype(d.deliverable_type_id).name)}</div>`:''}</div></div></td>
-          <td class="m-only" data-m="meta">${esc(dtype(d.deliverable_type_id).name)}${d.owner_id?' · '+esc(user(d.owner_id).full_name.split(' ')[0]):''}${d.due_date&&!canEditDueDates(p)?` · <span style="${over?'color:var(--danger);font-weight:700':''}">due ${D.fmt(d.due_date)}</span>`:''}${d.quantity_target?` · ${d.quantity_delivered||0}/${d.quantity_target} ${esc(d.unit||'')}`:''}${vs.length?` · v${latest.version_no}`:''}</td>
+              !typeIsTitle(d)?`<div class="t-sub">${esc(dtype(d.deliverable_type_id).name)}</div>`:''}</div></div></td>
+          <td class="m-only" data-m="meta">${[typeIsTitle(d)?'':esc(dtype(d.deliverable_type_id).name),
+            d.owner_id?esc(personName(d.owner_id)):'',
+            d.due_date&&!canEditDueDates(p)?`<span style="${over?'color:var(--danger);font-weight:700':''}">due ${D.fmt(d.due_date)}</span>`:'',
+            d.quantity_target?`${d.quantity_delivered||0}/${d.quantity_target} ${esc(d.unit||'')}`:'',
+            vs.length?`v${latest.version_no}`:''].filter(Boolean).join(' · ')}</td>
           <td data-stop data-m="${d.owner_id?'hide':'actions'}">${delivOwnerCell(p,d)}</td>
           <td class="small" data-m="hide">${d.scheduled_date
             ? `<span class="chip" title="Appears in the owner's Today's Assignments on this date">◷ ${D.fmt(d.scheduled_date)}</span>`
@@ -11533,7 +11574,8 @@ function projDeliverablesTab(p,dls){
    the owner from the whole active Media Crew, and PATCH /deliverables/:id
    re-checks both server-side regardless of what is rendered. */
 function delivOwnerCell(p,d){
-  const opts=canAssignOn(p)?assignableMembers():[];
+  /* Delivered, dispatched or archived work keeps its owner (ownerLocked). */
+  const opts=canAssignOn(p)&&!ownerLocked(d)?assignableMembers():[];
   if(!opts.length)
     return d.owner_id?avatar(d.owner_id,'sm')
       :`<span class="chip mut3" title="Nobody owns this yet">No owner</span>`;
@@ -11541,7 +11583,7 @@ function delivOwnerCell(p,d){
      and the select is wide enough to show it. */
   return `<select class="inp deliv-owner" data-did="${d.id}"
       onchange="ACTIONS.assignDeliverable({did:${d.id}},this)"
-      style="height:26px;font-size:11.5px;width:auto;min-width:132px;max-width:260px;padding:0 6px"
+      style="height:26px;font-size:11.5px;width:auto;min-width:132px;max-width:260px;padding:0 26px 0 6px;background-position:right 8px center;text-overflow:ellipsis;white-space:nowrap;overflow:hidden"
       title="${d.owner_id?'Reassign deliverable — owned by '+esc(personLabel(d.owner_id)):'Assign this deliverable to anyone in the Media Crew'}">
     ${ownerOptions(d.owner_id,opts,'Assign…')}</select>`;
 }
@@ -11782,10 +11824,13 @@ function viewPipeline(){
               ${over?`<span class="status st-danger" style="height:18px;font-size:10px"><span class="si">⚑</span>${D.diff(TODAY,d.due_date)}d</span>`:''}
               ${kcMove('delivMenu',`data-did="${d.id}"`,d.title)}</div>
             <div class="kc-title">${esc(d.title)}</div>
-            <div class="kc-foot">${avatar(d.owner_id,'xs')}<span class="trunc">${esc(user(d.owner_id).full_name.split(' ')[0])}</span>
+            <div class="kc-foot">${avatar(d.owner_id,'xs')}<span class="trunc">${esc(personName(d.owner_id))}</span>
               <span class="sp"></span><span>${d.due_date?D.fmt(d.due_date):'—'}</span></div></div>`;}).join('')}
         </div></div>`;}).join('')}</div>
-    <div class="note mt4"><span class="hide-m">Drag a card to change its status.</span>
+    <div class="note mt4"><span class="hide-m">${/* What this person can actually do here. */
+      !ds.some(d=>allowedDelivMoves(d).length)?'Open a card to see its versions and who is on it.'
+      :canReviewDeliverables()?'Drag a card to change its status.'
+      :'Drag your cards to In progress; reviewers approve from the drawer.'}</span>
       <span class="m-only">Tap ⋯ on a card to change its status.</span></div>`;
 }
 
@@ -20625,13 +20670,10 @@ function drawerDeliverable(id){
         ${statusPill(DELIV_STATUS,d.status)}${over?`<span class="status st-danger"><span class="si">⚑</span>${D.diff(TODAY,d.due_date)}d overdue</span>`:''}</div>
         <h2>${esc(d.title)}</h2>
         <div class="dh-meta"><a href="#/media/projects/${p.id}" onclick="closeDrawer()">${esc(p.name)}</a>
-          <span class="code">${p.code}</span><span>·</span><span>${esc(t.name)}</span>
-          <span>·</span><span>weight ${d.weight}</span></div></div>
+          <span class="code">${p.code}</span>${typeIsTitle(d)?'':`<span>·</span><span>${esc(t.name)}</span>`}</div></div>
       <button class="icon-btn" onclick="closeDrawer()">✕</button></div>
     <div class="dr-body">
       <dl class="kv mb4">
-        <dt>Owner</dt><dd class="f ac gap2">${d.owner_id!=null?`${avatar(d.owner_id,'xs')} ${esc(user(d.owner_id).full_name)}`
-          :'<span class="mut3">No owner yet</span>'}</dd>
         <dt>Due date</dt><dd style="${over?'color:var(--danger);font-weight:700':''}">${d.due_date
           ?`${D.fmt(d.due_date)} <span class="mut3 small">(${D.rel(d.due_date)})</span>`:'<span class="mut3">No due date</span>'}</dd>
         ${d.completed_at?`<dt>Completed</dt><dd>${D.fmt(d.completed_at)}</dd>`:''}
@@ -20640,6 +20682,8 @@ function drawerDeliverable(id){
           ${bar(Math.round((d.quantity_delivered||0)/d.quantity_target*100))}</dd>`:''}
         ${d.spec_notes?`<dt>Spec notes</dt><dd class="small">${esc(d.spec_notes)}</dd>`:''}
       </dl>
+
+      ${dasgStyles()}${delivAssignSection(d.id)}
 
       <div class="sec-head"><span class="sec-title">Versions</span>
         <span class="ml-auto chip">${vs.length}</span></div>
@@ -20677,12 +20721,10 @@ function drawerDeliverable(id){
           <div class="small mut">${esc(c.body)}</div></div></div>`).join('')||'<div class="small mut3 mb3">No comments.</div>'}
       <textarea class="inp" placeholder="Add a comment…" id="dcomment"></textarea>
       <button class="btn sm mt2" data-act="postDelivComment" data-did="${d.id}">Comment</button>
-
-      ${dasgStyles()}${delivAssignSection(d.id)}
     </div>
     <div class="dr-foot">
       ${isOwner&&['not_started','in_progress','changes_requested'].includes(d.status)?
-        `<button class="btn primary" data-act="submitVersion" data-did="${d.id}">⤴ Submit for review</button>`:''}
+        `<button class="btn primary" data-act="submitVersion" data-did="${d.id}">${submitLabel(d)}</button>`:''}
       ${canApprove&&awaiting?
         `<button class="btn primary" data-act="approveVersion" data-did="${d.id}">✔ Approve</button>
          <button class="btn" data-act="requestChanges" data-did="${d.id}">↩ Request changes</button>`:''}
@@ -23080,7 +23122,9 @@ const ACTIONS = {
   },
   confirmVersion:(d)=>{
     const url=$('#sv-url').value.trim();
-    if(!/^https:\/\/(drive|docs)\.google\.com\//.test(url)){toast('must be a Google Drive or Docs link','bad');return;}
+    /* Said at the field, which stays marked until the link is fixed. */
+    if(!url)return fieldError('#sv-url','Add the Google Drive link for this version.');
+    if(!/^https:\/\/(drive|docs)\.google\.com\//.test(url))return fieldError('#sv-url','Use a Google Drive or Google Docs link.');
     const dl=deliv(+d.did);
     DB.deliverable_versions.push({id:Math.max(0,...DB.deliverable_versions.map(v=>v.id))+1,deliverable_id:dl.id,
       version_no:+d.v,drive_url:url,note:$('#sv-note').value.trim(),submitted_by:S.me,
@@ -23127,6 +23171,8 @@ const ACTIONS = {
     closeModal();render();refreshDelivDrawer(dl.id);toast('Changes requested. Everyone on it has been told','ok');
     moSync(MO_API.post('/deliverables/'+dl.id+'/review',{outcome:'changes_requested',comment:v.review_comment}), ()=>refreshDelivDrawer(dl.id));
   },
+  /* My Day's Delivered outputs: every row, or back to the latest eight. */
+  myDelivAll:()=>{S.myDelivAll=!S.myDelivAll;render();},
   markDelivered:(d)=>{
     const dl=deliv(+d.did);
     if(!canMarkDelivered(dl)){toast(delivMoveRefusal(dl,'delivered'),'bad');return;}
@@ -26789,7 +26835,7 @@ const ACTIONS = {
         <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
       <div class="mo-body">
         <div class="field"><label class="lbl">Assign to <span class="req">*</span></label>
-          <select class="inp" id="sd-owner">${ownerOptions(dl.owner_id,assignableMembers(),'— Pick who —')}</select></div>
+          <select class="inp" id="sd-owner" ${ownerLocked(dl)?'disabled title="Delivered work keeps its owner"':''}>${ownerOptions(dl.owner_id,assignableMembers(),'— Pick who —')}</select></div>
         <div class="row">
           <div class="field"><label class="lbl">Scheduled date</label>
             <input class="inp" type="date" id="sd-date" value="${dl.scheduled_date?String(dl.scheduled_date).slice(0,10):''}">
@@ -27215,7 +27261,12 @@ function wireDnD(){
       $$('.kb-col').forEach(c=>c.classList.remove('over'));});
   });
   $$('[data-drop]').forEach(col=>{
-    col.addEventListener('dragover',e=>{e.preventDefault();col.classList.add('over');});
+    col.addEventListener('dragover',e=>{
+      /* A column the dragged deliverable may not move to is not a drop target. */
+      const [sk,sid]=(S.dragging||'').split(':'), [dk,to]=col.dataset.drop.split(':');
+      if(sk==='deliverable'&&dk==='delivstatus'){const dl=deliv(+sid);
+        if(dl&&dl.status!==to&&!allowedDelivMoves(dl).includes(to))return;}
+      e.preventDefault();col.classList.add('over');});
     col.addEventListener('dragleave',()=>col.classList.remove('over'));
     col.addEventListener('drop',e=>{
       e.preventDefault();col.classList.remove('over');
@@ -28260,28 +28311,38 @@ async function loadDelivAssignees(did, force){
 }
 
 function delivAssignSection(did){
-  const a=DASG.byDeliv[did];
+  const a=DASG.byDeliv[did], dl=deliv(+did);
+  const line=(who,sub)=>`<div class="f ac gap2"><b class="small">${esc(who)}</b>${sub?`<span class="xsmall mut3">${esc(sub)}</span>`:''}</div>`;
+  /* The owner, by full name and team. owner_id is the one record of it (the
+     server's crew is a copy), so it is named before the rest has loaded. */
+  const crew=a&&!a.error?a.crew:null;
+  const ownerId=dl?dl.owner_id:(crew&&crew.user_id);
+  const owner=dl&&dl.owner_id!=null?`<div class="f ac gap2">${avatar(dl.owner_id,'xs')}${line(personName(dl.owner_id),personTag(dl.owner_id))}</div>`
+    :!dl&&crew?line(crew.full_name,crew.designation):'<span class="mut3">No owner yet</span>';
+  /* mt4: the drawer's gap between sections. */
+  const head=`<div class="sec-head"><span class="sec-title">Assignment</span></div>`;
   if(!a) { loadDelivAssignees(did);
-    return `<div data-dasg="${did}"><div class="sec-head"><span class="sec-title">Assignment</span></div>
-      <div class="small mut3 mb3">Loading assignment…</div></div>`; }
-  if(a.error) return `<div data-dasg="${did}"><div class="sec-head"><span class="sec-title">Assignment</span></div>
+    return `<div class="mt4" data-dasg="${did}">${head}<dl class="kv mb3"><dt>Owner</dt><dd>${owner}</dd></dl>
+      <div class="small mut3 mb3">Loading who else is on it…</div></div>`; }
+  if(a.error) return `<div class="mt4" data-dasg="${did}">${head}<dl class="kv mb3"><dt>Owner</dt><dd>${owner}</dd></dl>
     <div class="small bad mb3">${esc(a.error)}</div>
-    <button class="btn sm" data-act="dasgReload" data-did="${did}">Try again</button></div>`;
-  const line=(who,sub)=>who
-    ? `<div class="f ac gap2"><b class="small">${esc(who)}</b>${sub?`<span class="xsmall mut3">${esc(sub)}</span>`:''}</div>`
-    : `<div class="small mut3">Not assigned</div>`;
-  return `<div data-dasg="${did}">
-    <div class="sec-head"><span class="sec-title">Assignment</span></div>
+    <button class="btn sm mb3" data-act="dasgReload" data-did="${did}">Try again</button></div>`;
+  /* Finished work keeps its owner. SMC coverage is offered only while the
+     work is open, and its row shows only once someone is on it. */
+  const crewBtn=!!dl&&canAssignOn(proj(dl.project_id))&&!ownerLocked(dl);
+  const smcBtn=!!dl&&!['delivered','not_required','cancelled'].includes(dl.status)&&!ownerLocked(dl)&&canAssignSmc(dl);
+  return `<div class="mt4" data-dasg="${did}">${head}
     <dl class="kv mb3">
+      <dt>Owner</dt><dd>${owner}</dd>
       ${(a.team||[]).length?`<dt>Working with</dt><dd>${(a.team||[]).map(t=>line(t.full_name,t.designation)).join('')}</dd>`:''}
-      <dt>SMC member</dt><dd>${line(a.smc&&a.smc.full_name, a.smc&&a.smc.institute)}</dd>
+      ${a.smc?`<dt title="SMC members cover institute-level work through their own workflow">SMC member</dt><dd>${line(a.smc.full_name,a.smc.institute)}</dd>`:''}
     </dl>
-    <div class="f gap2 wrap mb3">
-      ${(()=>{const dl=deliv(+did);return dl&&canAssignOn(proj(dl.project_id))?`<button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="crew">
-        ${a.crew?'Reassign deliverable':'Assign an owner'}</button>`:'';})()}
-      ${canAssignSmc(deliv(+did))?`<button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="smc">
+    ${crewBtn||smcBtn?`<div class="f gap2 wrap mb3">
+      ${crewBtn?`<button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="crew">
+        ${ownerId!=null?'Reassign deliverable':'Assign an owner'}</button>`:''}
+      ${smcBtn?`<button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="smc">
         ${a.smc?'Change SMC member':'Assign to SMC member'}</button>`:''}
-    </div></div>`;
+    </div>`:''}</div>`;
 }
 
 async function dasgModal(did,kind){
