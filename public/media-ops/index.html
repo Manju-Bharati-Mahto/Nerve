@@ -2306,6 +2306,12 @@ html[data-layout="mobile"] .dc-acts{flex-wrap:wrap;justify-content:flex-end}
 html[data-layout="mobile"] table.pj-cards td[data-m=actions]{align-items:center}
 html[data-layout="mobile"] table.pj-cards td[data-m=aside]{display:flex;flex-direction:column;align-items:flex-end;gap:4px}
 html[data-layout="mobile"] table.pj-cards .chip.pp-chip{max-width:100%}
+/* My Profile rows: a fixed 150px label column left a long value (an email, a
+   department name) no room at 320px. On a phone the label takes what it needs
+   up to 40% and the value wraps inside the rest. */
+html[data-layout="mobile"] .pf-row{grid-template-columns:minmax(0,40%) minmax(0,1fr)}
+html[data-layout="mobile"] .pf-v{min-width:0}
+html[data-layout="mobile"] .pf-v a{overflow-wrap:anywhere;word-break:break-word;white-space:normal}
 /* ==== END PHONE LAYER ==== */
 </style>
 </head>
@@ -6326,6 +6332,9 @@ function openMyPreferences(){
           <span class="switch ${S.widgets[k]?'on':''}" onclick="ACTIONS.toggleWidget({k:'${k}'});this.classList.toggle('on')"></span></div>`).join('')}`:''}
     </div>
     <div class="mo-foot"><button class="btn primary ml-auto" onclick="closeModal();render()">Done</button></div>`);
+  /* The Layout and Theme segs are ordinary ACTIONS, wired here like every
+     other modal's buttons — without this they did nothing when tapped. */
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
 }
 /* ── Photo cropper (self-contained, no library) ───────────────────────────
    One modal, two states:
