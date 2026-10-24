@@ -836,6 +836,9 @@ table.tbl tbody tr:last-child td{border-bottom:none}
 table.tbl td.num,table.tbl th.num{text-align:right;font-variant-numeric:tabular-nums}
 /* A row's action buttons wrap inside their cell instead of pushing the table past its card. */
 table.tbl td.pj-acts{min-width:150px}
+/* …and a long unbroken recipient ("Dispatched … to student.affairs@…") wraps
+   inside the Status cell rather than widening the table past its card. */
+table.pj-cards [data-dispatch]{overflow-wrap:anywhere}
 /* Equipment catalog: one table, a header row per category, so every column
    keeps the same x from the first category to the last. */
 table.eq-cat tr.eq-grp th{position:static;padding:10px 14px;background:var(--surface-2);color:var(--text);
@@ -3935,12 +3938,19 @@ function canAssignSmc(dl){
   const p=dl&&proj(dl.project_id);
   return !!p&&(isAdmin()||isTL()||p.owner_id===S.me||isPMof(p.id));
 }
-/* Finished work keeps its owner — mirrors ownerLocked() on the server: once
-   delivered, dispatched or archived, nobody is offered a reassignment. */
-function ownerLocked(dl){
-  return !!dl&&!!dl.owner_id&&(dl.status==='delivered'
-    ||['sent','delivered','archived'].includes(dl.dispatch_status||'none'));
-}
+/* Finished work — delivered, dispatched or archived — mirrors finishedAs() on
+   the server. It keeps its owner (ownerLocked: nobody is offered a
+   reassignment) and its dates (datesLocked: no due-date field, no Schedule). */
+const workFinished=dl=>!!dl&&(dl.status==='delivered'
+  ||['sent','delivered','archived'].includes(dl.dispatch_status||'none'));
+function ownerLocked(dl){return !!dl&&!!dl.owner_id&&workFinished(dl);}
+const datesLocked=workFinished;
+/* The server's answer to a date change on finished work, word for word. */
+const datesLockedMsg=dl=>`“${dl.title||'This deliverable'}” has already been `
+  +`${['sent','delivered','archived'].includes(dl.dispatch_status||'none')?'dispatched':'delivered'}, so its schedule and due date can't be changed.`;
+/* The ⋯ row menu's own items — the scope moves. Without one, the row's click
+   (which opens the drawer) is all there is, so no ⋯ is drawn. */
+const delivScopeMoves=dl=>allowedDelivMoves(dl).filter(s=>s==='not_required'||s==='cancelled');
 /* POST /deliverables/:id/status — every move offered for this deliverable.
    In review is reached by submitting a version, and the two verdicts are the
    review itself, so those three open their dialogs (applyDelivStatus). Scope
@@ -3961,6 +3971,9 @@ function allowedDelivMoves(dl){
 }
 /* Why a move is not offered — said in the words the server would use. */
 function delivMoveRefusal(dl,s){
+  /* deliverRefusal() on the server: review-exempt work goes out from In progress. */
+  if(s==='delivered'&&dl.status==='not_started'&&dtype(dl.deliverable_type_id).review_exempt)
+    return 'Start it first — raw footage can be delivered once it is in progress.';
   if(!(DELIV_TRANSITIONS[dl.status]||[]).includes(s))
     return 'Not a valid transition: '+DELIV_STATUS[dl.status].l+' → '+DELIV_STATUS[s].l;
   const v=latestVersion(dl.id);
@@ -8298,8 +8311,11 @@ function dispatchQueue(){
     &&['none','queued','sent'].includes(d.dispatch_status||'none');
   return DB.deliverables.filter(d=>!d.deleted_at&&(exemptReady(d)||(['queued','sent'].includes(d.dispatch_status||'none')
     &&(latestVersion(d.id)||{}).review_status==='approved')))
-    .sort((a,b)=>String(a.queued_at||a.completed_at||'')<String(b.queued_at||b.completed_at||'')?-1:1);
+    .sort((a,b)=>String(dispatchWaitingSince(a))<String(dispatchWaitingSince(b))?-1:1);
 }
+/* When an item joined the queue — what the queue is ordered by (oldest
+   first, against its 48h window) and what each row says it has waited since. */
+const dispatchWaitingSince=d=>d.queued_at||d.completed_at||'';
 const dispatchedToday = ()=>DB.deliverables.filter(d=>dOf(d.dispatched_at)===TODAY);
 const requestsToday   = ()=>reqs().filter(r=>dOf(r.created_at)===TODAY);
 const projectsCreatedToday = ()=>reqs().filter(r=>r.status==='converted'&&dOf(r.converted_at)===TODAY);
@@ -8668,6 +8684,7 @@ function viewDispatch(){
     ${tab!=='queue'?`<div class="search-wrap mb3" style="max-width:360px">
       <input class="inp" id="disp-q" placeholder="Search project, deliverable or recipient…" value="${esc(S.filters.dispatch.q)}"
         oninput="S.filters.dispatch.q=this.value;moRerender('disp-q')"></div>`:''}
+    ${tab==='queue'&&rows.length>1?`<p class="small mut3 mb2" data-queue-order>Oldest first: whatever has waited longest is at the top.</p>`:''}
     <div class="card"><div class="card-body flush">
       ${tab==='queue'
         ? (rows.length?rows.map(dispatchRow).join('')
@@ -8841,6 +8858,7 @@ function dispatchRow(d){
     </div>
     <div class="dc-foot">
       <span class="chip ${link?'sel':''}">${link?'⛁ Drive link ready':'⚠ No Drive link'}</span>
+      ${dispatchWaitingSince(d)?`<span class="xsmall mut" data-waiting>Waiting since ${D.fmt(dOf(dispatchWaitingSince(d)))}</span>`:''}
       <div class="dc-acts">
         ${link?ico('Copy Drive link','copyDrive',`data-did="${d.id}" data-url="${esc(link)}"`)
               :`<button class="dc-btn" disabled title="The approved version has no Drive link"><span>⧉</span></button>`}
@@ -9821,7 +9839,7 @@ const AUDIT_VERB={
   'deliverable.assigned':'assigned {who} to','deliverable.smc_assigned':'assigned {who} from SMC to',
   'deliverable.reassigned':'reassigned',
   'deliverable.approval_changed':'signed off','deliverable.due_date_changed':'changed the due date of',
-  'deliverable.link_copied':'copied the Drive link of','deliverable.version_reviewed':'reviewed',
+  'deliverable.link_copied':'copied the Drive link of','drive_link.added':'added a Drive link to {t}','deliverable.version_reviewed':'reviewed',
   'deliverable.version_submitted':'submitted',
   'work.assigned':'assigned {t} to {who}','assignment.created':'created','assignment.updated':'updated',
   'assignment.deleted':'deleted','smc.assignment_created':'assigned {t} to {who}',
@@ -9949,7 +9967,7 @@ const AUDIT_FIELD={status:'Status',smc_status:'SMC status',approval_status:'Appr
   holder:'Holder',holder_id:'Holder',assignees:'Assigned to',delivered_by:'Delivered by',approved_by:'Approved by',
   random_sample_pct:'Random sample',spec_notes:'Notes',review_comment:'Comment',shoot_date:'Shoot date',
   start_date:'Starts',end_date:'Ends',event_level:'Event level',from:'From',to:'To',via:'How',
-  changed_by:'Changed by',edited_by:'Edited by',decided_by:'Decided by'};
+  changed_by:'Changed by',edited_by:'Edited by',decided_by:'Decided by',url:'Link'};
 const AUDIT_PERSON=/^(user_id|owner_id|holder|holder_id|assignees|delivered_by|approved_by|dispatched_by|reviewed_by|assigned_by|changed_by|edited_by|decided_by|lead|new_lead|member|reassigned_to)$/;
 /* A reassignment's trail says who it went from and to — people only there:
    other rows (a leave request's dates) use the same keys for other things. */
@@ -9983,6 +10001,8 @@ function auditVal(k,v,et,person=AUDIT_PERSON.test(k)){
 function auditChanges(a){
   const b=a.before&&typeof a.before==='object'?a.before:{}, f=a.after&&typeof a.after==='object'?a.after:{};
   const tpl=auditTpl(a), used=[];
+  /* The feed names its actor (a.actor); a local row carries the id. */
+  const actor=a.actor||(a.actor_id!=null&&user(a.actor_id)&&user(a.actor_id)!==UNKNOWN_PERSON?user(a.actor_id).full_name:'');
   if(tpl.includes('{who}'))used.push('user_id','assignees','holder');
   if(a.action==='deliverable.reassigned')used.push('owner_id');   // From says it
   // "approved v2 of …" already says the number and the verdict.
@@ -9997,6 +10017,10 @@ function auditChanges(a){
       if(had&&has&&JSON.stringify(b[k])===JSON.stringify(f[k]))return;
       const p=auditPerson(a,k), ov=had?auditVal(k,b[k],a.entity_type,p):'', nv=has?auditVal(k,f[k],a.entity_type,p):'';
       if(!ov&&!nv)return;
+      /* A value only on one side that is empty ("Note: none", "Owner: none")
+         was never set, and the person who acted is already the headline. */
+      if(had!==has&&(had?ov:nv)==='none')return;
+      if(p&&has&&actor&&nv===actor)return;
       const l=auditTeamPeople(a,k)?'Assigned to':AUDIT_FIELD[k]||auditWords(k);
       out.push(had&&has?l+': '+ov+' → '+nv:has?l+': '+nv:l+' was '+ov);
     });
@@ -10445,6 +10469,7 @@ function viewMyDay(){
           <span><span class="code">${esc(proj(d.project_id).code||'')}</span> ${esc(proj(d.project_id).name)}</span>
           ${vs&&vs.reviewed_at?`<span>approved ${D.fmt(vs.reviewed_at)}${vs.reviewed_by?' by '+esc(personName(vs.reviewed_by)):''}</span>`:''}
           ${d.status==='delivered'?`<span>delivered ${d.completed_at?D.fmt(d.completed_at):''}</span>`:''}
+          ${dispatchNote(d)?`<span data-dispatch>${esc(dispatchNote(d))}</span>`:''}
         </div>
         <div class="dlv-acts">
           ${canMarkDelivered(d)?`<button class="btn xs primary" data-act="markDelivered" data-did="${d.id}"
@@ -11246,10 +11271,11 @@ function viewProject(id,tab){
       <div class="page-actions">
         <span class="f ac gap2"><span class="small mut3">Owner</span>${avatar(p.owner_id,'sm')}
           <span class="small b">${esc(user(p.owner_id).full_name)}</span></span>
-        ${canAddDeliverable(p)?`<button class="btn sm" data-act="addDeliverable" data-pid="${p.id}"
+        ${/* One of each action per screen: the Deliverables tab's card head carries both. */
+          tab==='deliverables'?'':`${canAddDeliverable(p)?`<button class="btn sm" data-act="addDeliverable" data-pid="${p.id}"
           title="Add what this project has to produce — unassigned until someone is given it">＋ Add deliverable</button>`:''}
         ${canAssignWorkOn(p)?`<button class="btn sm primary" data-act="assignWork" data-pid="${p.id}"
-          title="Assign work to anyone in the Media Crew, with a new or existing deliverable or none">＋ Assign work</button>`:''}
+          title="Assign work to anyone in the Media Crew, with a new or existing deliverable or none">＋ Assign work</button>`:''}`}
         <button class="btn sm" data-menu="projMore" data-pid="${p.id}">⋯</button>
       </div></div>
 
@@ -11595,20 +11621,23 @@ function projDeliverablesTab(p,dls){
         const vs=DB.deliverable_versions.filter(v=>v.deliverable_id===d.id);
         const latest=vs.sort((a,b)=>b.version_no-a.version_no)[0];
         const over=d.due_date&&d.due_date<TODAY&&!['delivered','not_required','cancelled'].includes(d.status);
+        /* Finished work keeps its dates (datesLocked), as it keeps its owner. */
+        const dueEdit=canEditDueDates(p)&&!datesLocked(d), schedOk=canScheduleWork(p)&&!datesLocked(d);
+        const menuOk=delivScopeMoves(d).length>0;
         return `<tr class="click" data-drawer="deliverable:${d.id}">
           <td data-m="title"><div class="f ac gap2"><span title="${esc(dtype(d.deliverable_type_id).name)}" style="font-size:15px">${dtype(d.deliverable_type_id).icon}</span>
             <div><div class="t-main">${esc(d.title)}</div>${/* the type, only when the title does not already say it */
               !typeIsTitle(d)?`<div class="t-sub">${esc(dtype(d.deliverable_type_id).name)}</div>`:''}</div></div></td>
           <td class="m-only" data-m="meta">${[typeIsTitle(d)?'':esc(dtype(d.deliverable_type_id).name),
             d.owner_id?esc(personName(d.owner_id)):'',
-            d.due_date&&!canEditDueDates(p)?`<span style="${over?'color:var(--danger);font-weight:700':''}">due ${D.fmt(d.due_date)}</span>`:'',
+            d.due_date&&!dueEdit?`<span style="${over?'color:var(--danger);font-weight:700':''}">due ${D.fmt(d.due_date)}</span>`:'',
             d.quantity_target?`${d.quantity_delivered||0}/${d.quantity_target} ${esc(d.unit||'')}`:'',
             vs.length?`v${latest.version_no}`:''].filter(Boolean).join(' · ')}</td>
           <td data-stop data-m="${d.owner_id?'hide':'actions'}">${delivOwnerCell(p,d)}</td>
           <td class="small" data-m="hide">${d.scheduled_date
             ? `<span class="chip" title="Appears in the owner's Today's Assignments on this date">◷ ${D.fmt(d.scheduled_date)}</span>`
             : '<span class="mut3" title="Backlog: not in anyone\'s Today\'s Assignments">unscheduled</span>'}</td>
-          <td class="small" data-stop data-m="${canEditDueDates(p)?'actions':'hide'}">${canEditDueDates(p)
+          <td class="small" data-stop data-m="${dueEdit?'actions':'hide'}">${dueEdit
             ? `<span class="m-only small mut">Due</span><input type="date" class="inp due-inline" data-did="${d.id}" value="${d.due_date?String(d.due_date).slice(0,10):''}"
                  onchange="ACTIONS.saveDueDate({did:${d.id}},this)"
                  title="${d.due_date_source==='manual'?'Manually set. Project date changes will not move it':'Follows the +'+(d.due_offset_days??0)+'d offset'}"
@@ -11627,10 +11656,11 @@ function projDeliverablesTab(p,dls){
                <button class="btn xs" data-act="reviewDelivered" data-did="${d.id}" data-v="changes_requested">↩ Send back</button>`:''}
             ${DB.drive_links.filter(l=>l.entity_type==='deliverable'&&l.entity_id===d.id).length?
               `<button class="btn xs" data-act="copyLink" data-did="${d.id}">⧉ Copy</button>`:''}
-            ${canScheduleWork(p)?`<button class="btn xs" data-act="scheduleDeliv" data-did="${d.id}">◷ Schedule</button>`:''}
-            <button class="btn xs" data-act="delivAction" data-did="${d.id}">⋯</button></td></tr>`;}).join('')}
+            ${schedOk?`<button class="btn xs" data-act="scheduleDeliv" data-did="${d.id}">◷ Schedule</button>`:''}
+            ${menuOk?`<button class="btn xs" data-act="delivAction" data-did="${d.id}" aria-label="More actions">⋯</button>`:''}</td></tr>`;}).join('')}
       </tbody></table></div></div>
-    <div class="card-foot">Schedule a deliverable for a date to put it in its owner's day.</div>
+    ${/* The hint is for whoever can act on it. */
+      canScheduleWork(p)?`<div class="card-foot">Schedule a deliverable for a date to put it in its owner's day.</div>`:''}
   </div>`;
 }
 /* ── Who executes this deliverable ────────────────────────────────────────
@@ -11830,6 +11860,12 @@ function pipeScope(){
   const mine=teamDelivIds(S.me);
   return ds.filter(d=>mine.has(d.id)||isPMof(d.project_id));
 }
+/* A column's count, and its work-in-progress limit when it has one: "17/8"
+   says what it means on hover and to a screen reader — "17 in review — limit 8". */
+function wipCount(n,limit,what){
+  const says=limit?`${what?n+' '+what:plural(n,'card')} — limit ${limit}`:'';
+  return `<span class="kc ${limit&&n>limit?'wip-over':''}"${says?` title="${esc(says)}" aria-label="${esc(says)}"`:''}>${n}${limit?'/'+limit:''}</span>`;
+}
 function viewPipeline(){
   const f=S.filters.pipe||(S.filters.pipe={type:[],owner:[],unit:[],ptype:[],q:''});
   let ds=pipeScope();
@@ -11875,7 +11911,7 @@ function viewPipeline(){
       const wip=c==='in_review'?8:null;
       return `<div class="kb-col" data-drop="delivstatus:${c}">
         <div class="kb-col-head"><span class="kt">${statusPill(DELIV_STATUS,c)}</span>
-          <span class="kc ${wip&&list.length>wip?'wip-over':''}">${list.length}${wip?'/'+wip:''}</span></div>
+          ${wipCount(list.length,wip,DELIV_STATUS[c].l.toLowerCase())}</div>
         <div class="kb-cards">${list.map(d=>{
           const over=d.due_date&&d.due_date<TODAY&&!['delivered'].includes(d.status);
           const p=proj(d.project_id);
@@ -19154,7 +19190,7 @@ function viewBoards(){
       return `<div class="kb-col" data-drop="cardcol:${c.id}">
         <div class="kb-col-head"><span class="kt">${esc(c.name)}
           ${c.maps_to_status?`<span class="f ac g1" title="Two-way sync: a linked deliverable moved here becomes ${esc((DELIV_STATUS[c.maps_to_status]||{l:c.maps_to_status}).l)}">→ ${statusPill(DELIV_STATUS,c.maps_to_status)}</span>`:''}</span>
-          <span class="kc ${c.wip_limit&&cards.length>c.wip_limit?'wip-over':''}">${cards.length}${c.wip_limit?'/'+c.wip_limit:''}</span></div>
+          ${wipCount(cards.length,c.wip_limit)}</div>
         <div class="kb-cards">${cards.map(card=>{
           const done=card.checklist.filter(i=>i.is_done).length;
           return `<div class="kb-card" ${canMoveCards()?`draggable="true" data-drag="card:${card.id}"`:''} data-drawer="card:${card.id}">
@@ -21939,9 +21975,18 @@ const ACTIONS = {
     moSync(MO_API.post('/deliverables/'+d.did+'/dispatch',body).then(()=>hydrateFromServer()),
       ()=>{loadMyActivity(true);toast('Dispatched to '+to,'ok');});
   },
+  /* Asked in the app's own dialog, like Confirm dispatch: a browser that
+     suppresses window.confirm() used to cancel the archive without a word. */
   archiveDeliv:(d)=>{
     const dl=deliv(+d.did);
-    if(!confirm(`Archive “${dl?dl.title:'this deliverable'}”? It leaves Dispatched and moves to the Archive tab.`))return;
+    modal(`<div class="mo-head"><div><h2>Archive deliverable</h2>
+        <p>Archive “${esc(dl?dl.title:'this deliverable')}”? It leaves Dispatched and moves to the Archive tab.</p></div></div>
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="archiveGo" data-did="${esc(String(d.did))}">⛁ Archive</button></div>`,{size:'small'});
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  archiveGo:(d)=>{
+    closeModal();
     moSync(MO_API.post('/deliverables/'+d.did+'/archive',{}).then(()=>hydrateFromServer()),
       ()=>{loadMyActivity(true);toast('Archived','ok');});
   },
@@ -23338,7 +23383,7 @@ const ACTIONS = {
        every other status change goes through. applyDelivStatus() is that one
        path: the rules, the audit entry and the POST, in the right order. */
     /* Scope moves are running the project: offered only when allowed. */
-    ...(()=>{const dl=deliv(+d.did),ok=allowedDelivMoves(dl);return [
+    ...(()=>{const dl=deliv(+d.did),ok=delivScopeMoves(dl);return [
       ...(ok.includes('not_required')?[{label:'Mark not required',icon:'ban',fn:()=>applyDelivStatus(dl,'not_required')}]:[]),
       ...(ok.includes('cancelled')?[{label:'Cancel deliverable',icon:'x',cls:'danger',fn:()=>applyDelivStatus(dl,'cancelled')}]:[])];})()
   ]),
@@ -26940,7 +26985,8 @@ const ACTIONS = {
   saveDueDate:(d,el)=>{
     const dl=DB.deliverables.find(x=>x.id===+d.did); if(!dl)return;
     const p=proj(dl.project_id);
-    if(!canEditDueDates(p)){toast('403: you can only edit due dates on your own team\'s projects','bad');
+    if(!canEditDueDates(p)||datesLocked(dl)){toast(datesLocked(dl)?datesLockedMsg(dl)
+        :'403: you can only edit due dates on your own team\'s projects','bad');
       el.value=dl.due_date?String(dl.due_date).slice(0,10):''; return;}
     const before=dl.due_date, next=el.value||null;
     if(String(before||'').slice(0,10)===String(next||''))return;
@@ -26955,12 +27001,13 @@ const ACTIONS = {
     const dl=DB.deliverables.find(x=>x.id===+d.did); if(!dl)return;
     const p=proj(dl.project_id);
     if(!canScheduleWork(p)){toast('403: only a Team Lead, Admin or the project owner/PM may schedule work','bad');return;}
+    if(datesLocked(dl)){toast(datesLockedMsg(dl),'bad');return;}
     modal(`<div class="mo-head"><div><h2>Schedule deliverable</h2>
         <p>${esc(dl.title)}. Scheduling puts this in the owner's <b>Today's Assignments</b> on the chosen date only.</p></div>
         <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
       <div class="mo-body">
         <div class="field"><label class="lbl">Assign to <span class="req">*</span></label>
-          <select class="inp" id="sd-owner" ${ownerLocked(dl)?'disabled title="Delivered work keeps its owner"':''}>${ownerOptions(dl.owner_id,assignableMembers(),'— Pick who —')}</select></div>
+          <select class="inp" id="sd-owner">${ownerOptions(dl.owner_id,assignableMembers(),'— Pick who —')}</select></div>
         <div class="row">
           <div class="field"><label class="lbl">Scheduled date</label>
             <input class="inp" type="date" id="sd-date" value="${dl.scheduled_date?String(dl.scheduled_date).slice(0,10):''}">

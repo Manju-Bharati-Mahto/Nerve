@@ -206,9 +206,9 @@ describe("the deliverable drawer", () => {
       h.ev(`deliv(8102).status='in_review'; deliv(8102).dispatch_status='none'; ${finish}`);
       expect(drawer(h, 8102).querySelector('[data-kind="crew"]'), finish).toBeNull();
       expect(h.ev<string>("delivOwnerCell(proj(7001),deliv(8102))"), finish).not.toContain("<select");
+      // Finished work keeps its dates too, so Schedule does not open at all.
       h.ev("ACTIONS.scheduleDeliv({did:'8102'})");
-      expect((h.doc.getElementById("sd-owner") as HTMLSelectElement).disabled, finish).toBe(true);
-      h.ev("closeModal()");
+      expect(h.doc.getElementById("sd-owner"), finish).toBeNull();
     }
   });
 

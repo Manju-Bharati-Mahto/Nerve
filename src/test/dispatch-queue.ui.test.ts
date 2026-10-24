@@ -144,18 +144,26 @@ describe("Dispatch page — one word per meaning", () => {
     expect(text).toContain("Archive it from there afterwards");
   });
 
-  it("Archive asks first, naming the item, and does nothing when declined", async () => {
+  it("Archive asks first in the app's own dialog, naming the item, and does nothing when declined", async () => {
     const h = await boot(916);
     const asked: string[] = [];
-    h.ev("window.__answer=false");
     (h.doc.defaultView as unknown as { confirm: (m: string) => boolean }).confirm =
-      (m: string) => { asked.push(m); return h.ev<boolean>("window.__answer"); };
+      (m: string) => { asked.push(m); return true; };
+    const layer = h.doc.getElementById("modal-layer")!;
     h.ev("ACTIONS.archiveDeliv({did:'8104'})");
-    expect(asked[0]).toContain("Drone Clips");
+    expect(asked, "a browser confirm() was used").toEqual([]);
+    expect(layer.classList.contains("on")).toBe(true);
+    expect(layer.querySelector("h2")?.textContent).toBe("Archive deliverable");
+    expect(layer.textContent).toContain("Drone Clips");
+    // Cancel closes it and sends nothing.
+    (layer.querySelector(".mo-foot .btn:not(.primary)") as HTMLElement).click();
+    expect(layer.classList.contains("on")).toBe(false);
     expect(h.writes().some((c) => c.url.endsWith("/deliverables/8104/archive"))).toBe(false);
-    h.ev("window.__answer=true");
+    // Archive sends it.
     h.ev("ACTIONS.archiveDeliv({did:'8104'})");
+    (layer.querySelector('[data-act="archiveGo"]') as HTMLElement).click();
     expect(h.writes().some((c) => c.url.endsWith("/deliverables/8104/archive"))).toBe(true);
+    expect(layer.classList.contains("on")).toBe(false);
   });
 });
 
