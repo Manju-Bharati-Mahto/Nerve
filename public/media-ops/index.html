@@ -2468,6 +2468,10 @@ const D = {
      time 5 h 30 min behind, so a stamp is always read through a Date first. */
   time:ts=>{const d=D.at(ts);if(!d)return '—';
     return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');},
+  /* A wall-clock "HH:MM" (a project's start/end time — no date, no zone) as
+     the crew says it: "9:00 AM". '' for none. */
+  clock:hm=>{const m=/^(\d\d):(\d\d)/.exec(String(hm||''));if(!m)return '';
+    const h=+m[1];return (h%12||12)+':'+m[2]+' '+(h<12?'AM':'PM');},
   /* Now as a local timestamp with no zone, the shape the seed rows use, so a
      row written in this session reads back at the time it was written. */
   stamp:()=>{const n=new Date();return new Date(n.getTime()-n.getTimezoneOffset()*60000).toISOString().slice(0,19);}
@@ -10975,7 +10979,7 @@ function projList(ps){
             <span class="pj-ico" style="color:${ptype(p.project_type_id).color}">${ptype(p.project_type_id).icon}</span>
             <span class="lr-main"><b>${esc(p.name)}</b>
               <span><span class="code">${p.code}</span> · ${esc(ptype(p.project_type_id).name)} · ${esc(aunitName(p.academic_unit_id))}
-              · ${D.fmt(p.start_date)}–${D.fmt(p.end_date)}</span></span>
+              · ${p.start_time||p.end_time?esc(projWhen(p)):`${D.fmt(p.start_date)}–${D.fmt(p.end_date)}`}</span></span>
             <span class="hide-sm pj-prog">${bar(pr)}<span class="xsmall b pj-pct">${pr}%</span></span>
             <span class="hide-sm chip pj-dl" title="Deliverables delivered">${dl.filter(d=>d.status==='delivered').length}/${dl.length} ◆</span>
             <span class="hide-sm">${avStack(crew,3)}</span>
@@ -11237,7 +11241,7 @@ function pcEvHTML(day,ev,back){
   const done=dl.filter(d=>['approved','delivered'].includes(d.status)).length;
   const lead=p.owner_id?user(p.owner_id):null, tm=p.team_id?team(p.team_id):null, rq=reqs().find(r=>r.project_id===p.id);
   return head(k==='pe'?'var(--warn)':t.color,p.name,
-      `${k==='ps'?'Starts':k==='pe'?'Ends':'In progress'} · ${esc(D.fmt(p.start_date))} – ${esc(D.fmt(p.end_date))}`)
+      `${k==='ps'?'Starts':k==='pe'?'Ends':'In progress'} · ${esc(projWhen(p))}`)
     +`<div class="pcal-kv">${row('Status',statusPill(PROJ_STATUS,projProgress(p)))}${row('Type',esc(t.name))}
       ${row('Team',tm&&tm.id?esc(tm.name):'')}${row('Lead',lead?esc(lead.full_name):'')}${row('Priority',priTag(p.priority))}
       ${rq?row('Request',`<span class="code">${esc(rq.code||'')}</span> ${esc(rq.event_name||rq.institute||'')}`):''}
@@ -11297,7 +11301,7 @@ function viewProject(id,tab){
           ${priTag(p.priority)}
           <span class="chip">${esc(aunitName(p.academic_unit_id))}${aunitIsRetired(p.academic_unit_id)?' · archived':''}</span>
           <span class="chip">${esc(ayear(p.academic_year_id))}</span>
-          <span class="chip">${D.fmt(p.start_date)} – ${D.fmt(p.end_date)}</span>
+          <span class="chip">${esc(projWhen(p))}</span>
           ${p.tags.map(tg=>{const g=DB.tags.find(x=>x.id===tg);return g?`<span class="tag" style="border-color:${g.color}">#${esc(g.name)}</span>`:'';}).join('')}
         </div>
       </div>
@@ -21141,8 +21145,47 @@ function openTaskLog(taskId){
 function npHelpLine(){
   if(isCoord())return 'Route it to one team. That team’s lead becomes its owner and assigns the work.';
   if(isAdmin())return 'Route it to a team: its lead becomes the owner and assigns the work. With no team, you own it.';
-  if(isTL())return 'It is for your team. You assign the work after creating it.';
+  if(isTL())return 'You own it. Pick who works on it, and who makes each deliverable.';
   return 'It is your own project. You assign the work after creating it.';
+}
+/* A Team Lead staffs a project as they create it: no team to route it to (it
+   stays with the team they lead — POST /projects resolves that), but the
+   people on it and who makes each deliverable, as Assign work would. */
+const npStaffs=()=>isTL();
+/* When a project runs, in one line: "24 Oct 26, 9:00 AM – 31 Oct 26, 6:00 PM".
+   A time shows only where one was set; a one-day project names its day once. */
+function projWhen(p){
+  const s=D.clock(p.start_time), e=D.clock(p.end_time);
+  if(!s&&!e)return `${D.fmt(p.start_date)} – ${D.fmt(p.end_date)}`;
+  if(p.start_date&&p.start_date===p.end_date)
+    return `${D.fmt(p.start_date)}, ${s||'—'} – ${e||'—'}`;
+  return `${D.fmt(p.start_date)}${s?', '+s:''} – ${D.fmt(p.end_date)}${e?', '+e:''}`;
+}
+/* The New project / Edit project start–end check. Returns the field to flag
+   and why, or null. A time may be left out; only a same-day pair is ordered. */
+function projWhenError(start,end,st,et,pre){
+  if(start&&end&&end<start)return ['#'+pre+'-end','The end date must be on or after the start date.'];
+  if(start&&start===end&&st&&et&&et<=st)return ['#'+pre+'-etime','On a one-day project it must end after it starts.'];
+  return null;
+}
+/* "Runs Sat, 24 October 2026 · 9:00 AM → Sat, 31 October 2026 · 6:00 PM",
+   redrawn under the New project dates as they change. */
+function npWhenSync(){
+  const box=$('#np-when'); if(!box)return;
+  const v=id=>($('#'+id)||{}).value||'';
+  const s=v('np-start'), e=v('np-end'), st=D.clock(v('np-stime')), et=D.clock(v('np-etime'));
+  if(!s||!e){box.textContent='';return;}
+  const err=projWhenError(s,e,v('np-stime'),v('np-etime'),'np');
+  box.style.color=err?'var(--danger)':'';
+  box.innerHTML=err?esc(err[1])
+    :`Runs <b>${esc(D.fmtLong(s))}${st?' · '+st:''}</b> → <b>${esc(D.fmtLong(e))}${et?' · '+et:''}</b>`;
+}
+/* The people a lead may put on a new project: the whole crew, as Assign work
+   offers it (assignableMembers), less the lead, who owns it anyway. */
+const npCrewPool=()=>assignableMembers().filter(u=>u.id!==S.me);
+function npCrewCount(){
+  const n=$$('#np-crew .chip.sel').length, box=$('#np-crew-n');
+  if(box)box.textContent=n?`${n} ${n===1?'person':'people'} on it, besides you.`:'Nobody picked yet — you can add people later too.';
 }
 function openNewProject(){
   const types=catalogOrder(DB.project_types.filter(t=>t.is_active));
@@ -21169,10 +21212,23 @@ function openNewProject(){
       </div>
       <div class="row">
         <div class="field"><label class="lbl">Start date <span class="req">*</span></label><input class="inp" type="date" id="np-start" value="${rtoday()}"></div>
-        <div class="field"><label class="lbl">End date <span class="req">*</span></label><input class="inp" type="date" id="np-end" value="${D.add(rtoday(),7)}"></div>
+        <div class="field"><label class="lbl" for="np-stime">Start time</label><input class="inp" type="time" id="np-stime"></div>
       </div>
+      <div class="row">
+        <div class="field"><label class="lbl">End date <span class="req">*</span></label><input class="inp" type="date" id="np-end" value="${D.add(rtoday(),7)}"></div>
+        <div class="field"><label class="lbl" for="np-etime">End time</label><input class="inp" type="time" id="np-etime"></div>
+      </div>
+      <div class="small mut2" id="np-when" aria-live="polite" style="margin:-4px 0 var(--s3)"></div>
       <div class="field"><label class="lbl">Description</label><textarea class="inp" id="np-desc" placeholder="Scope, constraints, who asked for it…"></textarea></div>
-      ${isEmp()
+      ${npStaffs()
+        /* A lead's project is theirs and stays with their team; what they pick
+           is the people. Any number, from the whole crew. */
+        ? `<div class="field"><label class="lbl">Crew</label>
+            <div class="f wrap gap2" id="np-crew" role="group" aria-label="People on this project">
+              ${npCrewPool().map(u=>`<button type="button" class="chip" data-uid="${u.id}" aria-pressed="false">${personChipText(u.id)}</button>`).join('')
+                ||'<span class="small mut3">No one else in the crew to add.</span>'}</div>
+            <div class="hint" id="np-crew-n"></div></div>`
+      : isEmp()
         /* An employee's project is theirs — POST /projects refuses a team from them. */
         ? `<div class="field"><label class="lbl">Assigned to</label>
             <div class="chip">${esc((user(S.me)||{}).full_name||'You')}</div><input type="hidden" id="np-team" value=""></div>`
@@ -21189,13 +21245,19 @@ function openNewProject(){
       <div class="field">
         <div class="between mb2"><label class="lbl" style="margin:0">Deliverables</label>
           <button type="button" class="btn xs" data-act="npAddDeliverable">＋ Add deliverable</button></div>
-        <div id="np-delivs"></div>
-        <div class="hint">Pick what this project has to produce — one row per deliverable.</div></div>
+        <div id="np-delivs"${npStaffs()?' data-assign="1"':''}></div>
+        <div class="hint">${npStaffs()?'One row per deliverable, and who makes it. They join the crew if they are not on it yet.'
+          :'Pick what this project has to produce — one row per deliverable.'}</div></div>
     </div>
     <div class="mo-foot">
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn primary" data-act="createProject">Create project</button></div>`,{size:'wide'});
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=e=>{e.stopPropagation();ACTIONS[n.dataset.act](n.dataset,n);});
+  ['np-start','np-end','np-stime','np-etime'].forEach(id=>{const n=$('#'+id);
+    n.addEventListener('input',()=>{clearFieldErrors(n.closest('.mo-body'));npWhenSync();});});
+  $$('#np-crew .chip').forEach(c=>c.onclick=()=>{
+    const on=c.classList.toggle('sel'); c.setAttribute('aria-pressed',String(on)); npCrewCount();});
+  npWhenSync(); npCrewCount();
   ACTIONS.npDelivSync();
 }
 /* ── One deliverable row — New project and Add deliverable share it ───────
@@ -21204,14 +21266,21 @@ function openNewProject(){
    on the project becomes "… (2)". A free-text title beside the type was two
    fields for one fact, and read as a choice between them. Every field carries
    a visible label, and says when it may be left empty. */
-function delivRowHtml(types){
+/* With assign (a Team Lead's New project), the row says who makes it in place
+   of a priority: the lead's own call, as Assign work makes it. */
+function delivRowHtml(types,assign){
   const lbl=t=>`<span class="xsmall mut3">${t}</span>`, col='display:flex;flex-direction:column;gap:2px';
   return `<div class="f gap2 wrap" style="align-items:flex-end">
       <label style="${col};flex:1 1 220px">${lbl('Type')}
         <select class="inp np-d-type" style="height:34px;font-size:13px" aria-label="Deliverable type">
           ${types.map(t=>`<option value="${t.id}">${t.icon||''} ${esc(t.name)}</option>`).join('')}</select></label>
-      <label style="${col}">${lbl('Priority')}
-        <select class="inp np-d-pri" style="height:30px;font-size:12px;width:auto">${priOptions()}</select></label>
+      ${assign
+        ? `<label style="${col};flex:0 1 200px">${lbl('Assigned to')}
+        <select class="inp np-d-owner" style="height:30px;font-size:12px" aria-label="Assigned to">
+          <option value="">— Unassigned</option>
+          ${assignableMembers().map(u=>`<option value="${u.id}">${esc(u.full_name)}${u.id===S.me?' (you)':''}</option>`).join('')}</select></label>`
+        : `<label style="${col}">${lbl('Priority')}
+        <select class="inp np-d-pri" style="height:30px;font-size:12px;width:auto">${priOptions()}</select></label>`}
       <label style="${col}">${lbl('Due (optional)')}
         <input class="inp np-d-due" type="date" style="height:30px;font-size:12px;width:auto"></label>
       <label style="${col}">${lbl('Effort h (optional)')}
@@ -23098,8 +23167,9 @@ const ACTIONS = {
      One row per thing the project has to produce. The name is free text so the
      creator is never boxed into a template's idea of the work; the type comes
      from the existing catalogue, which is what gives the row its unit, icon and
-     review rules downstream. No row carries an assignee — that is decided
-     later, with Assign work on the project page. */
+     review rules downstream. A row carries an assignee only on a Team Lead's
+     New project (data-assign); everywhere else that is decided later, with
+     Assign work on the project page. */
   npAddDeliverable:()=>{
     const box=$('#np-delivs'); if(!box)return;
     const empty=box.querySelector('.np-d-empty'); if(empty)empty.remove();
@@ -23108,9 +23178,13 @@ const ACTIONS = {
     const row=document.createElement('div');
     row.className='np-d';
     row.style.cssText='border:1px solid var(--border);border-radius:var(--r);padding:10px;margin-bottom:8px;background:var(--surface-2)';
-    row.innerHTML=delivRowHtml(types);
+    row.innerHTML=delivRowHtml(types,box.dataset.assign==='1');
     row.querySelector('.np-d-del').onclick=()=>{row.remove();ACTIONS.npDelivSync();};
     row.querySelector('.np-d-type').onchange=()=>ACTIONS.npDelivSync();
+    /* Whoever is given a deliverable is on the project: tick them in Crew. */
+    const own=row.querySelector('.np-d-owner');
+    if(own)own.onchange=()=>{const c=$(`#np-crew .chip[data-uid="${own.value}"]`);
+      if(c&&!c.classList.contains('sel')){c.classList.add('sel');c.setAttribute('aria-pressed','true');npCrewCount();}};
     box.appendChild(row);
     ACTIONS.npDelivSync();
     if(!n)row.querySelector('.np-d-type').focus();
@@ -23168,9 +23242,14 @@ const ACTIONS = {
        without — and Admin is asked to choose (a team, or "no team" on purpose). */
     if((isCoord()||isAdmin())&&!$('#np-team').value)
       return fieldError('#np-team','Choose the team this project is for.');
-    const teamId=+$('#np-team').value||null;
+    /* A lead names no team: the project stays with the one they lead, which is
+       what POST /projects resolves when they lead exactly one. */
+    const staffs=npStaffs(), mine=staffs?assignableTeams():[];
+    const teamId=staffs?(mine.length===1?mine[0].id:null):(+($('#np-team')||{}).value||null);
     const start=$('#np-start').value,end=$('#np-end').value;
-    if(end<start){toast('end date must be on or after the start date','bad');return;}
+    const stime=$('#np-stime').value||null, etime=$('#np-etime').value||null;
+    const when=projWhenError(start,end,stime,etime,'np');
+    if(when)return fieldError(when[0],when[1]);
     const tid=+$('#np-type').value;
     const id=Math.max(...DB.projects.map(p=>p.id))+1;
     // The API creates every project active, an employee's included — no proposal step.
@@ -23181,26 +23260,34 @@ const ACTIONS = {
       team_id:teamId,
       owner_id:(()=>{const t=teamId?team(teamId):null;
         return t&&t.lead_user_id?t.lead_user_id:(isCoord()?null:S.me);})(),
-      created_by:S.me,start_date:start,end_date:end,cover_image_url:null,type_meta:{},
+      created_by:S.me,start_date:start,end_date:end,start_time:stime,end_time:etime,cover_image_url:null,type_meta:{},
       source:'app',archived_at:null,deleted_at:null,tags:[],_optimistic:true};
     DB.projects.push(p);
-    if(p.owner_id)
-      DB.project_assignments.push({id:Math.max(...DB.project_assignments.map(a=>a.id))+1,project_id:id,user_id:p.owner_id,
-        capacity_role_id:5,is_project_manager:true,assigned_by:S.me,assigned_at:TODAY,removed_at:null});
-    /* Deliverables the creator typed. They go to the server unassigned (an
-       employee's own project aside) — the optimistic copy mirrors that so the
-       screen never implies an owner nobody has chosen. */
+    const onProject=uid=>{
+      if(DB.project_assignments.some(a=>a.project_id===id&&a.user_id===uid&&!a.removed_at))return;
+      DB.project_assignments.push({id:Math.max(...DB.project_assignments.map(a=>a.id))+1,project_id:id,user_id:uid,
+        capacity_role_id:uid===p.owner_id?5:null,is_project_manager:uid===p.owner_id,assigned_by:S.me,assigned_at:TODAY,removed_at:null});};
+    if(p.owner_id)onProject(p.owner_id);
+    /* Deliverables the creator typed. They go to the server unassigned — a
+       lead's own picks and an employee's own project aside — and the optimistic
+       copy mirrors that so the screen never implies an owner nobody chose. */
     /* Each row is a type; its title is the type's name, numbered when the same
        type appears again ("Reel / Short (2)"). */
     const seenTitles={};
     const delivs=$$('#np-delivs .np-d').map(r=>{
       const typeId=+r.querySelector('.np-d-type').value, base=dtype(typeId).name||'Deliverable';
       const n=(seenTitles[base]=(seenTitles[base]||0)+1);
+      const pri=r.querySelector('.np-d-pri'), own=r.querySelector('.np-d-owner');
       return {title:n>1?`${base} (${n})`:base, deliverable_type_id:typeId,
-        priority:r.querySelector('.np-d-pri').value,
+        priority:pri?pri.value:'normal',
+        ...(own&&own.value?{owner_id:uidOf(own.value)}:{}),
         due_date:r.querySelector('.np-d-due').value||null,
         estimated_hours:+(r.querySelector('.np-d-est').value||0)||null};
     });
+    /* A lead's crew: everyone ticked, and everyone given a deliverable. */
+    const crew=staffs?[...new Set([...$$('#np-crew .chip.sel').map(c=>uidOf(c.dataset.uid)),
+      ...delivs.filter(d=>d.owner_id!=null).map(d=>d.owner_id)])].filter(uid=>uid!==S.me):[];
+    crew.forEach(onProject);
     let made=0;
     delivs.forEach(d=>{
       const dt=dtype(d.deliverable_type_id);
@@ -23208,27 +23295,32 @@ const ACTIONS = {
         deliverable_type_id:d.deliverable_type_id,title:d.title,
         /* An employee's own project has no lead to assign it: its deliverables
            are theirs from the start, as the server stores them. */
-        owner_id:isEmp()?S.me:null,due_date:d.due_date,completed_at:null,quantity_target:null,
+        owner_id:isEmp()?S.me:(d.owner_id??null),due_date:d.due_date,completed_at:null,quantity_target:null,
         quantity_delivered:null,unit:dt.default_unit,spec_notes:'',weight:1,status:'not_started',
         priority:d.priority,estimated_hours:d.estimated_hours,
         deleted_at:null});
       made++;});
     audit(S.me,'project.created','project',id,null,{name,status:p.status,deliverables_created:made});
-    /* The project goes to a TEAM. The server resolves that team's lead and makes
-       them the owner — no individual is named here, by anyone. */
+    /* The Coordinator and Admin send a TEAM, and the server makes its lead the
+       owner. A lead sends people instead: the crew, and who makes what. */
     const _np={name,project_type_id:tid,priority:$('#np-pri').value,academic_unit_id:$('#np-unit').value?+$('#np-unit').value:null,
-      start_date:start,end_date:end,description:$('#np-desc').value.trim(),academic_year_id:+$('#np-year').value,
-      team_id:teamId,
-      deliverables:delivs};
+      start_date:start,end_date:end,start_time:stime,end_time:etime,
+      description:$('#np-desc').value.trim(),academic_year_id:+$('#np-year').value,
+      team_id:staffs?null:teamId,
+      ...(staffs?{assignees:crew.map(ruid)}:{}),
+      deliverables:delivs.map(d=>d.owner_id!=null?{...d,owner_id:ruid(d.owner_id)}:d)};
     // Read off the form BEFORE closeModal() empties the modal layer.
-    const tname=p.team_id?team(p.team_id).name:null;
+    const tname=!staffs&&p.team_id?team(p.team_id).name:null;
+    const given=delivs.filter(d=>d.owner_id!=null).length;
     closeModal();location.hash='#/media/projects/'+id;render();
     moSync(MO_API.post('/projects',_np), res=>{ if(res&&res.project) location.hash='#/media/projects/'+res.project.id; });
+    const nd=`${made} deliverable${made===1?'':'s'}`;
     toast(gated?'Proposed. Pending approval before it is reportable-against'
-      :tname?`Created · ${made} deliverable${made===1?'':'s'} for ${tname}`
+      :staffs?`Created · ${nd}${made?` · ${given===made?'all':given} assigned`:''} · ${crew.length} ${crew.length===1?'person':'people'} on it`
+      :tname?`Created · ${nd} for ${tname}`
       /* An employee's deliverables are theirs from the start (see above). */
-      :isEmp()?`Created · ${made} deliverable${made===1?'':'s'} · assigned to you`
-            :`Created · ${made} deliverable${made===1?'':'s'} · yours to assign`,'ok');
+      :isEmp()?`Created · ${nd} · assigned to you`
+            :`Created · ${nd} · yours to assign`,'ok');
   },
   editShoot:(d)=>{
     const s=DB.shoots.find(x=>x.id===+d.sid); if(!s)return;
@@ -27032,8 +27124,11 @@ const ACTIONS = {
               ${activeUnits(p.academic_unit_id).map(a=>`<option value="${a.id}" ${p.academic_unit_id===a.id?'selected':''}>${esc(a.name)}${aunitIsRetired(a.id)?' (archived)':''}</option>`).join('')}</select>
             ${aunitIsRetired(p.academic_unit_id)?'<div class="hint">This unit is archived, kept for history. Choosing another will replace it.</div>':''}</div></div>
         <div class="row">
-          <div class="field"><label class="lbl">Start</label><input class="inp" type="date" id="ep-start" value="${p.start_date||''}"></div>
-          <div class="field"><label class="lbl">End</label><input class="inp" type="date" id="ep-end" value="${p.end_date||''}"></div></div>
+          <div class="field"><label class="lbl">Start date</label><input class="inp" type="date" id="ep-start" value="${p.start_date||''}"></div>
+          <div class="field"><label class="lbl" for="ep-stime">Start time</label><input class="inp" type="time" id="ep-stime" value="${esc(p.start_time||'')}"></div></div>
+        <div class="row">
+          <div class="field"><label class="lbl">End date</label><input class="inp" type="date" id="ep-end" value="${p.end_date||''}"></div>
+          <div class="field"><label class="lbl" for="ep-etime">End time</label><input class="inp" type="time" id="ep-etime" value="${esc(p.end_time||'')}"></div></div>
         <div class="field"><label class="lbl">Description</label><textarea class="inp" id="ep-desc">${esc(p.description||'')}</textarea></div></div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" data-act="saveProjectEdit" data-pid="${p.id}">Save changes</button></div>`);
@@ -27043,10 +27138,12 @@ const ACTIONS = {
     const p=proj(+d.pid);
     const name=$('#ep-name').value.trim(), pri=$('#ep-pri').value,
       unit=$('#ep-unit').value?+$('#ep-unit').value:null,
-      start=$('#ep-start').value, end=$('#ep-end').value, desc=$('#ep-desc').value.trim();
+      start=$('#ep-start').value, end=$('#ep-end').value, desc=$('#ep-desc').value.trim(),
+      stime=$('#ep-stime').value||null, etime=$('#ep-etime').value||null;
     if(name.length<3||name.length>120){toast('name must be 3–120 characters','bad');return;}
-    if(start&&end&&end<start){toast('end date must be on or after start date','bad');return;}
-    const body={name,priority:pri,academic_unit_id:unit,start_date:start,end_date:end,description:desc};
+    const when=projWhenError(start,end,stime,etime,'ep');
+    if(when)return fieldError(when[0],when[1]);
+    const body={name,priority:pri,academic_unit_id:unit,start_date:start,end_date:end,start_time:stime,end_time:etime,description:desc};
     const teamSel=$('#ep-team'), team=teamSel&&teamSel.value?+teamSel.value:null;
     const rerouted=!!teamSel&&team!=null&&String(team)!==String(p.team_id);
     if(rerouted){
@@ -27054,7 +27151,7 @@ const ACTIONS = {
       const t=activeTeams().find(x=>String(x.id)===String(team));
       p.team_id=team; if(t&&t.lead_user_id)p.owner_id=t.lead_user_id;
     }
-    Object.assign(p,{name,priority:pri,academic_unit_id:unit,start_date:start,end_date:end,description:desc});
+    Object.assign(p,{name,priority:pri,academic_unit_id:unit,start_date:start,end_date:end,start_time:stime,end_time:etime,description:desc});
     closeModal();render();
     moSync(MO_API.patch('/projects/'+p.id,body),()=>{render();
       toast(rerouted?"Project moved. The new team's lead now owns it and has been told":'Project updated','ok');});

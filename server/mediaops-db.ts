@@ -1550,6 +1550,11 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
   await pool.query(`ALTER TABLE mo_requests ADD COLUMN IF NOT EXISTS team_id BIGINT REFERENCES mo_teams(id)`);
   // Venue travels with the work: request → project → shoot → calendar → filters.
   await pool.query(`ALTER TABLE mo_projects ADD COLUMN IF NOT EXISTS venue TEXT`);
+  /* When the event itself runs, as wall-clock "HH:MM" beside start_date and
+     end_date — the same TEXT shape as a shoot's call_time/end_time. Optional:
+     not every project is an event with a clock. Idempotent. */
+  await pool.query(`ALTER TABLE mo_projects ADD COLUMN IF NOT EXISTS start_time TEXT`);
+  await pool.query(`ALTER TABLE mo_projects ADD COLUMN IF NOT EXISTS end_time TEXT`);
   // §18 — a project converted from a request before a team is chosen has NO
   // production owner yet. That "Needs assignment" state must be representable,
   // otherwise the coordinator ends up owning production work by default.

@@ -1720,6 +1720,24 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
      in the same instant collide, and the second one 500'd. */
   const PENDING_CODE = `'PENDING-' || md5(random()::text || clock_timestamp()::text)`;
 
+  /* A project's start/end time: "HH:MM" (24 h), or nothing. Returns the value
+     to store, or an error. On a one-day project the end must follow the start. */
+  function projectTimes(b: Record<string, unknown>, start: string | null, end: string | null,
+                        cur?: { start_time?: string | null; end_time?: string | null }):
+      { start_time: string | null; end_time: string | null } | { error: string } {
+    const one = (k: "start_time" | "end_time") => {
+      if (!(k in b)) return cur?.[k] ?? null;
+      const v = b[k] == null ? "" : String(b[k]).trim();
+      return v === "" ? null : v.slice(0, 5);
+    };
+    const st = one("start_time"), et = one("end_time");
+    for (const v of [st, et])
+      if (v !== null && !/^([01]\d|2[0-3]):[0-5]\d$/.test(v)) return { error: "A time must be HH:MM (24-hour)." };
+    if (start && end && start === end && st && et && et <= st)
+      return { error: "On a one-day project the end time must be after the start time." };
+    return { start_time: st, end_time: et };
+  }
+
   /* Create a project's deliverables from its type's active template. ONE
      implementation, shared by POST /projects and the coordinator's
      Convert-to-Project, so both produce identical scope, offsets and due dates.
@@ -1795,6 +1813,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!typeId) return sendError(res, 400, "Project type is required.");
     const start = (b.start_date as string) || null, end = (b.end_date as string) || null;
     if (start && end && end < start) return sendError(res, 400, "The end date must be on or after the start date.");
+    const times = projectTimes(b, start, end);
+    if ("error" in times) return sendError(res, 400, times.error);
     if (badPriority(b.priority) || (Array.isArray(b.deliverables)
         && (b.deliverables as Array<Record<string, unknown>>).some((d) => badPriority(d?.priority))))
       return sendError(res, 400, PRIORITY_ERROR);
@@ -1900,11 +1920,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const ownerId = leadId ?? (isCoord && !isMoAdmin(u) ? null : u.id);
     const ins = await pool.query(
       `INSERT INTO mo_projects (department_id, campus_id, academic_year_id, project_type_id, code, name, description,
-         academic_unit_id, status, priority, owner_id, created_by, start_date, end_date, type_meta, source, team_id)
-       VALUES (1,1,$1,$2,${PENDING_CODE},$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'app',$13) RETURNING id`,
+         academic_unit_id, status, priority, owner_id, created_by, start_date, end_date, type_meta, source, team_id,
+         start_time, end_time)
+       VALUES (1,1,$1,$2,${PENDING_CODE},$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'app',$13,$14,$15) RETURNING id`,
       [ayId, typeId, name, String(b.description ?? ""), unitId,
        gated ? "proposed" : "planning", (b.priority as string) || "normal", ownerId, u.id, start, end,
-       JSON.stringify(b.type_meta ?? {}), teamId]);
+       JSON.stringify(b.type_meta ?? {}), teamId, times.start_time, times.end_time]);
     const id = Number(ins.rows[0].id); // pg returns BIGINT as a string — coerce before arithmetic
     const code = `MC-2627-${100 + id}`;
     await pool.query(`UPDATE mo_projects SET code=$1 WHERE id=$2`, [code, id]);
@@ -1997,9 +2018,19 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       await pool.query(`UPDATE mo_deliverables SET owner_id=$1 WHERE project_id=$2 AND owner_id IS NULL`, [u.id, id]);
 
     // Anyone named on a deliverable joins the crew, as on every other assignment path.
-    for (const r of (await pool.query(
-      `SELECT DISTINCT owner_id FROM mo_deliverables WHERE project_id=$1 AND owner_id IS NOT NULL`, [id])).rows)
-      await addToProjectCrew(id, String(r.owner_id), u.id);
+    const delivOwners = (await pool.query(
+      `SELECT DISTINCT owner_id FROM mo_deliverables WHERE project_id=$1 AND owner_id IS NOT NULL`, [id])).rows
+      .map((r) => String(r.owner_id));
+    for (const o of delivOwners) await addToProjectCrew(id, o, u.id);
+    /* Crew a lead put on the project as they created it hear about it. Whoever
+       was also given a deliverable has already been told, by that notice. */
+    if (isMoAdmin(u) || isMoTL(u))
+      for (const uid of new Set(assignees))
+        if (uid !== u.id && !delivOwners.includes(uid))
+          await pool.query(
+            `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+             VALUES ($1,'assignment',$2,$3,'project',$4)`,
+            [uid, "You are on a new project", `${u.full_name ?? "Your Team Lead"} added you to ${name}.`, id]).catch(() => {});
 
     await audit(u, "project.created", "project", id, null,
       { name, status: gated ? "proposed" : "planning", deliverables_created: made,
@@ -12638,6 +12669,10 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       return sendError(res, 400, "A project name must be 3–120 characters.");
     if (b.start_date && b.end_date && String(b.end_date) < String(b.start_date))
       return sendError(res, 400, "The end date must be on or after the start date.");
+    const times = projectTimes(b,
+      "start_date" in b ? ((b.start_date as string) || null) : dOnly(cur.start_date),
+      "end_date" in b ? ((b.end_date as string) || null) : dOnly(cur.end_date), cur);
+    if ("error" in times) return sendError(res, 400, times.error);
     // priority is NOT NULL, so an edit must send one of the four — never null or ''.
     if ("priority" in b && !PRIORITIES.includes(String(b.priority))) return sendError(res, 400, PRIORITY_ERROR);
     if ("academic_year_id" in b && b.academic_year_id != null
@@ -12671,6 +12706,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
     for (const k of ["name", "description", "academic_unit_id", "priority", "start_date", "end_date", "cover_image_url", "academic_year_id", "team_id"])
       if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
+    for (const k of ["start_time", "end_time"] as const)
+      if (k in b) { fields.push(`${k}=$${i++}`); vals.push(times[k]); }
     if (newLead) { fields.push(`owner_id=$${i++}`); vals.push(newLead); }
     if (!fields.length) return res.json({ project: cur });
     vals.push(id);

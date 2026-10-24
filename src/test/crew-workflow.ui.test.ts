@@ -114,11 +114,63 @@ describe("Team Lead — their own team, their own team's projects", () => {
     expect(h.ev<boolean[]>("[7001,7002,7003].map(id=>leadsProject(proj(id)))")).toEqual([false, true, false]);
   });
 
-  it("New project offers a lead only their own team, already chosen", async () => {
+  /* Owner's decision (24 Oct 2026): a lead does not route a project to a team —
+     it stays with the team they lead — but staffs it as they create it: any
+     number of people, and who makes each deliverable in place of its priority. */
+  it("New project asks a lead for people, not a team, and who makes each deliverable", async () => {
     const h = await boot(901);
     h.ev("openNewProject()");
-    const opts = [...h.doc.querySelectorAll("#np-team option")].map((o) => (o as HTMLOptionElement).value);
-    expect(opts).toEqual(["9001"]);
+    const layer = h.doc.getElementById("modal-layer")!;
+    expect(layer.querySelector("#np-team"), "a lead was offered a team").toBeNull();
+    const chips = [...layer.querySelectorAll("#np-crew .chip")].map((c) => (c as HTMLElement).dataset.uid);
+    for (const id of ["902", "903", "905"]) expect(chips).toContain(id);
+    expect(chips, "the lead owns it; they are not offered as crew").not.toContain("901");
+    expect(chips, "the Coordinator carries no work").not.toContain("906");
+    h.ev("ACTIONS.npAddDeliverable(); ACTIONS.npAddDeliverable()");
+    const rows = layer.querySelectorAll("#np-delivs .np-d");
+    expect(rows[0].querySelector(".np-d-pri"), "priority is replaced by an assignee").toBeNull();
+    const owners = [...rows].map((r) => r.querySelector(".np-d-owner") as HTMLSelectElement);
+    expect([...owners[0].options].map((o) => o.value)).toEqual(expect.arrayContaining(["", "902", "905"]));
+    (layer.querySelector("#np-crew .chip[data-uid='903']") as HTMLElement).click();
+    owners[0].value = "902"; owners[0].dispatchEvent(new h.dom.window.Event("change"));
+    expect(layer.querySelector("#np-crew .chip[data-uid='902']")!.classList.contains("sel"),
+      "whoever is given a deliverable joins the crew").toBe(true);
+    expect(layer.querySelector("#np-crew-n")!.textContent).toBe("2 people on it, besides you.");
+    (layer.querySelector("#np-name") as HTMLInputElement).value = "Convocation 2026";
+    h.ev("ACTIONS.createProject()");
+    const post = h.writes().find((c) => c.url.endsWith("/projects"));
+    expect(post?.body).toMatchObject({ team_id: null, assignees: expect.arrayContaining(["zcw-902", "zcw-903"]) });
+    const ds = (post!.body as { deliverables: Array<Record<string, unknown>> }).deliverables;
+    expect(ds[0]).toMatchObject({ owner_id: "zcw-902" });
+    expect(ds[1].owner_id, "an untouched row stays unassigned").toBeUndefined();
+    const pid = h.ev<number>("Math.max(...DB.projects.map(p=>p.id))");
+    expect(h.ev<number | null>(`proj(${pid}).team_id`), "it stays with the lead's team").toBe(9001);
+    expect(h.ev<number>(`proj(${pid}).owner_id`)).toBe(901);
+  });
+
+  it("New project takes the event's start and end time, says when it runs, and refuses a one-day project that ends first", async () => {
+    const h = await boot(906);
+    h.ev("openNewProject()");
+    const set = (id: string, v: string) => {
+      const n = h.doc.getElementById(id) as HTMLInputElement; n.value = v;
+      n.dispatchEvent(new h.dom.window.Event("input"));
+    };
+    set("np-start", "2026-10-24"); set("np-end", "2026-10-31"); set("np-stime", "09:00"); set("np-etime", "18:30");
+    expect(h.doc.getElementById("np-when")!.textContent)
+      .toBe("Runs Sat, 24 October 2026 · 9:00 AM → Sat, 31 October 2026 · 6:30 PM");
+    (h.doc.querySelector("#np-name") as HTMLInputElement).value = "Convocation 2026";
+    (h.doc.querySelector("#np-team") as HTMLSelectElement).value = "9001";
+    set("np-end", "2026-10-24"); set("np-etime", "08:00");
+    h.ev("ACTIONS.createProject()");
+    expect(h.writes().some((c) => c.url.endsWith("/projects")), "created ending before it starts").toBe(false);
+    expect(h.doc.querySelector("#np-etime-err")?.textContent).toBe("On a one-day project it must end after it starts.");
+    set("np-etime", "17:00");
+    h.ev("ACTIONS.createProject()");
+    expect(h.writes().find((c) => c.url.endsWith("/projects"))?.body)
+      .toMatchObject({ start_date: "2026-10-24", end_date: "2026-10-24", start_time: "09:00", end_time: "17:00" });
+    const pid = h.ev<number>("Math.max(...DB.projects.map(p=>p.id))");
+    expect(h.ev<string>(`projWhen(proj(${pid}))`)).toBe("24 Oct 26, 9:00 AM – 5:00 PM");
+    expect(h.ev<string>("projWhen(proj(7001))"), "no time set: dates only, as before").not.toMatch(/AM|PM/);
   });
 
   it("New project offers the Coordinator every team, and does not create one without a team", async () => {
@@ -157,7 +209,7 @@ describe("Team Lead — their own team, their own team's projects", () => {
     const h = await boot(906);
     const help = () => { h.ev("openNewProject()"); return h.doc.querySelector("#modal-layer .mo-head p")!.textContent; };
     expect(help()).toMatch(/team’s lead .* assigns the work/);
-    h.as(901); expect(help()).toBe("It is for your team. You assign the work after creating it.");
+    h.as(901); expect(help()).toBe("You own it. Pick who works on it, and who makes each deliverable.");
     h.as(902); expect(help()).toBe("It is your own project. You assign the work after creating it.");
     h.as(906); help();
     h.ev("ACTIONS.npAddDeliverable(); ACTIONS.npAddDeliverable()");

@@ -353,6 +353,45 @@ maybe("team lead — allocates inside their own team, on their own team's projec
     expect(Number(p.team_id)).toBe(teamA);
     expect(p.owner_id).toBe(ACTORS.leadA.id);
   });
+
+  /* Owner's decision (24 Oct 2026): a lead staffs the project as they create
+     it — the people on it, and who makes each deliverable. */
+  it("9c — a lead creates a project with its crew and each deliverable's owner, and they are told", async () => {
+    const r = await as("leadA", "POST", "/projects", {
+      name: `${PX} staffed ${Math.random().toString(36).slice(2, 8)}`, project_type_id: projectTypeId,
+      start_date: "2026-10-01", end_date: "2026-10-10", team_id: null,
+      assignees: [ACTORS.empA2.id, ACTORS.empB1.id],
+      deliverables: [{ deliverable_type_id: dtype, owner_id: ACTORS.empA1.id }, { deliverable_type_id: dtype }] });
+    expect(r.status).toBe(201);
+    const pid = Number((r.body.project as Record<string, unknown>).id);
+    expect(Number((await project(pid)).team_id), "it stays with the lead's team").toBe(teamA);
+    const owners = (await pool.query(`SELECT owner_id FROM mo_deliverables WHERE project_id=$1 ORDER BY id`, [pid]))
+      .rows.map((x) => x.owner_id);
+    expect(owners).toEqual([ACTORS.empA1.id, null]);
+    const crew = (await pool.query(
+      `SELECT user_id FROM mo_project_assignments WHERE project_id=$1 AND removed_at IS NULL`, [pid])).rows.map((x) => x.user_id);
+    for (const a of ["leadA", "empA1", "empA2", "empB1"] as const) expect(crew).toContain(ACTORS[a].id);
+    expect((await notes(ACTORS.empA2.id, "project", pid)).map((n) => n.title)).toEqual(["You are on a new project"]);
+    expect(await notes(ACTORS.empA1.id, "project", pid), "a deliverable's owner is told once, by its notice").toEqual([]);
+  });
+
+  it("9d — a project keeps the event's start and end time, and refuses a bad or backwards one", async () => {
+    const body = (o: Record<string, unknown>) => ({
+      name: `${PX} timed ${Math.random().toString(36).slice(2, 8)}`, project_type_id: projectTypeId, team_id: teamA, ...o });
+    const r = await as("coord", "POST", "/projects",
+      body({ start_date: "2026-10-24", end_date: "2026-10-31", start_time: "09:00", end_time: "18:30" }));
+    expect(r.status).toBe(201);
+    const pid = Number((r.body.project as Record<string, unknown>).id);
+    expect(await project(pid)).toMatchObject({ start_time: "09:00", end_time: "18:30" });
+    expect((await as("coord", "POST", "/projects",
+      body({ start_date: "2026-10-24", end_date: "2026-10-24", start_time: "17:00", end_time: "09:00" }))).status).toBe(400);
+    expect((await as("coord", "POST", "/projects",
+      body({ start_date: "2026-10-24", end_date: "2026-10-25", start_time: "25:00" }))).status).toBe(400);
+    // Edited: a one-day move is checked against the times already stored.
+    expect((await as("leadA", "PATCH", `/projects/${pid}`, { end_date: "2026-10-24", end_time: "08:00" })).status).toBe(400);
+    expect((await as("leadA", "PATCH", `/projects/${pid}`, { start_time: "10:15", end_time: null })).status).toBe(200);
+    expect(await project(pid)).toMatchObject({ start_time: "10:15", end_time: null });
+  });
 });
 
 /* ── EMPLOYEE (10–14) ─────────────────────────────────────────────────────── */
