@@ -777,9 +777,9 @@ describe("Controls — offered exactly what the server allows", () => {
     h.as(904);
     expect(h.ev<string[]>(moves), "another team's lead was offered scope moves").toEqual([]);
     h.as(902);
-    expect(h.ev<string[]>(moves)).toEqual(["→ In Progress"]);
+    expect(h.ev<string[]>(moves)).toEqual(["→ In progress"]);
     h.as(901);
-    expect(h.ev<string[]>(moves)).toEqual(["→ In Progress", "→ Not Required", "→ Cancelled"]);
+    expect(h.ev<string[]>(moves)).toEqual(["→ In progress", "→ Not required", "→ Cancelled"]);
     // The project table's ⋯ (Cancel / Not required) follows the same rule.
     h.as(902);
     expect(h.ev<string[]>("(()=>{let it=[];const m=window.menu;window.menu=(n,x)=>{it=x;};"
@@ -804,7 +804,7 @@ describe("Controls — offered exactly what the server allows", () => {
   it("→ In review opens Submit a version; it never sets the status alone", async () => {
     const h = await boot(902);
     h.ev("deliv(8002).status='in_progress'");
-    expect(h.ev<string[]>(moves)).toContain("→ In Review");
+    expect(h.ev<string[]>(moves)).toContain("→ In review");
     h.ev("applyDelivStatus(deliv(8002),'in_review')");
     expect(h.doc.getElementById("modal-layer")!.innerHTML).toContain("Submit v1 for review");
     expect(h.doc.getElementById("modal-layer")!.innerHTML).toContain("Any Team Lead or Admin");
@@ -814,7 +814,7 @@ describe("Controls — offered exactly what the server allows", () => {
   it("→ Changes requested asks the reviewer what to change, and sends it", async () => {
     const h = await boot(904);
     expect(h.ev<string[]>("MENUS.delivMenu({did:'8001'}).filter(i=>i.fn&&String(i.label).startsWith('→')).map(i=>i.label)"))
-      .toEqual(expect.arrayContaining(["→ Approved", "→ Changes Requested"]));
+      .toEqual(expect.arrayContaining(["→ Approve…", "→ Request changes…"]));
     h.ev("applyDelivStatus(deliv(8001),'changes_requested')");
     const modal = h.doc.getElementById("modal-layer")!;
     expect(modal.innerHTML).not.toMatch(/P4|version trail/);
@@ -833,7 +833,7 @@ describe("Controls — offered exactly what the server allows", () => {
     const h = await boot(901);
     h.ev("drawerDeliverable(8002)");
     h.ev("applyDelivStatus(deliv(8002),'not_required')");
-    expect(h.doc.querySelector("#drawer .dr-head")!.innerHTML).toContain("Not Required");
+    expect(h.doc.querySelector("#drawer .dr-head")!.innerHTML).toContain("Not required");
   });
 
   it("✔ Mark delivered is offered to the people on it and the project's lead — not the Coordinator or another lead", async () => {
@@ -916,7 +916,7 @@ describe("Controls — offered exactly what the server allows", () => {
 
   it("Assign to SMC member is not offered to the Coordinator or a crew employee", async () => {
     const h = await boot(906);
-    h.ev("DASG.byDeliv[8002]={crew:null,smc:null,team:[]}");
+    h.ev("DASG.byDeliv[8002]={crew:null,smc:null,team:[],smc_available:true}");
     expect(h.ev<string>("delivAssignSection(8002)")).not.toContain('data-kind="smc"');
     h.as(903);
     expect(h.ev<string>("delivAssignSection(8002)")).not.toContain('data-kind="smc"');
@@ -982,7 +982,7 @@ describe("My Day, the drawer, lists and crew — one answer per question", () =>
     const h = await boot(902);
     h.ev(WORK);
     const card = h.ev<string>("assignmentCard(myAssignments(902).find(a=>a.id===77101))");
-    expect(card).toContain("In Review");
+    expect(card).toContain("In review");
     expect(card).not.toContain("asg-sel");
     expect(card).not.toContain("Not started");
   });

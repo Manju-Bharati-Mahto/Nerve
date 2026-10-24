@@ -173,7 +173,7 @@ describe("the deliverable drawer", () => {
     expect(sec.textContent).not.toContain("Not assigned");
   });
 
-  it("SMC shows only when someone covers it, or a lead may still add one to open work", async () => {
+  it("SMC shows only when someone covers it, or a lead may still add one to open work at an institute with SMC", async () => {
     const h = await boot(902);
     h.ev("DASG.byDeliv[8102]={crew:{user_id:'zmd-902',full_name:'Emp Anika'},team:[],smc:null}");
     let sec = drawer(h, 8102).querySelector("[data-dasg]") as HTMLElement;
@@ -183,7 +183,14 @@ describe("the deliverable drawer", () => {
     expect(sec.textContent).toMatch(/SMC member\s*Smc Sana\s*PIET/);
     h.as(904);
     h.ev("DASG.byDeliv[8102].smc=null");
-    expect(drawer(h, 8102).querySelector('[data-act="dasgOpen"][data-kind="smc"]')).not.toBeNull();
+    // The project's institute has no Social Media Coordinator: nothing to offer.
+    expect(drawer(h, 8102).querySelector('[data-act="dasgOpen"][data-kind="smc"]')).toBeNull();
+    expect(drawer(h, 8102).querySelector("[data-dasg]")!.textContent).not.toContain("SMC");
+    h.ev("DASG.byDeliv[8102].smc_available=true");
+    const btn = drawer(h, 8102).querySelector('[data-act="dasgOpen"][data-kind="smc"]') as HTMLElement;
+    expect(btn.title).toBe("Hand it to a Social Media Coordinator at the institute");
+    expect(drawer(h, 8102).querySelector("[data-smc-hint]")!.textContent)
+      .toBe("SMC: hand it to a Social Media Coordinator at the institute.");
     h.ev("deliv(8102).status='delivered'");
     expect(drawer(h, 8102).querySelector('[data-act="dasgOpen"][data-kind="smc"]')).toBeNull();
   });
@@ -271,5 +278,138 @@ describe("Home and the board", () => {
     h.ev("S.dragging='deliverable:8101'");   // in progress, Emp Anika's own
     expect(over("approved"), "an employee approving by drag").toBe(false);
     expect(over("in_review")).toBe(true);
+  });
+});
+
+/* ── The drawer after a live run: versions, delivery and sign-off ─────────────
+   Who reviewed each version and when, in the display format; delivered work
+   says Delivered (no countdown) and who signed it off; post-delivery wording
+   is Sign off / Send back; status words in sentence case; the ⋯ menu holds
+   only usable items; the people on it can start work from the footer. */
+describe("the deliverable drawer — versions, delivery and sign-off", () => {
+  const drawer = (h: H, id: number) => { h.ev(`drawerDeliverable(${id})`); return h.doc.querySelector("#drawer") as HTMLElement; };
+  const kv = (h: H, id: number, dt: string) => [...drawer(h, id).querySelectorAll("dl.kv dt")]
+    .find((n) => n.textContent === dt)?.nextElementSibling?.textContent?.replace(/\s+/g, " ").trim();
+  const day = (h: H, ts: string) => h.ev<string>(`D.fmtDay('${ts}')`);
+  const delivered = (h: H) => h.ev(`__dl(8120,'Photos edited','delivered',{completed_at:'2026-10-20',delivered_by:902,
+    due_date:'2099-12-31'}); __v(88120,8120,1,'approved','2026-10-19T10:00:00Z');`);
+
+  it("status words are sentence case — one spelling for pills, menus and the board", async () => {
+    const h = await boot(901);
+    expect(h.ev<string[]>("Object.values(DELIV_STATUS).map(s=>s.l)")).toEqual(
+      ["Not started", "In progress", "In review", "Changes requested", "Approved", "Delivered", "Not required", "Cancelled"]);
+    expect(h.ev<string>("viewPipeline()")).not.toMatch(/Not Started|In Progress|In Review|Changes Requested/);
+  });
+
+  it("each reviewed version says who reviewed it and when; no date is raw ISO", async () => {
+    const h = await boot(902);
+    h.ev(`__v(88103,8102,0,'changes_requested','2026-09-30T08:00:00Z');
+          DB.deliverable_versions.find(v=>v.id===88103).review_comment='Brighten the night shots';
+          DB.comments.push({id:99801,entity_type:'deliverable',entity_id:8102,user_id:901,body:'Looks good',created_at:'2026-10-02T07:00:00Z'});`);
+    const d = drawer(h, 8102);
+    const reviewed = [...d.querySelectorAll("[data-reviewed]")].map((n) => n.textContent!.replace(/\s+/g, " ").trim());
+    expect(reviewed).toEqual([`Changes requested by Lead Bravo · ${day(h, "2026-09-30T08:00:00Z")}`]);
+    h.ev("Object.assign(DB.deliverable_versions.find(v=>v.id===88102),{review_status:'approved',reviewed_by:904,reviewed_at:'2026-10-03T09:00:00Z'})");
+    expect(drawer(h, 8102).querySelector("[data-reviewed]")!.textContent!.replace(/\s+/g, " ").trim())
+      .toBe(`Approved by Lead Bravo · ${day(h, "2026-10-03T09:00:00Z")}`);
+    const text = drawer(h, 8102).querySelector(".dr-body")!.textContent!;
+    expect(text).not.toMatch(/\d{4}-\d\d-\d\d/);
+    expect(text).toContain(day(h, "2026-10-02T07:00:00Z"));
+  });
+
+  it("a review note is not contradicted by 'No comments.'", async () => {
+    const h = await boot(902);
+    expect(drawer(h, 8102).textContent).toContain("No comments.");
+    h.ev("Object.assign(DB.deliverable_versions.find(v=>v.id===88102),{review_status:'changes_requested',reviewed_by:904,reviewed_at:'2026-10-03',review_comment:'Too dark'})");
+    const text = drawer(h, 8102).textContent!;
+    expect(text).toContain("Review note: Too dark");
+    expect(text).toContain("No other comments.");
+    expect(text).not.toContain("No comments.");
+  });
+
+  it("delivered work says Delivered with no countdown, and waits for sign-off", async () => {
+    const h = await boot(904);
+    delivered(h);
+    expect(kv(h, 8120, "Due date")).toBe(h.ev<string>("D.fmt('2099-12-31')"));
+    expect(kv(h, 8120, "Delivered")).toBe(`${h.ev<string>("D.fmt('2026-10-20')")} by Emp Anika`);
+    expect(kv(h, 8120, "Completed")).toBeUndefined();
+    expect(kv(h, 8120, "Sign-off")).toBe("Awaiting sign-off");
+    // Open work still counts down.
+    h.ev("deliv(8101).due_date='2099-12-31'");
+    expect(kv(h, 8101, "Due date")).toMatch(/\(in \d+d\)$/);
+  });
+
+  it("post-delivery is Sign off / Send back, and the drawer then says who signed it off or sent it back", async () => {
+    const h = await boot(904);
+    delivered(h);
+    const foot = () => [...drawer(h, 8120).querySelectorAll('.dr-foot [data-act="reviewDelivered"]')].map((b) => b.textContent);
+    expect(foot()).toEqual(["✔ Sign off", "↩ Send back"]);
+    expect(h.ev<string>("projDeliverablesTab(proj(7001),projectDeliverables(7001))")).toContain("✔ Sign off");
+    expect(h.ev<string[]>("Object.values(DELIV_APPROVAL).map(s=>s.l)").slice(0, 3))
+      .toEqual(["Awaiting sign-off", "Signed off", "Sent back"]);
+    h.ev("ACTIONS.confirmSignOff({did:'8120',v:'approved'})");
+    expect(kv(h, 8120, "Sign-off")).toBe(`Signed off by Lead Bravo · ${h.ev<string>("D.fmtDay(deliv(8120).approved_at)")}`);
+    expect(foot()).toEqual([]);
+    expect(h.ev<string>(`auditText({action:'deliverable.approval_changed',entity_type:'deliverable',entity_id:8120,
+      before:{approval_status:'pending'},after:{approval_status:'approved'}})`)).toBe("signed off Photos edited");
+    // Sent back after delivery: who, and what to change.
+    h.ev("deliv(8120).approval_status='pending'; deliv(8120).status='delivered'");
+    h.ev("ACTIONS.reviewDelivered({did:'8120',v:'changes_requested'})");
+    (h.doc.getElementById("rd-note") as HTMLTextAreaElement).value = "Wrong logo at the end";
+    h.ev("ACTIONS.confirmSignOff({did:'8120',v:'changes_requested'})");
+    expect(kv(h, 8120, "Sign-off")).toBe("Sent back after delivery by Lead Bravo: Wrong logo at the end");
+    expect(h.ev<string>(`auditText({action:'deliverable.approval_changed',entity_type:'deliverable',entity_id:8120,
+      before:{approval_status:'pending'},after:{approval_status:'changes_requested'}})`)).toBe("sent Photos edited back after delivery");
+  });
+
+  it("the ⋯ menu: moves carry no status glyph, approval reads → Approve…, and Copy Drive link only with a link", async () => {
+    const h = await boot(904);
+    const items = () => h.ev<Array<{ label?: string; icon?: string; fn?: unknown }>>("MENUS.delivMenu({did:'8102'})");
+    const moves = items().filter((i) => String(i.label).startsWith("→"));
+    expect(moves.map((i) => i.label)).toContain("→ Approve…");
+    expect(moves.every((i) => !i.icon)).toBe(true);
+    expect(items().map((i) => i.label)).not.toContain("Copy Drive link");
+    h.ev("ACTIONS.copyLink({did:'8102'})");
+    expect(h.doc.querySelector("#toasts")!.textContent).toContain("no Drive link yet");
+    h.ev(`DB.drive_links.push({id:99701,entity_type:'deliverable',entity_id:8102,label:'Aftermovie',
+      url:'https://drive.google.com/x',validation_status:'ok'})`);
+    expect(items().map((i) => i.label)).toContain("Copy Drive link");
+  });
+
+  it("the Drive link row: a copy glyph, and no bare 'ok' pill — only a problem is named", async () => {
+    const h = await boot(902);
+    h.ev(`DB.drive_links.push({id:99701,entity_type:'deliverable',entity_id:8102,label:'Aftermovie',
+      url:'https://drive.google.com/x',validation_status:'ok'})`);
+    const row = () => [...drawer(h, 8102).querySelectorAll(".list-row")]
+      .find((r) => r.textContent!.includes("drive.google.com/x")) as HTMLElement;
+    expect(row().textContent).not.toMatch(/\bok\b|Valid/);
+    expect(row().querySelector('[data-act="copyURL"]')!.textContent).toBe("⧉ Copy");
+    expect(drawer(h, 8102).innerHTML).not.toContain("⛁");
+    h.ev("DB.drive_links.find(l=>l.id===99701).validation_status='broken'");
+    expect(row().textContent).toContain("Broken");
+    h.as(901);
+    expect(h.ev<string>("projDeliverablesTab(proj(7001),projectDeliverables(7001))")).toContain("⧉ Copy");
+  });
+
+  it("the people on it see ▶ Start work while Not started — the same move as ⋯ → In progress", async () => {
+    const h = await boot(902);
+    h.ev("__dl(8121,'Reel','not_started')");
+    const start = () => drawer(h, 8121).querySelector('.dr-foot [data-act="startWork"]') as HTMLElement | null;
+    expect(start()?.textContent).toBe("▶ Start work");
+    h.as(906);
+    expect(start(), "the Coordinator is not on it").toBeNull();
+    h.as(902);
+    start()!.click();
+    expect(h.writes().find((c) => c.url.endsWith("/deliverables/8121/status"))?.body).toEqual({ status: "in_progress" });
+    expect(start(), "gone once in progress").toBeNull();
+  });
+
+  it("work in review tells the Coordinator who acts next", async () => {
+    const h = await boot(906);
+    expect(drawer(h, 8102).querySelector(".dr-foot [data-next]")?.textContent).toBe("Waiting for a Team Lead to review.");
+    h.as(904);
+    expect(drawer(h, 8102).querySelector(".dr-foot [data-next]"), "the reviewer has the buttons").toBeNull();
+    h.as(902);
+    expect(drawer(h, 8102).querySelector(".dr-foot [data-next]"), "the submitter reads their own line").toBeNull();
   });
 });

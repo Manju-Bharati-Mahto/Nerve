@@ -2457,6 +2457,8 @@ const D = {
   /* The absolute value every relative one carries in its tooltip. */
   fmtAt:ts=>{const d=D.at(ts);if(!d)return '—';
     return D.fmt(D.iso(d))+', '+D.time(d);},
+  /* A timestamp's local day, in the display format ("24 Oct 26"). */
+  fmtDay:ts=>{const d=D.at(ts);return d?D.fmt(D.iso(d)):'—';},
   /* Clock time only, for lists that are already one day ("today"). Server
      timestamps arrive in UTC: slicing "…T22:07…" out of the string printed a
      time 5 h 30 min behind, so a stamp is always read through a Date first. */
@@ -4357,17 +4359,25 @@ const PROJ_STATUS = {
   completed:{l:'Completed',c:'st-success',i:'✔',ico:'check'}, archived:{l:'Archived',c:'st-neutral',i:'⛁',ico:'archive'},
   on_hold:{l:'On Hold',c:'st-warn',i:'‖',ico:'pause'}, cancelled:{l:'Cancelled',c:'st-danger',i:'✕',ico:'x'}
 };
+/* Status words in sentence case — the one spelling every pill, menu, board
+   column and sheet reads. */
 const DELIV_STATUS = {
-  not_started:{l:'Not Started',c:'st-neutral',i:'◌',ico:'pending'}, in_progress:{l:'In Progress',c:'st-info',i:'▶',ico:'play'},
-  in_review:{l:'In Review',c:'st-warn',i:'◎',ico:'eye'}, changes_requested:{l:'Changes Requested',c:'st-danger',i:'↩',ico:'undo'},
+  not_started:{l:'Not started',c:'st-neutral',i:'◌',ico:'pending'}, in_progress:{l:'In progress',c:'st-info',i:'▶',ico:'play'},
+  in_review:{l:'In review',c:'st-warn',i:'◎',ico:'eye'}, changes_requested:{l:'Changes requested',c:'st-danger',i:'↩',ico:'undo'},
   approved:{l:'Approved',c:'st-brand',i:'✓',ico:'check'}, delivered:{l:'Delivered',c:'st-success',i:'✔',ico:'check'},
-  not_required:{l:'Not Required',c:'st-neutral',i:'–',ico:'ban'}, cancelled:{l:'Cancelled',c:'st-danger',i:'✕',ico:'x'}
+  not_required:{l:'Not required',c:'st-neutral',i:'–',ico:'ban'}, cancelled:{l:'Cancelled',c:'st-danger',i:'✕',ico:'x'}
 };
-/* Reviewer verdict on a DELIVERED output (separate from version review). */
+/* The sign-off on a DELIVERED output — separate from a version's review
+   ("Approve" / "Approved by …"), so it never borrows that word. */
 const DELIV_APPROVAL = {
-  pending:{l:'Awaiting review',c:'st-warn',i:'◔',ico:'clock'}, approved:{l:'Approved',c:'st-success',i:'✔',ico:'check'},
-  changes_requested:{l:'Needs revision',c:'st-danger',i:'↩',ico:'undo'}, rejected:{l:'Rejected',c:'st-danger',i:'✕',ico:'x'}
+  pending:{l:'Awaiting sign-off',c:'st-warn',i:'◔',ico:'clock'}, approved:{l:'Signed off',c:'st-success',i:'✔',ico:'check'},
+  changes_requested:{l:'Sent back',c:'st-danger',i:'↩',ico:'undo'}, rejected:{l:'Rejected',c:'st-danger',i:'✕',ico:'x'}
 };
+/* The ⋯ move for a verdict opens its dialog, so it is named as that action. */
+const DELIV_MOVE_LABEL = {approved:'Approve…',changes_requested:'Request changes…'};
+/* A Drive link's weekly check, in plain words. */
+const LINK_STATUS = {ok:{l:'Valid',c:'st-success',i:'✔',ico:'check'},broken:{l:'Broken',c:'st-danger',i:'✕',ico:'xcircle'},
+  no_permission:{l:'No permission',c:'st-warn',i:'🔒',ico:'lock'},unchecked:{l:'Unchecked',c:'st-neutral',i:'◌',ico:'pending'}};
 const REPORT_STATUS = {
   draft:{l:'Draft',c:'st-neutral',i:'✎',ico:'edit'}, submitted:{l:'Submitted',c:'st-info',i:'⤴',ico:'send'},
   flagged:{l:'Flagged',c:'st-danger',i:'⚑',ico:'flag'}, returned:{l:'Returned',c:'st-warn',i:'↩',ico:'undo'},
@@ -9810,7 +9820,7 @@ const AUDIT_VERB={
   'deliverable.delivered':'delivered','deliverable.dispatched':'dispatched','deliverable.archived':'archived',
   'deliverable.assigned':'assigned {who} to','deliverable.smc_assigned':'assigned {who} from SMC to',
   'deliverable.reassigned':'reassigned',
-  'deliverable.approval_changed':'reviewed','deliverable.due_date_changed':'changed the due date of',
+  'deliverable.approval_changed':'signed off','deliverable.due_date_changed':'changed the due date of',
   'deliverable.link_copied':'copied the Drive link of','deliverable.version_reviewed':'reviewed',
   'deliverable.version_submitted':'submitted',
   'work.assigned':'assigned {t} to {who}','assignment.created':'created','assignment.updated':'updated',
@@ -9911,8 +9921,11 @@ function auditWho(a){
 }
 /* A version's review says its verdict: "approved v2 of …", "requested changes on v1 of …". */
 const AUDIT_VERDICT={approved:'approved',changes_requested:'requested changes on'};
+/* A sign-off on delivered work says which: "signed off …", "sent … back after delivery". */
+const AUDIT_SIGNOFF={approved:'signed off',changes_requested:'sent {t} back after delivery',rejected:'sent {t} back after delivery'};
 function auditTpl(a){
   const v=(a.action==='deliverable.version_reviewed'&&AUDIT_VERDICT[(a.after||{}).review_status])
+    ||(a.action==='deliverable.approval_changed'&&AUDIT_SIGNOFF[(a.after||{}).approval_status])
     ||AUDIT_VERB[a.action]||auditVerbGuess(a.action);
   return v.includes('{t}')?v:v+' {t}';
 }
@@ -11610,10 +11623,10 @@ function projDeliverablesTab(p,dls){
             ${dispatchNote(d)?`<div class="t-sub small mut" data-dispatch>${esc(dispatchNote(d))}</div>`:''}</td>
           <td class="num pj-acts" data-stop data-m="actions">
             ${canSignOff(d)?
-              `<button class="btn xs primary" data-act="reviewDelivered" data-did="${d.id}" data-v="approved">✔ Approve</button>
-               <button class="btn xs" data-act="reviewDelivered" data-did="${d.id}" data-v="changes_requested">↩ Revise</button>`:''}
+              `<button class="btn xs primary" data-act="reviewDelivered" data-did="${d.id}" data-v="approved">✔ Sign off</button>
+               <button class="btn xs" data-act="reviewDelivered" data-did="${d.id}" data-v="changes_requested">↩ Send back</button>`:''}
             ${DB.drive_links.filter(l=>l.entity_type==='deliverable'&&l.entity_id===d.id).length?
-              `<button class="btn xs" data-act="copyLink" data-did="${d.id}">⛁ Copy</button>`:''}
+              `<button class="btn xs" data-act="copyLink" data-did="${d.id}">⧉ Copy</button>`:''}
             ${canScheduleWork(p)?`<button class="btn xs" data-act="scheduleDeliv" data-did="${d.id}">◷ Schedule</button>`:''}
             <button class="btn xs" data-act="delivAction" data-did="${d.id}">⋯</button></td></tr>`;}).join('')}
       </tbody></table></div></div>
@@ -11721,8 +11734,6 @@ function projShootsTab(p,shoots){
 function projFilesTab(p){
   const links=DB.drive_links.filter(l=>(l.entity_type==='project'&&l.entity_id===p.id)||
     (l.entity_type==='deliverable'&&projectDeliverables(p.id).some(d=>d.id===l.entity_id)));
-  const VS={ok:{l:'Valid',c:'st-success',i:'✔',ico:'check'},broken:{l:'Broken',c:'st-danger',i:'✕',ico:'xcircle'},
-    no_permission:{l:'No permission',c:'st-warn',i:'🔒',ico:'lock'},unchecked:{l:'Unchecked',c:'st-neutral',i:'◌',ico:'pending'}};
   return `<div class="note mb4"><b>Media files stay in Drive.</b> The platform stores structured, validated links:
     entity, label, URL, who added it, and a validation state checked weekly by AUTO-5 with read-metadata scope only.
     </div>
@@ -11735,7 +11746,7 @@ function projFilesTab(p){
         <td class="small">${l.entity_type==='project'?'Project':esc((deliv(l.entity_id)||{title:'—'}).title)}</td>
         <td class="small mono trunc" style="max-width:260px"><a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.url)}</a></td>
         <td>${avatar(l.added_by,'sm')}</td>
-        <td>${statusPill(VS,l.validation_status)}<div class="t-sub">${D.fmt(l.last_validated_at)}</div></td>
+        <td>${statusPill(LINK_STATUS,l.validation_status)}<div class="t-sub">${D.fmt(l.last_validated_at)}</div></td>
         <td class="num"><button class="btn xs" data-act="copyURL" data-url="${esc(l.url)}">Copy</button></td></tr>`).join('')
         ||'<tr><td colspan="6" class="tbl-empty">No links yet.</td></tr>'}
       </tbody></table></div></div>
@@ -11970,7 +11981,7 @@ function viewLibrary(){
             <td class="small" data-m="hide">${esc(aunitName(p.academic_unit_id))}</td><td class="small" data-m="hide">${esc(ayear(p.academic_year_id))}</td>
             <td data-m="hide">${avatar(d.owner_id,'xs')}</td><td data-m="aside">${statusPill(DELIV_STATUS,d.status)}</td>
             <td data-stop data-m="${ls.length?'actions':'hide'}">${ls.map(l=>
-              `<button class="btn xs" data-act="copyURL" data-url="${esc(l.url)}">⛁ Copy</button>`).join('')||'<span class="mut3">—</span>'}</td>
+              `<button class="btn xs" data-act="copyURL" data-url="${esc(l.url)}">⧉ Copy</button>`).join('')||'<span class="mut3">—</span>'}</td>
           </tr>`;}).join('')||'<tr><td colspan="8" class="tbl-empty">No results. Try clearing a facet.</td></tr>'}
           </tbody></table></div></div>
           ${rows.length>200?`<div class="card-foot">Showing 200 of ${rows.length}. Cursor pagination, 50 default / 200 max.</div>`:''}
@@ -20715,7 +20726,8 @@ function drawerDeliverable(id){
   const latest=vs[0];
   const links=DB.drive_links.filter(l=>l.entity_type==='deliverable'&&l.entity_id===id);
   const cs=DB.comments.filter(c=>c.entity_type==='deliverable'&&c.entity_id===id);
-  const over=d.due_date&&d.due_date<TODAY&&!['delivered','not_required','cancelled'].includes(d.status);
+  const closed=['delivered','not_required','cancelled'].includes(d.status);
+  const over=d.due_date&&d.due_date<TODAY&&!closed;
   const canApprove=canReviewDeliverable(d);
   /* Review follows the version, not the status: Pending Approvals lists every
      pending version, and the server reviews the latest whatever the status.
@@ -20726,6 +20738,20 @@ function drawerDeliverable(id){
      a teammate Assign work put on it — the same people the server lets submit. */
   const isOwner=onDelivTeam(d);
   const tasks=DB.report_tasks.filter(x=>x.deliverable_id===id);
+  /* Dates in the display format, the exact time in the tooltip. */
+  const when=ts=>`<span title="${String(ts||'').length>10?esc(D.fmtAt(ts)):''}">${esc(D.fmtDay(ts))}</span>`;
+  const who=uid=>uid!=null&&user(uid).full_name?esc(personName(uid)):'a reviewer';
+  /* The sign-off on delivered work — waiting, who gave it, or who sent it
+     back after delivery and why (the server keeps that note as the latest
+     version's review comment; approval_note is this page's copy). */
+  const ap=d.approval_status||'pending';
+  const signOff=d.status==='delivered'
+    ?(ap==='pending'?`<span title="Any Team Lead or Admin who is not on it signs it off">Awaiting sign-off</span>`
+      :ap==='approved'?`Signed off by ${who(d.approved_by)}${d.approved_at?' · '+when(d.approved_at):''}`:'')
+    :['changes_requested','rejected'].includes(ap)&&d.approved_by!=null&&d.completed_at
+    ?(()=>{const note=d.approval_note||(latest&&latest.review_status==='changes_requested'?latest.review_comment:'');
+      return `Sent back after delivery by ${who(d.approved_by)}${note?': '+esc(note):''}`;})():'';
+  const reviewNoteShown=vs.some(v=>v.review_comment);
   openDrawer(`
     <div class="dr-head">
       <div class="dh-txt"><div class="f ac gap2 mb1"><span style="font-size:17px">${t.icon}</span>
@@ -20737,8 +20763,9 @@ function drawerDeliverable(id){
     <div class="dr-body">
       <dl class="kv mb4">
         <dt>Due date</dt><dd style="${over?'color:var(--danger);font-weight:700':''}">${d.due_date
-          ?`${D.fmt(d.due_date)} <span class="mut3 small">(${D.rel(d.due_date)})</span>`:'<span class="mut3">No due date</span>'}</dd>
-        ${d.completed_at?`<dt>Completed</dt><dd>${D.fmt(d.completed_at)}</dd>`:''}
+          ?`${D.fmt(d.due_date)}${closed?'':` <span class="mut3 small">(${D.rel(d.due_date)})</span>`}`:'<span class="mut3">No due date</span>'}</dd>
+        ${d.completed_at?`<dt>Delivered</dt><dd data-delivered>${D.fmt(d.completed_at)}${d.delivered_by!=null&&user(d.delivered_by).full_name?' by '+esc(personName(d.delivered_by)):''}</dd>`:''}
+        ${signOff?`<dt>Sign-off</dt><dd data-signoff>${signOff}</dd>`:''}
         ${dispatchNote(d)?`<dt>Dispatch</dt><dd data-dispatch>${esc(dispatchNote(d))}</dd>`:''}
         ${d.quantity_target?`<dt>Quantity</dt><dd>${d.quantity_delivered||0} / ${d.quantity_target} ${esc(d.unit||'')}
           ${bar(Math.round((d.quantity_delivered||0)/d.quantity_target*100))}</dd>`:''}
@@ -20755,20 +20782,22 @@ function drawerDeliverable(id){
             ${v.review_status==='approved'?'<span class="status st-success"><span class="si">✔</span>Approved</span>':
               v.review_status==='changes_requested'?'<span class="status st-danger"><span class="si">↩</span>Changes requested</span>':
               '<span class="status st-warn"><span class="si">◔</span>Pending review</span>'}
-            <span class="tl-time" style="margin-left:auto">${esc(v.submitted_at.slice(0,10))}</span></div>
+            <span class="tl-time" style="margin-left:auto">${when(v.submitted_at)}</span></div>
           <div class="tl-body">${esc(v.note)}
             <div class="f gap2 mt2 wrap">${avatar(v.submitted_by,'xs')}<span class="xsmall mut3">${esc(user(v.submitted_by).full_name)}</span>
-              ${v.drive_url?`<a class="btn xs" href="${esc(v.drive_url)}" target="_blank" rel="noopener">⛁ Open in Drive</a>`:''}</div>
+              ${v.drive_url?`<a class="btn xs" href="${esc(v.drive_url)}" target="_blank" rel="noopener">↗ Open in Drive</a>`:''}</div>
+            ${v.review_status!=='pending'&&v.reviewed_by!=null?`<div class="xsmall mut3 mt2" data-reviewed>
+              ${v.review_status==='approved'?'Approved':'Changes requested'} by ${who(v.reviewed_by)}${v.reviewed_at?' · '+when(v.reviewed_at):''}</div>`:''}
             ${v.review_comment?`<div class="note ${v.review_status==='approved'?'':'warn'} mt2">
-              <b>${esc(user(v.reviewed_by).full_name)}:</b> ${esc(v.review_comment)}</div>`:''}
+              <b>Review note:</b> ${esc(v.review_comment)}</div>`:''}
           </div></div>`).join('')}</div>`:
         `<div class="empty" style="padding:20px"><p>No versions submitted yet.</p></div>`}
 
       ${links.length?`<div class="sec-head"><span class="sec-title">Drive links</span></div>
         <div class="mb4">${links.map(l=>`<div class="list-row" style="cursor:default">
-          <span>⛁</span><span class="lr-main"><b>${esc(l.label)}</b><span class="mono xsmall trunc">${esc(l.url)}</span></span>
-          <span class="chip ${l.validation_status==='ok'?'sel':''}">${esc(l.validation_status)}</span>
-          <button class="btn xs" data-act="copyURL" data-url="${esc(l.url)}">Copy</button></div>`).join('')}</div>`:''}
+          <span>${ic('link')}</span><span class="lr-main"><b>${esc(l.label)}</b><span class="mono xsmall trunc">${esc(l.url)}</span></span>
+          ${l.validation_status&&l.validation_status!=='ok'?statusPill(LINK_STATUS,l.validation_status):''}
+          <button class="btn xs" data-act="copyURL" data-url="${esc(l.url)}">⧉ Copy</button></div>`).join('')}</div>`:''}
 
       ${tasks.length?`<div class="sec-head"><span class="sec-title">Linked task logs</span>
         <span class="ml-auto chip">${(tasks.reduce((s,t2)=>s+t2.minutes,0)/60).toFixed(1)}h</span></div>
@@ -20779,25 +20808,29 @@ function drawerDeliverable(id){
       <div class="sec-head"><span class="sec-title">Comments</span></div>
       ${cs.map(c=>`<div class="f gap2 mb3">${avatar(c.user_id,'xs')}
         <div style="flex:1"><div class="between"><b class="xsmall">${esc(user(c.user_id).full_name)}</b>
-          <span class="xsmall mut3">${esc(c.created_at.slice(0,10))}</span></div>
-          <div class="small mut">${esc(c.body)}</div></div></div>`).join('')||'<div class="small mut3 mb3">No comments.</div>'}
+          <span class="xsmall mut3">${when(c.created_at)}</span></div>
+          <div class="small mut">${esc(c.body)}</div></div></div>`).join('')
+        ||`<div class="small mut3 mb3">${reviewNoteShown?'No other comments.':'No comments.'}</div>`}
       <textarea class="inp" placeholder="Add a comment…" id="dcomment"></textarea>
       <button class="btn sm mt2" data-act="postDelivComment" data-did="${d.id}">Comment</button>
     </div>
     <div class="dr-foot">
+      ${isOwner&&d.status==='not_started'&&allowedDelivMoves(d).includes('in_progress')?
+        `<button class="btn" data-act="startWork" data-did="${d.id}">▶ Start work</button>`:''}
       ${isOwner&&['not_started','in_progress','changes_requested'].includes(d.status)?
         `<button class="btn primary" data-act="submitVersion" data-did="${d.id}">${submitLabel(d)}</button>`:''}
       ${canApprove&&awaiting?
         `<button class="btn primary" data-act="approveVersion" data-did="${d.id}">✔ Approve</button>
          <button class="btn" data-act="requestChanges" data-did="${d.id}">↩ Request changes</button>`:''}
       ${awaiting&&latest.submitted_by===S.me?
-        `<span class="small mut3" style="align-self:center">You submitted this version. Someone else must approve it.</span>`:''}
+        `<span class="small mut3" style="align-self:center">You submitted this version. Someone else must approve it.</span>`
+        :awaiting&&!canApprove?`<span class="small mut3" style="align-self:center" data-next>Waiting for a Team Lead to review.</span>`:''}
       ${canMarkDelivered(d)?(d.status==='approved'
         ?`<button class="btn primary" data-act="markDelivered" data-did="${d.id}">✔ Mark delivered</button>`
         :`<button class="btn" data-act="markDelivered" data-did="${d.id}">✔ Mark delivered (review-exempt)</button>`):''}
       ${canSignOff(d)?
-        `<button class="btn primary" data-act="reviewDelivered" data-did="${d.id}" data-v="approved">✔ Approve</button>
-         <button class="btn" data-act="reviewDelivered" data-did="${d.id}" data-v="changes_requested">↩ Revise</button>`:''}
+        `<button class="btn primary" data-act="reviewDelivered" data-did="${d.id}" data-v="approved">✔ Sign off</button>
+         <button class="btn" data-act="reviewDelivered" data-did="${d.id}" data-v="changes_requested">↩ Send back</button>`:''}
       <button class="btn ghost ml-auto" data-menu="delivMenu" data-did="${d.id}">⋯</button>
     </div>`);
   wirePage();
@@ -23194,6 +23227,8 @@ const ACTIONS = {
   },
 
   /* ---- deliverables ---- */
+  /* ▶ Start work in the drawer: the same move as ⋯ → In progress. */
+  startWork:(d)=>{const dl=deliv(+d.did); if(dl)applyDelivStatus(dl,'in_progress');},
   submitVersion:(d)=>{
     const dl=deliv(+d.did);
     const vs=DB.deliverable_versions.filter(v=>v.deliverable_id===dl.id);
@@ -23274,7 +23309,7 @@ const ACTIONS = {
     moSync(MO_API.post('/deliverables/'+dl.id+'/deliver',{}), ()=>drawerDeliverable(dl.id));
   },
   copyLink:(d)=>{const l=DB.drive_links.find(x=>x.entity_type==='deliverable'&&x.entity_id===+d.did);
-    if(l)ACTIONS.copyURL({url:l.url});},
+    if(l)ACTIONS.copyURL({url:l.url});else toast('This deliverable has no Drive link yet','warn');},
   copyURL:(d)=>{navigator.clipboard&&navigator.clipboard.writeText(d.url);
     toast('Link copied. This is what replaces “scroll up in WhatsApp to find the link”','ok');},
   addLink:(d)=>{
@@ -26889,7 +26924,7 @@ const ACTIONS = {
     const note=back?($('#rd-note')?.value||'').trim():'';
     if(back&&!note){toast('Say what needs to change.','bad');return;}
     const before={approval_status:dl.approval_status,status:dl.status};
-    dl.approval_status=to; dl.approved_by=S.me;
+    dl.approval_status=to; dl.approved_by=S.me; dl.approved_at=D.stamp();
     /* Sent back, it is no longer ready to go out — even if it already went:
        the corrected version is queued again when it is approved, and the
        project waits for that dispatch. The earlier dispatch stays as history. */
@@ -27234,11 +27269,15 @@ const MENUS = {
     const dl=deliv(+d.did);
     /* Only the moves this person may make (allowedDelivMoves) — the same list
        the pipeline drag and the phone Move sheet offer. */
+    /* A move reads as where it goes, with no status glyph: "✓ → Approved"
+       looked like the current choice. The two verdicts open their dialogs, so
+       they are named as the action. */
+    const hasLink=DB.drive_links.some(l=>l.entity_type==='deliverable'&&l.entity_id===dl.id);
     return [{label_only:'Status: '+DELIV_STATUS[dl.status].l},
-      ...allowedDelivMoves(dl).map(s=>({label:'→ '+DELIV_STATUS[s].l,icon:DELIV_STATUS[s].i,
+      ...allowedDelivMoves(dl).map(s=>({label:'→ '+(DELIV_MOVE_LABEL[s]||DELIV_STATUS[s].l),
         fn:()=>{applyDelivStatus(dl,s);}})),
       {sep:true},
-      {label:'Copy Drive link',icon:'copy',fn:()=>ACTIONS.copyLink({did:dl.id})},
+      ...(hasLink?[{label:'Copy Drive link',icon:'copy',fn:()=>ACTIONS.copyLink({did:dl.id})}]:[]),
       {label:'Open project',icon:'folder',fn:()=>{closeDrawer();location.hash='#/media/projects/'+dl.project_id;}}];
   },
   pipeType:()=>DB.deliverable_types.map(t=>({label:t.name,icon:t.icon,on:S.filters.pipe.type.includes(t.id),
@@ -28423,9 +28462,13 @@ function delivAssignSection(did){
     <div class="small bad mb3">${esc(a.error)}</div>
     <button class="btn sm mb3" data-act="dasgReload" data-did="${did}">Try again</button></div>`;
   /* Finished work keeps its owner. SMC coverage is offered only while the
-     work is open, and its row shows only once someone is on it. */
+     work is open, and only where it applies — the project's institute has a
+     Social Media Coordinator (smc_available), or one is already on it. Its
+     row shows only once someone is on it. */
   const crewBtn=!!dl&&canAssignOn(proj(dl.project_id))&&!ownerLocked(dl);
-  const smcBtn=!!dl&&!['delivered','not_required','cancelled'].includes(dl.status)&&!ownerLocked(dl)&&canAssignSmc(dl);
+  const smcBtn=!!dl&&!['delivered','not_required','cancelled'].includes(dl.status)&&!ownerLocked(dl)
+    &&(!!a.smc||!!a.smc_available)&&canAssignSmc(dl);
+  const smcHint='Hand it to a Social Media Coordinator at the institute';
   return `<div class="mt4" data-dasg="${did}">${head}
     <dl class="kv mb3">
       <dt>Owner</dt><dd>${owner}</dd>
@@ -28435,9 +28478,9 @@ function delivAssignSection(did){
     ${crewBtn||smcBtn?`<div class="f gap2 wrap mb3">
       ${crewBtn?`<button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="crew">
         ${ownerId!=null?'Reassign deliverable':'Assign an owner'}</button>`:''}
-      ${smcBtn?`<button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="smc">
+      ${smcBtn?`<button class="btn sm" data-act="dasgOpen" data-did="${did}" data-kind="smc" title="${smcHint}">
         ${a.smc?'Change SMC member':'Assign to SMC member'}</button>`:''}
-    </div>`:''}</div>`;
+    </div>${smcBtn?`<div class="xsmall mut3 mb3" data-smc-hint>SMC: ${smcHint.charAt(0).toLowerCase()+smcHint.slice(1)}.</div>`:''}`:''}</div>`;
 }
 
 async function dasgModal(did,kind){
