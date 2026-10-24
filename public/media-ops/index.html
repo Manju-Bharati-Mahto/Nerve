@@ -8646,7 +8646,7 @@ function viewDispatch(){
               <th>Recipient</th><th>Dispatched</th><th>Drive</th><th></th></tr></thead>
             <tbody>${rows.map(d=>{const v=latestVersion(d.id)||{};
               return `<tr class="click" data-drawer="deliverable:${d.id}" data-dispatch-did="${d.id}"${dispatchFocusStyle(d.id)}>
-              <td><div class="t-main">${esc(d.title)}</div><div class="t-sub">${esc(dtype(d.deliverable_type_id).name)}</div></td>
+              <td><div class="t-main">${esc(d.title)}</div>${typeIsTitle(d)?'':`<div class="t-sub">${esc(dtype(d.deliverable_type_id).name)}</div>`}</td>
               <td class="small"><span class="code">${esc(proj(d.project_id).code||'')}</span> ${esc(proj(d.project_id).name)}</td>
               <td class="small">${esc(v.reviewed_by?(user(v.reviewed_by)||{full_name:'—'}).full_name:'—')}</td>
               <td class="small">${esc(d.dispatched_by?(user(d.dispatched_by)||{full_name:'—'}).full_name:'—')}</td>
@@ -10290,7 +10290,9 @@ function viewMyDay(){
   const outputAt=d=>{const v=latestVersion(d.id);
     return [d.completed_at,v&&v.reviewed_at].filter(Boolean).map(String).sort().pop()||'';};
   const myDelivered=mineDeliv.filter(isDeliveredOutput)
-    .sort((a,b)=>outputAt(b).localeCompare(outputAt(a))||b.id-a.id);
+    .map(d=>({d,at:outputAt(d)}))
+    .sort((a,b)=>b.at.localeCompare(a.at)||b.d.id-a.d.id)
+    .map(x=>x.d);
   const expects=expectsReport(S.me,TODAY);
   /* Newest first (ids are issued in creation order): the project someone was
      just put on is the one they are looking for. */
@@ -21192,7 +21194,10 @@ const WORK_TEMPLATES={
        added at creation, say — can be taken on instead, so it is not made
        twice. Everyone assigned works on it; the owner is accountable for it. */
     body(pid){
-      const open=DB.deliverables.filter(d=>d.project_id===+pid&&!d.deleted_at&&!DELIV_DONE.includes(d.status));
+      /* Finished work — delivered, or already dispatched or archived — is not
+         offered for new work; it keeps the owner who finished it (ownerLocked). */
+      const open=DB.deliverables.filter(d=>d.project_id===+pid&&!d.deleted_at&&!DELIV_DONE.includes(d.status)
+        &&!['sent','delivered','archived'].includes(d.dispatch_status||'none'));
       const dtypes=pickableDelivTypes();
       return `
       <div class="field"><label class="lbl">Title <span class="req">*</span></label>
@@ -28402,7 +28407,7 @@ function delivAssignSection(did){
   return `<div class="mt4" data-dasg="${did}">${head}
     <dl class="kv mb3">
       <dt>Owner</dt><dd>${owner}</dd>
-      ${(a.team||[]).length?`<dt>Working with</dt><dd>${(a.team||[]).map(t=>line(t.full_name,t.designation)).join('')}</dd>`:''}
+      ${(a.team||[]).length?`<dt>Working with</dt><dd>${(a.team||[]).map(t=>line(t.full_name,crewTag(t.user_id,t.designation))).join('')}</dd>`:''}
       ${a.smc?`<dt title="SMC members cover institute-level work through their own workflow">SMC member</dt><dd>${line(a.smc.full_name,a.smc.institute)}</dd>`:''}
     </dl>
     ${crewBtn||smcBtn?`<div class="f gap2 wrap mb3">
@@ -28433,6 +28438,13 @@ async function dasgModal(did,kind){
   dasgRenderList(did,kind,'');
 }
 
+/* A server-sent crew row names a person by their real id. Label them the way
+   every other picker does (team, else Media Ops role — personTag), falling
+   back to the row's own designation only for someone this page has not loaded. */
+function crewTag(id,fallback){
+  const u=id==null?UNKNOWN_PERSON:user(id);
+  return u===UNKNOWN_PERSON?(fallback||''):personTag(u.id);
+}
 function dasgRenderList(did,kind,q){
   const b=$('#dasg-body'); if(!b) return;
   const all=(DASG.list||{})[kind]||[];
@@ -28440,7 +28452,8 @@ function dasgRenderList(did,kind,q){
   const unit=DASG.unit||'';
   let rows=all;
   if(kind==='smc'&&unit) rows=rows.filter(m=>String(m.academic_unit_id)===String(unit));
-  if(ql) rows=rows.filter(m=>`${m.full_name} ${m.designation||''} ${m.institute||''}`.toLowerCase().includes(ql));
+  const sub=m=>kind==='smc'?(m.designation||''):crewTag(m.id,m.designation);
+  if(ql) rows=rows.filter(m=>`${m.full_name} ${sub(m)} ${m.institute||''}`.toLowerCase().includes(ql));
   const units=kind==='smc'
     ? [...new Map(all.filter(m=>m.academic_unit_id).map(m=>[String(m.academic_unit_id),m.institute])).entries()]
     : [];
@@ -28451,14 +28464,14 @@ function dasgRenderList(did,kind,q){
         ${units.map(([id,name])=>`<option value="${esc(id)}" ${unit===id?'selected':''}>${esc(name||'—')}</option>`).join('')}
       </select></div>`:''}
     <div class="field"><label class="lbl">Search</label>
-      <input class="inp" id="dasg-q" placeholder="${kind==='smc'?'Name or institute':'Name or designation'}"
+      <input class="inp" id="dasg-q" placeholder="${kind==='smc'?'Name or institute':'Name or team'}"
              value="${esc(q||'')}" oninput="ACTIONS.dasgSearch({did:'${did}',kind:'${kind}',q:this.value})"></div>
     ${rows.length?`<div class="dasg-list">${rows.map(m=>`
       <label class="dasg-opt${String(DASG.pick[did])===String(m.id)?' on':''}">
         <input type="radio" name="dasg" value="${esc(m.id)}" ${String(DASG.pick[did])===String(m.id)?'checked':''}
                onchange="ACTIONS.dasgPick({did:'${did}',id:this.value})">
         <span class="dasg-m"><b>${esc(m.full_name)}</b>
-          <span>${esc(m.designation||'')}${m.institute?(m.designation?' · ':'')+esc(m.institute):''}</span></span>
+          <span>${esc(sub(m))}${m.institute?(sub(m)?' · ':'')+esc(m.institute):''}</span></span>
       </label>`).join('')}</div>`
       :`<div class="smc-empty sm"><p>${kind==='smc'
           ? (all.length?'No SMC members match this filter.':'No active SMC members are available.')

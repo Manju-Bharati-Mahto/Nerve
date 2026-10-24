@@ -1492,3 +1492,41 @@ describe("Reassign deliverable — the current owner is named, and it is asked f
     expect(calls).toEqual([{ owner_id: "zcw-903" }, { owner_id: "zcw-903", confirm_reassign: true }]);
   });
 });
+
+describe("Finished work and people's labels — the last review's loose ends", () => {
+  it("the drawer's 'Working with' and its owner picker name each person's team, not their job title", async () => {
+    const h = await boot(901);
+    h.ev(`DASG.byDeliv[8002]={crew:{user_id:'zcw-902',full_name:'Emp Anika'},smc:null,
+            team:[{user_id:'zcw-903',full_name:'Emp Arjun',designation:'Media Operations Coordinator'}]};`);
+    const sec = h.ev<string>("delivAssignSection(8002)");
+    expect(sec).toContain("Event Team");
+    expect(sec).not.toContain("Media Operations Coordinator");
+    h.doc.body.insertAdjacentHTML("beforeend", '<div id="dasg-body"></div><button id="dasg-go"></button>');
+    h.ev(`DASG.list={crew:[{id:'zcw-903',full_name:'Emp Arjun',designation:'Media Operations Coordinator'}],smc:[]};
+          dasgRenderList(8002,'crew','')`);
+    const list = h.doc.getElementById("dasg-body")!.textContent!;
+    expect(list).toContain("Emp Arjun");
+    expect(list).toContain("Event Team");
+    expect(list).not.toContain("Media Operations Coordinator");
+  });
+
+  it("Assign work does not offer dispatched work as an existing deliverable", async () => {
+    const h = await boot(901);
+    h.ev("deliv(8003).dispatch_status='delivered'; openAssignWork(7001); ACTIONS.awDelivMode({m:'existing'})");
+    const ids = [...h.doc.querySelectorAll("#aw-deliv option")].map((o) => (o as HTMLOptionElement).value);
+    expect(ids).toContain("8002");
+    expect(ids).not.toContain("8003");
+  });
+
+  it("the Dispatch page names a type-named deliverable once, and still shows the type of one named otherwise", async () => {
+    const h = await boot(906);
+    h.ev(`const d=deliv(8002); d.title=dtype(d.deliverable_type_id).name; d.dispatch_status='delivered';
+          const e=deliv(8003); e.dispatch_status='delivered'; S.tab.dispatch='delivered';`);
+    const type2 = h.ev<string>("dtype(deliv(8002).deliverable_type_id).name");
+    const type3 = h.ev<string>("dtype(deliv(8003).deliverable_type_id).name");
+    h.doc.body.insertAdjacentHTML("beforeend", `<div id="dsp">${h.ev<string>("viewDispatch()")}</div>`);
+    const cell = (id: number) => h.doc.querySelector(`#dsp tr[data-dispatch-did="${id}"] td`)!.textContent!;
+    expect(cell(8002).split(type2).length - 1, "type-named: the name once").toBe(1);
+    expect(cell(8003)).toContain(type3);
+  });
+});
