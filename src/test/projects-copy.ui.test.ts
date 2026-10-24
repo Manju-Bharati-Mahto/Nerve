@@ -86,11 +86,22 @@ describe("Assignment lists — who is in them, and how they are named", () => {
     expect(h.ev<string>("personLabel(906)")).toBe("Coord Chitra · Coordinator");
   });
 
-  it("two people with the same name are told apart by their email", async () => {
+  it("two people with the same name are told apart by their email — both with the same kind of tag", async () => {
     const h = await boot(901);
     const a = h.ev<string>("personLabel(910)"), b = h.ev<string>("personLabel(911)");
-    expect(a).toBe("Priya Twin · Employee · priya.one@x.invalid");
-    expect(b).toBe("Priya Twin · Employee · priya.two@x.invalid");
+    // Neither is on a team: both say so, then their email — never a role for one of them.
+    expect(a).toBe("Priya Twin · No team · priya.one@x.invalid");
+    expect(b).toBe("Priya Twin · No team · priya.two@x.invalid");
+    // One of them joins a team: the pair still reads team, then email.
+    h.ev("DB.team_members.push({team_id:9001,user_id:910})");
+    expect(h.ev<string>("personLabel(910)")).toBe("Priya Twin · Event Team · priya.one@x.invalid");
+    expect(h.ev<string>("personLabel(911)")).toBe("Priya Twin · No team · priya.two@x.invalid");
+    // Every people picker labels them the same way — the card form's assignees included.
+    h.ev("openAssignWork(7001)");
+    expect(h.doc.querySelector('#aw-users .chip[data-uid="911"]')!.textContent).toBe("Priya Twin · No team · priya.two@x.invalid");
+    h.ev("closeModal(); openNewCard(DB.boards[0].id)");
+    // A board card's assignees were first names only ("Priya", twice).
+    expect(h.doc.querySelector('#nc-assign .chip[data-uid="911"]')!.textContent!.trim()).toBe("Priya Twin · No team · priya.two@x.invalid");
     // Someone whose name is theirs alone keeps the short label.
     expect(h.ev<string>("personLabel(902)")).toBe("Emp Anika · Event Team");
   });

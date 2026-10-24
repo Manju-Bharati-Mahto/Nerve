@@ -250,19 +250,34 @@ async function notifyOnce(userId: string, kind: string, title: string, body: str
    is about (directly, or through its deliverable, shoot or work row) so the
    bell can say where; project_id lets a notice whose deliverable the page has
    not loaded still open that project. The list stays capped at 50; `unread` is the real count,
-   which a capped list cannot give once someone has more than 50 waiting. */
+   which a capped list cannot give once someone has more than 50 waiting.
+
+   Two facts the bell needs and a stored row cannot hold, read now:
+   version_review_status — where the version a "Version submitted for review"
+   notice is about stands today, so one already reviewed reads "Reviewed" and
+   does not ask for a review again; from_admin_or_coord — whether the person
+   who added a deliverable ("Deliverable added") runs the work (an Admin or
+   the Coordinator), from the audit trail, since the row has no sender. */
 /* Older notices were stored with the rule that sent them in brackets —
    "… today's report (AUTO-1)." People never see rule codes, so the feed drops
    them as it reads; the stored rows are left as they are. */
 const NOTICE_CODE = /\s*\((?:\s*(?:(?:AUTO|BR|VR|FR)-[0-9][\w.-]*|§\s*[\d.]+)\s*[,;/]?)+\)/g;
-const plainNotice = (s: unknown): unknown => (typeof s === "string" ? s.replace(NOTICE_CODE, "") : s);
+/* Older notices also said "4 deliverable(s)"; they are read as "4 deliverables"
+   (and "1 deliverable"). New ones are written with plural(). */
+const plainNotice = (s: unknown): unknown => (typeof s === "string"
+  ? s.replace(NOTICE_CODE, "").replace(/\b(\d+) ([a-z][a-z-]*)\(s\)/gi, (_m, n: string, w: string) => plural(Number(n), w))
+  : s);
+/* "1 deliverable", "4 deliverables" — never "4 deliverable(s)". */
+const plural = (n: number, one: string, many = one + "s"): string => `${n} ${n === 1 ? one : many}`;
 
 async function notificationFeed(userId: string): Promise<{ notifications: Array<Record<string, unknown>>; unread: number }> {
   const { rows } = await pool.query(
     `SELECT n.id::int AS id, n.user_id, n.kind, n.title, n.body, n.entity_type,
             n.entity_id::int AS entity_id, n.is_read, n.created_at,
             COALESCE(pp.name, pd.name, ps.name, pa.name) AS project_name,
-            COALESCE(pp.id, pd.id, ps.id, pa.id)::int AS project_id
+            COALESCE(pp.id, pd.id, ps.id, pa.id)::int AS project_id,
+            sv.review_status AS version_review_status,
+            snd.ops AS from_admin_or_coord
        FROM mo_notifications n
        LEFT JOIN mo_projects pp ON n.entity_type = 'project' AND pp.id = n.entity_id
        LEFT JOIN mo_deliverables d ON n.entity_type = 'deliverable' AND d.id = n.entity_id
@@ -271,6 +286,16 @@ async function notificationFeed(userId: string): Promise<{ notifications: Array<
        LEFT JOIN mo_projects ps ON ps.id = s.project_id
        LEFT JOIN mo_assignments a ON n.entity_type = 'assignment' AND a.id = n.entity_id
        LEFT JOIN mo_projects pa ON pa.id = a.project_id
+       LEFT JOIN mo_deliverable_versions sv ON n.kind = 'review' AND n.title = 'Version submitted for review'
+             AND sv.deliverable_id = d.id
+             AND sv.version_no = substring(n.body from 'submitted v([0-9]+) of')::int
+       LEFT JOIN LATERAL (
+         SELECT (us.role IN ('admin','super_admin') OR COALESCE(pr.mo_role,'') = 'coordinator') AS ops
+           FROM mo_audit_logs al JOIN users us ON us.id = al.actor_id
+           LEFT JOIN mo_user_profiles pr ON pr.user_id = al.actor_id
+          WHERE n.kind = 'assignment' AND n.entity_type = 'deliverable' AND n.title = 'Deliverable added'
+            AND al.entity_type = 'deliverable' AND al.entity_id = n.entity_id AND al.action = 'deliverable.created'
+          ORDER BY al.occurred_at LIMIT 1) snd ON true
       WHERE n.user_id = $1
       ORDER BY n.created_at DESC, n.id DESC LIMIT 50`, [userId]);
   for (const r of rows) { r.title = plainNotice(r.title); r.body = plainNotice(r.body); }
@@ -1968,7 +1993,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
          VALUES ($1,'assignment',$2,$3,'project',$4)`,
         [leadId, "You are leading a new project",
-         `${name} was assigned to ${teamName}. ${made} deliverable(s) to allocate.`, id]);
+         `${name} was assigned to ${teamName}. ${plural(made, "deliverable")} to allocate.`, id]);
     }
     const { rows } = await pool.query(`SELECT * FROM mo_projects WHERE id=$1`, [id]);
     res.status(201).json({ project: rows[0], deliverables_created: made });
@@ -2361,13 +2386,16 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        submitter (a lead pushing a version for their crew), they cannot review
        it: tell the Admins instead so the item does not vanish into a queue
        its reviewer cannot action. */
+    /* The text names the project: several projects have a "Story / Post", and
+       the stored body is what a push or an email carries. */
+    const projName = (await pool.query(`SELECT name FROM mo_projects WHERE id=$1`, [d.project_id])).rows[0]?.name as string | undefined;
     for (const rid of await reviewerIdsFor(Number(d.project_id), [...team, u.id]))
       if (rid !== u.id)
         await pool.query(
           `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
            VALUES ($1,'review',$2,$3,'deliverable',$4)`,
           [rid, "Version submitted for review",
-            `${u.full_name ?? "A crew member"} submitted v${next} of “${d.title}”.`, id]).catch(() => {});
+            `${u.full_name ?? "A crew member"} submitted v${next} of “${d.title}”${projName ? ` on ${projName}` : ""}.`, id]).catch(() => {});
     res.status(201).json({ version: ins.rows[0] });
   }));
 
@@ -11163,7 +11191,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
         `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
          VALUES ($1,'assignment',$2,$3,'project',$4)`,
         [leadId, "You are leading a new project",
-         `${r.event_name} was converted from request ${r.code ?? id}. ${made.deliverables} deliverable(s) created.`, made.id]);
+         `${r.event_name} was converted from request ${r.code ?? id}. ${plural(made.deliverables, "deliverable")} created.`, made.id]);
     }
     res.status(201).json({ project_id: made.id, deliverables_created: made.deliverables });
   }));
@@ -11476,7 +11504,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
           `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
            VALUES ($1,'assignment',$2,$3,'team',$4)`,
           [relNew, `You now lead ${t.name}`,
-           `${movedProjects.length} project(s) have been handed to you to run.`, id]).catch(() => {});
+           `${plural(movedProjects.length, "project")} ${movedProjects.length === 1 ? "has" : "have"} been handed to you to run.`, id]).catch(() => {});
     }
     await audit(u, "team.updated", "team", id,
       { name: cur.name, lead_user_id: cur.lead_user_id, archived_at: cur.archived_at },
@@ -11497,7 +11525,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const moveTo = (req.query.reassign_to ?? (req.body as Record<string, unknown>)?.reassign_to) as string | undefined;
     if (members.length && moveTo === undefined)
       return sendError(res, 409,
-        `"${t.name}" has ${members.length} member(s). Send reassign_to=<teamId> to move them, or reassign_to="" to leave them unassigned.`);
+        `"${t.name}" has ${plural(members.length, "member")}. Send reassign_to=<teamId> to move them, or reassign_to="" to leave them unassigned.`);
     if (moveTo) {
       const dest = parseInt(String(moveTo), 10);
       if (dest === id) return sendError(res, 400, "Pick a different team to move members into.");
@@ -12671,10 +12699,19 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const u = requireMedia(res); if (!u) return;
     const day = String((req.query as Record<string, unknown>).day ?? "");
     const { rows } = await pool.query(
-      `SELECT id, actor_id, action, entity_type, entity_id, before, after, occurred_at
-         FROM mo_audit_logs
-        WHERE actor_id=$1 ${day ? "AND occurred_at::date = $2::date" : ""}
-        ORDER BY occurred_at DESC LIMIT 300`,
+      /* project_name: the project a row about a deliverable or its version is
+         in, read now — so the timeline can say which project's "Raw Archive"
+         was archived even once the page no longer holds that deliverable. */
+      `SELECT a.id, a.actor_id, a.action, a.entity_type, a.entity_id, a.before, a.after, a.occurred_at,
+              COALESCE(pd.name, pv.name) AS project_name
+         FROM mo_audit_logs a
+         LEFT JOIN mo_deliverables d ON a.entity_type = 'deliverable' AND d.id = a.entity_id
+         LEFT JOIN mo_projects pd ON pd.id = d.project_id
+         LEFT JOIN mo_deliverable_versions v ON a.entity_type = 'deliverable_version' AND v.id = a.entity_id
+         LEFT JOIN mo_deliverables dv ON dv.id = v.deliverable_id
+         LEFT JOIN mo_projects pv ON pv.id = dv.project_id
+        WHERE a.actor_id=$1 ${day ? "AND a.occurred_at::date = $2::date" : ""}
+        ORDER BY a.occurred_at DESC LIMIT 300`,
       day ? [u.id, day] : [u.id]);
     res.json({ audit: rows });
   }));
@@ -17074,7 +17111,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
         `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
          SELECT w.user_id, 'recognition', 'You are Creator of the Cycle',
                 $2 || ' — ' || w.points_at_award || ' points.'
-                  || CASE WHEN $3::int > 1 THEN ' Shared with ' || ($3::int - 1) || ' other creator(s).' ELSE '' END,
+                  || CASE WHEN $3::int > 2 THEN ' Shared with ' || ($3::int - 1) || ' other creators.'
+                         WHEN $3::int = 2 THEN ' Shared with 1 other creator.' ELSE '' END,
                 'creator_cycle_award', w.id
            FROM mo_creator_cycle_awards w WHERE w.id = ANY($1::bigint[])`,
         [rows.map((r) => Number(r.id)), cycle.label, rows.length]).catch(() => {});

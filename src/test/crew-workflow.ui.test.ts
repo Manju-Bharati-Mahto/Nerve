@@ -339,8 +339,8 @@ describe("Notifications — clickable, routed and segmented for leads", () => {
       const when = (localExpr: string) =>
         h.ev<string>(`(()=>{const t=new Date();${localExpr};return notifWhen({created_at:t.toISOString()});})()`);
       const earlyToday = when("t.setHours(0,1,0,0)");
-      expect(earlyToday).toMatch(/^(just now|\d+m ago|\d+h ago)$/);
-      expect(when("t.setMinutes(t.getMinutes()-11)")).toMatch(/^(11m ago|Yesterday, \d\d:\d\d)$/);
+      expect(earlyToday).toMatch(/^(just now|\d+ min ago|\d+ h ago)$/);
+      expect(when("t.setMinutes(t.getMinutes()-11)")).toMatch(/^(11 min ago|Yesterday, \d\d:\d\d)$/);
       expect(when("t.setDate(t.getDate()-1);t.setHours(23,0,0,0)")).toBe("Yesterday, 23:00");
       expect(when("t.setDate(t.getDate()-2);t.setHours(12,0,0,0)")).not.toContain("Yesterday");
     } finally {

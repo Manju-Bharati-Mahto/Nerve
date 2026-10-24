@@ -2453,9 +2453,10 @@ const D = {
   since:ts=>{const d=D.at(ts);if(!d)return '—';
     const m=Math.round((Date.now()-d.getTime())/60000);
     if(m<1)return 'just now';
-    if(m<60)return m+'m ago';
-    if(m<1440)return Math.floor(m/60)+'h ago';
-    if(m<10080)return Math.floor(m/1440)+'d ago';
+    /* In words a reader says: "3 min ago", "2 h ago", "3 days ago". */
+    if(m<60)return m+' min ago';
+    if(m<1440)return Math.floor(m/60)+' h ago';
+    if(m<10080){const n=Math.floor(m/1440);return n+(n===1?' day ago':' days ago');}
     return D.fmt(D.iso(d));},
   /* The absolute value every relative one carries in its tooltip. */
   fmtAt:ts=>{const d=D.at(ts);if(!d)return '—';
@@ -4347,9 +4348,11 @@ function teamOf(uid){
    be told apart. */
 function personTag(uid){
   const u=user(uid)||{}, t=teamOf(uid);
-  const tag=t?t.name:(({admin:'Admin',team_lead:'Team Lead',coordinator:'Coordinator',employee:'Employee'})[u.role]||'');
   const twin=u.full_name&&u.email&&DB.users.some(x=>x.id!==u.id&&x.is_active!==false&&x.full_name===u.full_name);
-  return twin?(tag?tag+' · ':'')+u.email:tag;
+  /* Twins carry the same kind of tag — team, then email — so one "Priya Shah"
+     never reads "· Motion Team" while the other reads "· Employee". */
+  if(twin)return (t?t.name:'No team')+' · '+u.email;
+  return t?t.name:(({admin:'Admin',team_lead:'Team Lead',coordinator:'Coordinator',employee:'Employee'})[u.role]||'');
 }
 const personLabel=uid=>{const tag=personTag(uid);return ((user(uid)||{}).full_name||'')+(tag?' · '+tag:'');};
 /* A people chip: the full name, with the team beside it in small type. */
@@ -4434,7 +4437,7 @@ function eqStateChips(st){
   if(st.derived.overdue)
     out.push(`<span class="status st-danger"><span class="si">!</span>${st.derived.overdue_days}d overdue</span>`);
   if(st.maintenance.active)
-    out.push(`<span class="chip" title="${st.maintenance.open_count} open record(s)">⚒ maintenance open</span>`);
+    out.push(`<span class="chip" title="${plural(st.maintenance.open_count,'open record')}">⚒ maintenance open</span>`);
   if(st.reservation)
     out.push(`<span class="chip" title="Booking ${st.reservation.booking_id}">◷ ${esc(st.reservation.status)} `
       +`${D.fmt(st.reservation.starts_at)}–${D.fmt(st.reservation.ends_at)}</span>`);
@@ -5243,11 +5246,16 @@ function priTag(p){
   const x=m[p]; if(!x) return `<span class="pri pri-${p}">${p}</span>`;
   return `<span class="pri pri-${p}">${ic(x[0])}${x[1]}</span>`;}
 function money(n){return '₹'+Number(n).toLocaleString('en-IN');}
+/* "1 deliverable", "4 deliverables" — never "4 deliverable(s)". */
+const plural=(n,one,many)=>`${n} ${Number(n)===1?one:(many||one+'s')}`;
 
 /* opts.passing marks a notice nobody acts on (the start-up "signed in"
    line): it is short-lived and goes the moment a dialog or drawer opens, so it
-   never sits over their footer buttons. */
+   never sits over their footer buttons. One that arrives while a dialog or
+   drawer is already open (the start-up line lands when /state returns, which
+   can be after New project was clicked) is not shown at all. */
 function toast(msg,kind='',action,opts={}){
+  if(opts.passing&&($('#modal-layer')?.classList.contains('on')||$('#drawer')?.classList.contains('on')))return;
   const id='t'+(++S.toastId);
   const ic=kind==='ok'?'✔':kind==='bad'?'✕':kind==='warn'?'⚠':'ⓘ';
   const node=el(`<div class="toast ${kind}" ${kind==='bad'&&isMobileLayout()?'role="alert"':''} id="${id}"><span class="ti">${ic}</span><span>${esc(msg)}</span>${action?`<button data-act="undo">${esc(action.label)}</button>`:''}</div>`);
@@ -6784,7 +6792,7 @@ function openUmsImport(){
     const prev=pfReadExtra(S.me)||{};
     pfWriteExtra(S.me, Object.assign({},prev,parsed));
     closeModal();
-    toast(`Imported ${Object.keys(parsed).length} field(s) from UMS`,'ok');
+    toast(`Imported ${plural(Object.keys(parsed).length,'field')} from UMS`,'ok');
     if((S.route||'').startsWith('#/media/profile')) render(); else location.hash='#/media/profile';
   };
 }
@@ -7592,7 +7600,7 @@ function castAdminLinks(){
         <div class="dc-grid">
           <div class="dc-kv"><span class="dc-k">Submissions</span><span class="dc-v">
             <button class="btn xs" data-act="castLinkSubs" data-lid="${l.id}">${subs.length}</button></span></div>
-          <div class="dc-kv"><span class="dc-k">Created</span><span class="dc-v">${D.fmt(l.created_at)}${l.created_by?' · '+esc((user(l.created_by)||{full_name:'—'}).full_name.split(' ')[0]):''}</span></div>
+          <div class="dc-kv"><span class="dc-k">Created</span><span class="dc-v">${D.fmt(l.created_at)}${l.created_by?' · '+esc(personName(l.created_by)):''}</span></div>
           <div class="dc-kv"><span class="dc-k">Last submission</span><span class="dc-v">${last?D.fmt(last):'—'}</span></div>
           <div class="dc-kv"><span class="dc-k">Allowed domain</span><span class="dc-v">${castOtpOn(l)?'@'+esc(l.allowed_domain):'Any email'}</span></div>
           <div class="dc-kv"><span class="dc-k">OTP verification</span><span class="dc-v f gap2 ac">
@@ -7931,7 +7939,7 @@ function castAdminTags(){
         <div class="between mb2"><b class="small">${esc(l)}</b><span class="chip">${byCat[k].length}</span></div>
         <div class="f wrap gap1">${byCat[k].map(t=>{
           const n=(DB.casting_record_tags||[]).filter(x=>x.tag_id===t.id).length;
-          return `<span class="chip" title="${n} casting record(s)">${esc(t.name)} <span class="mut3">${n}</span></span>`;}).join('')}</div>
+          return `<span class="chip" title="${plural(n,'casting record')}">${esc(t.name)} <span class="mut3">${n}</span></span>`;}).join('')}</div>
       </div>`).join('')}
     </div></div>`;
 }
@@ -7988,7 +7996,7 @@ function castActivityCard(limit){
       <span class="tl-dot"></span>
       <span class="lr-main"><b>${esc(CASTING_LABEL[a.action]||a.action)}</b>
         <span>${ref?`<span class="code">${esc(ref.id)}</span>`:''}
-          ${esc((user(a.actor_id)||{full_name:'—'}).full_name.split(' ')[0])}</span></span>
+          ${esc(personName(a.actor_id))}</span></span>
       ${ref&&ref.kind==='record'?`<button class="btn xs" data-drawer="casting:${a.entity_id}">Open</button>`:''}
       <span class="chip" title="${esc(D.fmtAt(a.occurred_at))}">${esc(D.since(a.occurred_at))}</span>
     </div>`;}).join('')||`<div class="empty" style="padding:24px"><p>No casting activity recorded yet.</p></div>`}
@@ -8370,7 +8378,7 @@ function requestLinksSection(){
             <button class="btn xs" data-act="reqLinkFilter" data-lid="${l.id}" data-st="open">${open.length}</button></span></div>
           <div class="dc-kv"><span class="dc-k">Converted</span><span class="dc-v">
             <button class="btn xs" data-act="reqLinkFilter" data-lid="${l.id}" data-st="converted">${conv.length}</button></span></div>
-          <div class="dc-kv"><span class="dc-k">Created</span><span class="dc-v">${D.fmt(l.created_at)}${l.created_by?' · '+esc((user(l.created_by)||{full_name:'—'}).full_name.split(' ')[0]):''}</span></div>
+          <div class="dc-kv"><span class="dc-k">Created</span><span class="dc-v">${D.fmt(l.created_at)}${l.created_by?' · '+esc(personName(l.created_by)):''}</span></div>
           <div class="dc-kv"><span class="dc-k">Last submission</span><span class="dc-v">${last?D.fmt(last):'—'}</span></div>
           <div class="dc-kv"><span class="dc-k">Expires</span><span class="dc-v">${l.expires_on?D.fmt(l.expires_on):'no expiry'}</span></div>
         </div>
@@ -8739,22 +8747,22 @@ function viewCoordDashboard(){
 
     <div class="grid g4 sec">
       ${card('New requests',nw.length,`${requestsToday().length} received today`,'data-go="#/media/requests"',nw.length?'':'')}
-      ${card('Waiting for clarification',clar.length,`${openFollowups().length} follow-up(s) open`,'data-go="#/media/requests"',clar.length?'alert':'')}
+      ${card('Waiting for clarification',clar.length,`${plural(openFollowups().length,'follow-up')} open`,'data-go="#/media/requests"',clar.length?'alert':'')}
       ${card('Projects created today',projectsCreatedToday().length,`${ready.length} ready to convert`,'data-go="#/media/requests"')}
       ${card('Ready for dispatch',q.length,overdue.length?`<span class="delta-pill dn">⚑ ${overdue.length} overdue</span>`:'all fresh','data-go="#/media/dispatch"',overdue.length?'alert':'')}
     </div>
     <div class="grid g4 sec">
       ${card('Meetings today',meetingsToday().length,`${meetingsToday().filter(m=>m.status==='completed').length} completed`,'data-go="#/media/my-day"')}
       ${card('Pending follow-ups',openFollowups().length,'awaiting stakeholder reply','data-go="#/media/my-day"')}
-      ${card('Vendor activities',va.length,`${va.filter(v=>v.kind==='quotation').length} open quotation(s)`,'data-go="#/media/my-day"')}
+      ${card('Vendor activities',va.length,`${plural(va.filter(v=>v.kind==='quotation').length,'open quotation')}`,'data-go="#/media/my-day"')}
       ${card('Delivered today',dispatchedToday().length,'emails sent / dispatched','data-go="#/media/dispatch"')}
     </div>
 
     ${(needsAssignment().length||overdue.length||overdueFollowups().length)?`
     <div class="note warn sec"><b>Needs your attention.</b>
-      ${needsAssignment().length?`<a href="#/media/my-day">${needsAssignment().length} project(s) with no Team Lead</a> · `:''}
+      ${needsAssignment().length?`<a href="#/media/my-day">${plural(needsAssignment().length,'project')} with no Team Lead</a> · `:''}
       ${overdue.length?`<a href="#/media/dispatch">${overdue.length} dispatch(es) past ${DISPATCH_SLA_DAYS*24}h</a> · `:''}
-      ${overdueFollowups().length?`${overdueFollowups().length} overdue follow-up(s)`:''}
+      ${overdueFollowups().length?`${plural(overdueFollowups().length,'overdue follow-up')}`:''}
     </div>`:''}
 
     <div class="grid g2 sec">
@@ -8791,7 +8799,7 @@ function viewCoordDashboard(){
           <button class="list-row" data-go="#/media/projects/${r.project_id}">
             <span class="lr-main"><b>${esc(proj(r.project_id).name||r.event_name)}</b>
               <span><span class="code">${esc(proj(r.project_id).code||'')}</span>
-                ${proj(r.project_id).owner_id?'lead '+esc((user(proj(r.project_id).owner_id)||{full_name:''}).full_name.split(' ')[0]):'<span style="color:var(--warn)">needs a Team Lead</span>'}</span></span>
+                ${proj(r.project_id).owner_id?'lead '+esc(personName(proj(r.project_id).owner_id)):'<span style="color:var(--warn)">needs a Team Lead</span>'}</span></span>
             <span class="chip">${projectDeliverables(r.project_id).length} ◆</span>
           </button>`).join(''),'Nothing converted yet.')}
       ${opsWidget('Pending team assignments',needsAssignment().length,'#/media/my-day','Assign now',
@@ -8916,8 +8924,8 @@ function coordActivityCard(limit){
     <div class="card-body flush">${rows.map(a=>`<div class="list-row" style="cursor:default">
       <span class="tl-dot"></span>
       <span class="lr-main"><b>${esc(AUDIT_LABEL[a.action]||a.action)}</b>
-        <span>${esc(auditName(a)||auditNoun(a.entity_type))}
-          ${a.actor_id?' · '+esc((user(a.actor_id)||{full_name:''}).full_name.split(' ')[0]):''}</span></span>
+        <span>${esc(auditName(a)||auditNoun(a.entity_type))}${auditProjectName(a)?' on '+esc(auditProjectName(a)):''}
+          ${a.actor_id?' · '+esc(personName(a.actor_id)):''}</span></span>
       <span class="chip" title="${esc(D.fmtAt(a.occurred_at))}">${esc(D.since(a.occurred_at))}</span>
     </div>`).join('')||`<div class="empty" style="padding:22px"><p>No operational activity recorded yet today.</p></div>`}
     </div>
@@ -9015,7 +9023,7 @@ function viewCoordMyDay(){
             <span class="tl-dot"></span>
             <span class="lr-main"><b>${esc(proj(r.project_id).name||r.event_name)}</b>
               <span><span class="code">${esc(proj(r.project_id).code||'')}</span> from ${esc(r.code||'request')}
-                · ${projectDeliverables(r.project_id).length} deliverable(s)</span></span>
+                · ${plural(projectDeliverables(r.project_id).length,'deliverable')}</span></span>
             <span class="chip">${esc(D.time(r.converted_at))}</span>
           </button>`).join('')||`<div class="empty" style="padding:22px"><p>No conversions yet today.</p></div>`}
           </div></div>
@@ -9223,7 +9231,6 @@ const liveChip=(label,tone='ok',pulse=true)=>
   `<span class="live-pill ${tone}${pulse?' on':''}"><i class="live-dot" aria-hidden="true"></i>${esc(label)}</span>`;
 /* "a, b and c" — for the hero's sentence. */
 const andList=a=>a.length<2?(a[0]||''):a.slice(0,-1).join(', ')+' and '+a[a.length-1];
-const plural=(n,one,many)=>`${n} ${n===1?one:(many||one+'s')}`;
 /* The live strip keeps itself current. Once a second it rewrites the clock;
    once a minute (and only when something changed) the shift pill, the field
    note, the greeting and the day. Nothing else on the page is touched. */
@@ -9929,6 +9936,26 @@ function auditName(a){
     case 'import_batch':case 'analytics':return AUDIT_NOUN[a.entity_type];
     default:return row;
   }
+}
+/* The project a row is about, for a row that names something inside one (a
+   deliverable, a version, a shoot, a work row) — so "Archived — Raw Archive"
+   says which project's Raw Archive. A project row already names it: ''. */
+function auditProjectName(a){
+  const f=a.after||{}, b=a.before||{}, id=a.entity_id, et=String(a.entity_type||'');
+  if(et==='project')return '';
+  if(a.project_name)return String(a.project_name);
+  const of=k=>(DB[k]||[]).find(x=>x&&String(x.id)===String(id));
+  let pid=f.project_id??b.project_id??null;
+  if(pid==null){
+    if(et==='deliverable')pid=(of('deliverables')||{}).project_id;
+    else if(et==='deliverable_version'){const v=of('deliverable_versions');
+      pid=v?(deliv(Number(v.deliverable_id))||{}).project_id:null;}
+    else if(et==='shoot')pid=(of('shoots')||{}).project_id;
+    else if(et==='assignment')pid=(of('assignments')||{}).project_id;
+  }
+  if(et==='project'||pid==null||pid==='')return '';
+  const p=DB.projects.find(x=>String(x.id)===String(pid));
+  return p&&p.name||'';
 }
 /* The person a row is about (an assignee, the crew member added), by name. */
 function auditWho(a){
@@ -11508,7 +11535,7 @@ function projOverview(p,dls,crew,shoots,pr){
         <div class="card-body flush">${next.map(d=>{const over=d.due_date<TODAY;
           return `<button class="list-row" data-drawer="deliverable:${d.id}">
             <span style="font-size:15px">${dtype(d.deliverable_type_id).icon}</span>
-            <span class="lr-main"><b>${esc(d.title)}</b><span>${esc(user(d.owner_id).full_name.split(' ')[0])} · ${DELIV_STATUS[d.status].l}</span></span>
+            <span class="lr-main"><b>${esc(d.title)}</b><span>${esc(personName(d.owner_id))} · ${DELIV_STATUS[d.status].l}</span></span>
             <span class="${over?'status st-danger':'chip'}">${over?D.diff(TODAY,d.due_date)+'d over':D.rel(d.due_date)}</span></button>`;}).join('')
           ||'<div class="empty" style="padding:20px"><p>Nothing outstanding.</p></div>'}</div></div>
 
@@ -11794,6 +11821,11 @@ function projFilesTab(p){
    request is not retried on every render: it waits for Try again or a write. */
 function projActivityRows(p){
   if(window.__MO_LIVE__){
+    /* A project New project has only drawn so far has a made-up id: asking the
+       server for its feed asks about a project that does not exist yet (403),
+       or about somebody else's that happens to have that id. It waits until
+       /state brings the real row back. */
+    if(p._optimistic) return null;
     const cache=S._projActs||(S._projActs={}), k=String(p.id);
     let e=cache[k];
     if(!e||(e.stale&&!e.loading)){
@@ -14234,7 +14266,7 @@ function a360Overview(e,d,st){
 
       ${d.escalation?`<div class="card"><div class="card-head"><h3>Overdue</h3></div>
         <div class="card-body"><div class="note danger">Overdue by ${
-          d.holder&&d.holder.overdue_days?esc(String(d.holder.overdue_days)):'—'} day(s).
+          d.holder&&d.holder.overdue_days?esc(plural(d.holder.overdue_days,'day')):'— days'}.
           ${esc(escalationSentence(d.escalation))}</div></div></div>`:''}
     </div></div>`;
 }
@@ -14251,7 +14283,7 @@ function a360Custody(e,d,st){
           <dt>Since</dt><dd>${cu.checked_out_at?esc(D.fmtAt(cu.checked_out_at)):'<span class="mut3">Not recorded</span>'}</dd>
           <dt>Due</dt><dd>${cu.due_at?D.fmt(cu.due_at):'<span class="mut3">No due date</span>'}</dd>
           <dt>Recorded via</dt><dd>${cu.recorded_via?esc(cu.recorded_via):'<span class="mut3">—</span>'}</dd>
-          ${d.holder&&d.holder.overdue_days>0?`<dt>Overdue</dt><dd><span class="status st-bad"><span class="si">!</span>${d.holder.overdue_days} day(s)</span></dd>`:''}
+          ${d.holder&&d.holder.overdue_days>0?`<dt>Overdue</dt><dd><span class="status st-bad"><span class="si">!</span>${plural(d.holder.overdue_days,'day')}</span></dd>`:''}
         </dl></div></div>`
     : `<div class="card"><div class="card-body"><div class="empty" style="padding:28px">
         <div class="e-ico">✔</div><h4>Currently available</h4>
@@ -14599,7 +14631,7 @@ function commitKiosk(){
      with a recoverable message rather than writing a guess. */
   const unknown=K.items.filter(id=>!assetKnown(id));
   if(unknown.length){
-    toast('Could not confirm '+unknown.length+' scanned item(s) with the server. Remove them and scan again.','bad');
+    toast('Could not confirm '+plural(unknown.length,'scanned item')+' with the server. Remove them and scan again.','bad');
     return;
   }
   /* The kiosk session token is what names the borrower. Without it the
@@ -14927,7 +14959,7 @@ function renderRemoveModal(uid,impact){
   modal(`<div class="mo-head"><div>
       <h2>${hot?'Force remove':'Remove'} ${esc(u.full_name)}?</h2>
       <p>This removes their account and access to Nerve.
-        ${hist.reports||hist.audit_entries?`Their history stays: <b>${hist.reports}</b> daily report(s)
+        ${hist.reports||hist.audit_entries?`Their history stays: <b>${hist.reports}</b> daily report${hist.reports===1?'':'s'}
           and <b>${hist.audit_entries}</b> audit entr${hist.audit_entries===1?'y':'ies'} remain, and their name keeps
           rendering on everything they did.`:'They have no historical records yet.'}</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
@@ -14950,10 +14982,10 @@ function renderRemoveModal(uid,impact){
         <div class="card-head"><h3>This user is currently a Team Lead</h3></div>
         <div class="card-body">
           ${led.map(t=>`<div class="between small" style="padding:3px 0">
-            <span><b>${esc(t.name)}</b> · ${t.members} member(s) · ${t.projects} project(s)</span></div>`).join('')}
+            <span><b>${esc(t.name)}</b> · ${plural(t.members,'member')} · ${plural(t.projects,'project')}</span></div>`).join('')}
           <div class="field mt3"><label class="lbl">Hand the team to <span class="mut3">(optional)</span></label>
             <select class="inp" id="rm-newlead"><option value="">Leave the team without a lead</option>
-              ${leadPool.map(x=>`<option value="${x.id}">${esc(x.full_name)}</option>`).join('')}</select>
+              ${leadPool.map(x=>`<option value="${x.id}">${esc(personLabel(x.id))}</option>`).join('')}</select>
             <div class="hint">The team, its members and its projects all survive either way. Without a replacement
               it simply shows as <b>Lead unassigned</b> until you pick one.</div></div>
         </div></div>`:''}
@@ -17945,7 +17977,7 @@ function teamStructure(){
                <p>No teams yet. Create one to define who reports to whom. Dashboards, Assign Work,
                   review routing and leave approval all follow this structure.</p>
                ${canMng?`<button class="btn primary mt3" data-act="newTeam">＋ Add team</button>`:''}</div>`}
-          ${unassigned.length?`<div class="note mt3"><b>${unassigned.length} person(s) not on a team.</b>
+          ${unassigned.length?`<div class="note mt3"><b>${plural(unassigned.length,'person','people')} not on a team.</b>
             They have no Team Lead, so their reports and leave escalate straight to Admin.
             <div class="f wrap gap1 mt2">${unassigned.map(u=>`<span class="chip">${avatar(u.id,'xs')} ${esc(u.full_name)}</span>`).join('')}</div></div>`:''}
           ${canMng?`<div class="hint mt3">Drag a card by its handle to reorder. That order is used wherever teams appear.</div>`:''}
@@ -17957,7 +17989,7 @@ function teamStructure(){
         <div class="card-body flush">${archived.map(t=>`<div class="list-row" style="cursor:default">
           <span style="color:${teamColor(t)};font-size:15px">${esc(teamIcon(t))}</span>
           <span class="lr-main"><b>${esc(t.name)}</b>
-            <span>${teamMembers(t.id).length} member(s) · lead ${esc((user(t.lead_user_id)||{full_name:'—'}).full_name)}</span></span>
+            <span>${plural(teamMembers(t.id).length,'member')} · lead ${esc((user(t.lead_user_id)||{full_name:'—'}).full_name)}</span></span>
           ${canMng?`<button class="btn xs" data-act="teamArchive" data-tid="${t.id}" data-on="0">Restore</button>
                     <button class="btn xs ghost" data-act="teamDelete" data-tid="${t.id}">Delete</button>`:''}
         </div>`).join('')}</div></div>`:''}
@@ -18063,7 +18095,7 @@ function openTeamForm(tid){
       </div>
       <div class="field"><label class="lbl">Members</label>
         <div class="f wrap gap2" id="tf-members">${memberPool.map(u=>`<button type="button" class="chip ${cur.includes(u.id)?'sel':''}" data-uid="${u.id}"
-          onclick="this.classList.toggle('sel')">${avatar(u.id,'xs')} ${esc(u.full_name)}</button>`).join('')}</div>
+          onclick="this.classList.toggle('sel')">${avatar(u.id,'xs')} ${personChipText(u.id)}</button>`).join('')}</div>
         <div class="hint">A person belongs to one primary team. Adding them here moves them off their previous team.</div></div>
       <label class="chk mt3"><input type="checkbox" id="tf-multi"> Allow this person to lead more than one team
         <span class="mut3">(off by default: one lead, one team)</span></label>
@@ -18791,7 +18823,7 @@ function leaveApprovals(){
           ${shoots.map(s=>`◉ ${esc(s.title)} — ${D.fmt(s.shoot_date)}, ${esc(s.location)}`).join('<br>')}
           <div class="mt2 f gap2 wrap"><span class="small">Suggested same-skill replacements:</span>
             ${replacementSuggestions(l.user_id,shoots[0]).map(u=>`<button class="chip sel" data-act="assignReplacement" data-lid="${l.id}" data-uid="${u}">
-              ${avatar(u,'xs')} ${esc(user(u).full_name)}</button>`).join('')}</div></div>`:''}
+              ${avatar(u,'xs')} ${personChipText(u)}</button>`).join('')}</div></div>`:''}
         ${dls.length?`<div class="note danger mb3"><b>Deliverable deadlines inside the window</b><br>
           ${dls.map(d=>`◆ ${esc(d.title)}, due ${D.fmt(d.due_date)}`).join('<br>')}</div>`:''}
         <div class="f gap2 wrap">
@@ -19424,6 +19456,22 @@ const NOTIF_KIND={
   creator_message:{l:'Message',ic:'mail'}, creator_overdue:{l:'Overdue',ic:'alert',c:'var(--danger)'}
 };
 const notifKind=k=>NOTIF_KIND[k]||{l:auditWords(k)||'Notice',ic:'bell'};
+/* The tag a notice ends in. Verdicts and submissions are all stored as kind
+   'review', so the title says which it is: an outcome is tagged with the
+   outcome, not "Review". A submission whose version has been reviewed since
+   (the server reads where that version stands now) says "Reviewed", muted,
+   rather than looking like a review still waiting. */
+const NOTIF_REVIEW_TAG=[[/^Approved:/,'Approved'],[/^Changes requested on /,'Changes requested'],
+  [/^Signed off:/,'Signed off'],[/^Sent back after delivery:/,'Sent back'],[/^Deliverable delivered/,'Sign off']];
+function notifTag(n){
+  if(String(n.kind||'')==='review'){
+    const t=String(n.title||''), hit=NOTIF_REVIEW_TAG.find(([re])=>re.test(t));
+    if(hit) return {l:hit[1]};
+    if(t==='Version submitted for review'&&n.version_review_status&&n.version_review_status!=='pending')
+      return {l:'Reviewed',muted:true};
+  }
+  return {l:notifKind(n.kind).l};
+}
 /* Where a notification takes the reader when they tap it. Shared by the
    bell-list, the drawer and the full page — any new entity_type goes HERE,
    not re-implemented at each call site. Falls back to the Notifications page
@@ -19501,6 +19549,9 @@ function notifSource(n){
   if(k==='assignment' && e==='project') return /^You are leading/.test(String(n.title||''))?'coord':'team';
   // A Coordinator intake / casting request / request-converted event.
   if(k==='casting' || k==='request') return 'coord';
+  /* "Deliverable added" is whoever added it: the server reads from the audit
+     trail whether that was an Admin or the Coordinator. */
+  if(k==='assignment' && e==='deliverable' && n.from_admin_or_coord===true) return 'coord';
   // Dispatch is the Coordinator telling an owner "your work went out".
   if(k==='deliverable' && e==='deliverable') return 'coord';
   // Automation chatter (overdue, reminder, approval queue, due-soon) is its own group.
@@ -19556,7 +19607,7 @@ function viewNotifications(){
     <span class="nk-ico" aria-hidden="true" style="color:${notifKind(n.kind).c||'var(--info)'}">${ic(notifKind(n.kind).ic)}</span>
     <span class="lr-main"><b>${esc(n.title)}</b><span>${esc(n.body)}</span>
       <span class="xsmall mut3">${notifProject(n)?esc(notifProject(n))+' · ':''}<span title="${esc(D.fmtAt(n.created_at))}">${esc(notifWhen(n))}</span></span></span>
-    <span class="chip">${esc(notifKind(n.kind).l)}</span>
+    <span class="chip${notifTag(n).muted?' mut3':''}">${esc(notifTag(n).l)}</span>
     ${!n.is_read?'<span style="width:7px;height:7px;border-radius:50%;background:var(--brand-500)"></span>':''}
   </button>`;
   const empty=`<div class="empty" style="padding:40px"><div class="e-ico">◔</div><h4>Nothing new</h4></div>`;
@@ -19581,7 +19632,7 @@ function viewNotifications(){
             k==='coord'?'No new routing yet. Projects you are handed will land here.':
             k==='team'?'No reviews or submissions waiting.':'Nothing to automate right now.'}</p></div>`}
         </div></div>`;}).join('')}
-      ${todayCoord.length?`<p class="xsmall mut3 mb3">Today's brief: ${todayCoord.length} item(s) routed to you.</p>`:''}`;
+      ${todayCoord.length?`<p class="xsmall mut3 mb3">Today's brief: ${plural(todayCoord.length,'item')} routed to you.</p>`:''}`;
   } else {
     main=`<div class="card"><div class="card-body flush">
       ${mine.length?mine.map(row).join(''):empty}
@@ -19874,7 +19925,7 @@ function viewCrudEngine(preMod){
         ||`<tr><td colspan="${mod.cols.length+3}" class="tbl-empty">No ${esc(mod.label.toLowerCase())} match.</td></tr>`}
       </tbody></table></div></div>
     <div class="card-foot"><div class="between">
-      <span class="small mut3">${data.total} record(s) · page ${c.page} of ${pages}</span>
+      <span class="small mut3">${plural(data.total,'record')} · page ${c.page} of ${pages}</span>
       <span class="f gap2">
         <button class="btn xs" ${c.page<=1?'disabled':''} data-act="crudPage" data-p="${c.page-1}">← Prev</button>
         <button class="btn xs" ${c.page>=pages?'disabled':''} data-act="crudPage" data-p="${c.page+1}">Next →</button></span>
@@ -19929,10 +19980,10 @@ function crudViewModal(tab){
       <dt>Created by</dt><dd>${esc((DB.users.find(u2=>u2.real_id===r.created_by)||{}).full_name||r.created_by||'—')}</dd>
       <dt>Created</dt><dd>${r.created_at?D.fmt(String(r.created_at).slice(0,10)):'—'}</dd>
       <dt>Updated</dt><dd>${r.updated_at?D.fmt(String(r.updated_at).slice(0,10)):'—'}</dd>
-      <dt>Usage count</dt><dd>${v.dependencies.reduce((s,x)=>s+x.count,0)} reference(s) across ${v.dependencies.length} table(s)</dd></dl>`:
+      <dt>Usage count</dt><dd>${plural(v.dependencies.reduce((s,x)=>s+x.count,0),'reference')} across ${plural(v.dependencies.length,'table')}</dd></dl>`:
     tab==='config'?`<dl class="kv">${mod.fields.map(f=>`<dt>${esc(f.label)}</dt><dd>${crudCellVal(mod,f.name,r[f.name])}</dd>`).join('')}</dl>`:
     tab==='deps'?(v.dependencies.length?`${v.dependencies.map(d=>`<div class="between mb2"><span>${esc(d.label)}</span><span class="chip">${d.count}</span></div>`).join('')}
-      <div class="note warn mt3">This record is referenced ${v.dependencies.reduce((s,d)=>s+d.count,0)} time(s). It cannot be deleted, only archived.</div>`
+      <div class="note warn mt3">This record is referenced ${plural(v.dependencies.reduce((s,d)=>s+d.count,0),'time')}. It cannot be deleted, only archived.</div>`
       :`<div class="note">Not referenced anywhere. Safe to delete.</div>`):
     `${v.audit.length?v.audit.map(a=>`<div class="list-row" style="cursor:default">
       <span class="mono small">${esc(D.fmtAt(a.occurred_at))}</span>
@@ -21244,7 +21295,7 @@ function openLeaveRequest(lid){
         <div class="field"><label class="lbl">Replacement person</label>
           <select class="inp" id="lv-replacement"><option value="">— Optional</option>
             ${DB.users.filter(u=>u.is_active&&u.id!==S.me).map(u=>
-              `<option value="${u.id}"${ex&&String(ex.replacement_user_id)===String(u.id)?' selected':''}>${esc(u.full_name)}</option>`).join('')}</select></div>
+              `<option value="${u.id}"${ex&&String(ex.replacement_user_id)===String(u.id)?' selected':''}>${esc(personLabel(u.id))}</option>`).join('')}</select></div>
         <div class="field"><label class="lbl">Affected project</label>
           <select class="inp" id="lv-project"><option value="">— Optional</option>
             ${activeProjects.map(p=>
@@ -21379,7 +21430,7 @@ const WORK_TEMPLATES={
       <div class="field"><label class="lbl">Crew <span class="mut3">(project crew first · load + leave shown)</span></label>
         <div class="f wrap gap2" id="aw-users">${users.map(u=>{const busy=onLeave(u.id,TODAY);const w=workload(u.id);
           return `<button type="button" class="chip ${isOnProject(+pid,u.id)?'sel':''}" data-uid="${u.id}" onclick="this.classList.toggle('sel')"
-            title="${w.projects} active project(s) · ${w.hours.toFixed(0)}h this week${busy?' · ON LEAVE (override is logged)':''}">
+            title="${plural(w.projects,'active project')} · ${w.hours.toFixed(0)}h this week${busy?' · ON LEAVE (override is logged)':''}">
             ${personChipText(u.id)}<span class="xsmall mut3"> · ${w.projects}p</span>${busy?' ⚠':''}</button>`;}).join('')}</div>
         <div class="hint">⚠ = approved leave that day. Assigning them is an override that is logged.</div></div>
       <div class="field"><label class="lbl">Equipment <span class="mut3">(booked against the date)</span></label>
@@ -21446,13 +21497,14 @@ function openAssignWork(pid,tpl){
   }
   if(!ps.length){toast('You can assign work only on projects you are part of','warn');return;}
   const types=activeWorkTypes();
-  if(!types.length){toast('No active work types. Add one in Settings → Work Types','bad');return;}
+  /* Only an Admin can reach Settings, so only an Admin is pointed there. */
+  if(!types.length){toast(isAdmin()?'No active work types. Add one in Settings → Work Types':'No active work types yet. Ask an Admin to add one','bad');return;}
   /* From the Shoots tab it opens on a shoot type; otherwise on the first type. */
   const initial=(tpl&&types.find(w=>w.form_template===tpl))||types[0];
   const fixed=pid?+pid:null;
   pid=fixed||ps[0].id;
   modal(`<div class="mo-head"><div><h2>Assign work</h2>
-      <p>Pick the work type first. The form adapts to it. Types are configured in <b>Settings → Work Types</b>.</p></div>
+      <p>Pick the work type first. The form adapts to it.${isAdmin()?' Types are configured in <b>Settings → Work Types</b>.':''}</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
     <div class="mo-body">
       <div class="field"><label class="lbl">Work type <span class="req">*</span></label>
@@ -21491,7 +21543,7 @@ function openNewCard(bid){
           ${DB.deliverables.slice(0,40).map(d=>`<option value="deliverable:${d.id}">◆ ${esc(d.title)}</option>`).join('')}</select></div>
       <div class="field"><label class="lbl">Assignees</label>
         <div class="f wrap gap2" id="nc-assign">${DB.users.filter(u=>u.is_active).map(u=>
-          `<button class="chip" data-uid="${u.id}" onclick="this.classList.toggle('sel')">${avatar(u.id,'xs')} ${esc(u.full_name.split(' ')[0])}</button>`).join('')}</div></div>
+          `<button class="chip" data-uid="${u.id}" onclick="this.classList.toggle('sel')">${avatar(u.id,'xs')} ${personChipText(u.id)}</button>`).join('')}</div></div>
     </div>
     <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn primary" data-act="createCard" data-bid="${b.id}">Create card</button></div>`,{size:'wide'});
@@ -21732,7 +21784,7 @@ const ACTIONS = {
       /* The server reports overlaps rather than blocking them (§31) — surface it
          so the decision stays a human one. */
       if(r&&r.conflicts&&r.conflicts.length)
-        toast(`Assigned. Note this member already has ${r.conflicts.length} other assignment(s) that day.`,'warn');
+        toast(`Assigned. Note this member already has ${plural(r.conflicts.length,'other assignment')} that day.`,'warn');
       else toast('Assignment created','ok');
       smcMgmtLoad(true);
     }catch(e){ if(n){n.disabled=false;n.textContent='Create assignment';} toast(smcError(e),'bad'); }
@@ -21889,7 +21941,7 @@ const ACTIONS = {
       start_date:$('#cv-start').value||null,end_date:$('#cv-end').value||null};
     closeModal();
     moSync(MO_API.post('/requests/'+d.rid+'/convert',body).then(r=>hydrateFromServer().then(()=>r)),
-      (r)=>{loadMyActivity(true);toast('Project created'+(r&&r.deliverables_created?' with '+r.deliverables_created+' deliverable(s)':'')+'. Production has started','ok');});
+      (r)=>{loadMyActivity(true);toast('Project created'+(r&&r.deliverables_created?' with '+plural(r.deliverables_created,'deliverable'):'')+'. Production has started','ok');});
   },
   /* Routing is always by team — the team's lead becomes the production owner. */
   assignTeam:(d)=>{
@@ -22144,7 +22196,7 @@ const ACTIONS = {
   coordReportGo:()=>{
     const a=coordAudit(TODAY);
     const note=$('#cr-note').value.trim();
-    const summary=`Operational summary: ${a.length} action(s) logged.`+(note?' '+note:'');
+    const summary=`Operational summary: ${plural(a.length,'action')} logged.`+(note?' '+note:'');
     closeModal();
     moSync(MO_API.post('/reports/submit',{report_date:TODAY,note:summary}).then(()=>hydrateFromServer()),
       ()=>{render();toast('Daily report submitted from your activity log','ok');});
@@ -23049,7 +23101,7 @@ const ACTIONS = {
       owner_id:(()=>{const t=teamId?team(teamId):null;
         return t&&t.lead_user_id?t.lead_user_id:(isCoord()?null:S.me);})(),
       created_by:S.me,start_date:start,end_date:end,cover_image_url:null,type_meta:{},
-      source:'app',archived_at:null,deleted_at:null,tags:[]};
+      source:'app',archived_at:null,deleted_at:null,tags:[],_optimistic:true};
     DB.projects.push(p);
     if(p.owner_id)
       DB.project_assignments.push({id:Math.max(...DB.project_assignments.map(a=>a.id))+1,project_id:id,user_id:p.owner_id,
@@ -23134,7 +23186,7 @@ const ACTIONS = {
     const s=DB.shoots.find(x=>x.id===+d.sid);
     modal(`<div class="mo-head"><div><h2>Assign shoot crew</h2><p>${esc(s.title)} · ${D.fmt(s.shoot_date)}</p></div>
         <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
-      <div class="mo-body"><div class="f wrap gap2" id="sc-crew">${assignableMembers().map(u=>`<button type="button" class="chip ${DB.shoot_crew.some(c=>c.shoot_id===s.id&&c.user_id===u.id)?'sel':''}" data-uid="${u.id}" onclick="this.classList.toggle('sel')">${esc(u.full_name)}</button>`).join('')}</div></div>
+      <div class="mo-body"><div class="f wrap gap2" id="sc-crew">${assignableMembers().map(u=>`<button type="button" class="chip ${DB.shoot_crew.some(c=>c.shoot_id===s.id&&c.user_id===u.id)?'sel':''}" data-uid="${u.id}" onclick="this.classList.toggle('sel')">${personChipText(u.id)}</button>`).join('')}</div></div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" data-act="confirmShootCrew" data-sid="${s.id}">Assign</button></div>`);
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
@@ -24258,7 +24310,7 @@ const ACTIONS = {
        constraint is entitled to refuse. */
     moSync(Promise.all(sel.map(id=>MO_API.post('/equipment/bookings',{equipment_item_id:id,starts_at:from,ends_at:to,
         shoot_id:sid,project_id:sid?(DB.shoots.find(s=>s.id===sid)||{}).project_id:null}))),
-      ()=>toast(sel.length+' item(s) booked. The DB exclusion constraint makes double-booking impossible even under concurrency.','ok'));
+      ()=>toast(plural(sel.length,'item')+' booked. The DB exclusion constraint makes double-booking impossible even under concurrency.','ok'));
   },
   /* The cancellation IS the POST, and the re-read is what puts the tab right.
      The booking may not be in any local array at all — the tab is a server read
@@ -24880,9 +24932,9 @@ const ACTIONS = {
       const csv=[mod.cols.join(',')].concat(rows.map(r=>mod.cols.map(cc=>'"'+String(r[cc]??'').replace(/"/g,'""')+'"').join(','))).join('\n');
       const a=document.createElement('a');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
       a.href=url;a.download='media-ops-'+c.mod+'.csv';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
-      toast('Exported '+rows.length+' row(s)','ok');return;
+      toast('Exported '+plural(rows.length,'row'),'ok');return;
     }
-    if(d.a==='delete'&&!confirm('Delete '+ids.length+' record(s)? Records still in use are skipped automatically.'))return;
+    if(d.a==='delete'&&!confirm('Delete '+plural(ids.length,'record')+'? Records still in use are skipped automatically.'))return;
     MO_API.post('/crud/'+c.mod+'/bulk',{ids,action:d.a}).then(r=>{
       c.sel={};toast(r.done+' done'+(r.blocked?' · '+r.blocked+' blocked (in use, archive those instead)':''),r.blocked?'warn':'ok');crudAfterMutate();
     }).catch(e=>toast(e.message,'bad'));
@@ -25212,7 +25264,7 @@ const ACTIONS = {
     moSync(MO_API.req('DELETE','/crew/'+ruid(uid),body).then(()=>hydrateFromServer()),
       (r)=>{render();
         const bits=[name+' removed'];
-        if(r&&r.reassigned)bits.push(r.reassigned+' item(s) reassigned');
+        if(r&&r.reassigned)bits.push(plural(r.reassigned,'item')+' reassigned');
         if(r&&r.teams_unassigned&&r.teams_unassigned.length&&!(r&&r.new_lead))
           bits.push(r.teams_unassigned.map(t=>t.name).join(', ')+' now has no lead');
         toast(bits.join(' · '),'ok');});
@@ -25397,7 +25449,7 @@ const ACTIONS = {
       start_time:$('#ce-start').value||null, end_time:$('#ce-end').value||null, opportunities};
     closeModal();
     MO_API.post('/creator/events',body)
-      .then(r=>{toast(`${title} created${r.opportunities_created?` · ${r.opportunities_created} requirement(s)`:''}. Open it when ready`,'ok');
+      .then(r=>{toast(`${title} created${r.opportunities_created?` · ${plural(r.opportunities_created,'requirement')}`:''}. Open it when ready`,'ok');
         cnReload('events');})
       .catch(e=>toast(e.message,'bad'));
   },
@@ -25731,7 +25783,7 @@ const ACTIONS = {
         <div class="mo-body">
           ${closed.length?`<div class="field"><label class="lbl">Closed cycle <span class="req">*</span></label>
             <select class="inp" id="gp-cycle">${closed.map(c=>
-              `<option value="${c.id}">${esc(c.label)} · ${c.creators} creator(s), ${c.total_points} points</option>`).join('')}</select></div>
+              `<option value="${c.id}">${esc(c.label)} · ${plural(c.creators,'creator')}, ${plural(c.total_points,'point')}</option>`).join('')}</select></div>
             <div class="hint">Nothing is paid by this. Each payout goes into review first.</div>`
           :`<div class="empty" style="padding:24px"><div class="e-ico">◌</div>
              <h4>No closed cycle</h4><p>Close a cycle under Points → Rules &amp; cycles first. An active
@@ -26178,7 +26230,7 @@ const ACTIONS = {
         <div class="mo-body">
           ${closed.length?`<div class="field"><label class="lbl">Closed cycle <span class="req">*</span></label>
             <select class="inp" id="fr-cycle">${closed.map(c=>
-              `<option value="${c.id}">${esc(c.label)} · ${c.creators} creator(s), ${c.total_points} points</option>`).join('')}</select></div>
+              `<option value="${c.id}">${esc(c.label)} · ${plural(c.creators,'creator')}, ${plural(c.total_points,'point')}</option>`).join('')}</select></div>
             <div class="hint">Points, ranks and payouts are untouched by this. It only records recognition.</div>`
           :`<div class="empty" style="padding:24px"><div class="e-ico">◌</div><h4>No closed cycle</h4>
              <p>Close a cycle under Points → Rules &amp; cycles first.</p></div>`}
@@ -27051,7 +27103,7 @@ const ACTIONS = {
       <div class="mo-body">
         <div class="field"><label class="lbl">Title <span class="req">*</span></label><input class="inp" id="na-title" placeholder="e.g. Edit convocation highlights"></div>
         <div class="field"><label class="lbl">Assign to <span class="req">*</span></label>
-          <div class="f wrap gap2" id="na-users">${assignableMembers().map(u=>`<button type="button" class="chip" data-uid="${u.id}" onclick="this.classList.toggle('sel')">${esc(u.full_name)}</button>`).join('')}</div></div>
+          <div class="f wrap gap2" id="na-users">${assignableMembers().map(u=>`<button type="button" class="chip" data-uid="${u.id}" onclick="this.classList.toggle('sel')">${personChipText(u.id)}</button>`).join('')}</div></div>
         <div class="row">
           <div class="field"><label class="lbl">Start date</label><input class="inp" type="date" id="na-start" value="${rtoday()}"></div>
           <div class="field"><label class="lbl">Due date</label><input class="inp" type="date" id="na-due" value="${rtoday()}"></div></div>
@@ -28298,7 +28350,7 @@ function smcInstituteDetail(id){
   const mem=(SMC.mgmt.members||[]).filter(m=>+m.academic_unit_id===+id);
   const asg=(SMC.mgmt.assignments||[]).filter(a=>+a.unit_id===+id);
   modal(`<div class="mo-head"><div><h2>${esc(i?i.name:'Institute')}</h2>
-      <p>${mem.filter(m=>m.is_active).length} active SMC member(s) · ${asg.length} assignment(s)</p></div>
+      <p>${plural(mem.filter(m=>m.is_active).length,'active SMC member')} · ${plural(asg.length,'assignment')}</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
     <div class="mo-body">
       <div class="small b mb2">SMC members</div>
