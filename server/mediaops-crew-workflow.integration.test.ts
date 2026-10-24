@@ -1323,6 +1323,53 @@ maybe("status moves — a version is the only way into review, and closed work i
   });
 });
 
+/* ── Finished work keeps its owner ─────────────────────────────────────────
+   Delivered, dispatched or archived work is not handed to someone else by any
+   path that names an owner, and the answer says why in plain words. */
+
+maybe("finished work keeps its owner", () => {
+  const finished = async (set: string) => {
+    const { pid, did } = await ownedBy("empA1");
+    await pool.query(`UPDATE mo_deliverables SET ${set} WHERE id=$1`, [did]);
+    return { pid, did };
+  };
+  const tries = (pid: number, did: number) => [
+    as("leadA", "PATCH", `/deliverables/${did}`, { owner_id: ACTORS.empA2.id, confirm_reassign: true }),
+    as("leadA", "POST", `/deliverables/${did}/assignee`, { kind: "crew", user_id: ACTORS.empA2.id, confirm_reassign: true }),
+    as("leadA", "POST", `/deliverables/${did}/schedule`, { scheduled_date: "2026-10-30", owner_id: ACTORS.empA2.id, confirm_reassign: true }),
+    as("leadA", "POST", `/projects/${pid}/work`, { work_type_id: workTypeId, title: `${PX} more edits`,
+      assignees: [ACTORS.empA2.id], owner_id: ACTORS.empA2.id, deliverable_id: did, confirm_reassign: true }),
+  ];
+
+  it("delivered work is not reassigned by any path", async () => {
+    const { pid, did } = await finished(`status='delivered', completed_at=NOW()`);
+    for (const r of await Promise.all(tries(pid, did)))
+      expect(r.status, JSON.stringify(r.body)).toBe(400);
+    const r = await as("leadA", "PATCH", `/deliverables/${did}`, { owner_id: ACTORS.empA2.id, confirm_reassign: true });
+    expect(r.body.message).toMatch(/has already been delivered, so it can't be reassigned\.$/);
+    expect((await deliv(did)).owner_id).toBe(ACTORS.empA1.id);
+  });
+
+  it("dispatched or archived work is not reassigned either, and says dispatched", async () => {
+    for (const set of [`status='approved', dispatch_status='delivered'`, `status='delivered', dispatch_status='archived'`]) {
+      const { pid, did } = await finished(set);
+      for (const r of await Promise.all(tries(pid, did))) expect(r.status, `${set}: ${JSON.stringify(r.body)}`).toBe(400);
+      const r = await as("leadA", "POST", `/deliverables/${did}/assignee`, { kind: "crew", user_id: ACTORS.empA2.id, confirm_reassign: true });
+      expect(r.body.message, set).toMatch(/has already been dispatched, so it can't be reassigned\.$/);
+      expect((await deliv(did)).owner_id, set).toBe(ACTORS.empA1.id);
+    }
+  });
+
+  it("approved work still waiting to go out can change hands, and finished work can still be edited", async () => {
+    const { did } = await finished(`status='approved', dispatch_status='queued'`);
+    expect((await as("leadA", "PATCH", `/deliverables/${did}`,
+      { owner_id: ACTORS.empA2.id, confirm_reassign: true })).status).toBe(200);
+    const done = await finished(`status='delivered'`);
+    expect((await as("leadA", "PATCH", `/deliverables/${done.did}`,
+      { owner_id: ACTORS.empA1.id, spec_notes: "Final cut" })).status).toBe(200);
+  });
+});
+
 /* ── Boards: a linked card moves its deliverable only as /status would ───── */
 
 maybe("PATCH /cards/:id — Team Leads and Admins only, and a synced move obeys the review rules", () => {

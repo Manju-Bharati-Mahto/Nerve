@@ -1041,6 +1041,20 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     return true;
   }
 
+  /* Finished work keeps the owner who finished it: once a deliverable is
+     delivered, dispatched or archived, nobody takes it over. Every path that
+     names an owner asks this before reassignUnconfirmed(), so the answer is a
+     plain no rather than a question. True when it has answered. */
+  function ownerLocked(res: express.Response, d: { title?: unknown; owner_id?: unknown; status?: unknown;
+                       dispatch_status?: unknown }, to: string | null): boolean {
+    if (!d.owner_id || String(d.owner_id) === String(to ?? "")) return false;
+    const dispatched = ["sent", "delivered", "archived"].includes(String(d.dispatch_status ?? "none"));
+    if (String(d.status) !== "delivered" && !dispatched) return false;
+    sendError(res, 400, `“${String(d.title ?? "This deliverable")}” has already been `
+      + `${dispatched ? "dispatched" : "delivered"}, so it can't be reassigned.`);
+    return true;
+  }
+
   // Per-user module access (allowed_modules). Admins bypass; NULL = unrestricted
   // (role-based). Backend defense-in-depth behind the client's nav/route gating.
   async function requireModule(res: express.Response, u: CurrentUser, key: string): Promise<boolean> {
@@ -2188,6 +2202,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (refused.length)
       return sendError(res, 403, `You can't change ${refused.join(", ").replace(/_/g, " ")} on this deliverable.`);
     if ("priority" in b && !PRIORITIES.includes(String(b.priority))) return sendError(res, 400, PRIORITY_ERROR);
+    if ("owner_id" in b && ownerLocked(res, d, b.owner_id ? String(b.owner_id) : null)) return;
     // Re-owning a deliverable is an assignment — same team scope as everything else.
     if ("owner_id" in b && b.owner_id && String(b.owner_id) !== String(d.owner_id)
         && !(await assertAssignable(res, u, [String(b.owner_id)]))) return;
@@ -2222,6 +2237,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // Scheduling implies an assignee — that person is who it shows up for.
     const owner = b.owner_id ? String(b.owner_id) : String(cur.owner_id ?? "");
     if (date && !owner) return sendError(res, 400, "Assign an owner before scheduling this deliverable.");
+    if (b.owner_id && ownerLocked(res, cur, String(b.owner_id))) return;
     if (b.owner_id && String(b.owner_id) !== String(cur.owner_id)
         && !(await assertAssignable(res, u, [String(b.owner_id)]))) return;
     if (b.owner_id && await reassignUnconfirmed(res, cur, String(b.owner_id), b)) return;
@@ -2830,6 +2846,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       if (["delivered", "not_required", "cancelled"].includes(String(existing.status)))
         return sendError(res, 400, `That deliverable is ${String(existing.status).replace("_", " ")} — it can no longer take new work.`);
       // Naming a different owner takes it off the one it has: asked first, like any reassignment.
+      if (ownerLocked(res, existing, ownerId)) return;
       if (await reassignUnconfirmed(res, existing, ownerId, b)) return;
     }
     if (nd) {
@@ -18925,6 +18942,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       if (!(await assertAssignable(res, u, [memberId]))) return;
       const from = d.owner_id ? String(d.owner_id) : null;
       if (from === memberId) return res.json({ ok: true, unchanged: true, kind });
+      if (ownerLocked(res, d, memberId)) return;
       if (await reassignUnconfirmed(res, d, memberId, b)) return;
       const { rows } = await pool.query(
         `UPDATE mo_deliverables SET owner_id=$1, updated_at=NOW() WHERE id=$2 RETURNING *`, [memberId, did]);
