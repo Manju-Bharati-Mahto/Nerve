@@ -21069,7 +21069,8 @@ function delivRowHtml(types){
     <div class="xsmall mut3 np-d-name" style="margin-top:4px" hidden></div>`;
 }
 /* The next free title for a type on a project: its name, then "(2)", "(3)"…
-   — the numbering POST /projects/:id/deliverables applies. */
+   — the numbering the server's typeTitle() applies on POST /projects and
+   POST /projects/:id/deliverables. */
 function nextDelivTitle(base,taken){
   let t=base;
   for(let n=2;taken.has(t.toLowerCase());n++)t=`${base} (${n})`;

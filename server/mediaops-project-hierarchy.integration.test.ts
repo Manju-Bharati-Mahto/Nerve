@@ -352,8 +352,10 @@ maybe("TEST 8/9/10 — deliverables are the creator's own words", () => {
   });
 
   it("skips empty rows and refuses an over-long title", async () => {
+    // Empty means neither a title nor a type: a row that gives its type is a
+    // deliverable named after it, so the blank row here carries no type.
     const r = await newProject("coord", { team_id: teamA,
-      deliverables: [{ title: "  ", deliverable_type_id: deliverableTypeId },
+      deliverables: [{ title: "  " },
                      { title: "Real one", deliverable_type_id: deliverableTypeId }] });
     expect(r.body.deliverables_created).toBe(1);
     const bad = await newProject("coord", { team_id: teamA,
