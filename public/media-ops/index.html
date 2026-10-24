@@ -980,6 +980,13 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
 #rsg-layer{position:fixed;inset:0;z-index:95;display:grid;place-items:center;padding:var(--s4);
   background:var(--overlay)}
 #rsg-layer .modal{width:min(440px,100%)}
+/* Submit for review, opened over Log a task the same way: that form stays
+   underneath, as typed, and the Review field turns green once it is sent. */
+#sv-layer{position:fixed;inset:0;z-index:95;display:grid;place-items:center;padding:var(--s4);
+  background:var(--overlay)}
+.tl-sent{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;padding:8px 12px;border-radius:var(--r-sm);
+  background:var(--success-bg);color:var(--success);font-weight:600}
+.tl-sent a{font-size:11.5px;font-weight:400;color:inherit;text-decoration:underline;word-break:break-all}
 .modal{background:var(--surface);border-radius:var(--r-xl);box-shadow:var(--sh-3);width:min(560px,100%);
   max-height:88vh;display:flex;flex-direction:column;border:1px solid var(--border);
   animation:pop 180ms var(--ease)}
@@ -21117,10 +21124,8 @@ function openTaskLog(taskId){
             `<option value="${d.id}" ${existing&&existing.deliverable_id===d.id?'selected':''}>${esc(d.title)}</option>`).join('')}</select>
         <div class="hint">Filtered to the chosen project. Claiming completion without evidence auto-flags the report.</div></div>
 
-      <div class="field"><label class="lbl">Evidence</label>
-        <input class="inp" id="tl-link" placeholder="https://drive.google.com/…">
-        <div class="hint">Must match drive.google.com or docs.google.com; params are stripped and duplicates rejected.
-          Attachments ≤ 25 MB, virus-scanned.</div></div>
+      <div class="field"><label class="lbl">Submit for review</label>
+        <div id="tl-review"></div></div>
 
       <div class="field"><label class="lbl">Status</label>
         <div class="seg" id="tl-status">${['done','in_progress','blocked'].map((s,i)=>
@@ -21129,7 +21134,8 @@ function openTaskLog(taskId){
                      document.getElementById('tl-blocker').style.display=this.dataset.st==='blocked'?'block':'none'">
             ${({done:'✔ Done',in_progress:'▶ In progress',blocked:'‖ Blocked'})[s]}</button>`).join('')}</div>
         <div id="tl-blocker" style="display:${existing&&existing.status==='blocked'?'block':'none'};margin-top:8px">
-          <input class="inp" id="tl-blocknote" placeholder="What is blocking this? (required)" value="${esc(existing?existing.blocker_note:'')}"></div></div>
+          <input class="inp" id="tl-blocknote" placeholder="What is blocking this? (required)" value="${esc(existing?existing.blocker_note:'')}"></div>
+        <div id="tl-stwarn"></div></div>
 
       <details><summary class="small mut" style="cursor:pointer">Optional progress before / after</summary>
         <div class="row mt3">
@@ -21163,9 +21169,122 @@ function openTaskLog(taskId){
   $('#tl-project').onchange=()=>{const pid=+$('#tl-project').value;
     $$('#tl-recent .chip').forEach(c=>c.classList.toggle('sel',+c.dataset.pid===pid));
     $('#tl-deliv').innerHTML='<option value="">— none —</option>'+DB.deliverables.filter(d=>d.project_id===pid)
-      .map(d=>`<option value="${d.id}">${esc(d.title)}</option>`).join('');};
+      .map(d=>`<option value="${d.id}">${esc(d.title)}</option>`).join('');
+    review();};
   $$('#tl-recent .chip').forEach(c=>c.onclick=()=>{const s=$('#tl-project');
     s.value=c.dataset.pid;s.dispatchEvent(new Event('change'));});
+  /* Submit for review takes the place of a pasted link: the linked
+     deliverable's own Submit dialog opens over this one, and the version it
+     sends is this log's evidence. Status follows it — In progress until the
+     work is submitted, Done once it is — until the person picks one
+     themselves; an edited log keeps the status it was saved with. */
+  let stPicked=!!existing, drawn=null;
+  const linked=()=>deliv(+$('#tl-deliv').value)||null;
+  const setStatus=s=>{$$('#tl-status button').forEach(b=>b.classList.toggle('on',b.dataset.st===s));
+    $('#tl-blocker').style.display=s==='blocked'?'block':'none';};
+  const stWarn=()=>{const dl=linked(),on=$('#tl-status button.on');
+    $('#tl-stwarn').innerHTML=dl&&on&&on.dataset.st==='done'&&!tlSubmitted(dl)
+      ?'<div class="warn-msg">⚠ Not submitted yet — submit it for review, or log it as In progress.</div>':'';};
+  function review(){
+    const dl=linked(); drawn=dl?dl.id:null;
+    $('#tl-review').innerHTML=tlReviewHtml(dl);
+    const b=$('#tl-submit');
+    if(b)b.onclick=e=>{e.stopPropagation();submitVersionOver(dl.id,()=>{
+      if(!$('#tl-review'))return;
+      review();setStatus('done');stWarn();},b);};
+    if(!stPicked)setStatus(dl&&!tlSubmitted(dl)?'in_progress':'done');
+    stWarn();
+  }
+  $('#tl-deliv').onchange=review;
+  $$('#tl-status button').forEach(b=>b.addEventListener('click',()=>{stPicked=true;stWarn();}));
+  review();
+  /* Log on a Today's assignment card picks the deliverable just after this
+     opens, without a change event (ACTIONS.logWork), so look once more then. */
+  queueMicrotask(()=>{ if($('#tl-review')&&(linked()&&linked().id||null)!==drawn) review(); });
+}
+/* Submit for review — one form and one submit path, whether it opens as the
+   page's dialog (ACTIONS.submitVersion) or over Log a task (submitVersionOver). */
+function svNext(dl){
+  const vs=DB.deliverable_versions.filter(v=>v.deliverable_id===dl.id);
+  return vs.length?Math.max(...vs.map(v=>v.version_no))+1:1;
+}
+function svForm(dl,next,over){
+  return `<div class="mo-head"><div><h2${over?' id="sv-h"':''}>Submit v${next} for review</h2>
+        <p>Each submission is an immutable version with its own Drive link and review outcome.</p></div>${
+        over?'<button class="icon-btn ml-auto" data-sv="no" aria-label="Close">✕</button>':''}</div>
+      <div class="mo-body">
+        <div class="field"><label class="lbl">Drive link <span class="req">*</span></label>
+          <input class="inp" id="sv-url" placeholder="https://drive.google.com/file/d/…"></div>
+        <div class="field"><label class="lbl">Note to reviewer</label>
+          <textarea class="inp" id="sv-note" placeholder="What changed since the last version?"></textarea></div>
+        <div class="note">Any Team Lead or Admin who is not working on it reviews it, never you. The project's Team Lead is told it is waiting.</div></div>
+      <div class="mo-foot">${over?'<button class="btn" data-sv="no">Cancel</button>':'<button class="btn" onclick="closeModal()">Cancel</button>'}
+        <button class="btn primary" ${over?'data-sv="yes"':`data-act="confirmVersion" data-did="${dl.id}" data-v="${next}"`}>Submit v${next}</button></div>`;
+}
+/* POST /deliverables/:id/versions from the open form's #sv-url / #sv-note.
+   A missing or non-Drive link is refused at the field and nothing is sent
+   (null). Otherwise the version is recorded here at once — the deliverable
+   waits for review and the work on it closes — `shown` lets the caller close
+   its dialog and redraw, the request goes out (`synced` once the server has
+   it) and the person is told. Resolves to the new version. */
+function submitDeliverableVersion(did,v,{shown,synced}={}){
+  const url=$('#sv-url').value.trim();
+  /* Said at the field, which stays marked until the link is fixed. */
+  if(!url){fieldError('#sv-url','Add the Google Drive link for this version.');return null;}
+  if(!/^https:\/\/(drive|docs)\.google\.com\//.test(url)){fieldError('#sv-url','Use a Google Drive or Google Docs link.');return null;}
+  const dl=deliv(+did), note=$('#sv-note').value.trim();
+  const ver={id:Math.max(0,...DB.deliverable_versions.map(x=>x.id))+1,deliverable_id:dl.id,
+    version_no:+v,drive_url:url,note,submitted_by:S.me,
+    submitted_at:D.stamp(),review_status:'pending',reviewed_by:null,reviewed_at:null,review_comment:''};
+  DB.deliverable_versions.push(ver);
+  dl.status='in_review';
+  syncLinkedWork(dl,'done');
+  audit(S.me,'deliverable.version_submitted','deliverable_version',DB.deliverable_versions.length,null,{version_no:+v});
+  const _sv={drive_url:url,note};
+  if(shown)shown(ver);
+  moSync(MO_API.post('/deliverables/'+dl.id+'/versions',_sv), synced);
+  toast('v'+v+' submitted. The project\'s Team Lead has been told it is waiting for review.','ok');
+  return ver;
+}
+/* The Submit dialog over another one (Log a task), on its own layer like the
+   reassign question, so the form beneath stays open as typed. Escape, ✕,
+   Cancel or a click outside close only this; focus goes back to `back`.
+   `onSent(version)` runs once the version is recorded. */
+function submitVersionOver(did,onSent,back){
+  const dl=deliv(+did); if(!dl)return;
+  const prev=$('#sv-layer'); if(prev)prev.remove();
+  const next=svNext(dl);
+  const layer=el(`<div id="sv-layer" role="dialog" aria-modal="true" aria-labelledby="sv-h">
+    <div class="modal">${svForm(dl,next,true)}</div></div>`);
+  const key=e=>{ if(e.key==='Escape'){ e.stopPropagation(); e.preventDefault(); close(); } };
+  const close=()=>{ window.removeEventListener('keydown',key,true); layer.remove();
+    const f=back&&back.isConnected?back:$('#modal-layer [data-act="saveTask"]'); if(f)f.focus(); };
+  layer.onclick=e=>{ const b=e.target.closest('[data-sv]');
+    if(b&&b.dataset.sv==='yes'){
+      const ver=submitDeliverableVersion(dl.id,next,{shown:()=>{back=null;close();render();}});
+      if(ver&&onSent)onSent(ver);
+    } else if(b||e.target===layer) close(); };
+  window.addEventListener('keydown',key,true);
+  document.body.appendChild(layer);
+  mInputAttrs(layer);
+  setTimeout(()=>{ const u=layer.querySelector('#sv-url'); if(u&&u.isConnected)u.focus(); },30);
+}
+/* The version a log on this deliverable carries as its evidence: the latest
+   one, while it waits for review or once it is approved. */
+function tlSubmitted(dl){
+  const v=dl&&latestVersion(dl.id);
+  return v&&['pending','approved'].includes(v.review_status)
+    &&['in_review','approved','delivered'].includes(dl.status)?v:null;
+}
+/* Log a task's Review field, for the deliverable it is linked to. */
+function tlReviewHtml(dl){
+  if(!dl)return '<div class="hint">Link a deliverable to submit this work for review.</div>';
+  const v=tlSubmitted(dl);
+  if(v)return `<div class="tl-sent" role="status">✔ v${v.version_no} ${v.review_status==='approved'?'approved':'submitted for review'}
+    <a href="${esc(v.drive_url)}" target="_blank" rel="noopener">${esc(v.drive_url)}</a></div>`;
+  if(canSubmitVersion(dl))return `<button type="button" class="btn primary" id="tl-submit">${submitLabel(dl)}</button>`;
+  if(WORK_OPEN.includes(dl.status))return '<div class="hint">Only people working on this deliverable can submit it.</div>';
+  return `<div class="hint">Nothing to submit: this deliverable is ${esc((DELIV_STATUS[dl.status]||{l:'closed'}).l.toLowerCase())}.</div>`;
 }
 /* One line, for the person creating it, on who assigns the work afterwards. */
 function npHelpLine(){
@@ -23052,7 +23171,10 @@ const ACTIONS = {
     const status=($('#tl-status button.on')||{dataset:{st:'done'}}).dataset.st;
     const qty=$('#tl-qty').value?+$('#tl-qty').value:null;
     const unit=$('#tl-unit').value.trim()||null;
-    const link=$('#tl-link').value.trim();
+    /* Evidence is the Drive link of the version the linked deliverable was
+       submitted with — sent from this dialog's Submit for review, or earlier. */
+    const _sub=tlSubmitted(deliv(+$('#tl-deliv').value));
+    const link=_sub?_sub.drive_url:'';
     /* The most-used form in the product. Every rule below used to answer with a
        toast in the corner and leave the field it meant unmarked. */
     clearFieldErrors($('#modal-layer'));
@@ -23060,8 +23182,6 @@ const ACTIONS = {
     if(t2m(en)<=t2m(st))return fieldError('#tl-end','End time must be after the start time.');
     if(qty&&!unit)return fieldError('#tl-unit','Add the unit for that quantity, e.g. photos.');
     if(qty&&(qty<1||qty>100000))return fieldError('#tl-qty','Quantity must be between 1 and 100,000.');
-    if(link&&!/^https:\/\/(drive|docs)\.google\.com\//.test(link))
-      return fieldError('#tl-link','Use a Google Drive or Docs link.');
     if(status==='blocked'&&!$('#tl-blocknote').value.trim())return fieldError('#tl-blocknote','Add a note: what is blocking this?');
     let r=DB.daily_reports.find(x=>x.user_id===S.me&&x.report_date===TODAY);
     if(!r){r={id:Math.max(0,...DB.daily_reports.map(x=>x.id))+1,user_id:S.me,report_date:TODAY,status:'draft',
@@ -23527,36 +23647,15 @@ const ACTIONS = {
   startWork:(d)=>{const dl=deliv(+d.did); if(dl)applyDelivStatus(dl,'in_progress');},
   submitVersion:(d)=>{
     const dl=deliv(+d.did);
-    const vs=DB.deliverable_versions.filter(v=>v.deliverable_id===dl.id);
-    const next=vs.length?Math.max(...vs.map(v=>v.version_no))+1:1;
-    modal(`<div class="mo-head"><div><h2>Submit v${next} for review</h2>
-        <p>Each submission is an immutable version with its own Drive link and review outcome.</p></div></div>
-      <div class="mo-body">
-        <div class="field"><label class="lbl">Drive link <span class="req">*</span></label>
-          <input class="inp" id="sv-url" placeholder="https://drive.google.com/file/d/…"></div>
-        <div class="field"><label class="lbl">Note to reviewer</label>
-          <textarea class="inp" id="sv-note" placeholder="What changed since the last version?"></textarea></div>
-        <div class="note">Any Team Lead or Admin who is not working on it reviews it, never you. The project's Team Lead is told it is waiting.</div></div>
-      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
-        <button class="btn primary" data-act="confirmVersion" data-did="${dl.id}" data-v="${next}">Submit v${next}</button></div>`);
+    const next=svNext(dl);
+    modal(svForm(dl,next,false));
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
   },
   confirmVersion:(d)=>{
-    const url=$('#sv-url').value.trim();
-    /* Said at the field, which stays marked until the link is fixed. */
-    if(!url)return fieldError('#sv-url','Add the Google Drive link for this version.');
-    if(!/^https:\/\/(drive|docs)\.google\.com\//.test(url))return fieldError('#sv-url','Use a Google Drive or Google Docs link.');
     const dl=deliv(+d.did);
-    DB.deliverable_versions.push({id:Math.max(0,...DB.deliverable_versions.map(v=>v.id))+1,deliverable_id:dl.id,
-      version_no:+d.v,drive_url:url,note:$('#sv-note').value.trim(),submitted_by:S.me,
-      submitted_at:D.stamp(),review_status:'pending',reviewed_by:null,reviewed_at:null,review_comment:''});
-    dl.status='in_review';
-    syncLinkedWork(dl,'done');
-    audit(S.me,'deliverable.version_submitted','deliverable_version',DB.deliverable_versions.length,null,{version_no:+d.v});
-    const _sv={drive_url:url,note:$('#sv-note').value.trim()};
-    closeModal();drawerDeliverable(dl.id);render();
-    moSync(MO_API.post('/deliverables/'+dl.id+'/versions',_sv), ()=>drawerDeliverable(dl.id));
-    toast('v'+d.v+' submitted. The project\'s Team Lead has been told it is waiting for review.','ok');
+    submitDeliverableVersion(dl.id,+d.v,{
+      shown:()=>{closeModal();drawerDeliverable(dl.id);render();},
+      synced:()=>drawerDeliverable(dl.id)});
   },
   approveVersion:(d)=>{
     const dl=deliv(+d.did);
