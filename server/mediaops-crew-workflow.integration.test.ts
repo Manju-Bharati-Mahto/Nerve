@@ -561,6 +561,16 @@ maybe("approval bypass — there is one road to approved", () => {
     expect((await as("empA1", "POST", `/deliverables/${did}/status`, { status: "delivered" })).status).toBe(200);
   });
 
+  it("25c — a review-exempt type not yet started is told to start it, not to submit a version", async () => {
+    if (!exemptType) return;
+    const { did } = await ownedBy("empA1");
+    await pool.query(`UPDATE mo_deliverables SET deliverable_type_id=$1, status='not_started' WHERE id=$2`, [exemptType, did]);
+    const r = await as("empA1", "POST", `/deliverables/${did}/deliver`, {});
+    expect([r.status, r.body.message]).toEqual(
+      [400, "Start it first — raw footage can be delivered once it is in progress."]);
+    expect((await deliv(did)).status).toBe("not_started");
+  });
+
   it("26 — the board's 'approved' is the same review: it needs a version, and it queues dispatch", async () => {
     const bare = await ownedBy("empA1");
     await pool.query(`UPDATE mo_deliverables SET status='in_review' WHERE id=$1`, [bare.did]);
@@ -1378,6 +1388,27 @@ maybe("finished work keeps its owner", () => {
       expect(r.body.message, set).toMatch(/has already been dispatched, so it can't be reassigned\.$/);
       expect((await deliv(did)).owner_id, set).toBe(ACTORS.empA1.id);
     }
+  });
+
+  it("finished work keeps its dates: schedule, due date and a generic edit say so plainly", async () => {
+    for (const [set, word] of [[`status='delivered', completed_at=NOW()`, "delivered"],
+                               [`status='approved', dispatch_status='delivered'`, "dispatched"],
+                               [`status='delivered', dispatch_status='archived'`, "dispatched"]]) {
+      const { did } = await finished(set);
+      const before = await deliv(did);
+      for (const r of [
+        await as("leadA", "POST", `/deliverables/${did}/schedule`, { scheduled_date: "2026-10-30" }),
+        await as("leadA", "PATCH", `/deliverables/${did}/due-date`, { due_date: "2026-11-02" }),
+        await as("leadA", "PATCH", `/deliverables/${did}`, { due_date: "2026-11-02" }),
+        await as("leadA", "PATCH", `/deliverables/${did}`, { scheduled_date: "2026-10-30" }),
+      ]) expect([r.status, r.body.message], set).toEqual([400,
+        `“${before.title}” has already been ${word}, so its schedule and due date can't be changed.`]);
+      const after = await deliv(did);
+      expect([after.due_date, after.scheduled_date], set).toEqual([before.due_date, before.scheduled_date]);
+    }
+    // Work still open is scheduled as before.
+    const { did } = await ownedBy("empA1");
+    expect((await as("leadA", "POST", `/deliverables/${did}/schedule`, { scheduled_date: "2026-10-30" })).status).toBe(200);
   });
 
   it("approved work still waiting to go out can change hands, and finished work can still be edited", async () => {

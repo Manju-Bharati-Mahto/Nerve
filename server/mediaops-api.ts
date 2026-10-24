@@ -1045,13 +1045,26 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
      delivered, dispatched or archived, nobody takes it over. Every path that
      names an owner asks this before reassignUnconfirmed(), so the answer is a
      plain no rather than a question. True when it has answered. */
-  function ownerLocked(res: express.Response, d: { title?: unknown; owner_id?: unknown; status?: unknown;
-                       dispatch_status?: unknown }, to: string | null): boolean {
+  type FinishedRow = { title?: unknown; owner_id?: unknown; status?: unknown; dispatch_status?: unknown };
+  /* "dispatched" or "delivered" once the work is finished; null while it is open. */
+  function finishedAs(d: FinishedRow): "dispatched" | "delivered" | null {
+    if (["sent", "delivered", "archived"].includes(String(d.dispatch_status ?? "none"))) return "dispatched";
+    return String(d.status) === "delivered" ? "delivered" : null;
+  }
+  function ownerLocked(res: express.Response, d: FinishedRow, to: string | null): boolean {
     if (!d.owner_id || String(d.owner_id) === String(to ?? "")) return false;
-    const dispatched = ["sent", "delivered", "archived"].includes(String(d.dispatch_status ?? "none"));
-    if (String(d.status) !== "delivered" && !dispatched) return false;
-    sendError(res, 400, `“${String(d.title ?? "This deliverable")}” has already been `
-      + `${dispatched ? "dispatched" : "delivered"}, so it can't be reassigned.`);
+    const done = finishedAs(d);
+    if (!done) return false;
+    sendError(res, 400, `“${String(d.title ?? "This deliverable")}” has already been ${done}, so it can't be reassigned.`);
+    return true;
+  }
+  /* Finished work keeps its dates the same way: /schedule, /due-date and a
+     generic edit that would move either say so plainly. True when answered. */
+  function datesLocked(res: express.Response, d: FinishedRow): boolean {
+    const done = finishedAs(d);
+    if (!done) return false;
+    sendError(res, 400, `“${String(d.title ?? "This deliverable")}” has already been ${done}, `
+      + "so its schedule and due date can't be changed.");
     return true;
   }
 
@@ -2202,6 +2215,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (refused.length)
       return sendError(res, 403, `You can't change ${refused.join(", ").replace(/_/g, " ")} on this deliverable.`);
     if ("priority" in b && !PRIORITIES.includes(String(b.priority))) return sendError(res, 400, PRIORITY_ERROR);
+    const movesDate = (k: "due_date" | "scheduled_date") =>
+      k in b && String(dOnly(d[k]) ?? "") !== String(b[k] ?? "");
+    if ((movesDate("due_date") || movesDate("scheduled_date")) && datesLocked(res, d)) return;
     if ("owner_id" in b && ownerLocked(res, d, b.owner_id ? String(b.owner_id) : null)) return;
     // Re-owning a deliverable is an assignment — same team scope as everything else.
     if ("owner_id" in b && b.owner_id && String(b.owner_id) !== String(d.owner_id)
@@ -2230,6 +2246,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!cur) return sendError(res, 404, "Deliverable not found.");
     if (!(await canManageProject(u, Number(cur.project_id))))
       return sendError(res, 403, "Only the project's Team Lead, owner/PM or an Admin may schedule work.");
+    if (datesLocked(res, cur)) return;
     const b = req.body as Record<string, unknown>;
     const date = b.scheduled_date == null || b.scheduled_date === "" ? null : String(b.scheduled_date);
     if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return sendError(res, 400, "scheduled_date must be YYYY-MM-DD (or null to unschedule).");
@@ -2280,6 +2297,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       return sendError(res, 403, isMoTL(u)
         ? "You can only edit due dates on your own team's projects."
         : "Only a Team Lead or Admin may change a due date.");
+    if (datesLocked(res, cur)) return;
     const b = req.body as Record<string, unknown>;
     const raw = b.due_date == null || b.due_date === "" ? null : String(b.due_date);
     if (raw && !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return sendError(res, 400, "due_date must be YYYY-MM-DD (or null to clear).");
@@ -2454,6 +2472,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   async function deliverRefusal(d: Record<string, unknown>): Promise<string | null> {
     if (d.status === "in_review")
       return "A version is awaiting review — it can be delivered once a reviewer approves it.";
+    if (d.review_exempt && d.status === "not_started")
+      return "Start it first — raw footage can be delivered once it is in progress.";
     if (!(d.status === "approved" || (d.review_exempt && d.status === "in_progress")))
       return "This deliverable is not ready to deliver. Submit a version for review first — a reviewer approves, then it is delivered.";
     if (!d.review_exempt) {
