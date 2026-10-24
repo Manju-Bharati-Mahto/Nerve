@@ -328,7 +328,8 @@ maybe("checkout", () => {
       await pool.query(`UPDATE mo_equipment_items SET status=$2 WHERE id=$1`, [id, st]);
       const r = await as("borrower", "POST", `/equipment/${id}/checkout`, { expected_return_at: DUE });
       expect(r.status, st).toBe(409);
-      expect(String(r.body.message), st).toMatch(/BR-7/);
+      expect(String(r.body.message), st).toMatch(/cannot be checked out/);
+      expect(String(r.body.message), st).not.toMatch(/BR-\d/);
     }
   });
 
@@ -357,7 +358,7 @@ maybe("BR-7 blocks a borrower who is sitting on an overdue item", () => {
     const other = await newAsset("Blocked");
     const blocked = await as("borrower2", "POST", `/equipment/${other}/checkout`, { expected_return_at: DUE });
     expect(blocked.status).toBe(409);
-    expect(String(blocked.body.message)).toMatch(/BR-7/);
+    expect(String(blocked.body.message)).toMatch(/^Blocked — you hold an item/);
     expect(String(blocked.body.message)).toMatch(/blocked/i);
 
     // Somebody else is unaffected — the block is personal, not global.
@@ -1446,7 +1447,7 @@ maybe("availability asks the database, in the constraint's own terms", () => {
       "/equipment/availability?from=2029-05-05&to=2029-05-01")).status).toBe(400);
     const long = await as("borrower", "GET", "/equipment/availability?from=2029-06-01&to=2029-09-01");
     expect(long.status).toBe(400);
-    expect(String(long.body.message)).toMatch(/VR-8/);
+    expect(String(long.body.message)).toMatch(/^A booking cannot exceed/);
   });
 
   it("pages, and says so when nothing matches", async () => {
@@ -3127,7 +3128,7 @@ maybe("a reservation can be moved", () => {
     const long = await as("borrower", "PATCH", `/equipment/bookings/${bid}`,
       { starts_at: "2031-06-01", ends_at: "2031-08-01" });
     expect(long.status).toBe(400);
-    expect(String(long.body.message)).toMatch(/VR-8/);
+    expect(String(long.body.message)).toMatch(/^A booking cannot exceed/);
     expect(await row(bid)).toMatchObject({ s: "2031-06-01", e: "2031-06-03" });
   });
 

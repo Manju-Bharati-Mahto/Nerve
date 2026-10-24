@@ -56,7 +56,21 @@ test("a two-field row stacks rather than crushing on a narrow phone", async ({ p
 
 test("the Drive-link field asks for a URL keyboard, without changing its type", async ({ page }) => {
   await openTaskLog(page);
-  const link = page.locator("#tl-link");
+  /* Log a task takes the link through Submit for review, which opens over it:
+     link a deliverable this person can submit, then open that form. */
+  const did = await page.evaluate(() => {
+    const sel = document.getElementById("tl-deliv") as HTMLSelectElement;
+    const ps = document.getElementById("tl-project") as HTMLSelectElement;
+    for (const p of [...ps.options]) {
+      ps.value = p.value; ps.dispatchEvent(new Event("change"));
+      const o = [...sel.options].find((x) => x.value && (window as any).eval(`canSubmitVersion(deliv(${+x.value}))`));
+      if (o) { sel.value = o.value; sel.dispatchEvent(new Event("change")); return +o.value; }
+    }
+    return 0;
+  });
+  expect(did, "a deliverable the employee can submit").toBeGreaterThan(0);
+  await page.click("#tl-submit");
+  const link = page.locator("#sv-layer #sv-url");
   await expect(link).toHaveAttribute("inputmode", "url");
   await expect(link).toHaveAttribute("autocapitalize", "off");
   /* Type is untouched, so validation is exactly as on desktop. */

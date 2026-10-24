@@ -61,19 +61,26 @@ test.describe("Desktop chosen on a phone", () => {
   });
 });
 
-test.describe("the seg in the profile sheet", () => {
+/* The display segs live in My Preference, opened from the account menu
+   (#btn-role) since the topbar avatar became a menu with a full My Profile page. */
+const openPreferences = async (page: Page) => {
+  await page.click("#btn-role");
+  await page.click('.menu-item:has-text("My Preference")');
+};
+
+test.describe("the seg in My Preference", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
   test("changes the layout, and lights the chosen option", async ({ page }) => {
     await bootStaff(page, "admin");
-    await page.click("#btn-role");
+    await openPreferences(page);
     await page.click('#modal-layer [data-act="setLayout"][data-v="mobile"]');
     expect(await layout(page)).toBe("mobile");
   });
 
   test("on desktop, the theme changes but is not remembered", async ({ page }) => {
     await bootStaff(page, "admin");
-    await page.click("#btn-role");
+    await openPreferences(page);
     await page.click('#modal-layer [data-act="setTheme"][data-v="dark"]');
     expect(await theme(page)).toBe("dark");
     /* The seg lights up in place, no rebuild. */
@@ -85,6 +92,16 @@ test.describe("the seg in the profile sheet", () => {
 
 test.describe("theme on a phone is remembered", () => {
   test.use(device("iPhone 13"));
+
+  test("the account menu's My Preference opens and stays open on a phone", async ({ page }) => {
+    await bootStaff(page, "admin");
+    await page.click("#btn-role");
+    await page.click('.menu-item:has-text("My Preference")');
+    await page.waitForTimeout(700);   // past the sheet's history pop
+    await expect(page.locator('#modal-layer [data-act="setTheme"][data-v="dark"]')).toBeVisible();
+    await page.click('#modal-layer [data-act="setTheme"][data-v="dark"]');
+    expect(await theme(page)).toBe("dark");
+  });
 
   test("the More sheet seg sets it, writes mo_theme, and survives a reload before paint", async ({ page }) => {
     await bootStaff(page, "admin");

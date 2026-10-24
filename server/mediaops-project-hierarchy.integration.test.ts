@@ -232,12 +232,11 @@ maybe("creating a project", () => {
     expect(n.rows[0].c).toBe(1);
   });
 
-  it("leaves a Coordinator's unrouted project OWNERLESS rather than on their own desk", async () => {
-    // owner_id IS NULL is what the pipeline already reads as "needs assignment".
+  it("refuses a Coordinator's project that names no team, rather than leaving it on nobody's desk", async () => {
+    // Routing is the Coordinator's whole part in a project, so it is never optional for them.
     const r = await newProject("coord");
-    const p = await projectRow(Number((r.body.project as Record<string, unknown>).id));
-    expect(p.owner_id).toBeNull();
-    expect(p.team_id).toBeNull();
+    expect(r.status).toBe(400);
+    expect(r.body.project).toBeUndefined();
   });
 
   it("records the routing in the existing audit trail", async () => {
@@ -309,9 +308,11 @@ maybe("TEST 4/14 — individual assignment is not the Coordinator's to make", ()
     expect((await newProject("coord", { team_id: teamA, owner_id: ACTORS.empA1.id })).status).toBe(403);
   });
 
-  it("the Coordinator's assignable scope is themselves — never the directory", async () => {
+  /* Never the directory — and not even themselves unless an Admin has made
+     them a production worker (Q5). */
+  it("the Coordinator's assignable scope is never the directory — nobody, unflagged", async () => {
     const r = await as("coord", "GET", "/members/assignable");
-    expect((r.body.members as Array<{ id: string }>).map((m) => m.id)).toEqual([ACTORS.coord.id]);
+    expect((r.body.members as Array<{ id: string }>).map((m) => m.id)).toEqual([]);
   });
 
   it("TEST 14 — an employee who is not on the project cannot assign work on it", async () => {
@@ -351,8 +352,10 @@ maybe("TEST 8/9/10 — deliverables are the creator's own words", () => {
   });
 
   it("skips empty rows and refuses an over-long title", async () => {
+    // Empty means neither a title nor a type: a row that gives its type is a
+    // deliverable named after it, so the blank row here carries no type.
     const r = await newProject("coord", { team_id: teamA,
-      deliverables: [{ title: "  ", deliverable_type_id: deliverableTypeId },
+      deliverables: [{ title: "  " },
                      { title: "Real one", deliverable_type_id: deliverableTypeId }] });
     expect(r.body.deliverables_created).toBe(1);
     const bad = await newProject("coord", { team_id: teamA,
@@ -393,8 +396,9 @@ maybe("TEST 11/12/13 — allocation belongs to the Team Lead", () => {
     const ids = (r.body.members as Array<{ id: string }>).map((m) => m.id);
     for (const who of [ACTORS.empA1.id, ACTORS.empA2.id, ACTORS.empB1.id, ACTORS.leadA.id]) expect(ids).toContain(who);
     expect(ids, "a removed account is offered").not.toContain(`${PX}-deadlead`);
+    expect(ids, "an unflagged Coordinator is offered").not.toContain(ACTORS.coord.id);
     const c = await as("coord", "GET", "/members/assignable");
-    expect((c.body.members as Array<{ id: string }>).map((m) => m.id)).toEqual([ACTORS.coord.id]);
+    expect((c.body.members as Array<{ id: string }>).map((m) => m.id)).toEqual([]);
   });
 
   it("TEST 11 — the lead assigns the deliverable to one of their people", async () => {
@@ -410,17 +414,21 @@ maybe("TEST 11/12/13 — allocation belongs to the Team Lead", () => {
   });
 
   it("the lead may assign someone from another team", async () => {
-    const r = await as("leadA", "PATCH", `/deliverables/${delivId}`, { owner_id: ACTORS.empB1.id });
+    // It has an owner already, so taking it off them is confirmed (Q10).
+    const r = await as("leadA", "PATCH", `/deliverables/${delivId}`, { owner_id: ACTORS.empB1.id, confirm_reassign: true });
     expect(r.status).toBe(200);
     expect((await deliverablesOf(pid))[0].owner_id).toBe(ACTORS.empB1.id);
   });
 
   it("reassignment stays inside the team and is auditable", async () => {
-    const r = await as("leadA", "PATCH", `/deliverables/${delivId}`, { owner_id: ACTORS.empA2.id });
+    const r = await as("leadA", "PATCH", `/deliverables/${delivId}`, { owner_id: ACTORS.empA2.id, confirm_reassign: true });
     expect(r.status).toBe(200);
     const a = await pool.query(
       `SELECT count(*)::int c FROM mo_audit_logs WHERE action='deliverable.updated' AND entity_id=$1`, [delivId]);
     expect(a.rows[0].c).toBeGreaterThan(0);
+    const re = await pool.query(
+      `SELECT after FROM mo_audit_logs WHERE action='deliverable.reassigned' AND entity_id=$1 ORDER BY id DESC LIMIT 1`, [delivId]);
+    expect(re.rows[0].after).toEqual({ from: ACTORS.empB1.id, to: ACTORS.empA2.id, via: "edit" });
   });
 });
 

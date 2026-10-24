@@ -256,6 +256,11 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
       archived_at TIMESTAMPTZ, deleted_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
+  /* Nothing proposes a project any more: every creation path writes
+     'planning', so the column default says the same. 'proposed' stays a valid
+     value for the rows that already hold it, which a Team Lead or an Admin can
+     still approve or cancel. Idempotent; existing rows are untouched. */
+  await pool.query(`ALTER TABLE mo_projects ALTER COLUMN status SET DEFAULT 'planning'`);
   // ── Migration: faculty_served (free text) → mo_academic_units FK ──────────
   // Idempotent and lossless: every distinct legacy value becomes a unit, every
   // project is re-pointed at it, and only then is the old column dropped.
@@ -421,7 +426,8 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
       ('Photography','photography','▣','standard_task',6),
       ('Videography','videography','▶','standard_task',7),
       ('Animation','animation','◈','standard_task',8),
-      ('Meeting','meeting','☎','standard_task',9)
+      ('Meeting','meeting','☎','standard_task',9),
+      ('Script Writing','script-writing','✎','standard_task',10)
     ) AS x(name, slug, icon, tpl, so)
     WHERE NOT EXISTS (SELECT 1 FROM mo_work_types w WHERE lower(w.name)=lower(x.name))`);
   // Migrate legacy records: every shoot is a 'Shoot'; every pre-existing
@@ -470,6 +476,11 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
   // type is normally due. Pre-fills project creation; never overwritten by a
   // project-level override (PRD §3/§6).
   await pool.query(`ALTER TABLE mo_deliverable_types ADD COLUMN IF NOT EXISTS default_due_offset_days INTEGER NOT NULL DEFAULT 5`);
+  /* The kind of work a deliverable of this type is logged as. Assign work has
+     no work-type choice of its own: work that produces a deliverable counts as
+     its type's work type ("Aftermovie" → Editing). Admin-set in Settings →
+     Deliverable types; seeded below, once the catalogue exists. */
+  await pool.query(`ALTER TABLE mo_deliverable_types ADD COLUMN IF NOT EXISTS work_type_id BIGINT REFERENCES mo_work_types(id)`);
   // Three values kept SEPARATE (PRD §6):
   //   mo_template_deliverables.days_offset_due → template default
   //   mo_deliverables.due_offset_days          → this project's override
@@ -1539,6 +1550,11 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
   await pool.query(`ALTER TABLE mo_requests ADD COLUMN IF NOT EXISTS team_id BIGINT REFERENCES mo_teams(id)`);
   // Venue travels with the work: request → project → shoot → calendar → filters.
   await pool.query(`ALTER TABLE mo_projects ADD COLUMN IF NOT EXISTS venue TEXT`);
+  /* When the event itself runs, as wall-clock "HH:MM" beside start_date and
+     end_date — the same TEXT shape as a shoot's call_time/end_time. Optional:
+     not every project is an event with a clock. Idempotent. */
+  await pool.query(`ALTER TABLE mo_projects ADD COLUMN IF NOT EXISTS start_time TEXT`);
+  await pool.query(`ALTER TABLE mo_projects ADD COLUMN IF NOT EXISTS end_time TEXT`);
   // §18 — a project converted from a request before a team is chosen has NO
   // production owner yet. That "Needs assignment" state must be representable,
   // otherwise the coordinator ends up owning production work by default.
@@ -1747,6 +1763,14 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
     INSERT INTO mo_duty_flags (code, name, description)
     SELECT 'casting_manager','Casting Manager','Maintains the casting library: records, tags, collections, consent and casting requests.'
      WHERE NOT EXISTS (SELECT 1 FROM mo_duty_flags WHERE code='casting_manager')`);
+
+  // Production worker is a duty too (D4). Admins and the Coordinator run and
+  // route the work, so they are left out of every assignment list — unless an
+  // Admin gives them this, for the ones who also shoot or edit.
+  await pool.query(`
+    INSERT INTO mo_duty_flags (code, name, description)
+    SELECT 'production_worker','Production worker','May be assigned production work despite an Admin/Coordinator role.'
+     WHERE NOT EXISTS (SELECT 1 FROM mo_duty_flags WHERE code='production_worker')`);
 
   /* ═══ SMC — Social Media Council ══════════════════════════════════════════
      The institute-level coverage network. Deliberately built ON the existing
@@ -2202,6 +2226,35 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
   await bootstrapAssetFoundation();
   await bootstrapCreatorNetwork();
   await seedMediaOpsLookups();
+  await seedDeliverableWorkTypes();
+}
+
+/* Starter "counts as" for each deliverable type, matched by slug or name and
+   only where none is set yet — an Admin's choice in Settings is never undone
+   by a reboot. Runs after seedMediaOpsLookups(), which fills the catalogue on
+   an empty database. A type left unmatched is logged as General Task by
+   POST /projects/:id/work until an Admin sets one. */
+async function seedDeliverableWorkTypes() {
+  await pool.query(`
+    UPDATE mo_deliverable_types dt SET work_type_id = wt.id
+      FROM (VALUES
+        ('photos-raw','Photos — Raw','Photography'),
+        ('video-raw','Video — Raw','Videography'),
+        ('continuous','Continuous Recording','Videography'),
+        ('drone','Drone Footage','Videography'),
+        ('photos-edited','Photos — Edited','Editing'),
+        ('video-edited','Video — Edited','Editing'),
+        ('aftermovie','Aftermovie','Editing'),
+        ('highlight-reel','Highlight Reel','Editing'),
+        ('reel','Reel / Short','Editing'),
+        ('album','Album Design','Editing'),
+        ('story','Story / Post','Editing'),
+        ('outreach','Outreach Content','General Task'),
+        ('raw-archive','Raw Archive','General Task'),
+        ('other','Other','General Task')
+      ) AS m(slug, name, work_type)
+      JOIN mo_work_types wt ON lower(wt.name) = lower(m.work_type)
+     WHERE dt.work_type_id IS NULL AND (dt.slug = m.slug OR lower(dt.name) = lower(m.name))`);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -3464,7 +3517,7 @@ async function seedMediaOpsLookups() {
   await pool.query(`INSERT INTO mo_duty_flags (code, name, description) VALUES
     ('equipment_custodian','Equipment Custodian','Handles the camera cupboard: damage reports, maintenance, disputes.'),
     ('report_reviewer','Report Reviewer','Receives flagged daily reports for their scope in addition to the Team Lead.'),
-    ('project_manager','Project Manager','Per-project duty set on the project, not the user (BR-2).'),
+    ('project_manager','Project Manager','Per-project duty set on the project, not the user.'),
     ('kiosk_operator','Kiosk Operator','May reset a kiosk device and reprint QR labels.')`);
   await pool.query(`INSERT INTO mo_skills (name, category) VALUES
     ('Photography','Capture'),('Videography','Capture'),('Drone Piloting','Capture'),('Editing','Post'),
