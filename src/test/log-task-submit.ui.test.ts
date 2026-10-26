@@ -42,7 +42,7 @@ const FIXTURES = `
 `;
 
 async function boot(me: number) {
-  const calls: Array<{ url: string; method: string; body: any }> = [];
+  const calls: Array<{ url: string; method: string; body: unknown }> = [];
   const dom = new JSDOM(HTML, { url: "http://localhost/api/media-ops/#/media/home",
     runScripts: "dangerously", pretendToBeVisual: true });
   const w = dom.window as unknown as { fetch: unknown; eval: (s: string) => unknown; confirm: unknown };

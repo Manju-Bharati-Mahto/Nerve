@@ -63,7 +63,7 @@ test("the Drive-link field asks for a URL keyboard, without changing its type", 
     const ps = document.getElementById("tl-project") as HTMLSelectElement;
     for (const p of [...ps.options]) {
       ps.value = p.value; ps.dispatchEvent(new Event("change"));
-      const o = [...sel.options].find((x) => x.value && (window as any).eval(`canSubmitVersion(deliv(${+x.value}))`));
+      const o = [...sel.options].find((x) => x.value && (window as unknown as { eval: (s: string) => unknown }).eval(`canSubmitVersion(deliv(${+x.value}))`));
       if (o) { sel.value = o.value; sel.dispatchEvent(new Event("change")); return +o.value; }
     }
     return 0;
