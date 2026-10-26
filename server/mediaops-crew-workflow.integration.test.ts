@@ -168,6 +168,10 @@ async function cleanup() {
   await pool.query(`DELETE FROM mo_audit_logs WHERE actor_id LIKE '${PX}-%'`);
   await pool.query(`DELETE FROM mo_notifications WHERE user_id LIKE '${PX}-%'`);
   await pool.query(`DELETE FROM mo_projects WHERE name LIKE '${PX}%'`);
+  await pool.query(`DELETE FROM mo_smc_profiles WHERE user_id LIKE '${PX}-%'`);
+  await pool.query(`DELETE FROM mo_academic_units WHERE name LIKE '${PX} %'`);
+  await pool.query(`DELETE FROM mo_academic_years WHERE label LIKE '${PX}%'`);
+  await pool.query(`DELETE FROM mo_boards WHERE name LIKE '${PX} %'`);
   await pool.query(`DELETE FROM mo_team_members WHERE user_id LIKE '${PX}-%'`);
   await pool.query(`DELETE FROM mo_teams WHERE name LIKE '${PX} %'`);
   await pool.query(`DELETE FROM mo_user_profiles WHERE user_id LIKE '${PX}-%'`);
@@ -303,16 +307,19 @@ maybe("team lead — allocates inside their own team, on their own team's projec
      team's lead's. */
   it("7 — Team A's lead may assign a Team B employee, by either path", async () => {
     expect((await as("leadA", "PATCH", `/deliverables/${a.dids[2]}`, { owner_id: ACTORS.empB1.id })).status).toBe(200);
+    // dids[1] already has an owner: taking it off them is confirmed (Q10).
     expect((await as("leadA", "POST", `/deliverables/${a.dids[1]}/assignee`,
-      { kind: "crew", user_id: ACTORS.empB1.id })).status).toBe(201);
+      { kind: "crew", user_id: ACTORS.empB1.id, confirm_reassign: true })).status).toBe(201);
     expect((await deliv(a.dids[2])).owner_id).toBe(ACTORS.empB1.id);
   });
 
   it("8 — Team A's lead assigns on Team B's project, but does not run or review it", async () => {
     const d = b.dids[0];
     // Assigning — open to every lead.
-    expect((await as("leadA", "PATCH", `/deliverables/${d}`, { owner_id: ACTORS.empA1.id })).status).toBe(200);
-    expect((await as("leadA", "POST", `/deliverables/${d}/assignee`, { kind: "crew", user_id: ACTORS.empB1.id })).status).toBe(201);
+    expect((await as("leadA", "PATCH", `/deliverables/${d}`,
+      { owner_id: ACTORS.empA1.id, confirm_reassign: true })).status).toBe(200);
+    expect((await as("leadA", "POST", `/deliverables/${d}/assignee`,
+      { kind: "crew", user_id: ACTORS.empB1.id, confirm_reassign: true })).status).toBe(201);
     expect((await deliv(d)).owner_id).toBe(ACTORS.empB1.id);
     expect((await as("leadA", "POST", `/projects/${b.pid}/work`,
       { work_type_id: workTypeId, title: `${PX} task`, assignees: [ACTORS.empA1.id] })).status).toBe(201);
@@ -345,6 +352,45 @@ maybe("team lead — allocates inside their own team, on their own team's projec
     const p = r.body.project as Record<string, unknown>;
     expect(Number(p.team_id)).toBe(teamA);
     expect(p.owner_id).toBe(ACTORS.leadA.id);
+  });
+
+  /* Owner's decision (24 Oct 2026): a lead staffs the project as they create
+     it — the people on it, and who makes each deliverable. */
+  it("9c — a lead creates a project with its crew and each deliverable's owner, and they are told", async () => {
+    const r = await as("leadA", "POST", "/projects", {
+      name: `${PX} staffed ${Math.random().toString(36).slice(2, 8)}`, project_type_id: projectTypeId,
+      start_date: "2026-10-01", end_date: "2026-10-10", team_id: null,
+      assignees: [ACTORS.empA2.id, ACTORS.empB1.id],
+      deliverables: [{ deliverable_type_id: dtype, owner_id: ACTORS.empA1.id }, { deliverable_type_id: dtype }] });
+    expect(r.status).toBe(201);
+    const pid = Number((r.body.project as Record<string, unknown>).id);
+    expect(Number((await project(pid)).team_id), "it stays with the lead's team").toBe(teamA);
+    const owners = (await pool.query(`SELECT owner_id FROM mo_deliverables WHERE project_id=$1 ORDER BY id`, [pid]))
+      .rows.map((x) => x.owner_id);
+    expect(owners).toEqual([ACTORS.empA1.id, null]);
+    const crew = (await pool.query(
+      `SELECT user_id FROM mo_project_assignments WHERE project_id=$1 AND removed_at IS NULL`, [pid])).rows.map((x) => x.user_id);
+    for (const a of ["leadA", "empA1", "empA2", "empB1"] as const) expect(crew).toContain(ACTORS[a].id);
+    expect((await notes(ACTORS.empA2.id, "project", pid)).map((n) => n.title)).toEqual(["You are on a new project"]);
+    expect(await notes(ACTORS.empA1.id, "project", pid), "a deliverable's owner is told once, by its notice").toEqual([]);
+  });
+
+  it("9d — a project keeps the event's start and end time, and refuses a bad or backwards one", async () => {
+    const body = (o: Record<string, unknown>) => ({
+      name: `${PX} timed ${Math.random().toString(36).slice(2, 8)}`, project_type_id: projectTypeId, team_id: teamA, ...o });
+    const r = await as("coord", "POST", "/projects",
+      body({ start_date: "2026-10-24", end_date: "2026-10-31", start_time: "09:00", end_time: "18:30" }));
+    expect(r.status).toBe(201);
+    const pid = Number((r.body.project as Record<string, unknown>).id);
+    expect(await project(pid)).toMatchObject({ start_time: "09:00", end_time: "18:30" });
+    expect((await as("coord", "POST", "/projects",
+      body({ start_date: "2026-10-24", end_date: "2026-10-24", start_time: "17:00", end_time: "09:00" }))).status).toBe(400);
+    expect((await as("coord", "POST", "/projects",
+      body({ start_date: "2026-10-24", end_date: "2026-10-25", start_time: "25:00" }))).status).toBe(400);
+    // Edited: a one-day move is checked against the times already stored.
+    expect((await as("leadA", "PATCH", `/projects/${pid}`, { end_date: "2026-10-24", end_time: "08:00" })).status).toBe(400);
+    expect((await as("leadA", "PATCH", `/projects/${pid}`, { start_time: "10:15", end_time: null })).status).toBe(200);
+    expect(await project(pid)).toMatchObject({ start_time: "10:15", end_time: null });
   });
 });
 
@@ -554,6 +600,16 @@ maybe("approval bypass — there is one road to approved", () => {
     expect((await as("empA1", "POST", `/deliverables/${did}/status`, { status: "delivered" })).status).toBe(200);
   });
 
+  it("25c — a review-exempt type not yet started is told to start it, not to submit a version", async () => {
+    if (!exemptType) return;
+    const { did } = await ownedBy("empA1");
+    await pool.query(`UPDATE mo_deliverables SET deliverable_type_id=$1, status='not_started' WHERE id=$2`, [exemptType, did]);
+    const r = await as("empA1", "POST", `/deliverables/${did}/deliver`, {});
+    expect([r.status, r.body.message]).toEqual(
+      [400, "Start it first — raw footage can be delivered once it is in progress."]);
+    expect((await deliv(did)).status).toBe("not_started");
+  });
+
   it("26 — the board's 'approved' is the same review: it needs a version, and it queues dispatch", async () => {
     const bare = await ownedBy("empA1");
     await pool.query(`UPDATE mo_deliverables SET status='in_review' WHERE id=$1`, [bare.did]);
@@ -662,7 +718,7 @@ maybe("Phase 2 — the self-naming, bypass and routing holes stay closed", () =>
     await as("empA1", "POST", `/deliverables/${did}/versions`, drive("v"));
     await as("leadA", "POST", `/deliverables/${did}/review`, { outcome: "approved" });
     await as("empA1", "POST", `/deliverables/${did}/deliver`, {});
-    await as("leadA", "POST", `/deliverables/${did}/approval`, { approval_status: "changes_requested" });
+    await as("leadA", "POST", `/deliverables/${did}/approval`, { approval_status: "changes_requested", note: "redo the cut" });
     expect((await as("coord", "POST", `/deliverables/${did}/dispatch`, { recipient: "x" })).status).toBe(400);
     // Already-dispatched items cannot be re-dispatched over the top.
     await pool.query(`UPDATE mo_deliverables SET status='approved', approval_status='pending', dispatch_status='delivered'
@@ -676,9 +732,15 @@ maybe("Phase 2 — the self-naming, bypass and routing holes stay closed", () =>
       `UPDATE mo_deliverables SET owner_id=$1 WHERE project_id=$2 RETURNING id`,
       [ACTORS.leadA.id, pid]);
     const did = Number(own.rows[0].id);
+    /* The Admins there both before and after the version goes in: suites
+       running alongside add and remove their own Admins, and one added after
+       the submit, or gone before the check, was never going to be told. */
+    const adminIds = async () => (await pool.query(
+      `SELECT id FROM users WHERE team='media' AND role IN ('admin','super_admin')`)).rows.map((r) => String(r.id));
+    const before = await adminIds();
     await as("leadA", "POST", `/deliverables/${did}/versions`, drive("own"));
-    const admins = await pool.query(`SELECT id FROM users WHERE team='media' AND role IN ('admin','super_admin')`);
-    for (const a of admins.rows) {
+    const after = new Set(await adminIds());
+    for (const a of before.filter((id) => after.has(id)).map((id) => ({ id }))) {
       const n = await pool.query(
         `SELECT COUNT(*)::int c FROM mo_notifications WHERE user_id=$1 AND entity_type='deliverable' AND entity_id=$2`,
         [a.id, did]);
@@ -690,20 +752,21 @@ maybe("Phase 2 — the self-naming, bypass and routing holes stay closed", () =>
     expect(Number(leadNotes.rows[0].c)).toBe(0);
   });
 
-  it("adding a deliverable with an owner notifies them, and they join the project crew", async () => {
+  /* Adding scope is not assigning it (owner's rule, Q3): an owner_id in the
+     request is ignored, nobody is told they have work, and nobody joins the
+     crew — the deliverable waits, unassigned, for its lead to allocate. */
+  it("adding a deliverable never names an owner — an owner_id sent is ignored", async () => {
     const { pid } = await routed(teamA);
     const r = await as("leadA", "POST", `/projects/${pid}/deliverables`,
       { title: `${PX} new`, deliverable_type_id: dtype, owner_id: ACTORS.empA2.id });
     expect(r.status).toBe(201);
     const did = Number((r.body.deliverable as Record<string, unknown>).id);
-    const n = await pool.query(
-      `SELECT title FROM mo_notifications WHERE user_id=$1 AND entity_type='deliverable' AND entity_id=$2`,
-      [ACTORS.empA2.id, did]);
-    expect(n.rows.map((x) => x.title)).toContain("New assignment");
+    expect((await deliv(did)).owner_id).toBeNull();
+    expect(await notes(ACTORS.empA2.id, "deliverable", did)).toEqual([]);
     const crew = await pool.query(
       `SELECT 1 FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`,
       [pid, ACTORS.empA2.id]);
-    expect(crew.rowCount).toBe(1);
+    expect(crew.rowCount).toBe(0);
   });
 });
 
@@ -785,8 +848,10 @@ maybe("legacy projects, PMs, shoots and ad-hoc assignments", () => {
     await pool.query(
       `INSERT INTO mo_project_assignments (project_id, user_id, is_project_manager, assigned_by)
        VALUES ($1,$2,false,$3)`, [pid, ACTORS.empA2.id, ACTORS.admin.id]);
-    // promote: the lead stands down so the single-PM index allows it
-    await pool.query(`UPDATE mo_project_assignments SET is_project_manager=(user_id=$2) WHERE project_id=$1`,
+    // promote: the lead stands down first, so the single-PM index (checked row by row) allows it
+    await pool.query(`UPDATE mo_project_assignments SET is_project_manager=false WHERE project_id=$1 AND user_id<>$2`,
+      [pid, ACTORS.empA2.id]);
+    await pool.query(`UPDATE mo_project_assignments SET is_project_manager=true WHERE project_id=$1 AND user_id=$2`,
       [pid, ACTORS.empA2.id]);
     expect((await as("empA2", "POST", `/deliverables/${did}/schedule`, { scheduled_date: "2026-10-04" })).status).toBe(200);
     await as("empA1", "POST", `/deliverables/${did}/versions`, drive("pm1"));
@@ -985,7 +1050,8 @@ maybe("assign work — creates the deliverable and gives it a team", () => {
     const r = await work("leadA", pid, { assignees: [ACTORS.empA1.id, ACTORS.empA2.id], owner_id: ACTORS.empA1.id,
       new_deliverable: { deliverable_type_id: dtype } });
     const did = Number((r.body.deliverable as Record<string, unknown>).id);
-    expect((await as("leadA", "PATCH", `/deliverables/${did}`, { owner_id: ACTORS.leadA.id })).status).toBe(200);
+    expect((await as("leadA", "PATCH", `/deliverables/${did}`,
+      { owner_id: ACTORS.leadA.id, confirm_reassign: true })).status).toBe(200);
     expect((await teamRow(did))[0].users).toEqual([ACTORS.empA2.id, ACTORS.leadA.id].sort());
     expect((await as("empA2", "POST", `/deliverables/${did}/versions`, drive("keep"))).status).toBe(201);
     expect((await as("empA1", "POST", `/deliverables/${did}/versions`, drive("gone"))).status).toBe(403);
@@ -1000,6 +1066,24 @@ maybe("assign work — creates the deliverable and gives it a team", () => {
     const a = await as("leadA", "GET", `/deliverables/${did}/assignees`);
     expect((a.body.crew as Record<string, unknown>).user_id).toBe(ACTORS.empA1.id);
     expect((a.body.team as Array<Record<string, unknown>>).map((t) => t.user_id)).toEqual([ACTORS.empA2.id]);
+  });
+
+  it("the drawer offers SMC coverage only where the project's institute has an SMC member", async () => {
+    const { pid, dids } = await routed(teamA);
+    const offered = async () => (await as("leadA", "GET", `/deliverables/${dids[0]}/assignees`)).body.smc_available;
+    expect(await offered(), "a project with no institute").toBe(false);
+    const unit = Number((await one(`INSERT INTO mo_academic_units (name, is_active) VALUES ($1, true) RETURNING id`,
+      [`${PX} Institute ${Math.random().toString(36).slice(2, 7)}`])).id);
+    await pool.query(`UPDATE mo_projects SET academic_unit_id=$1 WHERE id=$2`, [unit, pid]);
+    expect(await offered(), "an institute without SMC members").toBe(false);
+    await pool.query(
+      `INSERT INTO mo_smc_profiles (user_id, academic_unit_id, is_active) VALUES ($1,$2,true)
+       ON CONFLICT (user_id) DO UPDATE SET academic_unit_id=EXCLUDED.academic_unit_id, is_active=true`,
+      [ACTORS.empB1.id, unit]);
+    expect(await offered(), "an institute with an active SMC member").toBe(true);
+    await pool.query(`UPDATE mo_smc_profiles SET is_active=false WHERE user_id=$1`, [ACTORS.empB1.id]);
+    expect(await offered(), "only an inactive one").toBe(false);
+    await pool.query(`DELETE FROM mo_smc_profiles WHERE user_id=$1`, [ACTORS.empB1.id]);
   });
 
   it("an employee creates their own project for themselves, then assigns work on it to anyone", async () => {
@@ -1030,5 +1114,714 @@ maybe("assign work — creates the deliverable and gives it a team", () => {
     expect(r.status).toBe(201);
     expect(r.body.deliverable).toBe(null);
     expect((r.body.assignment as Record<string, unknown>).deliverable_id).toBe(null);
+  });
+});
+
+/* ── NOTIFICATIONS: what the bell gets, who is told, and only once ──────────
+   A notice is only useful if tapping it opens something (numeric ids), if it
+   reaches the people who have to act, and if nobody is told twice. */
+
+maybe("notifications — payload, recipients, no duplicates", () => {
+  const work = (actor: ActorName, pid: number, extra: Record<string, unknown>) =>
+    as(actor, "POST", `/projects/${pid}/work`, { work_type_id: workTypeId, title: `${PX} notice work`, ...extra });
+  /** A Team A deliverable made by Assign work: empA1 owns it, empA2 is on its team. */
+  async function teamed() {
+    const { pid } = await routed(teamA, []);
+    const r = await work("leadA", pid, { assignees: [ACTORS.empA1.id, ACTORS.empA2.id], owner_id: ACTORS.empA1.id,
+      new_deliverable: { deliverable_type_id: dtype } });
+    return { pid, did: Number((r.body.deliverable as Record<string, unknown>).id) };
+  }
+  const titles = async (actor: ActorName, entityType: string, id: number) =>
+    (await notes(ACTORS[actor].id, entityType, id)).map((n) => String(n.title));
+  const admins = async () => (await pool.query(
+    `SELECT id FROM users WHERE team='media' AND role IN ('admin','super_admin')`)).rows.map((r) => String(r.id));
+  /* The Admins there both before and after an act: suites running alongside
+     add and remove their own Admins, and one added after it (or gone before
+     the check) was never going to show the notice. */
+  const adminsAround = async (act: () => Promise<void>) => {
+    const before = await admins();
+    await act();
+    const after = new Set(await admins());
+    return before.filter((a) => after.has(a));
+  };
+
+  it("the bell gets numeric ids, the project's name and the true unread count", async () => {
+    const { pid, did } = await teamed();
+    const g = await as("empA2", "GET", "/notifications");
+    expect(g.status).toBe(200);
+    const row = (g.body.notifications as Array<Record<string, unknown>>).find((n) => n.entity_id === did);
+    expect(row, "the Assign work notice, with a numeric entity_id").toBeTruthy();
+    expect(typeof row!.id).toBe("number");
+    expect(row!.project_name).toBe(String((await project(pid)).name));
+    expect(row!.project_id, "so an unloaded deliverable can still open its project").toBe(Number(pid));
+    const unread = Number((await one(
+      `SELECT COUNT(*)::int c FROM mo_notifications WHERE user_id=$1 AND NOT is_read`, [ACTORS.empA2.id])).c);
+    expect(g.body.unread).toBe(unread);
+    const s = await as("empA2", "GET", "/state");
+    expect(s.body.notifications_unread).toBe(unread);
+    const sr = (s.body.notifications as Array<Record<string, unknown>>).find((n) => n.entity_id === did);
+    expect(typeof sr?.id).toBe("number");
+  });
+
+  it("shoot work from Assign work tells its crew and puts them on the project crew", async () => {
+    const st = await one(`SELECT id FROM mo_work_types WHERE is_active AND archived_at IS NULL AND form_template='shoot' ORDER BY id LIMIT 1`);
+    const { pid } = await routed(teamA, []);
+    const r = await as("leadA", "POST", `/projects/${pid}/work`, { work_type_id: st.id, title: `${PX} convocation shoot`,
+      shoot_date: "2026-10-06", crew: [ACTORS.empA1.id, ACTORS.empB1.id] });
+    expect(r.status).toBe(201);
+    const sid = Number((r.body.shoot as Record<string, unknown>).id);
+    for (const who of ["empA1", "empB1"] as const) {
+      expect(await titles(who, "shoot", sid), who).toEqual(["You are on a shoot"]);
+      expect((await one(`SELECT 1 AS ok FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`,
+        [pid, ACTORS[who].id]))?.ok, `${who} on the crew`).toBe(1);
+    }
+  });
+
+  it("crew and shoot-crew assigns tell only the people newly added", async () => {
+    const { pid } = await routed(teamA, []);
+    for (let i = 0; i < 2; i++)
+      expect((await as("leadA", "POST", `/projects/${pid}/assignments`, { user_id: ACTORS.empA2.id })).status).toBe(201);
+    expect(await titles("empA2", "project", pid)).toEqual(["You are on a project"]);
+    const shoot = await one(
+      `INSERT INTO mo_shoots (project_id, title, shoot_date, location, status, created_by)
+       VALUES ($1,$2,'2026-10-07','Lawn','planned',$3) RETURNING id`, [pid, `${PX} lawn shoot`, ACTORS.leadA.id]);
+    await as("leadA", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empA1.id] });
+    const again = await as("leadA", "POST", `/shoots/${shoot.id}/crew`, { crew: [ACTORS.empA1.id, ACTORS.empA2.id] });
+    expect(again.body.added).toBe(1);
+    expect(await titles("empA1", "shoot", Number(shoot.id))).toEqual(["You are on a shoot"]);
+    expect(await titles("empA2", "shoot", Number(shoot.id))).toEqual(["You are on a shoot"]);
+  });
+
+  it("an owner named while creating the project is told, as Assign work tells them", async () => {
+    const r = await as("leadA", "POST", "/projects", {
+      name: `${PX} owners named ${Math.random().toString(36).slice(2, 7)}`, project_type_id: projectTypeId,
+      start_date: "2026-10-01", end_date: "2026-10-10", team_id: teamA,
+      deliverables: [{ title: "Edited Photos", deliverable_type_id: dtype, owner_id: ACTORS.empA1.id }] });
+    expect(r.status).toBe(201);
+    const did = Number((await one(`SELECT id FROM mo_deliverables WHERE project_id=$1`,
+      [Number((r.body.project as Record<string, unknown>).id)])).id);
+    expect(await titles("empA1", "deliverable", did)).toEqual(["New assignment"]);
+  });
+
+  it("a version the project's own lead submits goes to the Admins, never back to that lead", async () => {
+    const { did } = await teamed();
+    const told = await adminsAround(async () => {
+      expect((await as("leadA", "POST", `/deliverables/${did}/versions`, drive("lead-push"))).status).toBe(201);
+    });
+    expect(await titles("leadA", "deliverable", did)).toEqual([]);
+    for (const a of told)
+      expect((await notes(a, "deliverable", did)).map((n) => n.title), a).toContain("Version submitted for review");
+  });
+
+  it("marking it delivered asks the project's lead to sign off — the Admins when the lead delivered it", async () => {
+    const { did } = await teamed();
+    await as("empA1", "POST", `/deliverables/${did}/versions`, drive("d1"));
+    await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "approved" });
+    expect((await as("empA2", "POST", `/deliverables/${did}/deliver`, {})).status).toBe(200);
+    expect(await titles("leadA", "deliverable", did)).toContain("Deliverable delivered — needs sign-off");
+    expect(await titles("empA1", "deliverable", did)).not.toContain("Deliverable delivered — needs sign-off");
+
+    const second = await teamed();
+    await as("empA1", "POST", `/deliverables/${second.did}/versions`, drive("d2"));
+    await as("leadB", "POST", `/deliverables/${second.did}/review`, { outcome: "approved" });
+    const told = await adminsAround(async () => {
+      expect((await as("leadA", "POST", `/deliverables/${second.did}/deliver`, {})).status).toBe(200);
+    });
+    expect(await titles("leadA", "deliverable", second.did)).not.toContain("Deliverable delivered — needs sign-off");
+    for (const a of told)
+      expect((await notes(a, "deliverable", second.did)).map((n) => n.title), a).toContain("Deliverable delivered — needs sign-off");
+  });
+
+  it("a sign-off reaches the whole team, and a send-back must say what to change and carries it", async () => {
+    const { did } = await teamed();
+    await as("empA1", "POST", `/deliverables/${did}/versions`, drive("s1"));
+    await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "approved" });
+    await as("empA1", "POST", `/deliverables/${did}/deliver`, {});
+    const bare = await as("leadB", "POST", `/deliverables/${did}/approval`, { approval_status: "changes_requested", note: "  " });
+    expect([bare.status, bare.body.message]).toEqual([400, "Say what needs to change."]);
+    expect((await as("leadB", "POST", `/deliverables/${did}/approval`,
+      { approval_status: "changes_requested", note: "Tighten the opening" })).status).toBe(200);
+    // Its own title: not the version's "Changes requested on …".
+    const sentBack = `Sent back after delivery: ${(await deliv(did)).title}`;
+    for (const who of ["empA1", "empA2"] as const)
+      expect(await titles(who, "deliverable", did), who).toContain(sentBack);
+    const body = (await one(`SELECT body FROM mo_notifications WHERE user_id=$1 AND entity_id=$2 AND title=$3
+                              ORDER BY id DESC LIMIT 1`, [ACTORS.empA2.id, did, sentBack])).body;
+    expect(String(body)).toContain("Tighten the opening");
+    // The version it was approved on is sent back, with the note, so My Day shows it.
+    const v = await one(`SELECT review_status, review_comment FROM mo_deliverable_versions WHERE deliverable_id=$1
+                          ORDER BY version_no DESC LIMIT 1`, [did]);
+    expect([v.review_status, v.review_comment]).toEqual(["changes_requested", "Tighten the opening"]);
+    expect((await deliv(did)).status).toBe("changes_requested");
+
+    // Approving after delivery tells the whole team too.
+    await as("empA2", "POST", `/deliverables/${did}/versions`, drive("s2"));
+    await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "approved" });
+    await as("empA2", "POST", `/deliverables/${did}/deliver`, {});
+    expect((await as("leadB", "POST", `/deliverables/${did}/approval`, { approval_status: "approved" })).status).toBe(200);
+    for (const who of ["empA1", "empA2"] as const)
+      expect(await titles(who, "deliverable", did), who).toContain(`Signed off: ${(await deliv(did)).title}`);
+  });
+
+  it("dispatch tells everyone on the deliverable", async () => {
+    const { did } = await teamed();
+    await as("empA1", "POST", `/deliverables/${did}/versions`, drive("x"));
+    await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "approved" });
+    expect((await as("coord", "POST", `/deliverables/${did}/dispatch`, { recipient: "Dean's office" })).status).toBe(200);
+    for (const who of ["empA1", "empA2"] as const)
+      expect(await titles(who, "deliverable", did), who).toContain("Your deliverable was dispatched");
+  });
+
+  /* Q10: a reassignment always tells the old owner who has it now — handed to
+     a teammate, it also says they are still on the team, never that the work
+     is no longer theirs. */
+  it("handing ownership to a teammate tells the old owner who has it, and that they remain on its team", async () => {
+    const { pid, did } = await teamed();
+    const r = await work("leadA", pid, { assignees: [ACTORS.empA2.id, ACTORS.empA1.id], owner_id: ACTORS.empA2.id,
+      deliverable_id: did, confirm_reassign: true });
+    expect(r.status).toBe(201);
+    expect((await deliv(did)).owner_id).toBe(ACTORS.empA2.id);
+    const told = (await pool.query(`SELECT body FROM mo_notifications WHERE user_id=$1 AND entity_type='deliverable'
+                                       AND entity_id=$2 AND title='Assignment reassigned'`, [ACTORS.empA1.id, did])).rows;
+    expect(told).toHaveLength(1);
+    expect(told[0].body).toContain(ACTORS.empA2.full_name);
+    expect(told[0].body).toContain("You remain on its team.");
+    expect(told[0].body).not.toContain("no longer assigned to you");
+  });
+
+  it("the review reminder waits for its threshold instead of following the submission notice", async () => {
+    const rule = await one(`SELECT is_enabled FROM mo_automation_rules WHERE rule_key='AUTO-4'`);
+    if (rule && !rule.is_enabled) return;
+    const { runMediaOpsAutomations } = await import("./mediaops-api.js");
+    const { did } = await teamed();
+    await as("empA1", "POST", `/deliverables/${did}/versions`, drive("r1"));
+    await runMediaOpsAutomations();
+    expect(await titles("leadA", "deliverable", did)).toEqual(["Version submitted for review"]);
+    await pool.query(`UPDATE mo_deliverable_versions SET submitted_at = NOW() - INTERVAL '25 hours' WHERE deliverable_id=$1`, [did]);
+    await runMediaOpsAutomations();
+    expect(await titles("leadA", "deliverable", did)).toContain("Awaiting your review");
+  });
+
+  it("someone on a deliverable's team who is off the crew still reads its comment thread", async () => {
+    const { pid, did } = await teamed();
+    await pool.query(`UPDATE mo_project_assignments SET removed_at=NOW() WHERE project_id=$1 AND user_id=$2`,
+      [pid, ACTORS.empA2.id]);
+    await pool.query(`INSERT INTO mo_comments (entity_type, entity_id, user_id, body) VALUES ('deliverable',$1,$2,$3)`,
+      [did, ACTORS.leadA.id, `${PX} trim the intro`]);
+    const s = await as("empA2", "GET", "/state");
+    const bodies = (s.body.comments as Array<Record<string, unknown>>).map((c) => c.body);
+    expect(bodies).toContain(`${PX} trim the intro`);
+  });
+});
+
+/* ── The status machine: one road into review, and closed work stays closed ── */
+
+maybe("status moves — a version is the only way into review, and closed work is not reviewed", () => {
+  const versionOf = (did: number) => one(
+    `SELECT review_status, review_comment FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [did]);
+
+  it("/status cannot put work in review; submitting a version does", async () => {
+    const { did } = await ownedBy("empA1");
+    await as("empA1", "POST", `/deliverables/${did}/status`, { status: "in_progress" });
+    for (const who of ["empA1", "leadA"] as const) {
+      const r = await as(who, "POST", `/deliverables/${did}/status`, { status: "in_review" });
+      expect(r.status, who).toBe(400);
+      expect(r.body.message).toBe("Submit a version to send it for review.");
+    }
+    expect((await deliv(did)).status).toBe("in_progress");
+    expect((await as("empA1", "POST", `/deliverables/${did}/versions`, drive("ir1"))).status).toBe(201);
+    expect((await deliv(did)).status).toBe("in_review");
+  });
+
+  it("/status answers who may before whether the move is valid", async () => {
+    const { did } = await ownedBy("empA1");
+    // not_started → in_review / approved are invalid moves; these callers have no say at all.
+    expect((await as("empB1", "POST", `/deliverables/${did}/status`, { status: "in_review" })).status).toBe(403);
+    expect((await as("coord", "POST", `/deliverables/${did}/status`, { status: "approved" })).status).toBe(403);
+    expect((await as("empA1", "POST", `/deliverables/${did}/status`, { status: "approved" })).status).toBe(403);
+    expect((await deliv(did)).status).toBe("not_started");
+  });
+
+  it("a send-back through /status carries its comment to the version and the team", async () => {
+    const { did } = await ownedBy("empA1");
+    await as("empA1", "POST", `/deliverables/${did}/versions`, drive("cr1"));
+    const r = await as("leadB", "POST", `/deliverables/${did}/status`, { status: "changes_requested", comment: "Fix the colour grade" });
+    expect(r.status).toBe(200);
+    expect(await versionOf(did)).toEqual({ review_status: "changes_requested", review_comment: "Fix the colour grade" });
+    const n = await one(`SELECT body FROM mo_notifications WHERE user_id=$1 AND entity_type='deliverable' AND entity_id=$2
+                          AND title LIKE 'Changes requested%'`, [ACTORS.empA1.id, did]);
+    expect(String(n?.body)).toContain("Fix the colour grade");
+  });
+
+  it("cancelled, not-required and delivered work is not reviewed, and leaves the reviews count", async () => {
+    const { did } = await ownedBy("empA1");
+    await as("empA1", "POST", `/deliverables/${did}/versions`, drive("cl1"));
+    const reviews = async () => Number(((await as("admin", "GET", `/crew/${ACTORS.empA1.id}/impact`)).body
+      .active as Record<string, unknown>).reviews);
+    const before = await reviews();
+    // The project's lead cancels it while the version is still pending.
+    expect((await as("leadA", "POST", `/deliverables/${did}/status`, { status: "cancelled" })).status).toBe(200);
+    expect(await reviews()).toBe(before - 1);
+    for (const closed of ["cancelled", "not_required", "delivered"]) {
+      await pool.query(`UPDATE mo_deliverables SET status=$1, dispatch_status='none' WHERE id=$2`, [closed, did]);
+      for (const outcome of ["approved", "changes_requested"]) {
+        expect((await as("leadB", "POST", `/deliverables/${did}/review`, { outcome, comment: "x" })).status, `${closed} /review ${outcome}`).toBe(400);
+        expect((await as("leadB", "POST", `/deliverables/${did}/status`, { status: outcome, comment: "x" })).status, `${closed} /status ${outcome}`).toBe(400);
+      }
+      const after = await deliv(did);
+      expect([after.status, after.dispatch_status], closed).toEqual([closed, "none"]);
+    }
+    expect((await versionOf(did)).review_status).toBe("pending");
+  });
+
+  it("a post-delivery send-back needs a note; the whole team hears the sign-off", async () => {
+    const { pid } = await routed(teamA, []);
+    const w = await as("leadA", "POST", `/projects/${pid}/work`, { work_type_id: workTypeId, title: `${PX} cut`,
+      assignees: [ACTORS.empA1.id, ACTORS.empA2.id], owner_id: ACTORS.empA1.id, new_deliverable: { deliverable_type_id: dtype } });
+    const did = Number((w.body.deliverable as Record<string, unknown>).id);
+    await as("empA1", "POST", `/deliverables/${did}/versions`, drive("so1"));
+    await as("leadB", "POST", `/deliverables/${did}/review`, { outcome: "approved" });
+    await as("empA1", "POST", `/deliverables/${did}/deliver`, {});
+    for (const to of ["changes_requested", "rejected"]) {
+      const r = await as("leadB", "POST", `/deliverables/${did}/approval`, { approval_status: to, note: "  " });
+      expect([r.status, r.body.message], to).toEqual([400, "Say what needs to change."]);
+    }
+    expect((await as("leadB", "POST", `/deliverables/${did}/approval`, { approval_status: "approved" })).status).toBe(200);
+    for (const who of ["empA1", "empA2"] as const)
+      expect((await notes(ACTORS[who].id, "deliverable", did)).map((n) => n.title), who).toContain(`Signed off: ${(await deliv(did)).title}`);
+  });
+});
+
+/* ── Finished work keeps its owner ─────────────────────────────────────────
+   Delivered, dispatched or archived work is not handed to someone else by any
+   path that names an owner, and the answer says why in plain words. */
+
+maybe("finished work keeps its owner", () => {
+  const finished = async (set: string) => {
+    const { pid, did } = await ownedBy("empA1");
+    await pool.query(`UPDATE mo_deliverables SET ${set} WHERE id=$1`, [did]);
+    return { pid, did };
+  };
+  const tries = (pid: number, did: number) => [
+    as("leadA", "PATCH", `/deliverables/${did}`, { owner_id: ACTORS.empA2.id, confirm_reassign: true }),
+    as("leadA", "POST", `/deliverables/${did}/assignee`, { kind: "crew", user_id: ACTORS.empA2.id, confirm_reassign: true }),
+    as("leadA", "POST", `/deliverables/${did}/schedule`, { scheduled_date: "2026-10-30", owner_id: ACTORS.empA2.id, confirm_reassign: true }),
+    as("leadA", "POST", `/projects/${pid}/work`, { work_type_id: workTypeId, title: `${PX} more edits`,
+      assignees: [ACTORS.empA2.id], owner_id: ACTORS.empA2.id, deliverable_id: did, confirm_reassign: true }),
+  ];
+
+  it("delivered work is not reassigned by any path", async () => {
+    const { pid, did } = await finished(`status='delivered', completed_at=NOW()`);
+    for (const r of await Promise.all(tries(pid, did)))
+      expect(r.status, JSON.stringify(r.body)).toBe(400);
+    const r = await as("leadA", "PATCH", `/deliverables/${did}`, { owner_id: ACTORS.empA2.id, confirm_reassign: true });
+    expect(r.body.message).toMatch(/has already been delivered, so it can't be reassigned\.$/);
+    expect((await deliv(did)).owner_id).toBe(ACTORS.empA1.id);
+  });
+
+  it("dispatched or archived work is not reassigned either, and says dispatched", async () => {
+    for (const set of [`status='approved', dispatch_status='delivered'`, `status='delivered', dispatch_status='archived'`]) {
+      const { pid, did } = await finished(set);
+      for (const r of await Promise.all(tries(pid, did))) expect(r.status, `${set}: ${JSON.stringify(r.body)}`).toBe(400);
+      const r = await as("leadA", "POST", `/deliverables/${did}/assignee`, { kind: "crew", user_id: ACTORS.empA2.id, confirm_reassign: true });
+      expect(r.body.message, set).toMatch(/has already been dispatched, so it can't be reassigned\.$/);
+      expect((await deliv(did)).owner_id, set).toBe(ACTORS.empA1.id);
+    }
+  });
+
+  it("finished work keeps its dates: schedule, due date and a generic edit say so plainly", async () => {
+    for (const [set, word] of [[`status='delivered', completed_at=NOW()`, "delivered"],
+                               [`status='approved', dispatch_status='delivered'`, "dispatched"],
+                               [`status='delivered', dispatch_status='archived'`, "dispatched"]]) {
+      const { did } = await finished(set);
+      const before = await deliv(did);
+      for (const r of [
+        await as("leadA", "POST", `/deliverables/${did}/schedule`, { scheduled_date: "2026-10-30" }),
+        await as("leadA", "PATCH", `/deliverables/${did}/due-date`, { due_date: "2026-11-02" }),
+        await as("leadA", "PATCH", `/deliverables/${did}`, { due_date: "2026-11-02" }),
+        await as("leadA", "PATCH", `/deliverables/${did}`, { scheduled_date: "2026-10-30" }),
+      ]) expect([r.status, r.body.message], set).toEqual([400,
+        `“${before.title}” has already been ${word}, so its schedule and due date can't be changed.`]);
+      const after = await deliv(did);
+      expect([after.due_date, after.scheduled_date], set).toEqual([before.due_date, before.scheduled_date]);
+    }
+    // Work still open is scheduled as before.
+    const { did } = await ownedBy("empA1");
+    expect((await as("leadA", "POST", `/deliverables/${did}/schedule`, { scheduled_date: "2026-10-30" })).status).toBe(200);
+  });
+
+  it("moving the project's end date re-derives due dates on open work only, never on finished work", async () => {
+    const { pid, dids } = await routed(teamA, ["Edited Photos", "Raw Footage", "Aftermovie"]);
+    await pool.query(`UPDATE mo_deliverables SET due_date_source='offset', due_offset_days=2, due_date='2026-10-12'
+                       WHERE id = ANY($1::int[])`, [dids]);
+    await pool.query(`UPDATE mo_deliverables SET status='delivered', completed_at=NOW() WHERE id=$1`, [dids[1]]);
+    await pool.query(`UPDATE mo_deliverables SET status='approved', dispatch_status='delivered' WHERE id=$1`, [dids[2]]);
+    const r = await as("admin", "PATCH", `/projects/${pid}`, { end_date: "2026-10-20" });
+    expect(r.status).toBe(200);
+    expect(dayOf((await deliv(dids[0])).due_date), "open work follows the project").toBe("2026-10-22");
+    expect(dayOf((await deliv(dids[1])).due_date), "delivered work keeps its date").toBe("2026-10-12");
+    expect(dayOf((await deliv(dids[2])).due_date), "dispatched work keeps its date").toBe("2026-10-12");
+  });
+
+  it("approved work still waiting to go out can change hands, and finished work can still be edited", async () => {
+    const { did } = await finished(`status='approved', dispatch_status='queued'`);
+    expect((await as("leadA", "PATCH", `/deliverables/${did}`,
+      { owner_id: ACTORS.empA2.id, confirm_reassign: true })).status).toBe(200);
+    const done = await finished(`status='delivered'`);
+    expect((await as("leadA", "PATCH", `/deliverables/${done.did}`,
+      { owner_id: ACTORS.empA1.id, spec_notes: "Final cut" })).status).toBe(200);
+  });
+});
+
+/* ── Boards: a linked card moves its deliverable only as /status would ───── */
+
+maybe("PATCH /cards/:id — Team Leads and Admins only, and a synced move obeys the review rules", () => {
+  let board = 0, approvedCol = 0, restartCol = 0, plainCol = 0;
+  const card = async (did: number) => Number((await one(
+    `INSERT INTO mo_cards (board_id, column_id, title, linked_entity_type, linked_entity_id, created_by)
+     VALUES ($1,$2,$3,'deliverable',$4,$5) RETURNING id`, [board, plainCol, `${PX} card`, did, ACTORS.leadA.id])).id);
+  const columnOf = async (cid: number) => Number((await one(`SELECT column_id FROM mo_cards WHERE id=$1`, [cid])).column_id);
+
+  beforeAll(async () => {
+    board = Number((await one(`INSERT INTO mo_boards (name, is_management, sync_status, created_by)
+                               VALUES ($1, true, true, $2) RETURNING id`, [`${PX} War Room`, ACTORS.leadA.id])).id);
+    const col = async (name: string, maps: string | null, i: number) => Number((await one(
+      `INSERT INTO mo_board_columns (board_id, name, sort_order, maps_to_status) VALUES ($1,$2,$3,$4) RETURNING id`,
+      [board, name, i, maps])).id);
+    plainCol = await col("Inbox", null, 0);
+    restartCol = await col("To arrange", "not_started", 1);
+    approvedCol = await col("Confirmed", "approved", 2);
+  });
+
+  it("an employee or the Coordinator cannot move a card", async () => {
+    const { did } = await ownedBy("empA1");
+    const cid = await card(did);
+    for (const who of ["empA1", "coord"] as const)
+      expect((await as(who, "PATCH", `/cards/${cid}`, { column_id: approvedCol })).status, who).toBe(403);
+    expect(await columnOf(cid)).toBe(plainCol);
+    expect((await deliv(did)).status).toBe("not_started");
+  });
+
+  it("dragging to an approved column is the review: refused for the team, and without a version", async () => {
+    const bare = await ownedBy("empA1");
+    const bareCard = await card(bare.did);
+    expect((await as("leadB", "PATCH", `/cards/${bareCard}`, { column_id: approvedCol })).status).toBe(400);
+    expect([await columnOf(bareCard), (await deliv(bare.did)).status]).toEqual([plainCol, "not_started"]);
+
+    const own = await ownedBy("leadB");
+    await as("leadB", "POST", `/deliverables/${own.did}/versions`, drive("cd1"));
+    const ownCard = await card(own.did);
+    expect((await as("leadB", "PATCH", `/cards/${ownCard}`, { column_id: approvedCol })).status).toBe(403);
+    expect([await columnOf(ownCard), (await deliv(own.did)).status]).toEqual([plainCol, "in_review"]);
+
+    const r = await as("leadA", "PATCH", `/cards/${ownCard}`, { column_id: approvedCol });
+    expect([r.status, r.body.synced]).toEqual([200, "approved"]);
+    const d = await deliv(own.did);
+    expect([await columnOf(ownCard), d.status, d.dispatch_status]).toEqual([approvedCol, "approved", "queued"]);
+  });
+
+  it("an invalid move is refused and the card stays; an unmapped column just moves the card", async () => {
+    const { did } = await ownedBy("empA1");
+    await as("empA1", "POST", `/deliverables/${did}/versions`, drive("cd2"));
+    const cid = await card(did);
+    expect((await as("leadA", "PATCH", `/cards/${cid}`, { column_id: restartCol })).status).toBe(400);
+    expect([await columnOf(cid), (await deliv(did)).status]).toEqual([plainCol, "in_review"]);
+    const r = await as("leadA", "PATCH", `/cards/${cid}`, { column_id: plainCol, title: `${PX} renamed` });
+    expect([r.status, r.body.synced]).toEqual([200, null]);
+  });
+});
+
+/* ── Projects: create, edit, re-route, crew, activity ─────────────────────── */
+
+maybe("projects — creating, editing and re-routing follow the rules", () => {
+  const fresh = (actor: ActorName, extra: Record<string, unknown> = {}) => as(actor, "POST", "/projects", {
+    name: `${PX} rules ${Math.random().toString(36).slice(2, 8)}`, project_type_id: projectTypeId,
+    start_date: "2026-10-01", end_date: "2026-10-10", ...extra });
+  const pidOf = (r: { body: Record<string, unknown> }) => Number((r.body.project as Record<string, unknown>).id);
+  const pmOf = (pid: number) => pool.query(
+    `SELECT user_id FROM mo_project_assignments WHERE project_id=$1 AND is_project_manager AND removed_at IS NULL`,
+    [pid]).then((r) => r.rows.map((x) => x.user_id));
+
+  it("a Coordinator must say which team the project is for", async () => {
+    const r = await fresh("coord");
+    expect([r.status, r.body.message]).toEqual([400, "Choose the team this project is for."]);
+    expect((await fresh("coord", { team_id: teamA })).status).toBe(201);
+  });
+
+  it("the academic year picked is the one stored, and duplicates are per year", async () => {
+    const past = Number((await one(
+      `INSERT INTO mo_academic_years (label, start_date, end_date, is_current)
+       VALUES ('${PX} 2019-20','2019-06-01','2020-05-31',false) RETURNING id`)).id);
+    const name = `${PX} same name ${Math.random().toString(36).slice(2, 8)}`;
+    const r = await fresh("coord", { name, team_id: teamA, academic_year_id: past });
+    expect(r.status).toBe(201);
+    expect(Number((await project(pidOf(r))).academic_year_id)).toBe(past);
+    // The same project in the current year is not a duplicate of last year's.
+    const now = await fresh("coord", { name, team_id: teamA });
+    expect(now.status).toBe(201);
+    expect(Number((await project(pidOf(now))).academic_year_id)).not.toBe(past);
+    expect((await fresh("coord", { name, team_id: teamA, academic_year_id: past })).status).toBe(409);
+    expect((await fresh("coord", { team_id: teamA, academic_year_id: 99999999 })).status).toBe(400);
+  });
+
+  it("a priority outside urgent, high, normal and low is a 400 everywhere, never a 500", async () => {
+    const msg = "Priority must be urgent, high, normal or low.";
+    const bad = { priority: "medium" };
+    expect([(await fresh("coord", { team_id: teamA, ...bad })).body.message]).toEqual([msg]);
+    expect((await fresh("coord", { team_id: teamA,
+      deliverables: [{ title: "Edited Photos", deliverable_type_id: dtype, ...bad }] })).status).toBe(400);
+    const { pid, dids } = await routed(teamA);
+    const patch = await as("leadA", "PATCH", `/projects/${pid}`, bad);
+    expect([patch.status, patch.body.message]).toEqual([400, msg]);
+    expect((await as("leadA", "PATCH", `/projects/${pid}`, { priority: null })).status).toBe(400);
+    expect((await as("leadA", "PATCH", `/deliverables/${dids[0]}`, bad)).status).toBe(400);
+    expect((await as("leadA", "POST", `/projects/${pid}/work`, { work_type_id: workTypeId,
+      title: `${PX} work`, assignees: [ACTORS.empA1.id], ...bad })).status).toBe(400);
+    expect((await as("leadA", "PATCH", `/projects/${pid}`, { priority: "urgent" })).status).toBe(200);
+    expect((await project(pid)).priority).toBe("urgent");
+  });
+
+  it("re-routing: the Coordinator or an Admin moves it, the new lead takes over and is told", async () => {
+    const { pid } = await routed(teamA);
+    expect((await as("leadA", "PATCH", `/projects/${pid}`, { team_id: teamB })).status).toBe(403);
+    expect((await as("coord", "PATCH", `/projects/${pid}`, { team_id: teamB })).status).toBe(200);
+    const p = await project(pid);
+    expect([Number(p.team_id), p.owner_id]).toEqual([teamB, ACTORS.leadB.id]);
+    expect(await pmOf(pid)).toEqual([ACTORS.leadB.id]);
+    expect((await notes(ACTORS.leadB.id, "project", pid)).map((n) => n.title)).toContain("You are leading a project");
+    expect((await as("admin", "PATCH", `/projects/${pid}`, { team_id: teamA })).status).toBe(200);
+    expect(await pmOf(pid)).toEqual([ACTORS.leadA.id]);
+    // Moving it is not un-routing it.
+    expect((await as("coord", "PATCH", `/projects/${pid}`, { team_id: null })).status).toBe(400);
+    expect(Number((await project(pid)).team_id)).toBe(teamA);
+  });
+
+  it("an employee's own project: every deliverable on it is theirs", async () => {
+    const r = await fresh("empA1", { deliverables: [
+      { title: "Edited Photos", deliverable_type_id: dtype }, { title: "Edited Photos (2)", deliverable_type_id: dtype }] });
+    expect(r.status).toBe(201);
+    const owners = (await pool.query(`SELECT owner_id FROM mo_deliverables WHERE project_id=$1`, [pidOf(r)])).rows;
+    expect(owners.map((o) => o.owner_id)).toEqual([ACTORS.empA1.id, ACTORS.empA1.id]);
+  });
+
+  it("deliverable types reach the client in the order the Admin set", async () => {
+    const r = await as("admin", "GET", "/state");
+    const types = (r.body.deliverable_types as Array<{ id: number | string; sort_order: number }>)
+      .map((t) => [Number(t.sort_order ?? 0), Number(t.id)]);
+    const sorted = [...types].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    expect(types).toEqual(sorted);
+  });
+});
+
+maybe("project crew — adding people, and who may name a PM", () => {
+  const pmOf = (pid: number) => pool.query(
+    `SELECT user_id FROM mo_project_assignments WHERE project_id=$1 AND is_project_manager AND removed_at IS NULL`,
+    [pid]).then((r) => r.rows.map((x) => x.user_id));
+  const onCrew = (pid: number, uid: string) => one(
+    `SELECT 1 AS ok FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`, [pid, uid]);
+
+  it("another team's lead and a crew employee add people, but cannot make anyone the PM", async () => {
+    const { pid } = await routed(teamA);
+    // A project with no PM is the case where a forged flag would have stuck.
+    await pool.query(`UPDATE mo_project_assignments SET is_project_manager=false WHERE project_id=$1`, [pid]);
+    expect((await as("leadB", "POST", `/projects/${pid}/assignments`,
+      { user_id: ACTORS.leadB.id, is_project_manager: true })).status).toBe(403);
+    const add = await as("leadB", "POST", `/projects/${pid}/assignments`, { user_id: ACTORS.empA1.id });
+    expect([add.status, add.body.added]).toEqual([201, true]);
+    expect((await as("empA1", "POST", `/projects/${pid}/assignments`,
+      { user_id: ACTORS.empA2.id, is_project_manager: true })).status).toBe(403);
+    expect(await pmOf(pid)).toEqual([]);
+    expect(await onCrew(pid, ACTORS.empA2.id)).toBeUndefined();
+    // The project's own lead may name one.
+    const ok = await as("leadA", "POST", `/projects/${pid}/assignments`,
+      { user_id: ACTORS.empA2.id, is_project_manager: true });
+    expect(ok.status).toBe(201);
+    expect(await pmOf(pid)).toEqual([ACTORS.empA2.id]);
+    expect((await notes(ACTORS.empA2.id, "project", pid)).map((n) => n.title)).toEqual(["You are the PM on a project"]);
+  });
+
+  it("a second PM is refused out loud: nobody added, nobody told", async () => {
+    const { pid } = await routed(teamA);
+    const r = await as("leadA", "POST", `/projects/${pid}/assignments`,
+      { user_id: ACTORS.empA1.id, is_project_manager: true });
+    expect(r.status).toBe(409);
+    expect(await pmOf(pid)).toEqual([ACTORS.leadA.id]);
+    expect(await onCrew(pid, ACTORS.empA1.id)).toBeUndefined();
+    expect(await notes(ACTORS.empA1.id, "project", pid)).toEqual([]);
+  });
+});
+
+maybe("project activity — only this project's history, with who did it", () => {
+  it("each kind of record is matched against its own ids", async () => {
+    const { pid, dids } = await routed(teamA);
+    const other = await routed(teamB);
+    // An event on ANOTHER project's shoot/assignment whose id happens to equal this project's deliverable id.
+    for (const t of ["shoot", "assignment"])
+      await pool.query(
+        `INSERT INTO mo_audit_logs (actor_id, action, entity_type, entity_id, after)
+         VALUES ($1,$2,$3,$4,$5)`, [ACTORS.admin.id, `${t}.probe`, t, dids[0], JSON.stringify({ project: other.pid })]);
+    await pool.query(
+      `INSERT INTO mo_audit_logs (actor_id, action, entity_type, entity_id) VALUES ($1,'deliverable.probe','deliverable',$2)`,
+      [ACTORS.leadA.id, dids[0]]);
+    const r = await as("leadA", "GET", `/projects/${pid}/activity`);
+    expect(r.status).toBe(200);
+    const rows = r.body.activity as Array<{ action: string; actor: string | null }>;
+    const actions = rows.map((x) => x.action);
+    expect(actions).toContain("deliverable.probe");
+    expect(actions).toContain("project.created");
+    expect(actions).not.toContain("shoot.probe");
+    expect(actions).not.toContain("assignment.probe");
+    expect(rows.find((x) => x.action === "project.created")?.actor).toBe(ACTORS.coord.full_name);
+    expect(rows.find((x) => x.action === "deliverable.probe")?.actor).toBe(ACTORS.leadA.full_name);
+  });
+});
+
+maybe("assign work on an existing deliverable, delivering, dispatch and archive", () => {
+  const work = (actor: ActorName, pid: number, extra: Record<string, unknown>) =>
+    as(actor, "POST", `/projects/${pid}/work`, { work_type_id: workTypeId, title: `${PX} cut the reel`, ...extra });
+  const onCrew = (pid: number, uid: string) => one(
+    `SELECT 1 AS ok FROM mo_project_assignments WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`, [pid, uid]);
+  const teamOf = (did: number) => pool.query(
+    `SELECT DISTINCT au.user_id FROM mo_assignments a JOIN mo_assignment_users au ON au.assignment_id=a.id
+      WHERE a.deliverable_id=$1 AND a.status<>'cancelled' ORDER BY au.user_id`, [did]).then((r) => r.rows.map((x) => x.user_id));
+
+  it("an existing deliverable takes the work's due date, and the answer is the deliverable as stored", async () => {
+    const { pid, dids } = await routed(teamA, ["Archive Data"]);
+    await pool.query(`UPDATE mo_deliverables SET due_date=NULL WHERE id=$1`, [dids[0]]);
+    // Another team's lead may assign here; an empty date is filled by their work's date.
+    const r = await work("leadB", pid, { assignees: [ACTORS.empB1.id], deliverable_id: dids[0], due_date: "2026-10-22" });
+    expect(r.status).toBe(201);
+    const body = r.body.deliverable as Record<string, unknown>;
+    expect(body.owner_id).toBe(ACTORS.empB1.id);
+    expect(body.due_date).not.toBeNull();
+    expect(dayOf((await deliv(dids[0])).due_date)).toBe("2026-10-22");
+    // …but a date already set moves only for someone who runs the project.
+    expect((await work("leadB", pid, { assignees: [ACTORS.empB1.id], deliverable_id: dids[0],
+      due_date: "2026-10-25" })).status).toBe(201);
+    expect(dayOf((await deliv(dids[0])).due_date)).toBe("2026-10-22");
+    expect((await work("leadA", pid, { assignees: [ACTORS.empB1.id], deliverable_id: dids[0],
+      due_date: "2026-10-28" })).status).toBe(201);
+    expect(dayOf((await deliv(dids[0])).due_date)).toBe("2026-10-28");
+  });
+
+  it("changing a work row's people keeps the owner on it, brings newcomers in once and tells who left", async () => {
+    const { pid } = await routed(teamA, []);
+    const r = await work("leadA", pid, { assignees: [ACTORS.empA1.id, ACTORS.empA2.id], owner_id: ACTORS.empA1.id,
+      new_deliverable: { deliverable_type_id: dtype } });
+    const did = Number((r.body.deliverable as Record<string, unknown>).id);
+    const aid = Number((r.body.assignment as Record<string, unknown>).id);
+    // Leaving the owner out would dissolve the team: refused, nothing changes.
+    const bad = await as("leadA", "PATCH", `/assignments/${aid}`, { assignees: [ACTORS.empA2.id] });
+    expect([bad.status, String(bad.body.message)]).toEqual([400, expect.stringContaining("owner must stay")]);
+    expect(await teamOf(did)).toEqual([ACTORS.empA1.id, ACTORS.empA2.id].sort());
+
+    expect((await as("leadA", "PATCH", `/assignments/${aid}`,
+      { assignees: [ACTORS.empA1.id, ACTORS.empB1.id, ACTORS.empB1.id] })).status).toBe(200);
+    expect(await teamOf(did)).toEqual([ACTORS.empA1.id, ACTORS.empB1.id].sort());
+    expect(await onCrew(pid, ACTORS.empB1.id)).toBeTruthy();
+    expect((await notes(ACTORS.empB1.id, "deliverable", did)).map((n) => n.title)).toEqual(["New assignment"]);
+    expect((await notes(ACTORS.empA2.id, "deliverable", did)).map((n) => n.title)).toContain("Assignment reassigned");
+    // The owner, who stayed, hears nothing new.
+    expect((await notes(ACTORS.empA1.id, "deliverable", did)).map((n) => n.title))
+      .not.toContain("Assignment reassigned");
+  });
+
+  it("delivering while a version awaits review says so", async () => {
+    const { did } = await ownedBy("empA1");
+    expect((await as("empA1", "POST", `/deliverables/${did}/versions`, drive("p10"))).status).toBe(201);
+    const r = await as("empA1", "POST", `/deliverables/${did}/deliver`, {});
+    expect([r.status, String(r.body.message)]).toEqual([400, expect.stringContaining("awaiting review")]);
+  });
+
+  it("a delivered review-exempt deliverable is dispatched and archived without a version", async () => {
+    if (!exemptType) return;
+    const { did } = await ownedBy("empA1");
+    await pool.query(`UPDATE mo_deliverables SET deliverable_type_id=$1, status='in_progress' WHERE id=$2`, [exemptType, did]);
+    expect((await as("empA1", "POST", `/deliverables/${did}/status`, { status: "delivered" })).status).toBe(200);
+    // Not dispatched yet: archiving says what is missing.
+    const early = await as("coord", "POST", `/deliverables/${did}/archive`, {});
+    expect([early.status, String(early.body.message)]).toEqual([400, expect.stringContaining("not been dispatched")]);
+    expect((await as("leadB", "POST", `/deliverables/${did}/approval`, { approval_status: "approved" })).status).toBe(200);
+    expect((await as("coord", "POST", `/deliverables/${did}/dispatch`, { recipient: "Library" })).status).toBe(200);
+    expect((await as("coord", "POST", `/deliverables/${did}/archive`, {})).status).toBe(200);
+    const again = await as("coord", "POST", `/deliverables/${did}/archive`, {});
+    expect([again.status, again.body.message]).toEqual([400, "This deliverable is already archived."]);
+    expect((await deliv(did)).dispatch_status).toBe("archived");
+  });
+
+  it("a review-exempt deliverable sent back after delivery is not dispatched", async () => {
+    if (!exemptType) return;
+    const { did } = await ownedBy("empA1");
+    await pool.query(`UPDATE mo_deliverables SET deliverable_type_id=$1, status='in_progress' WHERE id=$2`, [exemptType, did]);
+    await as("empA1", "POST", `/deliverables/${did}/status`, { status: "delivered" });
+    expect((await as("leadB", "POST", `/deliverables/${did}/approval`,
+      { approval_status: "changes_requested", note: "Missing the second camera" })).status).toBe(200);
+    expect((await as("coord", "POST", `/deliverables/${did}/dispatch`, { recipient: "Library" })).status).toBe(400);
+    expect((await deliv(did)).dispatch_status).toBe("none");
+  });
+});
+
+maybe("the work follows its deliverable — submitting closes it for everyone, changes open it again", () => {
+  /* Today's assignments and My deliverables are one piece of work: a version
+     submitted from either closes the work rows Assign work put on it, for
+     every assignee; a reviewer asking for changes — on the version, or after
+     delivery — puts the work back on everyone's day. SMC coverage linked to
+     the same deliverable keeps its own lifecycle. */
+  const rowsOf = (did: number) => pool.query(
+    `SELECT id, status, is_smc FROM mo_assignments WHERE deliverable_id=$1 ORDER BY id`, [did])
+    .then((r) => r.rows.map((x) => ({ id: Number(x.id), status: String(x.status), smc: !!x.is_smc })));
+  const crewStatuses = async (did: number) => (await rowsOf(did)).filter((r) => !r.smc).map((r) => r.status);
+  const smcStatuses = async (did: number) => (await rowsOf(did)).filter((r) => r.smc).map((r) => r.status);
+
+  it("closes on submit, reopens on changes requested, stays closed on approval, reopens on a send-back", async () => {
+    const { pid } = await routed(teamA, []);
+    const r = await as("leadA", "POST", `/projects/${pid}/work`, { work_type_id: workTypeId, title: `${PX} aftermovie`,
+      assignees: [ACTORS.empA1.id, ACTORS.empA2.id], owner_id: ACTORS.empA1.id,
+      start_date: "2026-10-01", due_date: "2026-10-05", new_deliverable: { deliverable_type_id: dtype } });
+    expect(r.status).toBe(201);
+    const did = Number((r.body.deliverable as Record<string, unknown>).id);
+    // A second work row on the same deliverable, and SMC coverage linked to it.
+    await pool.query(`INSERT INTO mo_assignments (project_id, title, status, deliverable_id)
+                      VALUES ($1,$2,'in_progress',$3)`, [pid, `${PX} second pass`, did]);
+    await pool.query(`INSERT INTO mo_assignments (project_id, title, status, deliverable_id, is_smc)
+                      VALUES ($1,$2,'in_progress',$3,true), ($1,$4,'done',$3,true)`,
+      [pid, `${PX} smc live`, did, `${PX} smc done`]);
+    expect(await crewStatuses(did)).toEqual(["not_started", "in_progress"]);
+
+    // A teammate, not only the owner, submits — the work closes for both of them.
+    expect((await as("empA2", "POST", `/deliverables/${did}/versions`, drive("w1"))).status).toBe(201);
+    expect(await crewStatuses(did)).toEqual(["done", "done"]);
+    expect(await smcStatuses(did)).toEqual(["in_progress", "done"]);
+    const trail = await pool.query(
+      `SELECT entity_id, before, after FROM mo_audit_logs WHERE action='assignment.updated' AND actor_id=$1
+         AND entity_id = ANY($2::bigint[]) ORDER BY id`,
+      [ACTORS.empA2.id, (await rowsOf(did)).filter((x) => !x.smc).map((x) => x.id)]);
+    expect(trail.rows.map((t) => [t.before.status, t.after.status]))
+      .toEqual([["not_started", "done"], ["in_progress", "done"]]);
+
+    // Changes requested: back on everyone's day.
+    expect((await as("leadA", "POST", `/deliverables/${did}/review`,
+      { outcome: "changes_requested", comment: "Tighten the opening" })).status).toBe(200);
+    expect(await crewStatuses(did)).toEqual(["in_progress", "in_progress"]);
+    expect(await smcStatuses(did)).toEqual(["in_progress", "done"]);
+
+    // v2 closes it again, and approving it does not reopen it.
+    expect((await as("empA1", "POST", `/deliverables/${did}/versions`, drive("w2"))).status).toBe(201);
+    expect(await crewStatuses(did)).toEqual(["done", "done"]);
+    expect((await as("leadA", "POST", `/deliverables/${did}/review`, { outcome: "approved" })).status).toBe(200);
+    expect(await crewStatuses(did)).toEqual(["done", "done"]);
+
+    // Sent back after delivery: the work is open again for both.
+    expect((await as("empA1", "POST", `/deliverables/${did}/deliver`, {})).status).toBe(200);
+    expect(await crewStatuses(did)).toEqual(["done", "done"]);
+    expect((await as("leadA", "POST", `/deliverables/${did}/approval`,
+      { approval_status: "changes_requested", note: "Wrong logo" })).status).toBe(200);
+    expect(await crewStatuses(did)).toEqual(["in_progress", "in_progress"]);
+    expect(await smcStatuses(did)).toEqual(["in_progress", "done"]);
+    // A cancelled row stays cancelled whatever happens next.
+    const ids = (await rowsOf(did)).filter((x) => !x.smc).map((x) => x.id);
+    await pool.query(`UPDATE mo_assignments SET status='cancelled' WHERE id=$1`, [ids[1]]);
+    expect((await as("empA1", "POST", `/deliverables/${did}/versions`, drive("w3"))).status).toBe(201);
+    expect(await crewStatuses(did)).toEqual(["done", "cancelled"]);
   });
 });

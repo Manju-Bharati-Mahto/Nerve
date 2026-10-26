@@ -209,6 +209,16 @@ function inventoryScopeSql(scope: InventoryScope, params: unknown[], col = "i.sc
    scope predicate goes in as one more entry — beside the caller's filters,
    never instead of one. An unrestricted caller adds nothing at all, which is
    what keeps the Admin's query plan identical to the one it was before. */
+/* The four priorities the projects, deliverables and assignments tables
+   accept (their CHECK constraints). Anything else used to reach the INSERT
+   and come back as a 500; it is refused up front instead. Not sending a
+   priority (or sending an empty one) is fine — the caller's default applies. */
+const PRIORITIES = ["urgent", "high", "normal", "low"];
+const PRIORITY_ERROR = "Priority must be urgent, high, normal or low.";
+const badPriority = (v: unknown) => v != null && v !== "" && !PRIORITIES.includes(String(v));
+/** Cards on the management boards are changed (moved, edited, archived, ticked) by Team Leads and Admins only. */
+const PROJECT_HIDDEN = "You can only open projects you are working on.";
+const CARD_EDIT_REFUSAL = "Only a Team Lead or an Admin may change cards.";
 /* ── Phase 17J: telling the right custodians, once ──────────────────────────
    ONE INSERT, AND IT IS ITS OWN DEDUPLICATION. The condition below is the same
    one runMediaOpsAutomations() has always used: an UNREAD notification with the
@@ -230,6 +240,77 @@ async function notifyOnce(userId: string, kind: string, title: string, body: str
       [userId, kind, title, body, entityType, entityId]);
     return r.rowCount ?? 0;
   } catch { return 0; }   /* notifications must never break the flow */
+}
+
+/* ONE PERSON'S BELL — what /state and GET /notifications both send.
+
+   id and entity_id are BIGINT, which pg hands back as strings; the client
+   matches a tapped notice to its row and its target by number, so a string id
+   opened nothing. Both are cast here. project_name names the project the notice
+   is about (directly, or through its deliverable, shoot or work row) so the
+   bell can say where; project_id lets a notice whose deliverable the page has
+   not loaded still open that project. The list stays capped at 50; `unread` is the real count,
+   which a capped list cannot give once someone has more than 50 waiting.
+
+   Two facts the bell needs and a stored row cannot hold, read now:
+   version_review_status — where the version a "Version submitted for review"
+   notice is about stands today, so one already reviewed reads "Reviewed" and
+   does not ask for a review again; from_admin_or_coord — whether the person
+   who added a deliverable ("Deliverable added") runs the work (an Admin or
+   the Coordinator), from the audit trail, since the row has no sender. */
+/* Older notices were stored with the rule that sent them in brackets —
+   "… today's report (AUTO-1)." People never see rule codes, so the feed drops
+   them as it reads; the stored rows are left as they are. */
+const NOTICE_CODE = /\s*\((?:\s*(?:(?:AUTO|BR|VR|FR)-[0-9][\w.-]*|§\s*[\d.]+)\s*[,;/]?)+\)/g;
+/* The title of the notice asking a reviewer to sign off delivered work. */
+const SIGN_OFF_NOTICE = "Deliverable delivered — needs sign-off";
+/* Older notices also said "4 deliverable(s)" or "2 other creator(s)"; they are
+   read as "4 deliverables" (and "1 deliverable", "1 other creator"), with the
+   verb after "N project(s) have" agreeing. New ones are written with plural().
+   A post-delivery sign-off request was once titled "… needs review"; it is
+   sign-off, not review, and reads so. The stored rows are left as they are. */
+const plainNotice = (s: unknown): unknown => (typeof s === "string"
+  ? s.replace(NOTICE_CODE, "")
+    .replace(/^Deliverable delivered — needs review$/, SIGN_OFF_NOTICE)
+    .replace(/\b(\d+) ((?:[a-z][a-z-]*\s)?)([a-z][a-z-]*)\(s\)(\s+have\b)?/gi,
+      (_m, n: string, other: string, w: string, have?: string) =>
+        `${n} ${other}${Number(n) === 1 ? w : w + "s"}${have ? (Number(n) === 1 ? have.replace(/have$/i, "has") : have) : ""}`)
+  : s);
+/* "1 deliverable", "4 deliverables" — never "4 deliverable(s)". */
+const plural = (n: number, one: string, many = one + "s"): string => `${n} ${n === 1 ? one : many}`;
+
+async function notificationFeed(userId: string): Promise<{ notifications: Array<Record<string, unknown>>; unread: number }> {
+  const { rows } = await pool.query(
+    `SELECT n.id::int AS id, n.user_id, n.kind, n.title, n.body, n.entity_type,
+            n.entity_id::int AS entity_id, n.is_read, n.created_at,
+            COALESCE(pp.name, pd.name, ps.name, pa.name) AS project_name,
+            COALESCE(pp.id, pd.id, ps.id, pa.id)::int AS project_id,
+            sv.review_status AS version_review_status,
+            snd.ops AS from_admin_or_coord
+       FROM mo_notifications n
+       LEFT JOIN mo_projects pp ON n.entity_type = 'project' AND pp.id = n.entity_id
+       LEFT JOIN mo_deliverables d ON n.entity_type = 'deliverable' AND d.id = n.entity_id
+       LEFT JOIN mo_projects pd ON pd.id = d.project_id
+       LEFT JOIN mo_shoots s ON n.entity_type = 'shoot' AND s.id = n.entity_id
+       LEFT JOIN mo_projects ps ON ps.id = s.project_id
+       LEFT JOIN mo_assignments a ON n.entity_type = 'assignment' AND a.id = n.entity_id
+       LEFT JOIN mo_projects pa ON pa.id = a.project_id
+       LEFT JOIN mo_deliverable_versions sv ON n.kind = 'review' AND n.title = 'Version submitted for review'
+             AND sv.deliverable_id = d.id
+             AND sv.version_no = substring(n.body from 'submitted v([0-9]+) of')::int
+       LEFT JOIN LATERAL (
+         SELECT (us.role IN ('admin','super_admin') OR COALESCE(pr.mo_role,'') = 'coordinator') AS ops
+           FROM mo_audit_logs al JOIN users us ON us.id = al.actor_id
+           LEFT JOIN mo_user_profiles pr ON pr.user_id = al.actor_id
+          WHERE n.kind = 'assignment' AND n.entity_type = 'deliverable' AND n.title = 'Deliverable added'
+            AND al.entity_type = 'deliverable' AND al.entity_id = n.entity_id AND al.action = 'deliverable.created'
+          ORDER BY al.occurred_at LIMIT 1) snd ON true
+      WHERE n.user_id = $1
+      ORDER BY n.created_at DESC, n.id DESC LIMIT 50`, [userId]);
+  for (const r of rows) { r.title = plainNotice(r.title); r.body = plainNotice(r.body); }
+  const unread = (await pool.query(
+    `SELECT COUNT(*)::int AS c FROM mo_notifications WHERE user_id=$1 AND NOT is_read`, [userId])).rows[0].c as number;
+  return { notifications: rows, unread };
 }
 
 /* WHO RUNS THE CUPBOARD THIS ASSET LIVES IN. Equipment custodians and media
@@ -308,6 +389,23 @@ async function isCoordinator(u: CurrentUser): Promise<boolean> {
   if (u.team !== "media") return false;
   const r = (await pool.query(`SELECT mo_role FROM mo_user_profiles WHERE user_id=$1`, [u.id])).rows[0];
   return r?.mo_role === "coordinator";
+}
+
+/* WHO IN OPERATIONS HEARS THAT A PROJECT'S WORK IS READY TO GO OUT. The
+   Coordinator who turned the request into this project, else the one who
+   created it, else — a project an Admin or a lead started — every Coordinator.
+   Only active Coordinators count, so a departed one does not swallow it. */
+async function responsibleCoordinatorIds(projectId: number): Promise<string[]> {
+  const coordinators = async (sql: string, params: unknown[]) => (await pool.query(
+    `SELECT DISTINCT c.uid FROM (${sql}) c
+       JOIN users u ON u.id = c.uid AND u.team='media' AND (u.status IS NULL OR u.status='active')
+       JOIN mo_user_profiles pr ON pr.user_id = c.uid AND pr.mo_role='coordinator'`,
+    params)).rows.map((r) => String(r.uid));
+  const converter = await coordinators(`SELECT converted_by AS uid FROM mo_requests WHERE project_id=$1`, [projectId]);
+  if (converter.length) return converter;
+  const creator = await coordinators(`SELECT created_by AS uid FROM mo_projects WHERE id=$1`, [projectId]);
+  if (creator.length) return creator;
+  return coordinators(`SELECT user_id AS uid FROM mo_user_profiles`, []);
 }
 
 /* Has an administrator explicitly granted this user a module?
@@ -591,6 +689,82 @@ async function allowsModule(u: CurrentUser, key: string): Promise<boolean> {
   return (await effectiveModules(u)).includes(key);
 }
 
+/* ── Project progress follows its deliverables (Q8, Q9) ───────────────────
+   Approval, dispatch and sign-off are three separate acts, and a project is
+   finished only when each of its live deliverables (not deleted, not marked
+   not-needed or cancelled) has gone out or been signed off:
+     · dispatched (dispatch_status delivered|archived), or marked delivered;
+     · marked delivered means signed off — approval_status 'approved';
+     · nothing sent back (approval_status changes_requested|rejected).
+   closureBlocker() names what still holds one deliverable, in plain words. */
+type LiveDeliverable = { id: number; title: string; status: string; approval_status: string; dispatch_status: string };
+
+function closureBlocker(d: LiveDeliverable): string | null {
+  if (["changes_requested", "rejected"].includes(d.approval_status)) return "was sent back for changes";
+  if (d.status === "delivered") return d.approval_status === "approved" ? null : "is waiting for sign-off";
+  if (d.status !== "approved") return "is not finished yet";
+  return ["delivered", "archived"].includes(d.dispatch_status) ? null : "has not been dispatched yet";
+}
+
+async function liveDeliverablesOf(projectId: number): Promise<LiveDeliverable[]> {
+  return (await pool.query(
+    `SELECT id, title, status, approval_status, dispatch_status FROM mo_deliverables
+      WHERE project_id=$1 AND deleted_at IS NULL AND status NOT IN ('not_required','cancelled')
+      ORDER BY id`, [projectId])).rows as LiveDeliverable[];
+}
+
+/** Each live deliverable that keeps the project from being completed, and why. */
+async function projectClosureBlockers(projectId: number): Promise<Array<{ id: number; title: string; reason: string }>> {
+  return (await liveDeliverablesOf(projectId)).flatMap((d) => {
+    const reason = closureBlocker(d);
+    return reason ? [{ id: Number(d.id), title: String(d.title), reason }] : [];
+  });
+}
+
+/* The status a project's deliverables point at, or null for "leave it":
+     none live, or none started             → no change
+     started, not every one approved        → in_production
+     all approved/delivered, some still out → delivered ("Ready to dispatch")
+     all dispatched or signed off           → completed                    */
+function projectProgressTarget(ds: LiveDeliverable[]): { status: string; rule: string } | null {
+  if (!ds.length || ds.every((d) => d.status === "not_started")) return null;
+  if (!ds.every((d) => ["approved", "delivered"].includes(d.status)))
+    return { status: "in_production", rule: "work has started and not every deliverable is approved" };
+  if (ds.some((d) => closureBlocker(d)))
+    return { status: "delivered", rule: "every deliverable is approved and some still wait for dispatch or sign-off" };
+  return { status: "completed", rule: "every deliverable has been dispatched or signed off" };
+}
+
+/* Forward-only automation. Only these statuses are ever moved by it, and only
+   forward — with one way back: a project that was ready to dispatch returns
+   to production when work on it is sent back or new work is added. Proposed,
+   on hold, cancelled, completed and archived are people's decisions and are
+   never touched; in_review is set by hand only (automation may move past it). */
+const PROJECT_AUTO_RANK: Record<string, number> = { planning: 0, approved: 0, in_production: 1, in_review: 2, delivered: 3, completed: 4 };
+
+/** Move a project to where its deliverables say it is, if that is allowed. */
+async function syncProjectProgress(projectId: number): Promise<string | null> {
+  if (!Number.isFinite(projectId) || projectId <= 0) return null;
+  try {
+    const p = (await pool.query(`SELECT status FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [projectId])).rows[0];
+    const from = p ? String(p.status) : "";
+    if (!(from in PROJECT_AUTO_RANK) || from === "completed") return null;
+    const target = projectProgressTarget(await liveDeliverablesOf(projectId));
+    if (!target || target.status === from) return null;
+    const sentBack = from === "delivered" && target.status === "in_production";
+    if (!sentBack && PROJECT_AUTO_RANK[target.status] <= PROJECT_AUTO_RANK[from]) return null;
+    const upd = await pool.query(
+      `UPDATE mo_projects SET status=$2, updated_at=NOW() WHERE id=$1 AND status=$3 AND deleted_at IS NULL`,
+      [projectId, target.status, from]);
+    if (!upd.rowCount) return null;
+    await pool.query(
+      `INSERT INTO mo_audit_logs (actor_id, actor_role, action, entity_type, entity_id, before, after)
+       VALUES (NULL,'system','project.status_auto','project',$1,$2,$3)`,
+      [projectId, JSON.stringify({ status: from }), JSON.stringify({ status: target.status, rule: target.rule })]).catch(() => {});
+    return target.status;
+  } catch { return null; /* progress must never break the write that triggered it */ }
+}
+
 export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   const { asyncHandler, sendError, getSingleParam } = h;
   /* See the note on Handlers.kioskPinLimiter: absent means "no extra budget",
@@ -611,25 +785,35 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   // ── Assignable-member scoping (§16) ──────────────────────────────────────
   // Who may this actor put on a project, a deliverable or a task?
-  //   Admin                 → every media crew member.
-  //   Team Lead, Employee   → every ACTIVE media crew member. Product decision
+  //   Admin                 → every ACTIVE production worker.
+  //   Team Lead, Employee   → every ACTIVE production worker. Product decision
   //                           (Oct 2026): assigning is not limited to your own
   //                           team — a lead, or an employee on a project, may
   //                           hand work to anyone in the crew.
-  //   Coordinator           → themselves only. The Coordinator routes projects
-  //                           to teams and never names individuals.
+  //   Coordinator           → themselves only, and only as a production worker.
+  //                           The Coordinator routes projects to teams and
+  //                           never names individuals.
   //   SMC member            → themselves only. SMC is a separate network.
-  // Enforced server-side on every assignment path; the UI merely mirrors it.
+  // A production worker is anyone on the Media Crew who is not an Admin or the
+  // Coordinator — those run and route the work rather than do it — unless an
+  // Admin has given them the 'production_worker' duty (D4: a duty, never a 4th
+  // role). Enforced server-side on every assignment path; the UI mirrors it.
+  const PRODUCTION_WORKER_SQL = `
+    SELECT u.id, u.full_name,
+           (u.role IN ('admin','super_admin') OR COALESCE(pr.mo_role,'')='coordinator') AS runs_work,
+           EXISTS (SELECT 1 FROM mo_user_duties d JOIN mo_duty_flags f ON f.id=d.duty_flag_id
+                    WHERE d.user_id=u.id AND f.code='production_worker'
+                      AND f.is_active AND f.archived_at IS NULL) AS flagged
+      FROM users u LEFT JOIN mo_user_profiles pr ON pr.user_id=u.id
+     WHERE u.team='media' AND COALESCE(u.status,'active')='active'`;
   async function assignableMemberIds(actor: CurrentUser): Promise<Set<string>> {
     const role = moRoleOf(actor);
-    if (role === "admin") {
-      const { rows } = await pool.query(`SELECT id FROM users WHERE team='media'`);
-      return new Set(rows.map((r) => String(r.id)));
-    }
-    if (actor.team !== "media" || await isCoordinator(actor)) return new Set<string>([actor.id]);
-    const { rows } = await pool.query(
-      `SELECT id FROM users WHERE team='media' AND COALESCE(status,'active')='active'`);
-    return new Set([actor.id, ...rows.map((r) => String(r.id))]);
+    if (role !== "admin" && actor.team !== "media") return new Set<string>([actor.id]);
+    const workers = (await pool.query(PRODUCTION_WORKER_SQL)).rows
+      .filter((r) => !r.runs_work || r.flagged).map((r) => String(r.id));
+    if (role === "admin") return new Set(workers);
+    if (await isCoordinator(actor)) return new Set(workers.filter((id) => id === actor.id));
+    return new Set([actor.id, ...workers]);
   }
 
   /* ── Who may ASSIGN on a project ───────────────────────────────────────────
@@ -679,9 +863,19 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const allowed = await assignableMemberIds(actor);
     const bad = wanted.filter((id) => !allowed.has(id));
     if (bad.length) {
-      sendError(res, 403, moRoleOf(actor) === "team_lead"
-        ? "You can only assign members of your own team."
-        : "You can only assign yourself.");
+      /* Someone this actor could otherwise pick, left out only because they
+         run the work (Admin, Coordinator) and carry no production duty. */
+      const mayPickOthers = isMoAdmin(actor) || (actor.team === "media" && !(await isCoordinator(actor)));
+      const runner = (await pool.query(`${PRODUCTION_WORKER_SQL} AND u.id = ANY($1::text[])`, [bad])).rows
+        .find((r) => r.runs_work && !r.flagged && (mayPickOthers || String(r.id) === actor.id));
+      if (runner) {
+        sendError(res, 403, `${runner.full_name} is not marked as a production worker.`);
+        return false;
+      }
+      // Any Team Lead, and an employee on the project, may assign anyone active in the crew.
+      sendError(res, 403, actor.team !== "media" || await isCoordinator(actor)
+        ? "The Operations Coordinator routes work; a Team Lead assigns it."
+        : "That person is not an active member of the Media Crew.");
       return false;
     }
     return true;
@@ -720,6 +914,27 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (isMoAdmin(actor) || await isTeamLeadOfProject(actor, projectId)) return true;
     const owner = (await pool.query(`SELECT owner_id FROM mo_projects WHERE id=$1`, [projectId])).rows[0]?.owner_id;
     return String(owner ?? "") === actor.id || await isProjectPM(actor, projectId);
+  }
+
+  /** Who may read a project's own record and history (GET /projects/:id and
+      its /activity) — the same split /state draws for project conversation:
+      Admins, Team Leads and the Coordinator see the department; an employee
+      sees a project they own, are on the crew of, own a deliverable on, or
+      are on a deliverable's team for. */
+  async function seesProject(u: CurrentUser, projectId: number): Promise<boolean> {
+    if (isMoAdmin(u) || isMoTL(u) || await isCoordinator(u)) return true;
+    return !!(await pool.query(
+      `SELECT 1 FROM mo_projects p WHERE p.id=$1 AND (p.owner_id=$2
+          OR EXISTS (SELECT 1 FROM mo_project_assignments pa
+                      WHERE pa.project_id=p.id AND pa.user_id=$2 AND pa.removed_at IS NULL)
+          OR EXISTS (SELECT 1 FROM mo_deliverables d
+                      WHERE d.project_id=p.id AND d.deleted_at IS NULL AND d.owner_id=$2)
+          OR EXISTS (SELECT 1 FROM mo_deliverables d
+                       JOIN mo_assignments a ON a.deliverable_id=d.id
+                                            AND NOT COALESCE(a.is_smc,false) AND a.status <> 'cancelled'
+                       JOIN mo_assignment_users au ON au.assignment_id=a.id AND au.user_id=$2
+                      WHERE d.project_id=p.id AND d.deleted_at IS NULL))`,
+      [projectId, u.id])).rows[0];
   }
 
   /** Who may review and approve deliverables (and approve proposed projects):
@@ -786,7 +1001,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
   async function deliverableAssigned(actor: CurrentUser, d: { id: number; project_id: number; title: string },
                                      from: string | null, to: string | null,
-                                     opts: { notifyIncoming?: boolean; skipAssignmentId?: number } = {}) {
+                                     opts: { notifyIncoming?: boolean; skipAssignmentId?: number; reassign?: boolean;
+                                             via?: string; req?: express.Request } = {}) {
     if (from === to) return;
     if (to) await addToProjectCrew(Number(d.project_id), to, actor.id);
     const linked = (await pool.query(
@@ -808,10 +1024,82 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const say = (uid: string, title: string, body: string) => pool.query(
       `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
        VALUES ($1,'assignment',$2,$3,'deliverable',$4)`, [uid, title, body, d.id]).catch(() => {});
+    /* A reassignment (someone took the work off its owner) names both people,
+       and both are always told — the outgoing owner whether or not they stay
+       on the team. The trail records who it went from and to, and by which
+       path (via), whatever that path also records of its own. A caller that
+       tells the incoming owner itself (Assign work) passes notifyIncoming:false. */
+    if (opts.reassign && from && to) {
+      if (opts.req) await audit(actor, "deliverable.reassigned", "deliverable", Number(d.id),
+        { owner_id: from }, { from, to, via: opts.via ?? null }, opts.req);
+      const names = new Map((await pool.query(`SELECT id, full_name FROM users WHERE id = ANY($1)`, [[from, to]]))
+        .rows.map((r) => [String(r.id), String(r.full_name ?? "")]));
+      const by = actor.full_name ?? "Your Team Lead";
+      if (to !== actor.id && opts.notifyIncoming !== false)
+        await say(to, "Reassigned to you", `${by} reassigned “${d.title}” to you (was ${names.get(from) || "someone else"}).`);
+      if (from !== actor.id) {
+        const stays = (await deliverableTeamIds(Number(d.id))).has(from);
+        await say(from, "Assignment reassigned",
+          `${by} reassigned “${d.title}” to ${names.get(to) || "someone else"}.${stays ? " You remain on its team." : ""}`);
+      }
+      return;
+    }
     if (to && to !== actor.id && opts.notifyIncoming !== false)
       await say(to, "New assignment", `${actor.full_name ?? "Your Team Lead"} assigned “${d.title}” to you.`);
-    if (from && from !== actor.id)
+    /* Handing ownership to a teammate does not take the old owner off the
+       work: Assign work may pick them again. Only someone who has actually
+       left the deliverable's team is told it is no longer theirs. */
+    if (from && from !== actor.id && !(await deliverableTeamIds(Number(d.id))).has(from))
       await say(from, "Assignment reassigned", `“${d.title}” is no longer assigned to you.`);
+  }
+
+  /* Taking a deliverable off the person who owns it is a reassignment, and
+     whoever does it says so: confirm_reassign:true, sent once they have been
+     shown who has it now. Without it nothing changes and the answer (409
+     reassign_confirm) names the current owner, so the page can ask. A first
+     assignment, or picking the same owner again, never asks. Call it after the
+     permission and eligibility checks, so a refusal is never dressed up as a
+     question. True when it has answered. */
+  async function reassignUnconfirmed(res: express.Response, d: { title?: unknown; owner_id?: unknown },
+                                     to: string | null, body: Record<string, unknown>): Promise<boolean> {
+    const from = d.owner_id ? String(d.owner_id) : null;
+    if (!from || from === to || body.confirm_reassign === true) return false;
+    const owner = (await pool.query(`SELECT full_name FROM users WHERE id=$1`, [from])).rows[0];
+    const name = owner?.full_name ? String(owner.full_name) : null;
+    res.status(409).json({
+      code: "reassign_confirm",
+      message: `“${String(d.title ?? "This deliverable")}” is ${name ? `${name}'s` : "already assigned"}. `
+        + `Confirm that you want to reassign it; ${name ?? "the current owner"} and the new owner are both told.`,
+      current_owner: { id: from, full_name: name },
+    });
+    return true;
+  }
+
+  /* Finished work keeps the owner who finished it: once a deliverable is
+     delivered, dispatched or archived, nobody takes it over. Every path that
+     names an owner asks this before reassignUnconfirmed(), so the answer is a
+     plain no rather than a question. True when it has answered. */
+  type FinishedRow = { title?: unknown; owner_id?: unknown; status?: unknown; dispatch_status?: unknown };
+  /* "dispatched" or "delivered" once the work is finished; null while it is open. */
+  function finishedAs(d: FinishedRow): "dispatched" | "delivered" | null {
+    if (["sent", "delivered", "archived"].includes(String(d.dispatch_status ?? "none"))) return "dispatched";
+    return String(d.status) === "delivered" ? "delivered" : null;
+  }
+  function ownerLocked(res: express.Response, d: FinishedRow, to: string | null): boolean {
+    if (!d.owner_id || String(d.owner_id) === String(to ?? "")) return false;
+    const done = finishedAs(d);
+    if (!done) return false;
+    sendError(res, 400, `“${String(d.title ?? "This deliverable")}” has already been ${done}, so it can't be reassigned.`);
+    return true;
+  }
+  /* Finished work keeps its dates the same way: /schedule, /due-date and a
+     generic edit that would move either say so plainly. True when answered. */
+  function datesLocked(res: express.Response, d: FinishedRow): boolean {
+    const done = finishedAs(d);
+    if (!done) return false;
+    sendError(res, 400, `“${String(d.title ?? "This deliverable")}” has already been ${done}, `
+      + "so its schedule and due date can't be changed.");
+    return true;
   }
 
   // Per-user module access (allowed_modules). Admins bypass; NULL = unrestricted
@@ -893,7 +1181,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // 'mo-uN'); to_jsonb keeps DATE/timestamp columns as clean strings (no tz drift).
   const uidToInt = (v: unknown) =>
     typeof v === "string" && v.startsWith("mo-u") ? parseInt(v.slice(4), 10) : v;
-  const STATE: [string, string, string | null, string[]][] = [
+  const STATE: [string, string, string | null, string[], string?][] = [
     ["projects", "mo_projects", "deleted_at IS NULL", ["owner_id", "created_by"]],
     ["project_assignments", "mo_project_assignments", "removed_at IS NULL", ["user_id", "assigned_by"]],
     // Orphan guard (G1): never ship deliverables whose parent project is deleted.
@@ -964,8 +1252,10 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // Admin configuration (CRUD engine) — the DB is the source of truth for every
     // picker/template in the operational UI. Archived rows are excluded (cannot be
     // selected); disabled rows ship and are filtered by is_active client-side.
-    ["project_types", "mo_project_types", "archived_at IS NULL", []],
-    ["deliverable_types", "mo_deliverable_types", "archived_at IS NULL", []],
+    // In the order the Admin set: the New project Type picker lists them as sent.
+    ["project_types", "mo_project_types", "archived_at IS NULL", [], "sort_order, id"],
+    // In the order the Admin set: the New project and Assign work pickers list them as sent.
+    ["deliverable_types", "mo_deliverable_types", "archived_at IS NULL", [], "sort_order, id"],
     ["task_categories", "mo_task_categories", "archived_at IS NULL", []],
     ["project_templates", "mo_project_templates", "archived_at IS NULL", []],
     ["template_deliverables", "mo_template_deliverables", null, []],
@@ -1020,8 +1310,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const roleMap: Record<string, string> = { super_admin: "admin", admin: "admin", sub_admin: "team_lead", user: "employee" };
 
     const out: Record<string, unknown> = {};
-    for (const [key, table, where, refs] of STATE) {
-      const { rows } = await pool.query(`SELECT to_jsonb(t) AS row FROM ${table} t${where ? " WHERE " + where : ""}`);
+    for (const [key, table, where, refs, order] of STATE) {
+      const { rows } = await pool.query(
+        `SELECT to_jsonb(t) AS row FROM ${table} t${where ? " WHERE " + where : ""}${order ? " ORDER BY " + order : ""}`);
       out[key] = rows.map((r) => {
         const o = r.row as Record<string, unknown>;
         for (const f of refs) o[f] = toInt(o[f]);
@@ -1244,6 +1535,18 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
            assigned before assignment added them to the crew still needs the
            thread their Team Lead's feedback lives in. */
         for (const d of arr("deliverables")) if (Number(d.owner_id) === meInt && !d.deleted_at) myProjects.add(Number(d.project_id));
+        /* So is being on its team (deliverableTeamIds' rule): Assign work can
+           put someone on a deliverable who is later taken off the crew, and
+           they still do the work and get its review notices. */
+        for (const r of (await pool.query(
+          `SELECT DISTINCT d.project_id FROM mo_deliverables d
+             JOIN mo_assignments a ON a.deliverable_id = d.id
+                                  AND NOT COALESCE(a.is_smc,false) AND a.status <> 'cancelled'
+             JOIN mo_assignment_users au ON au.assignment_id = a.id AND au.user_id = $1
+            WHERE d.deleted_at IS NULL AND d.owner_id IS NOT NULL
+              AND EXISTS (SELECT 1 FROM mo_assignment_users o
+                           WHERE o.assignment_id = a.id AND o.user_id = d.owner_id)`, [u.id])).rows)
+          myProjects.add(Number(r.project_id));
         const myDeliverables = new Set(arr("deliverables")
           .filter((d) => myProjects.has(Number(d.project_id))).map((d) => Number(d.id)));
         out.comments = arr("comments").filter((c) =>
@@ -1292,8 +1595,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     for (const r of fireRows.rows) if (r.rk) fires[r.rk] = r.c;
     for (const ar of (out.automation_rules as Array<Record<string, unknown>>)) ar.fires_30d = fires[String(ar.rule_key)] ?? 0;
     // Server-persisted notifications for this user (written by the automation engine).
-    const notifs = await pool.query(`SELECT * FROM mo_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, [u.id]);
-    out.notifications = notifs.rows.map((n) => ({ ...n, user_id: idMap.get(u.id) }));
+    const feed = await notificationFeed(u.id);
+    out.notifications = feed.notifications.map((n) => ({ ...n, user_id: idMap.get(u.id) }));
+    out.notifications_unread = feed.unread;
     // The prototype expects a tags array on each project (seed had one); real
     // projects have none — default to [] so viewProject's `p.tags.map` never crashes.
     for (const p of (out.projects as Array<Record<string, unknown>>)) if (!Array.isArray(p.tags)) p.tags = [];
@@ -1320,10 +1624,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   }));
 
   app.get(`${P}/projects/:id`, asyncHandler(async (req, res) => {
-    if (!requireMedia(res)) return;
+    const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
     const { rows } = await pool.query(`SELECT * FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [id]);
     if (!rows[0]) return sendError(res, 404, "Project not found.");
+    if (!(await seesProject(u, id))) return sendError(res, 403, PROJECT_HIDDEN);
     const [assignments, deliverables, shoots] = await Promise.all([
       pool.query(`SELECT * FROM mo_project_assignments WHERE project_id=$1 AND removed_at IS NULL`, [id]),
       pool.query(`SELECT * FROM mo_deliverables WHERE project_id=$1 AND deleted_at IS NULL ORDER BY due_date`, [id]),
@@ -1338,19 +1643,29 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // name the person a row is about ("added Jay Thakkar to …") instead of "a crew member".
   app.get(`${P}/activity/recent`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
+    /* project_name: the project a row about a deliverable or its version is in,
+       read now (as /my-activity does) — so Home can say which project's
+       "Raw Archive" was archived even when the page does not hold it. */
+    const projectOf = `COALESCE(pd.name, pv.name) AS project_name
+           FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
+           LEFT JOIN mo_deliverables d ON a.entity_type = 'deliverable' AND d.id = a.entity_id
+           LEFT JOIN mo_projects pd ON pd.id = d.project_id
+           LEFT JOIN mo_deliverable_versions v ON a.entity_type = 'deliverable_version' AND v.id = a.entity_id
+           LEFT JOIN mo_deliverables dv ON dv.id = v.deliverable_id
+           LEFT JOIN mo_projects pv ON pv.id = dv.project_id`;
     let rows;
     if (isMoAdmin(u)) {
       rows = (await pool.query(
-        `SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor
-           FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
+        `SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor,
+                ${projectOf}
           ORDER BY a.occurred_at DESC LIMIT 20`)).rows;
     } else {
       rows = (await pool.query(
         `WITH my_projects AS (
            SELECT p.id FROM mo_projects p WHERE p.deleted_at IS NULL AND (p.owner_id=$1
              OR EXISTS (SELECT 1 FROM mo_project_assignments a WHERE a.project_id=p.id AND a.user_id=$1 AND a.removed_at IS NULL)))
-         SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor
-           FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
+         SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor,
+                ${projectOf}
           WHERE a.actor_id=$1
              OR (a.entity_type='project' AND a.entity_id IN (SELECT id FROM my_projects))
              OR (a.entity_type='deliverable' AND a.entity_id IN (SELECT d.id FROM mo_deliverables d WHERE d.project_id IN (SELECT id FROM my_projects)))
@@ -1360,20 +1675,42 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   }));
 
   // FR-3.5 / FR-13.3 — per-object activity feed (the non-admin subset of the audit
-  // trail): the project's own events + its deliverables' events. Any media member.
+  // trail): the project's own events + its deliverables' events. Whoever may
+  // open the project — it carries sign-off notes, recipients and owner changes.
   app.get(`${P}/projects/:id/activity`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
+    if (!(await seesProject(u, id))) return sendError(res, 403, PROJECT_HIDDEN);
+    /* Each entity type is matched against ITS OWN ids. One pooled id set let a
+       shoot whose id equalled one of this project's deliverable ids pull
+       another project's shoot history into this feed.
+       A version's submission and its review are the project's story too: they
+       are recorded against the version, so they come in through its
+       deliverable, with the version number and the deliverable's title so the
+       feed can say "v2 of Photos" without having loaded either. */
     const { rows } = await pool.query(
-      `SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor
+      `SELECT a.action, a.entity_type, a.entity_id, a.entity_uid, a.before, a.after, a.occurred_at, us.full_name AS actor,
+              v.version_no, vd.title AS deliverable_title, v.review_status AS v_review_status, v.review_comment AS v_review_comment
          FROM mo_audit_logs a LEFT JOIN users us ON us.id=a.actor_id
+         LEFT JOIN mo_deliverable_versions v ON a.entity_type='deliverable_version' AND v.id=a.entity_id
+         LEFT JOIN mo_deliverables vd ON vd.id=v.deliverable_id
         WHERE (a.entity_type='project' AND a.entity_id=$1)
-           OR (a.entity_type IN ('deliverable','shoot','assignment')
-               AND a.entity_id IN (
-                 SELECT d.id FROM mo_deliverables d WHERE d.project_id=$1
-                 UNION SELECT s.id FROM mo_shoots s WHERE s.project_id=$1
-                 UNION SELECT g.id FROM mo_assignments g WHERE g.project_id=$1))
+           OR (a.entity_type='deliverable' AND a.entity_id IN (SELECT d.id FROM mo_deliverables d WHERE d.project_id=$1))
+           OR (a.entity_type='deliverable_version' AND a.entity_id IN (SELECT x.id FROM mo_deliverable_versions x
+                 JOIN mo_deliverables d ON d.id=x.deliverable_id WHERE d.project_id=$1))
+           OR (a.entity_type='shoot' AND a.entity_id IN (SELECT s.id FROM mo_shoots s WHERE s.project_id=$1))
+           OR (a.entity_type='assignment' AND a.entity_id IN (SELECT g.id FROM mo_assignments g WHERE g.project_id=$1))
         ORDER BY a.occurred_at DESC LIMIT 60`, [id]);
+    /* A review recorded before its comment was written into the trail still
+       says what to change: the version's own comment, while that verdict is
+       still the version's verdict. Read-time only — the trail is not rewritten. */
+    for (const r of rows) {
+      const after = r.after as Record<string, unknown> | null;
+      if (r.action === "deliverable.version_reviewed" && after && after.review_comment == null
+          && r.v_review_comment && after.review_status === r.v_review_status)
+        r.after = { ...after, review_comment: r.v_review_comment };
+      delete r.v_review_status; delete r.v_review_comment;
+    }
     res.json({ activity: rows });
   }));
 
@@ -1382,6 +1719,24 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
      placeholder must be unique too: a shared literal made two projects created
      in the same instant collide, and the second one 500'd. */
   const PENDING_CODE = `'PENDING-' || md5(random()::text || clock_timestamp()::text)`;
+
+  /* A project's start/end time: "HH:MM" (24 h), or nothing. Returns the value
+     to store, or an error. On a one-day project the end must follow the start. */
+  function projectTimes(b: Record<string, unknown>, start: string | null, end: string | null,
+                        cur?: { start_time?: string | null; end_time?: string | null }):
+      { start_time: string | null; end_time: string | null } | { error: string } {
+    const one = (k: "start_time" | "end_time") => {
+      if (!(k in b)) return cur?.[k] ?? null;
+      const v = b[k] == null ? "" : String(b[k]).trim();
+      return v === "" ? null : v.slice(0, 5);
+    };
+    const st = one("start_time"), et = one("end_time");
+    for (const v of [st, et])
+      if (v !== null && !/^([01]\d|2[0-3]):[0-5]\d$/.test(v)) return { error: "A time must be HH:MM (24-hour)." };
+    if (start && end && start === end && st && et && et <= st)
+      return { error: "On a one-day project the end time must be after the start time." };
+    return { start_time: st, end_time: et };
+  }
 
   /* Create a project's deliverables from its type's active template. ONE
      implementation, shared by POST /projects and the coordinator's
@@ -1453,18 +1808,31 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!(await requireModule(res, u, "projects"))) return;   // Group I: API half of module gating
     const b = req.body as Record<string, unknown>;
     const name = String(b.name ?? "").trim();
-    if (name.length < 3 || name.length > 120) return sendError(res, 400, "VR-6: name must be 3–120 characters.");
+    if (name.length < 3 || name.length > 120) return sendError(res, 400, "A project name must be 3–120 characters.");
     const typeId = Number(b.project_type_id);
     if (!typeId) return sendError(res, 400, "Project type is required.");
     const start = (b.start_date as string) || null, end = (b.end_date as string) || null;
-    if (start && end && end < start) return sendError(res, 400, "VR-6: end date must be on or after start date.");
+    if (start && end && end < start) return sendError(res, 400, "The end date must be on or after the start date.");
+    const times = projectTimes(b, start, end);
+    if ("error" in times) return sendError(res, 400, times.error);
+    if (badPriority(b.priority) || (Array.isArray(b.deliverables)
+        && (b.deliverables as Array<Record<string, unknown>>).some((d) => badPriority(d?.priority))))
+      return sendError(res, 400, PRIORITY_ERROR);
+    /* The academic year the creator picked is the one stored; only a project
+       sent without one falls back to the current year. */
+    const ayId = b.academic_year_id
+      ? (await pool.query(`SELECT id FROM mo_academic_years WHERE id=$1 AND archived_at IS NULL`,
+          [Number(b.academic_year_id) || 0])).rows[0]?.id ?? null
+      : (await pool.query(`SELECT id FROM mo_academic_years WHERE is_current LIMIT 1`)).rows[0]?.id ?? null;
+    if (b.academic_year_id && ayId === null) return sendError(res, 400, "Unknown academic year.");
     // VR-6 / AUTO-6: block EXACT duplicates (same name + type + academic year, live).
     // Fuzzy near-duplicates only warn (client dupCheck + /ai/duplicates), per spec.
     const dup = await pool.query(
-      `SELECT code FROM mo_projects WHERE deleted_at IS NULL AND lower(name)=lower($1) AND project_type_id=$2 LIMIT 1`,
-      [name, typeId]);
+      `SELECT code FROM mo_projects WHERE deleted_at IS NULL AND lower(name)=lower($1) AND project_type_id=$2
+          AND academic_year_id IS NOT DISTINCT FROM $3 LIMIT 1`,
+      [name, typeId, ayId]);
     if (dup.rows[0] && b.force_duplicate !== true)
-      return sendError(res, 409, `AUTO-6/VR-6: an identical project already exists (${dup.rows[0].code}). Rename it, or merge into the existing project.`);
+      return sendError(res, 409, `An identical project already exists (${dup.rows[0].code}). Rename it, or open the existing one.`);
     /* Who may create a project. The Operations Coordinator owns intake, so they
        belong here — the client's capability table has always said so, and this
        gate refusing them is why the New project button appeared and then 403'd. */
@@ -1479,6 +1847,10 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       return sendError(res, 403, "Only Media Crew may create a project.");
     if (isEmployee && b.team_id)
       return sendError(res, 403, "An employee's project is assigned to themselves — only the Coordinator routes a project to a team.");
+    /* The Coordinator's whole part in a project is routing it: a project they
+       raise names the team it is for. (An Admin may still raise one unrouted.) */
+    if (isCoord && !isMoAdmin(u) && !b.team_id)
+      return sendError(res, 400, "Choose the team this project is for.");
 
     /* ── Team assignment ────────────────────────────────────────────────────
        The hierarchy is Coordinator/Admin → Team → Team Lead → Employee. A
@@ -1533,7 +1905,6 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // Every id a Team Lead or Admin names must still be someone they may assign.
     if (!isCoord && !(await assertAssignable(res, u, named))) return;
     const gated = false;   // TL/Admin only ⇒ projects are created active
-    const ay = await pool.query(`SELECT id FROM mo_academic_years WHERE is_current LIMIT 1`);
     // Academic Unit is master data — validate the reference and refuse a unit
     // that is archived or disabled (it may still be shown on old projects, but
     // must not be selectable for new work).
@@ -1544,17 +1915,17 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       if (!au.is_active || au.archived_at) return sendError(res, 400, "That academic unit is archived or disabled — pick an active one.");
     }
     /* Production ownership belongs to the Team Lead when a team was chosen. A
-       Coordinator is Created By and nothing more, so a project they raise with
-       no team is left OWNERLESS — which the pipeline already reads as "needs
-       assignment" — rather than silently landing in their lap. */
+       Coordinator is Created By and nothing more — and always names a team
+       (checked above) — so ownership never lands in their lap. */
     const ownerId = leadId ?? (isCoord && !isMoAdmin(u) ? null : u.id);
     const ins = await pool.query(
       `INSERT INTO mo_projects (department_id, campus_id, academic_year_id, project_type_id, code, name, description,
-         academic_unit_id, status, priority, owner_id, created_by, start_date, end_date, type_meta, source, team_id)
-       VALUES (1,1,$1,$2,${PENDING_CODE},$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'app',$13) RETURNING id`,
-      [ay.rows[0]?.id ?? null, typeId, name, String(b.description ?? ""), unitId,
+         academic_unit_id, status, priority, owner_id, created_by, start_date, end_date, type_meta, source, team_id,
+         start_time, end_time)
+       VALUES (1,1,$1,$2,${PENDING_CODE},$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'app',$13,$14,$15) RETURNING id`,
+      [ayId, typeId, name, String(b.description ?? ""), unitId,
        gated ? "proposed" : "planning", (b.priority as string) || "normal", ownerId, u.id, start, end,
-       JSON.stringify(b.type_meta ?? {}), teamId]);
+       JSON.stringify(b.type_meta ?? {}), teamId, times.start_time, times.end_time]);
     const id = Number(ins.rows[0].id); // pg returns BIGINT as a string — coerce before arithmetic
     const code = `MC-2627-${100 + id}`;
     await pool.query(`UPDATE mo_projects SET code=$1 WHERE id=$2`, [code, id]);
@@ -1605,35 +1976,61 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        pipeline reads as "unassigned". */
     if (Array.isArray(b.deliverables)) {
       for (const raw of b.deliverables as Array<Record<string, unknown>>) {
-        const title = String(raw.title ?? "").trim();
-        if (!title) continue;                       // an empty row the creator never filled in
+        let title = String(raw.title ?? "").trim();
+        // An empty row the creator never filled in. A row that gives only its
+        // type is a deliverable of that type, named after it below.
+        if (!title && !raw.deliverable_type_id) continue;
         if (title.length > 160) return sendError(res, 400, "A deliverable title must be 160 characters or fewer.");
         // The type comes from the existing catalogue; an unknown or archived id
         // is refused rather than silently coerced.
         const typeRow = raw.deliverable_type_id
-          ? (await pool.query(`SELECT id FROM mo_deliverable_types WHERE id=$1 AND archived_at IS NULL`,
+          ? (await pool.query(`SELECT id, name FROM mo_deliverable_types WHERE id=$1 AND archived_at IS NULL`,
               [Number(raw.deliverable_type_id)])).rows[0]
-          : (await pool.query(`SELECT id FROM mo_deliverable_types WHERE archived_at IS NULL ORDER BY id LIMIT 1`)).rows[0];
+          : (await pool.query(`SELECT id, name FROM mo_deliverable_types WHERE archived_at IS NULL ORDER BY id LIMIT 1`)).rows[0];
         if (!typeRow) return sendError(res, 400, "Unknown deliverable type.");
+        if (!title) title = await typeTitle(id, String(typeRow.name));
         const pr = ["urgent", "high", "normal", "low"].includes(String(raw.priority)) ? String(raw.priority) : "normal";
         const est = raw.estimated_hours != null && raw.estimated_hours !== "" && !Number.isNaN(Number(raw.estimated_hours))
           ? Number(raw.estimated_hours) : null;
         // A Coordinator never names an owner (blocked above); a TL/Admin may.
         const dOwner = raw.owner_id ? String(raw.owner_id) : null;
-        await pool.query(
+        const dIns = await pool.query(
           `INSERT INTO mo_deliverables (project_id, deliverable_type_id, title, owner_id, due_date, unit, weight,
              status, priority, estimated_hours, due_date_source)
            SELECT $1,$2,$3,$4,$5, dt.default_unit, 1,'not_started',$6,$7,'manual'
-             FROM mo_deliverable_types dt WHERE dt.id=$2`,
+             FROM mo_deliverable_types dt WHERE dt.id=$2 RETURNING id`,
           [id, typeRow.id, title, dOwner, (raw.due_date as string) || null, pr, est]);
         made++;
+        /* An owner named here is being given the work, exactly as Assign work
+           gives it, so they hear about it the same way. */
+        if (dOwner && dOwner !== u.id && dIns.rows[0])
+          await pool.query(
+            `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+             VALUES ($1,'assignment',$2,$3,'deliverable',$4)`,
+            [dOwner, "New assignment", `${u.full_name ?? "Your Team Lead"} assigned “${title}” on ${name} to you.`,
+             Number(dIns.rows[0].id)]).catch(() => {});
       }
     }
 
+    /* An employee's own project has nobody else to give its work to: every
+       deliverable on it is theirs from the start, not "unassigned". */
+    if (isEmployee)
+      await pool.query(`UPDATE mo_deliverables SET owner_id=$1 WHERE project_id=$2 AND owner_id IS NULL`, [u.id, id]);
+
     // Anyone named on a deliverable joins the crew, as on every other assignment path.
-    for (const r of (await pool.query(
-      `SELECT DISTINCT owner_id FROM mo_deliverables WHERE project_id=$1 AND owner_id IS NOT NULL`, [id])).rows)
-      await addToProjectCrew(id, String(r.owner_id), u.id);
+    const delivOwners = (await pool.query(
+      `SELECT DISTINCT owner_id FROM mo_deliverables WHERE project_id=$1 AND owner_id IS NOT NULL`, [id])).rows
+      .map((r) => String(r.owner_id));
+    for (const o of delivOwners) await addToProjectCrew(id, o, u.id);
+    /* Crew a lead put on the project as they created it hear about it. Whoever
+       was also given a deliverable has already been told, by that notice. */
+    if (isMoAdmin(u) || isMoTL(u))
+      for (const uid of new Set(assignees))
+        if (uid !== u.id && !delivOwners.includes(uid))
+          await pool.query(
+            `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+             VALUES ($1,'assignment',$2,$3,'project',$4)`,
+            [uid, "You are on a new project", `${u.full_name ?? "Your Team Lead"} added you to ${name}.`, id]).catch(() => {});
 
     await audit(u, "project.created", "project", id, null,
       { name, status: gated ? "proposed" : "planning", deliverables_created: made,
@@ -1646,7 +2043,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
          VALUES ($1,'assignment',$2,$3,'project',$4)`,
         [leadId, "You are leading a new project",
-         `${name} was assigned to ${teamName}. ${made} deliverable(s) to allocate.`, id]);
+         `${name} was assigned to ${teamName}. ${plural(made, "deliverable")} to allocate.`, id]);
     }
     const { rows } = await pool.query(`SELECT * FROM mo_projects WHERE id=$1`, [id]);
     res.status(201).json({ project: rows[0], deliverables_created: made });
@@ -1670,18 +2067,40 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        with its own lead, owner/PM or an Admin. */
     if (from === "proposed" && to === "approved") {
       if (!(await canReviewProject(u, id)))
-        return sendError(res, 403, "BR-11: only a Team Lead or an Admin may approve a proposed project.");
+        return sendError(res, 403, "Only a Team Lead or an Admin may approve a proposed project.");
     } else if (!(await canManageProject(u, id))) return sendError(res, 403, "You cannot change this project's status.");
-    if (to === "archived" && !isMoAdmin(u)) return sendError(res, 403, "Only Admin may archive (BR-1).");
-    if (from === "archived" && !isMoAdmin(u)) return sendError(res, 403, "BR-12: only Admin may un-archive.");
+    if (to === "archived" && !isMoAdmin(u)) return sendError(res, 403, "Only an Admin may archive a project.");
+    if (from === "archived" && !isMoAdmin(u)) return sendError(res, 403, "Only an Admin may restore an archived project.");
     if (!(PROJ_TRANSITIONS[from] ?? []).includes(to))
-      return sendError(res, 400, `BR-1: ${from} → ${to} is not a valid transition.`);
+      return sendError(res, 400, `${from} → ${to} is not a valid move.`);
+    /* Completing is closing: every live deliverable has gone out or been
+       signed off (projectClosureBlockers). An Admin may close it anyway, but
+       only with a reason, which goes on the record. Un-archiving returns a
+       project that was already completed, so it is not a new closure. */
+    let override: { reason: string; open: Array<{ id: number; title: string; reason: string }> } | null = null;
+    if (to === "completed" && from !== "archived") {
+      const open = await projectClosureBlockers(id);
+      if (open.length) {
+        const reason = String((req.body as Record<string, unknown>).override_reason ?? "").trim();
+        const list = open.slice(0, 5).map((o) => `“${o.title}” ${o.reason}`).join("; ")
+          + (open.length > 5 ? `; and ${open.length - 5} more` : "");
+        if (!isMoAdmin(u))
+          return sendError(res, 400, `This project can't be completed yet: ${list}.`);
+        if (!reason)
+          return sendError(res, 400, `This project can't be completed yet: ${list}. To close it anyway, give a reason.`);
+        override = { reason, open };
+      }
+    }
     await pool.query(
       `UPDATE mo_projects SET status=$1,
          archived_at=CASE WHEN $1='archived' THEN NOW() WHEN $3 THEN NULL ELSE archived_at END,
          updated_at=NOW() WHERE id=$2`, [to, id, from === "archived"]);
-    await audit(u, from === "archived" ? "project.unarchived" : (to === "archived" ? "project.archived" : "project.status_changed"),
-      "project", id, { status: from }, { status: to }, req);
+    if (override)
+      await audit(u, "project.completed_override", "project", id, { status: from },
+        { status: to, reason: override.reason, still_open: override.open.map((o) => `${o.title} ${o.reason}`) }, req);
+    else
+      await audit(u, from === "archived" ? "project.unarchived" : (to === "archived" ? "project.archived" : "project.status_changed"),
+        "project", id, { status: from }, { status: to }, req);
     res.json({ ok: true, status: to });
   }));
 
@@ -1699,11 +2118,44 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!(await assertAssignable(res, u, [String(b.user_id)]))) return;
     if (!(await pool.query(`SELECT 1 FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [id])).rows[0])
       return sendError(res, 404, "Project not found.");
-    await pool.query(
+    /* Adding someone to the crew is assigning; making them the PM hands them
+       the running of the project, so it takes someone who runs it already.
+       Another team's lead, or a crew employee, may add people — not a PM. */
+    const asPm = !!b.is_project_manager;
+    if (asPm && !(await canManageProject(u, id)))
+      return sendError(res, 403, "Only the project's Team Lead, owner/PM or an Admin may name its PM.");
+    /* One PM per project (idx_mo_one_pm). A second used to vanish inside the
+       bare ON CONFLICT DO NOTHING — nobody added, 201 returned, and a "you are
+       the PM" notice sent all the same. The conflict target now names only the
+       crew index (same person twice), so a PM clash is reported. */
+    if (asPm && (await pool.query(
+      `SELECT 1 FROM mo_project_assignments
+        WHERE project_id=$1 AND is_project_manager AND removed_at IS NULL AND user_id<>$2`, [id, String(b.user_id)])).rows[0])
+      return sendError(res, 409, "This project already has a PM — change the owner to hand it over.");
+    const pmClash = (e: { code?: string }) => {
+      if (e.code === "23505") return null;   // a PM named at the same instant
+      throw e;
+    };
+    /* Naming someone already on the crew as PM promotes their row. The INSERT
+       below does nothing for them, so the request answered 201 with nobody
+       made PM and nobody told. */
+    const promote = asPm ? await pool.query(
+      `UPDATE mo_project_assignments SET is_project_manager=true
+        WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL AND NOT is_project_manager`,
+      [id, String(b.user_id)]).catch(pmClash) : { rowCount: 0 };
+    if (!promote) return sendError(res, 409, "This project already has a PM — change the owner to hand it over.");
+    const promoted = (promote.rowCount ?? 0) > 0;
+    const ins = promoted ? { rowCount: 0 } : await pool.query(
       `INSERT INTO mo_project_assignments (project_id, user_id, capacity_role_id, is_project_manager, assigned_by)
-       VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-      [id, String(b.user_id), b.capacity_role_id ? Number(b.capacity_role_id) : null, !!b.is_project_manager, u.id]);
-    await audit(u, "project.assignment_added", "project", id, null, { user_id: b.user_id }, req);
+       VALUES ($1,$2,$3,$4,$5) ON CONFLICT (project_id, user_id) WHERE removed_at IS NULL DO NOTHING`,
+      [id, String(b.user_id), b.capacity_role_id ? Number(b.capacity_role_id) : null, asPm, u.id])
+      .catch(pmClash);
+    if (!ins) return sendError(res, 409, "This project already has a PM — change the owner to hand it over.");
+    /* The modal posts everyone it shows ticked, the existing crew included.
+       Someone already on the crew is neither re-added nor told again. */
+    const added = (ins.rowCount ?? 0) > 0;
+    if (!added && !promoted) return res.status(201).json({ ok: true, added });
+    await audit(u, promoted ? "project.pm_named" : "project.assignment_added", "project", id, null, { user_id: b.user_id }, req);
     /* The new crew member learns they are on the project. The notification
        opens the project directly (notifTarget maps entity_type='project'). */
     if (String(b.user_id) !== u.id) {
@@ -1711,10 +2163,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       await pool.query(
         `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
          VALUES ($1,'assignment',$2,$3,'project',$4)`,
-        [String(b.user_id), b.is_project_manager ? "You are the PM on a project" : "You are on a project",
-         `${u.full_name ?? "Your Team Lead"} added you to “${p?.name ?? "a project"}”.`, id]).catch(() => {});
+        [String(b.user_id), asPm ? "You are the PM on a project" : "You are on a project",
+         promoted ? `${u.full_name ?? "Your Team Lead"} made you the PM on “${p?.name ?? "a project"}”.`
+           : `${u.full_name ?? "Your Team Lead"} added you to “${p?.name ?? "a project"}”.`, id]).catch(() => {});
     }
-    res.status(201).json({ ok: true });
+    res.status(201).json({ ok: true, added, promoted });
   }));
 
   // ═════════════════════════ DELIVERABLES (§7.4) ══════════════════════════
@@ -1724,40 +2177,86 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     approved: ["delivered", "changes_requested"], delivered: [], not_required: ["not_started"], cancelled: ["not_started"],
   };
 
+  /* A deliverable given only its type is named after the type, numbered when
+     the project already has one by that name: "Reel", "Reel (2)". One rule for
+     New project's rows and Add deliverable. */
+  async function typeTitle(projectId: number, typeName: string): Promise<string> {
+    const taken = new Set((await pool.query(
+      `SELECT lower(title) t FROM mo_deliverables WHERE project_id=$1 AND deleted_at IS NULL`, [projectId])).rows.map((r) => r.t));
+    let title = typeName;
+    for (let n = 2; taken.has(title.toLowerCase()); n++) title = `${typeName} (${n})`;
+    return title;
+  }
+
+  /* ── Add deliverable on an existing project ─────────────────────────────
+     Scope grows after creation, so the people who shape it may add to it: the
+     project's lead, owner/PM or an Admin (canManageProject), and the
+     Coordinator, whose intake job this is. Adding is not assigning: the row is
+     created UNASSIGNED whatever the request says — the lead (or whoever may
+     assign here) decides who does it, with Assign work. The one exception is
+     an employee's own project, where every deliverable is theirs from the
+     start, exactly as POST /projects stores it. One field names the work: its
+     type, whose name is the title ("Reel (2)" for a second one). A finished
+     project takes no new scope. */
   app.post(`${P}/projects/:id/deliverables`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
+    if (!(await requireModule(res, u, "projects"))) return;
     const pid = parseInt(getSingleParam(req.params.id), 10);
-    // §16: "Create/edit deliverables" — the project's lead, Admin, or its owner/PM.
-    if (!(await canManageProject(u, pid)))
-      return sendError(res, 403, "§16: only the project's Team Lead, owner/PM or an Admin may add deliverables.");
+    const proj = (await pool.query(
+      `SELECT id, name, status, owner_id, team_id FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [pid])).rows[0];
+    if (!proj) return sendError(res, 404, "Project not found.");
+    if (!(await canManageProject(u, pid) || await isCoordinator(u)))
+      return sendError(res, 403, "Only the project's Team Lead, its owner or PM, the Coordinator or an Admin may add deliverables.");
+    if (["completed", "archived", "cancelled"].includes(String(proj.status)))
+      return sendError(res, 400, `This project is ${proj.status} — reopen it before adding deliverables.`);
     const b = req.body as Record<string, unknown>;
-    // Naming an owner is an assignment — same team scope as every other path.
-    if (b.owner_id && !(await assertAssignable(res, u, [String(b.owner_id)]))) return;
-    const title = String(b.title ?? "").trim();
-    if (!title) return sendError(res, 400, "Title is required.");
-    const typeId = Number(b.deliverable_type_id);
+    const typeRow = (await pool.query(
+      `SELECT id, name FROM mo_deliverable_types WHERE id=$1 AND archived_at IS NULL`, [Number(b.deliverable_type_id)])).rows[0];
+    if (!typeRow) return sendError(res, 400, "Choose a deliverable type.");
+    if (b.priority != null && b.priority !== "" && !PRIORITIES.includes(String(b.priority)))
+      return sendError(res, 400, PRIORITY_ERROR);
+    const pr = b.priority ? String(b.priority) : "normal";
+    const est = b.estimated_hours != null && b.estimated_hours !== "" && !Number.isNaN(Number(b.estimated_hours))
+      ? Number(b.estimated_hours) : null;
+    if (est !== null && est < 0) return sendError(res, 400, "Effort cannot be negative.");
+    const due = b.due_date ? String(b.due_date).slice(0, 10) : null;
+    if (due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) return sendError(res, 400, "The due date is not a valid date.");
+    // The title is the type's name, numbered when the project already has one.
+    let title = String(b.title ?? "").trim();
+    if (title.length > 160) return sendError(res, 400, "A deliverable title must be 160 characters or fewer.");
+    if (!title) title = await typeTitle(pid, String(typeRow.name));
+    const isEmployee = !isMoAdmin(u) && !isMoTL(u) && !(await isCoordinator(u));
+    const owner = isEmployee && proj.team_id == null && String(proj.owner_id) === u.id ? u.id : null;
     const ins = await pool.query(
-      `INSERT INTO mo_deliverables (project_id, deliverable_type_id, title, owner_id, due_date, quantity_target, unit, spec_notes, weight, status)
-       SELECT $1,$2,$3,$4,$5,$6, dt.default_unit, $7, dt.default_weight, 'not_started'
+      `INSERT INTO mo_deliverables (project_id, deliverable_type_id, title, owner_id, due_date, quantity_target, unit,
+         spec_notes, weight, status, priority, estimated_hours, due_date_source)
+       SELECT $1,$2,$3,$4,$5,$6, dt.default_unit, $7, dt.default_weight, 'not_started', $8, $9, 'manual'
        FROM mo_deliverable_types dt WHERE dt.id=$2 RETURNING *`,
-      [pid, typeId, title, (b.owner_id as string) || u.id, (b.due_date as string) || null,
-       b.quantity_target ? Number(b.quantity_target) : null, String(b.spec_notes ?? "")]);
-    // Robustness: the INSERT…SELECT yields no row when the type id doesn't exist —
-    // answer 400, not a crash (found via a deleted lookup type).
-    if (!ins.rows[0]) return sendError(res, 400, "Invalid deliverable type.");
-    /* Naming an owner HERE is an assignment, so it joins the project crew and
-       the owner is notified — same consequences every other assignment path
-       has. Before this call, adding a deliverable with an owner notified
-       nobody, so the person it was assigned to found out by accident. */
-    if (ins.rows[0].owner_id)
-      await deliverableAssigned(u, ins.rows[0], null, String(ins.rows[0].owner_id));
+      [pid, typeRow.id, title, owner, due, b.quantity_target ? Number(b.quantity_target) : null,
+       String(b.spec_notes ?? ""), pr, est]);
+    const d = ins.rows[0];
     // #7: optional Drive link attached to the new deliverable.
     const url = String(b.drive_url ?? "").trim();
     if (url && /^https:\/\/(drive|docs)\.google\.com\//.test(url))
       await pool.query(`INSERT INTO mo_drive_links (entity_type, entity_id, label, url, added_by, validation_status, last_validated_at)
-        VALUES ('deliverable',$1,$2,$3,$4,'ok',NOW())`, [ins.rows[0].id, title, url, u.id]);
-    await audit(u, "deliverable.created", "deliverable", ins.rows[0].id, null, { title }, req);
-    res.status(201).json({ deliverable: ins.rows[0] });
+        VALUES ('deliverable',$1,$2,$3,$4,'ok',NOW())`, [d.id, title, url, u.id]);
+    /* Whoever allocates the project's work hears there is more of it: the
+       team's lead and the project's owner — not the person who added it. */
+    const lead = proj.team_id == null ? null : (await pool.query(
+      `SELECT t.lead_user_id FROM mo_teams t JOIN users us ON us.id=t.lead_user_id
+        WHERE t.id=$1 AND COALESCE(us.status,'active')='active'`, [proj.team_id])).rows[0]?.lead_user_id;
+    const tell = new Set([lead, proj.owner_id].filter(Boolean).map(String));
+    tell.delete(u.id);
+    for (const uid of tell)
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'assignment',$2,$3,'deliverable',$4)`,
+        [uid, "Deliverable added", `${u.full_name ?? "Someone"} added “${title}” to ${proj.name}. Nobody is assigned to it yet.`,
+         Number(d.id)]).catch(() => {});
+    // New scope on a project that was ready to dispatch puts it back in production.
+    await syncProjectProgress(pid);
+    await audit(u, "deliverable.created", "deliverable", d.id, null, { title, project_id: pid }, req);
+    res.status(201).json({ deliverable: d });
   }));
 
   app.patch(`${P}/deliverables/:id`, asyncHandler(async (req, res) => {
@@ -1790,9 +2289,15 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const refused = asked.filter((k) => !allowed.has(k));
     if (refused.length)
       return sendError(res, 403, `You can't change ${refused.join(", ").replace(/_/g, " ")} on this deliverable.`);
+    if ("priority" in b && !PRIORITIES.includes(String(b.priority))) return sendError(res, 400, PRIORITY_ERROR);
+    const movesDate = (k: "due_date" | "scheduled_date") =>
+      k in b && String(dOnly(d[k]) ?? "") !== String(b[k] ?? "");
+    if ((movesDate("due_date") || movesDate("scheduled_date")) && datesLocked(res, d)) return;
+    if ("owner_id" in b && ownerLocked(res, d, b.owner_id ? String(b.owner_id) : null)) return;
     // Re-owning a deliverable is an assignment — same team scope as everything else.
     if ("owner_id" in b && b.owner_id && String(b.owner_id) !== String(d.owner_id)
         && !(await assertAssignable(res, u, [String(b.owner_id)]))) return;
+    if ("owner_id" in b && await reassignUnconfirmed(res, d, b.owner_id ? String(b.owner_id) : null, b)) return;
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
     for (const k of asked) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
     if (!fields.length) return res.json({ deliverable: d });
@@ -1800,7 +2305,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const { rows } = await pool.query(`UPDATE mo_deliverables SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals);
     if ("owner_id" in b)
       await deliverableAssigned(u, rows[0], d.owner_id ? String(d.owner_id) : null,
-        rows[0].owner_id ? String(rows[0].owner_id) : null);
+        rows[0].owner_id ? String(rows[0].owner_id) : null, { reassign: true, via: "edit", req });
     await audit(u, "deliverable.updated", "deliverable", id, d, rows[0], req);
     res.json({ deliverable: rows[0] });
   }));
@@ -1816,14 +2321,18 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!cur) return sendError(res, 404, "Deliverable not found.");
     if (!(await canManageProject(u, Number(cur.project_id))))
       return sendError(res, 403, "Only the project's Team Lead, owner/PM or an Admin may schedule work.");
+    if (datesLocked(res, cur)) return;
     const b = req.body as Record<string, unknown>;
     const date = b.scheduled_date == null || b.scheduled_date === "" ? null : String(b.scheduled_date);
     if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return sendError(res, 400, "scheduled_date must be YYYY-MM-DD (or null to unschedule).");
+    if (badPriority(b.priority)) return sendError(res, 400, PRIORITY_ERROR);
     // Scheduling implies an assignee — that person is who it shows up for.
     const owner = b.owner_id ? String(b.owner_id) : String(cur.owner_id ?? "");
     if (date && !owner) return sendError(res, 400, "Assign an owner before scheduling this deliverable.");
+    if (b.owner_id && ownerLocked(res, cur, String(b.owner_id))) return;
     if (b.owner_id && String(b.owner_id) !== String(cur.owner_id)
         && !(await assertAssignable(res, u, [String(b.owner_id)]))) return;
+    if (b.owner_id && await reassignUnconfirmed(res, cur, String(b.owner_id), b)) return;
     const { rows } = await pool.query(
       `UPDATE mo_deliverables SET scheduled_date=$1, owner_id=COALESCE($2, owner_id),
          estimated_hours=COALESCE($3, estimated_hours), priority=COALESCE($4, priority)
@@ -1832,7 +2341,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        b.estimated_hours != null && b.estimated_hours !== "" ? Number(b.estimated_hours) : null,
        b.priority ? String(b.priority) : null, id]);
     if (b.owner_id)
-      await deliverableAssigned(u, rows[0], cur.owner_id ? String(cur.owner_id) : null, String(rows[0].owner_id));
+      await deliverableAssigned(u, rows[0], cur.owner_id ? String(cur.owner_id) : null, String(rows[0].owner_id),
+        { reassign: true, via: "schedule", req });
     await audit(u, date ? "deliverable.scheduled" : "deliverable.unscheduled", "deliverable", id,
       { scheduled_date: cur.scheduled_date, owner_id: cur.owner_id },
       { scheduled_date: date, owner_id: rows[0].owner_id }, req);
@@ -1862,6 +2372,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       return sendError(res, 403, isMoTL(u)
         ? "You can only edit due dates on your own team's projects."
         : "Only a Team Lead or Admin may change a due date.");
+    if (datesLocked(res, cur)) return;
     const b = req.body as Record<string, unknown>;
     const raw = b.due_date == null || b.due_date === "" ? null : String(b.due_date);
     if (raw && !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return sendError(res, 400, "due_date must be YYYY-MM-DD (or null to clear).");
@@ -1889,6 +2400,25 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     res.json({ members: rows, scope: moRoleOf(u) });
   }));
 
+  /* The work rows Assign work put on a deliverable follow its versions, so
+     the work and the deliverable never disagree: a submitted version closes
+     the work for everyone on it (it leaves their Today's assignments and
+     waits for review), and changes asked for open it again for all of them.
+     SMC coverage has its own lifecycle and is never touched here. Each row
+     that moves is audited as an ordinary assignment update. */
+  async function syncLinkedWork(u: CurrentUser, deliverableId: number, to: "done" | "in_progress",
+                                req: express.Request) {
+    const { rows } = await pool.query(
+      `UPDATE mo_assignments a SET status=$2
+         FROM (SELECT id, status FROM mo_assignments WHERE deliverable_id=$1 AND NOT COALESCE(is_smc,false)
+                 AND ${to === "done" ? "status NOT IN ('done','cancelled')" : "status='done'"} FOR UPDATE) old
+        WHERE a.id = old.id
+        RETURNING a.id, old.status AS was`, [deliverableId, to]);
+    for (const r of rows)
+      await audit(u, "assignment.updated", "assignment", Number(r.id), { status: r.was },
+        { status: to, via: to === "done" ? "version_submitted" : "changes_requested" }, req);
+  }
+
   // Submit a new immutable version for review.
   app.post(`${P}/deliverables/:id/versions`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
@@ -1910,7 +2440,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!["not_started", "in_progress", "in_review", "changes_requested"].includes(String(d.status)))
       return sendError(res, 400, `This deliverable is ${String(d.status).replace("_", " ")}; a version cannot be submitted on it.`);
     const url = String((req.body as Record<string, unknown>).drive_url ?? "").trim();
-    if (!/^https:\/\/(drive|docs)\.google\.com\//.test(url)) return sendError(res, 400, "VR-4: must be a Google Drive/Docs link.");
+    if (!/^https:\/\/(drive|docs)\.google\.com\//.test(url)) return sendError(res, 400, "The link must be a Google Drive or Google Docs link.");
     const last = await pool.query(`SELECT COALESCE(MAX(version_no),0) AS n FROM mo_deliverable_versions WHERE deliverable_id=$1`, [id]);
     const next = (last.rows[0].n as number) + 1;
     const ins = await pool.query(
@@ -1918,19 +2448,24 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        VALUES ($1,$2,$3,$4,$5,'pending') RETURNING *`,
       [id, next, url, String((req.body as Record<string, unknown>).note ?? ""), u.id]);
     await pool.query(`UPDATE mo_deliverables SET status='in_review' WHERE id=$1`, [id]);
+    await syncProjectProgress(Number(d.project_id));
     await audit(u, "deliverable.version_submitted", "deliverable_version", ins.rows[0].id, null, { version_no: next }, req);
+    await syncLinkedWork(u, id, "done", req);
     /* The project's reviewer hears about it — one person, not every Team Lead.
-       If the resolved reviewer is also the deliverable's owner (a lead who
-       assigned the work to themselves), they are ineligible to review their
-       own: tell the Admins instead so the item does not vanish into the
-       reviewer's own queue they cannot action. */
-    for (const rid of await reviewerIdsFor(Number(d.project_id), team))
+       If the resolved reviewer is on the deliverable's team or IS the
+       submitter (a lead pushing a version for their crew), they cannot review
+       it: tell the Admins instead so the item does not vanish into a queue
+       its reviewer cannot action. */
+    /* The text names the project: several projects have a "Story / Post", and
+       the stored body is what a push or an email carries. */
+    const projName = (await pool.query(`SELECT name FROM mo_projects WHERE id=$1`, [d.project_id])).rows[0]?.name as string | undefined;
+    for (const rid of await reviewerIdsFor(Number(d.project_id), [...team, u.id]))
       if (rid !== u.id)
         await pool.query(
           `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
            VALUES ($1,'review',$2,$3,'deliverable',$4)`,
           [rid, "Version submitted for review",
-            `${u.full_name ?? "A crew member"} submitted v${next} of “${d.title}”.`, id]).catch(() => {});
+            `${u.full_name ?? "A crew member"} submitted v${next} of “${d.title}”${projName ? ` on ${projName}` : ""}.`, id]).catch(() => {});
     res.status(201).json({ version: ins.rows[0] });
   }));
 
@@ -1947,35 +2482,69 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
          (Admins included: nobody signs off their own work);
        · approving needs a version waiting for review; changes can be asked for
          on a pending version or on one already approved (sent back);
-       · approval queues the deliverable for dispatch; changes pull it out. */
-  async function reviewDeliverable(u: CurrentUser, d: Record<string, unknown>, outcome: "approved" | "changes_requested",
-                                   comment: string, req: express.Request): Promise<{ status: number; message?: string }> {
+       · approval queues the deliverable for dispatch; changes pull it out;
+       · cancelled, not-required and delivered work is out of review: a
+         pending version left on it is not a question anyone answers here
+         (delivered work has its own sign-off, POST /approval). */
+  async function reviewerRefusal(u: CurrentUser, d: Record<string, unknown>): Promise<{ status: number; message: string } | null> {
     if (!(await canReviewProject(u, Number(d.project_id))))
       return { status: 403, message: "Only a Team Lead or an Admin may review a deliverable." };
+    if ((await deliverableTeamIds(Number(d.id))).has(u.id))
+      return { status: 403, message: "You cannot review a deliverable you are working on." };
+    return null;
+  }
+
+  /* Ready to go out: the item joins the dispatch queue and the Coordinator
+     responsible for its project is told — once, when it joins. Approval queues
+     reviewed work; a review-exempt type is queued when it is delivered. A
+     submitted version tells nobody in Operations; only this does. */
+  async function queueForDispatch(d: Record<string, unknown>) {
+    const q = await pool.query(
+      `UPDATE mo_deliverables SET dispatch_status='queued', queued_at=NOW()
+        WHERE id=$1 AND dispatch_status='none'`, [d.id]);
+    if (!q.rowCount) return;
+    for (const cid of await responsibleCoordinatorIds(Number(d.project_id)))
+      await notifyOnce(cid, "dispatch", `Ready to dispatch: ${d.title}`,
+        "It is waiting in the dispatch queue.", "deliverable", Number(d.id));
+  }
+
+  async function reviewDeliverable(u: CurrentUser, d: Record<string, unknown>, outcome: "approved" | "changes_requested",
+                                   comment: string, req: express.Request): Promise<{ status: number; message?: string }> {
+    const refused = await reviewerRefusal(u, d);
+    if (refused) return refused;
+    if (d.status === "delivered")
+      return { status: 400, message: "This deliverable has been delivered — sign it off or send it back from its sign-off instead." };
+    if (d.status === "cancelled" || d.status === "not_required")
+      return { status: 400, message: "This deliverable is no longer needed, so there is nothing to review." };
     const team = await deliverableTeamIds(Number(d.id));
-    if (team.has(u.id))
-      return { status: 403, message: "BR-5: you cannot review a deliverable you are assigned to." };
     const v = (await pool.query(
       `SELECT * FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [d.id])).rows[0];
     if (!v) return { status: 400, message: "No version to review — the owner submits one first." };
-    if (v.submitted_by === u.id) return { status: 403, message: "BR-5: a version cannot be reviewed by its submitter." };
+    if (v.submitted_by === u.id) return { status: 403, message: "Someone else must review a version you submitted." };
     if (outcome === "approved" && v.review_status !== "pending")
       return { status: 400, message: "There is no version waiting for review." };
     await pool.query(`UPDATE mo_deliverable_versions SET review_status=$1, reviewed_by=$2, reviewed_at=NOW(), review_comment=$3 WHERE id=$4`,
       [outcome, u.id, comment, v.id]);
-    await pool.query(`UPDATE mo_deliverables SET status=$1, updated_at=NOW() WHERE id=$2`, [outcome, d.id]);
+    /* Approving a new version answers a sign-off send-back, so the send-back
+       no longer holds it: without this, the item would be queued (and the
+       Coordinator told) while /dispatch and closing still refused it. */
+    await pool.query(
+      `UPDATE mo_deliverables SET status=$1, updated_at=NOW(),
+         approval_status = CASE WHEN $1='approved' AND approval_status IN ('changes_requested','rejected')
+                                THEN 'pending' ELSE approval_status END
+        WHERE id=$2`, [outcome, d.id]);
     // Approval is the creative verdict; it also hands the item to Operations.
-    if (outcome === "approved")
-      await pool.query(
-        `UPDATE mo_deliverables SET dispatch_status='queued', queued_at=NOW()
-          WHERE id=$1 AND dispatch_status='none'`, [d.id]);
+    if (outcome === "approved") await queueForDispatch(d);
     // Changes requested on something already queued pulls it back out.
     if (outcome === "changes_requested")
       await pool.query(
         `UPDATE mo_deliverables SET dispatch_status='none', queued_at=NULL
           WHERE id=$1 AND dispatch_status='queued'`, [d.id]);
+    await syncProjectProgress(Number(d.project_id));
     await audit(u, "deliverable.version_reviewed", "deliverable_version", v.id,
-      { review_status: v.review_status }, { review_status: outcome }, req);
+      { review_status: v.review_status }, { review_status: outcome, ...(comment ? { review_comment: comment } : {}) }, req);
+    // The work is back on everyone's day until the next version goes in.
+    if (outcome === "changes_requested") await syncLinkedWork(u, Number(d.id), "in_progress", req);
     // The verdict reaches everyone working on it, not only its owner.
     for (const uid of team)
       if (uid !== u.id)
@@ -1986,6 +2555,42 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
             `${u.full_name ?? "Your Team Lead"} ${outcome === "approved" ? "approved" : "asked for changes to"} v${v.version_no}.${comment ? " " + comment : ""}`,
             d.id]).catch(() => {});
     return { status: 200 };
+  }
+
+  /* Delivered work waits for a sign-off, so whoever can give it is told —
+     the project's lead, or the Admins when that lead is on the deliverable's
+     team or delivered it (nobody signs off their own work). Both ways of
+     marking it delivered, the drawer's /deliver and the board's /status,
+     come through here; /deliver used to tell nobody. */
+  const DELIVER_REFUSAL = "Only the people assigned to this deliverable, the project's Team Lead or an Admin may mark it delivered.";
+  /* WHEN work may be marked delivered — one rule for the drawer's /deliver
+     and the board's /status: an approved deliverable whose latest version is
+     approved, or a review-exempt type straight from work in progress. Null
+     when it may; otherwise the plain-words reason. (canMarkDelivered mirrors
+     it in the client.) Before this was shared, /status let a review-exempt
+     item jump from not started, or out of review, to delivered. */
+  async function deliverRefusal(d: Record<string, unknown>): Promise<string | null> {
+    if (d.status === "in_review")
+      return "A version is awaiting review — it can be delivered once a reviewer approves it.";
+    if (d.review_exempt && d.status === "not_started")
+      return "Start it first — raw footage can be delivered once it is in progress.";
+    if (!(d.status === "approved" || (d.review_exempt && d.status === "in_progress")))
+      return "This deliverable is not ready to deliver. Submit a version for review first — a reviewer approves, then it is delivered.";
+    if (!d.review_exempt) {
+      const v = await pool.query(`SELECT review_status FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [d.id]);
+      if (v.rows[0]?.review_status !== "approved") return "Only an approved latest version can be delivered.";
+    }
+    return null;
+  }
+  async function tellSignOffNeeded(u: CurrentUser, d: Record<string, unknown>) {
+    const team = await deliverableTeamIds(Number(d.id));
+    for (const rid of await reviewerIdsFor(Number(d.project_id), [...team, u.id]))
+      if (rid !== u.id)
+        await pool.query(
+          `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+           VALUES ($1,'review',$2,$3,'deliverable',$4)`,
+          [rid, SIGN_OFF_NOTICE,
+            `${u.full_name ?? "A crew member"} marked “${d.title}” as delivered.`, Number(d.id)]).catch(() => {});
   }
 
   // Review latest version — the drawer's Approve / Request changes.
@@ -2009,17 +2614,13 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const d = await pool.query(`SELECT d.*, dt.review_exempt FROM mo_deliverables d JOIN mo_deliverable_types dt ON dt.id=d.deliverable_type_id WHERE d.id=$1`, [id]);
     if (!d.rows[0]) return sendError(res, 404, "Deliverable not found.");
     if (!(await worksOnDeliverable(u, id) || await leadsProjectOrAdmin(u, Number(d.rows[0].project_id))))
-      return sendError(res, 403, "Only the people assigned to this deliverable, the project's Team Lead or an Admin may mark it delivered.");
+      return sendError(res, 403, DELIVER_REFUSAL);
     /* Only an approved deliverable can be delivered (a review-exempt type reaches
        delivered straight from work). Before this check, calling /deliver after
        a reviewer's post-delivery send-back silently re-flipped status back to
        delivered — the Phase 1 P1 "undo send-back" bypass. */
-    if (!(d.rows[0].status === "approved" || (d.rows[0].review_exempt && d.rows[0].status === "in_progress")))
-      return sendError(res, 400, "This deliverable is not ready to deliver. Submit a version for review first — a reviewer approves, then it is delivered.");
-    if (!d.rows[0].review_exempt) {
-      const v = await pool.query(`SELECT review_status FROM mo_deliverable_versions WHERE deliverable_id=$1 ORDER BY version_no DESC LIMIT 1`, [id]);
-      if (v.rows[0]?.review_status !== "approved") return sendError(res, 400, "BR-6: Delivered requires an approved latest version.");
-    }
+    const notReady = await deliverRefusal(d.rows[0]);
+    if (notReady) return sendError(res, 400, notReady);
     /* approval_status was reset to 'pending' only when /status drove it to
        delivered; this route left stale 'changes_requested' or 'approved' on
        the row, which the Dispatch board reads. Reset it so the Operations
@@ -2027,7 +2628,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     await pool.query(`UPDATE mo_deliverables SET status='delivered', completed_at=CURRENT_DATE,
       delivered_by=$2, approval_status='pending',
       quantity_delivered=COALESCE(quantity_delivered, quantity_target) WHERE id=$1`, [id, u.id]);
+    await syncProjectProgress(Number(d.rows[0].project_id));
     await audit(u, "deliverable.delivered", "deliverable", id, { status: d.rows[0].status }, { status: "delivered" }, req);
+    await tellSignOffNeeded(u, d.rows[0]);
+    // Dispatch does not wait for the sign-off: exempt work is ready once delivered.
+    if (d.rows[0].review_exempt) await queueForDispatch(d.rows[0]);
     res.json({ ok: true });
   }));
 
@@ -2099,7 +2704,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const q = req.query as Record<string, string>;
     const date = q.date || new Date().toISOString().slice(0, 10);
     const userId = q.user || u.id;
-    if (userId !== u.id && !(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Out of scope (§16).");
+    if (userId !== u.id && !(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "You can only open your own report.");
     let r = await pool.query(`SELECT * FROM mo_daily_reports WHERE user_id=$1 AND report_date=$2`, [userId, date]);
     if (!r.rows[0]) {
       r = await pool.query(`INSERT INTO mo_daily_reports (user_id, report_date, status) VALUES ($1,$2,'draft') RETURNING *`, [userId, date]);
@@ -2123,13 +2728,13 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const b = req.body as Record<string, unknown>;
     const start = String(b.start_time ?? ""), end = String(b.end_time ?? "");
     const mins = t2m(end) - t2m(start);
-    if (mins <= 0) return sendError(res, 400, "VR-1: end must be after start.");
-    if (mins > 16 * 60) return sendError(res, 400, "VR-1: a single task cannot exceed 16 hours — split it.");
+    if (mins <= 0) return sendError(res, 400, "The end time must be after the start time.");
+    if (mins > 16 * 60) return sendError(res, 400, "A single task cannot run longer than 16 hours — split it.");
     if (String(b.description ?? "").trim().length < 3) return sendError(res, 400, "Describe the task (min 3 characters).");
     for (const k of ["progress_before", "progress_after"] as const)
-      if (b[k] != null && (Number(b[k]) < 0 || Number(b[k]) > 100)) return sendError(res, 400, "VR-2: progress must be 0–100.");
-    if (b.quantity && !b.unit) return sendError(res, 400, "VR-3: unit is required when quantity is present.");
-    if (b.status === "blocked" && !String(b.blocker_note ?? "").trim()) return sendError(res, 400, "FR-2.8: a blocker note is required.");
+      if (b[k] != null && (Number(b[k]) < 0 || Number(b[k]) > 100)) return sendError(res, 400, "Progress must be between 0 and 100.");
+    if (b.quantity && !b.unit) return sendError(res, 400, "Give a unit when you give a quantity.");
+    if (b.status === "blocked" && !String(b.blocker_note ?? "").trim()) return sendError(res, 400, "Say what is blocking the task.");
     let r = await pool.query(`SELECT * FROM mo_daily_reports WHERE user_id=$1 AND report_date=$2`, [u.id, date]);
     if (!r.rows[0]) r = await pool.query(`INSERT INTO mo_daily_reports (user_id, report_date, status) VALUES ($1,$2,'draft') RETURNING *`, [u.id, date]);
     const rid = r.rows[0].id as number;
@@ -2145,10 +2750,12 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        JSON.stringify(b.evidence ?? [])]);
     await refreshReportTotal(rid);
     // Lifecycle: logging the first work against a deliverable starts it.
-    if (b.deliverable_id)
-      await pool.query(
+    if (b.deliverable_id) {
+      const started = await pool.query(
         `UPDATE mo_deliverables SET status='in_progress', updated_at=NOW()
-          WHERE id=$1 AND status='not_started'`, [Number(b.deliverable_id)]);
+          WHERE id=$1 AND status='not_started' RETURNING project_id`, [Number(b.deliverable_id)]);
+      if (started.rows[0]) await syncProjectProgress(Number(started.rows[0].project_id));
+    }
     await audit(u, "report.task_logged", "daily_report", rid, null, { minutes: mins }, req);
     // Adding a task to an already-submitted report re-opens its review.
     const re = await touchReportAfterEdit(u, rid, req);
@@ -2203,7 +2810,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const r = await pool.query(`SELECT * FROM mo_daily_reports WHERE user_id=$1 AND report_date=$2`, [u.id, date]);
     if (!r.rows[0]) return sendError(res, 400, "Nothing to submit — log a task first.");
     if (["submitted", "approved", "auto_approved", "flagged"].includes(r.rows[0].status))
-      return sendError(res, 409, "BR-3: this report has already been submitted for the day.");
+      return sendError(res, 409, "This report has already been submitted for the day.");
     const rid = r.rows[0].id as number;
     const tasks = await pool.query(`SELECT * FROM mo_report_tasks WHERE daily_report_id=$1`, [rid]);
     if (!tasks.rows.length) return sendError(res, 400, "Nothing to submit — log a task first.");
@@ -2220,7 +2827,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // report back to 'returned' so its tasks become editable by the owner again.
   app.post(`${P}/reports/:id/unlock`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or Admin may unlock a report (BR-9).");
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or an Admin may unlock a report.");
     const id = parseInt(getSingleParam(req.params.id), 10);
     const cur = (await pool.query(`SELECT * FROM mo_daily_reports WHERE id=$1`, [id])).rows[0];
     if (!cur) return sendError(res, 404, "Report not found.");
@@ -2256,23 +2863,54 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   const toUid = (v: unknown): string | null =>
     v == null ? null : (typeof v === "number" || /^\d+$/.test(String(v))) ? `mo-u${v}` : String(v);
 
+  /* The work type a deliverable of this type is logged as: the one its type
+     names in Settings → Deliverable types, while that one is active and not a
+     shoot; otherwise General Task. Null only when neither exists. */
+  async function workTypeOfDeliverableType(typeId: number) {
+    return (await pool.query(
+      `SELECT wt.* FROM mo_work_types wt
+        WHERE wt.is_active AND wt.archived_at IS NULL AND wt.form_template = 'standard_task'
+          AND (wt.id = (SELECT work_type_id FROM mo_deliverable_types WHERE id = $1) OR lower(wt.name) = 'general task')
+        ORDER BY (wt.id = (SELECT work_type_id FROM mo_deliverable_types WHERE id = $1)) DESC NULLS LAST, wt.id
+        LIMIT 1`, [typeId || 0])).rows[0] ?? null;
+  }
+
   // ── Unified "Assign Work" (§7.5) ─────────────────────────────────────────
-  // One entry point for every kind of assignable work. The chosen work type's
+  // One entry point for every kind of assignable work. The work type's
   // form_template decides which record we write — a shoot or a standard task.
   // Adding a new work type in Settings therefore needs no code change here.
+  //
+  // Work that produces a deliverable has no work-type choice of its own: it is
+  // logged as its deliverable type's work type (mo_deliverable_types.
+  // work_type_id), worked out below once the deliverable is known. Only work
+  // with no deliverable — a meeting, a script, a shoot — names its kind.
   app.post(`${P}/projects/:id/work`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const pid = parseInt(getSingleParam(req.params.id), 10);
     const b = req.body as Record<string, unknown>;
-    if (!b.work_type_id) return sendError(res, 400, "Work type is required.");
-    const wt = (await pool.query(`SELECT * FROM mo_work_types WHERE id=$1`, [Number(b.work_type_id)])).rows[0];
-    if (!wt) return sendError(res, 400, "Unknown work type.");
-    if (!wt.is_active || wt.archived_at) return sendError(res, 400, "That work type is archived or disabled — pick an active one.");
+    const nd = b.new_deliverable && typeof b.new_deliverable === "object" ? b.new_deliverable as Record<string, unknown> : null;
+    const withDeliverable = !!(nd || b.deliverable_id);
+    type WorkTypeRow = { id: number; name: string; form_template: string; is_active: boolean; archived_at: unknown };
+    let wt: WorkTypeRow | null = null;
+    if (withDeliverable) {
+      /* A kind sent alongside a deliverable is not used — the deliverable's
+         type decides — but a shoot cannot produce one: it is its own record. */
+      const sent = b.work_type_id
+        ? (await pool.query(`SELECT form_template FROM mo_work_types WHERE id=$1`, [Number(b.work_type_id)])).rows[0]
+        : null;
+      if (sent && sent.form_template === "shoot")
+        return sendError(res, 400, "A shoot is scheduled on its own — choose No deliverable.");
+    } else {
+      if (!b.work_type_id) return sendError(res, 400, "Choose the kind of work.");
+      wt = (await pool.query(`SELECT * FROM mo_work_types WHERE id=$1`, [Number(b.work_type_id)])).rows[0] ?? null;
+      if (!wt) return sendError(res, 400, "Unknown work type.");
+      if (!wt.is_active || wt.archived_at) return sendError(res, 400, "That work type is archived or disabled — pick an active one.");
+    }
     // Admin, any Team Lead, or an employee who is part of the project.
     if (!(await canAssignOnProject(u, pid)))
       return sendError(res, 403, "You can assign work only on a project you are part of.");
 
-    if (wt.form_template === "shoot") {
+    if (wt && wt.form_template === "shoot") {
       if (!String(b.title ?? "").trim()) return sendError(res, 400, "Title is required.");
       if (!b.shoot_date) return sendError(res, 400, "Date is required.");
       const crew = (Array.isArray(b.crew) ? b.crew : []).map((r) => String(toUid(r)));
@@ -2300,8 +2938,18 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
            VALUES ($1,$2,$3,$4,$5,$5,'reserved',$2)`,
           [Number(raw), u.id, shoot.id, pid, b.shoot_date]).catch(() => {/* clashes surface via AC-7 */});
       }
+      /* A shoot is assigned work like any other: its crew join the project's
+         crew and are told now, not first by the reminder the day before. */
+      for (const uid of crew) await addToProjectCrew(pid, uid, u.id);
       await audit(u, "work.assigned", "shoot", shoot.id, null,
-        { work_type: wt.name, form_template: wt.form_template, title: shoot.title, date: shoot.shoot_date }, req);
+        { work_type: wt.name, form_template: wt.form_template, title: shoot.title, date: shoot.shoot_date, crew }, req);
+      for (const uid of new Set(crew))
+        if (uid !== u.id)
+          await pool.query(
+            `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+             VALUES ($1,'assignment',$2,$3,'shoot',$4)`,
+            [uid, "You are on a shoot",
+              `${u.full_name ?? "Your Team Lead"} added you to “${shoot.title}” on ${dOnly(shoot.shoot_date)}.`, shoot.id]).catch(() => {});
       return res.status(201).json({ kind: "shoot", work_type: wt, shoot });
     }
 
@@ -2325,15 +2973,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const assignees = [...new Set((Array.isArray(b.assignees) ? b.assignees : []).map((r) => String(toUid(r))))];
     if (!assignees.length) return sendError(res, 400, "Assign the work to at least one member.");
     if (!(await assertAssignable(res, u, assignees))) return;
+    if (badPriority(b.priority)) return sendError(res, 400, PRIORITY_ERROR);
     const priority = ["urgent", "high", "normal", "low"].includes(String(b.priority)) ? String(b.priority) : "normal";
     const startDate = (b.start_date as string) || null, dueDate = (b.due_date as string) || null;
     if (startDate && dueDate && dueDate < startDate)
       return sendError(res, 400, "Due date must be on or after the start date.");
 
-    const nd = b.new_deliverable && typeof b.new_deliverable === "object" ? b.new_deliverable as Record<string, unknown> : null;
     if (nd && b.deliverable_id)
       return sendError(res, 400, "Create a new deliverable or take on an existing one — not both.");
-    const withDeliverable = !!(nd || b.deliverable_id);
     const ownerId = withDeliverable ? String(toUid(b.owner_id ?? assignees[0])) : null;
     if (ownerId && !assignees.includes(ownerId))
       return sendError(res, 400, "The deliverable's owner must be one of the people you assign.");
@@ -2347,6 +2994,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       if (!existing) return sendError(res, 400, "That deliverable is not on this project.");
       if (["delivered", "not_required", "cancelled"].includes(String(existing.status)))
         return sendError(res, 400, `That deliverable is ${String(existing.status).replace("_", " ")} — it can no longer take new work.`);
+      // Naming a different owner takes it off the one it has: asked first, like any reassignment.
+      if (ownerLocked(res, existing, ownerId)) return;
+      if (await reassignUnconfirmed(res, existing, ownerId, b)) return;
     }
     if (nd) {
       const typeId = Number(nd.deliverable_type_id);
@@ -2370,6 +3020,10 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       // The deliverable is due when the work is due, unless the lead says otherwise.
       ndRow = { typeId, title: dTitle, due: (nd.due_date as string) || dueDate, drive };
     }
+    if (withDeliverable)
+      wt = await workTypeOfDeliverableType(ndRow ? ndRow.typeId : Number(existing?.deliverable_type_id));
+    if (!wt) return sendError(res, 400,
+      "This deliverable type does not say what kind of work it is. An Admin can set it in Settings → Deliverable types.");
 
     /* The deliverable, the work row and its people go in together or not at
        all — half a creation (a deliverable with nobody on it, or work pointing
@@ -2416,18 +3070,37 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
 
     /* Taking on an existing deliverable with a different owner is a
        reassignment: the shared path swaps the owner on the deliverable's
-       EARLIER team rows and tells the outgoing owner. The row just inserted is
-       skipped — it is exactly the people the lead picked, and swapping on it
-       would drop the outgoing owner from work they were just given. The
-       incoming owner hears about it below, once. */
+       EARLIER team rows and tells the outgoing owner who has it now. The row
+       just inserted is skipped — it is exactly the people the lead picked, and
+       swapping on it would drop the outgoing owner from work they were just
+       given. The incoming owner hears about it below, once, in the work's own
+       notice. */
+    const reassignedFrom = existing && existing.owner_id && String(existing.owner_id) !== ownerId
+      ? String(existing.owner_id) : null;
     if (existing && String(existing.owner_id ?? "") !== ownerId) {
       await pool.query(`UPDATE mo_deliverables SET owner_id=$1, updated_at=NOW() WHERE id=$2`, [ownerId, existing.id]);
       await deliverableAssigned(u, existing as { id: number; project_id: number; title: string },
         existing.owner_id ? String(existing.owner_id) : null, ownerId,
-        { notifyIncoming: false, skipAssignmentId: Number(assignment.id) });
+        { notifyIncoming: false, skipAssignmentId: Number(assignment.id), reassign: true, via: "assign_work", req });
       await audit(u, "deliverable.assigned", "deliverable", Number(existing.id),
         { owner_id: existing.owner_id }, { owner_id: ownerId, via: "assign_work" }, req);
     }
+    /* The deliverable is due when the work is due — the same rule as a new
+       one. A date it already has is moved only by someone who runs the
+       project (the same people who move it in the drawer); anyone else's
+       work date fills an empty one and leaves a set one alone. */
+    if (existing && dueDate && dueDate !== dOnly(existing.due_date)
+        && (!existing.due_date || await canManageProject(u, pid))) {
+      await pool.query(
+        `UPDATE mo_deliverables SET due_date=$1, due_date_source='manual', updated_at=NOW() WHERE id=$2`,
+        [dueDate, existing.id]);
+      await audit(u, "deliverable.due_date_changed", "deliverable", Number(existing.id),
+        { due_date: dOnly(existing.due_date), due_date_source: existing.due_date_source },
+        { due_date: dueDate, due_date_source: "manual", changed_by: u.id, via: "assign_work" }, req);
+    }
+    // The answer is the deliverable as it now stands, owner and date included.
+    if (existing)
+      existing = (await pool.query(`SELECT * FROM mo_deliverables WHERE id=$1`, [existing.id])).rows[0] ?? existing;
     const target = deliverable ?? existing;
     for (const uid of assignees) await addToProjectCrew(pid, uid, u.id);
     if (deliverable)
@@ -2442,10 +3115,14 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        whether they own it or are working on it with someone. */
     const ownerName = ownerId
       ? (await pool.query(`SELECT full_name FROM users WHERE id=$1`, [ownerId])).rows[0]?.full_name ?? "the owner" : "";
+    const wasName = reassignedFrom
+      ? (await pool.query(`SELECT full_name FROM users WHERE id=$1`, [reassignedFrom])).rows[0]?.full_name ?? "someone else" : "";
     for (const uid of assignees) {
       if (uid === u.id) continue;
       const by = u.full_name ?? "Your Team Lead";
       const body = !target ? `${by} assigned “${title}”.`
+        : uid === ownerId && reassignedFrom
+          ? `${by} assigned “${title}” and reassigned “${target.title}” to you (was ${wasName}). You submit it for review.`
         : uid === ownerId ? `${by} assigned “${title}”. You own “${target.title}” and submit it for review.`
         : `${by} assigned “${title}”. You are working on “${target.title}” with ${ownerName}.`;
       await pool.query(
@@ -2454,6 +3131,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         [uid, `${wt.name} assigned to you`, body, target ? "deliverable" : "assignment",
          target ? target.id : assignment.id]).catch(() => {});
     }
+    if (deliverable) await syncProjectProgress(pid);
     res.status(201).json({ kind: "assignment", work_type: wt, assignment, deliverable: target ?? null });
   }));
 
@@ -2464,11 +3142,19 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   // POST /projects/:id/shoots endpoint was the second, divergent creation path
   // (no work type, no assignable-crew check, no attribution) and is gone.
 
-  /** A shoot is project work: Admin, or the lead of the project it belongs to. */
+  /** A shoot is project work: Admin, or the lead of the project it belongs to.
+      Deleting one is theirs alone. */
   async function leadsShootProject(actor: CurrentUser, shootId: number): Promise<boolean> {
     if (isMoAdmin(actor)) return true;
     const s = (await pool.query(`SELECT project_id FROM mo_shoots WHERE id=$1`, [shootId])).rows[0];
     return !!s && await isTeamLeadOfProject(actor, Number(s.project_id));
+  }
+
+  /** Editing a shoot and taking people off it is running the project, so the
+      project's owner/PM may do it as well as its lead or an Admin. */
+  async function managesShootProject(actor: CurrentUser, shootId: number): Promise<boolean> {
+    const s = (await pool.query(`SELECT project_id FROM mo_shoots WHERE id=$1`, [shootId])).rows[0];
+    return !!s && await canManageProject(actor, Number(s.project_id));
   }
 
   // A2 — soft-delete a shoot (BR-13). The project's lead or Admin.
@@ -2484,7 +3170,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
   app.patch(`${P}/shoots/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
-    if (!(await leadsShootProject(u, id))) return sendError(res, 403, "Only the project's Team Lead or an Admin may edit a shoot.");
+    if (!(await managesShootProject(u, id)))
+      return sendError(res, 403, "Only the project's Team Lead, its owner/PM or an Admin may edit a shoot.");
     const b = req.body as Record<string, unknown>;
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
     for (const k of ["title", "shoot_date", "call_time", "end_time", "location", "notes", "status"])
@@ -3463,7 +4150,7 @@ async function allocateInternalCode(
           damagedRecordId = Number((await client.query(
             `INSERT INTO mo_maintenance_records (equipment_item_id, kind, description, reported_by, started_at)
              VALUES ($1,'damage_report',$2,$3,CURRENT_DATE) RETURNING id`,
-            [itemId, `BR-8: returned ${cond}, checked out ${out?.condition_noted ?? live.condition}.`, u.id]))
+            [itemId, `Returned ${cond}, checked out ${out?.condition_noted ?? live.condition}.`, u.id]))
             .rows[0].id);
         created = tx.rows[0];
       }
@@ -8627,7 +9314,7 @@ async function allocateInternalCode(
   // FR-14 — create a management board (+ default columns). TL/Admin.
   app.post(`${P}/boards`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Management boards are for Team Leads and Admins (FR-14.1).");
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Management boards are for Team Leads and Admins.");
     const b = req.body as Record<string, unknown>;
     const name = String(b.name ?? "").trim();
     if (!name) return sendError(res, 400, "Board name is required.");
@@ -8642,10 +9329,11 @@ async function allocateInternalCode(
 
   app.post(`${P}/boards/:id/cards`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Boards are Admin/Team-Lead only (FR-14.1).");
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Only a Team Lead or an Admin may add cards.");
     const boardId = parseInt(getSingleParam(req.params.id), 10);
     const b = req.body as Record<string, unknown>;
     if (!String(b.title ?? "").trim()) return sendError(res, 400, "Card title is required.");
+    if (badPriority(b.priority)) return sendError(res, 400, PRIORITY_ERROR);
     const ins = await pool.query(
       `INSERT INTO mo_cards (board_id, column_id, title, description, linked_entity_type, linked_entity_id, priority, sort_order, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,999,$8) RETURNING *`,
@@ -8662,31 +9350,43 @@ async function allocateInternalCode(
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
     const b = req.body as Record<string, unknown>;
+    // Boards are the Team Leads' and Admins' (FR-14.1), as creating a card is.
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, CARD_EDIT_REFUSAL);
+    if ("priority" in b && !PRIORITIES.includes(String(b.priority))) return sendError(res, 400, PRIORITY_ERROR);
     const cur = await pool.query(`SELECT * FROM mo_cards WHERE id=$1`, [id]);
     if (!cur.rows[0]) return sendError(res, 404, "Card not found.");
+    /* FR-14.2 two-way sync: moving a linked card to a status-mapped column moves
+       the deliverable — through the same rules as POST /deliverables/:id/status
+       (review, who may, valid moves). It used to write the status straight in,
+       so dragging to an "approved" column approved work with no review. When
+       the deliverable may not move, the card does not move either. */
+    let synced: string | null = null;
+    if ("column_id" in b && cur.rows[0].linked_entity_type === "deliverable" && cur.rows[0].linked_entity_id) {
+      const info = await pool.query(
+        `SELECT bd.sync_status, col.maps_to_status, d.status FROM mo_boards bd
+           JOIN mo_board_columns col ON col.id=$1 AND col.board_id=bd.id
+           JOIN mo_deliverables d ON d.id=$3
+          WHERE bd.id=$2`, [Number(b.column_id), cur.rows[0].board_id, cur.rows[0].linked_entity_id]);
+      const maps = info.rows[0]?.maps_to_status;
+      if (info.rows[0]?.sync_status && maps && maps !== info.rows[0].status) {
+        const r = await changeDeliverableStatus(u, Number(cur.rows[0].linked_entity_id), String(maps), "", req);
+        if (r.status !== 200) return sendError(res, r.status, r.message ?? "");
+        synced = maps;
+      }
+    }
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
     for (const k of ["column_id", "sort_order", "title", "description", "priority", "due_date"])
       if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
     if (b.archived === true) { fields.push(`archived_at=CURRENT_DATE`); }
     if (fields.length) { vals.push(id); await pool.query(`UPDATE mo_cards SET ${fields.join(",")} WHERE id=$${i}`, vals); }
-    // FR-14.2 two-way sync: moving a linked card to a status-mapped column updates the object.
-    let synced: string | null = null;
-    if ("column_id" in b) {
-      const info = await pool.query(
-        `SELECT bd.sync_status, col.maps_to_status FROM mo_boards bd
-           JOIN mo_board_columns col ON col.id=$1 WHERE bd.id=$2`, [Number(b.column_id), cur.rows[0].board_id]);
-      const maps = info.rows[0]?.maps_to_status;
-      if (info.rows[0]?.sync_status && maps && cur.rows[0].linked_entity_type === "deliverable" && cur.rows[0].linked_entity_id) {
-        await pool.query(`UPDATE mo_deliverables SET status=$1 WHERE id=$2`, [maps, cur.rows[0].linked_entity_id]);
-        synced = maps;
-      }
-    }
     await audit(u, "card.updated", "card", id, cur.rows[0], b, req);
     res.json({ ok: true, synced });
   }));
 
   app.post(`${P}/cards/:id/checklist/:ix/toggle`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
+    // Ticking a checklist item changes the card, so it has the same gate as PATCH /cards.
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, CARD_EDIT_REFUSAL);
     const id = parseInt(getSingleParam(req.params.id), 10), ix = parseInt(getSingleParam(req.params.ix), 10);
     const { rows } = await pool.query(
       `UPDATE mo_card_checklist_items SET is_done = NOT is_done WHERE card_id=$1 AND sort_order=$2 RETURNING is_done`, [id, ix]);
@@ -8708,48 +9408,64 @@ async function allocateInternalCode(
     res.status(201).json({ comment: ins.rows[0] });
   }));
 
-  // Deliverable status change (Production Board drag) — persists + enforces the
-  // machine. The two verdicts on the board (approved, changes requested) are
-  // not status edits: they ARE the review, so they go through reviewDeliverable()
-  // and obey exactly the rules the drawer does.
-  app.post(`${P}/deliverables/:id/status`, asyncHandler(async (req, res) => {
-    const u = requireMedia(res); if (!u) return;
-    const id = parseInt(getSingleParam(req.params.id), 10);
-    const to = String((req.body as Record<string, unknown>).status ?? "");
+  /* One implementation behind POST /deliverables/:id/status and a linked card
+     moved on a status-synced board (PATCH /cards/:id), so a drag on either
+     board obeys the same rules. Who is asking is checked before whether the
+     move is valid: someone with no say over the deliverable is told so, not
+     what state it is in. */
+  async function changeDeliverableStatus(u: CurrentUser, id: number, to: string, comment: string,
+                                         req: express.Request): Promise<{ status: number; message?: string }> {
     const d = (await pool.query(`SELECT d.*, dt.review_exempt FROM mo_deliverables d JOIN mo_deliverable_types dt ON dt.id=d.deliverable_type_id WHERE d.id=$1`, [id])).rows[0];
-    if (!d) return sendError(res, 404, "Deliverable not found.");
+    if (!d) return { status: 404, message: "Deliverable not found." };
     // Lifecycle (PRD §3): Assigned → In Progress → Submitted → Approved → Delivered.
     // A review-exempt type skips the review and is delivered straight from work.
+    // In review is reached only by submitting a version (POST /versions), and
+    // delivered work is sent back from its sign-off (POST /approval).
     const DELIV: Record<string, string[]> = {
-      not_started: ["in_progress", "delivered", "not_required", "cancelled"],
-      in_progress: ["in_review", "delivered", "not_required", "cancelled"],
-      in_review: ["approved", "changes_requested", "delivered", "cancelled"],
-      changes_requested: ["in_progress", "in_review", "approved", "cancelled"],
+      not_started: ["in_progress", "not_required", "cancelled"],
+      in_progress: ["delivered", "not_required", "cancelled"],
+      in_review: ["approved", "changes_requested", "cancelled"],
+      changes_requested: ["in_progress", "approved", "cancelled"],
       approved: ["delivered", "changes_requested"],
-      delivered: ["changes_requested"],   // a reviewer can send delivered work back
+      delivered: [],
       not_required: ["not_started"], cancelled: ["not_started"],
     };
-    if (!(DELIV[d.status] ?? []).includes(to)) return sendError(res, 400, `BR-1: ${d.status} → ${to} is not a valid transition.`);
+    const invalid = { status: 400, message: `${String(d.status).replace(/_/g, " ")} → ${to.replace(/_/g, " ")} is not a valid move.` };
 
     if (to === "approved" || to === "changes_requested") {
-      const r = await reviewDeliverable(u, d, to, "", req);
-      if (r.status !== 200) return sendError(res, r.status, r.message ?? "");
-      return res.json({ ok: true, status: to });
+      const refused = await reviewerRefusal(u, d);
+      if (refused) return refused;
+      // Closed work falls through: reviewDeliverable says why it is out of review.
+      if (!(DELIV[d.status] ?? []).includes(to) && !["delivered", "cancelled", "not_required"].includes(d.status))
+        return invalid;
+      return reviewDeliverable(u, d, to, comment, req);
     }
-    /* Delivered is reached through review: an approved deliverable is delivered,
-       and only a review-exempt type is delivered straight from work. This was
-       the road round the reviewer — mark your own work delivered, skip review. */
-    if (to === "delivered" && d.status !== "approved" && !d.review_exempt)
-      return sendError(res, 400, "Submit a version for review — only an approved deliverable can be delivered.");
     // The owner drives their own execution; scope changes (not required,
     // cancelled, and back) are the project's to make.
     const isOwner = await worksOnDeliverable(u, id);   // owner or team: the people doing it
     const manages = await canManageProject(u, Number(d.project_id));
+    /* Marking work delivered is the same rule here as on /deliver: the people
+       doing it, the project's Team Lead or an Admin — not a PM who is neither. */
+    if (to === "delivered" && !(isOwner || await leadsProjectOrAdmin(u, Number(d.project_id))))
+      return { status: 403, message: DELIVER_REFUSAL };
     const ownerMoves = ["in_progress", "in_review", "delivered"];
     if (!(manages || (isOwner && ownerMoves.includes(to))))
-      return sendError(res, 403, isOwner
+      return { status: 403, message: isOwner
         ? "Only the project's Team Lead or PM may change this deliverable's scope."
-        : "You can only update deliverables assigned to you.");
+        : "You can only update deliverables assigned to you." };
+    /* In review means a version is waiting for a reviewer. Setting the status
+       alone left work "in review" with nothing to review: no reviewer told,
+       nothing to approve, and no way back out for the team. */
+    if (to === "in_review") return { status: 400, message: "Submit a version to send it for review." };
+    /* Delivered is reached through review: an approved deliverable is delivered,
+       and only a review-exempt type is delivered straight from work — the same
+       rule, and the same words, as /deliver. This was the road round the
+       reviewer — mark your own work delivered, skip review. */
+    if (to === "delivered") {
+      const notReady = await deliverRefusal(d);
+      if (notReady) return { status: 400, message: notReady };
+    }
+    if (!(DELIV[d.status] ?? []).includes(to)) return invalid;
     // Delivering stamps who/when and re-opens the approval gate for the reviewer.
     const delivering = to === "delivered";
     await pool.query(
@@ -8759,17 +9475,23 @@ async function allocateInternalCode(
          approval_status = CASE WHEN $2 THEN 'pending' ELSE approval_status END,
          updated_at = NOW()
        WHERE id=$4`, [to, delivering, u.id, id]);
+    await syncProjectProgress(Number(d.project_id));
     await audit(u, "deliverable.status_changed", "deliverable", id,
       { status: d.status }, { status: to, delivered_by: delivering ? u.id : undefined }, req);
     // Tell the project's reviewer there is something to look at.
-    if (delivering)
-      for (const rid of await reviewerIdsFor(Number(d.project_id)))
-        if (rid !== u.id)
-          await pool.query(
-            `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
-             VALUES ($1,'review',$2,$3,'deliverable',$4)`,
-            [rid, "Deliverable delivered — needs review",
-              `${u.full_name ?? "A crew member"} marked “${d.title}” as delivered.`, id]).catch(() => {});
+    if (delivering) await tellSignOffNeeded(u, d);
+    if (delivering && d.review_exempt) await queueForDispatch(d);
+    return { status: 200 };
+  }
+
+  app.post(`${P}/deliverables/:id/status`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const b = req.body as Record<string, unknown>;
+    const to = String(b.status ?? "");
+    // A send-back from the board says what to fix, as the drawer's does.
+    const r = await changeDeliverableStatus(u, id, to, String(b.comment ?? "").trim(), req);
+    if (r.status !== 200) return sendError(res, r.status, r.message ?? "");
     res.json({ ok: true, status: to });
   }));
 
@@ -8785,43 +9507,70 @@ async function allocateInternalCode(
     if (!(await canReviewProject(u, Number(d.project_id))))
       return sendError(res, 403, "Only a Team Lead or an Admin may approve deliverables.");
     if (await worksOnDeliverable(u, id))
-      return sendError(res, 403, "BR-5: you cannot approve a deliverable you are assigned to.");
+      return sendError(res, 403, "You cannot sign off a deliverable you are working on.");
+    // Nobody signs off their own hand-over — the same people tellSignOffNeeded leaves out.
+    if (d.delivered_by != null && String(d.delivered_by) === String(u.id))
+      return sendError(res, 403, "Someone else must sign off work you delivered.");
     if (d.status !== "delivered")
       return sendError(res, 400, "This deliverable has not been delivered — review its submitted version instead.");
     const to = String((req.body as Record<string, unknown>).approval_status ?? "");
     if (!["approved", "changes_requested", "rejected", "pending"].includes(to))
       return sendError(res, 400, "approval_status must be approved, changes_requested, rejected or pending.");
-    const note = String((req.body as Record<string, unknown>).note ?? "");
+    const note = String((req.body as Record<string, unknown>).note ?? "").trim();
     // "Needs revision" pulls the work back into the employee's active list.
     const backToWork = to === "changes_requested" || to === "rejected";
+    // The team has to know what to fix, so a send-back always says it.
+    if (backToWork && !note) return sendError(res, 400, "Say what needs to change.");
     const { rows } = await pool.query(
       `UPDATE mo_deliverables SET approval_status=$1, approved_by=$2, approved_at=NOW(),
          status = CASE WHEN $3 THEN 'changes_requested' ELSE status END,
          updated_at = NOW()
        WHERE id=$4 RETURNING *`, [to, u.id, backToWork, id]);
-    // Sent back after delivery: it is no longer ready to hand over.
-    if (backToWork)
+    /* Sent back after delivery: it is no longer ready to hand over, and the
+       version it was approved on is no longer the answer. Marking that
+       version sent back, with the note, is what takes the item out of
+       "Delivered outputs" and shows the team the comment in My Day — the
+       same record a review's Request changes leaves.
+       It is no longer ready to go out either — even if it already went: the
+       corrected version is queued (and the Coordinator told) when it is
+       approved again, and the project cannot close until that goes out.
+       dispatched_at, the recipient and the audit row stay as history. */
+    if (backToWork) {
       await pool.query(
         `UPDATE mo_deliverables SET dispatch_status='none', queued_at=NULL
-          WHERE id=$1 AND dispatch_status='queued'`, [id]);
+          WHERE id=$1 AND dispatch_status IN ('queued','delivered','archived')`, [id]);
+      await pool.query(
+        `UPDATE mo_deliverable_versions SET review_status='changes_requested', reviewed_by=$2,
+           reviewed_at=NOW(), review_comment=$3
+          WHERE id = (SELECT id FROM mo_deliverable_versions WHERE deliverable_id=$1
+                       ORDER BY version_no DESC LIMIT 1)`, [id, u.id, note]);
+    }
+    await syncProjectProgress(Number(d.project_id));
+    if (backToWork) await syncLinkedWork(u, id, "in_progress", req);
     await audit(u, "deliverable.approval_changed", "deliverable", id,
       { approval_status: d.approval_status, status: d.status },
       { approval_status: to, approved_by: u.id, approved_by_role: moRoleOf(u), note }, req);
-    if (d.owner_id && String(d.owner_id) !== u.id)
-      await pool.query(
-        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
-         VALUES ($1,'review',$2,$3,'deliverable',$4)`,
-        [d.owner_id, to === "approved" ? "Deliverable approved" : "Changes requested",
-          `${u.full_name ?? "Your reviewer"} set “${d.title}” to ${to.replace("_", " ")}.${note ? " " + note : ""}`, id]).catch(() => {});
+    // The sign-off reaches everyone working on it, not only its owner.
+    if (to !== "pending")
+      for (const uid of await deliverableTeamIds(id))
+        if (uid !== u.id)
+          await pool.query(
+            `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+             VALUES ($1,'review',$2,$3,'deliverable',$4)`,
+            /* Its own title: "Approved: …" is the version's review, and a
+               send-back after delivery is not the same as changes on a draft. */
+            [uid, to === "approved" ? `Signed off: ${d.title}` : `Sent back after delivery: ${d.title}`,
+              `${u.full_name ?? "Your reviewer"} ${to === "approved" ? "signed off" : "sent back"} “${d.title}”.${note ? " " + note : ""}`,
+              id]).catch(() => {});
     res.json({ deliverable: rows[0] });
   }));
 
-  // Delete a project (soft) — #11. TL/Admin.
+  // Delete a project (soft) — #11. Admin only: a lead cancels or archives a
+  // project they run, but removing one from every view is an Admin's call.
   app.delete(`${P}/projects/:id`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
-    if (!(isMoAdmin(u) || await isTeamLeadOfProject(u, id)))
-      return sendError(res, 403, "Only the project's Team Lead or an Admin may delete a project.");
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may delete a project.");
     // G1: cascade the soft-delete so no orphans pollute the Library/Workload.
     await pool.query(`UPDATE mo_projects SET deleted_at=NOW() WHERE id=$1`, [id]);
     await pool.query(`UPDATE mo_deliverables SET deleted_at=NOW() WHERE project_id=$1 AND deleted_at IS NULL`, [id]);
@@ -8845,7 +9594,7 @@ async function allocateInternalCode(
       one(`SELECT count(*) n FROM mo_projects WHERE owner_id=$1 AND status NOT IN ('completed','archived','cancelled') AND deleted_at IS NULL`),
       one(`SELECT count(*) n FROM mo_deliverables WHERE owner_id=$1 AND status NOT IN ('delivered','not_required','cancelled') AND deleted_at IS NULL`),
       one(`SELECT count(*) n FROM mo_deliverable_versions v JOIN mo_deliverables d ON d.id=v.deliverable_id
-            WHERE v.review_status='pending' AND d.owner_id=$1`),
+            WHERE v.review_status='pending' AND d.owner_id=$1 AND d.status='in_review' AND d.deleted_at IS NULL`),
       one(`SELECT count(*) n FROM mo_assignment_users au JOIN mo_assignments a ON a.id=au.assignment_id
             WHERE au.user_id=$1 AND a.status NOT IN ('done','cancelled')`),
       one(`SELECT count(*) n FROM mo_daily_reports WHERE user_id=$1`),
@@ -8888,14 +9637,24 @@ async function allocateInternalCode(
     const b = (req.body ?? {}) as Record<string, unknown>;
     const reassignTo = b.reassign_to ? String(toUid(b.reassign_to)) : null;
     const newLead = b.new_lead ? String(toUid(b.new_lead)) : null;
+    // Whoever takes the work over must be someone work can be assigned to.
+    if (reassignTo && reassignTo !== realId && !(await assertAssignable(res, u, [reassignTo]))) return;
 
     // Optional: hand active work to someone else FIRST, so nothing is orphaned.
     // Entirely the Admin's choice — removal proceeds either way.
     let reassigned = 0;
     if (reassignTo && reassignTo !== realId) {
+      /* Each deliverable changes hands the way every other owner change does
+         (deliverableAssigned): the new owner joins the crew and takes the old
+         owner's place on its team, and is told who it came from. */
       const r1 = await pool.query(
-        `UPDATE mo_deliverables SET owner_id=$1 WHERE owner_id=$2
-           AND status NOT IN ('delivered','not_required','cancelled') AND deleted_at IS NULL`, [reassignTo, realId]);
+        `UPDATE mo_deliverables SET owner_id=$1, updated_at=NOW() WHERE owner_id=$2
+           AND status NOT IN ('delivered','not_required','cancelled') AND deleted_at IS NULL
+           AND dispatch_status NOT IN ('sent','delivered','archived') -- finished work keeps its owner (ownerLocked)
+         RETURNING id, project_id, title`, [reassignTo, realId]);
+      for (const d of r1.rows)
+        await deliverableAssigned(u, { id: Number(d.id), project_id: Number(d.project_id), title: String(d.title) },
+          realId, reassignTo, { reassign: true, via: "account_removal", req });
       const r2 = await pool.query(
         `UPDATE mo_projects SET owner_id=$1 WHERE owner_id=$2
            AND status NOT IN ('completed','archived','cancelled') AND deleted_at IS NULL`, [reassignTo, realId]);
@@ -10398,6 +11157,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     if (!cur) return sendError(res, 404, "Request not found.");
     if (cur.status === "converted") return sendError(res, 409, "This request has already become a project — edit the project instead.");
     const b = req.body as Record<string, unknown>;
+    if (b.priority !== undefined && !PRIORITIES.includes(String(b.priority))) return sendError(res, 400, PRIORITY_ERROR);
     const COLS = ["institute", "stakeholder", "contact", "event_name", "venue", "event_date", "event_time",
       "end_date", "description", "priority", "notes",
       "contact_email", "contact_phone", "requirement"];
@@ -10537,7 +11297,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
         `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
          VALUES ($1,'assignment',$2,$3,'project',$4)`,
         [leadId, "You are leading a new project",
-         `${r.event_name} was converted from request ${r.code ?? id}. ${made.deliverables} deliverable(s) created.`, made.id]);
+         `${r.event_name} was converted from request ${r.code ?? id}. ${plural(made.deliverables, "deliverable")} created.`, made.id]);
     }
     res.status(201).json({ project_id: made.id, deliverables_created: made.deliverables });
   }));
@@ -10592,7 +11352,9 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const u = requireMedia(res); if (!u) return;
     if (!(await coordOnly(res, u))) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
-    const d = (await pool.query(`SELECT * FROM mo_deliverables WHERE id=$1`, [id])).rows[0];
+    const d = (await pool.query(
+      `SELECT d.*, dt.review_exempt FROM mo_deliverables d
+         JOIN mo_deliverable_types dt ON dt.id=d.deliverable_type_id WHERE d.id=$1`, [id])).rows[0];
     if (!d) return sendError(res, 404, "Deliverable not found.");
     const v = (await pool.query(
       `SELECT review_status, drive_url FROM mo_deliverable_versions WHERE deliverable_id=$1
@@ -10602,8 +11364,12 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
        status: a reviewer could /approval reject or send a delivered item back
        and the Operations side could still ship it, because the version was
        still 'approved'. Approval queues it (dispatch_status='queued'); a
-       sent-back item is 'none' and no longer eligible. */
-    if (v?.review_status !== "approved")
+       sent-back item is 'none' and no longer eligible.
+       A review-exempt type (raw footage, a recording) never goes through a
+       version review: once delivered it is ready to go out, and the checks
+       below still refuse it after a sign-off sent it back. */
+    const exemptDelivered = !!d.review_exempt && d.status === "delivered";
+    if (!exemptDelivered && v?.review_status !== "approved")
       return sendError(res, 400, "Only a deliverable whose latest version is approved can be dispatched.");
     if (!["approved", "delivered"].includes(String(d.status)))
       return sendError(res, 400, "This deliverable is not ready to dispatch. The reviewer must approve it first.");
@@ -10618,14 +11384,17 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       `UPDATE mo_deliverables SET dispatch_status='delivered', dispatch_recipient=$1, dispatch_subject=$2,
          dispatch_notes=$3, dispatched_by=$4, dispatched_at=NOW() WHERE id=$5 RETURNING *`,
       [recipient, String(b.subject ?? ""), String(b.notes ?? ""), u.id, id]);
+    await syncProjectProgress(Number(d.project_id));
     await audit(u, "deliverable.dispatched", "deliverable", id,
       { dispatch_status: d.dispatch_status },
-      { dispatch_status: "delivered", recipient, drive_url: v.drive_url ?? null, subject: String(b.subject ?? "") }, req);
-    if (d.owner_id && d.owner_id !== u.id)
-      await pool.query(
-        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
-         VALUES ($1,'deliverable',$2,$3,'deliverable',$4)`,
-        [d.owner_id, "Your deliverable was dispatched", `${d.title} was sent to ${recipient}.`, id]);
+      { dispatch_status: "delivered", recipient, drive_url: v?.drive_url ?? null, subject: String(b.subject ?? "") }, req);
+    // Everyone who made it hears that it went out, not only its owner.
+    for (const uid of await deliverableTeamIds(id))
+      if (uid !== u.id)
+        await pool.query(
+          `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+           VALUES ($1,'deliverable',$2,$3,'deliverable',$4)`,
+          [uid, "Your deliverable was dispatched", `${d.title} was sent to ${recipient}.`, id]).catch(() => {});
     res.json({ deliverable: upd.rows[0] });
   }));
 
@@ -10634,11 +11403,15 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const u = requireMedia(res); if (!u) return;
     if (!(await coordOnly(res, u))) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
-    const d = (await pool.query(`SELECT dispatch_status FROM mo_deliverables WHERE id=$1`, [id])).rows[0];
+    const d = (await pool.query(`SELECT dispatch_status, project_id FROM mo_deliverables WHERE id=$1`, [id])).rows[0];
     if (!d) return sendError(res, 404, "Deliverable not found.");
+    // Archiving closes a dispatch, so the refusal names what is actually missing.
+    if (d.dispatch_status === "archived")
+      return sendError(res, 400, "This deliverable is already archived.");
     if (d.dispatch_status !== "delivered")
-      return sendError(res, 400, "Only a delivered deliverable can be archived.");
+      return sendError(res, 400, "This deliverable has not been dispatched yet — dispatch it first, then archive it.");
     await pool.query(`UPDATE mo_deliverables SET dispatch_status='archived' WHERE id=$1`, [id]);
+    await syncProjectProgress(Number(d.project_id));
     await audit(u, "deliverable.archived", "deliverable", id, { dispatch_status: "delivered" }, { dispatch_status: "archived" }, req);
     res.json({ ok: true });
   }));
@@ -10837,7 +11610,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
           `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
            VALUES ($1,'assignment',$2,$3,'team',$4)`,
           [relNew, `You now lead ${t.name}`,
-           `${movedProjects.length} project(s) have been handed to you to run.`, id]).catch(() => {});
+           `${plural(movedProjects.length, "project")} ${movedProjects.length === 1 ? "has" : "have"} been handed to you to run.`, id]).catch(() => {});
     }
     await audit(u, "team.updated", "team", id,
       { name: cur.name, lead_user_id: cur.lead_user_id, archived_at: cur.archived_at },
@@ -10858,7 +11631,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const moveTo = (req.query.reassign_to ?? (req.body as Record<string, unknown>)?.reassign_to) as string | undefined;
     if (members.length && moveTo === undefined)
       return sendError(res, 409,
-        `"${t.name}" has ${members.length} member(s). Send reassign_to=<teamId> to move them, or reassign_to="" to leave them unassigned.`);
+        `"${t.name}" has ${plural(members.length, "member")}. Send reassign_to=<teamId> to move them, or reassign_to="" to leave them unassigned.`);
     if (moveTo) {
       const dest = parseInt(String(moveTo), 10);
       if (dest === id) return sendError(res, 400, "Pick a different team to move members into.");
@@ -10953,23 +11726,186 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     res.json({ ok: true });
   }));
 
-  // Remove a crew member from a project (#3). TL/Admin.
+  /* ── Taking someone off a project ──────────────────────────────────────────
+     Running the project (canManageProject: Admin, its lead, its owner/PM)
+     includes choosing its crew. The project's owner and its PM are not taken
+     off this way — hand the project or the PM role on first.
+
+     Removal never strands work. What blocks it is a live deliverable of this
+     project the person carries — they own it or are on its team — anything not
+     delivered, not required or cancelled. The one removing them resolves each
+     first: hands it to someone else, takes them off its team (the owner carries
+     on), or closes it as not required / cancelled. Their open plain work and
+     upcoming shoots on this project are then let go. Delivered work, the
+     versions they submitted and every historical record are never touched. */
+  const CLOSED_DELIV = ["delivered", "not_required", "cancelled"];
+  /* Dispatched or archived work is finished whatever its status says — a
+     Coordinator may send approved work before its owner marks it delivered —
+     so, like ownerLocked(), it neither blocks a removal nor changes hands. */
+  const SENT_DISPATCH = ["sent", "delivered", "archived"];
+  type Blocking = { id: number; title: string; status: string; role: "owner" | "team" };
+  async function crewRemovalImpact(pid: number, uid: string) {
+    /* One query for every live deliverable they own or are on the team of —
+       the team test is deliverableTeamIds()'s: a non-SMC, uncancelled row
+       linked to it that also names its owner. */
+    const blocking: Blocking[] = (await pool.query(
+      `SELECT d.id, d.title, d.status, (d.owner_id IS NOT NULL AND d.owner_id=$2) AS owns
+         FROM mo_deliverables d
+        WHERE d.project_id=$1 AND d.deleted_at IS NULL AND d.status <> ALL($3) AND d.dispatch_status <> ALL($4)
+          AND (d.owner_id=$2 OR (d.owner_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM mo_assignments a
+                  JOIN mo_assignment_users au ON au.assignment_id=a.id AND au.user_id=$2
+                 WHERE a.deliverable_id=d.id AND NOT COALESCE(a.is_smc,false) AND a.status <> 'cancelled'
+                   AND EXISTS (SELECT 1 FROM mo_assignment_users o WHERE o.assignment_id=a.id AND o.user_id=d.owner_id))))
+        ORDER BY d.id`, [pid, uid, CLOSED_DELIV, SENT_DISPATCH])).rows
+      .map((d) => ({ id: Number(d.id), title: String(d.title), status: String(d.status), role: d.owns ? "owner" : "team" }));
+    const n = async (sql: string) => Number((await pool.query(sql, [pid, uid])).rows[0]?.n ?? 0);
+    const [work, shoots, versions, delivered] = await Promise.all([
+      n(`SELECT count(*) n FROM mo_assignments a JOIN mo_assignment_users au ON au.assignment_id=a.id AND au.user_id=$2
+          WHERE a.project_id=$1 AND a.deliverable_id IS NULL AND a.status NOT IN ('done','cancelled')`),
+      n(`SELECT count(*) n FROM mo_shoot_crew c JOIN mo_shoots s ON s.id=c.shoot_id
+          WHERE s.project_id=$1 AND c.user_id=$2 AND s.shoot_date >= CURRENT_DATE AND s.deleted_at IS NULL`),
+      n(`SELECT count(*) n FROM mo_deliverable_versions v JOIN mo_deliverables d ON d.id=v.deliverable_id
+          WHERE d.project_id=$1 AND v.submitted_by=$2`),
+      n(`SELECT count(*) n FROM mo_deliverables WHERE project_id=$1 AND status='delivered' AND deleted_at IS NULL
+            AND (owner_id=$2 OR delivered_by=$2)`),
+    ]);
+    return { blocking, info: { work_items: work, upcoming_shoots: shoots }, history: { versions, delivered } };
+  }
+
+  /** What taking this person off the project would touch — drives the removal dialog. */
+  app.get(`${P}/projects/:id/assignments/:uid/impact`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    const pid = parseInt(getSingleParam(req.params.id), 10);
+    if (!(await canManageProject(u, pid)))
+      return sendError(res, 403, "Only the project's Team Lead, its owner/PM or an Admin may take people off it.");
+    res.json(await crewRemovalImpact(pid, String(getSingleParam(req.params.uid))));
+  }));
+
+  /* Body (optional): resolutions — one per blocking deliverable:
+       { deliverable_id, reassign_to }          hand it (or their team place) to someone
+       { deliverable_id, remove_from_team }     a team member only: the owner carries on
+       { deliverable_id, status }               'not_required' or 'cancelled'
+     Every resolution is checked before any is applied, so a refused request
+     changes nothing. */
   app.delete(`${P}/projects/:id/assignments/:uid`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const pid = parseInt(getSingleParam(req.params.id), 10);
-    if (!(isMoAdmin(u) || await isTeamLeadOfProject(u, pid)))
-      return sendError(res, 403, "Only the project's Team Lead or an Admin may change assignments.");
-    const uid = getSingleParam(req.params.uid);
-    await pool.query(`UPDATE mo_project_assignments SET removed_at=NOW() WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`, [pid, uid]);
-    await audit(u, "project.assignment_removed", "project", pid, null, { user_id: uid }, req);
-    res.json({ ok: true });
+    if (!(await canManageProject(u, pid)))
+      return sendError(res, 403, "Only the project's Team Lead, its owner/PM or an Admin may take people off it.");
+    const uid = String(getSingleParam(req.params.uid));
+    const p = (await pool.query(`SELECT id, name, owner_id FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [pid])).rows[0];
+    if (!p) return sendError(res, 404, "Project not found.");
+    const name = String((await pool.query(`SELECT full_name FROM users WHERE id=$1`, [uid])).rows[0]?.full_name ?? "This person");
+    if (String(p.owner_id ?? "") === uid)
+      return sendError(res, 400, `${name} owns this project — hand it to someone else before taking them off.`);
+    if ((await pool.query(`SELECT 1 FROM mo_project_assignments
+                            WHERE project_id=$1 AND user_id=$2 AND is_project_manager AND removed_at IS NULL`, [pid, uid])).rows[0])
+      return sendError(res, 400, `${name} is this project's PM — make someone else PM before taking them off.`);
+
+    const { blocking } = await crewRemovalImpact(pid, uid);
+    const raw = (req.body as Record<string, unknown> | undefined)?.resolutions;
+    // The moves changeDeliverableStatus allows into each closed state.
+    const CLOSE_FROM: Record<string, string[]> = {
+      not_required: ["not_started", "in_progress"],
+      cancelled: ["not_started", "in_progress", "in_review", "changes_requested"],
+    };
+    const plan = new Map<number, { d: Blocking; to?: string; status?: string }>();
+    for (const r of (Array.isArray(raw) ? raw : []) as Array<Record<string, unknown>>) {
+      const d = blocking.find((x) => x.id === Number(r?.deliverable_id));
+      if (!d) return sendError(res, 400, `${name} is not working on that deliverable here.`);
+      if (r.reassign_to != null && r.reassign_to !== "") {
+        const to = String(toUid(r.reassign_to));
+        if (to === uid) return sendError(res, 400, `Choose someone other than ${name} for “${d.title}”.`);
+        if (!(await assertAssignable(res, u, [to]))) return;
+        if (!(await pool.query(`SELECT 1 FROM users WHERE id=$1 AND team='media' AND COALESCE(status,'active')='active'`, [to])).rows[0])
+          return sendError(res, 403, `“${d.title}” can only go to an active member of the Media Crew.`);
+        plan.set(d.id, { d, to });
+      } else if (r.remove_from_team === true && d.role === "team") {
+        plan.set(d.id, { d });
+      } else if (typeof r.status === "string" && CLOSE_FROM[r.status]) {
+        if (!CLOSE_FROM[r.status].includes(d.status))
+          return sendError(res, 400, `“${d.title}” is ${d.status.replace(/_/g, " ")} and cannot be marked ${r.status.replace(/_/g, " ")} now — hand it to someone instead.`);
+        plan.set(d.id, { d, status: r.status });
+      } else {
+        return sendError(res, 400, `Say what happens to “${d.title}”: hand it to someone, or close it.`);
+      }
+    }
+    const blocked = (open: Blocking[]) => res.status(409).json({
+      code: "active_deliverables",
+      message: `${name} is still working on ${open.map((d) => `“${d.title}”`).join(", ")} here. `
+        + `Hand ${open.length === 1 ? "it" : "each"} to someone else or close ${open.length === 1 ? "it" : "them"} first.`,
+      deliverables: open,
+    });
+    const unresolved = blocking.filter((d) => !plan.has(d.id));
+    if (unresolved.length) return blocked(unresolved);
+
+    const by = u.full_name ?? "Your Team Lead";
+    for (const { d, to, status } of plan.values()) {
+      if (status) {
+        const r = await changeDeliverableStatus(u, d.id, status, "", req);
+        if (r.status !== 200) return sendError(res, r.status, r.message ?? "");
+      } else if (d.role === "owner") {
+        await pool.query(`UPDATE mo_deliverables SET owner_id=$1, updated_at=NOW() WHERE id=$2`, [to, d.id]);
+        await deliverableAssigned(u, { id: d.id, project_id: pid, title: d.title }, uid, to ?? null,
+          { reassign: true, via: "crew_removal", req });
+      } else {
+        // A team member: off its team rows, with their replacement in their place.
+        const rows = (await pool.query(
+          `SELECT a.id FROM mo_assignments a JOIN mo_assignment_users au ON au.assignment_id=a.id AND au.user_id=$2
+            WHERE a.deliverable_id=$1 AND NOT COALESCE(a.is_smc,false) AND a.status <> 'cancelled'`, [d.id, uid])).rows;
+        for (const row of rows) {
+          await pool.query(`DELETE FROM mo_assignment_users WHERE assignment_id=$1 AND user_id=$2`, [row.id, uid]);
+          if (to) await pool.query(
+            `INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [row.id, to]);
+        }
+        if (to) {
+          await addToProjectCrew(pid, to, u.id);
+          if (to !== u.id) await pool.query(
+            `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+             VALUES ($1,'assignment','New assignment',$2,'deliverable',$3)`,
+            [to, `${by} put you on “${d.title}” in place of ${name}.`, d.id]).catch(() => {});
+        }
+      }
+    }
+    const still = (await crewRemovalImpact(pid, uid)).blocking;
+    if (still.length) return blocked(still);
+
+    const crew = await pool.query(
+      `UPDATE mo_project_assignments SET removed_at=NOW() WHERE project_id=$1 AND user_id=$2 AND removed_at IS NULL`, [pid, uid]);
+    // Open work on this project lets them go — never a row of closed (delivered or dispatched) work.
+    const work = await pool.query(
+      `DELETE FROM mo_assignment_users au USING mo_assignments a
+        WHERE au.assignment_id=a.id AND au.user_id=$2 AND a.project_id=$1 AND a.status NOT IN ('done','cancelled')
+          AND (a.deliverable_id IS NULL OR EXISTS (SELECT 1 FROM mo_deliverables d
+                                                    WHERE d.id=a.deliverable_id AND d.status <> ALL($3)
+                                                      AND d.dispatch_status <> ALL($4)))`,
+      [pid, uid, CLOSED_DELIV, SENT_DISPATCH]);
+    const shoots = await pool.query(
+      `DELETE FROM mo_shoot_crew WHERE user_id=$2 AND shoot_id IN
+         (SELECT id FROM mo_shoots WHERE project_id=$1 AND shoot_date >= CURRENT_DATE)`, [pid, uid]);
+    // Nothing to take them off: say so rather than report a removal that did nothing.
+    if (!crew.rowCount && !work.rowCount && !shoots.rowCount && !plan.size)
+      return sendError(res, 404, `${name} is not on this project.`);
+    if (uid !== u.id)
+      await pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'assignment','Taken off a project',$2,'project',$3)`,
+        [uid, `${by} took you off “${p.name}”.`, pid]).catch(() => {});
+    await audit(u, "project.assignment_removed", "project", pid, null, {
+      user_id: uid,
+      resolutions: [...plan.values()].map(({ d, to, status }) =>
+        ({ deliverable_id: d.id, ...(to ? { reassign_to: to } : status ? { status } : { remove_from_team: true }) })),
+    }, req);
+    res.json({ ok: true, resolved: plan.size });
   }));
 
   // Remove a crew member from a shoot (#7).
   app.delete(`${P}/shoots/:id/crew/:uid`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
     const sid = parseInt(getSingleParam(req.params.id), 10);
-    if (!(await leadsShootProject(u, sid))) return sendError(res, 403, "Only the project's Team Lead or an Admin may change shoot crew.");
+    if (!(await managesShootProject(u, sid)))
+      return sendError(res, 403, "Only the project's Team Lead, its owner/PM or an Admin may take people off a shoot.");
     const uid = getSingleParam(req.params.uid);
     await pool.query(`DELETE FROM mo_shoot_crew WHERE shoot_id=$1 AND user_id=$2`, [sid, uid]);
     await audit(u, "shoot.crew_removed", "shoot", sid, null, { user_id: uid }, req);
@@ -10990,8 +11926,13 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
        without this the crew would learn about it only from AUTO-10's T-24h
        reminder, which the Phase 1 review flagged (no time to raise a clash). */
     const shoot = (await pool.query(`SELECT title, shoot_date FROM mo_shoots WHERE id=$1`, [sid])).rows[0];
+    /* The modal posts the whole crew, people already on it included; only
+       someone this call actually adds is told. */
+    const added: string[] = [];
     for (const uid of crew) {
-      await pool.query(`INSERT INTO mo_shoot_crew (shoot_id, user_id, capacity_role_id) VALUES ($1,$2,2) ON CONFLICT DO NOTHING`, [sid, uid]);
+      const ins = await pool.query(`INSERT INTO mo_shoot_crew (shoot_id, user_id, capacity_role_id) VALUES ($1,$2,2) ON CONFLICT DO NOTHING`, [sid, uid]);
+      if (!ins.rowCount) continue;
+      added.push(uid);
       if (uid !== u.id && shoot)
         await pool.query(
           `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
@@ -10999,8 +11940,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
           [uid, "You are on a shoot",
             `${u.full_name ?? "Your Team Lead"} added you to “${shoot.title}” on ${dOnly(shoot.shoot_date)}.`, sid]).catch(() => {});
     }
-    await audit(u, "shoot.crew_added", "shoot", sid, null, { users: crew }, req);
-    res.status(201).json({ ok: true });
+    await audit(u, "shoot.crew_added", "shoot", sid, null, { users: added }, req);
+    res.status(201).json({ ok: true, added: added.length });
   }));
 
   // Update own profile photo (edit-avatar from the profile dialog — #5).
@@ -11726,7 +12667,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const b = req.body as Record<string, unknown>;
     const url = String(b.url ?? "").trim();
     if (!b.entity_type || !b.entity_id) return sendError(res, 400, "entity_type and entity_id are required.");
-    if (!/^https:\/\/(drive|docs)\.google\.com\//.test(url)) return sendError(res, 400, "VR-4: must be a Google Drive/Docs link.");
+    if (!/^https:\/\/(drive|docs)\.google\.com\//.test(url)) return sendError(res, 400, "The link must be a Google Drive or Google Docs link.");
     const ins = await pool.query(
       `INSERT INTO mo_drive_links (entity_type, entity_id, label, url, added_by, validation_status, last_validated_at)
        VALUES ($1,$2,$3,$4,$5,'ok',NOW()) RETURNING *`,
@@ -11748,9 +12689,18 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       return sendError(res, 403, "Only the project's Team Lead, owner/PM, the Coordinator or an Admin may edit this project.");
     const b = req.body as Record<string, unknown>;
     if (typeof b.name === "string" && (b.name.trim().length < 3 || b.name.trim().length > 120))
-      return sendError(res, 400, "VR-6: name must be 3–120 characters.");
+      return sendError(res, 400, "A project name must be 3–120 characters.");
     if (b.start_date && b.end_date && String(b.end_date) < String(b.start_date))
-      return sendError(res, 400, "VR-6: end date must be on or after start date.");
+      return sendError(res, 400, "The end date must be on or after the start date.");
+    const times = projectTimes(b,
+      "start_date" in b ? ((b.start_date as string) || null) : dOnly(cur.start_date),
+      "end_date" in b ? ((b.end_date as string) || null) : dOnly(cur.end_date), cur);
+    if ("error" in times) return sendError(res, 400, times.error);
+    // priority is NOT NULL, so an edit must send one of the four — never null or ''.
+    if ("priority" in b && !PRIORITIES.includes(String(b.priority))) return sendError(res, 400, PRIORITY_ERROR);
+    if ("academic_year_id" in b && b.academic_year_id != null
+        && !(await pool.query(`SELECT 1 FROM mo_academic_years WHERE id=$1`, [Number(b.academic_year_id) || 0])).rows[0])
+      return sendError(res, 400, "Unknown academic year.");
     // Changing the academic unit may only target an active, non-archived unit.
     // Leaving it untouched keeps a historical (possibly archived) reference intact.
     if ("academic_unit_id" in b && b.academic_unit_id != null &&
@@ -11766,6 +12716,10 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
        their project to another team, and nobody else moves it at all. */
     if ("team_id" in b && Number(b.team_id ?? 0) !== Number(cur.team_id ?? 0) && !(isCoord || isMoAdmin(u)))
       return sendError(res, 403, "Only the Coordinator or an Admin may change which team a project is routed to.");
+    /* Re-routing moves a project to another team; it never un-routes one. A
+       Coordinator's project always names its team, as it did when created. */
+    if ("team_id" in b && !b.team_id && cur.team_id && isCoord && !isMoAdmin(u))
+      return sendError(res, 400, "Choose the team this project is for.");
     if ("team_id" in b && b.team_id != null && Number(b.team_id) !== Number(cur.team_id)) {
       const t = await resolveTeamLead(Number(b.team_id));
       if ("error" in t) return sendError(res, 400, t.error);
@@ -11775,18 +12729,22 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
     for (const k of ["name", "description", "academic_unit_id", "priority", "start_date", "end_date", "cover_image_url", "academic_year_id", "team_id"])
       if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
+    for (const k of ["start_time", "end_time"] as const)
+      if (k in b) { fields.push(`${k}=$${i++}`); vals.push(times[k]); }
     if (newLead) { fields.push(`owner_id=$${i++}`); vals.push(newLead); }
     if (!fields.length) return res.json({ project: cur });
     vals.push(id);
     const { rows } = await pool.query(`UPDATE mo_projects SET ${fields.join(",")} WHERE id=$${i} RETURNING *`, vals);
     // §9: moving the project dates re-derives due dates ONLY for deliverables
-    // still tracking their offset. Hand-edited dates ('manual') are left alone.
+    // still tracking their offset. Hand-edited dates ('manual') are left alone,
+    // and so is finished work — the same rule as finishedAs()/datesLocked().
     let recalculated = 0;
     if ("end_date" in b && rows[0].end_date && String(rows[0].end_date) !== String(cur.end_date)) {
       const r = await pool.query(
         `UPDATE mo_deliverables
             SET due_date = ($1::date + COALESCE(due_offset_days,0) * INTERVAL '1 day')::date, updated_at=NOW()
           WHERE project_id=$2 AND due_date_source='offset' AND deleted_at IS NULL
+            AND status <> 'delivered' AND COALESCE(dispatch_status,'none') NOT IN ('sent','delivered','archived')
           RETURNING id`, [rows[0].end_date, id]);
       recalculated = r.rowCount ?? 0;
       if (recalculated)
@@ -11855,17 +12813,26 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const u = requireMedia(res); if (!u) return;
     const day = String((req.query as Record<string, unknown>).day ?? "");
     const { rows } = await pool.query(
-      `SELECT id, actor_id, action, entity_type, entity_id, before, after, occurred_at
-         FROM mo_audit_logs
-        WHERE actor_id=$1 ${day ? "AND occurred_at::date = $2::date" : ""}
-        ORDER BY occurred_at DESC LIMIT 300`,
+      /* project_name: the project a row about a deliverable or its version is
+         in, read now — so the timeline can say which project's "Raw Archive"
+         was archived even once the page no longer holds that deliverable. */
+      `SELECT a.id, a.actor_id, a.action, a.entity_type, a.entity_id, a.before, a.after, a.occurred_at,
+              COALESCE(pd.name, pv.name) AS project_name
+         FROM mo_audit_logs a
+         LEFT JOIN mo_deliverables d ON a.entity_type = 'deliverable' AND d.id = a.entity_id
+         LEFT JOIN mo_projects pd ON pd.id = d.project_id
+         LEFT JOIN mo_deliverable_versions v ON a.entity_type = 'deliverable_version' AND v.id = a.entity_id
+         LEFT JOIN mo_deliverables dv ON dv.id = v.deliverable_id
+         LEFT JOIN mo_projects pv ON pv.id = dv.project_id
+        WHERE a.actor_id=$1 ${day ? "AND a.occurred_at::date = $2::date" : ""}
+        ORDER BY a.occurred_at DESC LIMIT 300`,
       day ? [u.id, day] : [u.id]);
     res.json({ audit: rows });
   }));
 
   app.get(`${P}/audit`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
-    if (!isMoAdmin(u)) return sendError(res, 403, "The audit log is Admin-only (FR-13.3).");
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may read the audit log.");
     const q = req.query as Record<string, unknown>;
     const conds: string[] = [], vals: unknown[] = []; let i = 1;
     if (q.entity_type) { conds.push(`a.entity_type=$${i++}`); vals.push(String(q.entity_type)); }
@@ -11915,8 +12882,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
   // Notifications (§18) — the feed is written by the automation engine.
   app.get(`${P}/notifications`, asyncHandler(async (_req, res) => {
     const u = requireMedia(res); if (!u) return;
-    const { rows } = await pool.query(`SELECT * FROM mo_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 50`, [u.id]);
-    res.json({ notifications: rows });
+    res.json(await notificationFeed(u.id));
   }));
   app.post(`${P}/notifications/read`, asyncHandler(async (req, res) => {
     const u = requireMedia(res); if (!u) return;
@@ -11942,6 +12908,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     if (!(await assertAssignable(res, u, assignees))) return;
     if (b.start_date && b.due_date && String(b.due_date) < String(b.start_date))
       return sendError(res, 400, "Due date must be on or after the start date.");
+    if (badPriority(b.priority)) return sendError(res, 400, PRIORITY_ERROR);
     const priority = ["urgent", "high", "normal", "low"].includes(String(b.priority)) ? String(b.priority) : "normal";
     const status = ["not_started", "in_progress", "done", "blocked", "cancelled"].includes(String(b.status)) ? String(b.status) : "not_started";
     const ins = await pool.query(
@@ -11967,21 +12934,58 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
        SMC coverage keeps its long-standing rule (any Team Lead). */
     const priv = isMoAdmin(u) || cur.assigned_by === u.id || isMoTL(u);
     if (!priv && !isAssignee) return sendError(res, 403, "You can't change this assignment.");
-    const b0 = req.body as Record<string, unknown>;
-    if (priv && !cur.is_smc && Array.isArray(b0.assignees)
-        && !(await assertAssignable(res, u, (b0.assignees as unknown[]).map(String)))) return;
     const b = req.body as Record<string, unknown>;
+    const people = priv && Array.isArray(b.assignees)
+      ? [...new Set((b.assignees as unknown[]).map((r) => String(toUid(r))))] : null;
+    if (people && !cur.is_smc && !(await assertAssignable(res, u, people))) return;
+    /* Work on a deliverable is that deliverable's team: the row that names its
+       owner is what makes everyone else on it a teammate (deliverableTeamIds).
+       Rewriting the people must keep the owner on it, or the team silently
+       dissolves — changing the owner is the drawer's Change owner. */
+    const linked = people && cur.deliverable_id && !cur.is_smc
+      ? (await pool.query(`SELECT id, project_id, title, owner_id FROM mo_deliverables WHERE id=$1`,
+          [cur.deliverable_id])).rows[0] ?? null : null;
+    if (linked && !people!.length) return sendError(res, 400, "Assign the work to at least one member.");
+    if (linked?.owner_id && !people!.includes(String(linked.owner_id)))
+      return sendError(res, 400, "The deliverable's owner must stay on this work. Change the owner first if someone else should own it.");
+    const teamBefore = linked ? await deliverableTeamIds(Number(linked.id)) : new Set<string>();
+    const rowBefore = people ? (await pool.query(
+      `SELECT user_id FROM mo_assignment_users WHERE assignment_id=$1`, [id])).rows.map((r) => String(r.user_id)) : [];
     // Assignees may only move the status; TL/Admin/creator may edit everything.
     const cols = priv ? ["title", "priority", "status", "start_date", "due_date", "start_time", "end_time", "notes"] : ["status"];
+    if (priv && "priority" in b && !PRIORITIES.includes(String(b.priority))) return sendError(res, 400, PRIORITY_ERROR);
     const fields: string[] = [], vals: unknown[] = []; let i = 1;
     for (const k of cols) if (k in b) { fields.push(`${k}=$${i++}`); vals.push(b[k]); }
     if (fields.length) { vals.push(id); await pool.query(`UPDATE mo_assignments SET ${fields.join(",")} WHERE id=$${i}`, vals); }
-    if (priv && Array.isArray(b.assignees)) {
+    if (people) {
       await pool.query(`DELETE FROM mo_assignment_users WHERE assignment_id=$1`, [id]);
-      for (const uid of (b.assignees as unknown[]).map(String))
+      for (const uid of people)
         await pool.query(`INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, [id, uid]);
     }
     await audit(u, "assignment.updated", "assignment", id, cur, b, req);
+    /* As Assign work does: whoever is added joins the project's crew and is
+       told once; whoever is taken off is told it is no longer theirs — for a
+       deliverable, only once they have left its team altogether. */
+    if (people && !cur.is_smc && String("status" in b ? b.status : cur.status) !== "cancelled") {
+      const by = u.full_name ?? "Your Team Lead";
+      const title = String(("title" in b ? b.title : cur.title) ?? "");
+      const teamAfter = linked ? await deliverableTeamIds(Number(linked.id)) : new Set<string>();
+      const say = (uid: string, head: string, body: string) => pool.query(
+        `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
+         VALUES ($1,'assignment',$2,$3,$4,$5)`,
+        [uid, head, body, linked ? "deliverable" : "assignment", linked ? Number(linked.id) : id]).catch(() => {});
+      for (const uid of people.filter((x) => !rowBefore.includes(x))) {
+        if (cur.project_id) await addToProjectCrew(Number(cur.project_id), uid, u.id);
+        if (uid !== u.id)
+          await say(uid, "New assignment", linked
+            ? `${by} added you to “${title}”. You are working on “${linked.title}”.`
+            : `${by} assigned “${title}” to you.`);
+      }
+      for (const uid of rowBefore.filter((x) => !people.includes(x))) {
+        if (uid === u.id || (linked && (!teamBefore.has(uid) || teamAfter.has(uid)))) continue;
+        await say(uid, "Assignment reassigned", `“${linked ? linked.title : title}” is no longer assigned to you.`);
+      }
+    }
     res.json({ ok: true });
   }));
 
@@ -12022,7 +13026,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     if (!String(b.title ?? "").trim()) return sendError(res, 400, "KRA title is required.");
     const weight = Math.max(0, Math.min(100, Number(b.weight) || 0));
     const cur = Number((await pool.query(`SELECT COALESCE(SUM(weight),0) s FROM mo_kras WHERE kra_cycle_id=$1 AND user_id=$2`, [cid, target])).rows[0].s);
-    if (cur + weight > 100) return sendError(res, 400, `BR-14: a user's KRA weights cannot exceed 100 (currently ${cur}).`);
+    if (cur + weight > 100) return sendError(res, 400, `A person's KRA weights cannot add up to more than 100 (currently ${cur}).`);
     const src = ["manual", "auto"].includes(String(b.metric_source)) ? String(b.metric_source) : "manual";
     const ins = await pool.query(
       `INSERT INTO mo_kras (kra_cycle_id, user_id, title, metric_source, auto_metric_key, target_text, weight)
@@ -12064,8 +13068,13 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     name: string; label: string;
     type: "text" | "textarea" | "select" | "switch" | "color" | "icon" | "date" | "number" | "slug" | "relation";
     required?: boolean; def?: unknown; options?: string[];
-    relation?: { module: string; labelCol: string };
+    /* `where` narrows the options offered AND the values accepted, with
+       `whereMsg` as the refusal when a value falls outside it. */
+    relation?: { module: string; labelCol: string; where?: string; whereMsg?: string };
     showIf?: { field: string; value: unknown };
+    /* Only an Admin may set or change this field, whatever the module's own
+       write rule; anyone else may save the record with it as it stands. */
+    adminOnly?: boolean;
   };
   type CrudModule = {
     key: string; label: string; table: string; fields: CrudField[];
@@ -12112,10 +13121,16 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
         { name: "icon", label: "Icon", type: "icon" },
         { name: "default_weight", label: "Default weight", type: "number", def: 1 },
         { name: "default_unit", label: "Default unit", type: "text" },
-        { name: "review_exempt", label: "Review exempt (BR-6)", type: "switch", def: false },
+        { name: "review_exempt", label: "Review exempt", type: "switch", def: false },
         { name: "default_due_offset_days", label: "Default due offset (days after project end)", type: "number", def: 5 },
+        /* What work on a deliverable of this type is logged as — Assign work
+           has no work-type choice of its own. A shoot produces no deliverable,
+           so only standard work types are offered. */
+        { name: "work_type_id", label: "Counts as", type: "relation", adminOnly: true,
+          relation: { module: "work_types", labelCol: "name", where: "is_active AND form_template = 'standard_task'",
+                      whereMsg: "Counts as must be an active work type that is not a shoot." } },
         { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
-      cols: ["name", "icon", "default_weight", "default_unit", "default_due_offset_days"],
+      cols: ["name", "icon", "default_weight", "default_unit", "default_due_offset_days", "work_type_id"],
       deps: [{ table: "mo_deliverables", fk: "deliverable_type_id", label: "Deliverables" },
              { table: "mo_template_deliverables", fk: "deliverable_type_id", label: "Template items" }] },
     task_categories: { key: "task_categories", label: "Task Categories", table: "mo_task_categories",
@@ -12211,7 +13226,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       cols: ["name", "icon", "form_template", "sort_order"],
       // Referenced by both record kinds → delete refused once in use; archive instead.
       deps: [{ table: "mo_shoots", fk: "work_type_id", label: "Shoots" },
-             { table: "mo_assignments", fk: "work_type_id", label: "Assigned tasks" }] },
+             { table: "mo_assignments", fk: "work_type_id", label: "Assigned tasks" },
+             { table: "mo_deliverable_types", fk: "work_type_id", label: "Deliverable types" }] },
     academic_units: { key: "academic_units", label: "Academic Units", table: "mo_academic_units",
       fields: [
         { name: "name", label: "Name", type: "text", required: true },
@@ -12317,6 +13333,26 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     }
     return { ok: true, rec };
   }
+  /* The checks crudValidate() cannot make alone: a narrowed relation names a
+     row inside its `where`, and an adminOnly field is set or changed only by
+     an Admin (`cur` is the row being edited; none on create). Returns the
+     refusal, or null. */
+  async function crudGuard(u: CurrentUser, m: CrudModule, rec: Record<string, unknown>,
+                           cur: Record<string, unknown> | null): Promise<{ status: number; msg: string } | null> {
+    for (const f of m.fields) {
+      if (!(f.name in rec)) continue;
+      const v = rec[f.name];
+      if (f.adminOnly && !isMoAdmin(u) && String(v ?? "") !== String(cur?.[f.name] ?? ""))
+        return { status: 403, msg: `Only an Admin can change “${f.label}”.` };
+      if (f.type === "relation" && f.relation?.where && v != null) {
+        const rm = CRUD[f.relation.module];
+        const ok = (await pool.query(
+          `SELECT 1 FROM ${rm.table} WHERE id=$1 AND archived_at IS NULL AND (${f.relation.where})`, [v])).rows[0];
+        if (!ok) return { status: 400, msg: f.relation.whereMsg ?? `${f.label}: pick one from the list.` };
+      }
+    }
+    return null;
+  }
   async function crudDeps(m: CrudModule, id: number): Promise<{ label: string; count: number }[]> {
     const out: { label: string; count: number }[] = [];
     for (const d of m.deps) {
@@ -12337,7 +13373,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
         const ff: Record<string, unknown> = { ...f };
         if (f.type === "relation" && f.relation) {
           const rm = CRUD[f.relation.module];
-          const opts = await pool.query(`SELECT id, ${f.relation.labelCol} AS l FROM ${rm.table} WHERE archived_at IS NULL ORDER BY 2`);
+          const opts = await pool.query(`SELECT id, ${f.relation.labelCol} AS l FROM ${rm.table} WHERE archived_at IS NULL
+            ${f.relation.where ? `AND (${f.relation.where})` : ""} ORDER BY 2`);
           ff.options2 = opts.rows.map((r) => ({ v: Number(r.id), l: r.l }));
         }
         fields.push(ff);
@@ -12408,6 +13445,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
     const v = crudValidate(m, req.body as Record<string, unknown>, false);
     if (!v.ok) return sendError(res, 400, v.msg);
+    const refused = await crudGuard(u, m, v.rec, null);
+    if (refused) return sendError(res, refused.status, refused.msg);
     v.rec.created_by = u.id;
     const keys = Object.keys(v.rec);
     try {
@@ -12417,7 +13456,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       await audit(u, "crud.created", m.key, ins.rows[0].id, null, v.rec, req);
       res.status(201).json({ row: ins.rows[0] });
     } catch (e) {
-      if ((e as { code?: string }).code === "23505") return sendError(res, 409, "A record with that name/slug already exists (VR-11: unique per department).");
+      if ((e as { code?: string }).code === "23505") return sendError(res, 409, "A record with that name already exists in this department.");
       throw e;
     }
   }));
@@ -12432,6 +13471,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     if (!cur) return sendError(res, 404, "Record not found.");
     const v = crudValidate(m, req.body as Record<string, unknown>, true);
     if (!v.ok) return sendError(res, 400, v.msg);
+    const refused = await crudGuard(u, m, v.rec, cur);
+    if (refused) return sendError(res, refused.status, refused.msg);
     const keys = Object.keys(v.rec);
     if (!keys.length) return res.json({ row: cur });
     try {
@@ -12497,7 +13538,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const deps = await crudDeps(m, id);
     if (deps.length) {
       res.status(409).json({
-        message: `Cannot delete — in use by ${deps.map((d) => `${d.count} ${d.label}`).join(", ")}. Archive it instead (VR-11).`,
+        message: `Cannot delete — in use by ${deps.map((d) => `${d.count} ${d.label}`).join(", ")}. Archive it instead.`,
         dependencies: deps,
       });
       return;
@@ -16221,7 +17262,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
         `INSERT INTO mo_notifications (user_id, kind, title, body, entity_type, entity_id)
          SELECT w.user_id, 'recognition', 'You are Creator of the Cycle',
                 $2 || ' — ' || w.points_at_award || ' points.'
-                  || CASE WHEN $3::int > 1 THEN ' Shared with ' || ($3::int - 1) || ' other creator(s).' ELSE '' END,
+                  || CASE WHEN $3::int > 2 THEN ' Shared with ' || ($3::int - 1) || ' other creators.'
+                         WHEN $3::int = 2 THEN ' Shared with 1 other creator.' ELSE '' END,
                 'creator_cycle_award', w.id
            FROM mo_creator_cycle_awards w WHERE w.id = ANY($1::bigint[])`,
         [rows.map((r) => Number(r.id)), cycle.label, rows.length]).catch(() => {});
@@ -17837,6 +18879,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     if (!prof) return sendError(res, 404, "That SMC member could not be found.");
     if (!prof.is_active) return sendError(res, 409, "That SMC member is inactive and cannot receive assignments.");
 
+    if (badPriority(b.priority)) return sendError(res, 400, PRIORITY_ERROR);
     const date = String(b.start_date ?? proj.start_date ?? "").slice(0, 10) || null;
     const unit = Number(b.academic_unit_id) || proj.academic_unit_id || prof.academic_unit_id || null;
     // §31 — a conflict is reported, not blocked; management decides.
@@ -17853,7 +18896,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
          deliverables_required, submission_deadline, smc_status)
        VALUES ($1,$2,$3,$4,'not_started',$5,$6,$7,$8,true,$9,$10,$11,$12,$13,'assigned') RETURNING id`,
       [projectId, String(b.title ?? proj.name ?? "SMC coverage").trim(), actor.id,
-       String(b.priority ?? "normal"), date, b.start_time || null, b.end_time || null,
+       String(b.priority || "normal"), date, b.start_time || null, b.end_time || null,
        String(b.instructions ?? "").trim() || null, unit, String(b.venue ?? "").trim() || null,
        String(b.coverage_requirements ?? "").trim() || null,
        String(b.deliverables_required ?? "").trim() || null, b.submission_deadline || null]);
@@ -18065,7 +19108,13 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
          LEFT JOIN mo_user_profiles p ON p.user_id = us.id
         WHERE us.id = ANY($1::text[]) ORDER BY us.full_name`, [others])).rows
       .map((x) => ({ user_id: x.user_id, full_name: x.full_name, designation: x.designation ?? null })) : [];
-    res.json({ crew, team, smc });
+    /* SMC coverage is offered only where it applies: the project's institute
+       has an active Social Media Coordinator (or one is already on it). */
+    const smc_available = !!smc || (await pool.query(
+      `SELECT 1 FROM mo_deliverables d JOIN mo_projects p ON p.id = d.project_id
+         JOIN mo_smc_profiles sp ON sp.academic_unit_id = p.academic_unit_id AND sp.is_active
+        WHERE d.id = $1 LIMIT 1`, [did])).rowCount! > 0;
+    res.json({ crew, team, smc, smc_available });
   }));
 
   /** Candidates for both pickers, from the existing rosters. */
@@ -18114,9 +19163,11 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       if (!(await assertAssignable(res, u, [memberId]))) return;
       const from = d.owner_id ? String(d.owner_id) : null;
       if (from === memberId) return res.json({ ok: true, unchanged: true, kind });
+      if (ownerLocked(res, d, memberId)) return;
+      if (await reassignUnconfirmed(res, d, memberId, b)) return;
       const { rows } = await pool.query(
         `UPDATE mo_deliverables SET owner_id=$1, updated_at=NOW() WHERE id=$2 RETURNING *`, [memberId, did]);
-      await deliverableAssigned(u, rows[0], from, memberId);
+      await deliverableAssigned(u, rows[0], from, memberId, { reassign: true, via: "assignee", req });
       await audit(u, "deliverable.assigned", "deliverable", did, { owner_id: from },
         { owner_id: memberId, kind }, req);
       const who = (await pool.query(
@@ -18302,8 +19353,10 @@ async function reviewerIdsForDb(projectId: number, exclude: string | Iterable<st
        LEFT JOIN users o ON o.id = p.owner_id
       WHERE p.id = $1`, [projectId])).rows[0];
   if (r?.lead && !out.has(String(r.lead))) return [String(r.lead)];
+  // An Admin on the team (or the submitter) cannot review it either.
   return (await pool.query(
-    `SELECT id FROM users WHERE team='media' AND role IN ('admin','super_admin')`)).rows.map((x) => String(x.id));
+    `SELECT id FROM users WHERE team='media' AND role IN ('admin','super_admin')`)).rows
+    .map((x) => String(x.id)).filter((id) => !out.has(id));
 }
 
 export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; notified: number;
@@ -18385,16 +19438,37 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
      lead, with the deliverable's own owner excluded (a lead cannot review
      their own; the fallback picks up Admins). Projects not being driven are
      skipped — the overdue sweep already does. */
+  /* It is a REMINDER: it waits the rule's own remind_h (24 h unless an Admin
+     changed it) after the version went in. Without the wait it fired on the
+     next pass, seconds after the submission notice had already told the
+     reviewer. The submitter is excluded as /versions excludes them.
+     It reminds ONCE per pending version per reviewer: notify() only skips
+     while an earlier reminder is unread, so a read one was followed by a
+     fresh reminder on every later pass. */
   if (ruleOn("AUTO-4")) {
+    const cfg = (await pool.query(`SELECT config FROM mo_automation_rules WHERE rule_key='AUTO-4'`)).rows[0]?.config;
+    const remindH = Number((cfg as { remind_h?: unknown } | undefined)?.remind_h);
     const rows = (await pool.query(
-      `SELECT d.id, d.title, d.project_id, d.owner_id
+      `SELECT d.id, d.title, d.project_id, d.owner_id, v.submitted_by, v.submitted_at
          FROM mo_deliverables d
          JOIN mo_projects p ON p.id = d.project_id
+         JOIN LATERAL (SELECT review_status, submitted_by, submitted_at FROM mo_deliverable_versions
+                        WHERE deliverable_id = d.id ORDER BY version_no DESC LIMIT 1) v ON true
         WHERE d.status='in_review' AND d.deleted_at IS NULL
-          AND p.deleted_at IS NULL AND p.status NOT IN ('cancelled','on_hold','archived')`)).rows;
-    for (const d of rows)
-      for (const rid of await reviewerIdsForDb(Number(d.project_id), await deliverableTeamIdsDb(Number(d.id))))
+          AND v.review_status = 'pending' AND v.submitted_at <= NOW() - $1::numeric * INTERVAL '1 hour'
+          AND p.deleted_at IS NULL AND p.status NOT IN ('cancelled','on_hold','archived')`,
+      [Number.isFinite(remindH) && remindH > 0 ? remindH : 24])).rows;
+    for (const d of rows) {
+      const exclude = await deliverableTeamIdsDb(Number(d.id));
+      if (d.submitted_by) exclude.add(String(d.submitted_by));
+      for (const rid of await reviewerIdsForDb(Number(d.project_id), exclude)) {
+        const reminded = await pool.query(
+          `SELECT 1 FROM mo_notifications WHERE user_id=$1 AND kind='approval' AND entity_type='deliverable'
+              AND entity_id=$2 AND created_at >= $3 LIMIT 1`, [rid, d.id, d.submitted_at]);
+        if (reminded.rows[0]) continue;
         await notify(rid, "approval", "Awaiting your review", `“${d.title}” has a version pending`, "deliverable", d.id);
+      }
+    }
   }
 
   /* AUTO-3 — overdue equipment. The seeded rule reads "Holder → +custodian on
@@ -18464,7 +19538,7 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
 
       if (who.holder)
         await notify(t.holder_id, "overdue", "Equipment overdue",
-          `${t.asset_tag} is ${late} past its return date. New checkouts are blocked at ${cfg.block_after_days} days (BR-7).`,
+          `${t.asset_tag} is ${late} past its return date. New checkouts are blocked at ${cfg.block_after_days} days.`,
           "equipment", t.id);
 
       /* The custodian runs the cupboard, so they hear about it as soon as it
@@ -18574,7 +19648,7 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
         WHERE u.team='media' AND COALESCE(u.role,'user') <> 'admin'
           AND NOT EXISTS (SELECT 1 FROM mo_daily_reports r WHERE r.user_id=u.id AND r.report_date=CURRENT_DATE AND r.status <> 'draft')
           AND NOT EXISTS (SELECT 1 FROM mo_leave_requests l WHERE l.user_id=u.id AND l.status='approved' AND CURRENT_DATE BETWEEN l.starts_on AND l.ends_on)`)).rows)
-      await notify(p.id, "reminder", "Daily report not submitted", "Log your tasks and submit today’s report (AUTO-1).", "report", null);
+      await notify(p.id, "reminder", "Daily report not submitted", "Log your tasks and submit today’s report.", "report", null);
 
   /* `undeliverable` is reported rather than swallowed: a pass that could not
      reach somebody is a fact the caller should be able to see and log. */
