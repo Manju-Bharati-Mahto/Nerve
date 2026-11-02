@@ -205,12 +205,40 @@ describe("Team Lead — their own team, their own team's projects", () => {
     expect(h.writes().find((c) => c.url.endsWith("/projects"))?.body).toMatchObject({ team_id: null });
   });
 
+  it("New project lets Admin assign a deliverable as daily work across its dates", async () => {
+    const h = await boot(907);
+    h.ev("openNewProject(); ACTIONS.npAddDeliverable()");
+    const layer = h.doc.getElementById("modal-layer")!;
+    expect(layer.querySelector(".np-d-pri")).toBeNull();
+    const owner = layer.querySelector(".np-d-owner") as HTMLSelectElement;
+    expect([...owner.options].map((o) => o.value)).toContain("902");
+    owner.value = "902";
+    (layer.querySelector("#np-name") as HTMLInputElement).value = "Animation project";
+    (layer.querySelector("#np-team") as HTMLSelectElement).value = "none";
+    (layer.querySelector("#np-start") as HTMLInputElement).value = "2026-10-24";
+    (layer.querySelector("#np-end") as HTMLInputElement).value = "2026-10-26";
+    h.ev("ACTIONS.createProject()");
+    const post = h.writes().find((c) => c.url.endsWith("/projects"));
+    expect((post!.body as { deliverables: Array<Record<string, unknown>> }).deliverables[0])
+      .toMatchObject({ owner_id: "zcw-902", priority: "normal" });
+    const pid = h.ev<number>("Math.max(...DB.projects.map(p=>p.id))");
+    const work = h.ev<Array<Record<string, unknown>>>(`DB.assignments.filter(a=>a.project_id===${pid})`);
+    expect(work).toEqual([expect.objectContaining({
+      start_date: "2026-10-24", due_date: "2026-10-26", assignees: [902] })]);
+    const mine = (date: string) => h.ev<Array<Record<string, unknown>>>(
+      `myAssignments(902,'${date}').filter(a=>a.project_id===${pid})`);
+    expect(mine("2026-10-23")).toHaveLength(0);
+    expect(mine("2026-10-24")).toHaveLength(1);
+    expect(mine("2026-10-25")).toHaveLength(1);
+    expect(mine("2026-10-26")).toHaveLength(1);
+  });
+
   it("New project: one help line per role, no internal codes, types in catalogue order, priorities most urgent first", async () => {
     const h = await boot(906);
     const help = () => { h.ev("openNewProject()"); return h.doc.querySelector("#modal-layer .mo-head p")!.textContent; };
     expect(help()).toMatch(/team’s lead .* assigns the work/);
     h.as(901); expect(help()).toBe("You own it. Pick who works on it, and who makes each deliverable.");
-    h.as(902); expect(help()).toBe("It is your own project. You assign the work after creating it.");
+    h.as(902); expect(help()).toBe("It is your own project. Each deliverable is your daily task from the project start.");
     h.as(906); help();
     h.ev("ACTIONS.npAddDeliverable(); ACTIONS.npAddDeliverable()");
     const layer = h.doc.getElementById("modal-layer")!;
@@ -237,6 +265,9 @@ describe("Team Lead — their own team, their own team's projects", () => {
     const layer = h.doc.getElementById("modal-layer")!.innerHTML;
     expect(layer).toContain("your own project");
     expect(layer).not.toContain("Pending Approval");
+    h.ev("ACTIONS.npAddDeliverable()");
+    expect(h.doc.querySelector("#np-delivs .np-d-pri")).toBeNull();
+    expect(h.doc.querySelector("#np-delivs .np-d")!.textContent).toContain("Assigned to");
   });
 
   /* Assigning is not limited by team (product decision, Oct 2026): a lead picks
@@ -1759,5 +1790,192 @@ describe("Settings → Deliverable types — Counts as is an Admin's to change",
     h.ev("ACTIONS.crudSubmit({id:'5'})");
     const body = h.writes().find((c) => c.url.endsWith("/crud/deliverable_types/5"))!.body as Record<string, unknown>;
     expect(body.work_type_id).toBe("9");
+  });
+});
+
+/* Owner's decision (24 Oct 2026): a multi-day event is ONE project, shown on
+   every day it runs — day 1 from its start time, the last day until its end
+   time — with deliverables for a day of it or for the whole event, and each
+   one on its owner's day from then until its Drive link is submitted. */
+describe("multi-day events — one project on every day, deliverables by day", () => {
+  const FOLKLORE = `DB.projects.push({id:7100,name:'Folklore',code:'MC-7100',team_id:9001,owner_id:901,created_by:901,
+    project_type_id:DB.project_types[0].id,status:'planning',priority:'normal',academic_unit_id:null,academic_year_id:3,
+    start_date:'2026-10-24',end_date:'2026-10-28',start_time:'09:00',end_time:'15:00',description:'',tags:[],deleted_at:null});
+    const dl=(id,title,day,owner,status)=>DB.deliverables.push({id,project_id:7100,deliverable_type_id:__T,title,event_day:day,
+      owner_id:owner,scheduled_date:null,due_date:null,status:status||'not_started',priority:'normal',deleted_at:null,
+      approval_status:'pending',unit:'',quantity_target:null,quantity_delivered:null});
+    dl(8101,'Photos · Day 1',1,902); dl(8102,'Photos · Day 2',2,903); dl(8103,'Aftermovie',null,902);`;
+
+  it("the calendar shows it on each of its five days, joined, with day 1's start and the last day's end — no Starts/Ends", async () => {
+    const h = await boot(901);
+    h.ev(FOLKLORE);
+    const on = (d: string) => h.ev<Array<{ ev: string; t: string; cls: string }>>(
+      `pcEvents('${d}',[proj(7100)])`).filter((e) => e.ev === "pd:7100");
+    expect(on("2026-10-23")).toEqual([]);
+    expect(on("2026-10-24")[0]).toMatchObject({ t: "Folklore — Day 1 of 5 · from 9:00 AM", cls: "span-first" });
+    expect(on("2026-10-26")[0]).toMatchObject({ t: "Folklore — Day 3 of 5", cls: "span-mid" });
+    expect(on("2026-10-28")[0]).toMatchObject({ t: "Folklore — Day 5 of 5 · until 3:00 PM", cls: "span-last" });
+    expect(on("2026-10-29")).toEqual([]);
+    h.ev("S.cal.month='2026-10-01'");
+    const month = h.ev<string>("projCalendar([proj(7100)])");
+    expect(month.match(/data-ev="pd:7100"/g)?.length, "one event a day, five days").toBe(5);
+    expect(month).not.toMatch(/ends<|▶ Folklore|⤴/);
+    /* One bar: labelled where it starts and where a new week row picks it up
+       (Sun 25 Oct); the other days carry on unlabelled. */
+    const box = h.doc.createElement("div");
+    box.innerHTML = month;
+    const bars = [...box.querySelectorAll('[data-ev="pd:7100"]')] as HTMLElement[];
+    expect(bars.map((b) => [b.dataset.d, b.classList.contains("span-cont")])).toEqual([
+      ["2026-10-24", false], ["2026-10-25", false], ["2026-10-26", true], ["2026-10-27", true], ["2026-10-28", true]]);
+    expect(new Set(bars.map((b) => b.style.background)).size, "the same colour every day").toBe(1);
+    expect(box.querySelector(".cal-cell.fit"), "one bar a day stays full height").toBeNull();
+  });
+
+  it("a busy day thins its bars to fit them all, one height for its week row", async () => {
+    const h = await boot(901);
+    h.ev(FOLKLORE);
+    h.ev(`for(let i=0;i<8;i++)DB.projects.push({...proj(7100),id:7200+i,name:'Busy '+i,code:'MC-'+(7200+i),
+      start_date:'2026-10-27',end_date:'2026-10-27',start_time:null,end_time:null})`);
+    h.ev("S.cal.month='2026-10-01'");
+    const box = h.doc.createElement("div");
+    box.innerHTML = h.ev<string>(`projCalendar(DB.projects.filter(p=>p.id===7100||p.id>=7200))`);
+    const cell = (d: string) => box.querySelector(`[data-d="${d}"][data-ev]`)!.closest(".cal-cell") as HTMLElement;
+    const busy = cell("2026-10-27");
+    expect(busy.querySelectorAll(".cal-ev").length, "all nine, no +more").toBe(9);
+    expect(busy.querySelector(".cal-more")).toBeNull();
+    expect(busy.classList.contains("fit")).toBe(true);
+    expect(busy.classList.contains("thin"), "nine bars are stripes").toBe(true);
+    expect(cell("2026-10-26").style.getPropertyValue("--evh"), "the week row shares it")
+      .toBe(busy.style.getPropertyValue("--evh"));
+    expect(cell("2026-10-24").classList.contains("fit"), "the week before is untouched").toBe(false);
+    expect(h.ev<string>("pcEvHTML('2026-10-26','pd:7100')")).toContain("Day 3 of 5");
+  });
+
+  /* Owner's decision (24 Oct 2026): a project with a time is on the hours of
+     the day view, not under All day — once, in its type's colour. */
+  it("the day view puts a project's hours on the grid, and only untimed days under All day", async () => {
+    const h = await boot(901);
+    h.ev(FOLKLORE);
+    h.ev(`DB.projects.push({...proj(7100),id:7101,name:'Seminar',code:'MC-7101',start_date:'2026-10-26',end_date:'2026-10-26',
+      start_time:'09:00',end_time:'17:00'})`);
+    const view = (d: string) => {
+      const box = h.doc.createElement("div");
+      box.innerHTML = h.ev<string>(`projCalDayView([proj(7100),proj(7101)],'${d}')`);
+      const all = [...box.querySelectorAll(".pcal-d-allday [data-ev]")].map((b) => (b as HTMLElement).dataset.ev);
+      const grid = [...box.querySelectorAll(".pcal-d-lane [data-ev]")].map((b) => ({
+        ev: (b as HTMLElement).dataset.ev, top: parseFloat((b as HTMLElement).style.top),
+        height: parseFloat((b as HTMLElement).style.height), text: [...b.children].map((x) => x.textContent).join(" "),
+        c: (b as HTMLElement).style.getPropertyValue("--c") }));
+      return { all, grid };
+    };
+    const color = h.ev<string>("ptype(proj(7100).project_type_id).color");
+    // A one-day 9–5 is on its hours; the event's middle day has no time and stays all day.
+    const mid = view("2026-10-26");
+    expect(mid.all).toEqual(["pd:7100"]);
+    expect(mid.grid).toEqual([expect.objectContaining({ ev: "pd:7101", top: 2 * 48, height: 8 * 48 - 2,
+      text: "Seminar 9:00 AM – 5:00 PM", c: color })]);
+    // Day 1 runs from 9 to the bottom of the hours; the last day from the top until 3.
+    const first = view("2026-10-24");
+    expect(first.all).toEqual([]);
+    expect(first.grid).toEqual([expect.objectContaining({ ev: "pd:7100", top: 2 * 48, text: "Folklore Day 1 of 5 · from 9:00 AM" })]);
+    const last = view("2026-10-28");
+    expect(last.grid).toEqual([expect.objectContaining({ ev: "pd:7100", top: 0, height: 8 * 48 - 2,
+      text: "Folklore Day 5 of 5 · until 3:00 PM" })]);
+    // Once a day, in the day's card too — no Starts/Ends rows.
+    const card = h.ev<string>("_pcPS=[proj(7100),proj(7101)]; pcDayHTML('2026-10-28')");
+    expect(card.match(/data-ev="pd:7100"/g)).toHaveLength(1);
+    expect(card).toContain("until 3pm");
+  });
+
+  it("a deliverable row offers the event's days, and Every day makes one for each", async () => {
+    const h = await boot(901);
+    h.ev("openNewProject()");
+    const set = (id: string, v: string) => {
+      const n = h.doc.getElementById(id) as HTMLInputElement; n.value = v;
+      n.dispatchEvent(new h.dom.window.Event("input"));
+    };
+    set("np-start", "2026-10-24"); set("np-end", "2026-10-28");
+    h.ev("ACTIONS.npAddDeliverable(); ACTIONS.npAddDeliverable(); ACTIONS.npAddDeliverable()");
+    const rows = [...h.doc.querySelectorAll("#np-delivs .np-d")];
+    const day = (i: number) => rows[i].querySelector(".np-d-day") as HTMLSelectElement;
+    expect((rows[0].querySelector(".np-d-daywrap") as HTMLElement).hidden).toBe(false);
+    expect([...day(0).options].map((o) => o.value)).toEqual(["", "1", "2", "3", "4", "5", "all"]);
+    expect(day(0).options[0].text).toBe("Whole event (final)");
+    set("np-end", "2026-10-24");
+    expect((rows[0].querySelector(".np-d-daywrap") as HTMLElement).hidden, "a one-day project has no day to pick").toBe(true);
+    set("np-end", "2026-10-28");
+    const owner = (i: number, v: string) => { const s = rows[i].querySelector(".np-d-owner") as HTMLSelectElement; s.value = v; };
+    day(0).value = "all"; owner(0, "902"); day(0).dispatchEvent(new h.dom.window.Event("change"));
+    day(1).value = "2"; owner(1, "903");
+    const base = h.ev<string>("dtype(+document.querySelector('.np-d-type').value).name");
+    expect(rows[0].querySelector(".np-d-name")!.textContent).toBe(`Makes 5: “${base} · Day 1” to “${base} · Day 5”`);
+    (h.doc.querySelector("#np-name") as HTMLInputElement).value = "Folklore";
+    h.ev("ACTIONS.createProject()");
+    const ds = (h.writes().find((c) => c.url.endsWith("/projects"))!.body as { deliverables: Array<Record<string, unknown>> }).deliverables;
+    expect(ds.map((d) => [d.title, d.event_day])).toEqual([
+      ...[1, 2, 3, 4, 5].map((n) => [`${base} · Day ${n}`, n]), [`${base} · Day 2 (2)`, 2], [base, null]]);
+    expect(ds.slice(0, 5).every((d) => d.owner_id === "zcw-902")).toBe(true);
+  });
+
+  it("the Deliverables tab lists an event a day at a time, then the whole event", async () => {
+    const h = await boot(901);
+    h.ev(FOLKLORE);
+    const tab = h.ev<string>("projDeliverablesTab(proj(7100),projectDeliverables(7100))");
+    const order = ["<b>Day 1</b>", "Photos · Day 1", "<b>Day 2</b>", "Photos · Day 2", "Whole event (final)", "Aftermovie"]
+      .map((t) => tab.indexOf(t));
+    expect(order.every((i) => i >= 0), "a heading or a deliverable is missing").toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(h.ev<string>("projDeliverablesTab(proj(7001),projectDeliverables(7001))"), "no day: no headings").not.toContain("pj-day");
+  });
+
+  it("each owner has their deliverable on their day from its day until the Drive link is submitted", async () => {
+    const h = await boot(902);
+    h.ev(FOLKLORE);
+    const mine = (uid: number, d: string) => h.ev<string[]>(`myAssignments(${uid},'${d}').map(a=>a.id)`);
+    expect(mine(902, "2026-10-24")).toEqual(expect.arrayContaining(["d8101", "d8103"]));
+    expect(mine(903, "2026-10-24"), "a Day 2 deliverable waits for day 2").not.toContain("d8102");
+    expect(mine(903, "2026-10-25")).toContain("d8102");
+    expect(mine(902, "2026-10-27"), "unsubmitted, it stays every day").toEqual(expect.arrayContaining(["d8101", "d8103"]));
+    expect(h.ev<string>("myAssignments(902,'2026-10-27').find(a=>a.id==='d8103')._eventDay")).toBe("Day 4 of 5");
+    h.ev("deliv(8101).status='in_review'");
+    expect(mine(902, "2026-10-27"), "submitted: off their day").not.toContain("d8101");
+    h.ev("deliv(8101).status='changes_requested'");
+    expect(mine(902, "2026-10-27"), "changes asked for: back").toContain("d8101");
+  });
+
+  it("an assigned work row for Day 2 first reaches Today's assignments on Day 2", async () => {
+    const h = await boot(903);
+    h.ev(FOLKLORE);
+    h.ev(`DB.assignments.push({id:9100,project_id:7100,deliverable_id:8102,title:'Photos · Day 2',
+      assignees:[903],status:'not_started',start_date:null,created_at:'2026-10-24T10:00:00Z',
+      due_date:'2026-10-28',priority:'normal',is_smc:false})`);
+    const mine = (date: string) => h.ev<Array<{ id: number | string; deliverable_id: number }>>(
+      `myAssignments(903,'${date}')`);
+    expect(mine("2026-10-24").filter(a => a.deliverable_id === 8102), "assigned on Day 1, due after Day 2")
+      .toEqual([]);
+    expect(mine("2026-10-25").filter(a => a.deliverable_id === 8102).map(a => a.id))
+      .toEqual([9100]);
+    expect(mine("2026-10-26").filter(a => a.deliverable_id === 8102).map(a => a.id))
+      .toEqual([9100]);
+    h.ev("DB.assignments.find(a=>a.id===9100).start_date='2026-10-27'");
+    expect(mine("2026-10-25").map(a => a.id), "a later work start still applies to its work row")
+      .not.toContain(9100);
+    expect(mine("2026-10-27").filter(a => a.deliverable_id === 8102).map(a => a.id))
+      .toEqual([9100]);
+    h.ev("deliv(8102).status='in_review'");
+    expect(mine("2026-10-27").filter(a => a.deliverable_id === 8102)).toEqual([]);
+  });
+});
+
+describe("Home's Next 14 Days — an event on each of its days, no start/end entries", () => {
+  it("lists Folklore on every day it runs, with that day's hours, and never 'ends'", async () => {
+    const h = await boot(901);
+    h.ev(`DB.projects.push({id:7100,name:'Folklore',code:'MC-7100',team_id:9001,owner_id:901,created_by:901,
+      project_type_id:DB.project_types[0].id,status:'planning',priority:'normal',academic_unit_id:null,academic_year_id:3,
+      start_date:TODAY,end_date:D.add(TODAY,4),start_time:'09:00',end_time:'15:00',description:'',tags:[],deleted_at:null});`);
+    const w = h.ev<string>("upcomingWidget()");
+    expect(w.match(/data-go="#\/media\/projects\/7100"/g)?.length).toBe(5);
+    for (const t of ["Day 1 of 5 · from 9:00 AM", "Day 3 of 5", "Day 5 of 5 · until 3:00 PM"]) expect(w).toContain(t);
+    expect(w).not.toMatch(/Folklore ends/);
   });
 });

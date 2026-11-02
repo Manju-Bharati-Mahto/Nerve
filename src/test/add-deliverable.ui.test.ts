@@ -70,19 +70,21 @@ describe("＋ Add deliverable on an existing project", () => {
     expect(offered(906, 7004), "a completed project").toBe(false);
   });
 
+  /* "Day" is there only for a multi-day event (an event-day test covers it). */
   it("opens New project's row, with a visible label on every field", async () => {
     const h = await boot(906);
     h.ev("openAddDeliverable(7001)");
     const layer = h.doc.getElementById("modal-layer")!;
     const rows = layer.querySelectorAll(".np-d");
     expect(rows.length).toBe(1);
-    const labels = [...rows[0].querySelectorAll("label > span")].map((s) => s.textContent);
+    const labels = [...rows[0].querySelectorAll("label:not([hidden]) > span")].map((s) => s.textContent);
     expect(labels).toEqual(["Type", "Priority", "Due (optional)", "Effort h (optional)"]);
     expect((rows[0].querySelector(".np-d-pri") as HTMLSelectElement).value).toBe("normal");
     // New project draws the same row.
     h.ev("closeModal(); openNewProject(); ACTIONS.npAddDeliverable()");
-    const np = [...h.doc.querySelectorAll("#np-delivs .np-d label > span")].map((s) => s.textContent);
-    expect(np).toEqual(["Type", "Priority", "Due (optional)", "Effort h (optional)"]);
+    const np = [...h.doc.querySelectorAll("#np-delivs .np-d label:not([hidden]) > span")].map((s) => s.textContent);
+    // New project starts as a week-long run, so its days are offered.
+    expect(np).toEqual(["Type", "Assigned to", "Day", "Due (optional)", "Effort h (optional)"]);
   });
 
   it("sends each row unassigned, titled by its type and numbered after what the project has", async () => {
@@ -98,6 +100,52 @@ describe("＋ Add deliverable on an existing project", () => {
       expect(c.body).toMatchObject({ priority: "normal", due_date: null, estimated_hours: null });
       expect(c.body).not.toHaveProperty("owner_id");
     }
+  });
+
+  /* Owner's decision (24 Oct 2026): whoever may assign on the project names
+     who makes each row in place of its priority, and that person has it in
+     My deliverables and Today's assignments, due on the row's date. */
+  it("asks whoever may assign who makes each row, and gives it as Assign work does", async () => {
+    const h = await boot(901);
+    h.ev("openAddDeliverable(7001); ACTIONS.npAddDeliverable()");
+    const layer = h.doc.getElementById("modal-layer")!;
+    expect(layer.querySelector(".mo-head p")!.textContent).toMatch(/Today’s assignments/);
+    const rows = layer.querySelectorAll(".np-d");
+    expect([...rows[0].querySelectorAll("label:not([hidden]) > span")].map((s) => s.textContent))
+      .toEqual(["Type", "Assigned to", "Due (optional)", "Effort h (optional)"]);
+    expect(rows[0].querySelector(".np-d-pri"), "priority is replaced by an assignee").toBeNull();
+    h.ev(`document.querySelectorAll('#np-delivs .np-d-type').forEach(s=>s.value=String(__T.id))`);
+    const own = rows[0].querySelector(".np-d-owner") as HTMLSelectElement;
+    own.value = "903";
+    (rows[0].querySelector(".np-d-due") as HTMLInputElement).value = "2026-11-02";
+    (rows[0].querySelector(".np-d-est") as HTMLInputElement).value = "3";
+    h.ev(`ACTIONS.saveDeliverables({pid:'7001'})`);
+    await new Promise((r) => setTimeout(r, 50));
+    const name = h.ev<string>("__T.name");
+    const work = h.writes().filter((c) => c.url.endsWith("/projects/7001/work"));
+    expect(work.length).toBe(1);
+    expect(work[0].body).toMatchObject({ title: `${name} (2)`, assignees: ["zdl-903"], owner_id: "zdl-903",
+      due_date: "2026-11-02", priority: "normal",
+      new_deliverable: { deliverable_type_id: h.ev<number>("__T.id"), title: `${name} (2)`,
+        due_date: "2026-11-02", estimated_hours: 3 } });
+    const plain = h.writes().filter((c) => c.url.endsWith("/projects/7001/deliverables"));
+    expect(plain.map((c) => (c.body as Record<string, unknown>).owner_id), "the untouched row stays unassigned")
+      .toEqual([undefined]);
+    // Straight away: theirs, in their day, due when the row said.
+    const did = h.ev<number>(`DB.deliverables.find(d=>d.title===${JSON.stringify(`${name} (2)`)}).id`);
+    expect(h.ev<number>(`deliv(${did}).owner_id`)).toBe(903);
+    expect(h.ev<number[]>("openDeliverables(903).map(d=>d.id)")).toContain(did);
+    expect(h.ev<Array<{ deliverable_id: number; due_date: string }>>(
+      "myAssignments(903).map(a=>({deliverable_id:a.deliverable_id,due_date:a.due_date}))"))
+      .toContainEqual({ deliverable_id: did, due_date: "2026-11-02" });
+  });
+
+  it("keeps the Coordinator's rows unassigned, with a priority", async () => {
+    const h = await boot(906);
+    h.ev("openAddDeliverable(7001)");
+    const layer = h.doc.getElementById("modal-layer")!;
+    expect(layer.querySelector(".np-d-owner"), "the Coordinator never names individuals").toBeNull();
+    expect(layer.querySelector(".mo-head p")!.textContent).toMatch(/added unassigned/);
   });
 });
 
