@@ -56,6 +56,8 @@ export interface DailyReportRow {
    *  Null while running/idle, and reset to null when a row is carried over
    *  to the next day (it's freshly active for that day). */
   last_paused_at: string | null;
+  /** The Kanban card this row is tracked on, or null. */
+  project_id: string | null;
 }
 
 export interface SaveRowInput {
@@ -70,6 +72,7 @@ export interface SaveRowInput {
   stopwatch_started_at?: string | null;
   carried_over_from_row_id?: string | null;
   last_paused_at?: string | null;
+  project_id?: string | null;
 }
 
 export interface KraParameter {
@@ -290,6 +293,15 @@ export async function bootstrapBrandingDatabase() {
   // Optional supervising lead ("Assign Lead" dropdown). Does NOT get a daily
   // report row — purely a supervisory link shown on the project.
   await pool.query(`ALTER TABLE branding_projects ADD COLUMN IF NOT EXISTS assigned_lead_id TEXT REFERENCES users(id) ON DELETE SET NULL`);
+  // Kanban board column and priority (branding Leads board). `board_status` is
+  // the lead's workflow stage; `status` stays the delivery flag the rest of
+  // the app reads. Idempotent for pre-existing installs.
+  await pool.query(`ALTER TABLE branding_projects ADD COLUMN IF NOT EXISTS board_status TEXT NOT NULL DEFAULT 'notstarted'`);
+  await pool.query(`ALTER TABLE branding_projects ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'medium'`);
+  // Who last moved the card between Kanban columns, and when. Drives the
+  // "your card moved to X" items in the designer's notification panel.
+  await pool.query(`ALTER TABLE branding_projects ADD COLUMN IF NOT EXISTS board_moved_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE branding_projects ADD COLUMN IF NOT EXISTS board_moved_by TEXT`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS branding_project_assignments (
@@ -358,6 +370,19 @@ export async function bootstrapBrandingDatabase() {
     )
   `);
 
+  // Personal to-do list (member + lead), surfaced on the Team Members panel.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS branding_todos (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      completed BOOLEAN NOT NULL DEFAULT FALSE,
+      due_date DATE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ
+    )
+  `);
+
   // ── Migration: stopwatch fields on daily_report_rows ─────────────────────
   await pool.query(`ALTER TABLE daily_report_rows ADD COLUMN IF NOT EXISTS stopwatch_status TEXT NOT NULL DEFAULT 'idle'`);
   await pool.query(`ALTER TABLE daily_report_rows ADD COLUMN IF NOT EXISTS elapsed_seconds INTEGER NOT NULL DEFAULT 0`);
@@ -368,6 +393,9 @@ export async function bootstrapBrandingDatabase() {
   // carry-over so each new day starts fresh; the client supplies it on every
   // pause/finish save.
   await pool.query(`ALTER TABLE daily_report_rows ADD COLUMN IF NOT EXISTS last_paused_at TIMESTAMPTZ`);
+  // The Kanban card a report row is tracked on. Nullable; a row with no card
+  // (e.g. legacy rows, or rows with no specific-work text) simply has none.
+  await pool.query(`ALTER TABLE daily_report_rows ADD COLUMN IF NOT EXISTS project_id TEXT REFERENCES branding_projects(id) ON DELETE SET NULL`);
 
   // ── Migration: manual penalty on admin_kra_scores ────────────────────────
   await pool.query(`ALTER TABLE admin_kra_scores ADD COLUMN IF NOT EXISTS manual_penalty_percent NUMERIC(5,2) NOT NULL DEFAULT 0`);
@@ -500,6 +528,7 @@ interface ReportRowDb {
   stopwatch_started_at: string | null;
   carried_over_from_row_id: string | null;
   last_paused_at: string | null;
+  project_id: string | null;
 }
 interface KraParamRow {
   id: string; name: string; description: string; max_score: number; sort_order: number;
@@ -708,10 +737,10 @@ async function carryOverPausedRows(
       `INSERT INTO daily_report_rows
          (id, report_id, sr_no, type_of_work, sub_category, specific_work, time_taken,
           collaborative_colleagues, stopwatch_status, elapsed_seconds, stopwatch_started_at,
-          carried_over_from_row_id)
-       VALUES ($1, $2, $3, $4, $5, $6, '', $7, 'paused', 0, NULL, $8)`,
+          carried_over_from_row_id, project_id)
+       VALUES ($1, $2, $3, $4, $5, $6, '', $7, 'paused', 0, NULL, $8, $9)`,
       [id, todayReportId, nextSrNo, src.type_of_work, src.sub_category, src.specific_work,
-       src.collaborative_colleagues, src.id]
+       src.collaborative_colleagues, src.id, src.project_id ?? null]
     );
     nextSrNo += 1;
   }
@@ -759,6 +788,10 @@ function elapsedToTimeTakenServer(seconds: number): string {
   return parts.join(' ') || '0s';
 }
 
+// Description stamped on a Kanban card that was auto-created from a daily-report
+// row, so such a card can be cleaned up again if its row is deleted untouched.
+const REPORT_CARD_MARK = 'Logged from daily report';
+
 export async function saveReportRows(reportId: string, userId: string, rows: SaveRowInput[]): Promise<DailyReportRow[] | null> {
   const report = await pool.query<ReportDbRow>(
     `SELECT * FROM daily_reports WHERE id = $1 AND user_id = $2`,
@@ -771,10 +804,50 @@ export async function saveReportRows(reportId: string, userId: string, rows: Sav
   const reportDate = normalizeDate(report.rows[0].report_date);
   if (isEditingClosed(reportDate)) return null;
 
+  // Cards this report's rows pointed at before the rewrite, so a card whose
+  // row was deleted (and that nobody has touched) can be taken off the board.
+  const before = await pool.query<{ project_id: string | null }>(
+    `SELECT project_id FROM daily_report_rows WHERE report_id = $1`, [reportId]
+  );
+  const previousCards = new Set(before.rows.map(r => r.project_id).filter(Boolean) as string[]);
+  const owner = await pool.query<{ managed_by: string | null }>(`SELECT managed_by FROM users WHERE id = $1`, [userId]);
+  const leadId = owner.rows[0]?.managed_by ?? null;
+  const keptCards = new Set<string>();
+
   await pool.query(`DELETE FROM daily_report_rows WHERE report_id = $1`, [reportId]);
   const saved: DailyReportRow[] = [];
   for (const row of rows) {
     const id = generateId("drr");
+    // ── Kanban card ──────────────────────────────────────────────────────
+    let projectId: string | null = row.project_id ?? null;
+    if (projectId) {
+      const exists = await pool.query(`SELECT 1 FROM branding_projects WHERE id = $1`, [projectId]);
+      if ((exists.rowCount ?? 0) === 0) projectId = null;
+    }
+    if (!projectId && row.specific_work.trim() && row.type_of_work.trim()) {
+      const created = await createBrandingProject(
+        row.specific_work.trim(), REPORT_CARD_MARK, null, userId, [userId],
+        { typeOfWork: row.type_of_work, subCategory: row.sub_category, specificWork: row.specific_work.trim(),
+          assignedLeadId: leadId, boardStatus: "notstarted", priority: "medium" },
+      );
+      projectId = created.id;
+    }
+    if (projectId) {
+      keptCards.add(projectId);
+      // The timer owns the first three columns: stopped -> Not started,
+      // running -> In progress, finished -> In review (waiting for approval).
+      // Once the lead has moved the card on (Changes received, Approved,
+      // Delivered) the timer no longer touches it.
+      const timerCol = row.stopwatch_status === 'running' ? 'inprogress'
+        : row.stopwatch_status === 'finished' ? 'review'
+        : 'notstarted';
+      await pool.query(
+        `UPDATE branding_projects
+            SET board_status = $2, board_moved_at = now(), board_moved_by = $3
+          WHERE id = $1 AND board_status IN ('notstarted', 'inprogress', 'review') AND board_status <> $2`,
+        [projectId, timerCol, userId]
+      );
+    }
     let status: StopwatchStatus = row.stopwatch_status ?? 'idle';
     const elapsed = row.elapsed_seconds ?? 0;
     let startedAt: string | null = row.stopwatch_started_at ?? null;
@@ -806,13 +879,24 @@ export async function saveReportRows(reportId: string, userId: string, rows: Sav
       `INSERT INTO daily_report_rows
          (id, report_id, sr_no, type_of_work, sub_category, specific_work, time_taken,
           collaborative_colleagues, stopwatch_status, elapsed_seconds, stopwatch_started_at,
-          carried_over_from_row_id, last_paused_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+          carried_over_from_row_id, last_paused_at, project_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
       [id, reportId, row.sr_no, row.type_of_work, row.sub_category,
        row.specific_work, row.time_taken, row.collaborative_colleagues,
-       status, elapsed, startedAt, row.carried_over_from_row_id ?? null, lastPausedAt]
+       status, elapsed, startedAt, row.carried_over_from_row_id ?? null, lastPausedAt, projectId]
     );
     saved.push(res.rows[0]);
+  }
+  // A card that only ever existed for a row this user has now deleted, and
+  // that is still sitting untouched in Not started, goes with the row.
+  for (const cardId of previousCards) {
+    if (keptCards.has(cardId)) continue;
+    await pool.query(
+      `DELETE FROM branding_projects
+        WHERE id = $1 AND created_by = $2 AND description = $3 AND board_status = 'notstarted'
+          AND NOT EXISTS (SELECT 1 FROM daily_report_rows r WHERE r.project_id = $1)`,
+      [cardId, userId, REPORT_CARD_MARK]
+    );
   }
   return saved;
 }
@@ -1682,6 +1766,11 @@ export interface ProjectAssignment {
   completed_at: string | null;
 }
 
+export const BOARD_STATUSES = ["notstarted", "inprogress", "review", "changes", "approved", "delivered"] as const;
+export type BoardStatus = typeof BOARD_STATUSES[number];
+export const PRIORITIES = ["high", "medium", "low"] as const;
+export type Priority = typeof PRIORITIES[number];
+
 export interface BrandingProject {
   id: string;
   name: string;
@@ -1692,6 +1781,10 @@ export interface BrandingProject {
   sub_category: string;
   specific_work: string;
   assigned_lead_id: string | null;
+  board_status: BoardStatus;
+  priority: Priority;
+  board_moved_at: string | null;
+  board_moved_by: string | null;
   created_by: string;
   created_at: string;
   assigned_user_ids: string[];
@@ -1710,6 +1803,10 @@ interface ProjectRow {
   sub_category: string;
   specific_work: string;
   assigned_lead_id: string | null;
+  board_status: string;
+  priority: string;
+  board_moved_at: string | null;
+  board_moved_by: string | null;
   created_by: string;
   created_at: string;
 }
@@ -1731,6 +1828,8 @@ export async function listBrandingProjects(forUserId?: string): Promise<Branding
     return {
       ...p,
       status: p.status as BrandingProject["status"],
+      board_status: (BOARD_STATUSES as readonly string[]).includes(p.board_status) ? p.board_status as BoardStatus : "notstarted",
+      priority: (PRIORITIES as readonly string[]).includes(p.priority) ? p.priority as Priority : "medium",
       assigned_user_ids: mine.map(a => a.user_id),
       assignments: mine.map(a => ({
         user_id: a.user_id,
@@ -1753,13 +1852,13 @@ export async function createBrandingProject(
   deadline: string | null,
   createdBy: string,
   assignedUserIds: string[],
-  work: { typeOfWork?: string; subCategory?: string; specificWork?: string; assignedLeadId?: string | null } = {}
+  work: { typeOfWork?: string; subCategory?: string; specificWork?: string; assignedLeadId?: string | null; boardStatus?: BoardStatus; priority?: Priority } = {}
 ): Promise<BrandingProject> {
   const id = generateId("proj");
   await pool.query(
-    `INSERT INTO branding_projects (id, name, description, deadline, created_by, type_of_work, sub_category, specific_work, assigned_lead_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-    [id, name, description, deadline || null, createdBy, work.typeOfWork ?? "", work.subCategory ?? "", work.specificWork ?? "", work.assignedLeadId ?? null]
+    `INSERT INTO branding_projects (id, name, description, deadline, created_by, type_of_work, sub_category, specific_work, assigned_lead_id, board_status, priority)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    [id, name, description, deadline || null, createdBy, work.typeOfWork ?? "", work.subCategory ?? "", work.specificWork ?? "", work.assignedLeadId ?? null, work.boardStatus ?? "notstarted", work.priority ?? "medium"]
   );
   for (const userId of assignedUserIds) {
     await pool.query(
@@ -1827,6 +1926,37 @@ export async function updateBrandingProject(
   }
   const all = await listBrandingProjects();
   return all.find(p => p.id === id) ?? null;
+}
+
+/**
+ * Moves a project on the Kanban board and/or changes its priority. Dropping a
+ * card on Delivered marks the project completed; dragging it back out reopens
+ * it, so the delivery flag the rest of the app reads stays truthful. Only a
+ * real column change stamps board_moved_at/by (which the client reads to build
+ * the "your card moved to X" notifications); a priority-only edit does not.
+ */
+export async function updateBrandingProjectBoard(
+  id: string,
+  patch: { boardStatus?: BoardStatus; priority?: Priority },
+  movedBy: string | null = null,
+): Promise<BrandingProject | null> {
+  const sets: string[] = [];
+  const vals: unknown[] = [id];
+  if (patch.boardStatus) {
+    vals.push(patch.boardStatus);
+    const col = `$${vals.length}`;
+    vals.push(movedBy);
+    const who = `$${vals.length}`;
+    sets.push(`board_moved_at = CASE WHEN board_status <> ${col} THEN now() ELSE board_moved_at END`);
+    sets.push(`board_moved_by = CASE WHEN board_status <> ${col} THEN ${who} ELSE board_moved_by END`);
+    sets.push(`board_status = ${col}`);
+    vals.push(patch.boardStatus === "delivered" ? "completed" : "active"); sets.push(`status = $${vals.length}`);
+  }
+  if (patch.priority) { vals.push(patch.priority); sets.push(`priority = $${vals.length}`); }
+  if (sets.length === 0) return (await listBrandingProjects()).find(p => p.id === id) ?? null;
+  const res = await pool.query(`UPDATE branding_projects SET ${sets.join(", ")} WHERE id = $1 RETURNING id`, vals);
+  if (!res.rows[0]) return null;
+  return (await listBrandingProjects()).find(p => p.id === id) ?? null;
 }
 
 export async function deleteBrandingProject(id: string): Promise<boolean> {
@@ -2115,4 +2245,72 @@ export async function getLeaveForDate(userId: string, date: string): Promise<Bra
     [userId, date]
   );
   return res.rows[0] ? mapLeave(res.rows[0]) : null;
+}
+
+// ── Personal to-dos ─────────────────────────────────────────────────────────
+
+export interface BrandingTodo {
+  id: string;
+  user_id: string;
+  title: string;
+  completed: boolean;
+  due_date: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export async function listBrandingTodos(userId: string): Promise<BrandingTodo[]> {
+  const res = await pool.query<BrandingTodo>(
+    `SELECT id, user_id, title, completed,
+            CASE WHEN due_date IS NOT NULL THEN due_date::text ELSE NULL END AS due_date,
+            created_at, completed_at
+     FROM branding_todos
+     WHERE user_id = $1
+     ORDER BY completed ASC, created_at DESC`,
+    [userId]
+  );
+  return res.rows;
+}
+
+export async function createBrandingTodo(
+  userId: string, title: string, dueDate: string | null = null
+): Promise<BrandingTodo> {
+  const id = generateId("btd");
+  const res = await pool.query<BrandingTodo>(
+    `INSERT INTO branding_todos (id, user_id, title, due_date)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id, user_id, title, completed,
+               CASE WHEN due_date IS NOT NULL THEN due_date::text ELSE NULL END AS due_date,
+               created_at, completed_at`,
+    [id, userId, title, dueDate || null]
+  );
+  return res.rows[0];
+}
+
+export async function toggleBrandingTodo(
+  id: string, userId: string, completed: boolean
+): Promise<BrandingTodo | null> {
+  const res = await pool.query<BrandingTodo>(
+    `UPDATE branding_todos
+     SET completed = $1, completed_at = CASE WHEN $1 = true THEN NOW() ELSE NULL END
+     WHERE id = $2 AND (user_id = $3 OR EXISTS (
+       SELECT 1 FROM users WHERE id = $3 AND (role IN ('admin', 'super_admin', 'sub_admin', 'task_owner', 'task_manager'))
+     ))
+     RETURNING id, user_id, title, completed,
+               CASE WHEN due_date IS NOT NULL THEN due_date::text ELSE NULL END AS due_date,
+               created_at, completed_at`,
+    [completed, id, userId]
+  );
+  return res.rows[0] ?? null;
+}
+
+export async function deleteBrandingTodo(id: string, userId: string): Promise<boolean> {
+  const res = await pool.query(
+    `DELETE FROM branding_todos
+     WHERE id = $1 AND (user_id = $2 OR EXISTS (
+       SELECT 1 FROM users WHERE id = $2 AND (role IN ('admin', 'super_admin', 'sub_admin', 'task_owner', 'task_manager'))
+     ))`,
+    [id, userId]
+  );
+  return (res.rowCount ?? 0) > 0;
 }

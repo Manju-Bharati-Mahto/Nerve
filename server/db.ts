@@ -76,6 +76,13 @@ export interface AppUser {
   created_at: string;
   updated_at: string;
   team_joined_at: string | null;
+  /** Dashboard look the user last chose (primary colour, light/dark mode). */
+  appearance: UserAppearance | null;
+}
+
+export interface UserAppearance {
+  primary?: string;
+  mode?: "light" | "dark" | "system";
 }
 
 export interface UserWithPassword extends AppUser {
@@ -104,6 +111,7 @@ export interface UpdateUserInput {
   managed_by?: string | null;
   avatar_url?: string | null;
   mobile?: string | null;
+  appearance?: UserAppearance | null;
 }
 
 export interface CreateEntryInput {
@@ -153,6 +161,7 @@ interface UserRow {
   created_at: string;
   updated_at: string;
   team_joined_at: string | null;
+  appearance: UserAppearance | null;
 }
 
 interface EntryRow {
@@ -227,6 +236,7 @@ function mapUser(row: UserRow): AppUser {
     created_at: row.created_at,
     updated_at: row.updated_at,
     team_joined_at: row.team_joined_at ?? null,
+    appearance: row.appearance ?? null,
   };
 }
 
@@ -325,6 +335,13 @@ export async function bootstrapDatabase() {
     UPDATE users
        SET team_joined_at = created_at
      WHERE team_joined_at IS NULL AND team IS NOT NULL
+  `);
+
+  // Per-user dashboard appearance (primary colour + light/dark/system mode),
+  // chosen with the paintbrush and re-applied at sign-in on any device.
+  // Nullable JSONB; NULL means "use defaults". Additive, metadata-only.
+  await pool.query(`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS appearance JSONB DEFAULT NULL
   `);
 
   // Widen role CHECK constraint to include all current roles (safe migration).
@@ -553,6 +570,7 @@ export async function updateUser(id: string, input: UpdateUserInput) {
 
   const avatarUrl = input.avatar_url !== undefined ? input.avatar_url : current.avatar_url;
   const mobile = input.mobile !== undefined ? (input.mobile?.trim() || null) : current.mobile;
+  const appearance = input.appearance !== undefined ? input.appearance : current.appearance;
 
   // Re-stamp team_joined_at whenever the team actually changes (including
   // assignment from null → team, team → team', or team → null). Keep the
@@ -570,6 +588,7 @@ export async function updateUser(id: string, input: UpdateUserInput) {
          password_hash = $8,
          avatar_url = $9,
          mobile = $11,
+         appearance = $12::jsonb,
          team_joined_at = CASE
            WHEN $10::boolean THEN (CASE WHEN $6::text IS NULL THEN NULL ELSE NOW() END)
            ELSE team_joined_at
@@ -589,6 +608,7 @@ export async function updateUser(id: string, input: UpdateUserInput) {
       avatarUrl,
       teamChanged,
       mobile,
+      appearance === null || appearance === undefined ? null : JSON.stringify(appearance),
     ],
   );
 

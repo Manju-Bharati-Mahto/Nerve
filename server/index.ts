@@ -131,9 +131,16 @@ import {
   listBrandingProjects,
   createBrandingProject,
   updateBrandingProject,
+  updateBrandingProjectBoard,
   deleteBrandingProject,
   createAssignedReportRow,
   completeProjectAssignment,
+  BOARD_STATUSES,
+  PRIORITIES,
+  listBrandingTodos,
+  createBrandingTodo,
+  toggleBrandingTodo,
+  deleteBrandingTodo,
   listRowComments,
   createRowComment,
   updateRowComment,
@@ -945,6 +952,10 @@ app.patch("/api/users/me", asyncHandler(async (req, res) => {
   const schema = z.object({
     full_name: z.string().min(1).optional(),
     department: z.string().optional(),
+    appearance: z.object({
+      primary: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+      mode: z.enum(["light", "dark", "system"]).optional(),
+    }).nullable().optional(),
   });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return sendError(res, 400, "Invalid payload.");
@@ -1786,6 +1797,21 @@ app.put("/api/branding/portal/projects/:id", asyncHandler(async (req, res) => {
   res.json({ project });
 }));
 
+// Move a project on the Kanban board and/or change its priority (lead/admin).
+app.patch("/api/branding/portal/projects/:id/board", asyncHandler(async (req, res) => {
+  if (!requireBrandingLead(res)) return;
+  const id = getSingleParam(req.params.id);
+  const { board_status, priority } = req.body as { board_status?: string; priority?: string };
+  if (board_status !== undefined && !(BOARD_STATUSES as readonly string[]).includes(board_status)) return sendError(res, 400, "Invalid board status.");
+  if (priority !== undefined && !(PRIORITIES as readonly string[]).includes(priority)) return sendError(res, 400, "Invalid priority.");
+  const project = await updateBrandingProjectBoard(id, {
+    boardStatus: board_status as typeof BOARD_STATUSES[number] | undefined,
+    priority: priority as typeof PRIORITIES[number] | undefined,
+  }, res.locals.currentUser.id);
+  if (!project) return sendError(res, 404, "Project not found.");
+  res.json({ project });
+}));
+
 // Assign a project to designers (capability-gated). Creates the project with
 // its work classification, assigns the chosen designers, and seeds a row into
 // each designer's daily report for the given work date. (Spec: leads granted
@@ -1996,6 +2022,52 @@ app.get("/api/branding/portal/leave/date/:date", asyncHandler(async (req, res) =
   const user = res.locals.currentUser;
   const leave = await getLeaveForDate(user.id, getSingleParam(req.params.date));
   res.json({ leave });
+}));
+
+// ── Personal to-dos (member + lead), surfaced on the Team Members panel ─────
+app.get("/api/branding/portal/todos", asyncHandler(async (req, res) => {
+  if (!requireBranding(res)) return;
+  const user = res.locals.currentUser;
+  let targetUserId = user.id;
+  const requestedUserId = req.query.userId ? String(req.query.userId) : null;
+  if (requestedUserId && requestedUserId !== user.id) {
+    const isLeadOrAdmin =
+      user.role === "super_admin" ||
+      user.role === "admin" ||
+      isBrandingLeadRole(user.role, user.team);
+    if (!isLeadOrAdmin) {
+      return sendError(res, 403, "Only team leads and admins can view other members' to-dos.");
+    }
+    targetUserId = requestedUserId;
+  }
+  const todos = await listBrandingTodos(targetUserId);
+  res.json({ todos });
+}));
+
+app.post("/api/branding/portal/todos", asyncHandler(async (req, res) => {
+  if (!requireBranding(res)) return;
+  const user = res.locals.currentUser;
+  const { title, due_date } = req.body as { title?: string; due_date?: string | null };
+  if (!title?.trim()) return sendError(res, 400, "Title is required.");
+  const todo = await createBrandingTodo(user.id, title.trim(), due_date || null);
+  res.status(201).json({ todo });
+}));
+
+app.patch("/api/branding/portal/todos/:id/toggle", asyncHandler(async (req, res) => {
+  if (!requireBranding(res)) return;
+  const user = res.locals.currentUser;
+  const { completed } = req.body as { completed: boolean };
+  const todo = await toggleBrandingTodo(getSingleParam(req.params.id), user.id, Boolean(completed));
+  if (!todo) return sendError(res, 404, "To-do item not found or unauthorized.");
+  res.json({ todo });
+}));
+
+app.delete("/api/branding/portal/todos/:id", asyncHandler(async (req, res) => {
+  if (!requireBranding(res)) return;
+  const user = res.locals.currentUser;
+  const ok = await deleteBrandingTodo(getSingleParam(req.params.id), user.id);
+  if (!ok) return sendError(res, 404, "To-do item not found or unauthorized.");
+  res.json({ ok: true });
 }));
 
 
