@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { Fragment, useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
@@ -6,20 +6,24 @@ import { brandingApi } from '@/lib/branding-api'
 import { api } from '@/lib/api'
 import type {
   BrandingProject, MemberReportStatus, DailyReport, DailyReportRow,
-  ReportRowComment,
+  ReportRowComment, BrandingTodo,
 } from '@/lib/branding-types'
 import {
   perDayElapsedSeconds, elapsedToTimeTaken,
 } from '@/lib/branding-types'
 import type { AppUser } from '@/lib/app-types'
 import { CAPABILITIES, CAPABILITY_META, BO_CAPABILITIES } from '@/lib/capabilities'
-import { splitRoster, editableRole } from './team-roster'
-
 import {
-  Users, FolderKanban, Plus, Pencil, Trash2, X, Check,
+  Users, FolderKanban, Plus, Pencil, Trash2, Check,
   CalendarDays, UserPlus, ChevronDown, ChevronUp,
-  CheckCircle2, XCircle, Radio, Send, Clock,
+  CheckCircle2, XCircle, Radio, Send, Clock, ListTodo, RefreshCw,
+  ArrowLeft,
 } from 'lucide-react'
+import {
+  DS, cx, Badge, Avatar, Modal, EmptyState, Spinner,
+  Segmented, BlockHeader, CardHead, StatusPill, MiniStat, DotItem,
+} from './ds'
+import type { Tone } from './ds'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -30,12 +34,11 @@ const STATUS_LABELS: Record<BrandingProject['status'], string> = {
   completed: 'Completed',
   on_hold: 'On Hold',
 }
-const STATUS_BADGE: Record<BrandingProject['status'], string> = {
-  active: 'bg-green-100 text-green-700',
-  completed: 'bg-blue-100 text-blue-700',
-  on_hold: 'bg-yellow-100 text-yellow-700',
+const STATUS_BADGE: Record<BrandingProject['status'], Tone> = {
+  active: 'success',
+  completed: 'info',
+  on_hold: 'warning',
 }
-
 // ── Member Dialog ──────────────────────────────────────────────────────────
 
 interface MemberFormState {
@@ -93,161 +96,193 @@ function MemberDialog({ mode, initial, canManageCapabilities, onSave, onClose }:
   }
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 py-6">
-      {/* The BrandOps capability grid makes this dialog taller than a laptop
-          screen. Without a cap and a scroll it centres with the Save button
-          off the bottom of the window, unreachable. The header stays put so
-          the dialog still reads as one thing while the body scrolls. */}
-      <div className="bg-card border border-border rounded-xl shadow-xl w-full max-w-md mx-4 max-h-full flex flex-col">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border shrink-0">
-          <h2 className="text-sm font-semibold text-foreground">
-            {mode === 'add' ? 'Add Team Member' : 'Edit Member'}
-          </h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
-            <X className="w-4 h-4" />
+    <Modal
+      title={mode === 'add' ? 'Add Team Member' : 'Edit Member'}
+      onClose={onClose}
+      size="md"
+      footer={
+        <>
+          <button type="button" onClick={onClose} className={cx(DS.btn, DS.btnSecondary)}>
+            Cancel
           </button>
+          <button type="submit" form="member-dialog-form" disabled={saving} className={cx(DS.btn, DS.btnPrimary)}>
+            {saving ? 'Saving…' : mode === 'add' ? 'Add Member' : 'Save Changes'}
+          </button>
+        </>
+      }
+    >
+      {/* Profile header — the Account page's avatar + name row, fed live
+          from the form so the card reflects what is being typed. */}
+      <div className="flex items-center gap-4 sm:gap-5 pb-5 mb-5 border-b border-[#C5CAD1]">
+        <Avatar name={form.full_name} email={form.email} size="xl" />
+        <div className="min-w-0">
+          <p className="text-base font-semibold text-[#111827] tracking-tight truncate">
+            {form.full_name.trim() || (mode === 'add' ? 'New member' : 'Unnamed')}
+          </p>
+          <p className="text-sm font-medium text-[#6B7280] truncate">{form.email.trim() || 'Email address'}</p>
+          <p className="text-xs font-medium text-[#9CA3AF] mt-1">
+            {mode === 'add' ? 'Joins the branding team' : 'Branding team'}
+          </p>
         </div>
-        <form onSubmit={handleSubmit} className="p-5 space-y-4 overflow-y-auto">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-medium text-muted-foreground block mb-1">Full Name *</label>
-              <input
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
-                value={form.full_name}
-                onChange={e => setForm(f => ({ ...f, full_name: e.target.value }))}
-                placeholder="Jane Doe"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground block mb-1">Department</label>
-              <input
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
-                value={form.department}
-                onChange={e => setForm(f => ({ ...f, department: e.target.value }))}
-                placeholder="Design"
-              />
-            </div>
-          </div>
+      </div>
+
+      <form id="member-dialog-form" onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1">Email *</label>
+            <label className={DS.label}>Full Name *</label>
             <input
-              type="email"
-              className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
-              value={form.email}
-              onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-              placeholder="jane@example.com"
+              className={DS.input}
+              value={form.full_name}
+              onChange={e => setForm(f => ({ ...f, full_name: e.target.value }))}
+              placeholder="Jane Doe"
             />
           </div>
           <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1">
-              {mode === 'add' ? 'Password *' : 'New Password (leave blank to keep)'}
-            </label>
+            <label className={DS.label}>Department</label>
             <input
-              type="password"
-              className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
-              value={form.password}
-              onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-              placeholder={mode === 'edit' ? 'Leave blank to keep current' : 'Min 6 characters'}
+              className={DS.input}
+              value={form.department}
+              onChange={e => setForm(f => ({ ...f, department: e.target.value }))}
+              placeholder="Design"
             />
           </div>
-          <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1">Role *</label>
-            <select
-              className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
-              value={form.role}
-              onChange={e => setForm(f => ({ ...f, role: e.target.value as 'user' | 'sub_admin' | 'task_owner' | 'task_manager' | 'inventory_manager' }))}
-            >
-              <option value="user">Designer</option>
-              <option value="sub_admin">Team Lead</option>
-              <option value="task_owner">Task Owner</option>
-              <option value="task_manager">Task Manager</option>
-              <option value="inventory_manager">Inventory Manager (BrandOps)</option>
-            </select>
-          </div>
-          {canManageCapabilities && (
-            <div>
-              <label className="text-xs font-medium text-muted-foreground block mb-1">
-                Extra capabilities
-              </label>
-              <p className="text-[11px] text-muted-foreground mb-2">
-                Grant access to specific admin features without promoting the member to admin. Each grant adds a sidebar entry on the user's dashboard.
+        </div>
+        <div>
+          <label className={DS.label}>Email *</label>
+          <input
+            type="email"
+            className={DS.input}
+            value={form.email}
+            onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+            placeholder="jane@example.com"
+          />
+        </div>
+        <div>
+          <label className={DS.label}>
+            {mode === 'add' ? 'Password *' : 'New Password (leave blank to keep)'}
+          </label>
+          <input
+            type="password"
+            className={DS.input}
+            value={form.password}
+            onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+            placeholder={mode === 'edit' ? 'Leave blank to keep current' : 'Min 6 characters'}
+          />
+        </div>
+        <div>
+          <label className={DS.label}>Role *</label>
+          <select
+            className={DS.select}
+            value={form.role}
+            onChange={e => setForm(f => ({ ...f, role: e.target.value as MemberFormState['role'] }))}
+          >
+            <option value="user">Designer</option>
+            <option value="sub_admin">Team Lead</option>
+            <option value="task_owner">Task Owner</option>
+            <option value="task_manager">Task Manager</option>
+            <option value="inventory_manager">Inventory Manager (BrandOps)</option>
+          </select>
+        </div>
+        {canManageCapabilities && (
+          <div className="pt-1">
+            <p className={DS.eyebrow}>Extra capabilities</p>
+            <p className={cx(DS.hint, 'mb-3')}>
+              Grant access to specific admin features without promoting the member to admin. Each grant adds a sidebar entry on the user's dashboard.
+            </p>
+            <div className="space-y-2">
+              {CAPABILITIES.filter(k => k.startsWith('branding:')).map(key => {
+                const meta = CAPABILITY_META[key]
+                const checked = form.capabilities.includes(key)
+                return (
+                  <label
+                    key={key}
+                    className={cx(
+                      'flex items-start gap-3 px-3.5 py-3 rounded-[6px] border cursor-pointer transition-colors',
+                      checked ? 'bg-bp-50 border-bp-300' : 'bg-white border-[#C5CAD1] hover:border-[#9CA3AF] hover:bg-[#F9FAFB]',
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      className="sr-only"
+                      checked={checked}
+                      onChange={() => toggleCapability(key)}
+                    />
+                    <span
+                      className={cx(
+                        'mt-0.5 w-[18px] h-[18px] rounded-md border grid place-items-center shrink-0 transition-colors',
+                        checked ? 'bg-bp-700 border-bp-700 text-white' : 'bg-white border-[#9CA3AF]',
+                      )}
+                      aria-hidden="true"
+                    >
+                      {checked && <Check className="w-3 h-3 stroke-[3]" />}
+                    </span>
+                    <div className="min-w-0">
+                      <p className={cx('text-[13px] font-semibold', checked ? 'text-bp-800' : 'text-[#111827]')}>{meta.label}</p>
+                      <p className="text-xs text-[#6B7280] font-medium leading-snug mt-0.5">{meta.description}</p>
+                    </div>
+                  </label>
+                )
+              })}
+            </div>
+
+            {/* BrandOps: one switch per tab. An Inventory Manager sees only
+                what is ticked here, and the same keys gate the API. */}
+            <div className="mt-5">
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <p className={DS.eyebrow}>
+                  BrandOps tabs {form.role === 'inventory_manager' && <span className="text-rose-500">*</span>}
+                </p>
+                <button type="button"
+                  onClick={() => setForm(f => ({
+                    ...f,
+                    capabilities: BO_CAPABILITIES.every(k => f.capabilities.includes(k))
+                      ? f.capabilities.filter(k => !(BO_CAPABILITIES as readonly string[]).includes(k))
+                      : [...new Set([...f.capabilities, ...BO_CAPABILITIES])],
+                  }))}
+                  className="text-[11px] font-semibold text-bp-700 hover:underline">
+                  {BO_CAPABILITIES.every(k => form.capabilities.includes(k)) ? 'Clear all' : 'Select all'}
+                </button>
+              </div>
+              <p className={cx(DS.hint, 'mb-3')}>
+                Switch on the BrandOps tabs this person should see. An Inventory Manager with
+                nothing ticked here can sign in but has no modules.
               </p>
-              <div className="space-y-1.5">
-                {CAPABILITIES.filter(k => k.startsWith('branding:')).map(key => {
+              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                {BO_CAPABILITIES.map(key => {
                   const meta = CAPABILITY_META[key]
                   const checked = form.capabilities.includes(key)
                   return (
-                    <label key={key} className="flex items-start gap-2 px-2.5 py-2 rounded-lg border border-border cursor-pointer hover:bg-accent/40">
-                      <input
-                        type="checkbox"
-                        className="mt-0.5"
-                        checked={checked}
-                        onChange={() => toggleCapability(key)}
-                      />
+                    <label
+                      key={key}
+                      className={cx(
+                        'flex items-start gap-3 px-3.5 py-3 rounded-[6px] border cursor-pointer transition-colors',
+                        checked ? 'bg-bp-50 border-bp-300' : 'bg-white border-[#C5CAD1] hover:border-[#9CA3AF] hover:bg-[#F9FAFB]',
+                      )}
+                    >
+                      <input type="checkbox" className="sr-only" checked={checked} onChange={() => toggleCapability(key)} />
+                      <span
+                        className={cx(
+                          'mt-0.5 w-[18px] h-[18px] rounded-md border grid place-items-center shrink-0 transition-colors',
+                          checked ? 'bg-bp-700 border-bp-700 text-white' : 'bg-white border-[#9CA3AF]',
+                        )}
+                        aria-hidden="true"
+                      >
+                        {checked && <Check className="w-3 h-3 stroke-[3]" />}
+                      </span>
                       <div className="min-w-0">
-                        <p className="text-xs font-semibold text-foreground">{meta.label}</p>
-                        <p className="text-[11px] text-muted-foreground">{meta.description}</p>
+                        <p className={cx('text-[13px] font-semibold', checked ? 'text-bp-800' : 'text-[#111827]')}>{meta.label}</p>
+                        <p className="text-xs text-[#6B7280] font-medium leading-snug mt-0.5">{meta.description}</p>
                       </div>
                     </label>
                   )
                 })}
               </div>
-
-              {/* BrandOps: one switch per tab. An Inventory Manager sees only
-                  what is ticked here, and the same keys gate the API. */}
-              <div className="mt-4">
-                <div className="flex items-center justify-between gap-2 mb-1">
-                  <label className="text-xs font-medium text-muted-foreground">
-                    BrandOps tabs {form.role === 'inventory_manager' && <span className="text-red-500">*</span>}
-                  </label>
-                  <button type="button"
-                    onClick={() => setForm(f => ({
-                      ...f,
-                      capabilities: BO_CAPABILITIES.every(k => f.capabilities.includes(k))
-                        ? f.capabilities.filter(k => !(BO_CAPABILITIES as readonly string[]).includes(k))
-                        : [...new Set([...f.capabilities, ...BO_CAPABILITIES])],
-                    }))}
-                    className="text-[11px] font-semibold text-blue-700 hover:underline">
-                    {BO_CAPABILITIES.every(k => form.capabilities.includes(k)) ? 'Clear all' : 'Select all'}
-                  </button>
-                </div>
-                <p className="text-[11px] text-muted-foreground mb-2">
-                  Switch on the BrandOps tabs this person should see. An Inventory Manager with
-                  nothing ticked here can sign in but has no modules.
-                </p>
-                <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
-                  {BO_CAPABILITIES.map(key => {
-                    const meta = CAPABILITY_META[key]
-                    const checked = form.capabilities.includes(key)
-                    return (
-                      <label key={key} className="flex items-start gap-2 px-2.5 py-2 rounded-lg border border-border cursor-pointer hover:bg-accent/40">
-                        <input type="checkbox" className="mt-0.5" checked={checked}
-                          onChange={() => toggleCapability(key)} />
-                        <div className="min-w-0">
-                          <p className="text-xs font-semibold text-foreground">{meta.label}</p>
-                          <p className="text-[11px] text-muted-foreground">{meta.description}</p>
-                        </div>
-                      </label>
-                    )
-                  })}
-                </div>
-              </div>
             </div>
-          )}
-          {err && <p className="text-xs text-red-500">{err}</p>}
-          <div className="flex gap-2 justify-end pt-1">
-            <button type="button" onClick={onClose}
-              className="px-4 py-2 text-sm rounded-lg border border-border text-muted-foreground hover:bg-accent">
-              Cancel
-            </button>
-            <button type="submit" disabled={saving}
-              className="px-4 py-2 text-sm rounded-lg text-white disabled:opacity-50" style={{ background: 'hsl(var(--brand-700))' }}>
-              {saving ? 'Saving…' : mode === 'add' ? 'Add Member' : 'Save Changes'}
-            </button>
           </div>
-        </form>
-      </div>
-    </div>
+        )}
+        {err && <p className="text-xs font-semibold text-rose-600">{err}</p>}
+      </form>
+    </Modal>
   )
 }
 
@@ -310,115 +345,255 @@ function ProjectDialog({ mode, initial, members, onSave, onClose }: ProjectDialo
     .map(m => m.full_name || m.email)
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-card border border-border rounded-xl shadow-xl w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border sticky top-0 bg-card">
-          <h2 className="text-sm font-semibold text-foreground">
-            {mode === 'add' ? 'New Project' : 'Edit Project'}
-          </h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
-            <X className="w-4 h-4" />
+    <Modal
+      title={mode === 'add' ? 'New Project' : 'Edit Project'}
+      onClose={onClose}
+      size="lg"
+      footer={
+        <>
+          <button type="button" onClick={onClose} className={cx(DS.btn, DS.btnSecondary)}>
+            Cancel
           </button>
+          <button type="submit" form="project-dialog-form" disabled={saving} className={cx(DS.btn, DS.btnPrimary)}>
+            {saving ? 'Saving…' : mode === 'add' ? 'Create Project' : 'Save Changes'}
+          </button>
+        </>
+      }
+    >
+      <form id="project-dialog-form" onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className={DS.label}>Project Name *</label>
+          <input
+            className={DS.input}
+            value={form.name}
+            onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+            placeholder="Annual Brochure Design"
+          />
         </div>
-        <form onSubmit={handleSubmit} className="p-5 space-y-4">
+        <div>
+          <label className={DS.label}>Description</label>
+          <textarea
+            className={cx(DS.textarea, 'resize-none')}
+            rows={3}
+            value={form.description}
+            onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+            placeholder="Brief description of the project…"
+          />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1">Project Name *</label>
+            <label className={DS.label}>Deadline</label>
             <input
-              className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
-              value={form.name}
-              onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-              placeholder="Annual Brochure Design"
+              type="date"
+              className={DS.input}
+              value={form.deadline}
+              onChange={e => setForm(f => ({ ...f, deadline: e.target.value }))}
             />
           </div>
           <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1">Description</label>
-            <textarea
-              className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background resize-none"
-              rows={3}
-              value={form.description}
-              onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-              placeholder="Brief description of the project…"
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-medium text-muted-foreground block mb-1">Deadline</label>
-              <input
-                type="date"
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
-                value={form.deadline}
-                onChange={e => setForm(f => ({ ...f, deadline: e.target.value }))}
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground block mb-1">Status</label>
-              <select
-                className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
-                value={form.status}
-                onChange={e => setForm(f => ({ ...f, status: e.target.value as BrandingProject['status'] }))}
-              >
-                <option value="active">Active</option>
-                <option value="on_hold">On Hold</option>
-                <option value="completed">Completed</option>
-              </select>
-            </div>
-          </div>
-          {/* Assign members */}
-          <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1">Assign Members</label>
-            <button
-              type="button"
-              onClick={() => setMemberOpen(o => !o)}
-              className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background text-left flex justify-between items-center"
+            <label className={DS.label}>Status</label>
+            <select
+              className={DS.select}
+              value={form.status}
+              onChange={e => setForm(f => ({ ...f, status: e.target.value as BrandingProject['status'] }))}
             >
-              <span className={selectedNames.length ? 'text-foreground' : 'text-muted-foreground'}>
-                {selectedNames.length
-                  ? selectedNames.slice(0, 3).join(', ') + (selectedNames.length > 3 ? ` +${selectedNames.length - 3} more` : '')
-                  : 'Select members…'}
-              </span>
-              {memberOpen ? <ChevronUp className="w-4 h-4 shrink-0" /> : <ChevronDown className="w-4 h-4 shrink-0" />}
-            </button>
-            {memberOpen && (
-              <div className="border border-border rounded-lg mt-1 max-h-44 overflow-y-auto bg-background">
-                {members.length === 0 && (
-                  <p className="text-xs text-muted-foreground px-3 py-2">No team members yet.</p>
-                )}
-                {members.map(m => (
-                  <label key={m.id} className="flex items-center gap-2.5 px-3 py-2 hover:bg-accent cursor-pointer">
+              <option value="active">Active</option>
+              <option value="on_hold">On Hold</option>
+              <option value="completed">Completed</option>
+            </select>
+          </div>
+        </div>
+        {/* Assign members */}
+        <div>
+          <label className={DS.label}>Assign Members</label>
+          <button
+            type="button"
+            onClick={() => setMemberOpen(o => !o)}
+            className={cx(DS.input, 'text-left flex justify-between items-center gap-2 cursor-pointer', memberOpen && 'border-bp-600 ring-2 ring-bp-200')}
+          >
+            <span className={cx('truncate', selectedNames.length ? 'text-[#111827]' : 'text-[#9CA3AF]')}>
+              {selectedNames.length
+                ? selectedNames.slice(0, 3).join(', ') + (selectedNames.length > 3 ? ` +${selectedNames.length - 3} more` : '')
+                : 'Select members…'}
+            </span>
+            {memberOpen ? <ChevronUp className="w-4 h-4 shrink-0 text-[#9CA3AF]" /> : <ChevronDown className="w-4 h-4 shrink-0 text-[#9CA3AF]" />}
+          </button>
+          {memberOpen && (
+            <div className="border border-[#C5CAD1] rounded-[6px] mt-2 max-h-44 overflow-y-auto bg-white divide-y divide-[#C5CAD1]">
+              {members.length === 0 && (
+                <EmptyState compact title="No team members yet." />
+              )}
+              {members.map(m => {
+                const on = form.assigned_user_ids.includes(m.id)
+                return (
+                  <label key={m.id} className={cx('flex items-center gap-3 px-3.5 py-2.5 cursor-pointer transition-colors', on ? 'bg-bp-50' : 'hover:bg-[#F9FAFB]')}>
                     <input
                       type="checkbox"
-                      checked={form.assigned_user_ids.includes(m.id)}
+                      checked={on}
                       onChange={() => toggleMember(m.id)}
-                      className="rounded"
+                      className="sr-only"
                     />
-                    <span className="text-sm text-foreground">{m.full_name || m.email}</span>
-                    <span className="ml-auto text-[11px] text-muted-foreground">
-                      {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : m.role === 'task_manager' ? 'Task Manager' : m.role === 'inventory_manager' ? 'Inventory Manager' : 'Member'}
+                    <span
+                      className={cx(
+                        'w-[18px] h-[18px] rounded-md border grid place-items-center shrink-0 transition-colors',
+                        on ? 'bg-bp-700 border-bp-700 text-white' : 'bg-white border-[#9CA3AF]',
+                      )}
+                      aria-hidden="true"
+                    >
+                      {on && <Check className="w-3 h-3 stroke-[3]" />}
+                    </span>
+                    <Avatar url={m.avatar_url} name={m.full_name} email={m.email} size="xs" />
+                    <span className={cx('text-sm font-semibold truncate', on ? 'text-bp-800' : 'text-[#111827]')}>{m.full_name || m.email}</span>
+                    <span className="ml-auto text-[11px] font-semibold text-[#9CA3AF] shrink-0">
+                      {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : m.role === 'task_manager' ? 'Task Manager' : m.role === 'inventory_manager' ? 'Inventory Mgr' : 'Member'}
                     </span>
                   </label>
-                ))}
-              </div>
-            )}
-          </div>
-          {err && <p className="text-xs text-red-500">{err}</p>}
-          <div className="flex gap-2 justify-end pt-1">
-            <button type="button" onClick={onClose}
-              className="px-4 py-2 text-sm rounded-lg border border-border text-muted-foreground hover:bg-accent">
-              Cancel
-            </button>
-            <button type="submit" disabled={saving}
-              className="px-4 py-2 text-sm rounded-lg text-white disabled:opacity-50" style={{ background: 'hsl(var(--brand-700))' }}>
-              {saving ? 'Saving…' : mode === 'add' ? 'Create Project' : 'Save Changes'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+        {err && <p className="text-xs font-semibold text-rose-600">{err}</p>}
+      </form>
+    </Modal>
   )
 }
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10)
+}
+
+// ── Member To-Dos Dialog (Visible to Leads & Admins) ──────────────────────
+
+function MemberTodosDialog({ member, onClose, mode = 'modal' }: { member: AppUser; onClose: () => void; mode?: 'modal' | 'page' }) {
+  const [todos, setTodos] = useState<BrandingTodo[]>([])
+  const [loading, setLoading] = useState(true)
+
+  // Page mode (phones / tablets): opening pushes a history entry so the
+  // device Back button closes the page instead of leaving the panel.
+  useEffect(() => {
+    if (mode !== 'page') return
+    window.history.pushState({ todosPage: member.id }, '')
+    let popped = false
+    const onPop = () => { popped = true; onClose() }
+    window.addEventListener('popstate', onPop)
+    return () => {
+      window.removeEventListener('popstate', onPop)
+      // Closed by the on-screen Back: drop the entry we pushed.
+      if (!popped && window.history.state?.todosPage === member.id) window.history.back()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, member.id])
+
+  useEffect(() => {
+    let unmounted = false
+    setLoading(true)
+    brandingApi.getTodos(member.id)
+      .then(res => {
+        if (!unmounted) setTodos(res.todos || [])
+      })
+      .catch(() => {
+        if (!unmounted) setTodos([])
+      })
+      .finally(() => {
+        if (!unmounted) setLoading(false)
+      })
+    return () => { unmounted = true }
+  }, [member.id])
+
+  // The todo model only knows "completed" — an open item with a due date is
+  // scheduled work (in progress), one without is simply pending.
+  const completedCount = todos.filter(t => t.completed).length
+  const inProgressCount = todos.filter(t => !t.completed && t.due_date).length
+  const pendingCount = todos.length - completedCount - inProgressCount
+
+  const fmtDay = (iso: string) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+
+  const body = (
+    <>
+      {/* Status strip — Project Progress's three figure tiles */}
+      <div className="grid grid-cols-3 gap-2 mb-5">
+        <MiniStat dot="bg-emerald-500" n={completedCount} label="Completed" />
+        <MiniStat dot="bg-bp-600" n={inProgressCount} label="In progress" />
+        <MiniStat dot="bg-slate-400" n={pendingCount} label="Pending" />
+      </div>
+
+      {/* Content */}
+      {loading ? (
+        <div className="flex flex-col items-center justify-center py-12 gap-2">
+          <Spinner />
+          <p className={DS.muted}>Loading to-dos…</p>
+        </div>
+      ) : todos.length === 0 ? (
+        <EmptyState
+          icon={ListTodo}
+          title="No to-dos created yet"
+          body="This member has not added any personal to-dos in their schedule."
+        />
+      ) : (
+        <ul className="divide-y divide-[#C5CAD1]">
+          {todos.map(todo => {
+            const open = !todo.completed
+            const meta = [
+              `Created ${fmtDay(todo.created_at)}`,
+              todo.completed && todo.completed_at ? `Done ${fmtDay(todo.completed_at)}` : null,
+              todo.due_date ? `Due ${fmtDay(todo.due_date)}` : null,
+            ].filter(Boolean).join(' · ')
+            return (
+              <DotItem
+                key={todo.id}
+                title={<span className={todo.completed ? 'line-through text-[#9CA3AF]' : undefined}>{todo.title}</span>}
+                meta={meta}
+                trailing={
+                  todo.completed
+                    ? <Badge tone="success">Completed</Badge>
+                    : open && todo.due_date
+                      ? <Badge tone="info">In progress</Badge>
+                      : <Badge tone="neutral">Pending</Badge>
+                }
+              />
+            )
+          })}
+        </ul>
+      )}
+    </>
+  )
+
+  if (mode === 'page') {
+    return (
+      <div className="space-y-3">
+        <button type="button" onClick={onClose} className={cx(DS.btn, DS.btnSecondary, DS.btnSm)}>
+          <ArrowLeft className="w-3.5 h-3.5" strokeWidth={1.75} /> Back to team
+        </button>
+        <div className={cx(DS.card, DS.cardPad)}>
+          <div className="flex items-center gap-3 mb-4">
+            <Avatar url={member.avatar_url} name={member.full_name} email={member.email} size="md" />
+            <div className="min-w-0">
+              <h2 className={DS.h2}>{member.full_name || member.email}'s Schedule & To-Dos</h2>
+              <p className={cx(DS.sub, 'text-[12px]')}>Tasks created by this member in Today's Schedule</p>
+            </div>
+          </div>
+          {body}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <Modal
+      title={`${member.full_name || member.email}'s Schedule & To-Dos`}
+      subtitle="Tasks created by this member in Today's Schedule"
+      onClose={onClose}
+      size="lg"
+      footer={
+        <button onClick={onClose} className={cx(DS.btn, DS.btnSecondary)}>
+          Close
+        </button>
+      }
+    >
+      {body}
+    </Modal>
+  )
 }
 
 // ── Main Component ─────────────────────────────────────────────────────────
@@ -432,6 +607,19 @@ export default function BrandingTeamPanel() {
   // Branding members only
   // - admin/super_admin: all branding members
   // - sub_admin (lead): members they manage + themselves (so their own report is visible)
+  // Allow ?tab=projects|live in the URL to land directly on a sub-tab —
+  // used by the Total Projects card on the admin dashboard — and ?lead=<id>
+  // to show one lead's team only, which is how the Team Members overview
+  // cards open this page.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const leadFilter = searchParams.get('lead')
+  const filterLead = leadFilter ? allUsers.find(u => u.id === leadFilter) ?? null : null
+  const clearLeadFilter = () => {
+    const next = new URLSearchParams(searchParams)
+    next.delete('lead')
+    setSearchParams(next, { replace: true })
+  }
+
   const members = allUsers.filter(u =>
     u.team === 'branding' &&
     u.role !== 'super_admin' &&
@@ -439,12 +627,10 @@ export default function BrandingTeamPanel() {
       ? true
       : isLead
         ? u.managed_by === user?.id || u.id === user?.id
-        : u.id !== user?.id)
+        : u.id !== user?.id) &&
+    (!filterLead || u.managed_by === filterLead.id || u.id === filterLead.id)
   )
-
-  // Allow ?tab=projects|live in the URL to land directly on a sub-tab —
-  // used by the Total Projects card on the admin dashboard.
-  const [searchParams, setSearchParams] = useSearchParams()
+  const memberIds = new Set(members.map(m => m.id))
   const tabParam = searchParams.get('tab')
   const initialTab: TabKey = tabParam === 'projects' ? 'projects' : tabParam === 'live' ? 'live' : 'members'
   const [tab, setTab] = useState<TabKey>(initialTab)
@@ -478,14 +664,21 @@ export default function BrandingTeamPanel() {
   }, [])
 
   useEffect(() => { loadStatuses(filterDate) }, [loadStatuses, filterDate])
+  // Statuses for the people on screen only, so the summary matches the cards
+  // when one lead's team is being shown.
+  const shownStatuses = todayStatuses.filter(st => memberIds.has(st.user_id))
 
   // ── Members state ─────────────────────────────────────────────────────
   const [memberDialog, setMemberDialog] = useState<null | 'add' | { mode: 'edit'; member: AppUser }>(null)
   const [deleteTarget, setDeleteTarget] = useState<AppUser | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState(false)
+  const [viewingTodosMember, setViewingTodosMember] = useState<AppUser | null>(null)
 
   // ── Projects state ────────────────────────────────────────────────────
   const [projects, setProjects] = useState<BrandingProject[]>([])
+  const shownProjects = projects.filter(proj => !filterLead
+    || proj.assigned_lead_id === filterLead.id || proj.created_by === filterLead.id
+    || proj.assigned_user_ids.some(id => memberIds.has(id)))
   const [projLoading, setProjLoading] = useState(true)
   const [projDialog, setProjDialog] = useState<null | 'add' | { mode: 'edit'; project: BrandingProject }>(null)
   const [deleteProjTarget, setDeleteProjTarget] = useState<BrandingProject | null>(null)
@@ -583,110 +776,118 @@ export default function BrandingTeamPanel() {
 
   // ── Render ─────────────────────────────────────────────────────────────
 
-  const { leads: teamLeads, rest: teamMembers } = splitRoster(members)
+  const teamLeads = members.filter(m => m.role === 'sub_admin' || m.role === 'task_owner' || m.role === 'task_manager')
+  const teamMembers = members.filter(m => m.role === 'user')
+
+  // Below the lg breakpoint a member's to-dos open as a page of their own
+  // (like every other page on a phone) instead of a dialog.
+  const [isSmall, setIsSmall] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 1023px)').matches)
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 1023px)')
+    const onChange = () => setIsSmall(mq.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+
+  if (viewingTodosMember && isSmall) {
+    return (
+      <MemberTodosDialog
+        mode="page"
+        member={viewingTodosMember}
+        onClose={() => setViewingTodosMember(null)}
+      />
+    )
+  }
 
   return (
-    <div className="animate-fade-in space-y-6">
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-3xl font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>
-            {isLead ? 'My Team' : 'Team Management'}
-          </h1>
-          <p className="text-sm font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>
-            {isLead ? 'Branding team — members & daily report status' : 'Branding team — members & projects'}
-          </p>
+    <div className="animate-fade-in space-y-4">
+      {/* Toolbar: tabs on the left, context action on the right. The host
+          shell already draws the page title, so this row stays compact. */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <Segmented<TabKey>
+          round={false}
+          className="flex-1 max-w-md"
+          ariaLabel="Team sections"
+          value={tab}
+          onChange={setTab}
+          options={[
+            { id: 'members', label: `Members (${members.length})` },
+            ...((isAdmin || isLead)
+              ? [
+                  { id: 'live' as const, label: 'Live Reports' },
+                  { id: 'projects' as const, label: `Projects (${shownProjects.length})` },
+                ]
+              : []),
+          ]}
+        />
+        <div className="flex items-center gap-2 shrink-0">
+          {isAdmin && tab === 'members' && (
+            <button
+              onClick={() => setMemberDialog('add')}
+              className={cx(DS.btn, DS.btnPrimary)}
+            >
+              <UserPlus className="w-4 h-4" />
+              Add Member
+            </button>
+          )}
+          {(isAdmin || isLead) && tab === 'projects' && (
+            <button
+              onClick={() => setProjDialog('add')}
+              className={cx(DS.btn, DS.btnPrimary)}
+            >
+              <Plus className="w-4 h-4" />
+              New Project
+            </button>
+          )}
         </div>
-        {isAdmin && tab === 'members' && (
-          <button
-            onClick={() => setMemberDialog('add')}
-            className="flex items-center gap-2 px-4 py-2 text-white rounded-xl text-sm font-semibold"
-            style={{ background: 'hsl(var(--brand-700))' }}
-          >
-            <UserPlus className="w-4 h-4" />
-            Add Member
-          </button>
-        )}
-        {(isAdmin || isLead) && tab === 'projects' && (
-          <button
-            onClick={() => setProjDialog('add')}
-            className="flex items-center gap-2 px-4 py-2 text-white rounded-xl text-sm font-semibold"
-            style={{ background: 'hsl(var(--brand-700))' }}
-          >
-            <Plus className="w-4 h-4" />
-            New Project
-          </button>
-        )}
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-border">
-        <button
-          onClick={() => setTab('members')}
-          className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-            tab === 'members' ? 'border-[hsl(var(--brand-700))] text-[hsl(var(--brand-700))]' : 'border-transparent text-muted-foreground hover:text-foreground'
-          }`}
-        >
-          <Users className="w-4 h-4" />
-          Members ({members.length})
-        </button>
-        {(isAdmin || isLead) && (
-          <button
-            onClick={() => setTab('live')}
-            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-              tab === 'live' ? 'border-[hsl(var(--brand-700))] text-[hsl(var(--brand-700))]' : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            <Radio className="w-4 h-4" />
-            Live Reports
+      {filterLead && (
+        <div className={cx(DS.card, 'px-4 py-3 flex items-center gap-3 flex-wrap bg-bp-50/60 border-bp-200')}>
+          <Avatar url={filterLead.avatar_url} name={filterLead.full_name} email={filterLead.email} size="sm" />
+          <p className="text-sm font-medium text-[#374151] min-w-0">
+            Showing <span className="font-semibold text-[#111827]">{filterLead.full_name || filterLead.email}</span>'s team only
+            <span className="text-[#9CA3AF]"> · {members.length} {members.length === 1 ? 'person' : 'people'}</span>
+          </p>
+          <button type="button" onClick={clearLeadFilter} className={cx(DS.btn, DS.btnSecondary, DS.btnXs, 'ml-auto')}>
+            Show all teams
           </button>
-        )}
-        {(isAdmin || isLead) && (
-          <button
-            onClick={() => setTab('projects')}
-            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-              tab === 'projects' ? 'border-[hsl(var(--brand-700))] text-[hsl(var(--brand-700))]' : 'border-transparent text-muted-foreground hover:text-foreground'
-            }`}
-          >
-            <FolderKanban className="w-4 h-4" />
-            Projects ({projects.length})
-          </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* ── Members Tab ── */}
       {tab === 'members' && (
-        <div className="space-y-5">
+        <div className="space-y-4">
           {/* Date filter + summary */}
           <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-2">
-              <CalendarDays className="w-4 h-4 shrink-0" style={{ color: 'hsl(var(--brand-400))' }} />
+            <div className="flex items-center gap-2 bg-white border border-[#C5CAD1] rounded-[6px] px-3 py-2 focus-within:border-bp-600 focus-within:ring-2 focus-within:ring-bp-200 transition-all">
+              <CalendarDays className="w-4 h-4 shrink-0 text-[#9CA3AF]" />
               <input
                 type="date"
                 max={todayIso()}
                 value={filterDate}
                 onChange={e => setFilterDate(e.target.value)}
-                className="text-sm bg-transparent outline-none cursor-pointer"
-                style={{ color: 'hsl(var(--brand-700))' }}
+                className="text-sm font-semibold text-[#111827] bg-transparent outline-none cursor-pointer"
               />
             </div>
             {statusLoading ? (
-              <span className="text-xs font-medium text-gray-400 animate-pulse">Loading…</span>
-            ) : todayStatuses.length > 0 && (
+              <span className="inline-flex items-center gap-2 text-xs font-medium text-[#9CA3AF]"><Spinner /> Loading…</span>
+            ) : shownStatuses.length > 0 && (
               <>
-                <span className="flex items-center gap-1 text-xs font-semibold text-green-700 bg-green-50 px-3 py-1.5 rounded-full">
+                <Badge tone="success" className="!px-3 !py-1.5 !text-xs">
                   <CheckCircle2 className="w-3.5 h-3.5" />
-                  {todayStatuses.filter(s => s.has_submitted).length} submitted
-                </span>
-                <span className="flex items-center gap-1 text-xs font-semibold text-red-600 bg-red-50 px-3 py-1.5 rounded-full">
+                  {shownStatuses.filter(s => s.has_submitted).length} submitted
+                </Badge>
+                <Badge tone="danger" className="!px-3 !py-1.5 !text-xs">
                   <XCircle className="w-3.5 h-3.5" />
-                  {todayStatuses.filter(s => !s.has_submitted).length} pending
-                </span>
+                  {shownStatuses.filter(s => !s.has_submitted).length} pending
+                </Badge>
               </>
             )}
           </div>
 
           <MemberGroup
-            label="Team Leads"
+            label="Team leads"
             items={teamLeads}
             isAdmin={isAdmin}
             statuses={todayStatuses}
@@ -696,6 +897,7 @@ export default function BrandingTeamPanel() {
             onEdit={m => setMemberDialog({ mode: 'edit', member: m })}
             onDelete={m => { setDeleteTarget(m); setDeleteConfirm(false) }}
             onAssign={handleAssignMember}
+            onViewTodos={m => setViewingTodosMember(m)}
           />
           <MemberGroup
             label="Members"
@@ -708,11 +910,15 @@ export default function BrandingTeamPanel() {
             onEdit={m => setMemberDialog({ mode: 'edit', member: m })}
             onDelete={m => { setDeleteTarget(m); setDeleteConfirm(false) }}
             onAssign={handleAssignMember}
+            onViewTodos={m => setViewingTodosMember(m)}
           />
           {members.length === 0 && (
-            <p className="text-sm text-muted-foreground text-center py-8">
-              No members yet.{isAdmin ? ' Click "Add Member" to get started.' : ''}
-            </p>
+            <div className={DS.card}>
+              <EmptyState
+                icon={Users}
+                title={<>No members yet.{isAdmin ? ' Click "Add Member" to get started.' : ''}</>}
+              />
+            </div>
           )}
         </div>
       )}
@@ -720,13 +926,20 @@ export default function BrandingTeamPanel() {
       {/* ── Projects Tab ── */}
       {tab === 'projects' && (
         <div className="space-y-3">
-          {projLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-          {!projLoading && projects.length === 0 && (
-            <p className="text-sm text-muted-foreground text-center py-8">
-              No projects yet.{(isAdmin || isLead) ? ' Click "New Project" to create one.' : ''}
-            </p>
+          {projLoading && (
+            <div className={cx(DS.card, 'flex items-center justify-center gap-2 py-12')}>
+              <Spinner /> <span className={DS.muted}>Loading projects…</span>
+            </div>
           )}
-          {projects.map(proj => (
+          {!projLoading && shownProjects.length === 0 && (
+            <div className={DS.card}>
+              <EmptyState
+                icon={FolderKanban}
+                title={<>No projects yet.{(isAdmin || isLead) ? ' Click "New Project" to create one.' : ''}</>}
+              />
+            </div>
+          )}
+          {shownProjects.map(proj => (
             <ProjectCard
               key={proj.id}
               project={proj}
@@ -764,7 +977,7 @@ export default function BrandingTeamPanel() {
             email: memberDialog.member.email,
             password: '',
             department: memberDialog.member.department,
-            role: editableRole(memberDialog.member.role),
+            role: memberDialog.member.role === 'sub_admin' ? 'sub_admin' : memberDialog.member.role === 'task_owner' ? 'task_owner' : memberDialog.member.role === 'task_manager' ? 'task_manager' : memberDialog.member.role === 'inventory_manager' ? 'inventory_manager' : 'user',
             capabilities: memberDialog.member.capabilities ?? [],
           }}
           onSave={data => handleEditMember(data, memberDialog.member.id)}
@@ -774,42 +987,40 @@ export default function BrandingTeamPanel() {
 
       {/* ── Delete Member Confirm ── */}
       {deleteTarget && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="bg-card border border-border rounded-xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
-            <h2 className="text-sm font-semibold text-foreground">Remove Member</h2>
-            <p className="text-sm text-muted-foreground">
-              Remove <span className="font-medium text-foreground">{deleteTarget.full_name || deleteTarget.email}</span> from the branding team?
-              This cannot be undone.
-            </p>
-            {!deleteConfirm && (
-              <div className="flex gap-2 justify-end">
-                <button onClick={() => setDeleteTarget(null)}
-                  className="px-4 py-2 text-sm rounded-lg border border-border text-muted-foreground hover:bg-accent">
+        <Modal
+          title="Remove Member"
+          onClose={() => { setDeleteTarget(null); setDeleteConfirm(false) }}
+          size="sm"
+          footer={
+            !deleteConfirm ? (
+              <>
+                <button onClick={() => setDeleteTarget(null)} className={cx(DS.btn, DS.btnSecondary)}>
                   Cancel
                 </button>
-                <button onClick={() => setDeleteConfirm(true)}
-                  className="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
+                <button onClick={() => setDeleteConfirm(true)} className={cx(DS.btn, DS.btnDanger)}>
                   Remove
                 </button>
-              </div>
-            )}
-            {deleteConfirm && (
-              <div className="space-y-2">
-                <p className="text-xs text-red-500 font-medium">Are you sure? This will permanently delete their account.</p>
-                <div className="flex gap-2 justify-end">
-                  <button onClick={() => { setDeleteTarget(null); setDeleteConfirm(false) }}
-                    className="px-4 py-2 text-sm rounded-lg border border-border text-muted-foreground hover:bg-accent">
-                    Cancel
-                  </button>
-                  <button onClick={handleDeleteMember}
-                    className="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
-                    Yes, Delete
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
+              </>
+            ) : (
+              <>
+                <button onClick={() => { setDeleteTarget(null); setDeleteConfirm(false) }} className={cx(DS.btn, DS.btnSecondary)}>
+                  Cancel
+                </button>
+                <button onClick={handleDeleteMember} className={cx(DS.btn, DS.btnDanger)}>
+                  Yes, Delete
+                </button>
+              </>
+            )
+          }
+        >
+          <p className="text-sm text-[#6B7280] font-medium leading-relaxed">
+            Remove <span className="font-semibold text-[#111827]">{deleteTarget.full_name || deleteTarget.email}</span> from the branding team?
+            This cannot be undone.
+          </p>
+          {deleteConfirm && (
+            <p className="mt-3 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-100 rounded-[6px] px-3.5 py-2.5">Are you sure? This will permanently delete their account.</p>
+          )}
+        </Modal>
       )}
 
       {/* ── Project Dialog ── */}
@@ -835,25 +1046,34 @@ export default function BrandingTeamPanel() {
 
       {/* ── Delete Project Confirm ── */}
       {deleteProjTarget && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="bg-card border border-border rounded-xl shadow-xl w-full max-w-sm mx-4 p-6 space-y-4">
-            <h2 className="text-sm font-semibold text-foreground">Delete Project</h2>
-            <p className="text-sm text-muted-foreground">
-              Delete <span className="font-medium text-foreground">"{deleteProjTarget.name}"</span>?
-              This cannot be undone.
-            </p>
-            <div className="flex gap-2 justify-end">
-              <button onClick={() => setDeleteProjTarget(null)}
-                className="px-4 py-2 text-sm rounded-lg border border-border text-muted-foreground hover:bg-accent">
+        <Modal
+          title="Delete Project"
+          onClose={() => setDeleteProjTarget(null)}
+          size="sm"
+          footer={
+            <>
+              <button onClick={() => setDeleteProjTarget(null)} className={cx(DS.btn, DS.btnSecondary)}>
                 Cancel
               </button>
-              <button onClick={handleDeleteProject}
-                className="px-4 py-2 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700">
+              <button onClick={handleDeleteProject} className={cx(DS.btn, DS.btnDanger)}>
                 Delete
               </button>
-            </div>
-          </div>
-        </div>
+            </>
+          }
+        >
+          <p className="text-sm text-[#6B7280] font-medium leading-relaxed">
+            Delete <span className="font-semibold text-[#111827]">"{deleteProjTarget.name}"</span>?
+            This cannot be undone.
+          </p>
+        </Modal>
+      )}
+
+      {/* ── View Member Schedule To-Dos Dialog ── */}
+      {viewingTodosMember && (
+        <MemberTodosDialog
+          member={viewingTodosMember}
+          onClose={() => setViewingTodosMember(null)}
+        />
       )}
     </div>
   )
@@ -862,7 +1082,7 @@ export default function BrandingTeamPanel() {
 // ── MemberGroup sub-component ──────────────────────────────────────────────
 
 function MemberGroup({
-  label, items, isAdmin, statuses, loading, currentUserId, teamLeads, onEdit, onDelete, onAssign
+  label, items, isAdmin, statuses, loading, currentUserId, teamLeads, onEdit, onDelete, onAssign, onViewTodos
 }: {
   label: string
   items: AppUser[]
@@ -874,97 +1094,97 @@ function MemberGroup({
   onEdit: (m: AppUser) => void
   onDelete: (m: AppUser) => void
   onAssign: (memberId: string, leadId: string | null) => Promise<void>
+  onViewTodos: (m: AppUser) => void
 }) {
   if (items.length === 0) return null
   return (
     <div>
-      <p className="text-[11px] font-bold uppercase tracking-widest mb-4 px-1" style={{ color: 'hsl(var(--brand-400))' }}>{label}</p>
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+      <BlockHeader
+        title={label}
+        subtitle={`${items.length} ${items.length === 1 ? 'person' : 'people'}`}
+      />
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
         {items.map(m => {
           const status = statuses.find(s => s.user_id === m.id)
           const isLead = m.role === 'sub_admin'
           const isSelf = m.id === currentUserId
-          const initials = (m.full_name || m.email).slice(0, 2).toUpperCase()
           return (
-            <div key={m.id} className={`bg-white rounded-2xl border shadow-sm overflow-hidden flex flex-col ${isSelf ? 'border-[hsl(var(--brand-700))] ring-2 ring-[hsl(var(--brand-700))]/10' : 'border-gray-100'}`}>
-              {/* Avatar area — full-width cover */}
-              <div className="h-56 overflow-hidden rounded-t-2xl">
-                {m.avatar_url ? (
-                  <img src={m.avatar_url} alt={m.full_name} className="w-full h-full object-cover" />
-                ) : (
-                  <div
-                    className="w-full h-full flex items-center justify-center text-3xl font-bold text-white"
-                    style={{ background: isLead ? 'linear-gradient(135deg, hsl(var(--brand-700)), hsl(var(--brand-600)))' : 'linear-gradient(135deg, hsl(var(--brand-600)), hsl(var(--brand-400)))' }}
-                  >
-                    {initials}
+            <div
+              key={m.id}
+              className={cx(
+                DS.card, DS.cardHover, DS.cardPad, 'flex flex-col',
+                isSelf && 'ring-2 ring-bp-400 bg-bp-50/40',
+              )}
+            >
+              {/* Identity row */}
+              <div className="flex items-start gap-3">
+                <Avatar url={m.avatar_url} name={m.full_name} email={m.email} size="lg" className="!rounded-[6px]" />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-sm font-semibold text-[#111827] tracking-tight truncate leading-tight">{m.full_name || 'Unnamed'}</span>
+                    {isSelf && <Badge tone="accent">You</Badge>}
                   </div>
-                )}
+                  <p className="text-xs text-[#6B7280] font-medium truncate mt-0.5">{m.email}</p>
+                </div>
               </div>
 
-              {/* Info */}
-              <div className="px-4 pt-3 pb-4 flex flex-col flex-1">
-                {/* Name + verified badge */}
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="font-bold text-gray-800 text-[14px] truncate leading-tight">{m.full_name || 'Unnamed'}</span>
-                  <span className={`shrink-0 w-[18px] h-[18px] rounded-full flex items-center justify-center ${isLead ? 'bg-green-500' : 'bg-gray-300'}`}>
-                    <Check className="w-2.5 h-2.5 text-white" />
-                  </span>
-                  {isSelf && (
-                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md text-white shrink-0" style={{ background: 'hsl(var(--brand-700))' }}>You</span>
-                  )}
-                </div>
-
-                {/* Designation */}
-                <p className="text-[12px] text-gray-500 mt-0.5 leading-snug">
+              {/* Role + designation */}
+              <div className="flex items-center gap-2 flex-wrap mt-3">
+                <Badge tone="info">{isLead ? 'Team Lead' : 'Team Member'}</Badge>
+                <span className="text-xs text-[#6B7280] font-medium truncate">
                   {m.department || (isLead ? 'Team Lead' : 'Team Member')}
-                </p>
+                </span>
+              </div>
 
-                {/* Assign to lead — admin only, regular members only */}
-                {isAdmin && !isLead && (
-                  <div className="mt-2">
-                    <select
-                      defaultValue={m.managed_by ?? ''}
-                      onChange={e => void onAssign(m.id, e.target.value || null)}
-                      className="w-full text-[11px] px-2 py-1 rounded-lg border border-gray-200 bg-gray-50 focus:border-green-600 focus:outline-none cursor-pointer"
-                      style={{ color: m.managed_by ? 'hsl(var(--brand-700))' : '#9ca3af' }}
-                    >
-                      <option value="">Unassigned</option>
-                      {teamLeads.map(lead => (
-                        <option key={lead.id} value={lead.id}>
-                          {lead.full_name || lead.email}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+              {/* Assign to lead — admin only, regular members only */}
+              {isAdmin && !isLead && (
+                <div className="mt-3">
+                  <select
+                    defaultValue={m.managed_by ?? ''}
+                    onChange={e => void onAssign(m.id, e.target.value || null)}
+                    className={cx(DS.select, '!py-2 !text-xs font-semibold', m.managed_by ? '!text-bp-800' : '!text-slate-400')}
+                  >
+                    <option value="">Unassigned</option>
+                    {teamLeads.map(lead => (
+                      <option key={lead.id} value={lead.id}>
+                        {lead.full_name || lead.email}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* Bottom row: report status + actions */}
+              <div className="flex items-center justify-between mt-4 pt-3 border-t border-[#C5CAD1] gap-2">
+                {loading ? (
+                  <span className="h-6 w-20 rounded-full bg-[#F3F4F6] animate-pulse inline-block" />
+                ) : status ? (
+                  status.has_submitted ? (
+                    <StatusPill tone="success">Submitted</StatusPill>
+                  ) : (
+                    <StatusPill tone="warning">Pending</StatusPill>
+                  )
+                ) : (
+                  <span className={DS.muted}>No data</span>
                 )}
 
-                {/* Bottom row: report status + actions */}
-                <div className="flex items-center justify-between mt-3 gap-2">
-                  {loading ? (
-                    <span className="h-6 w-20 rounded-full bg-gray-100 animate-pulse inline-block" />
-                  ) : status ? (
-                    status.has_submitted ? (
-                      <span className="flex items-center gap-1 text-[11px] font-semibold text-green-700 bg-green-50 px-2 py-1 rounded-full whitespace-nowrap">
-                        <CheckCircle2 className="w-3 h-3 shrink-0" /> Submitted
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-1 text-[11px] font-semibold text-red-600 bg-red-50 px-2 py-1 rounded-full whitespace-nowrap">
-                        <XCircle className="w-3 h-3 shrink-0" /> Pending
-                      </span>
-                    )
-                  ) : (
-                    <span className="text-[11px] text-gray-400">No data</span>
-                  )}
-
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    onClick={() => onViewTodos(m)}
+                    className={DS.iconBtnSm}
+                    title="View Schedule To-Dos"
+                  >
+                    <ListTodo className="w-3.5 h-3.5" />
+                  </button>
                   {isAdmin && (
-                    <div className="flex gap-1 shrink-0">
-                      <button onClick={() => onEdit(m)} className="p-1.5 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors" title="Edit">
+                    <>
+                      <button onClick={() => onEdit(m)} className={DS.iconBtnSm} title="Edit">
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
-                      <button onClick={() => onDelete(m)} className="p-1.5 rounded-lg text-gray-400 hover:bg-red-50 hover:text-red-500 transition-colors" title="Remove">
+                      <button onClick={() => onDelete(m)} className={cx(DS.iconBtnSm, 'hover:!bg-rose-600 hover:!border-rose-600')} title="Remove">
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
-                    </div>
+                    </>
                   )}
                 </div>
               </div>
@@ -990,34 +1210,36 @@ function ProjectCard({
 }) {
   const [expanded, setExpanded] = useState(false)
   const assignedMembers = members.filter(m => project.assigned_user_ids.includes(m.id))
+  const overdue = !!project.deadline && project.status !== 'completed' && project.deadline.slice(0, 10) < todayIso()
 
   return (
-    <div className="hub-card">
+    <div className={cx(DS.card, DS.cardHover, DS.cardPad)}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="text-sm font-semibold text-foreground">{project.name}</h3>
-            <span className={`hub-badge ${STATUS_BADGE[project.status]}`}>
+            <h3 className={DS.h3}>{project.name}</h3>
+            <StatusPill tone={STATUS_BADGE[project.status]}>
               {STATUS_LABELS[project.status]}
-            </span>
+            </StatusPill>
           </div>
           {project.description && (
-            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{project.description}</p>
+            <p className={cx(DS.sub, 'mt-1 line-clamp-2')}>{project.description}</p>
           )}
-          <div className="flex items-center gap-4 mt-2">
+          <div className="flex items-center gap-4 mt-3 text-[11px] font-medium text-[#9CA3AF]">
             {project.deadline && (
-              <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                <CalendarDays className="w-3 h-3" />
+              <span className={cx('inline-flex items-center gap-1.5', overdue && 'text-rose-600 font-semibold')}>
+                <CalendarDays className="w-3.5 h-3.5" />
                 {new Date(project.deadline).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                {overdue && ' · Overdue'}
               </span>
             )}
             <button
               onClick={() => setExpanded(e => !e)}
-              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+              className="inline-flex items-center gap-1.5 hover:text-bp-700 transition-colors cursor-pointer"
             >
-              <Users className="w-3 h-3" />
+              <Users className="w-3.5 h-3.5" />
               {assignedMembers.length} assigned
-              {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+              {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
             </button>
           </div>
         </div>
@@ -1026,7 +1248,7 @@ function ProjectCard({
             {canEdit && (
               <button
                 onClick={onEdit}
-                className="p-1.5 rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                className={DS.iconBtnSm}
                 title="Edit project"
               >
                 <Pencil className="w-3.5 h-3.5" />
@@ -1035,7 +1257,7 @@ function ProjectCard({
             {canDelete && (
               <button
                 onClick={onDelete}
-                className="p-1.5 rounded-lg text-muted-foreground hover:bg-red-50 hover:text-red-600 transition-colors"
+                className={cx(DS.iconBtnSm, 'hover:!bg-rose-600 hover:!border-rose-600')}
                 title="Delete project"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -1046,17 +1268,17 @@ function ProjectCard({
       </div>
 
       {expanded && (
-        <div className="mt-3 pt-3 border-t border-border">
+        <div className="mt-4 pt-4 border-t border-[#C5CAD1]">
           {assignedMembers.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No members assigned.</p>
+            <EmptyState compact icon={Users} title="No members assigned." />
           ) : (
             <div className="flex flex-wrap gap-2">
               {assignedMembers.map(m => (
-                <div key={m.id} className="flex items-center gap-1.5 px-2.5 py-1 rounded-full" style={{ background: 'rgba(26,71,42,0.08)' }}>
-                  <Check className="w-3 h-3" style={{ color: 'hsl(var(--brand-700))' }} />
-                  <span className="text-xs font-medium" style={{ color: 'hsl(var(--brand-700))' }}>{m.full_name || m.email}</span>
-                  <span className="text-[10px]" style={{ color: 'hsl(var(--brand-400))' }}>
-                    {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : m.role === 'task_manager' ? 'Task Manager' : m.role === 'inventory_manager' ? 'Inventory Manager' : 'Member'}
+                <div key={m.id} className="inline-flex items-center gap-2 pl-1 pr-3 py-1 rounded-full bg-bp-50 border border-bp-100">
+                  <Avatar url={m.avatar_url} name={m.full_name} email={m.email} size="xs" className="!rounded-full" />
+                  <span className="text-xs font-semibold text-bp-800">{m.full_name || m.email}</span>
+                  <span className="text-[10px] font-semibold text-bp-700/70">
+                    {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : m.role === 'task_manager' ? 'Task Manager' : m.role === 'inventory_manager' ? 'Inventory Mgr' : 'Member'}
                   </span>
                 </div>
               ))}
@@ -1075,11 +1297,11 @@ function ProjectCard({
 
 const POLL_INTERVAL_MS = 30_000
 
-const STOPWATCH_LABEL: Record<string, { label: string; cls: string }> = {
-  idle:     { label: 'Not started', cls: 'bg-gray-100 text-gray-600' },
-  running:  { label: 'Running',     cls: 'bg-amber-100 text-amber-700' },
-  paused:   { label: 'Paused',      cls: 'bg-orange-100 text-orange-700' },
-  finished: { label: 'Finished',    cls: 'bg-green-100 text-green-700' },
+const STOPWATCH_LABEL: Record<string, { label: string; tone: Tone }> = {
+  idle:     { label: 'Not started', tone: 'neutral' },
+  running:  { label: 'Running',     tone: 'warning' },
+  paused:   { label: 'Paused',      tone: 'info' },
+  finished: { label: 'Finished',    tone: 'success' },
 }
 
 function LiveReportsView({
@@ -1151,11 +1373,11 @@ function LiveReportsView({
     return Math.round((secs / 3600) * 10) / 10
   }
 
-  function memberStatus(rep: DailyReport | undefined): { label: string; cls: string } {
-    if (!rep) return { label: 'Not started', cls: 'bg-gray-100 text-gray-600' }
-    if (rep.is_locked) return { label: 'Submitted', cls: 'bg-green-100 text-green-700' }
-    if ((rep.rows?.length ?? 0) === 0) return { label: 'Not started', cls: 'bg-gray-100 text-gray-600' }
-    return { label: 'In progress', cls: 'bg-amber-100 text-amber-700' }
+  function memberStatus(rep: DailyReport | undefined): { label: string; tone: Tone } {
+    if (!rep) return { label: 'Not started', tone: 'neutral' }
+    if (rep.is_locked) return { label: 'Submitted', tone: 'success' }
+    if ((rep.rows?.length ?? 0) === 0) return { label: 'Not started', tone: 'neutral' }
+    return { label: 'In progress', tone: 'warning' }
   }
 
   async function postComment(rowId: string, body: string) {
@@ -1181,144 +1403,187 @@ function LiveReportsView({
     }
   }
 
+  // One-line summary for the Activity column: how much is logged and what
+  // the latest row is about.
+  function activityLabel(rep: DailyReport | undefined): string {
+    const rows = rep?.rows ?? []
+    if (rows.length === 0) return 'No report for this date'
+    const last = rows[rows.length - 1]
+    const what = last.specific_work || last.type_of_work || 'Untitled entry'
+    return `${rows.length} ${rows.length === 1 ? 'entry' : 'entries'} · ${what}`
+  }
+
+  const dateLabel = new Date(`${date}T00:00:00`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })
+
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {/* Date + live indicator */}
       <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-2">
-          <CalendarDays className="w-4 h-4 shrink-0" style={{ color: 'hsl(var(--brand-400))' }} />
+        <div className="flex items-center gap-2 bg-white border border-[#C5CAD1] rounded-[6px] px-3 py-2 focus-within:border-bp-600 focus-within:ring-2 focus-within:ring-bp-200 transition-all">
+          <CalendarDays className="w-4 h-4 shrink-0 text-[#9CA3AF]" />
           <input
             type="date"
             max={todayIso()}
             value={date}
             onChange={e => setDate(e.target.value)}
-            className="text-sm bg-transparent outline-none cursor-pointer"
-            style={{ color: 'hsl(var(--brand-700))' }}
+            className="text-sm font-semibold text-[#111827] bg-transparent outline-none cursor-pointer"
           />
         </div>
-        <span className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full" style={{ background: 'rgba(82,183,136,0.15)', color: 'hsl(var(--brand-700))' }}>
+        <span className="inline-flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700">
           <span className="relative inline-flex w-2 h-2">
-            <span className="absolute inline-flex w-full h-full rounded-full opacity-75 animate-ping" style={{ background: 'hsl(var(--brand-400))' }} />
-            <span className="relative inline-flex w-2 h-2 rounded-full" style={{ background: 'hsl(var(--brand-400))' }} />
+            <span className="absolute inline-flex w-full h-full rounded-full opacity-75 animate-ping bg-emerald-500" />
+            <span className="relative inline-flex w-2 h-2 rounded-full bg-emerald-500" />
           </span>
           Live · refreshes every 30s
         </span>
         {lastUpdated && (
-          <span className="text-xs text-muted-foreground">
+          <span className={DS.muted}>
             Updated {lastUpdated.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}
           </span>
         )}
         <button
           onClick={() => void refresh()}
-          className="text-xs font-semibold px-3 py-1.5 rounded-full border border-gray-200 hover:border-[hsl(var(--brand-400))] hover:text-[hsl(var(--brand-700))] transition-colors"
+          className={cx(DS.btn, DS.btnSoft)}
         >
-          Refresh now
+          <RefreshCw className="w-3.5 h-3.5" /> Refresh now
         </button>
       </div>
 
       {loading && reports.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
+        <div className={cx(DS.card, 'flex items-center justify-center gap-2 py-12')}>
+          <Spinner /> <span className={DS.muted}>Loading reports…</span>
+        </div>
       ) : monitoredMembers.length === 0 ? (
-        <p className="text-sm text-muted-foreground text-center py-8">
-          No members assigned to you yet.
-        </p>
+        <div className={DS.card}>
+          <EmptyState icon={Radio} title="No members assigned to you yet." />
+        </div>
       ) : (
-        <div className="space-y-3">
-          {monitoredMembers.map(m => {
-            const rep = reportByUser[m.id]
-            const status = memberStatus(rep)
-            const hrs = perDayHours(rep)
-            const isOpen = expandedUserId === m.id
-            return (
-              <div key={m.id} className="hub-card">
-                <button
-                  type="button"
-                  onClick={() => setExpandedUserId(isOpen ? null : m.id)}
-                  className="w-full flex items-center justify-between gap-3 text-left"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold shrink-0" style={{ background: 'hsl(var(--brand-700))' }}>
-                      {(m.full_name || m.email)[0]?.toUpperCase() ?? '?'}
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold truncate" style={{ color: 'hsl(var(--brand-700))' }}>
-                        {m.full_name || m.email}
-                      </p>
-                      <p className="text-xs text-muted-foreground truncate">{m.email}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3 shrink-0">
-                    <span className={`hub-badge ${status.cls}`}>{status.label}</span>
-                    <span className="flex items-center gap-1 text-xs font-semibold" style={{ color: 'hsl(var(--brand-700))' }}>
-                      <Clock className="w-3.5 h-3.5" style={{ color: 'hsl(var(--brand-400))' }} />
-                      {hrs} hrs
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {(rep?.rows?.length ?? 0)} {rep?.rows?.length === 1 ? 'row' : 'rows'}
-                    </span>
-                    {isOpen ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
-                  </div>
-                </button>
+        /* Team-Collaboration roster: soft striped table, one row per member.
+           Clicking a row opens that member's report table beneath it. */
+        <div className={cx(DS.card, 'p-4')}>
+          <CardHead
+            title="Team roster"
+            subtitle={`Reports for ${dateLabel}`}
+            action={<span className={DS.chip}>{monitoredMembers.length} {monitoredMembers.length === 1 ? 'member' : 'members'}</span>}
+            className="mb-4"
+          />
+          <div className="overflow-x-auto -mx-1 sm:mx-0 pr-1">
+            <table className={cx(DS.tableSoft, 'min-w-[460px]')}>
+              <thead>
+                <tr>
+                  <th className={DS.thSoft}>Colleague</th>
+                  <th className={DS.thSoft}>Activity</th>
+                  <th className={cx(DS.thSoft, 'text-center')}>Hours</th>
+                  <th className={cx(DS.thSoft, 'text-right')}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {monitoredMembers.map((m, idx) => {
+                  const rep = reportByUser[m.id]
+                  const status = memberStatus(rep)
+                  const hrs = perDayHours(rep)
+                  const isOpen = expandedUserId === m.id
+                  const rowCount = rep?.rows?.length ?? 0
+                  return (
+                    <Fragment key={m.id}>
+                      <tr
+                        onClick={() => setExpandedUserId(isOpen ? null : m.id)}
+                        className={cx(idx % 2 === 0 ? DS.trSoftEven : DS.trSoftOdd, 'cursor-pointer', isOpen && '!bg-bp-50')}
+                        aria-expanded={isOpen}
+                      >
+                        {/* Colleague */}
+                        <td className={cx(DS.tdSoft, 'font-semibold text-[#111827]')}>
+                          <div className="flex items-center gap-2 max-w-[200px]">
+                            <Avatar url={m.avatar_url} name={m.full_name} email={m.email} size="xs" className="!rounded-full" />
+                            <span className="truncate font-semibold">{m.full_name || m.email}</span>
+                            {isOpen
+                              ? <ChevronUp className="w-3.5 h-3.5 text-[#9CA3AF] shrink-0" />
+                              : <ChevronDown className="w-3.5 h-3.5 text-[#9CA3AF] shrink-0" />}
+                          </div>
+                        </td>
+                        {/* Activity */}
+                        <td className={cx(DS.tdSoft, 'font-normal text-[#6B7280] max-w-[220px] truncate')}>
+                          {activityLabel(rep)}
+                        </td>
+                        {/* Hours */}
+                        <td className={cx(DS.tdSoft, 'text-center font-semibold text-[#374151] tabular-nums whitespace-nowrap')}>
+                          {hrs > 0 ? `${hrs} hrs` : '—'}
+                        </td>
+                        {/* Status */}
+                        <td className={cx(DS.tdSoft, 'text-right whitespace-nowrap')}>
+                          <StatusPill tone={status.tone}>{status.label}</StatusPill>
+                        </td>
+                      </tr>
 
-                {isOpen && (
-                  <div className="mt-4 pt-4 border-t border-border">
-                    {!rep || (rep.rows?.length ?? 0) === 0 ? (
-                      <p className="text-xs text-muted-foreground text-center py-4">
-                        No entries for this date.
-                      </p>
-                    ) : (
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="text-xs border-b border-gray-100" style={{ color: 'hsl(var(--brand-700))' }}>
-                            <th className="text-left pb-2 font-bold w-8 pr-2">#</th>
-                            <th className="text-left pb-2 font-bold pr-2">Type</th>
-                            <th className="text-left pb-2 font-bold pr-2">Specific Work</th>
-                            <th className="text-left pb-2 font-bold pr-2 whitespace-nowrap">Status</th>
-                            <th className="text-left pb-2 font-bold pr-2 whitespace-nowrap">Today</th>
-                            <th className="text-left pb-2 font-bold whitespace-nowrap">Comments</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(rep.rows ?? []).map((row: DailyReportRow) => {
-                            const perDay = perDayElapsedSeconds(row, [rep])
-                            const sw = STOPWATCH_LABEL[row.stopwatch_status] ?? STOPWATCH_LABEL.idle
-                            const thread = commentsByRow[row.id] ?? []
-                            return (
-                              <tr key={row.id} className="border-b border-gray-50 last:border-0 align-top">
-                                <td className="py-2.5 text-gray-400 pr-2">{row.sr_no}</td>
-                                <td className="py-2.5 pr-2">
-                                  <span className="text-gray-700">{row.type_of_work}</span>
-                                  {row.sub_category && <span className="text-xs text-gray-400 block">{row.sub_category}</span>}
-                                </td>
-                                <td className="py-2.5 text-gray-600 pr-2">{row.specific_work || '—'}</td>
-                                <td className="py-2.5 pr-2">
-                                  <span className={`text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${sw.cls}`}>
-                                    {sw.label}
-                                  </span>
-                                </td>
-                                <td className="py-2.5 text-gray-700 font-medium whitespace-nowrap pr-2">
-                                  {elapsedToTimeTaken(perDay)}
-                                </td>
-                                <td className="py-2.5 min-w-[260px]">
-                                  <CommentThread
-                                    rowId={row.id}
-                                    comments={thread}
-                                    currentUserId={currentUserId}
-                                    onSubmit={body => postComment(row.id, body)}
-                                    onDelete={id => removeComment(row.id, id)}
-                                  />
-                                </td>
-                              </tr>
-                            )
-                          })}
-                        </tbody>
-                      </table>
-                    )}
-                  </div>
-                )}
-              </div>
-            )
-          })}
+                      {isOpen && (
+                        <tr>
+                          <td colSpan={4} className="px-0 pt-0.5 pb-1">
+                            {!rep || rowCount === 0 ? (
+                              <div className={DS.card}>
+                                <EmptyState compact icon={Clock} title="No entries for this date." />
+                              </div>
+                            ) : (
+                              <div className={cx(DS.card, 'overflow-hidden')}>
+                                <div className="overflow-x-auto">
+                                  <table className={DS.table}>
+                                    <thead className={DS.thead}>
+                                      <tr>
+                                        <th className={cx(DS.th, 'w-8')}>#</th>
+                                        <th className={DS.th}>Type</th>
+                                        <th className={DS.th}>Specific Work</th>
+                                        <th className={DS.th}>Status</th>
+                                        <th className={DS.th}>Today</th>
+                                        <th className={DS.th}>Comments</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className={DS.tbody}>
+                                      {(rep.rows ?? []).map((row: DailyReportRow) => {
+                                        const perDay = perDayElapsedSeconds(row, [rep])
+                                        const sw = STOPWATCH_LABEL[row.stopwatch_status] ?? STOPWATCH_LABEL.idle
+                                        const thread = commentsByRow[row.id] ?? []
+                                        return (
+                                          <tr key={row.id} className={DS.trHover}>
+                                            <td className={cx(DS.td, 'text-[#9CA3AF] font-semibold tabular-nums')}>{row.sr_no}</td>
+                                            <td className={DS.td}>
+                                              <span className="font-semibold text-[#111827]">{row.type_of_work}</span>
+                                              {row.sub_category && <span className="text-xs text-[#9CA3AF] font-medium block">{row.sub_category}</span>}
+                                            </td>
+                                            <td className={cx(DS.td, 'text-[#6B7280]')}>{row.specific_work || '—'}</td>
+                                            <td className={DS.td}>
+                                              <StatusPill tone={sw.tone}>{sw.label}</StatusPill>
+                                            </td>
+                                            <td className={cx(DS.td, 'font-semibold text-[#111827] tabular-nums whitespace-nowrap')}>
+                                              {elapsedToTimeTaken(perDay)}
+                                            </td>
+                                            <td className={cx(DS.td, 'min-w-[260px]')}>
+                                              <CommentThread
+                                                rowId={row.id}
+                                                comments={thread}
+                                                currentUserId={currentUserId}
+                                                onSubmit={body => postComment(row.id, body)}
+                                                onDelete={id => removeComment(row.id, id)}
+                                              />
+                                            </td>
+                                          </tr>
+                                        )
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-3 pt-2 border-t border-[#C5CAD1] text-xs font-medium text-[#9CA3AF] text-center">
+            {monitoredMembers.length} {monitoredMembers.length === 1 ? 'member' : 'members'} · {reports.filter(r => r.is_locked).length} submitted
+          </p>
         </div>
       )}
     </div>
@@ -1353,25 +1618,25 @@ function CommentThread({
   return (
     <div className="space-y-2">
       {comments.length === 0 ? (
-        <p className="text-[11px] text-gray-400 italic">No comments yet.</p>
+        <p className={cx(DS.muted, 'italic')}>No comments yet.</p>
       ) : (
         <ul className="space-y-1.5">
           {comments.map(c => (
-            <li key={c.id} className="rounded-lg px-2.5 py-1.5" style={{ background: 'rgba(82,183,136,0.10)' }}>
+            <li key={c.id} className="rounded-[6px] px-3 py-2 bg-bp-50 border border-bp-100">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="text-[11px] font-semibold" style={{ color: 'hsl(var(--brand-700))' }}>
+                  <p className="text-[11px] font-semibold text-bp-800">
                     {c.author_name}
-                    <span className="text-gray-400 font-normal ml-1.5">
+                    <span className="text-[#9CA3AF] font-medium ml-1.5">
                       {new Date(c.created_at).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })}
                     </span>
                   </p>
-                  <p className="text-xs text-gray-700 whitespace-pre-wrap break-words">{c.body}</p>
+                  <p className="text-xs text-[#374151] font-medium whitespace-pre-wrap break-words mt-0.5">{c.body}</p>
                 </div>
                 {c.author_id === currentUserId && (
                   <button
                     onClick={() => void onDelete(c.id)}
-                    className="text-gray-400 hover:text-red-600 shrink-0"
+                    className="text-[#9CA3AF] hover:text-rose-600 shrink-0 transition-colors cursor-pointer"
                     title="Delete comment"
                   >
                     <Trash2 className="w-3 h-3" />
@@ -1384,21 +1649,20 @@ function CommentThread({
       )}
       <form
         onSubmit={e => { e.preventDefault(); void handleSend() }}
-        className="flex items-center gap-1"
+        className="flex items-center gap-1.5"
       >
         <input
           type="text"
           value={draft}
           onChange={e => setDraft(e.target.value)}
           placeholder="Leave feedback…"
-          className="flex-1 min-w-0 text-xs px-2.5 py-1.5 rounded-lg border border-gray-200 outline-none focus:border-[hsl(var(--brand-400))]"
+          className={cx(DS.input, 'flex-1 min-w-0 !text-xs !px-3 !py-2 !rounded-[6px]')}
           aria-label={`Comment on row ${rowId}`}
         />
         <button
           type="submit"
           disabled={!draft.trim() || sending}
-          className="p-1.5 rounded-lg text-white disabled:opacity-40"
-          style={{ background: 'hsl(var(--brand-700))' }}
+          className="w-8 h-8 rounded-[6px] grid place-items-center bg-bp-700 text-white hover:bg-bp-800 transition-colors cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
           title="Post comment"
         >
           {sending ? <Clock className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}

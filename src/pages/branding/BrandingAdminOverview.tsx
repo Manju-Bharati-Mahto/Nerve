@@ -1,8 +1,9 @@
 /**
  * Admin Dashboard overview — replaces the bare "Daily Reports" table on the
  * branding-admin Daily Reports tab. Mirrors the visual language of the
- * Branding User dashboard (dark green serif, glassy stat cards, capsule bar
- * charts) but the data shown is team-aggregated:
+ * Branding User dashboard (Salesa design system: slate ink, bp accent,
+ * white rounded-[6px] surfaces, rounded-top bar charts) but the data shown
+ * is team-aggregated:
  *
  *   • 4 stat cards (Total Projects / Submitted Today / Running Projects / Total Hours MTD)
  *   • Work Analytics — submitters per day, with date filter + click-to-drill modal
@@ -11,11 +12,11 @@
  *   • Team Summary bar chart
  *   • Hours by Category pie + Collaboration map side by side
  */
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  ArrowUpRight, Plus, AlertCircle, ChevronDown, ChevronUp, CheckCircle,
-  Download, Lock, Filter, X, Users as UsersIcon, Award, ArrowRight, Briefcase,
+  AlertCircle, ChevronDown, ChevronUp, CheckCircle, Clock,
+  Download, Lock, Users as UsersIcon, ArrowRight, Briefcase, Activity, Inbox,
 } from 'lucide-react'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -27,6 +28,11 @@ import { MONTHS, timeToHours, elapsedToTimeTaken, perDayElapsedSeconds } from '@
 import type {
   DailyReport, BrandingProject, BrandingLeave, WorkCategory,
 } from '@/lib/branding-types'
+import {
+  DS, cx, CHART, StatCard, DarkStatCard, HeroBanner, BlockHeader, Card, CardHead, Segmented,
+  NumberedItem, StatusPill, Avatar, Badge, Modal, EmptyState, Spinner, toneForStatus,
+} from './ds'
+import { L, CHART2, ChartTip, evenTicks } from './ds2'
 
 // ── Date helpers (local-midnight; mirrors BrandingUserDashboard) ──────────
 
@@ -55,72 +61,34 @@ function rowHours(
   return perDayElapsedSeconds(row, allReports) / 3600
 }
 
-// ── Color tokens (match user dashboard) ──────────────────────────────────
-
-const GREEN_DARK = 'hsl(var(--brand-700))'
-const GREEN_MID = 'hsl(var(--brand-400))'
-const GREEN_LIGHT = 'hsl(var(--brand-300))'
-const GREEN_BG = 'hsl(var(--brand-50))'
-const HATCH_ID = 'admin-bar-hatch'
-const FUTURE_HATCH_ID = 'admin-bar-future-hatch'
-const TEAM_HATCH_ID = 'admin-team-hatch'
-
-// Peacock-green palette — eight progressively lighter shades of the
-// same teal-green family so per-user / per-category slices on the bar
-// chart and the work-category pie stay visually distinct while reading
-// as one cohesive peacock-feather gradient.
-const TEAM_COLORS = ['#013F37', '#015D52', '#017A6A', '#009B82', '#0BB196', '#3FC8AC', '#7DD8C1', '#B9E7D6']
-
-const PIE_COLORS = ['#013F37', '#015D52', '#017A6A', '#009B82', '#0BB196', '#3FC8AC', '#7DD8C1', '#B9E7D6']
-
-// ── StatCard (mirrors user dashboard) ────────────────────────────────────
-
-function StatCard({ title, value, sub, badge, dark, onClick }: {
-  title: string
-  value: string | number
-  sub?: string
-  badge?: number
-  dark?: boolean
-  onClick?: () => void
-}) {
-  return (
-    <div
-      onClick={onClick}
-      className={`rounded-2xl p-5 flex flex-col justify-between min-h-[130px] relative overflow-hidden ${onClick ? 'cursor-pointer' : ''}`}
-      style={dark ? {
-        background: 'linear-gradient(135deg, hsl(var(--brand-700)) 0%, hsl(var(--brand-600)) 45%, #40916c 100%)',
-        color: 'white',
-      } : { background: 'white', border: '1px solid #f3f4f6' }}
-    >
-      {dark && (
-        <div className="absolute inset-0 pointer-events-none"
-          style={{ background: 'radial-gradient(ellipse at 80% 20%, rgba(255,255,255,0.10) 0%, transparent 65%)' }} />
-      )}
-      <div className="relative flex items-start justify-between">
-        <p className={`text-sm font-medium ${dark ? 'text-green-200' : 'text-gray-500'}`}>{title}</p>
-        <div className={`w-8 h-8 rounded-full border flex items-center justify-center ${dark ? 'border-green-500/60 bg-white/10' : 'border-gray-200'}`}>
-          <ArrowUpRight className={`w-3.5 h-3.5 ${dark ? 'text-white' : 'text-gray-400'}`} />
-        </div>
-      </div>
-      <div className="relative">
-        <p className={`text-4xl font-bold leading-none ${dark ? 'text-white' : 'text-gray-800'}`}>{value}</p>
-        {badge !== undefined && (
-          <div className="flex items-center gap-2 mt-2.5">
-            <span className={`flex items-center gap-0.5 text-[11px] font-semibold px-1.5 py-0.5 rounded ${dark ? 'bg-white/15 text-green-100' : 'bg-green-100 text-green-700'}`}>
-              {badge}<ArrowUpRight className="w-3 h-3" />
-            </span>
-            <span className={`text-xs ${dark ? 'text-green-200' : 'text-gray-500'}`}>{sub ?? 'across the team'}</span>
-          </div>
-        )}
-        {sub && badge === undefined && (
-          <p className={`text-xs mt-2 ${dark ? 'text-green-200' : 'text-gray-500'}`}>{sub}</p>
-        )}
-      </div>
-    </div>
-  )
+// A no-break space between the figure and its unit, and "hr" not "h" —
+// the same rule the user dashboard's figures follow.
+const fmtHours = (h: number): string => {
+  if (!isFinite(h) || h <= 0) return '0\u00A0hr'
+  if (h >= 1) return `${Math.round(h * 10) / 10}\u00A0hr`
+  const mins = h * 60
+  if (mins >= 1) return `${Math.round(mins)}\u00A0m`
+  return `${Math.max(1, Math.round(h * 3600))}\u00A0s`
 }
 
-// ── Liquid-glass donut pie (mirrors LiquidGlassPie in BrandingUserDashboard) ──
+// Short labels on purpose: four segments sit side by side in the card head.
+const CHART_RANGES = [
+  { id: 'week', label: 'Week' },
+  { id: 'month', label: 'Month' },
+  { id: '6months', label: '6 Months' },
+  { id: 'custom', label: 'Custom' },
+] as const
+type ChartRange = typeof CHART_RANGES[number]['id']
+
+
+
+// bp palette — eight progressively lighter shades of the same blue ramp
+// so per-user / per-category slices on the bar chart and the work-category
+// pie stay visually distinct while reading as one cohesive gradient.
+
+const PIE_COLORS = ['var(--bp-900)', 'var(--bp-800)', 'var(--bp-700)', 'var(--bp-600)', 'var(--bp-500)', 'var(--bp-400)', 'var(--bp-300)', 'var(--bp-200)']
+
+// ── Donut pie (hours by category) ────────────────────────────────────────
 
 function LiquidGlassPie({ data, title }: {
   data: { name: string; value: number }[]
@@ -138,22 +106,13 @@ function LiquidGlassPie({ data, title }: {
     const idx = data.findIndex(d => d.name === payload[0].name)
     const color = PIE_COLORS[idx % PIE_COLORS.length]
     return (
-      <div style={{
-        background: 'rgba(255,255,255,0.22)',
-        backdropFilter: 'blur(18px)',
-        WebkitBackdropFilter: 'blur(18px)',
-        border: '1px solid rgba(255,255,255,0.45)',
-        borderRadius: 14,
-        padding: '10px 14px',
-        boxShadow: '0 8px 32px rgba(26,71,42,0.18)',
-        minWidth: 130,
-      }}>
+      <div className="bg-white border border-[#C5CAD1] rounded-[6px] px-3.5 py-2.5 shadow-lg min-w-[130px]">
         <div className="flex items-center gap-2 mb-1">
-          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color, boxShadow: `0 0 6px ${color}99` }} />
-          <span className="text-xs font-bold" style={{ color: GREEN_DARK }}>{payload[0].name}</span>
+          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} />
+          <span className="text-xs font-semibold text-[#111827]">{payload[0].name}</span>
         </div>
-        <p className="text-base font-extrabold" style={{ color }}>{payload[0].value}h</p>
-        <p className="text-[10px] font-semibold text-gray-400">{total > 0 ? Math.round((payload[0].value / total) * 100) : 0}% of total</p>
+        <p className="text-base font-semibold text-[#111827] tracking-tight">{payload[0].value}h</p>
+        <p className="text-[10px] font-semibold text-[#9CA3AF]">{total > 0 ? Math.round((payload[0].value / total) * 100) : 0}% of total</p>
       </div>
     )
   }
@@ -175,31 +134,21 @@ function LiquidGlassPie({ data, title }: {
 
   return (
     <div>
-      <h3 className="text-lg font-extrabold font-serif mb-1" style={{ color: GREEN_DARK }}>{title}</h3>
-      <p className="text-xs font-semibold mb-4" style={{ color: GREEN_MID }}>This month, all team members</p>
-      <div className="flex flex-col sm:flex-row items-center gap-5">
+      <CardHead title={title} subtitle="This month, all team members" className="mb-4" />
+      <div className="flex flex-col sm:flex-row items-center gap-4">
         <div className="relative shrink-0" style={{ width: 220, height: 200 }}>
-          <div className="absolute inset-0 rounded-2xl" style={{
-            background: 'linear-gradient(135deg, rgba(255,255,255,0.55) 0%, rgba(210,240,220,0.35) 100%)',
-            backdropFilter: 'blur(12px)',
-            WebkitBackdropFilter: 'blur(12px)',
-            border: '1px solid rgba(255,255,255,0.65)',
-            boxShadow: '0 4px 24px rgba(26,71,42,0.10), inset 0 1px 0 rgba(255,255,255,0.8)',
-          }} />
-          <div className="absolute inset-0 rounded-2xl pointer-events-none" style={{
-            background: 'radial-gradient(ellipse at 30% 20%, rgba(255,255,255,0.50) 0%, transparent 60%)',
-          }} />
+          <div className="absolute inset-0 rounded-[6px] bg-[#F9FAFB] border border-[#C5CAD1]" />
           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-10">
             {active ? (
               <>
                 <span className="text-[11px] font-semibold text-center leading-tight px-2"
                   style={{ color: PIE_COLORS[activeIndex! % PIE_COLORS.length] }}>{active.name}</span>
-                <span className="text-lg font-extrabold mt-0.5" style={{ color: GREEN_DARK }}>{active.value}h</span>
+                <span className="text-lg font-semibold text-[#111827] tracking-tight mt-0.5">{active.value}h</span>
               </>
             ) : (
               <>
-                <span className="text-[10px] font-semibold text-gray-400">Total</span>
-                <span className="text-xl font-extrabold" style={{ color: GREEN_DARK }}>{total}h</span>
+                <span className={DS.eyebrow}>Total</span>
+                <span className="text-xl font-semibold text-[#111827] tracking-tight">{total}h</span>
               </>
             )}
           </div>
@@ -217,10 +166,9 @@ function LiquidGlassPie({ data, title }: {
                   const color = PIE_COLORS[i % PIE_COLORS.length]
                   return (
                     <Cell key={i} fill={color}
-                      stroke={isActive ? 'rgba(255,255,255,0.8)' : 'rgba(255,255,255,0.3)'}
+                      stroke="var(--nv-surface)"
                       strokeWidth={isActive ? 2.5 : 1}
                       style={{
-                        filter: isActive ? `drop-shadow(0 0 8px ${color}cc)` : undefined,
                         transform: isActive ? 'scale(1.05)' : 'scale(1)',
                         transformOrigin: 'center',
                         transition: 'all 0.2s ease',
@@ -241,15 +189,14 @@ function LiquidGlassPie({ data, title }: {
             const isActive = activeIndex === i
             return (
               <button key={i} onClick={() => setActiveIndex(prev => prev === i ? null : i)}
-                className="flex items-center gap-2 transition-all"
+                className="flex items-center gap-2 transition-all cursor-pointer"
                 style={{ opacity: activeIndex !== null && !isActive ? 0.45 : 1 }}>
                 <span className="w-3 h-3 rounded-full shrink-0 transition-all" style={{
                   background: color,
-                  boxShadow: isActive ? `0 0 8px ${color}cc` : 'none',
                   transform: isActive ? 'scale(1.3)' : 'scale(1)',
                 }} />
-                <span className="text-xs font-semibold" style={{ color: isActive ? GREEN_DARK : GREEN_MID }}>{entry.name}</span>
-                <span className="text-xs font-bold" style={{ color: GREEN_DARK }}>{entry.value}h</span>
+                <span className={cx('text-xs font-semibold', isActive ? 'text-[#111827]' : 'text-[#6B7280]')}>{entry.name}</span>
+                <span className="text-xs font-semibold text-[#111827]">{entry.value}h</span>
               </button>
             )
           })}
@@ -263,31 +210,11 @@ function LiquidGlassPie({ data, title }: {
 // Same visual idiom as the user dashboard's WorkAnalyticsChart but the y-axis
 // is a count of users who submitted (rather than hours logged).
 
-function roundedTopPath(x: number, y: number, w: number, h: number, r: number) {
-  return `M${x + r},${y} h${w - 2 * r} a${r},${r} 0 0 1 ${r},${r} v${h - r} h${-w} v${-(h - r)} a${r},${r} 0 0 1 ${r},${-r}z`
-}
-
-// Fully-rounded pill (top AND bottom). Clamps r so the path stays valid
-// when the rectangle is shorter than 2r or narrower than 2r — at that
-// point both endcaps merge into one curved blob, which is what we want
-// for "almost zero" bars instead of a degenerate path.
-function capsulePath(x: number, y: number, w: number, h: number, r: number) {
-  const rr = Math.max(0, Math.min(r, w / 2, h / 2))
-  if (rr <= 0) return ''
-  const x2 = x + w
-  const y2 = y + h
-  return `M${x + rr},${y}`
-    + ` H${x2 - rr}`
-    + ` A${rr},${rr} 0 0 1 ${x2},${y + rr}`
-    + ` V${y2 - rr}`
-    + ` A${rr},${rr} 0 0 1 ${x2 - rr},${y2}`
-    + ` H${x + rr}`
-    + ` A${rr},${rr} 0 0 1 ${x},${y2 - rr}`
-    + ` V${y + rr}`
-    + ` A${rr},${rr} 0 0 1 ${x + rr},${y}`
-    + ` Z`
-}
-
+// Team submissions per day, drawn exactly like the user dashboard's Work
+// Activity chart: grey bars rising from the axis, the focused day in the
+// primary colour with a dashed guide and a pill naming it. Today is focused
+// until you hover. Click a bar for who submitted, or the space above it for
+// who did not.
 function SubmittersChart({ data, onBarClick, onMissingClick, loading, total }: {
   data: { day: string; count: number; total: number; date: string; isHoliday: boolean; isFuture: boolean }[]
   onBarClick?: (date: string) => void
@@ -295,180 +222,131 @@ function SubmittersChart({ data, onBarClick, onMissingClick, loading, total }: {
   loading?: boolean
   total: number  // total active branding users (denominator)
 }) {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
+  const [guide, setGuide] = useState<{ x: number; y: number } | null>(null)
+  const guideKey = useRef('')
+
+  const today = fmtDate(new Date())
+  const currentIndex = data.findIndex(d => d.date === today)
+  const lastArrived = data.reduce((best, d, i) => (d.isFuture ? best : i), 0)
+  const focusIndex = hoveredIndex ?? (currentIndex !== -1 ? currentIndex : lastArrived)
+  const focus = data[focusIndex]
+
+  useEffect(() => { guideKey.current = ''; setGuide(null) }, [data])
+
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-44">
-        <div className="w-5 h-5 border-2 border-green-200 border-t-green-700 rounded-full animate-spin" />
-      </div>
-    )
+    return <div className="flex items-center justify-center h-56"><Spinner /></div>
   }
   if (data.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-44 text-sm font-semibold" style={{ color: GREEN_MID }}>
-        No data for this period
-      </div>
-    )
+    return <div className="flex items-center justify-center h-56 text-[13px] text-[#6B7280]">No data for this period</div>
   }
 
-  const CustomTooltip = (p: { active?: boolean; payload?: { payload: typeof data[number] }[]; label?: string }) => {
-    if (!p.active || !p.payload?.length) return null
-    const d = p.payload[0].payload
-    if (d.isFuture && !d.isHoliday) {
-      return (
-        <div className="bg-white border border-gray-100 rounded-xl px-3 py-2.5 shadow-lg text-xs min-w-[140px]">
-          <p className="font-bold mb-1" style={{ color: GREEN_DARK }}>{p.label}</p>
-          <p className="font-semibold text-gray-500">Hasn't arrived yet</p>
-        </div>
-      )
-    }
-    if (d.isHoliday) {
-      return (
-        <div className="bg-white border border-gray-100 rounded-xl px-3 py-2.5 shadow-lg text-xs min-w-[140px]">
-          <p className="font-bold mb-1" style={{ color: GREEN_DARK }}>{p.label}</p>
-          <p className="font-semibold text-gray-500">Holiday — no reports expected</p>
-        </div>
-      )
-    }
-    const missing = total - d.count
-    return (
-      <div className="bg-white border border-gray-100 rounded-xl px-3 py-2.5 shadow-lg text-xs min-w-[160px]">
-        <p className="font-bold mb-1" style={{ color: GREEN_DARK }}>{p.label}</p>
-        <p className="font-semibold text-gray-700">{d.count} submitted</p>
-        <p className="font-semibold text-gray-500">{missing} didn't submit</p>
-        {d.count > 0 && (
-          <p className="font-semibold mt-1" style={{ color: GREEN_MID }}>Click to view details</p>
-        )}
-      </div>
-    )
-  }
+  // Scaled to the busiest period, not the headcount, so a day when three of
+  // twenty-five filed is still a readable bar; the pill gives the full count.
+  const ticks = evenTicks(Math.max(5, ...data.map(d => d.count)))
+  const showHolidayLabel = data.length <= 14
 
-  // Single custom shape per category. Renders either a hatched capsule
-  // (holiday) or two stacked capsules — light green for the whole bar
-  // (non-submitters) with a smaller dark-green capsule on top with its own
-  // rounded top (submitters). Each region gets its own click handler so the
-  // user can drill into either group.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const StackedBar = (props: any) => {
-    const { x = 0, y = 0, width = 0, height = 0 } = props
-    const payload = props?.payload as typeof data[number] | undefined
-    if (!payload || width <= 0 || height <= 0) return null
-    const fullR = width / 2
-    const fullPath = roundedTopPath(x, y, width, height, fullR)
+  const DayBar = (props: {
+    x?: number; y?: number; width?: number; height?: number; index?: number
+    payload?: typeof data[number]
+    background?: { x: number; y: number; width: number; height: number }
+  }) => {
+    const { x = 0, y = 0, width = 0, height = 0, payload, index = -1, background } = props
+    if (width <= 0 || !payload) return null
+    const isZero = payload.count <= 0
+    const isFocus = index === focusIndex
+    const missing = total - payload.count
 
-    // Holiday OR future-day → render only the hatched backdrop (no count
-    // fill, no click handler). Future days use a slightly cooler stripe so
-    // they're visually distinguishable from holidays even though both read
-    // as "no submission expected here".
-    if (payload.isHoliday || payload.isFuture) {
-      const patternId = payload.isHoliday ? HATCH_ID : FUTURE_HATCH_ID
+    const barH = payload.isHoliday ? 22 : isZero ? 4 : Math.max(height, 4)
+    const barY = payload.isHoliday || isZero ? y - barH : y - (barH - height)
+    const r = Math.min(6, width / 2)
+    const centre = x + width / 2
+
+    if (isFocus) {
+      const key = `${index}:${Math.round(centre)}:${Math.round(barY)}`
+      if (guideKey.current !== key) {
+        guideKey.current = key
+        requestAnimationFrame(() => setGuide({ x: centre, y: barY }))
+      }
+    }
+
+    const d = `M${x},${barY + barH} V${barY + r} Q${x},${barY} ${x + r},${barY} H${x + width - r} Q${x + width},${barY} ${x + width},${barY + r} V${barY + barH} Z`
+
+    if (payload.isHoliday) {
       return (
-        <g>
-          <path d={fullPath} fill="hsl(var(--brand-50))" opacity={0.6} />
-          <path d={fullPath} fill={`url(#${patternId})`} />
+        <g className="cursor-default">
+          <path d={d} fill={CHART2.grid} />
+          {showHolidayLabel && (
+            <text x={centre} y={barY - 6} textAnchor="middle" fontSize={10} fill={CHART2.tick} fontWeight={500}>Holiday</text>
+          )}
         </g>
       )
     }
+    if (payload.isFuture) return <path d={d} fill={CHART2.grid} />
 
-    const safeTotal = total > 0 ? total : 1
-    const countH = (payload.count / safeTotal) * height
-    const countY = y + height - countH
-    const missing = safeTotal - payload.count
-
-    // Dark capsule radius is clamped so very small fractions still render
-    // as a half-pill rather than a degenerate path. When countH is large
-    // enough we get a full pill (matching the outer capsule width).
-    const darkR = Math.min(fullR, Math.max(1, countH / 2))
-    const darkPath = countH > 1
-      ? roundedTopPath(x, countY, width, countH, darkR)
-      : null
-
+    const fill = isFocus && !isZero ? CHART2.highlight : hoveredIndex === index ? CHART2.barHover : CHART2.bar
+    const openMissing = () => { if (payload.date && missing > 0) onMissingClick?.(payload.date) }
     return (
       <g>
-        {/* Light green full capsule = non-submitters. Clickable when
-            there's at least one non-submitter to drill into. */}
-        <path
-          d={fullPath}
-          fill={GREEN_LIGHT}
-          opacity={0.9}
-          onClick={() => { if (payload.date && missing > 0) onMissingClick?.(payload.date) }}
-          style={{ cursor: payload.date && missing > 0 && onMissingClick ? 'pointer' : 'default' }}
-        />
-        {/* Dark green capsule on top with rounded curvy top — sits inside
-            the light one; click here drills into the submitters. */}
-        {darkPath && (
-          <path
-            d={darkPath}
-            fill={GREEN_DARK}
-            onClick={(e) => { e.stopPropagation(); if (payload.date && payload.count > 0) onBarClick?.(payload.date) }}
-            style={{ cursor: payload.date && payload.count > 0 && onBarClick ? 'pointer' : 'default' }}
-          />
+        {/* The empty column above the bar is the "who didn't file" target. */}
+        {background && (
+          <rect x={background.x} y={background.y} width={background.width} height={background.height}
+            fill="transparent" onClick={openMissing} className={missing > 0 ? 'cursor-pointer' : undefined} />
         )}
+        <path
+          d={d}
+          fill={fill}
+          style={{ transition: 'fill 150ms ease-out' }}
+          className="cursor-pointer"
+          onClick={e => { e.stopPropagation(); if (isZero) openMissing(); else if (payload.date) onBarClick?.(payload.date) }}
+        />
       </g>
     )
   }
 
+  const pill = focus?.isHoliday ? 'Holiday' : focus?.isFuture ? 'Upcoming' : `${focus?.count ?? 0} of ${total} filed`
+
   return (
-    <ResponsiveContainer width="100%" height={210}>
-      <BarChart data={data} margin={{ top: 10, right: 4, left: -20, bottom: 0 }} barCategoryGap="28%">
-        <defs>
-          <pattern id={HATCH_ID} patternUnits="userSpaceOnUse" width="8" height="8" patternTransform="rotate(45)">
-            <line x1="0" y1="0" x2="0" y2="8" stroke="hsl(var(--brand-200))" strokeWidth="2.5" />
-          </pattern>
-          <pattern id={FUTURE_HATCH_ID} patternUnits="userSpaceOnUse" width="8" height="8" patternTransform="rotate(45)">
-            <line x1="0" y1="0" x2="0" y2="8" stroke="#cdd6cd" strokeWidth="2.5" />
-          </pattern>
-        </defs>
-        <CartesianGrid vertical={false} stroke="#f0f4f0" strokeDasharray="4 4" />
-        <XAxis dataKey="day" axisLine={false} tickLine={false}
-          tick={{ fontSize: 11, fill: '#9ca3af', fontWeight: 600 }} />
-        <YAxis axisLine={false} tickLine={false}
-          tick={{ fontSize: 10, fill: '#b0c0b0' }}
-          allowDecimals={false}
-          domain={[0, Math.max(total, 1)]}
-          tickFormatter={v => `${v}`} />
-        <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(240,247,240,0.6)' }} />
-        <Bar dataKey="total" shape={StackedBar} />
-      </BarChart>
-    </ResponsiveContainer>
+    <div className="relative flex-1 min-h-[240px]">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart
+          data={data}
+          margin={{ top: 36, right: 0, left: 0, bottom: 0 }}
+          barCategoryGap="28%"
+          onMouseMove={(state: { activeTooltipIndex?: number }) => {
+            const i = state?.activeTooltipIndex
+            const next = typeof i === 'number' && i >= 0 && i < data.length ? i : null
+            if (next !== hoveredIndex) setHoveredIndex(next)
+          }}
+          onMouseLeave={() => setHoveredIndex(null)}
+        >
+          <CartesianGrid vertical={false} stroke={CHART2.grid} />
+          <XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: CHART2.tick }} dy={10}
+            interval={data.length > 14 ? 'preserveStartEnd' : 0} minTickGap={8} />
+          <YAxis orientation="left" domain={[0, ticks[ticks.length - 1]]} ticks={ticks} interval={0}
+            axisLine={false} tickLine={false} allowDecimals={false}
+            tick={{ fontSize: 12, fill: CHART2.tick }} width={34} dx={-4} />
+          <Bar dataKey="count" background={{ fill: 'transparent' }} shape={(props: object) => <DayBar {...props} />} isAnimationActive={false} />
+        </BarChart>
+      </ResponsiveContainer>
+
+      {guide && focus && (
+        <div className="pointer-events-none absolute inset-0 z-10" aria-hidden="true">
+          <svg className="absolute inset-0 w-full h-full overflow-visible">
+            <line x1={34} x2={guide.x} y1={guide.y} y2={guide.y} stroke={CHART2.guide} strokeWidth={1.25} strokeDasharray="4 4" />
+          </svg>
+          <div className="absolute" style={{ left: guide.x, top: guide.y - 8, transform: 'translate(-50%, -100%)' }}>
+            <ChartTip label={focus.day} value={pill} />
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
 // ── Main component ───────────────────────────────────────────────────────
 
 interface User { id: string; full_name: string; email: string; avatar_url: string | null }
-
-// Small avatar that uses the user's avatar_url when available, falling back
-// to coloured initials. Used everywhere a person is rendered on the admin
-// dashboard so the look stays consistent.
-function Avatar({ url, name, email, sizeClass = 'w-9 h-9', textClass = 'text-xs', bg = 'bg-green-100 text-green-800', ring }: {
-  url?: string | null
-  name?: string
-  email?: string
-  sizeClass?: string
-  textClass?: string
-  bg?: string
-  ring?: string
-}) {
-  const initials =
-    (name || '').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
-    || email?.[0]?.toUpperCase()
-    || 'U'
-  const ringCls = ring ?? ''
-  if (url) {
-    return (
-      <img
-        src={url}
-        alt={name || email || 'avatar'}
-        className={`${sizeClass} rounded-full object-cover shrink-0 ${ringCls}`}
-      />
-    )
-  }
-  return (
-    <div className={`${sizeClass} rounded-full ${bg} flex items-center justify-center ${textClass} font-bold shrink-0 ${ringCls}`}>
-      {initials}
-    </div>
-  )
-}
 
 export default function BrandingAdminOverview({ brandingUsers }: { brandingUsers: User[] }) {
   const navigate = useNavigate()
@@ -534,7 +412,7 @@ export default function BrandingAdminOverview({ brandingUsers }: { brandingUsers
     brandingApi.getAllReports({ dateFrom, dateTo, lockedOnly: true })
       .then(r => {
         setChartReports(r.reports)
-        const DAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
+        const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
         const MONTH_ABB = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
         const total = brandingUsers.length
 
@@ -668,14 +546,12 @@ export default function BrandingAdminOverview({ brandingUsers }: { brandingUsers
   // mark. The actual hours get drawn as a filled capsule inside.
   const teamSummary = useMemo(() => {
     const top = userTotals.filter(u => u.hours > 0).slice(0, 10)
-    const cap = top.reduce((m, u) => Math.max(m, u.hours), 0)
-    return top.map((u, i) => ({
+    return top.map(u => ({
       name: u.name.split(' ')[0] || u.name,
       hours: Math.round(u.hours * 10) / 10,
-      color: TEAM_COLORS[i % TEAM_COLORS.length],
-      cap: Math.max(cap, 1),
     }))
   }, [userTotals])
+  const teamTicks = useMemo(() => evenTicks(teamSummary.reduce((m, u) => Math.max(m, u.hours), 0)), [teamSummary])
 
   // Hours by Category (pie data)
   const categoryHours = useMemo(() => {
@@ -767,237 +643,206 @@ export default function BrandingAdminOverview({ brandingUsers }: { brandingUsers
   const handleBarClick = useCallback((date: string) => setDrillDate(date), [])
   const handleMissingClick = useCallback((date: string) => setMissingDate(date), [])
 
-  return (
-    <div className="space-y-5">
+  // Hours behind the chart's range — the big figure and the Avg chip in
+  // the Work Analytics head, same as the user dashboard's Work Activity.
+  const chartHours = useMemo(() => {
+    const ids = new Set(brandingUsers.map(u => u.id))
+    const byDate = new Map<string, number>()
+    for (const rep of chartReports) {
+      if (!rep.is_locked || !ids.has(rep.user_id)) continue
+      let h = 0
+      for (const row of rep.rows) h += rowHours(row, chartReports)
+      byDate.set(rep.report_date, (byDate.get(rep.report_date) ?? 0) + h)
+    }
+    let total = 0
+    for (const v of byDate.values()) total += v
+    return { total, avg: byDate.size > 0 ? Math.round((total / byDate.size) * 10) / 10 : null }
+  }, [chartReports, brandingUsers])
 
-      {/* ── Row 1: 4 stat cards ───────────────────────────────────────── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard title="Total Projects" value={totalProjects} dark
-          sub={`${runningProjects} active`}
-          onClick={() => setProjectsOverviewOpen(true)} />
-        <StatCard title="Submitted Today" value={submittedToday}
-          badge={submittedToday}
-          sub={`of ${brandingUsers.length} team`} />
-        <StatCard title="Running Projects" value={runningProjects}
-          badge={runningProjects}
-          sub="active campaigns" />
-        <StatCard title="Total Hours" value={totalHoursMTD} sub="this month" />
+  // en-US for the short month: en-GB renders September as "Sept".
+  const stamp = `${now.toLocaleDateString('en-GB', { weekday: 'long' })} ${now.getDate()} ${now.toLocaleDateString('en-US', { month: 'short' })}`
+  const missingToday = now.getDay() === 0 ? 0 : Math.max(0, brandingUsers.length - submittedToday)
+
+  // Ordered by what to do first; only present while actually true.
+  const attention: { title: string; body: string; run: () => void }[] = []
+  if (pendingLeaves > 0) attention.push({
+    title: `${pendingLeaves} leave request${pendingLeaves === 1 ? '' : 's'} pending`,
+    body: 'Approve or reject in Leave Requests',
+    run: () => navigate('/branding/leaves'),
+  })
+  if (appraisalDue) attention.push({
+    title: 'KRA appraisal window open',
+    body: `Review and publish ${MONTHS[now.getMonth()]} ${now.getFullYear()} scores`,
+    run: () => navigate('/branding/kra'),
+  })
+  if (missingToday > 0) attention.push({
+    title: `${missingToday} team member${missingToday === 1 ? '' : 's'} yet to file today`,
+    body: 'See who has not submitted a report',
+    run: () => setMissingDate(today()),
+  })
+
+  return (
+    <div className="space-y-4 w-full">
+
+      <HeroBanner
+        eyebrow={<>Team workspace &middot; {stamp}</>}
+        title="Your team's day, in one view."
+        body="See who has filed, what hours are in, and where the work is."
+        primary={{ label: 'Open all reports', onClick: () => setAllReportsOpen(true) }}
+        secondary={{ label: 'Team members', onClick: () => navigate('/branding/team') }}
+      />
+
+      {/* ── At a glance: four figures for this month ──────────────────── */}
+      <div>
+        <BlockHeader
+          title="At a glance"
+          subtitle={<>{MONTHS[now.getMonth()]} {now.getFullYear()} &middot; branding team</>}
+        />
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+          <DarkStatCard
+            title="Total hours"
+            value={fmtHours(totalHoursMTD)}
+            sub={<>{now.getDate()} {MONTHS[now.getMonth()]} &middot; {submitterReports.length} report{submitterReports.length === 1 ? '' : 's'} filed</>}
+            icon={Clock}
+            onClick={() => setAllReportsOpen(true)}
+          />
+          <StatCard title="Total Projects" value={totalProjects} icon={Briefcase}
+            sub={`${runningProjects} active`}
+            onClick={() => setProjectsOverviewOpen(true)} />
+          <StatCard title="Submitted Today" value={submittedToday} icon={CheckCircle}
+            meter={{ done: submittedToday, total: brandingUsers.length, label: `of ${brandingUsers.length} team` }} />
+          <StatCard title="Running Projects" value={runningProjects} icon={Activity}
+            sub="active campaigns" />
+        </div>
       </div>
 
-      {/* ── Row 2: Work Analytics + Reminders ─────────────────────────── */}
+      {/* ── Row 2: Work Analytics + Needs your attention ──────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-        <div className="lg:col-span-3 bg-white rounded-2xl border border-gray-100 p-5">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <h3 className="text-lg font-bold" style={{ color: GREEN_DARK }}>Work Analytics</h3>
-              <p className="text-xs font-semibold mt-0.5" style={{ color: GREEN_MID }}>
-                Team members who submitted per day
-              </p>
-            </div>
-            <div className="flex items-center gap-3 text-xs font-semibold flex-wrap" style={{ color: GREEN_MID }}>
-              <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: GREEN_DARK }} />
-                Submitted
+        <Card
+          title="Work Analytics"
+          subtitle="Team submissions · click a bar for names"
+          className="lg:col-span-3"
+          bodyClassName="flex flex-col flex-1"
+          action={
+            <>
+              {chartHours.avg !== null && (
+                <span className="hidden sm:inline-flex items-center h-8 px-3 rounded-[6px] text-[12px] font-medium whitespace-nowrap border border-[#C5CAD1] bg-white text-[#374151]">
+                  Avg {chartHours.avg}{'\u00A0'}hr
+                </span>
+              )}
+              <Segmented<ChartRange>
+                round
+                ariaLabel="Chart period"
+                value={chartFilter}
+                onChange={setChartFilter}
+                options={[...CHART_RANGES]}
+              />
+            </>
+          }
+        >
+          <div className="flex items-end justify-between gap-3 flex-wrap">
+            <span className={L.figure}>
+              {Math.floor(chartHours.total).toLocaleString()}
+              <span>.{String(Math.round((chartHours.total % 1) * 100)).padStart(2, '0')}</span>
+              <span className="text-[16px] text-[#6B7280] font-medium ml-1 tracking-normal">hr</span>
+            </span>
+            <div className="flex items-center gap-4 text-[12px] text-[#6B7280]">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-[var(--nerve-primary)]" aria-hidden="true" /> Submitted
               </span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: GREEN_LIGHT }} />
-                Didn't submit
-              </span>
-              <span className="flex items-center gap-1.5">
-                <svg width="10" height="10" style={{ display: 'inline-block' }}>
-                  <defs>
-                    <pattern id="admin-legend-hatch" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)">
-                      <line x1="0" y1="0" x2="0" y2="4" stroke="hsl(var(--brand-200))" strokeWidth="1.5" />
-                    </pattern>
-                  </defs>
-                  <rect width="10" height="10" rx="2" fill="hsl(var(--brand-50))" />
-                  <rect width="10" height="10" rx="2" fill="url(#admin-legend-hatch)" />
-                </svg>
-                Holiday
-              </span>
-              <span className="flex items-center gap-1.5">
-                <svg width="10" height="10" style={{ display: 'inline-block' }}>
-                  <defs>
-                    <pattern id="admin-legend-future" patternUnits="userSpaceOnUse" width="4" height="4" patternTransform="rotate(45)">
-                      <line x1="0" y1="0" x2="0" y2="4" stroke="#cdd6cd" strokeWidth="1.5" />
-                    </pattern>
-                  </defs>
-                  <rect width="10" height="10" rx="2" fill="hsl(var(--brand-50))" opacity="0.6" />
-                  <rect width="10" height="10" rx="2" fill="url(#admin-legend-future)" />
-                </svg>
-                Upcoming
+              <span className="inline-flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-[#F3F4F6] border border-[#C5CAD1]" aria-hidden="true" /> Holiday
               </span>
             </div>
           </div>
 
-          {/* Filter buttons */}
-          <div className="flex flex-wrap items-center gap-2 mb-4">
-            {(['week', 'month', '6months', 'custom'] as const).map(f => (
-              <button key={f} onClick={() => setChartFilter(f)}
-                className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
-                  chartFilter === f ? 'text-white' : 'text-gray-500 bg-gray-100 hover:bg-gray-200'
-                }`}
-                style={chartFilter === f ? { background: GREEN_DARK } : {}}>
-                {f === 'week' ? '1 Week' : f === 'month' ? '1 Month' : f === '6months' ? '6 Months' : 'Custom'}
-              </button>
-            ))}
-            {chartFilter === 'custom' && (
-              <div className="flex items-center gap-1.5 ml-1">
-                <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
-                  className="text-xs px-2 py-1 rounded-lg border border-gray-200 focus:outline-none focus:border-green-600" />
-                <span className="text-xs text-gray-400">→</span>
-                <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
-                  className="text-xs px-2 py-1 rounded-lg border border-gray-200 focus:outline-none focus:border-green-600" />
-              </div>
-            )}
-          </div>
+          {chartFilter === 'custom' && (
+            <div className="flex items-center gap-2 mt-3 bg-[#F9FAFB] p-2.5 rounded-[6px] border border-[#C5CAD1]">
+              <span className="text-xs font-medium text-[#6B7280]">From</span>
+              <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
+                className="text-xs px-2.5 py-1 rounded-[6px] border border-[#C5CAD1] bg-white focus:outline-none focus:border-[#9CA3AF]" />
+              <span className="text-xs font-medium text-[#6B7280]">To</span>
+              <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)}
+                className="text-xs px-2.5 py-1 rounded-[6px] border border-[#C5CAD1] bg-white focus:outline-none focus:border-[#9CA3AF]" />
+            </div>
+          )}
 
-          <SubmittersChart data={chartData} loading={chartLoading} total={brandingUsers.length}
-            onBarClick={handleBarClick} onMissingClick={handleMissingClick} />
-          <p className="text-center text-[11px] mt-2" style={{ color: GREEN_MID }}>
-            Click a bar to view who submitted on that day
-          </p>
-        </div>
-
-        {/* Reminders — same illustrated background as the user dashboard */}
-        <div className="lg:col-span-2 rounded-2xl border border-gray-100 p-5 flex flex-col relative overflow-hidden">
-          <img
-            src="/reminders-bg.jpeg"
-            alt=""
-            aria-hidden="true"
-            className="absolute inset-0 w-full h-full object-cover object-top pointer-events-none select-none"
-            style={{ opacity: 0.55 }}
-          />
-          <div className="absolute inset-0 pointer-events-none rounded-2xl" style={{ background: 'rgba(255,255,255,0.50)' }} />
-          <h3 className="relative z-10 text-lg font-bold mb-4" style={{ color: GREEN_DARK }}>Reminders</h3>
-          <div className="relative z-10 space-y-3 flex-1">
-            {pendingLeaves > 0 ? (
-              <div className="rounded-xl bg-amber-50/90 border border-amber-100 p-4">
-                <p className="text-sm font-semibold text-amber-800">{pendingLeaves} Leave Request{pendingLeaves === 1 ? '' : 's'} Pending</p>
-                <p className="text-xs text-amber-600 mt-0.5">Review and approve/reject in Leave Requests</p>
-              </div>
-            ) : (
-              <div className="rounded-xl bg-green-50/90 border border-green-100 p-4">
-                <p className="text-sm font-semibold text-green-800">All Leaves Reviewed</p>
-                <p className="text-xs text-green-600 mt-0.5">No pending requests</p>
-              </div>
-            )}
-            {appraisalDue && (
-              <div className="rounded-xl bg-blue-50/90 border border-blue-100 p-4">
-                <p className="text-sm font-semibold text-blue-800">KRA Appraisal Window Open</p>
-                <p className="text-xs text-blue-600 mt-0.5">
-                  Review and publish {MONTHS[now.getMonth()]} {now.getFullYear()} scores
-                </p>
-              </div>
-            )}
-            {!appraisalDue && pendingLeaves === 0 && (
-              <p className="text-xs text-gray-400 text-center py-4">Nothing urgent right now.</p>
-            )}
+          <div className="mt-2 flex-1 flex flex-col min-h-[240px]">
+            <SubmittersChart data={chartData} loading={chartLoading} total={brandingUsers.length}
+              onBarClick={handleBarClick} onMissingClick={handleMissingClick} />
           </div>
-        </div>
+        </Card>
+
+        {/* Needs your attention */}
+        <Card title="Needs your attention" subtitle="Prioritised next steps" className="lg:col-span-2">
+          {attention.length === 0 ? (
+            <EmptyState compact icon={CheckCircle} title="Nothing needs your attention right now." />
+          ) : (
+            <ul className="divide-y divide-[#C5CAD1]">
+              {attention.map((item, i) => (
+                <NumberedItem key={item.title} n={i + 1} title={item.title} body={item.body}
+                  action="Review" onAction={item.run} />
+              ))}
+            </ul>
+          )}
+        </Card>
       </div>
 
       {/* ── Row 3: All Reports (top-4 cards + open dialog) ────────────── */}
-      <div className="bg-white rounded-2xl border border-gray-100 p-5">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h3 className="text-lg font-bold" style={{ color: GREEN_DARK }}>Today's Top Contributors</h3>
-            <p className="text-xs font-semibold mt-0.5" style={{ color: GREEN_MID }}>
-              Leaderboard for {now.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })} — refreshes every day.
-            </p>
-          </div>
-          <button onClick={() => setAllReportsOpen(true)}
-            className="flex items-center gap-1.5 text-xs font-semibold text-white px-3 py-2 rounded-xl"
-            style={{ background: GREEN_DARK }}>
-            <Filter className="w-3 h-3" /> Open detailed view
-          </button>
-        </div>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className={cx(DS.card, 'p-4')}>
+        <CardHead
+          title="Today's Top Contributors"
+          subtitle={<>Leaderboard for {now.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })} &middot; refreshes every day</>}
+          link="See all"
+          onLink={() => setAllReportsOpen(true)}
+        />
+        <div className="mt-4 grid grid-cols-2 lg:grid-cols-4 gap-3">
           {todayTopUsers.slice(0, 4).map(u => (
             <UserSummaryCard key={u.id} {...u} />
           ))}
           {todayTopUsers.length === 0 && (
-            <p className="text-sm text-gray-400 col-span-full text-center py-6">No one has logged hours today yet.</p>
+            <div className="col-span-full">
+              <EmptyState compact icon={UsersIcon} title="No one has logged hours today yet." />
+            </div>
           )}
         </div>
         {userTotals.length > 0 && (
-          <button onClick={() => setAllReportsOpen(true)}
-            className="w-full mt-3 py-2 text-xs font-semibold rounded-lg hover:bg-green-50 transition-colors"
-            style={{ color: GREEN_DARK }}>
-            See all {userTotals.length} team member{userTotals.length === 1 ? '' : 's'}
-          </button>
+          <p className="mt-3 pt-2 border-t border-[#C5CAD1] text-xs font-medium text-[#9CA3AF] text-center">
+            {userTotals.length} {userTotals.length === 1 ? 'member' : 'members'}
+          </p>
         )}
       </div>
 
       {/* ── Row 4: Team Summary bar chart ─────────────────────────────── */}
-      <div className="bg-white rounded-2xl border border-gray-100 p-5">
-        <h3 className="text-lg font-bold mb-1" style={{ color: GREEN_DARK }}>Team Summary</h3>
-        <p className="text-xs font-semibold mb-4" style={{ color: GREEN_MID }}>
-          Hours logged per member this month (top 10)
-        </p>
+      <Card title="Team Summary" subtitle="Hours logged per member this month (top 10)">
         {teamSummary.length === 0 ? (
-          <p className="text-sm text-gray-400 text-center py-10">No hours logged yet this month.</p>
+          <EmptyState compact icon={Activity} title="No hours logged yet this month." />
         ) : (
           <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={teamSummary} margin={{ top: 10, right: 8, left: -10, bottom: 0 }} barCategoryGap="22%">
-              <defs>
-                <pattern id={TEAM_HATCH_ID} patternUnits="userSpaceOnUse" width="7" height="7" patternTransform="rotate(45)">
-                  <line x1="0" y1="0" x2="0" y2="7" stroke="#c8e0d8" strokeWidth="2" />
-                </pattern>
-              </defs>
-              <CartesianGrid vertical={false} stroke="#f0f4f0" strokeDasharray="4 4" />
-              <XAxis dataKey="name" tick={{ fontSize: 11, fill: '#6b7280', fontWeight: 700 }} tickLine={false} axisLine={false} />
-              <YAxis tick={{ fontSize: 10, fill: '#b0c0b0' }} tickLine={false} axisLine={false} tickFormatter={v => `${v}h`} />
-              <Tooltip cursor={{ fill: 'rgba(240,247,240,0.4)' }}
+            <BarChart data={teamSummary} margin={{ top: 8, right: 0, left: 0, bottom: 0 }} barCategoryGap="28%">
+              <CartesianGrid vertical={false} stroke={CHART2.grid} />
+              <XAxis dataKey="name" tick={{ fontSize: 12, fill: CHART2.tick }} tickLine={false} axisLine={false} dy={10}
+                interval={teamSummary.length > 6 ? 'preserveStartEnd' : 0} minTickGap={8} />
+              <YAxis domain={[0, teamTicks[teamTicks.length - 1]]} ticks={teamTicks} interval={0}
+                tick={{ fontSize: 12, fill: CHART2.tick }} tickLine={false} axisLine={false} width={34} dx={-4} />
+              <Tooltip cursor={{ fill: 'var(--nv-canvas)' }}
                 content={(p: { active?: boolean; payload?: { payload: typeof teamSummary[number] }[]; label?: string }) => {
                   if (!p.active || !p.payload?.length) return null
-                  const d = p.payload[0].payload
-                  return (
-                    <div className="bg-white border border-gray-100 rounded-xl px-3 py-2 shadow-lg text-xs">
-                      <p className="font-bold" style={{ color: GREEN_DARK }}>{p.label}</p>
-                      <p className="font-semibold" style={{ color: d.color }}>{d.hours} hrs</p>
-                    </div>
-                  )
+                  return <ChartTip label={p.label} value={`${p.payload[0].payload.hours} hr`} />
                 }} />
-              {/* Single bar drawn with a custom shape: a hatched grey
-                  capsule backdrop for the team's max, with the user's
-                  actual hours rendered as a filled coloured capsule
-                  inside. dataKey="cap" so the bar height matches the
-                  shared maximum across all users. */}
-              <Bar dataKey="cap" maxBarSize={44}
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                shape={(props: any) => {
-                  const { x = 0, y = 0, width = 0, height = 0 } = props
-                  const d = props?.payload as typeof teamSummary[number] | undefined
-                  if (!d || width <= 0 || height <= 0) return null
-                  const fullR = width / 2
-                  const backdrop = capsulePath(x, y, width, height, fullR)
-                  const fillFrac = d.cap > 0 ? Math.min(1, d.hours / d.cap) : 0
-                  const fillH = Math.max(width, fillFrac * height) // never thinner than a pill
-                  const fillY = y + height - Math.min(height, fillH)
-                  const fillPath = capsulePath(x, fillY, width, Math.min(height, fillH), fullR)
-                  return (
-                    <g>
-                      <path d={backdrop} fill="#ecf4f0" />
-                      <path d={backdrop} fill={`url(#${TEAM_HATCH_ID})`} />
-                      <path d={fillPath} fill={d.color} />
-                    </g>
-                  )
-                }}
-              />
+              <Bar dataKey="hours" fill={CHART2.highlight} radius={[6, 6, 0, 0]} maxBarSize={44} isAnimationActive={false} />
             </BarChart>
           </ResponsiveContainer>
         )}
-      </div>
+      </Card>
 
       {/* ── Row 5: Hours by Category pie + Collaboration map ──────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="bg-white rounded-2xl border border-gray-100 p-5">
+        <div className={cx(DS.card, 'p-4')}>
           {categoryHours.length === 0 ? (
             <>
-              <h3 className="text-lg font-extrabold font-serif mb-1" style={{ color: GREEN_DARK }}>Hours by Work Category</h3>
-              <p className="text-xs font-semibold mb-4" style={{ color: GREEN_MID }}>This month, all team members</p>
-              <p className="text-sm text-gray-400 text-center py-10">No data.</p>
+              <CardHead title="Hours by Work Category" subtitle="This month, all team members" className="mb-4" />
+              <EmptyState compact icon={Inbox} title="No data." />
             </>
           ) : (
             <LiquidGlassPie data={categoryHours} title="Hours by Work Category" />
@@ -1050,23 +895,24 @@ function UserSummaryCard({ name, email, hours, reports, avatar_url, onClick }: {
   return (
     <Wrapper
       onClick={onClick}
-      className={`rounded-2xl border border-gray-100 p-4 bg-gradient-to-br from-white to-green-50/30 text-left w-full ${
-        onClick ? 'cursor-pointer hover:border-green-300 hover:shadow-md hover:-translate-y-0.5 transition-all' : ''
-      }`}
+      className={cx(
+        'bg-white rounded-[6px] border border-[#C5CAD1] p-4 text-left w-full transition-colors duration-300 ease-out',
+        onClick ? 'cursor-pointer hover:border-bp-700' : 'hover:border-bp-700',
+      )}
     >
       <div className="flex items-center gap-3">
-        <Avatar url={avatar_url} name={name} email={email} sizeClass="w-10 h-10" textClass="text-xs" />
+        <Avatar url={avatar_url} name={name} email={email} size="md" />
         <div className="min-w-0">
-          <p className="text-sm font-bold font-serif truncate" style={{ color: GREEN_DARK }}>{name}</p>
-          <p className="text-[11px] text-gray-400 truncate">{email}</p>
+          <p className="text-sm font-semibold text-[#111827] truncate">{name}</p>
+          <p className="text-[11px] text-[#6B7280] font-medium truncate">{email}</p>
         </div>
       </div>
       <div className="mt-3 flex items-end justify-between">
         <div>
-          <p className="text-2xl font-bold leading-none" style={{ color: GREEN_DARK }}>
-            {Math.round(hours * 10) / 10}<span className="text-sm font-semibold text-gray-400 ml-1">hrs</span>
+          <p className="text-lg font-semibold tabular-nums leading-none text-[#111827] tracking-tight">
+            {fmtHours(hours)}
           </p>
-          <p className="text-[11px] mt-1" style={{ color: GREEN_MID }}>{reports} report{reports === 1 ? '' : 's'}</p>
+          <p className="text-[11px] mt-1 text-[#6B7280] font-medium">{reports} report{reports === 1 ? '' : 's'}</p>
         </div>
       </div>
     </Wrapper>
@@ -1083,49 +929,64 @@ function DayDrillModal({ date, submitters, onClose }: {
   const label = new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
   const totalHrs = Math.round(submitters.reduce((s, x) => s + x.hours, 0) * 10) / 10
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl max-h-[80vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <div>
-            <h2 className="text-base font-extrabold font-serif" style={{ color: GREEN_DARK }}>Submissions — {label}</h2>
-            <p className="text-xs font-semibold mt-0.5 flex items-center gap-2" style={{ color: GREEN_MID }}>
-              <CheckCircle className="w-3 h-3" /> {submitters.length} submitter{submitters.length === 1 ? '' : 's'}
-              <span className="text-gray-300">·</span>
-              <span className="font-semibold text-gray-700">{totalHrs} hrs total</span>
-            </p>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1"><X className="w-5 h-5" /></button>
-        </div>
-        <div className="overflow-y-auto flex-1 px-6 py-4 space-y-2">
-          {submitters.length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-12">No one submitted on this day.</p>
-          ) : submitters.map(s => (
-            <div key={s.id} className="flex items-center justify-between p-3 rounded-xl border border-gray-100 hover:bg-green-50/30 transition-colors">
-              <div className="flex items-center gap-3 min-w-0">
-                <Avatar url={s.avatar_url} name={s.name} email={s.email} sizeClass="w-9 h-9" textClass="text-xs" />
-                <div className="min-w-0">
-                  <p className="text-sm font-bold font-serif truncate" style={{ color: GREEN_DARK }}>{s.name}</p>
-                  <p className="text-[11px]" style={{ color: GREEN_MID }}>
+    <Modal
+      size="md"
+      onClose={onClose}
+      title={<>Submissions — {label}</>}
+      subtitle={
+        <span className="flex items-center gap-2">
+          <CheckCircle className="w-3.5 h-3.5 text-emerald-500" /> {submitters.length} submitter{submitters.length === 1 ? '' : 's'}
+          <span className="text-[#9CA3AF]">·</span>
+          <span className="font-semibold text-[#374151]">{totalHrs} hrs total</span>
+        </span>
+      }
+    >
+      {submitters.length === 0 ? (
+        <EmptyState icon={Inbox} title="No one submitted on this day." />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className={cx(DS.tableSoft, 'min-w-[460px]')}>
+            <thead>
+              <tr>
+                <th className={DS.thSoft}>Colleague</th>
+                <th className={DS.thSoft}>Activity</th>
+                <th className={cx(DS.thSoft, 'text-center')}>Hours</th>
+                <th className={cx(DS.thSoft, 'text-right')}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {submitters.map((s, idx) => (
+                <tr key={s.id} className={idx % 2 === 0 ? DS.trSoftEven : DS.trSoftOdd}>
+                  <td className={cx(DS.tdSoft, 'font-semibold text-[#111827]')}>
+                    <div className="flex items-center gap-2 max-w-[200px]">
+                      <Avatar url={s.avatar_url} name={s.name} email={s.email} size="xs" />
+                      <span className="truncate">{s.name}</span>
+                    </div>
+                  </td>
+                  <td className={cx(DS.tdSoft, 'font-normal text-[#6B7280] whitespace-nowrap')}>
                     {s.rowCount} entr{s.rowCount === 1 ? 'y' : 'ies'}
-                    {s.submittedAt && ` · submitted ${new Date(s.submittedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}`}
-                  </p>
-                </div>
-              </div>
-              <div className="text-right shrink-0 ml-3">
-                <p className="text-lg font-bold" style={{ color: GREEN_DARK }}>{s.hours}<span className="text-xs text-gray-400 ml-0.5">h</span></p>
-              </div>
-            </div>
-          ))}
+                    {s.submittedAt && ` · ${new Date(s.submittedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}`}
+                  </td>
+                  <td className={cx(DS.tdSoft, 'font-semibold text-[#374151] text-center whitespace-nowrap')}>
+                    {s.hours > 0 ? fmtHours(s.hours) : '—'}
+                  </td>
+                  <td className={cx(DS.tdSoft, 'text-right whitespace-nowrap')}>
+                    <StatusPill tone="success">Submitted</StatusPill>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-      </div>
-    </div>
+      )}
+    </Modal>
   )
 }
 
 // ── Collaboration map (clickable, by project) ────────────────────────────
 
 // Modal listing users who DIDN'T submit on the picked date. Triggered by
-// clicking the light-green portion of a bar in the Work Analytics chart.
+// clicking the slate portion of a bar in the Work Analytics chart.
 function MissingDrillModal({ date, missing, onClose }: {
   date: string
   missing: { id: string; name: string; email: string; avatar_url: string | null }[]
@@ -1133,33 +994,48 @@ function MissingDrillModal({ date, missing, onClose }: {
 }) {
   const label = new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl max-h-[80vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <div>
-            <h2 className="text-base font-extrabold font-serif" style={{ color: GREEN_DARK }}>Did NOT submit — {label}</h2>
-            <p className="text-xs font-semibold mt-0.5 flex items-center gap-2" style={{ color: GREEN_MID }}>
-              <AlertCircle className="w-3 h-3" /> {missing.length} team member{missing.length === 1 ? '' : 's'} missing
-            </p>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1"><X className="w-5 h-5" /></button>
+    <Modal
+      size="md"
+      onClose={onClose}
+      title={<>Did NOT submit — {label}</>}
+      subtitle={
+        <span className="flex items-center gap-2">
+          <AlertCircle className="w-3.5 h-3.5 text-amber-500" /> {missing.length} team member{missing.length === 1 ? '' : 's'} missing
+        </span>
+      }
+    >
+      {missing.length === 0 ? (
+        <EmptyState icon={CheckCircle} title="Everyone submitted on this day." />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className={cx(DS.tableSoft, 'min-w-[400px]')}>
+            <thead>
+              <tr>
+                <th className={DS.thSoft}>Colleague</th>
+                <th className={DS.thSoft}>Email</th>
+                <th className={cx(DS.thSoft, 'text-right')}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {missing.map((m, idx) => (
+                <tr key={m.id} className={idx % 2 === 0 ? DS.trSoftEven : DS.trSoftOdd}>
+                  <td className={cx(DS.tdSoft, 'font-semibold text-[#111827]')}>
+                    <div className="flex items-center gap-2 max-w-[200px]">
+                      <Avatar url={m.avatar_url} name={m.name} email={m.email} size="xs" />
+                      <span className="truncate">{m.name}</span>
+                    </div>
+                  </td>
+                  <td className={cx(DS.tdSoft, 'font-normal text-[#6B7280] max-w-[220px] truncate')}>{m.email}</td>
+                  <td className={cx(DS.tdSoft, 'text-right whitespace-nowrap')}>
+                    <StatusPill tone="warning">Pending</StatusPill>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-        <div className="overflow-y-auto flex-1 px-6 py-4 space-y-2">
-          {missing.length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-12">Everyone submitted on this day. 🎉</p>
-          ) : missing.map(m => (
-            <div key={m.id} className="flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:bg-amber-50/30 transition-colors">
-              <Avatar url={m.avatar_url} name={m.name} email={m.email} sizeClass="w-9 h-9" textClass="text-xs" bg="bg-amber-100 text-amber-800" />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-bold font-serif truncate" style={{ color: GREEN_DARK }}>{m.name}</p>
-                <p className="text-[11px] text-gray-400 truncate">{m.email}</p>
-              </div>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 shrink-0">No report</span>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
+      )}
+    </Modal>
   )
 }
 
@@ -1174,13 +1050,10 @@ function CollaborationMap({ items, userMap }: {
   const maxHours = items[0]?.hours ?? 0
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 p-5">
-      <h3 className="text-lg font-bold mb-1" style={{ color: GREEN_DARK }}>Collaboration Map</h3>
-      <p className="text-xs font-semibold mb-4" style={{ color: GREEN_MID }}>
-        Hours each pair of team members spent working together this month
-      </p>
+    <div className={cx(DS.card, 'p-4')}>
+      <CardHead title="Collaboration Map" subtitle="Hours each pair of team members spent working together this month" className="mb-4" />
       {items.length === 0 ? (
-        <p className="text-sm text-gray-400 text-center py-10">No collaborative work yet this month.</p>
+        <EmptyState compact icon={UsersIcon} title="No collaborative work yet this month." />
       ) : (
         <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
           {items.slice(0, 15).map(item => {
@@ -1191,34 +1064,34 @@ function CollaborationMap({ items, userMap }: {
             const hrs = Math.round(item.hours * 10) / 10
             const widthPct = maxHours > 0 ? Math.max(8, (item.hours / maxHours) * 100) : 0
             return (
-              <div key={key} className="rounded-xl border border-gray-100">
+              <div key={key} className="rounded-[6px] border border-[#C5CAD1]">
                 <button onClick={() => setOpen(isOpen ? null : key)}
-                  className="w-full flex items-center gap-3 p-3 hover:bg-green-50/30 transition-colors text-left">
+                  className="w-full flex items-center gap-3 p-3 hover:bg-[#F9FAFB] transition-colors text-left cursor-pointer rounded-[6px]">
                   <div className="flex items-center -space-x-2 shrink-0">
                     <Avatar url={userA?.avatar_url} name={userA?.full_name} email={userA?.email}
-                      sizeClass="w-8 h-8" textClass="text-[11px]" ring="ring-2 ring-white" />
+                      size="sm" className="ring-2 ring-white" />
                     <Avatar url={userB?.avatar_url} name={userB?.full_name} email={userB?.email}
-                      sizeClass="w-8 h-8" textClass="text-[11px]" bg="bg-emerald-100 text-emerald-800" ring="ring-2 ring-white" />
+                      size="sm" className="ring-2 ring-white !bg-bp-700" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-bold font-serif truncate" style={{ color: GREEN_DARK }}>
-                      {nameFor(item.a)} <span className="text-gray-400 font-normal">↔</span> {nameFor(item.b)}
+                    <p className="text-sm font-semibold text-[#111827] truncate">
+                      {nameFor(item.a)} <span className="text-[#9CA3AF] font-normal">↔</span> {nameFor(item.b)}
                     </p>
-                    <div className="mt-1 h-1.5 w-full rounded-full bg-green-50 overflow-hidden">
-                      <div className="h-full rounded-full" style={{ width: `${widthPct}%`, background: GREEN_DARK }} />
+                    <div className="mt-1 h-1.5 w-full rounded-full bg-[#F3F4F6] overflow-hidden">
+                      <div className="h-full rounded-full bg-bp-600" style={{ width: `${widthPct}%` }} />
                     </div>
-                    <p className="text-[11px] mt-1" style={{ color: GREEN_MID }}>
+                    <p className="text-[11px] mt-1 text-[#6B7280] font-medium">
                       {hrs}h together · {item.sessions} session{item.sessions === 1 ? '' : 's'} · {item.projects.size} project{item.projects.size === 1 ? '' : 's'}
                     </p>
                   </div>
-                  {isOpen ? <ChevronUp className="w-4 h-4 text-gray-400 shrink-0" /> : <ChevronDown className="w-4 h-4 text-gray-400 shrink-0" />}
+                  {isOpen ? <ChevronUp className="w-4 h-4 text-[#9CA3AF] shrink-0" /> : <ChevronDown className="w-4 h-4 text-[#9CA3AF] shrink-0" />}
                 </button>
                 {isOpen && (
                   <div className="px-3 pb-3 pt-1">
-                    <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-1.5">Projects together</p>
+                    <p className={cx(DS.eyebrow, 'mb-1.5')}>Projects together</p>
                     <div className="flex flex-wrap gap-1.5">
                       {Array.from(item.projects).slice(0, 20).map(p => (
-                        <span key={p} className="text-[11px] px-2 py-1 rounded-full bg-green-50 text-green-700 font-medium">{p}</span>
+                        <Badge key={p} tone="info">{p}</Badge>
                       ))}
                     </div>
                   </div>
@@ -1289,99 +1162,87 @@ function ProjectsOverviewDialog({ projects, monthReports, brandingUsers, onClose
   }, [projects, monthReports, userById])
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <div>
-            <h2 className="text-lg font-extrabold font-serif flex items-center gap-2" style={{ color: GREEN_DARK }}>
-              <Briefcase className="w-5 h-5" />
-              Total Projects ({projects.length})
-            </h2>
-            <p className="text-xs font-semibold mt-0.5" style={{ color: GREEN_MID }}>
-              Who's assigned to what — and the hours logged on each project this month
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={onGoToProjects}
-              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg text-white"
-              style={{ background: GREEN_DARK }}>
-              Manage projects <ArrowRight className="w-3 h-3" />
-            </button>
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1"><X className="w-5 h-5" /></button>
-          </div>
-        </div>
-
-        <div className="overflow-y-auto flex-1 px-6 py-4 space-y-3">
-          {projectStats.length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-12">No projects yet.</p>
-          ) : projectStats.map(({ project, members, totalHours }) => {
-            const statusStyle =
-              project.status === 'active'    ? 'bg-green-700 text-white' :
-              project.status === 'completed' ? 'bg-blue-100 text-blue-800' :
-                                               'bg-amber-100 text-amber-800'
-            return (
-              <button
-                key={project.id}
-                onClick={onGoToProjects}
-                className="w-full text-left rounded-2xl border border-gray-100 hover:border-green-300 hover:shadow-md transition-all p-4 group">
-                <div className="flex items-start justify-between gap-3 mb-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <h3 className="text-base font-extrabold font-serif truncate" style={{ color: GREEN_DARK }}>{project.name}</h3>
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${statusStyle}`}>
-                        {project.status.replace('_', ' ')}
+    <Modal
+      size="xl"
+      onClose={onClose}
+      title={
+        <span className="flex items-center gap-2">
+          <Briefcase className="w-5 h-5 text-bp-700" />
+          Total Projects ({projects.length})
+        </span>
+      }
+      subtitle="Who's assigned to what — and the hours logged on each project this month"
+      footer={
+        <button onClick={onGoToProjects} className={cx(DS.btn, DS.btnPrimary, DS.btnSm)}>
+          Manage projects <ArrowRight className="w-3.5 h-3.5" />
+        </button>
+      }
+    >
+      <div className="space-y-3">
+        {projectStats.length === 0 ? (
+          <EmptyState icon={Briefcase} title="No projects yet." />
+        ) : projectStats.map(({ project, members, totalHours }) => {
+          return (
+            <button
+              key={project.id}
+              onClick={onGoToProjects}
+              className="w-full text-left bg-white rounded-[6px] border border-[#C5CAD1] hover:border-bp-700 transition-colors duration-300 ease-out p-4 group cursor-pointer">
+              <div className="flex items-start justify-between gap-3 mb-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className={cx(DS.h3, 'truncate')}>{project.name}</h3>
+                    <Badge tone={toneForStatus(project.status)} className="uppercase tracking-wider">
+                      {project.status.replace('_', ' ')}
+                    </Badge>
+                    {project.deadline && (
+                      <span className="text-[11px] font-semibold text-[#6B7280]">
+                        Due {new Date(project.deadline).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}
                       </span>
-                      {project.deadline && (
-                        <span className="text-[10px] font-semibold text-gray-500">
-                          Due {new Date(project.deadline).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}
-                        </span>
-                      )}
-                    </div>
-                    {project.description && (
-                      <p className="text-xs text-gray-500 mt-1 line-clamp-2">{project.description}</p>
                     )}
                   </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-xl font-extrabold leading-none" style={{ color: GREEN_DARK }}>
-                      {totalHours}<span className="text-xs font-semibold text-gray-400 ml-1">hrs</span>
-                    </p>
-                    <p className="text-[10px] font-semibold mt-0.5" style={{ color: GREEN_MID }}>this month</p>
-                  </div>
+                  {project.description && (
+                    <p className="text-xs text-[#6B7280] font-medium mt-1 line-clamp-2">{project.description}</p>
+                  )}
                 </div>
+                <div className="text-right shrink-0">
+                  <p className="text-xl font-semibold leading-none text-[#111827] tracking-tight">
+                    {totalHours}<span className="text-xs font-semibold text-[#9CA3AF] ml-1">hrs</span>
+                  </p>
+                  <p className={cx(DS.muted, 'text-[10px] mt-0.5')}>this month</p>
+                </div>
+              </div>
 
-                {members.length === 0 ? (
-                  <p className="text-xs text-gray-400 italic">No one assigned yet.</p>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {members.map(m => {
-                      const name = m.user?.full_name || m.user?.email || 'Unknown'
-                      return (
-                        <div key={m.id} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-green-50/50 border border-green-100/60">
-                          <Avatar url={m.user?.avatar_url} name={m.user?.full_name} email={m.user?.email}
-                            sizeClass="w-8 h-8" textClass="text-xs" />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs font-bold truncate" style={{ color: GREEN_DARK }}>{name}</p>
-                            <p className="text-[10px]" style={{ color: GREEN_MID }}>
-                              {m.hours > 0
-                                ? <>{m.hours}h logged{m.lastLogged ? ` · last ${new Date(m.lastLogged + 'T00:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}` : ''}</>
-                                : <span className="text-gray-400">No time logged yet</span>}
-                            </p>
-                          </div>
+              {members.length === 0 ? (
+                <p className="text-xs text-[#9CA3AF] font-medium italic">No one assigned yet.</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {members.map(m => {
+                    const name = m.user?.full_name || m.user?.email || 'Unknown'
+                    return (
+                      <div key={m.id} className="flex items-center gap-2 px-3 py-2 rounded-[6px] bg-[#F9FAFB] border border-[#C5CAD1]">
+                        <Avatar url={m.user?.avatar_url} name={m.user?.full_name} email={m.user?.email} size="sm" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-semibold text-[#111827] truncate">{name}</p>
+                          <p className="text-[10px] text-[#6B7280] font-medium">
+                            {m.hours > 0
+                              ? <>{m.hours}h logged{m.lastLogged ? ` · last ${new Date(m.lastLogged + 'T00:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}` : ''}</>
+                              : <span className="text-[#9CA3AF]">No time logged yet</span>}
+                          </p>
                         </div>
-                      )
-                    })}
-                  </div>
-                )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
 
-                <p className="mt-3 flex items-center gap-1 text-[11px] font-semibold opacity-0 group-hover:opacity-100 transition-opacity" style={{ color: GREEN_DARK }}>
-                  Open in Team Members → Projects <ArrowRight className="w-3 h-3" />
-                </p>
-              </button>
-            )
-          })}
-        </div>
+              <p className="mt-3 flex items-center gap-1 text-[11px] font-semibold text-bp-700 opacity-0 group-hover:opacity-100 transition-opacity">
+                Open in Team Members → Projects <ArrowRight className="w-3 h-3" />
+              </p>
+            </button>
+          )
+        })}
       </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -1471,96 +1332,87 @@ function AllReportsDialog({ brandingUsers, categories, onClose }: AllReportsDial
     toast.success('CSV downloaded')
   }
 
-  const INP = 'w-full text-sm px-3 py-2 rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-green-300 transition-all'
-  const SEL = INP + ' cursor-pointer'
-
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <div>
-            <h2 className="text-lg font-extrabold font-serif" style={{ color: GREEN_DARK }}>All Reports</h2>
-            <p className="text-xs font-semibold mt-0.5" style={{ color: GREEN_MID }}>
-              {userCards.length} contributor{userCards.length === 1 ? '' : 's'} matching filters — click a card for the full breakdown
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={exportCSV}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-gray-200 hover:bg-gray-50"
-              style={{ color: GREEN_DARK }}>
-              <Download className="w-3 h-3" /> Export CSV
-            </button>
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1"><X className="w-5 h-5" /></button>
-          </div>
-        </div>
-
+    <>
+      <Modal
+        size="2xl"
+        onClose={onClose}
+        title="All Reports"
+        subtitle={<>{userCards.length} contributor{userCards.length === 1 ? '' : 's'} matching filters — click a card for the full breakdown</>}
+        footer={
+          <button onClick={exportCSV} className={cx(DS.btn, DS.btnSecondary, DS.btnSm)}>
+            <Download className="w-3.5 h-3.5" /> Export CSV
+          </button>
+        }
+      >
         {/* Filter bar */}
-        <div className="px-6 py-3 border-b border-gray-100 grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <div className={cx(DS.card, 'bg-[#F9FAFB] p-4 mb-4 grid grid-cols-2 lg:grid-cols-5 gap-3')}>
           <div className="relative">
-            <label className="text-[10px] font-bold text-gray-500 block mb-1">Users</label>
-            <button type="button" onClick={() => setUserDropOpen(o => !o)} className={SEL + ' flex items-center justify-between'}>
+            <label className={DS.label}>Users</label>
+            <button type="button" onClick={() => setUserDropOpen(o => !o)} className={cx(DS.select, 'flex items-center justify-between text-left')}>
               <span className="truncate text-sm">
                 {filters.userIds.length === 0 ? 'All users'
                   : filters.userIds.length === 1 ? (brandingUsers.find(u => u.id === filters.userIds[0])?.full_name || 'Unknown')
                   : `${filters.userIds.length} selected`}
               </span>
-              <ChevronDown className="w-3.5 h-3.5 text-gray-400" />
+              <ChevronDown className="w-3.5 h-3.5 text-[#9CA3AF] shrink-0" />
             </button>
             {userDropOpen && (
-              <div className="absolute z-40 top-full mt-1 left-0 w-full bg-white border border-gray-100 rounded-lg shadow-lg py-1 max-h-52 overflow-y-auto">
-                <label className="flex items-center gap-2 px-3 py-1.5 hover:bg-green-50/40 cursor-pointer">
+              <div className="absolute z-40 top-full mt-1 left-0 w-full bg-white border border-[#C5CAD1] rounded-[6px] shadow-lg py-1 max-h-52 overflow-y-auto">
+                <label className="flex items-center gap-2 px-3 py-1.5 hover:bg-bp-50 cursor-pointer">
                   <input type="checkbox" checked={filters.userIds.length === 0}
                     onChange={() => setFilters(p => ({ ...p, userIds: [] }))}
-                    className="w-3.5 h-3.5 accent-green-700" />
-                  <span className="text-sm">All users</span>
+                    className="w-3.5 h-3.5 accent-bp-700" />
+                  <span className="text-sm text-[#374151] font-medium">All users</span>
                 </label>
-                <div className="border-t border-gray-100 my-1" />
+                <div className={cx(DS.divider, 'my-1')} />
                 {brandingUsers.map(u => (
-                  <label key={u.id} className="flex items-center gap-2 px-3 py-1.5 hover:bg-green-50/40 cursor-pointer">
+                  <label key={u.id} className="flex items-center gap-2 px-3 py-1.5 hover:bg-bp-50 cursor-pointer">
                     <input type="checkbox" checked={filters.userIds.includes(u.id)}
                       onChange={() => toggleUser(u.id)}
-                      className="w-3.5 h-3.5 accent-green-700" />
-                    <span className="text-sm truncate">{u.full_name || u.email}</span>
+                      className="w-3.5 h-3.5 accent-bp-700" />
+                    <span className="text-sm text-[#374151] font-medium truncate">{u.full_name || u.email}</span>
                   </label>
                 ))}
               </div>
             )}
           </div>
           <div>
-            <label className="text-[10px] font-bold text-gray-500 block mb-1">From</label>
-            <input type="date" value={filters.dateFrom} onChange={e => setFilters(p => ({ ...p, dateFrom: e.target.value }))} className={INP} />
+            <label className={DS.label}>From</label>
+            <input type="date" value={filters.dateFrom} onChange={e => setFilters(p => ({ ...p, dateFrom: e.target.value }))} className={DS.input} />
           </div>
           <div>
-            <label className="text-[10px] font-bold text-gray-500 block mb-1">To</label>
-            <input type="date" value={filters.dateTo} onChange={e => setFilters(p => ({ ...p, dateTo: e.target.value }))} className={INP} />
+            <label className={DS.label}>To</label>
+            <input type="date" value={filters.dateTo} onChange={e => setFilters(p => ({ ...p, dateTo: e.target.value }))} className={DS.input} />
           </div>
           <div>
-            <label className="text-[10px] font-bold text-gray-500 block mb-1">Type of Work</label>
+            <label className={DS.label}>Type of Work</label>
             <select value={filters.typeOfWork}
               onChange={e => setFilters(p => ({ ...p, typeOfWork: e.target.value, subCategory: '' }))}
-              className={SEL}>
+              className={DS.select}>
               <option value="">All types</option>
               {categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
             </select>
           </div>
           <div>
-            <label className="text-[10px] font-bold text-gray-500 block mb-1">Sub Category</label>
+            <label className={DS.label}>Sub Category</label>
             <select value={filters.subCategory}
               onChange={e => setFilters(p => ({ ...p, subCategory: e.target.value }))}
               disabled={!filters.typeOfWork}
-              className={SEL + (filters.typeOfWork ? '' : ' opacity-50 cursor-not-allowed')}>
+              className={DS.select}>
               <option value="">All sub-categories</option>
               {subCatOptions.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
             </select>
           </div>
         </div>
 
-        <div className="overflow-y-auto flex-1 px-6 py-4">
+        <div>
           {loading ? (
-            <p className="text-sm text-gray-400 text-center py-8">Loading…</p>
+            <div className="flex items-center justify-center gap-2 py-8 text-sm text-[#9CA3AF] font-medium">
+              <Spinner /> Loading…
+            </div>
           ) : userCards.length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-12">No reports match the current filters.</p>
+            <EmptyState icon={Inbox} title="No reports match the current filters." />
           ) : (
             /* Every user matching the current filters is rendered as a
                clickable card. Clicking a card opens that user's
@@ -1572,20 +1424,20 @@ function AllReportsDialog({ brandingUsers, categories, onClose }: AllReportsDial
             </div>
           )}
         </div>
+      </Modal>
 
-        {/* Per-user drill popup. Opens on UserSummaryCard click; the
-            user can see every report for that person within the current
-            filter set without leaving the All Reports dialog. */}
-        {detailUserId && (
-          <UserReportsDetailModal
-            user={userCards.find(u => u.id === detailUserId) ?? null}
-            reports={sortedReports.filter(r => r.user_id === detailUserId)}
-            brandingUsers={brandingUsers}
-            onClose={() => setDetailUserId(null)}
-          />
-        )}
-      </div>
-    </div>
+      {/* Per-user drill popup. Opens on UserSummaryCard click; the
+          user can see every report for that person within the current
+          filter set without leaving the All Reports dialog. */}
+      {detailUserId && (
+        <UserReportsDetailModal
+          user={userCards.find(u => u.id === detailUserId) ?? null}
+          reports={sortedReports.filter(r => r.user_id === detailUserId)}
+          brandingUsers={brandingUsers}
+          onClose={() => setDetailUserId(null)}
+        />
+      )}
+    </>
   )
 }
 
@@ -1595,17 +1447,13 @@ function AllReportsDialog({ brandingUsers, categories, onClose }: AllReportsDial
 // admin sees exactly the same paused/finished/running pill the user
 // submitted on the row.
 function RowStatusBadge({ status }: { status: 'idle' | 'running' | 'paused' | 'finished' }) {
-  const cfg = {
-    idle:     { label: 'Not started', cls: 'bg-gray-100 text-gray-600' },
-    running:  { label: 'Running',     cls: 'bg-amber-100 text-amber-700' },
-    paused:   { label: 'Paused',      cls: 'bg-orange-100 text-orange-700' },
-    finished: { label: 'Finished',    cls: 'bg-green-100 text-green-700' },
+  const label = {
+    idle:     'Not started',
+    running:  'Running',
+    paused:   'Paused',
+    finished: 'Finished',
   }[status]
-  return (
-    <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full ${cfg.cls}`}>
-      {cfg.label}
-    </span>
-  )
+  return <Badge tone={toneForStatus(status)}>{label}</Badge>
 }
 
 function UserReportsDetailModal({ user, reports, brandingUsers, onClose }: {
@@ -1625,118 +1473,114 @@ function UserReportsDetailModal({ user, reports, brandingUsers, onClose }: {
   if (!user) return null
   const totalHrs = Math.round(reports.reduce((s, r) => s + r.rows.reduce((ss, rw) => ss + rowHours(rw, reports), 0), 0) * 10) / 10
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[85vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <div className="flex items-center gap-3 min-w-0">
-            <Avatar url={user.avatar_url} name={user.name} email={user.email} sizeClass="w-12 h-12" textClass="text-sm" />
-            <div className="min-w-0">
-              <h2 className="text-lg font-extrabold font-serif truncate" style={{ color: GREEN_DARK }}>{user.name}</h2>
-              <p className="text-xs font-semibold mt-0.5" style={{ color: GREEN_MID }}>
-                {reports.length} report{reports.length === 1 ? '' : 's'} · {totalHrs}h on-day · {user.email}
-              </p>
-            </div>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1 shrink-0"><X className="w-5 h-5" /></button>
-        </div>
-        <div className="overflow-y-auto flex-1 px-6 py-4 space-y-2">
-          {reports.length === 0 ? (
-            <p className="text-sm text-gray-400 text-center py-10">No reports for this user under the current filters.</p>
-          ) : reports.map(r => {
-            const dayHours = Math.round(r.rows.reduce((s, rw) => s + rowHours(rw, reports), 0) * 10) / 10
-            const isOpen = expanded.has(r.id)
-            return (
-              <div key={r.id} className="rounded-xl border border-gray-100 overflow-hidden">
-                <button onClick={() => setExpanded(p => { const s = new Set(p); if (s.has(r.id)) s.delete(r.id); else s.add(r.id); return s })}
-                  className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-green-50/30 transition-colors">
-                  <div className="flex-1 min-w-0 text-left">
-                    <p className="text-sm font-semibold text-gray-800">
-                      {new Date(r.report_date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
-                    </p>
-                    <p className="text-xs text-gray-500">
-                      {r.rows.length} row{r.rows.length === 1 ? '' : 's'} · {dayHours}h on this day
-                      {r.submitted_at && ` · submitted ${new Date(r.submitted_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}`}
-                    </p>
-                  </div>
-                  {r.is_locked
-                    ? <span className="text-[10px] font-bold bg-green-50 text-green-700 px-2 py-0.5 rounded-full"><Lock className="w-2.5 h-2.5 inline mr-0.5" />Submitted</span>
-                    : <span className="text-[10px] font-bold bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full">Draft</span>}
-                  {isOpen ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
-                </button>
-                {isOpen && (
-                  <div className="overflow-x-auto border-t border-gray-100">
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="bg-gray-50 border-b border-gray-100">
-                          {['Sr', 'Type', 'Sub', 'Project', 'Status', 'Time today', 'Collaborators'].map(h => (
-                            <th key={h} className="text-left text-[10px] font-bold uppercase tracking-wider text-gray-500 px-3 py-2">{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {r.rows.map(row => {
-                          const isCarried = !!row.carried_over_from_row_id
-                          const hasStopwatch = row.elapsed_seconds > 0 || row.stopwatch_status !== 'idle'
-                          const perDaySecs = hasStopwatch ? perDayElapsedSeconds(row, reports) : 0
-                          return (
-                            <tr key={row.id} className="border-b border-gray-50 last:border-0">
-                              <td className="px-3 py-2 text-gray-400 align-top">{row.sr_no}</td>
-                              <td className="px-3 py-2 align-top">{row.type_of_work}</td>
-                              <td className="px-3 py-2 text-gray-500 align-top">{row.sub_category || '—'}</td>
-                              <td className="px-3 py-2 align-top">
-                                <span className="text-gray-800">{row.specific_work}</span>
-                                {isCarried && (
-                                  <span className="block text-[10px] text-gray-400 mt-0.5">Continued from a previous day</span>
-                                )}
-                              </td>
-                              <td className="px-3 py-2 align-top">
-                                <RowStatusBadge status={row.stopwatch_status} />
-                                {row.stopwatch_status === 'paused' && row.last_paused_at && (
-                                  <div className="text-[10px] text-gray-400 mt-0.5">
-                                    paused {new Date(row.last_paused_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
-                                  </div>
-                                )}
-                              </td>
-                              <td className="px-3 py-2 font-medium whitespace-nowrap align-top" style={{ color: GREEN_DARK }}>
-                                {!hasStopwatch ? (
-                                  // Manual time entry — show what the user typed.
-                                  <>{row.time_taken}</>
-                                ) : perDaySecs === 0 && isCarried ? (
-                                  <>
-                                    <span className="text-gray-400">—</span>
-                                    <span className="block text-[10px] text-gray-400 font-normal">no new work today</span>
-                                    <span className="block text-[10px] text-gray-400 font-normal">
+    <Modal
+      size="xl"
+      onClose={onClose}
+      title={
+        <span className="flex items-center gap-3 min-w-0">
+          <Avatar url={user.avatar_url} name={user.name} email={user.email} size="lg" />
+          <span className="truncate">{user.name}</span>
+        </span>
+      }
+      subtitle={<>{reports.length} report{reports.length === 1 ? '' : 's'} · {totalHrs}h on-day · {user.email}</>}
+    >
+      <div className="space-y-2">
+        {reports.length === 0 ? (
+          <EmptyState icon={Inbox} title="No reports for this user under the current filters." />
+        ) : reports.map(r => {
+          const dayHours = Math.round(r.rows.reduce((s, rw) => s + rowHours(rw, reports), 0) * 10) / 10
+          const isOpen = expanded.has(r.id)
+          return (
+            <div key={r.id} className={cx(DS.card, 'overflow-hidden')}>
+              <button onClick={() => setExpanded(p => { const s = new Set(p); if (s.has(r.id)) s.delete(r.id); else s.add(r.id); return s })}
+                className={cx('w-full flex items-center gap-3 px-4 py-2.5 cursor-pointer', DS.trHover)}>
+                <div className="flex-1 min-w-0 text-left">
+                  <p className="text-sm font-semibold text-[#111827]">
+                    {new Date(r.report_date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}
+                  </p>
+                  <p className="text-xs text-[#6B7280] font-medium">
+                    {r.rows.length} row{r.rows.length === 1 ? '' : 's'} · {dayHours}h on this day
+                    {r.submitted_at && ` · submitted ${new Date(r.submitted_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}`}
+                  </p>
+                </div>
+                {r.is_locked
+                  ? <Badge tone="success"><Lock className="w-2.5 h-2.5 inline mr-0.5" />Submitted</Badge>
+                  : <Badge tone="warning">Draft</Badge>}
+                {isOpen ? <ChevronUp className="w-4 h-4 text-[#9CA3AF]" /> : <ChevronDown className="w-4 h-4 text-[#9CA3AF]" />}
+              </button>
+              {isOpen && (
+                <div className="overflow-x-auto border-t border-[#C5CAD1]">
+                  <table className={cx(DS.table, '!text-xs')}>
+                    <thead className={DS.thead}>
+                      <tr>
+                        {['Sr', 'Type', 'Sub', 'Project', 'Status', 'Time today', 'Collaborators'].map(h => (
+                          <th key={h} className={DS.th}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className={DS.tbody}>
+                      {r.rows.map(row => {
+                        const isCarried = !!row.carried_over_from_row_id
+                        const hasStopwatch = row.elapsed_seconds > 0 || row.stopwatch_status !== 'idle'
+                        const perDaySecs = hasStopwatch ? perDayElapsedSeconds(row, reports) : 0
+                        return (
+                          <tr key={row.id} className={DS.trHover}>
+                            <td className={cx(DS.td, 'text-[#9CA3AF]')}>{row.sr_no}</td>
+                            <td className={DS.td}>{row.type_of_work}</td>
+                            <td className={cx(DS.td, 'text-[#6B7280]')}>{row.sub_category || '—'}</td>
+                            <td className={DS.td}>
+                              <span className="text-[#111827] font-medium">{row.specific_work}</span>
+                              {isCarried && (
+                                <span className="block text-[10px] text-[#9CA3AF] mt-0.5">Continued from a previous day</span>
+                              )}
+                            </td>
+                            <td className={DS.td}>
+                              <RowStatusBadge status={row.stopwatch_status} />
+                              {row.stopwatch_status === 'paused' && row.last_paused_at && (
+                                <div className="text-[10px] text-[#9CA3AF] mt-0.5">
+                                  paused {new Date(row.last_paused_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
+                                </div>
+                              )}
+                            </td>
+                            <td className={cx(DS.td, 'font-semibold whitespace-nowrap text-[#111827]')}>
+                              {!hasStopwatch ? (
+                                // Manual time entry — show what the user typed.
+                                <>{row.time_taken}</>
+                              ) : perDaySecs === 0 && isCarried ? (
+                                <>
+                                  <span className="text-[#9CA3AF]">—</span>
+                                  <span className="block text-[10px] text-[#9CA3AF] font-normal">no new work today</span>
+                                  <span className="block text-[10px] text-[#9CA3AF] font-normal">
+                                    cumulative {elapsedToTimeTaken(row.elapsed_seconds)}
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  {elapsedToTimeTaken(perDaySecs)}
+                                  {row.elapsed_seconds !== perDaySecs && (
+                                    <span className="block text-[10px] text-[#9CA3AF] font-normal">
                                       cumulative {elapsedToTimeTaken(row.elapsed_seconds)}
                                     </span>
-                                  </>
-                                ) : (
-                                  <>
-                                    {elapsedToTimeTaken(perDaySecs)}
-                                    {row.elapsed_seconds !== perDaySecs && (
-                                      <span className="block text-[10px] text-gray-400 font-normal">
-                                        cumulative {elapsedToTimeTaken(row.elapsed_seconds)}
-                                      </span>
-                                    )}
-                                  </>
-                                )}
-                              </td>
-                              <td className="px-3 py-2 text-gray-500 align-top">
-                                {row.collaborative_colleagues.length === 0
-                                  ? '—'
-                                  : row.collaborative_colleagues.map(id => nameById.get(id) || id).join(', ')}
-                              </td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
+                                  )}
+                                </>
+                              )}
+                            </td>
+                            <td className={cx(DS.td, 'text-[#6B7280]')}>
+                              {row.collaborative_colleagues.length === 0
+                                ? '—'
+                                : row.collaborative_colleagues.map(id => nameById.get(id) || id).join(', ')}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
-    </div>
+    </Modal>
   )
 }

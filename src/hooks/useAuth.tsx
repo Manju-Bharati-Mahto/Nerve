@@ -1,8 +1,9 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
 import { api } from '@/lib/api'
 import type { AppRole, AppTeam } from '@/lib/constants'
-import type { AppUser, CreatorStanding } from '@/lib/app-types'
+import type { AppUser, CreatorStanding, UserAppearance } from '@/lib/app-types'
 import { isActiveCreator } from '@/lib/creator-access'
+import { applyUserAppearance, clearAppearanceUser, setAppearanceSaver } from '@/pages/branding/theme'
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -16,6 +17,8 @@ export interface Profile {
   capabilities?: string[]
   // Standing on the Creator Network, or null. Read-only routing information.
   creator?: CreatorStanding | null
+  // Dashboard look the user last chose; applied on sign-in on any device.
+  appearance?: UserAppearance | null
 }
 
 interface AuthContextType {
@@ -48,10 +51,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       avatar_url: record.avatar_url,
       capabilities: record.capabilities ?? [],
       creator: record.creator ?? null,
+      appearance: record.appearance ?? null,
     })
     setRole(record.role)
     setTeam(record.team)
+    // The look this person last chose comes back with them, on any device.
+    applyUserAppearance(record.id, record.appearance ?? null, record.email)
   }
+
+  // Appearance changes made with the paintbrush are saved on the account.
+  useEffect(() => {
+    setAppearanceSaver(a => { void api.updateMe({ appearance: a }).catch(() => { /* kept locally */ }) })
+    return () => setAppearanceSaver(null)
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -84,6 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function signOut() {
     await api.logout()
     setUser(null); setRole(null); setTeam(null)
+    clearAppearanceUser()
   }
 
   async function refreshProfile() {

@@ -8,6 +8,7 @@ import type {
   Entry,
   TeamRecord,
   UpdateUserInput,
+  UserAppearance,
 } from "./app-types";
 import { errorFor, fetchOrExplain, readJson } from "./http";
 
@@ -107,7 +108,7 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
-  updateMe: (patch: { full_name?: string; department?: string }) =>
+  updateMe: (patch: { full_name?: string; department?: string; appearance?: UserAppearance | null }) =>
     request<{ user: AppUser }>("/users/me", {
       method: "PATCH",
       body: JSON.stringify(patch),

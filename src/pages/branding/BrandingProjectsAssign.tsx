@@ -8,19 +8,18 @@
  * the chosen work date (handled server-side by POST /projects/assign).
  */
 import { useEffect, useMemo, useState } from 'react'
-import { FolderPlus, CalendarDays, Users, Check, Clock } from 'lucide-react'
+import { FolderPlus, CalendarDays, Users, Check, Clock, ListChecks, CheckCircle2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
 import { brandingApi } from '@/lib/branding-api'
 import type { WorkCategory, BrandingProject } from '@/lib/branding-types'
+import { DS, cx, Card, Badge, EmptyState, StatCard, DarkStatCard, BlockHeader, Meter, toneForStatus } from './ds'
 
 function todayLocal(): string {
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
-
-const GREEN = 'hsl(var(--brand-700))'
 
 export default function BrandingProjectsAssign() {
   const { user, role } = useAuth()
@@ -100,186 +99,223 @@ export default function BrandingProjectsAssign() {
     } finally { setSaving(false) }
   }
 
-  const inputCls = 'w-full text-sm border border-gray-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-green-200'
-  const labelCls = 'text-xs font-bold uppercase tracking-wide mb-1 block'
+  const pending = projects.filter(p => p.status !== 'completed')
+  const completed = projects.filter(p => p.status === 'completed')
+  const openAssignments = pending.reduce((n, p) => n + p.assignments.filter(a => a.status !== 'completed').length, 0)
+  const dueSoon = pending.filter(p => {
+    if (!p.deadline) return false
+    const days = (new Date(p.deadline).getTime() - Date.now()) / 86400000
+    return days <= 7
+  }).length
 
   return (
-    <div className="max-w-6xl mx-auto">
-      <div className="flex items-center gap-3 mb-5">
-        <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: GREEN }}>
-          <FolderPlus className="w-5 h-5 text-white" />
-        </div>
-        <div>
-          <h1 className="text-xl font-extrabold font-serif" style={{ color: GREEN }}>Assign Projects</h1>
-          <p className="text-sm text-gray-500">Create a project and assign it to your designers — it lands in their daily report.</p>
-        </div>
+    <div className="space-y-4 lg:flex-1 flex flex-col">
+      {/* KPI strip */}
+      <div>
+        <BlockHeader
+          title="At a glance"
+          subtitle={`${projects.length} project${projects.length === 1 ? '' : 's'} · branding team`}
+        />
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <DarkStatCard title="Open projects" value={String(pending.length).padStart(2, '0')} sub="Still being worked on" icon={ListChecks} />
+        <StatCard title="Completed" value={completed.length} sub="Every assignee signed off" icon={CheckCircle2}
+          meter={projects.length > 0 ? { done: completed.length, total: projects.length, label: `${Math.round((completed.length / projects.length) * 100)}% of all projects` } : undefined} />
+        <StatCard title="Open assignments" value={openAssignments} sub="Rows waiting in daily reports" icon={Users} />
+        <StatCard title="Due this week" value={dueSoon} sub={dueSoon > 0 ? 'Deadlines inside 7 days' : 'Nothing due soon'} icon={CalendarDays} />
+      </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+      {/* The three columns fill the rest of the screen on desktop and share
+          one height, so every card's bottom edge lands on the same line and
+          no empty canvas is left below. Extra height goes to the team picker
+          and the project lists; on a short screen the form sets the height
+          and the page scrolls. */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch lg:flex-1">
         {/* ── Create / assign form ─────────────────────────────────── */}
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-3">
-          <h2 className="text-sm font-bold" style={{ color: GREEN }}>New assignment</h2>
-
-          <div>
-            <label className={labelCls} style={{ color: GREEN }}>Project Name *</label>
-            <input className={inputCls} placeholder="e.g. Convocation 2026 collateral" value={name} onChange={e => setName(e.target.value)} />
-          </div>
-
-          <div>
-            <label className={labelCls} style={{ color: GREEN }}>Type of Work *</label>
-            <select className={inputCls} value={type} onChange={e => { setType(e.target.value); setSubCat('') }}>
-              <option value="">Select type of work…</option>
-              {categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-            </select>
-          </div>
-
-          <div>
-            <label className={labelCls} style={{ color: GREEN }}>Sub-category *</label>
-            <select className={`${inputCls} disabled:bg-gray-50 disabled:text-gray-400`} value={subCat} onChange={e => setSubCat(e.target.value)} disabled={!type}>
-              <option value="">{type ? 'Select sub-category…' : 'Pick a type of work first'}</option>
-              {subCategories.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
-            </select>
-          </div>
-
-          <div>
-            <label className={labelCls} style={{ color: GREEN }}>Specific Work *</label>
-            <input className={inputCls} placeholder="e.g. Design 3 Instagram creatives" value={specific} onChange={e => setSpecific(e.target.value)} />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
+        <Card
+          title="New assignment"
+          subtitle="Each selected member gets a row in their daily report on the work date."
+          eyebrow="Create"
+          bodyClassName="flex-1 flex flex-col min-h-0"
+        >
+          <div className="space-y-4 flex-1 flex flex-col">
             <div>
-              <label className={labelCls} style={{ color: GREEN }}>Deadline</label>
-              <input type="date" className={inputCls} value={deadline} onChange={e => setDeadline(e.target.value)} />
+              <label className={DS.label}>Project name <span className="text-rose-500">*</span></label>
+              <input className={DS.input} placeholder="e.g. Convocation 2026 collateral" value={name} onChange={e => setName(e.target.value)} />
             </div>
-            <div>
-              <label className={labelCls} style={{ color: GREEN }}>Work date *</label>
-              <input type="date" className={inputCls} value={workDate} onChange={e => setWorkDate(e.target.value)} />
-              <p className="text-[10px] text-gray-400 mt-1">Day the row appears in the designer's report.</p>
-            </div>
-          </div>
 
-          <div>
-            <label className={labelCls} style={{ color: GREEN }}>Assign to designers / leads *</label>
-            {designers.length === 0 ? (
-              <p className="text-xs text-gray-400 border border-gray-100 rounded-xl px-3 py-3">
-                No members to assign. {isAdmin ? 'Add branding team members first.' : 'No branding team members found yet.'}
-              </p>
-            ) : (
-              <div className="border border-gray-100 rounded-xl divide-y divide-gray-50 max-h-52 overflow-y-auto">
-                {designers.map(d => {
-                  const checked = assignees.includes(d.id)
-                  const roleLabel = d.role === 'sub_admin' ? 'Lead' : d.role === 'task_owner' ? 'Task Owner' : d.role === 'task_manager' ? 'Task Manager' : 'Designer'
-                  return (
-                    <label key={d.id} className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-gray-50">
-                      <span className={`w-4 h-4 rounded flex items-center justify-center border ${checked ? 'text-white' : 'border-gray-300'}`}
-                        style={checked ? { background: GREEN, borderColor: GREEN } : {}}>
-                        {checked && <Check className="w-3 h-3" />}
-                      </span>
-                      <input type="checkbox" className="hidden" checked={checked} onChange={() => toggleAssignee(d.id)} />
-                      <span className="text-sm text-gray-700 truncate">{d.full_name || d.email}</span>
-                      <span className="ml-auto text-[10px] uppercase tracking-wide text-gray-400">{roleLabel}</span>
-                    </label>
-                  )
-                })}
+            <div className="grid grid-cols-1 gap-4">
+              <div>
+                <label className={DS.label}>Type of work <span className="text-rose-500">*</span></label>
+                <select className={DS.select} value={type} onChange={e => { setType(e.target.value); setSubCat('') }}>
+                  <option value="">Select type of work…</option>
+                  {categories.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                </select>
               </div>
-            )}
-            <p className="text-[10px] text-gray-400 mt-1">Each selected member gets a row in their daily report on the work date.</p>
-          </div>
+              <div>
+                <label className={DS.label}>Sub-category <span className="text-rose-500">*</span></label>
+                <select className={DS.select} value={subCat} onChange={e => setSubCat(e.target.value)} disabled={!type}>
+                  <option value="">{type ? 'Select sub-category…' : 'Pick a type first'}</option>
+                  {subCategories.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
+                </select>
+              </div>
+            </div>
 
-          <div>
-            <label className={labelCls} style={{ color: GREEN }}>Assign Lead <span className="normal-case font-normal text-gray-400">(optional — supervisory, no report row)</span></label>
-            <select className={inputCls} value={assignLead} onChange={e => setAssignLead(e.target.value)}>
-              <option value="">No supervising lead</option>
-              {leads.map(l => <option key={l.id} value={l.id}>{l.full_name || l.email}{l.role === 'admin' ? ' (Head)' : l.role === 'task_owner' ? ' (Task Owner)' : l.role === 'task_manager' ? ' (Task Manager)' : ''}</option>)}
-            </select>
-          </div>
+            <div>
+              <label className={DS.label}>Specific work <span className="text-rose-500">*</span></label>
+              <input className={DS.input} placeholder="e.g. Design 3 Instagram creatives" value={specific} onChange={e => setSpecific(e.target.value)} />
+            </div>
 
-          <button onClick={() => void submit()} disabled={saving}
-            className="w-full py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50 transition-opacity mt-1"
-            style={{ background: GREEN }}>
-            {saving ? 'Assigning…' : 'Create & Assign'}
-          </button>
-        </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className={DS.label}>Deadline</label>
+                <input type="date" className={DS.input} value={deadline} onChange={e => setDeadline(e.target.value)} />
+              </div>
+              <div>
+                <label className={DS.label}>Work date <span className="text-rose-500">*</span></label>
+                <input type="date" className={DS.input} value={workDate} onChange={e => setWorkDate(e.target.value)} />
+                <p className={DS.hint}>Day the row appears in the designer's report.</p>
+              </div>
+            </div>
+
+            <div className="lg:flex-1 flex flex-col">
+              <label className={DS.label}>
+                Assign to designers / leads <span className="text-rose-500">*</span>
+                {assignees.length > 0 && <Badge tone="info" className="ml-2">{assignees.length} selected</Badge>}
+              </label>
+              {designers.length === 0 ? (
+                <EmptyState compact icon={Users} title="No members to assign"
+                  body={isAdmin ? 'Add branding team members first.' : 'No branding team members found yet.'}
+                  className="border border-dashed border-[#C5CAD1] rounded-[6px]" />
+              ) : (
+                <div className="relative border border-[#C5CAD1] rounded-[6px] divide-y divide-[#C5CAD1] max-h-56 lg:max-h-none lg:grow lg:h-0 lg:min-h-56 overflow-y-auto">
+                  {designers.map(d => {
+                    const checked = assignees.includes(d.id)
+                    const roleLabel = d.role === 'sub_admin' ? 'Lead' : d.role === 'task_owner' ? 'Task Owner' : d.role === 'task_manager' ? 'Task Manager' : 'Designer'
+                    return (
+                      <label key={d.id} className={cx('flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors', checked ? 'bg-bp-50/60' : 'hover:bg-[#F9FAFB]')}>
+                        <span className={cx('w-[18px] h-[18px] rounded-md grid place-items-center border transition-colors shrink-0', checked ? 'bg-bp-700 border-bp-700 text-white' : 'border-[#9CA3AF] bg-white')}>
+                          {checked && <Check className="w-3 h-3 stroke-[3]" />}
+                        </span>
+                        <input type="checkbox" className="sr-only" checked={checked} onChange={() => toggleAssignee(d.id)} />
+                        <span className="text-sm font-medium text-[#111827] truncate">{d.full_name || d.email}</span>
+                        <span className="ml-auto text-[10px] font-semibold uppercase tracking-wider text-[#9CA3AF] shrink-0">{roleLabel}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className={DS.label}>
+                Supervising lead <span className="font-medium text-[#9CA3AF]">(optional, no report row)</span>
+              </label>
+              <select className={DS.select} value={assignLead} onChange={e => setAssignLead(e.target.value)}>
+                <option value="">No supervising lead</option>
+                {leads.map(l => <option key={l.id} value={l.id}>{l.full_name || l.email}{l.role === 'admin' ? ' (Head)' : l.role === 'task_owner' ? ' (Task Owner)' : l.role === 'task_manager' ? ' (Task Manager)' : ''}</option>)}
+              </select>
+            </div>
+
+            <button onClick={() => void submit()} disabled={saving} className={cx(DS.btn, DS.btnPrimary, 'w-full !py-3')}>
+              <FolderPlus className="w-4 h-4 stroke-[2.5]" />
+              {saving ? 'Assigning…' : 'Create & assign'}
+            </button>
+          </div>
+        </Card>
 
         {/* ── Project status: Pending vs Completed columns ─────────── */}
         {/* A project moves to Completed when every assigned designer /
             lead has marked their part done (server flips status then);
             partially-done pending projects show an n/m progress hint. */}
-        <ProjectStatusColumn
-          title="Pending Projects"
-          empty="No pending projects."
-          items={projects.filter(p => p.status !== 'completed').slice(0, 40)}
-          nameById={nameById}
-        />
-        <ProjectStatusColumn
-          title="Completed Projects"
-          empty="No completed projects yet."
-          items={projects.filter(p => p.status === 'completed').slice(0, 40)}
-          nameById={nameById}
-        />
+        {/* On desktop each list is absolutely positioned inside its grid
+            cell, so the cell adds no height of its own: the row is exactly
+            as tall as the form and the list scrolls within it. */}
+        <div className="relative lg:min-h-0">
+          <div className="lg:absolute lg:inset-0">
+            <ProjectStatusColumn
+              title="Pending projects"
+              eyebrow="In progress"
+              empty="No pending projects."
+              emptyBody="Create one on the left and it will appear here."
+              items={pending.slice(0, 40)}
+              nameById={nameById}
+            />
+          </div>
+        </div>
+        <div className="relative lg:min-h-0">
+          <div className="lg:absolute lg:inset-0">
+            <ProjectStatusColumn
+              title="Completed projects"
+              eyebrow="Delivered"
+              empty="No completed projects yet."
+              emptyBody="Projects move here once every assignee has signed off."
+              items={completed.slice(0, 40)}
+              nameById={nameById}
+            />
+          </div>
+        </div>
       </div>
     </div>
   )
 }
 
-function ProjectStatusColumn({ title, empty, items, nameById }: {
+function ProjectStatusColumn({ title, eyebrow, empty, emptyBody, items, nameById }: {
   title: string
+  eyebrow: string
   empty: string
+  emptyBody?: string
   items: BrandingProject[]
   nameById: Map<string, string>
 }) {
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
-      <h2 className="text-sm font-bold mb-3" style={{ color: GREEN }}>{title} ({items.length})</h2>
+    <Card title={title} eyebrow={eyebrow} action={<Badge tone="neutral">{items.length}</Badge>} className="h-full" bodyClassName="flex-1 min-h-0 flex flex-col">
       {items.length === 0 ? (
-        <p className="text-sm text-gray-400 py-8 text-center">{empty}</p>
+        <EmptyState compact icon={ListChecks} title={empty} body={emptyBody} className="my-auto" />
       ) : (
-        <div className="space-y-2.5 max-h-[70vh] overflow-y-auto">
+        <div className="space-y-3 flex-1 min-h-0 max-h-[70vh] lg:max-h-none overflow-y-auto -mx-1 px-1">
           {items.map(p => {
             const doneCount = p.assignments.filter(a => a.status === 'completed').length
+            const overdue = p.status !== 'completed' && p.deadline && new Date(p.deadline).getTime() < Date.now()
             return (
-              <div key={p.id} className="border border-gray-100 rounded-xl p-3">
+              <div key={p.id} className="border border-[#C5CAD1] rounded-[6px] p-3.5 hover:border-bp-300 transition-colors bg-white">
                 <div className="flex items-start justify-between gap-2">
-                  <p className="text-sm font-semibold text-gray-800">{p.name}</p>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full shrink-0"
-                    style={{ background: p.status === 'completed' ? 'hsl(var(--brand-50))' : p.status === 'on_hold' ? '#fef3c7' : 'hsl(var(--brand-50))', color: p.status === 'on_hold' ? '#92400e' : GREEN }}>
-                    {p.status.replace('_', ' ')}
-                  </span>
+                  <p className="text-sm font-semibold text-[#111827] leading-snug">{p.name}</p>
+                  <Badge tone={overdue ? 'danger' : toneForStatus(p.status)} className="capitalize">{overdue ? 'overdue' : p.status.replace('_', ' ')}</Badge>
                 </div>
                 {(p.type_of_work || p.specific_work) && (
-                  <p className="text-xs text-gray-500 mt-0.5">
+                  <p className="text-xs text-[#6B7280] font-medium mt-1 leading-relaxed">
                     {[p.type_of_work, p.sub_category].filter(Boolean).join(' · ')}
                     {p.specific_work ? ` — ${p.specific_work}` : ''}
                   </p>
                 )}
-                <div className="flex items-center flex-wrap gap-x-4 gap-y-1 mt-1.5 text-[11px] text-gray-400">
-                  {p.deadline && <span className="inline-flex items-center gap-1"><CalendarDays className="w-3 h-3" /> Due {new Date(p.deadline).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>}
+                {p.assignments.length > 0 && p.status !== 'completed' && (
+                  <Meter value={doneCount} max={p.assignments.length} className="mt-2.5"
+                    label={`${doneCount} of ${p.assignments.length} assignee${p.assignments.length === 1 ? '' : 's'} done`} />
+                )}
+                <div className="flex items-center flex-wrap gap-x-3.5 gap-y-1 mt-2.5 text-[11px] font-semibold text-[#9CA3AF]">
+                  {p.deadline && <span className={cx('inline-flex items-center gap-1', overdue && 'text-rose-600')}><CalendarDays className="w-3 h-3" /> Due {new Date(p.deadline).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>}
                   <span className="inline-flex items-center gap-1"><Users className="w-3 h-3" /> {p.assigned_user_ids.length} assigned</span>
-                  {p.assignments.length > 0 && p.status !== 'completed' && (
-                    <span className="inline-flex items-center gap-1"><Check className="w-3 h-3" /> {doneCount}/{p.assignments.length} done</span>
-                  )}
-                  <span className="inline-flex items-center gap-1"><Clock className="w-3 h-3" /> {new Date(p.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                  <span className="inline-flex items-center gap-1"><Clock className="w-3 h-3" /> {new Date(p.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>
                 </div>
-                {/* Per-member status (req 6): who's finished vs pending. */}
                 {p.assignments.length > 0 && (
-                  <div className="mt-1.5 flex flex-wrap gap-1">
+                  <div className="mt-2 flex flex-wrap gap-1.5">
                     {p.assignments.map(a => (
-                      <span key={a.user_id} className="text-[10px] px-1.5 py-0.5 rounded-full inline-flex items-center gap-1"
-                        style={a.status === 'completed' ? { background: 'hsl(var(--brand-50))', color: GREEN } : { background: '#f3f4f6', color: '#6b7280' }}>
-                        {a.status === 'completed' && <Check className="w-2.5 h-2.5" />}
+                      <Badge key={a.user_id} tone={a.status === 'completed' ? 'success' : 'neutral'}>
+                        {a.status === 'completed' && <Check className="w-2.5 h-2.5 stroke-[3]" />}
                         {nameById.get(a.user_id) ?? 'Unknown'}
-                      </span>
+                      </Badge>
                     ))}
                   </div>
                 )}
                 {p.assigned_lead_id && (
-                  <p className="text-[11px] text-gray-500 mt-1">Lead: {nameById.get(p.assigned_lead_id) ?? 'Unknown'}</p>
+                  <p className="text-[11px] font-medium text-[#6B7280] mt-2">Lead · {nameById.get(p.assigned_lead_id) ?? 'Unknown'}</p>
                 )}
               </div>
             )
           })}
         </div>
       )}
-    </div>
+    </Card>
   )
 }

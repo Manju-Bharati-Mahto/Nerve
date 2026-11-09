@@ -39,6 +39,8 @@ import BrandingProjectsAssign from "@/pages/branding/BrandingProjectsAssign";
 import BrandingSubAdminDashboard from "@/pages/branding/BrandingSubAdminDashboard";
 import BrandingUserDashboard from "@/pages/branding/BrandingUserDashboard";
 import BrandingTeamPanel from "@/pages/branding/BrandingTeamPanel";
+import BrandingKanban from "@/pages/branding/BrandingKanban";
+import BrandingTeamOverview from "@/pages/branding/BrandingTeamOverview";
 import BrandingBrowse from "@/pages/branding/BrandingBrowse";
 
 // Media Ops (self-contained prototype, served at /media)
@@ -108,6 +110,13 @@ import BoReports from "@/pages/branding/ops/BoReports";
 import BoActivity from "@/pages/branding/ops/BoActivity";
 
 import NotFound from "./pages/NotFound.tsx";
+import { applySavedPrimary, applySavedMode } from "@/pages/branding/theme";
+
+// Apply the saved Branding-portal appearance (primary colour + light/dark mode)
+// once at boot, before first paint of any themed screen. No-ops to defaults
+// when nothing was saved.
+applySavedPrimary();
+applySavedMode();
 
 const queryClient = new QueryClient();
 
@@ -213,6 +222,30 @@ const App = () => (
                 </RoleGuard>
               } />
               <Route path="/branding/team" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'task_owner', 'task_manager']} team="branding">
+                  <MaybeBrandingAdminShell>
+                    <BrandingKanban />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/account" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'branding_reports_admin', 'sub_admin', 'task_owner', 'task_manager']} team="branding">
+                  <MaybeBrandingAdminShell><></></MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/notifications" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'branding_reports_admin', 'sub_admin', 'task_owner', 'task_manager']} team="branding">
+                  <MaybeBrandingAdminShell><></></MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/members" element={
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'task_owner', 'task_manager']} team="branding">
+                  <MaybeBrandingAdminShell>
+                    <BrandingTeamOverview />
+                  </MaybeBrandingAdminShell>
+                </RoleGuard>
+              } />
+              <Route path="/branding/members/manage" element={
                 <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'task_owner', 'task_manager']} team="branding">
                   <MaybeBrandingAdminShell>
                     <BrandingTeamPanel />

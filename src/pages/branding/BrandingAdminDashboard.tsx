@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment, type ReactNode } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
@@ -11,11 +11,16 @@ import type {
 import {
   Plus, Trash2, Edit3,
   ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Check, AlertTriangle, Lock,
-  Download, Users, Filter, ToggleLeft, ToggleRight, X,
-  ArrowUp, ArrowDown, CalendarOff,
+  Download, Users, Filter, X,
+  GripVertical, CalendarOff, ArrowLeft,
 } from 'lucide-react'
 import BrandingAdminOverview from './BrandingAdminOverview'
 import BrandingAdminShell from './BrandingAdminShell'
+import {
+  DS, cx, Badge, Modal, EmptyState, Avatar, Spinner, toneForStatus,
+  PeriodBar, Segmented, BlockHeader, CardHead, InfoNote, MiniStat, StatusPill,
+  kraTone, ScorePips,
+} from './ds'
 import { toast } from 'sonner'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -25,14 +30,92 @@ import { toast } from 'sonner'
 // appear in cards, KRA cubes, top contributors, etc.
 const NON_SUBMITTING_ROLES = new Set(['super_admin', 'admin', 'branding_reports_admin'])
 
-const INP = 'w-full text-sm px-3 py-2 rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-green-300 transition-all'
-const SEL = 'text-sm px-3 py-2 rounded-lg border border-border bg-background focus:outline-none focus:ring-2 focus:ring-green-300 transition-all cursor-pointer'
+const INP = DS.input
 
 function scoreAvg(scores: Record<string, number> | null | undefined, params: KraParameter[]): number | null {
   if (!scores || params.length === 0) return null
   const vals = params.map(p => scores[p.id]).filter(v => v !== undefined) as number[]
   if (vals.length === 0) return null
   return Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10
+}
+
+/** Stored score → 1–5 pip level. A 5-scale value is its own level; a
+ *  10-scale value maps down (7/10 → level 4). */
+function kraLevel(v: number | null | undefined, scale: number): number | undefined {
+  if (v === null || v === undefined) return undefined
+  return scale === 5 ? v : Math.round((v / scale) * 5)
+}
+
+/** Pip level → stored value on the parameter's own scale (level 4 on a
+ *  10-scale writes 8). On a 5-scale the level is written as-is. */
+function kraFromLevel(level: number, scale: number): number {
+  return Math.round((level * scale) / 5)
+}
+
+/** One KRA parameter tile — the same tile the Self Appraisal page uses:
+ *  tinted by its score, name, description, pips on the left, score on the
+ *  right. Read-only when no onSelect is given. */
+function KraParamTile({ p, value, onSelect }: {
+  p: KraParameter; value: number | null | undefined; onSelect?: (v: number) => void
+}) {
+  const scale = p.max_score || 5
+  const tone = kraTone(value, scale)
+  return (
+    <div className={cx('flex flex-col rounded-[6px] border p-4 transition-colors', tone?.card ?? 'border-[#C5CAD1] bg-[#F9FAFB] hover:border-[#9CA3AF]')}>
+      <p className="text-sm font-semibold text-[#111827] tracking-tight">{p.name}</p>
+      {p.description && <p className="mt-1 text-xs leading-relaxed text-[#6B7280]">{p.description}</p>}
+      <div className="mt-auto pt-4 flex items-center justify-between gap-x-3 gap-y-2 flex-wrap">
+        <ScorePips
+          value={kraLevel(value, scale)}
+          label={p.name}
+          onSelect={onSelect ? lvl => onSelect(kraFromLevel(lvl, scale)) : undefined}
+        />
+        <span className={cx('shrink-0 text-sm font-semibold tabular-nums', tone?.score ?? 'text-[#111827]')}>
+          {value ?? <span className="text-[#9CA3AF]">&ndash;</span>}
+          <span className="text-xs font-semibold text-[#9CA3AF]">/{scale}</span>
+        </span>
+      </div>
+    </div>
+  )
+}
+
+/** The Self Appraisal parameter grid: three per row from xl, two at md, one on a phone. */
+function KraParamGrid({ params, scores, onChange }: {
+  params: KraParameter[]; scores: Record<string, number> | null | undefined
+  onChange?: (id: string, v: number) => void
+}) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {params.map(p => (
+        <KraParamTile key={p.id} p={p} value={scores?.[p.id]} onSelect={onChange ? v => onChange(p.id, v) : undefined} />
+      ))}
+    </div>
+  )
+}
+
+/** Team member tile — ChoiceTile's exact surface with an Avatar where the
+ *  icon sits (ChoiceTile's icon slot takes a lucide component, not a node). */
+function MemberTile({ active, avatarUrl, name, desc, trailing, onClick }: {
+  active: boolean; avatarUrl?: string | null; name: string; desc: ReactNode; trailing?: ReactNode; onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cx(
+        'rounded-[6px] p-4 text-left border transition-all hover:shadow-sm w-full cursor-pointer',
+        active ? 'border-bp-600 bg-bp-50' : 'bg-white border-[#C5CAD1] hover:border-bp-300',
+      )}
+    >
+      <div className="flex items-center gap-2 mb-1">
+        <Avatar url={avatarUrl} name={name} size="sm" className={active ? 'ring-2 ring-bp-200' : ''} />
+        <span className={cx('text-sm font-semibold tracking-tight truncate', active ? 'text-[#111827]' : 'text-[#6B7280]')}>{name}</span>
+        {trailing && <span className="ml-auto shrink-0">{trailing}</span>}
+      </div>
+      <p className="text-xs font-medium text-[#6B7280]">{desc}</p>
+    </button>
+  )
 }
 
 // ── Manage Categories Tab ─────────────────────────────────────────────────
@@ -114,171 +197,200 @@ function ManageCategoriesTab() {
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Failed') }
   }
 
-  async function moveCategory(id: string, dir: 'up' | 'down') {
-    const idx = categories.findIndex(c => c.id === id)
-    if (idx < 0) return
+  // Reorder by dragging a row's grip onto another row: the dragged
+  // category takes that row's position and the rest shift.
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [dragOverId, setDragOverId] = useState<string | null>(null)
+  async function dropCategory(targetId: string) {
+    const from = categories.findIndex(c => c.id === dragId)
+    const to = categories.findIndex(c => c.id === targetId)
+    setDragId(null); setDragOverId(null)
+    if (from < 0 || to < 0 || from === to) return
     const newOrder = [...categories]
-    const swapIdx = dir === 'up' ? idx - 1 : idx + 1
-    if (swapIdx < 0 || swapIdx >= newOrder.length) return
-    ;[newOrder[idx], newOrder[swapIdx]] = [newOrder[swapIdx], newOrder[idx]]
+    const [moved] = newOrder.splice(from, 1)
+    newOrder.splice(to, 0, moved)
     setCategories(newOrder)
     await brandingApi.reorderCategories(newOrder.map(c => c.id))
   }
 
-  if (loading) return <p className="text-sm text-muted-foreground text-center py-10 animate-pulse">Loading categories…</p>
+  if (loading) return <div className="flex items-center justify-center gap-2 py-10 text-sm text-[#6B7280] font-medium"><Spinner /> Loading categories…</div>
 
   return (
-    <div className="space-y-5">
-      {/* Add-new-category panel — same as before, kept as a wide bar above
-          the grid so it's discoverable. */}
-      <div className="rounded-2xl border-2 border-green-700 bg-gradient-to-br from-white to-green-50/40 p-5">
-        <h2 className="text-sm font-extrabold font-serif mb-3" style={{ color: 'hsl(var(--brand-700))' }}>Add New Category</h2>
-        <div className="flex gap-2">
-          <input value={newCatName} onChange={e => setNewCatName(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') void addCategory() }}
-            placeholder="Category name…" className={INP + ' flex-1'} />
-          <button onClick={() => void addCategory()}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[hsl(var(--brand-700))] text-white text-sm font-medium hover:bg-[#143620] transition-colors">
-            <Plus className="w-4 h-4" /> Add
-          </button>
+    <div className="space-y-4">
+      <div>
+        <BlockHeader
+          title="Categories"
+          subtitle="Work categories and sub-categories the team reports against"
+          chip={`${categories.length} categor${categories.length === 1 ? 'y' : 'ies'}`}
+        />
+        {/* Add-new-category panel — a wide bar above the grid so it's discoverable. */}
+        <div className={cx(DS.card, DS.cardPad, 'space-y-4')}>
+          <CardHead title="Add New Category" subtitle='A default "Others" sub-category is automatically added to every new category.' />
+          <div className="flex gap-2">
+            <input value={newCatName} onChange={e => setNewCatName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') void addCategory() }}
+              placeholder="Category name…" className={INP + ' flex-1'} />
+            <button onClick={() => void addCategory()}
+              className={cx(DS.btn, DS.btnPrimary)}>
+              <Plus className="w-4 h-4" /> Add
+            </button>
+          </div>
         </div>
-        <p className="text-xs text-muted-foreground mt-2">
-          A default "Others" sub-category is automatically added to every new category.
-        </p>
       </div>
 
-      {/* Card grid — each category gets its own tile with reorder, rename,
-          delete, and an expandable sub-category list with inline add/edit. */}
+      {/* Table — one row per category in report order. Drag the grip to
+          reorder; the sub-category count opens an inline editor row beneath. */}
       {categories.length === 0 ? (
-        <p className="text-sm text-muted-foreground text-center py-10">No categories yet.</p>
+        <div className={DS.card}><EmptyState icon={Filter} title="No categories yet." body="Add a category above to get started." /></div>
       ) : (
-        // `items-start` keeps each card sized to its own content so
-        // expanding one card's sub-categories doesn't visually stretch
-        // the other cards in the same row.
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
-          {categories.map((cat, catIdx) => {
-            const isExpanded = expanded.has(cat.id)
-            const isEditing = editingCat?.id === cat.id
-            return (
-              <div key={cat.id}
-                className="group relative rounded-2xl border-2 border-green-700 bg-white hover:border-green-800 hover:shadow-md transition-all flex flex-col self-start">
-                {/* Card header — colour-banded so it reads as a tile. The
-                    rounded-t-2xl matches the parent corners now that the
-                    card no longer clips its overflow (so the dropdown can
-                    float free of the row). */}
-                <div className={`px-4 pt-3 pb-2 bg-gradient-to-br from-green-50 to-white rounded-t-2xl ${isExpanded ? '' : 'rounded-b-2xl'}`}>
-                  <div className="flex items-start gap-2">
-                    <div className="flex flex-col gap-0.5 shrink-0 pt-0.5">
-                      <button onClick={() => void moveCategory(cat.id, 'up')} disabled={catIdx === 0}
-                        className="p-0.5 rounded hover:bg-green-100 disabled:opacity-25 transition-colors" title="Move up">
-                        <ArrowUp className="w-3 h-3 text-green-800" />
-                      </button>
-                      <button onClick={() => void moveCategory(cat.id, 'down')} disabled={catIdx === categories.length - 1}
-                        className="p-0.5 rounded hover:bg-green-100 disabled:opacity-25 transition-colors" title="Move down">
-                        <ArrowDown className="w-3 h-3 text-green-800" />
-                      </button>
-                    </div>
-                    {isEditing ? (
-                      <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                        <input value={editingCat!.name}
-                          onChange={e => setEditingCat(p => p ? { ...p, name: e.target.value } : p)}
-                          onKeyDown={e => { if (e.key === 'Enter') void saveCategory(cat.id, editingCat!.name) }}
-                          className={INP + ' flex-1 py-1 font-bold'} autoFocus />
-                        <button onClick={() => void saveCategory(cat.id, editingCat!.name)}
-                          className="p-1.5 rounded-lg bg-green-700 text-white hover:bg-green-800" title="Save">
-                          <Check className="w-3.5 h-3.5" />
-                        </button>
-                        <button onClick={() => setEditingCat(null)}
-                          className="p-1.5 rounded-lg bg-gray-100 text-gray-500 hover:bg-gray-200" title="Cancel">
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ) : (
-                      <>
-                        <h3 className="text-base font-extrabold font-serif flex-1 truncate" style={{ color: 'hsl(var(--brand-700))' }}>{cat.name}</h3>
-                        <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button onClick={() => setEditingCat({ id: cat.id, name: cat.name })}
-                            className="p-1.5 rounded-lg text-green-700 hover:bg-green-100" title="Rename">
-                            <Edit3 className="w-3.5 h-3.5" />
-                          </button>
-                          <button onClick={() => void deleteCategory(cat.id, cat.name)}
-                            className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50" title="Delete">
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                  <button onClick={() => setExpanded(p => { const s = new Set(p); if (s.has(cat.id)) s.delete(cat.id); else s.add(cat.id); return s })}
-                    className="mt-2 ml-5 flex items-center gap-1 text-[11px] font-semibold hover:underline" style={{ color: 'hsl(var(--brand-400))' }}>
-                    {cat.sub_categories.length} sub-categor{cat.sub_categories.length === 1 ? 'y' : 'ies'}
-                    {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                  </button>
-                </div>
-
-                {/* Sub-categories body — floats below the header as a
-                    dropdown so expanding it does NOT grow the card or
-                    push the surrounding grid row. */}
-                {isExpanded && (
-                  <div className="absolute top-full left-0 right-0 mt-1 p-3 space-y-1 bg-white border-2 border-green-700 rounded-2xl shadow-xl z-30 max-h-72 overflow-y-auto">
-                    {cat.sub_categories.map(sub => (
-                      <div key={sub.id} className="flex items-center gap-2 py-1 px-2 rounded-lg hover:bg-green-50/40 group/sub">
-                        {editingSub?.id === sub.id ? (
-                          <div className="flex items-center gap-1.5 flex-1">
-                            <input value={editingSub.name}
-                              onChange={e => setEditingSub(p => p ? { ...p, name: e.target.value } : p)}
-                              onKeyDown={e => { if (e.key === 'Enter') void saveSubCategory(sub.id, editingSub.name) }}
-                              className={INP + ' flex-1 py-1 text-xs'} autoFocus />
-                            <button onClick={() => void saveSubCategory(sub.id, editingSub.name)}
-                              className="p-1 rounded bg-green-700 text-white">
-                              <Check className="w-3 h-3" />
-                            </button>
-                            <button onClick={() => setEditingSub(null)}
-                              className="p-1 rounded bg-gray-100 text-gray-500">
-                              <X className="w-3 h-3" />
-                            </button>
-                          </div>
-                        ) : (
-                          <>
-                            <span className="text-sm flex-1 truncate" style={{ color: 'hsl(var(--brand-700))' }}>{sub.name}</span>
-                            {sub.is_others ? (
-                              <span className="text-[10px] text-muted-foreground bg-muted px-2 py-0.5 rounded-full shrink-0">default</span>
-                            ) : (
-                              <div className="flex items-center gap-0.5 opacity-0 group-hover/sub:opacity-100 transition-opacity">
-                                <button onClick={() => setEditingSub({ id: sub.id, name: sub.name })}
-                                  className="p-1 rounded text-green-700 hover:bg-green-100">
-                                  <Edit3 className="w-3 h-3" />
-                                </button>
-                                <button onClick={() => void deleteSubCategory(sub.id, sub.name)}
-                                  className="p-1 rounded text-rose-600 hover:bg-rose-50">
-                                  <Trash2 className="w-3 h-3" />
-                                </button>
-                              </div>
-                            )}
-                          </>
+        <div className={cx(DS.card, 'overflow-hidden')}>
+          <div className="overflow-x-auto">
+            <table className={cx(DS.table, 'min-w-[640px]')}>
+              <thead className={DS.thead}>
+                <tr>
+                  <th className={cx(DS.th, 'w-10 !px-3')} aria-label="Reorder" />
+                  <th className={cx(DS.th, 'w-12')}>#</th>
+                  <th className={DS.th}>Category</th>
+                  <th className={DS.th}>Sub-categories</th>
+                  <th className={cx(DS.th, 'w-32 !text-right')}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {categories.map((cat, catIdx) => {
+                  const isExpanded = expanded.has(cat.id)
+                  const isEditing = editingCat?.id === cat.id
+                  const cell = cx(DS.td, '!py-2 align-middle')
+                  return (
+                    <Fragment key={cat.id}>
+                      <tr
+                        draggable
+                        onDragStart={e => { setDragId(cat.id); e.dataTransfer.effectAllowed = 'move' }}
+                        onDragOver={e => { e.preventDefault(); if (dragOverId !== cat.id) setDragOverId(cat.id) }}
+                        onDragLeave={() => { if (dragOverId === cat.id) setDragOverId(null) }}
+                        onDrop={e => { e.preventDefault(); void dropCategory(cat.id) }}
+                        onDragEnd={() => { setDragId(null); setDragOverId(null) }}
+                        className={cx(
+                          'group border-t border-[#C5CAD1] transition-colors',
+                          dragOverId === cat.id && dragId !== cat.id ? 'bg-[var(--nerve-primary-soft)]' : DS.trHover,
+                          dragId === cat.id && 'opacity-50',
                         )}
-                      </div>
-                    ))}
+                      >
+                        <td className={cx(cell, '!px-3 text-[#9CA3AF] cursor-grab active:cursor-grabbing')} title="Drag to reorder">
+                          <GripVertical className="w-4 h-4" strokeWidth={1.75} />
+                        </td>
+                        <td className={cx(cell, 'text-[12px] text-[#9CA3AF] tabular-nums')}>{catIdx + 1}</td>
+                        <td className={cell}>
+                          {isEditing ? (
+                            <div className="flex items-center gap-1.5 max-w-sm">
+                              <input value={editingCat!.name}
+                                onChange={e => setEditingCat(p => p ? { ...p, name: e.target.value } : p)}
+                                onKeyDown={e => { if (e.key === 'Enter') void saveCategory(cat.id, editingCat!.name); if (e.key === 'Escape') setEditingCat(null) }}
+                                className={cx(INP, '!h-8 font-semibold')} autoFocus />
+                              <button onClick={() => void saveCategory(cat.id, editingCat!.name)}
+                                className={cx(DS.iconBtnSm, '!bg-[var(--nerve-primary)] !border-[var(--nerve-primary)] !text-[var(--nerve-on-primary)]')} title="Save" aria-label="Save">
+                                <Check className="w-3.5 h-3.5" />
+                              </button>
+                              <button onClick={() => setEditingCat(null)} className={DS.iconBtnSm} title="Cancel" aria-label="Cancel">
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-[13px] font-semibold text-[#111827]">{cat.name}</span>
+                          )}
+                        </td>
+                        <td className={cell}>
+                          <button
+                            onClick={() => setExpanded(p => { const n = new Set(p); if (n.has(cat.id)) n.delete(cat.id); else n.add(cat.id); return n })}
+                            className={DS.link}
+                            aria-expanded={isExpanded}>
+                            {cat.sub_categories.length} sub-categor{cat.sub_categories.length === 1 ? 'y' : 'ies'}
+                            {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                          </button>
+                        </td>
+                        <td className={cx(cell, '!text-right')}>
+                          {!isEditing && (
+                            <div className="inline-flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                              <button onClick={() => setEditingCat({ id: cat.id, name: cat.name })}
+                                className={DS.iconBtnSm} title="Rename" aria-label="Rename">
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                              <button onClick={() => void deleteCategory(cat.id, cat.name)}
+                                className={cx(DS.iconBtnSm, '!text-[#DC2626] hover:!bg-[#FEF2F2] hover:!border-[#FECACA]')} title="Delete" aria-label="Delete">
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
 
-                    {cat.name !== 'Others' && (
-                      <div className="flex gap-2 mt-2 pt-2 border-t-2 border-green-700/30">
-                        <input
-                          value={newSubName[cat.id] || ''}
-                          onChange={e => setNewSubName(p => ({ ...p, [cat.id]: e.target.value }))}
-                          onKeyDown={e => { if (e.key === 'Enter') void addSubCategory(cat.id) }}
-                          placeholder="Add sub-category…"
-                          className={INP + ' flex-1 py-1 text-xs'} />
-                        <button onClick={() => void addSubCategory(cat.id)}
-                          className="flex items-center gap-1 px-3 py-1 rounded-lg bg-green-700 text-white text-xs font-semibold hover:bg-green-800">
-                          <Plus className="w-3.5 h-3.5" /> Add
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )
-          })}
+                      {/* Sub-categories — an inline editor row beneath the category. */}
+                      {isExpanded && (
+                        <tr className="border-t border-[#C5CAD1] bg-[#F9FAFB]">
+                          <td colSpan={5} className="px-4 py-3">
+                            <div className="pl-10">
+                              <div className="divide-y divide-[#E5E7EB] rounded-[6px] border border-[#C5CAD1] bg-white">
+                                {cat.sub_categories.map(sub => (
+                                  <div key={sub.id} className="flex items-center gap-2 h-10 px-3 group/sub">
+                                    {editingSub?.id === sub.id ? (
+                                      <div className="flex items-center gap-1.5 flex-1">
+                                        <input value={editingSub.name}
+                                          onChange={e => setEditingSub(p => p ? { ...p, name: e.target.value } : p)}
+                                          onKeyDown={e => { if (e.key === 'Enter') void saveSubCategory(sub.id, editingSub.name); if (e.key === 'Escape') setEditingSub(null) }}
+                                          className={cx(INP, '!h-8 max-w-sm')} autoFocus />
+                                        <button onClick={() => void saveSubCategory(sub.id, editingSub.name)}
+                                          className={cx(DS.iconBtnSm, '!bg-[var(--nerve-primary)] !border-[var(--nerve-primary)] !text-[var(--nerve-on-primary)]')} title="Save" aria-label="Save">
+                                          <Check className="w-3.5 h-3.5" />
+                                        </button>
+                                        <button onClick={() => setEditingSub(null)} className={DS.iconBtnSm} title="Cancel" aria-label="Cancel">
+                                          <X className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <>
+                                        <span className="text-[13px] text-[#111827] flex-1 truncate">{sub.name}</span>
+                                        {sub.is_others ? (
+                                          <Badge tone="neutral">default</Badge>
+                                        ) : (
+                                          <div className="flex items-center gap-1 opacity-0 group-hover/sub:opacity-100 focus-within:opacity-100 transition-opacity">
+                                            <button onClick={() => setEditingSub({ id: sub.id, name: sub.name })}
+                                              className={DS.iconBtnSm} title="Rename" aria-label="Rename">
+                                              <Edit3 className="w-3.5 h-3.5" />
+                                            </button>
+                                            <button onClick={() => void deleteSubCategory(sub.id, sub.name)}
+                                              className={cx(DS.iconBtnSm, '!text-[#DC2626] hover:!bg-[#FEF2F2] hover:!border-[#FECACA]')} title="Delete" aria-label="Delete">
+                                              <Trash2 className="w-3.5 h-3.5" />
+                                            </button>
+                                          </div>
+                                        )}
+                                      </>
+                                    )}
+                                  </div>
+                                ))}
+                                {cat.name !== 'Others' && (
+                                  <div className="flex gap-2 p-2">
+                                    <input
+                                      value={newSubName[cat.id] || ''}
+                                      onChange={e => setNewSubName(p => ({ ...p, [cat.id]: e.target.value }))}
+                                      onKeyDown={e => { if (e.key === 'Enter') void addSubCategory(cat.id) }}
+                                      placeholder="Add sub-category…"
+                                      className={cx(INP, '!h-8 max-w-sm')} />
+                                    <button onClick={() => void addSubCategory(cat.id)}
+                                      className={cx(DS.btn, DS.btnPrimary, DS.btnSm)}>
+                                      <Plus className="w-3.5 h-3.5" /> Add
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
@@ -295,6 +407,25 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
   const [params, setParams]           = useState<KraParameter[]>([])
   const [peerEnabled, setPeerEnabled] = useState(false)
   const [selectedUser, setSelectedUser] = useState<string | null>(null)
+  // On phones and tablets the scoring panel opens inline, so it behaves like
+  // a page: opening it pushes a history entry and the device's Back button
+  // (or the panel's own Back) closes it instead of leaving KRA Management.
+  const panelPushedRef = useRef(false)
+  useEffect(() => {
+    const small = window.matchMedia('(max-width: 1023px)').matches
+    if (!selectedUser || !small) return
+    if (!panelPushedRef.current) {
+      window.history.pushState({ kraPanel: true }, '')
+      panelPushedRef.current = true
+    }
+    const onPop = () => { panelPushedRef.current = false; setSelectedUser(null) }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [selectedUser])
+  const closePanel = () => {
+    if (panelPushedRef.current) window.history.back()
+    else setSelectedUser(null)
+  }
   const [adminScores, setAdminScores] = useState<Record<string, number>>({})
   const [adminSaving, setAdminSaving] = useState(false)
   const [loading, setLoading]         = useState(false)
@@ -486,330 +617,153 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
     toast.success('KRA CSV downloaded')
   }
 
-  return (
-    <div className="space-y-5">
-      {/* Controls */}
-      <div className="hub-card flex items-center justify-between flex-wrap gap-4">
-        <div className="flex items-center gap-3">
-          {(() => {
-            const now = new Date()
-            const curYear = now.getFullYear()
-            const curMonth = now.getMonth() + 1
-            const years = Array.from({ length: curYear - 2023 }, (_, i) => 2024 + i)
-            return (
-              <>
-                <select value={month} onChange={e => {
-                  const m = parseInt(e.target.value)
-                  if (year === curYear && m > curMonth) return
-                  setMonth(m)
-                }} className={SEL}>
-                  {MONTHS.map((m, i) => (
-                    <option key={m} value={i + 1} disabled={year === curYear && i + 1 > curMonth}>{m}</option>
-                  ))}
-                </select>
-                <select value={year} onChange={e => {
-                  const y = parseInt(e.target.value)
-                  setYear(y)
-                  if (y === curYear && month > curMonth) setMonth(curMonth)
-                }} className={SEL}>
-                  {years.map(y => <option key={y} value={y}>{y}</option>)}
-                </select>
-              </>
-            )
-          })()}
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-bold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Peer Marking:</span>
-            <button onClick={() => void togglePeer(!peerEnabled)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${peerEnabled ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-muted text-muted-foreground hover:bg-accent'}`}>
-              {peerEnabled ? <ToggleRight className="w-4 h-4" /> : <ToggleLeft className="w-4 h-4" />}
-              {peerEnabled ? 'Enabled' : 'Disabled'}
-            </button>
-          </div>
-          <button onClick={() => void loadPeerMarkings()}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-muted text-muted-foreground text-xs font-medium hover:bg-accent">
-            <Users className="w-3.5 h-3.5" /> View Peer Markings
-          </button>
-          <button onClick={downloadKraCsv}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-muted text-muted-foreground text-xs font-medium hover:bg-accent">
-            <Download className="w-3.5 h-3.5" /> Export CSV
-          </button>
-        </div>
-      </div>
+  // Period guard: months after the current one in the current year are not
+  // selectable (the selects used to disable them; the handlers still refuse them).
+  const now = new Date()
+  const curYear = now.getFullYear()
+  const curMonth = now.getMonth() + 1
+  const years = Array.from({ length: curYear - 2023 }, (_, i) => 2024 + i)
 
-      {loading && <p className="text-sm text-muted-foreground text-center py-10 animate-pulse">Loading KRA data…</p>}
+  const selectedAvatar = selectedReport ? brandingUsers.find(b => b.id === selectedReport.user_id)?.avatar_url : null
 
-      {!loading && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          {/* Team Members — cube grid, three per row, pinned to the left
-              column. Selected cube has a strong ring; clicking populates
-              the scoring panel on the right. */}
-          <div>
-            <h3 className="text-base font-extrabold font-serif mb-3" style={{ color: 'hsl(var(--brand-700))' }}>Team Members</h3>
-            {/* Restrict KRA cubes to people in `brandingUsers` so the
-                team-admin / reports-admin entries the API may return
-                don't get scored — they aren't graded employees. */}
-            {kraMembers.length === 0 && <p className="text-sm text-gray-400 py-4">No team members found.</p>}
-            <div className="grid grid-cols-3 gap-3">
-              {kraMembers.map(r => {
-                const composite = r.composite_score
-                const final = r.composite_score_after_penalty
-                const u = brandingUsers.find(b => b.id === r.user_id)
-                const isSelected = selectedUser === r.user_id
-                return (
-                  <button key={r.user_id}
-                    onClick={() => { setSelectedUser(r.user_id); setFinalPushState('idle'); setDetailTab('admin') }}
-                    className={`relative aspect-square flex flex-col items-center justify-center gap-2 p-3 rounded-2xl border-2 text-center transition-all ${isSelected
-                      ? 'border-green-700 bg-gradient-to-br from-green-50 to-green-100 shadow-md ring-2 ring-green-700/40'
-                      : 'border-green-100 bg-white hover:border-green-400 hover:bg-green-50/60 hover:shadow-sm'}`}>
-                    {/* status pill in the top-right corner */}
-                    <span className={`absolute top-2 right-2 text-[9px] font-bold px-1.5 py-0.5 rounded-full ${r.is_final_pushed
-                      ? 'bg-green-700 text-white' : 'bg-amber-100 text-amber-700'}`}>
-                      {r.is_final_pushed ? 'Published' : 'Pending'}
-                    </span>
-                    {u?.avatar_url ? (
-                      <img src={u.avatar_url} alt={r.user_name}
-                        className={`w-12 h-12 rounded-full object-cover shrink-0 ring-2 ${isSelected ? 'ring-green-600' : 'ring-green-200'}`} />
-                    ) : (
-                      <div className={`w-12 h-12 rounded-full flex items-center justify-center shrink-0 ring-2 ${isSelected ? 'bg-green-200 ring-green-600' : 'bg-green-100 ring-green-200'}`}>
-                        <span className="text-sm font-bold text-green-800">{r.user_name[0]?.toUpperCase()}</span>
-                      </div>
-                    )}
-                    <p className="text-xs font-bold font-serif leading-tight line-clamp-2" style={{ color: 'hsl(var(--brand-700))' }}>{r.user_name}</p>
-                    <div className="flex items-baseline gap-1">
-                      {composite !== null ? (
-                        <>
-                          {final !== null && final !== composite ? (
-                            <>
-                              <span className="line-through text-gray-400 text-[10px]">{composite}</span>
-                              <span className="text-base font-extrabold" style={{ color: 'hsl(var(--brand-700))' }}>{final}</span>
-                            </>
-                          ) : (
-                            <span className="text-base font-extrabold" style={{ color: 'hsl(var(--brand-700))' }}>{composite}</span>
-                          )}
-                          <span className="text-[10px] text-gray-400 font-semibold">/5</span>
-                        </>
-                      ) : (
-                        <span className="text-[10px] text-gray-400 italic">No score</span>
-                      )}
-                    </div>
-                    <p className="text-[10px] font-semibold" style={{ color: 'hsl(var(--brand-400))' }}>
-                      {r.self_appraisal ? '✓' : '○'} Self · {r.peer_count > 0 ? `✓ ${r.peer_count}` : '○'} Peers
-                      {(r.total_penalty_percent ?? 0) > 0 && (
-                        <span className="ml-1 text-red-600">· −{r.total_penalty_percent}%</span>
-                      )}
-                    </p>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
+  // The scoring panel for the selected member. Rendered once in whichever
+  // slot fits the screen: the right column on desktop, inline under the
+  // member tile on smaller screens.
+  const detailPanel = selectedReport ? (
+              <div className={cx(DS.card, DS.cardPad, 'space-y-4')}>
+                <CardHead
+                  title={<><Avatar url={selectedAvatar} name={selectedReport.user_name} size="md" /><span>{selectedReport.user_name}</span></>}
+                  subtitle={selectedReport.team_joined_at
+                    ? `Member since ${new Date(selectedReport.team_joined_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })} · ${MONTHS[month - 1]} ${year}`
+                    : `${MONTHS[month - 1]} ${year}`}
+                  action={selectedReport.is_final_pushed
+                    ? <Badge tone="success"><Lock className="w-3 h-3" /> Final Published</Badge>
+                    : undefined}
+                />
 
-          {/* KRA Scoring Panel — sits to the right of the cube grid */}
-          <div>
-            {!selectedUser ? (
-              <div className="hub-card flex items-center justify-center h-full min-h-[300px] text-sm font-semibold" style={{ color: 'hsl(var(--brand-400))' }}>
-                Select a team member to view and edit their KRA
-              </div>
-            ) : selectedReport && (
-              <div className="hub-card space-y-5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    {(() => {
-                      const su = brandingUsers.find(b => b.id === selectedReport.user_id)
-                      return su?.avatar_url ? (
-                        <img src={su.avatar_url} alt={selectedReport.user_name}
-                          className="w-12 h-12 rounded-full object-cover shrink-0 ring-2 ring-green-200" />
-                      ) : (
-                        <div className="w-12 h-12 rounded-full bg-green-100 ring-2 ring-green-200 flex items-center justify-center shrink-0">
-                          <span className="text-base font-bold text-green-800">{selectedReport.user_name[0]?.toUpperCase()}</span>
-                        </div>
-                      )
-                    })()}
-                    <div>
-                      <h3 className="text-xl font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>{selectedReport.user_name}</h3>
-                      {selectedReport.team_joined_at && (
-                        <p className="text-[11px] font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>
-                          Member since {new Date(selectedReport.team_joined_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {selectedReport.is_final_pushed && (
-                      <span className="flex items-center gap-1 text-xs text-green-700 bg-green-50 px-3 py-1 rounded-full">
-                        <Lock className="w-3 h-3" /> Final Published
-                      </span>
-                    )}
-                  </div>
+                {/* Score overview */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  <MiniStat dot="bg-slate-400"   n={scoreAvg(selectedReport.self_appraisal?.scores || null, params)?.toFixed(1) ?? '—'} label="Self score"  sub="out of 5" />
+                  <MiniStat dot="bg-bp-500"      n={scoreAvg(selectedReport.peer_average, params)?.toFixed(1) ?? '—'}                   label="Peer score"  sub="out of 5" />
+                  <MiniStat dot="bg-bp-700"      n={scoreAvg(adminScores, params)?.toFixed(1) ?? '—'}                                   label="Admin score" sub="out of 5" />
+                  <MiniStat dot="bg-emerald-500" n={selectedReport.composite_score?.toFixed(1) ?? '—'}                                   label="Composite"   sub="out of 5" />
                 </div>
 
-                {/* Score overview cards */}
-                <div className="grid grid-cols-4 gap-2">
-                  {[
-                    { label: 'Self Score',   value: scoreAvg(selectedReport.self_appraisal?.scores || null, params)?.toFixed(1) ?? '—', bg: 'bg-green-50 text-green-800' },
-                    { label: 'Peer Score',   value: scoreAvg(selectedReport.peer_average, params)?.toFixed(1) ?? '—', bg: 'bg-blue-50 text-blue-700' },
-                    { label: 'Admin Score',  value: scoreAvg(adminScores, params)?.toFixed(1) ?? '—', bg: 'bg-purple-50 text-purple-700' },
-                    { label: 'Composite',    value: selectedReport.composite_score?.toFixed(1) ?? '—', bg: 'bg-green-50 text-green-700' },
-                  ].map(s => (
-                    <div key={s.label} className={`p-3 rounded-xl text-center ${s.bg}`}>
-                      <p className="text-xs font-medium opacity-70">{s.label}</p>
-                      <p className="text-2xl font-serif mt-0.5">{s.value}<span className="text-xs font-normal opacity-60">/5</span></p>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Penalty bar — auto + manual combined */}
+                {/* Penalty note — auto + manual combined */}
                 {(selectedReport.expected_report_days > 0 || selectedReport.manual_penalty_percent > 0) && (() => {
                   // Window was clamped to team-join when join date is later than month-start
                   const monthStartIso = `${selectedReport.year}-${String(selectedReport.month).padStart(2, '0')}-01`
                   const clamped = selectedReport.kra_window_start > monthStartIso
                   return (
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 space-y-2">
-                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-                      <span className="font-bold text-amber-800">Daily Report Attendance</span>
-                      <span className="text-amber-700">
-                        Submitted <span className="font-semibold">{selectedReport.submitted_report_days}</span>
-                        {' / '}
-                        Expected <span className="font-semibold">{selectedReport.expected_report_days}</span>
-                      </span>
-                      {clamped && (
-                        <span className="text-amber-700 text-[10px] italic">
-                          (from join: {new Date(selectedReport.kra_window_start).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })})
+                    <InfoNote tone="warning">
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                        <span className="font-semibold">Daily report attendance</span>
+                        <span>
+                          Submitted <span className="font-semibold">{selectedReport.submitted_report_days}</span>
+                          {' / '}
+                          Expected <span className="font-semibold">{selectedReport.expected_report_days}</span>
                         </span>
-                      )}
-                      <span className="text-amber-700">
-                        Missed: <span className="font-semibold">{selectedReport.missed_report_days}</span> day(s)
-                      </span>
-                      <span className="text-red-700 font-semibold">
-                        Auto: −{selectedReport.penalty_percent}%
-                      </span>
-                      {selectedReport.manual_penalty_percent > 0 && (
-                        <span className="text-red-700 font-semibold">
-                          Manual: −{selectedReport.manual_penalty_percent}%
+                        {clamped && (
+                          <span className="text-[10px] italic">
+                            (from join: {new Date(selectedReport.kra_window_start).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })})
+                          </span>
+                        )}
+                        <span>
+                          Missed: <span className="font-semibold">{selectedReport.missed_report_days}</span> day(s)
                         </span>
-                      )}
-                      <span className="text-red-800 font-bold">
-                        Total: −{selectedReport.total_penalty_percent}%
-                      </span>
-                      {selectedReport.total_penalty_override !== null && (
-                        <span className="text-[10px] font-semibold uppercase tracking-wider bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded">
-                          Admin Override
+                        <span className="text-rose-700 font-semibold">
+                          Auto: −{selectedReport.penalty_percent}%
                         </span>
+                        {selectedReport.manual_penalty_percent > 0 && (
+                          <span className="text-rose-700 font-semibold">
+                            Manual: −{selectedReport.manual_penalty_percent}%
+                          </span>
+                        )}
+                        <span className="text-rose-800 font-semibold">
+                          Total: −{selectedReport.total_penalty_percent}%
+                        </span>
+                        {selectedReport.total_penalty_override !== null && (
+                          <Badge tone="warning" className="uppercase tracking-wider">Admin override</Badge>
+                        )}
+                        <span className="ml-auto text-emerald-700 font-semibold tabular-nums">
+                          Final: {selectedReport.composite_score_after_penalty?.toFixed(1) ?? '—'}<span className="text-[10px] font-normal opacity-60">/5</span>
+                        </span>
+                      </div>
+                      {selectedReport.manual_penalty_reason && (
+                        <p className="mt-1.5 text-[11px] italic">Manual penalty reason: {selectedReport.manual_penalty_reason}</p>
                       )}
-                      <span className="ml-auto text-green-800 font-bold">
-                        Final: {selectedReport.composite_score_after_penalty?.toFixed(1) ?? '—'}<span className="text-[10px] font-normal opacity-60">/5</span>
-                      </span>
-                    </div>
-                    {selectedReport.manual_penalty_reason && (
-                      <p className="text-[11px] text-amber-700 italic">
-                        Manual penalty reason: {selectedReport.manual_penalty_reason}
-                      </p>
-                    )}
-                    {selectedReport.total_penalty_override !== null && selectedReport.total_penalty_override_reason && (
-                      <p className="text-[11px] text-amber-700 italic">
-                        Override reason: {selectedReport.total_penalty_override_reason}
-                      </p>
-                    )}
-                  </div>
+                      {selectedReport.total_penalty_override !== null && selectedReport.total_penalty_override_reason && (
+                        <p className="mt-1 text-[11px] italic">Override reason: {selectedReport.total_penalty_override_reason}</p>
+                      )}
+                    </InfoNote>
                   )
                 })()}
 
                 {/* Detail sub-tabs */}
-                <div className="flex gap-1 bg-gray-50 p-1 rounded-lg w-fit">
-                  {([
-                    { key: 'admin', label: 'Admin Score' },
-                    { key: 'self',  label: 'Self Score' },
-                    { key: 'peer',  label: `Peer Scores (${userPeerMarkings.length})` },
-                  ] as const).map(t => (
-                    <button key={t.key} onClick={() => setDetailTab(t.key)}
-                      className={`px-3 py-1.5 rounded-md text-xs font-bold font-serif transition-all ${
-                        detailTab === t.key ? 'bg-white shadow-sm' : 'hover:text-gray-700'
-                      }`}
-                      style={detailTab === t.key
-                        ? { color: 'hsl(var(--brand-700))' }
-                        : { color: 'hsl(var(--brand-400))' }}>
-                      {t.label}
-                    </button>
-                  ))}
-                </div>
+                <Segmented<'admin' | 'self' | 'peer'>
+                  round={false}
+                  ariaLabel="Score view"
+                  value={detailTab}
+                  onChange={setDetailTab}
+                  options={[
+                    { id: 'admin', label: 'Admin Score' },
+                    { id: 'self',  label: 'Self Score' },
+                    { id: 'peer',  label: `Peer Scores (${userPeerMarkings.length})` },
+                  ]}
+                />
 
                 {/* Admin Scoring */}
                 {detailTab === 'admin' && !selectedReport.is_final_pushed && params.length > 0 && (
-                  <div>
-                    <div className="space-y-3">
-                      {params.map(p => (
-                        <div key={p.id} className="flex items-center gap-3">
-                          <span className="text-xs text-foreground w-40 shrink-0">{p.name}</span>
-                          <input type="range" min={0} max={p.max_score} step={1}
-                            value={adminScores[p.id] ?? 5}
-                            onChange={e => setAdminScores(prev => ({ ...prev, [p.id]: parseInt(e.target.value) }))}
-                            className="flex-1 accent-purple-500" />
-                          <span className="text-sm font-semibold text-purple-600 w-8 text-right">
-                            {adminScores[p.id] ?? 5}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
+                  <div className="space-y-4">
+                    <InfoNote>
+                      Pick a level on each parameter. The admin score is averaged with the member's self and peer scores into the composite.
+                    </InfoNote>
+                    <KraParamGrid
+                      params={params}
+                      scores={adminScores}
+                      onChange={(id, v) => setAdminScores(prev => ({ ...prev, [id]: v }))}
+                    />
                     <button onClick={() => void saveAdminScore()} disabled={adminSaving}
-                      className="mt-4 w-full py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 disabled:opacity-50 transition-colors">
+                      className={cx(DS.btn, DS.btnPrimary, 'w-full !py-3')}>
                       {adminSaving ? 'Saving…' : 'Save Admin Score'}
                     </button>
                     {/* Manual penalty — applied on top of the auto missed-report penalty */}
-                    <button onClick={openPenaltyModal}
-                      className="mt-2 w-full py-2 rounded-lg border border-red-300 text-red-700 text-sm font-medium hover:bg-red-50 transition-colors flex items-center justify-center gap-2">
-                      <AlertTriangle className="w-4 h-4" />
-                      {selectedReport.manual_penalty_percent > 0
-                        ? `Edit Penalty (currently −${selectedReport.manual_penalty_percent}%)`
-                        : 'Add Penalty'}
-                    </button>
-                    <button onClick={openOverrideModal}
-                      className="mt-2 w-full py-2 rounded-lg border border-amber-300 text-amber-700 text-sm font-medium hover:bg-amber-50 transition-colors flex items-center justify-center gap-2">
-                      <Edit3 className="w-4 h-4" />
-                      Modify Penalty
-                      {selectedReport.total_penalty_override !== null ? (
-                        <span className="text-[11px] font-normal text-muted-foreground">
-                          (override: −{selectedReport.total_penalty_override}%)
-                        </span>
-                      ) : (selectedReport.total_penalty_percent ?? 0) > 0 && (
-                        <span className="text-[11px] font-normal text-muted-foreground">
-                          (total currently −{selectedReport.total_penalty_percent}%)
-                        </span>
-                      )}
-                    </button>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <button onClick={openPenaltyModal} className={cx(DS.btn, DS.btnOutlineDanger, 'w-full')}>
+                        <AlertTriangle className="w-4 h-4" />
+                        {selectedReport.manual_penalty_percent > 0
+                          ? `Edit Penalty (currently −${selectedReport.manual_penalty_percent}%)`
+                          : 'Add Penalty'}
+                      </button>
+                      <button onClick={openOverrideModal} className={cx(DS.btn, DS.btnSecondary, 'w-full')}>
+                        <Edit3 className="w-4 h-4" />
+                        Modify Penalty
+                        {selectedReport.total_penalty_override !== null ? (
+                          <span className="text-[11px] font-medium text-[#6B7280]">
+                            (override: −{selectedReport.total_penalty_override}%)
+                          </span>
+                        ) : (selectedReport.total_penalty_percent ?? 0) > 0 && (
+                          <span className="text-[11px] font-medium text-[#6B7280]">
+                            (total currently −{selectedReport.total_penalty_percent}%)
+                          </span>
+                        )}
+                      </button>
+                    </div>
                   </div>
                 )}
                 {detailTab === 'admin' && selectedReport.is_final_pushed && (
-                  <p className="text-xs text-muted-foreground text-center py-4">KRA is final-published. Admin scores are locked.</p>
+                  <EmptyState icon={Lock} title="KRA is final-published." body="Admin scores are locked." compact />
                 )}
 
                 {/* Self Score Detail */}
                 {detailTab === 'self' && (
                   <div>
                     {!selectedReport.self_appraisal ? (
-                      <p className="text-sm text-muted-foreground text-center py-6">Member has not submitted self-appraisal yet.</p>
+                      <EmptyState title="Member has not submitted self-appraisal yet." compact />
                     ) : (
-                      <div className="space-y-3">
-                        {params.map(p => {
-                          const score = selectedReport.self_appraisal?.scores[p.id] ?? null
-                          return (
-                            <div key={p.id} className="flex items-center gap-3">
-                              <div className="flex-1 min-w-0">
-                                <p className="text-xs font-medium text-foreground">{p.name}</p>
-                                {p.description && <p className="text-[10px] text-muted-foreground">{p.description}</p>}
-                              </div>
-                              <div className="w-32 h-2 bg-muted rounded-full shrink-0">
-                                <div className="h-full bg-green-500 rounded-full transition-all"
-                                  style={{ width: score !== null ? `${(score / (p.max_score || 5)) * 100}%` : '0%' }} />
-                              </div>
-                              <span className="text-sm font-semibold text-green-800 w-10 text-right shrink-0">
-                                {score ?? '—'}<span className="text-xs text-muted-foreground font-normal">/{p.max_score}</span>
-                              </span>
-                            </div>
-                          )
-                        })}
-                        <p className="text-[10px] text-muted-foreground pt-1">
+                      <div className="space-y-4">
+                        <KraParamGrid params={params} scores={selectedReport.self_appraisal.scores} />
+                        <p className={DS.muted}>
                           Submitted: {new Date(selectedReport.self_appraisal.submitted_at).toLocaleDateString()}
                         </p>
                       </div>
@@ -821,38 +775,40 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
                 {detailTab === 'peer' && (
                   <div>
                     {userPeerLoading ? (
-                      <p className="text-sm text-muted-foreground text-center py-6 animate-pulse">Loading peer markings…</p>
+                      <div className="flex items-center justify-center gap-2 py-6 text-sm text-[#6B7280] font-medium"><Spinner /> Loading peer markings…</div>
                     ) : userPeerMarkings.length === 0 ? (
-                      <p className="text-sm text-muted-foreground text-center py-6">No peer markings received for this period.</p>
+                      <EmptyState icon={Users} title="No peer markings received for this period." compact />
                     ) : (
                       <div className="space-y-4">
-                        {userPeerMarkings.map(pm => (
-                          <div key={pm.id} className="border border-border rounded-xl p-3 space-y-2">
-                            <p className="text-xs font-semibold text-foreground">
-                              From: {pm.reviewer_name || pm.reviewer_id}
-                              <span className="ml-2 text-muted-foreground font-normal">
-                                · Avg: {(Object.values(pm.scores).reduce((a, b) => a + b, 0) / Math.max(Object.keys(pm.scores).length, 1)).toFixed(1)}
-                              </span>
-                            </p>
-                            {params.map(p => {
-                              const score = pm.scores[p.id] ?? null
-                              return (
-                                <div key={p.id} className="flex items-center gap-3">
-                                  <span className="text-xs text-muted-foreground flex-1 truncate">{p.name}</span>
-                                  <div className="w-24 h-1.5 bg-muted rounded-full shrink-0">
-                                    <div className="h-full bg-blue-500 rounded-full transition-all"
-                                      style={{ width: score !== null ? `${(score / (p.max_score || 5)) * 100}%` : '0%' }} />
-                                  </div>
-                                  <span className="text-xs font-semibold text-blue-600 w-8 text-right shrink-0">
-                                    {score ?? '—'}
-                                  </span>
-                                </div>
-                              )
-                            })}
-                          </div>
-                        ))}
-                        <p className="text-[10px] text-muted-foreground">
-                          Average peer score shown in the summary card above is averaged across all {userPeerMarkings.length} reviewer{userPeerMarkings.length !== 1 ? 's' : ''}.
+                        {userPeerMarkings.map(pm => {
+                          const avg = (Object.values(pm.scores).reduce((a, b) => a + b, 0) / Math.max(Object.keys(pm.scores).length, 1)).toFixed(1)
+                          return (
+                            <div key={pm.id} className="rounded-[6px] border border-[#C5CAD1] bg-[#F9FAFB] p-4 space-y-3">
+                              <CardHead
+                                title={<><Avatar name={pm.reviewer_name || pm.reviewer_id} size="sm" /><span>{pm.reviewer_name || pm.reviewer_id}</span></>}
+                                action={<span className={DS.chip}>Avg {avg}</span>}
+                              />
+                              <div className="divide-y divide-[#C5CAD1]">
+                                {params.map(p => {
+                                  const score = pm.scores[p.id] ?? null
+                                  const scale = p.max_score || 5
+                                  const tone = kraTone(score, scale)
+                                  return (
+                                    <div key={p.id} className="flex items-center justify-between gap-3 py-2">
+                                      <span className="text-xs font-medium text-[#374151] truncate flex-1">{p.name}</span>
+                                      <ScorePips value={kraLevel(score, scale)} label={p.name} />
+                                      <span className={cx('w-10 text-right text-sm font-semibold tabular-nums shrink-0', tone?.score ?? 'text-[#111827]')}>
+                                        {score ?? <span className="text-[#9CA3AF]">&ndash;</span>}
+                                      </span>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          )
+                        })}
+                        <p className={DS.muted}>
+                          Average peer score shown in the summary above is averaged across all {userPeerMarkings.length} reviewer{userPeerMarkings.length !== 1 ? 's' : ''}.
                         </p>
                       </div>
                     )}
@@ -861,214 +817,274 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
 
                 {/* Final Push */}
                 {!selectedReport.is_final_pushed && (
-                  <div className="border-t border-border pt-4">
+                  <div className={cx(DS.divider, 'pt-4')}>
                     {finalPushState === 'idle' && (
                       <button onClick={() => setFinalPushState('confirm1')}
-                        className="w-full py-2.5 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 transition-colors flex items-center justify-center gap-2">
+                        className={cx(DS.btn, DS.btnPrimary, 'w-full !py-3')}>
                         <Check className="w-4 h-4" /> Proceed to Final Push
                       </button>
                     )}
                     {finalPushState === 'confirm1' && (
-                      <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-3">
-                        <div className="flex items-start gap-2">
-                          <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-                          <div>
-                            <p className="text-sm font-semibold text-amber-800">Review all scores before proceeding</p>
-                            <p className="text-xs text-amber-700 mt-1">
-                              Self: {scoreAvg(selectedReport.self_appraisal?.scores || null, params)?.toFixed(1) ?? '—'} ·
-                              Peer: {scoreAvg(selectedReport.peer_average, params)?.toFixed(1) ?? '—'} ·
-                              Admin: {scoreAvg(adminScores, params)?.toFixed(1) ?? '—'} ·
-                              Composite: {selectedReport.composite_score?.toFixed(1) ?? '—'}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex gap-3">
-                          <button onClick={() => setFinalPushState('confirm2')}
-                            className="flex-1 py-2 rounded-lg bg-amber-600 text-white text-sm font-medium hover:bg-amber-700">
-                            Proceed to Final Push
+                      <InfoNote tone="warning">
+                        <p className="text-sm font-semibold">Review all scores before proceeding</p>
+                        <p className="mt-1">
+                          Self: {scoreAvg(selectedReport.self_appraisal?.scores || null, params)?.toFixed(1) ?? '—'} ·
+                          Peer: {scoreAvg(selectedReport.peer_average, params)?.toFixed(1) ?? '—'} ·
+                          Admin: {scoreAvg(adminScores, params)?.toFixed(1) ?? '—'} ·
+                          Composite: {selectedReport.composite_score?.toFixed(1) ?? '—'}
+                        </p>
+                        <div className="flex gap-2 mt-3 flex-wrap">
+                          <button onClick={() => setFinalPushState('confirm2')} className={cx(DS.btn, DS.btnPrimary, 'flex-1')}>
+                            Confirm
                           </button>
-                          <button onClick={() => setFinalPushState('idle')}
-                            className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent">
+                          <button onClick={() => setFinalPushState('idle')} className={cx(DS.btn, DS.btnSecondary)}>
                             Cancel
                           </button>
                         </div>
-                      </div>
+                      </InfoNote>
                     )}
                     {finalPushState === 'confirm2' && (
-                      <div className="p-4 bg-red-50 border border-red-200 rounded-xl space-y-3">
-                        <div className="flex items-start gap-2">
-                          <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
-                          <div>
-                            <p className="text-sm font-semibold text-red-800">FINAL CONFIRMATION — This action is irreversible</p>
-                            <p className="text-xs text-red-700 mt-1">
-                              Once you click "Yes, I have reviewed and approve this KRA", the KRA for <strong>{selectedReport.user_name}</strong> ({MONTHS[month - 1]} {year}) will be permanently locked and published to the user. No further edits possible.
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex gap-3">
-                          <button onClick={() => void doFinalPush()}
-                            className="flex-1 py-2 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700">
+                      <InfoNote tone="danger">
+                        <p className="text-sm font-semibold">Final confirmation — this action is irreversible</p>
+                        <p className="mt-1">
+                          Once you confirm, the KRA for <strong>{selectedReport.user_name}</strong> ({MONTHS[month - 1]} {year}) will be permanently locked and published to the user. No further edits possible.
+                        </p>
+                        <div className="flex gap-2 mt-3 flex-wrap">
+                          <button onClick={() => void doFinalPush()} className={cx(DS.btn, DS.btnPrimary, 'flex-1')}>
                             Yes, I have reviewed and approve this KRA
                           </button>
-                          <button onClick={() => setFinalPushState('idle')}
-                            className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-accent">
+                          <button onClick={() => setFinalPushState('idle')} className={cx(DS.btn, DS.btnSecondary)}>
                             Cancel
                           </button>
                         </div>
-                      </div>
+                      </InfoNote>
                     )}
                   </div>
                 )}
               </div>
-            )}
+  ) : null
+
+  return (
+    <div className="space-y-4">
+      {/* Period strip */}
+      <PeriodBar
+        month={month} year={year}
+        onMonth={m => { if (year === curYear && m > curMonth) return; setMonth(m) }}
+        onYear={y => { setYear(y); if (y === curYear && month > curMonth) setMonth(curMonth) }}
+        months={MONTHS} years={years}
+        trailing={<>
+          <span className="inline-flex items-center gap-2 whitespace-nowrap">
+            <span className="text-[13px] font-semibold text-[#111827]">Peer marking</span>
+            <Segmented<'on' | 'off'>
+              round
+              className="!flex-nowrap"
+              ariaLabel="Peer marking"
+              value={peerEnabled ? 'on' : 'off'}
+              onChange={v => void togglePeer(v === 'on')}
+              options={[{ id: 'on', label: 'On' }, { id: 'off', label: 'Off' }]}
+            />
+          </span>
+          <button onClick={() => void loadPeerMarkings()} className={cx(DS.btn, DS.btnSecondary, DS.btnSm)}>
+            <Users className="w-3.5 h-3.5" /> View Peer Markings
+          </button>
+          <button onClick={downloadKraCsv} className={cx(DS.btn, DS.btnOutline, DS.btnSm)}>
+            <Download className="w-3.5 h-3.5" /> Export CSV
+          </button>
+        </>}
+      />
+
+      {loading && <div className="flex items-center justify-center gap-2 py-10 text-sm text-[#6B7280] font-medium"><Spinner /> Loading KRA data…</div>}
+
+      {!loading && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Team Members — choice tiles pinned to the left column.
+              Clicking populates the scoring panel on the right. */}
+          <div>
+            <BlockHeader title="Team Members" subtitle="Pick a member to review and score" chip={`${kraMembers.length} member${kraMembers.length === 1 ? '' : 's'}`} />
+            {/* Restrict KRA tiles to people in `brandingUsers` so the
+                team-admin / reports-admin entries the API may return
+                don't get scored — they aren't graded employees. */}
+            {kraMembers.length === 0 && <div className={DS.card}><EmptyState icon={Users} title="No team members found." compact /></div>}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {kraMembers.map(r => {
+                const composite = r.composite_score
+                const final = r.composite_score_after_penalty
+                const u = brandingUsers.find(b => b.id === r.user_id)
+                const isSelected = selectedUser === r.user_id
+                return (
+                  <Fragment key={r.user_id}>
+                  <MemberTile
+                    active={isSelected}
+                    avatarUrl={u?.avatar_url}
+                    name={r.user_name}
+                    onClick={() => { setSelectedUser(r.user_id); setFinalPushState('idle'); setDetailTab('admin') }}
+                    trailing={
+                      <Badge tone={r.is_final_pushed ? 'success' : 'warning'}>
+                        {r.is_final_pushed ? 'Published' : 'Pending'}
+                      </Badge>
+                    }
+                    desc={<>
+                      {composite !== null ? (
+                        <span className="font-semibold text-[#111827] tabular-nums">
+                          {final !== null && final !== composite && <span className="line-through text-[#9CA3AF] font-medium mr-1">{composite}</span>}
+                          {final !== null && final !== composite ? final : composite}
+                          <span className="text-[#9CA3AF] font-semibold">/5</span>
+                        </span>
+                      ) : (
+                        <span className="text-[#9CA3AF]">No score</span>
+                      )}
+                      <span className="text-[#9CA3AF]"> · </span>
+                      {r.self_appraisal ? '✓' : '○'} Self
+                      <span className="text-[#9CA3AF]"> · </span>
+                      {r.peer_count > 0 ? `✓ ${r.peer_count}` : '○'} Peers
+                      {(r.total_penalty_percent ?? 0) > 0 && (
+                        <span className="text-rose-600 font-semibold"> · −{r.total_penalty_percent}%</span>
+                      )}
+                    </>}
+                  />
+                  {isSelected && (
+                    <div className="sm:col-span-2 lg:hidden space-y-2">
+                      <button type="button" onClick={closePanel} className={cx(DS.btn, DS.btnSecondary, DS.btnSm)}>
+                        <ArrowLeft className="w-3.5 h-3.5" strokeWidth={1.75} /> Back to members
+                      </button>
+                      {detailPanel}
+                    </div>
+                  )}
+                  </Fragment>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* KRA Scoring Panel — beside the tile grid on desktop. On phones
+              and tablets the same panel renders inline under the selected
+              member instead (see the tile grid above). */}
+          <div className="hidden lg:block">
+            {!selectedUser ? (
+              <div className={cx(DS.card, 'flex items-center justify-center h-full min-h-[300px]')}>
+                <EmptyState icon={Users} title="Select a team member" body="Select a team member to view and edit their KRA" />
+              </div>
+            ) : detailPanel}
           </div>
         </div>
       )}
 
       {/* Peer Markings Modal */}
       {showPeerMarkings && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
-          <div className="bg-card border border-border rounded-2xl shadow-xl max-w-2xl w-full max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between p-4 border-b border-border">
-              <h3 className="text-base font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Peer Markings — {MONTHS[month - 1]} {year}</h3>
-              <button onClick={() => setShowPeerMarkings(false)} className="p-1 rounded-lg hover:bg-accent">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="overflow-y-auto flex-1 p-4">
-              {peerMarkings.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-6">No peer markings for this period.</p>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-border">
-                      <th className="text-left pb-2 pr-4 text-xs font-semibold text-muted-foreground">Reviewer</th>
-                      <th className="text-left pb-2 pr-4 text-xs font-semibold text-muted-foreground">Reviewee</th>
-                      <th className="text-right pb-2 text-xs font-semibold text-muted-foreground">Avg Score</th>
+        <Modal title={`Peer Markings — ${MONTHS[month - 1]} ${year}`} onClose={() => setShowPeerMarkings(false)} size="lg">
+          {peerMarkings.length === 0 ? (
+            <EmptyState icon={Users} title="No peer markings for this period." compact />
+          ) : (
+            <div className={cx(DS.card, 'overflow-hidden')}>
+              <table className={DS.table}>
+                <thead className={DS.thead}>
+                  <tr>
+                    <th className={DS.th}>Reviewer</th>
+                    <th className={DS.th}>Reviewee</th>
+                    <th className={cx(DS.th, '!text-right')}>Avg Score</th>
+                  </tr>
+                </thead>
+                <tbody className={DS.tbody}>
+                  {peerMarkings.map(m => (
+                    <tr key={m.id} className={DS.trHover}>
+                      <td className={DS.td}>{m.reviewer_name || m.reviewer_id}</td>
+                      <td className={DS.td}>{m.reviewee_name || m.reviewee_id}</td>
+                      <td className={cx(DS.td, 'text-right font-semibold text-[#111827] tabular-nums')}>
+                        {(Object.values(m.scores).reduce((a, b) => a + b, 0) / Math.max(Object.keys(m.scores).length, 1)).toFixed(1)}
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {peerMarkings.map(m => (
-                      <tr key={m.id} className="border-b border-border/50 last:border-0">
-                        <td className="py-2 pr-4">{m.reviewer_name || m.reviewer_id}</td>
-                        <td className="py-2 pr-4">{m.reviewee_name || m.reviewee_id}</td>
-                        <td className="py-2 text-right font-medium text-green-800">
-                          {(Object.values(m.scores).reduce((a, b) => a + b, 0) / Math.max(Object.keys(m.scores).length, 1)).toFixed(1)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
+                  ))}
+                </tbody>
+              </table>
             </div>
-          </div>
-        </div>
+          )}
+        </Modal>
       )}
 
       {/* Manual penalty modal */}
       {penaltyOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.45)' }}
-          onClick={() => setPenaltyOpen(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-semibold text-foreground flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-red-600" /> Add Manual Penalty
-              </h3>
-              <button onClick={() => setPenaltyOpen(false)} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground"><X className="w-4 h-4" /></button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Applied on top of the auto missed-report penalty. Final score = composite × (1 − total %).
-              Set to 0 to clear.
-            </p>
+        <Modal
+          title={<span className="inline-flex items-center gap-2"><AlertTriangle className="w-5 h-5 text-rose-600" /> Add Manual Penalty</span>}
+          subtitle="Applied on top of the auto missed-report penalty. Final score = composite × (1 − total %). Set to 0 to clear."
+          onClose={() => setPenaltyOpen(false)} size="sm"
+          footer={<>
+            <button onClick={() => setPenaltyOpen(false)} className={cx(DS.btn, DS.btnSecondary)}>
+              Cancel
+            </button>
+            <button onClick={() => void saveManualPenalty()} disabled={penaltySaving}
+              className={cx(DS.btn, DS.btnDanger)}>
+              {penaltySaving ? 'Saving…' : 'Apply Penalty'}
+            </button>
+          </>}>
+          <div className="space-y-4">
             <div>
-              <label className="text-xs font-bold uppercase tracking-wide mb-1 block text-foreground">Penalty (%)</label>
+              <label className={DS.label}>Penalty (%)</label>
               <input type="number" min={0} max={100} step={0.5}
                 value={penaltyPct}
                 onChange={e => setPenaltyPct(e.target.value)}
                 className={INP} autoFocus />
             </div>
             <div>
-              <label className="text-xs font-bold uppercase tracking-wide mb-1 block text-foreground">Reason (optional)</label>
+              <label className={DS.label}>Reason (optional)</label>
               <textarea value={penaltyReason} onChange={e => setPenaltyReason(e.target.value)}
                 rows={3} placeholder="e.g. Repeated late submissions, missed deadline on Project X…"
-                className={INP + ' resize-none'} />
-            </div>
-            <div className="flex gap-3 pt-1">
-              <button onClick={() => void saveManualPenalty()} disabled={penaltySaving}
-                className="flex-1 py-2 rounded-lg bg-red-600 text-white text-sm font-semibold hover:bg-red-700 disabled:opacity-50">
-                {penaltySaving ? 'Saving…' : 'Apply Penalty'}
-              </button>
-              <button onClick={() => setPenaltyOpen(false)}
-                className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-muted">
-                Cancel
-              </button>
+                className={cx(DS.textarea, 'resize-none')} />
             </div>
           </div>
-        </div>
+        </Modal>
       )}
 
       {/* Total-penalty override modal */}
       {overrideOpen && selectedReport && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.45)' }}
-          onClick={() => setOverrideOpen(false)}>
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-semibold text-foreground flex items-center gap-2">
-                <Edit3 className="w-4 h-4 text-amber-600" /> Modify Total Penalty
-              </h3>
-              <button onClick={() => setOverrideOpen(false)} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground"><X className="w-4 h-4" /></button>
+        <Modal
+          title={<span className="inline-flex items-center gap-2"><Edit3 className="w-5 h-5 text-amber-600" /> Modify Total Penalty</span>}
+          subtitle="Replaces the auto (late-submission) and manual penalties with a single total you choose. Final score = composite × (1 − total %)."
+          onClose={() => setOverrideOpen(false)} size="sm"
+          footer={<>
+            <button onClick={() => setOverrideOpen(false)} className={cx(DS.btn, DS.btnSecondary)}>
+              Cancel
+            </button>
+            <button onClick={() => void saveTotalOverride()} disabled={overrideSaving}
+              className={cx(DS.btn, DS.btnPrimary)}>
+              {overrideSaving ? 'Saving…' : (overrideEnabled ? 'Save Override' : 'Clear Override')}
+            </button>
+          </>}>
+          <div className="space-y-4">
+            <div className="rounded-[6px] bg-[#F9FAFB] border border-[#C5CAD1] p-3 text-xs space-y-0.5">
+              <div className="flex justify-between"><span className="text-[#6B7280] font-medium">Auto (late submissions)</span><span className="font-semibold text-rose-700">−{selectedReport.penalty_percent}%</span></div>
+              <div className="flex justify-between"><span className="text-[#6B7280] font-medium">Manual</span><span className="font-semibold text-rose-700">−{selectedReport.manual_penalty_percent}%</span></div>
+              <div className="flex justify-between border-t border-[#C5CAD1] pt-1 mt-1"><span className="text-[#111827] font-semibold">Current total</span><span className="font-semibold text-rose-800">−{selectedReport.total_penalty_percent}%</span></div>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Replaces the auto (late-submission) and manual penalties with a single total you choose.
-              Final score = composite × (1 − total %).
-            </p>
 
-            <div className="rounded-lg bg-muted/40 p-3 text-xs space-y-0.5">
-              <div className="flex justify-between"><span className="text-muted-foreground">Auto (late submissions)</span><span className="font-semibold text-red-700">−{selectedReport.penalty_percent}%</span></div>
-              <div className="flex justify-between"><span className="text-muted-foreground">Manual</span><span className="font-semibold text-red-700">−{selectedReport.manual_penalty_percent}%</span></div>
-              <div className="flex justify-between border-t border-border pt-1 mt-1"><span className="text-foreground font-medium">Current total</span><span className="font-bold text-red-800">−{selectedReport.total_penalty_percent}%</span></div>
-            </div>
-
-            <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <label className="flex items-center gap-2 text-sm font-medium text-[#111827] cursor-pointer">
               <input type="checkbox" checked={overrideEnabled}
                 onChange={e => setOverrideEnabled(e.target.checked)}
-                className="accent-amber-500 w-4 h-4" />
+                className="accent-bp-700 w-4 h-4" />
               <span>Override total penalty</span>
             </label>
 
             <div className={overrideEnabled ? '' : 'opacity-50 pointer-events-none'}>
-              <label className="text-xs font-bold uppercase tracking-wide mb-1 block text-foreground">Total Penalty (%)</label>
+              <label className={DS.label}>Total Penalty (%)</label>
               <input type="number" min={0} max={100} step={0.5}
                 value={overridePct}
                 onChange={e => setOverridePct(e.target.value)}
                 disabled={!overrideEnabled}
                 className={INP} autoFocus />
               <div className="mt-3">
-                <label className="text-xs font-bold uppercase tracking-wide mb-1 block text-foreground">Reason (optional)</label>
+                <label className={DS.label}>Reason (optional)</label>
                 <textarea value={overrideReason} onChange={e => setOverrideReason(e.target.value)}
                   rows={3} placeholder="e.g. Overriding to account for approved leave on missed days…"
-                  className={INP + ' resize-none'} />
+                  className={cx(DS.textarea, 'resize-none')} />
               </div>
             </div>
 
             {!overrideEnabled && selectedReport.total_penalty_override !== null && (
-              <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
+              <InfoNote tone="warning">
                 Unchecking and saving will remove the override; auto + manual will be used again.
-              </p>
+              </InfoNote>
             )}
-
-            <div className="flex gap-3 pt-1">
-              <button onClick={() => void saveTotalOverride()} disabled={overrideSaving}
-                className="flex-1 py-2 rounded-lg bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700 disabled:opacity-50">
-                {overrideSaving ? 'Saving…' : (overrideEnabled ? 'Save Override' : 'Clear Override')}
-              </button>
-              <button onClick={() => setOverrideOpen(false)}
-                className="px-4 py-2 rounded-lg border border-border text-sm text-muted-foreground hover:bg-muted">
-                Cancel
-              </button>
-            </div>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   )
@@ -1076,10 +1092,12 @@ function KraManagementTab({ brandingUsers }: { brandingUsers: { id: string; full
 
 // ── Leave Management Tab ───────────────────────────────────────────────────
 
+type LeaveFilter = 'all' | 'pending' | 'approved' | 'rejected'
+
 function LeaveManagementTab() {
   const [leaves, setLeaves] = useState<BrandingLeave[]>([])
   const [loading, setLoading] = useState(false)
-  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('pending')
+  const [statusFilter, setStatusFilter] = useState<LeaveFilter>('pending')
   const [transferEdit, setTransferEdit] = useState<string | null>(null)
   const [transferVal, setTransferVal] = useState('')
 
@@ -1114,120 +1132,100 @@ function LeaveManagementTab() {
 
   const today = new Date().toISOString().split('T')[0]
 
-  const statusBadgeCls = (s: BrandingLeave['status']) =>
-    s === 'approved' ? 'bg-green-100 text-green-800'
-    : s === 'rejected' ? 'bg-red-50 text-red-600'
-    : 'bg-amber-100 text-amber-700'
-
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       {/* Filter bar */}
-      <div className="bg-white rounded-2xl border border-gray-100 p-4 flex items-center gap-3 flex-wrap">
-        <span className="text-sm font-extrabold font-serif flex items-center gap-2" style={{ color: 'hsl(var(--brand-700))' }}>
-          <CalendarOff className="w-4 h-4" /> Leave Requests
-        </span>
-        <div className="flex gap-1 bg-gray-50 p-1 rounded-xl ml-auto">
-          {(['pending', 'approved', 'rejected', 'all'] as const).map(s => (
-            <button key={s} onClick={() => setStatusFilter(s)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold capitalize transition-all ${
-                statusFilter === s ? 'text-white shadow-sm' : 'text-gray-500 hover:text-gray-700'
-              }`}
-              style={statusFilter === s ? { background: 'hsl(var(--brand-700))' } : {}}>
-              {s === 'all' ? 'All' : s}
-            </button>
-          ))}
-        </div>
+      <div className={cx(DS.card, DS.cardPad, 'flex items-center justify-between gap-3 flex-wrap')}>
+        <CardHead icon={CalendarOff} title="Leave Requests" subtitle="Approve, reject and reassign team leaves" />
+        <Segmented<LeaveFilter>
+          round
+          ariaLabel="Leave status"
+          value={statusFilter}
+          onChange={setStatusFilter}
+          options={[
+            { id: 'pending',  label: 'Pending' },
+            { id: 'approved', label: 'Approved' },
+            { id: 'rejected', label: 'Rejected' },
+            { id: 'all',      label: 'All' },
+          ]}
+        />
       </div>
 
-      {loading && <p className="text-sm text-gray-400 text-center py-10 animate-pulse">Loading…</p>}
+      {loading && <div className="flex items-center justify-center gap-2 py-10 text-sm text-[#6B7280] font-medium"><Spinner /> Loading…</div>}
 
       {!loading && leaves.length === 0 && (
-        <p className="text-sm text-gray-400 text-center py-10">
-          No {statusFilter === 'all' ? '' : statusFilter} leave requests.
-        </p>
+        <div className={DS.card}>
+          <EmptyState icon={CalendarOff} title={`No ${statusFilter === 'all' ? '' : statusFilter} leave requests.`} />
+        </div>
       )}
 
       {!loading && leaves.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {leaves.map(lv => {
             const name = lv.user_name || lv.user_email || lv.user_id
-            const initials = name.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+            const statusLabel = lv.status.charAt(0).toUpperCase() + lv.status.slice(1)
             return (
-              <div key={lv.id} className="rounded-2xl border border-gray-100 bg-white p-5 flex flex-col gap-3 relative overflow-hidden">
-                {/* Subtle top stripe colored by status */}
-                <div className="absolute top-0 left-0 right-0 h-1" style={{
-                  background: lv.status === 'approved' ? 'hsl(var(--brand-700))'
-                    : lv.status === 'rejected' ? '#dc2626' : '#f59e0b'
-                }} />
-
+              <div key={lv.id} className={cx(DS.card, DS.cardPad, 'flex flex-col gap-3')}>
                 {/* Header: avatar + name + status pill */}
                 <div className="flex items-start gap-3">
-                  <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center text-sm font-bold text-green-800 shrink-0">
-                    {initials}
-                  </div>
+                  <Avatar name={name} email={lv.user_email} size="md" />
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold font-serif truncate" style={{ color: 'hsl(var(--brand-700))' }}>{name}</p>
-                    <p className="text-[11px] text-gray-400 truncate">{lv.user_email}</p>
+                    <p className="text-sm font-semibold text-[#111827] truncate">{name}</p>
+                    <p className="text-[13px] font-medium text-[#6B7280] truncate">{lv.user_email}</p>
                   </div>
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${statusBadgeCls(lv.status)}`}>
-                    {lv.status.charAt(0).toUpperCase() + lv.status.slice(1)}
-                  </span>
+                  <StatusPill tone={toneForStatus(lv.status)} className="shrink-0">{statusLabel}</StatusPill>
                 </div>
 
                 {/* Date + half-day */}
-                <div className="text-xs font-semibold flex items-center gap-1.5 flex-wrap" style={{ color: 'hsl(var(--brand-400))' }}>
-                  <span className="font-bold" style={{ color: 'hsl(var(--brand-700))' }}>{lv.leave_date}</span>
+                <div className="text-sm font-semibold text-[#111827] flex items-center gap-1.5 flex-wrap">
+                  <span>{lv.leave_date}</span>
                   {lv.is_half_day && lv.half_day_period && (
-                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700">
-                      {lv.half_day_period === 'first' ? 'First half' : 'Second half'}
-                    </span>
+                    <Badge tone="warning">{lv.half_day_period === 'first' ? 'First half' : 'Second half'}</Badge>
                   )}
-                  <span className="text-gray-300">·</span>
-                  <span className="text-gray-500 font-normal">
+                  <span className="text-[#9CA3AF]">·</span>
+                  <span className="text-[13px] font-medium text-[#6B7280]">
                     {new Date(lv.start_at).toLocaleString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
                     {' – '}
                     {new Date(lv.end_at).toLocaleString([], { hour: 'numeric', minute: '2-digit', hour12: true })}
                   </span>
                 </div>
 
-                {/* Reason */}
-                <div className="rounded-xl bg-gray-50 p-3">
-                  <p className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: 'hsl(var(--brand-400))' }}>Reason</p>
-                  <p className="text-xs text-gray-700">{lv.reason || '—'}</p>
+                {/* Reason — FieldTile's shape, but allowed to wrap. */}
+                <div className="rounded-[6px] bg-[#F9FAFB] border border-[#C5CAD1] p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-widest text-[#9CA3AF] mb-0.5">Reason</p>
+                  <p className="text-sm font-semibold text-[#111827] break-words">{lv.reason || '—'}</p>
                 </div>
 
                 {/* Transfer day */}
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="font-bold" style={{ color: 'hsl(var(--brand-400))' }}>Transfer day:</span>
+                <div className="flex items-center gap-2 text-[13px]">
+                  <span className="font-semibold text-[#6B7280] shrink-0">Transfer day:</span>
                   {transferEdit === lv.id ? (
                     <div className="flex items-center gap-1.5 flex-1">
                       <input type="date" value={transferVal} min={today}
                         onChange={e => setTransferVal(e.target.value)}
-                        className="flex-1 text-xs px-2 py-1 rounded-lg border border-gray-200 focus:outline-none focus:border-green-700" />
-                      <button onClick={() => void handleTransferSave(lv.id)}
-                        className="text-xs font-bold text-green-700 hover:text-green-900">Save</button>
-                      <button onClick={() => setTransferEdit(null)}
-                        className="text-xs text-gray-400 hover:text-gray-600">Cancel</button>
+                        className={cx(DS.input, 'flex-1 !text-xs !px-2 !py-1')} />
+                      <button onClick={() => void handleTransferSave(lv.id)} className={DS.link}>Save</button>
+                      <button onClick={() => setTransferEdit(null)} className={cx(DS.btn, DS.btnGhost, DS.btnXs)}>Cancel</button>
                     </div>
                   ) : (
-                    <span className="text-xs font-bold flex-1" style={{ color: 'hsl(var(--brand-700))' }}>
-                      {lv.transfer_date || <span className="text-gray-400 font-normal">Not set</span>}
-                      <button onClick={() => { setTransferEdit(lv.id); setTransferVal(lv.transfer_date || '') }}
-                        className="ml-2 text-[10px] text-gray-400 underline hover:text-gray-600 font-normal">edit</button>
+                    <span className="font-semibold flex-1 text-[#111827] flex items-center gap-2">
+                      {lv.transfer_date || <span className="text-[#9CA3AF] font-medium">Not set</span>}
+                      <button onClick={() => { setTransferEdit(lv.id); setTransferVal(lv.transfer_date || '') }} className={DS.link}>
+                        <Edit3 className="w-3 h-3" /> Edit
+                      </button>
                     </span>
                   )}
                 </div>
 
                 {/* Approve / Reject — only for pending */}
                 {lv.status === 'pending' && (
-                  <div className="flex gap-2 mt-auto pt-2 border-t border-gray-50">
+                  <div className={cx(DS.divider, 'flex gap-2 mt-auto pt-3')}>
                     <button onClick={() => void handleReview(lv.id, 'approved')}
-                      className="flex-1 px-3 py-2 text-xs font-bold text-white rounded-lg transition-colors hover:opacity-90"
-                      style={{ background: 'hsl(var(--brand-700))' }}>
+                      className={cx(DS.btn, DS.btnSuccess, DS.btnSm, 'flex-1')}>
                       Approve
                     </button>
                     <button onClick={() => void handleReview(lv.id, 'rejected')}
-                      className="flex-1 px-3 py-2 text-xs font-bold text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors">
+                      className={cx(DS.btn, DS.btnOutlineDanger, DS.btnSm, 'flex-1')}>
                       Reject
                     </button>
                   </div>
@@ -1278,11 +1276,7 @@ export default function BrandingAdminDashboard() {
   )
 
   return (
-    <BrandingAdminShell>
-      <div>
-        <h1 className="text-3xl font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>{meta.title}</h1>
-        <p className="text-sm font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>{meta.subtitle}</p>
-      </div>
+    <BrandingAdminShell title={meta.title} subtitle={meta.subtitle}>
       {section === 'reports'    && <BrandingAdminOverview brandingUsers={brandingUsers} />}
       {section === 'kra'        && <KraManagementTab   brandingUsers={brandingUsers} />}
       {section === 'leaves'     && <LeaveManagementTab />}
@@ -1300,6 +1294,38 @@ const LC_WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 
 function lcLocalDate(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/** One colour per person, chosen to carry white text. Fixed rather than taken
+    from the primary colour, because the point is telling people apart. */
+const LC_STRIP_COLORS = ['#1D4ED8', '#6D28D9', '#BE123C', '#B45309', '#0F766E', '#A21CAF', '#4D7C0F', '#334155']
+
+/** First and last calendar day of a leave. Day strings use the same UTC-slice
+    convention the server uses when it derives leave_date from start_at. */
+function lcLeaveDays(l: BrandingLeave): { start: string; end: string } {
+  const start = l.leave_date
+  if (!l.end_at) return { start, end: start }
+  const e = new Date(l.end_at)
+  if (Number.isNaN(e.getTime())) return { start, end: start }
+  const iso = e.toISOString().slice(0, 10)
+  return { start, end: iso > start ? iso : start }
+}
+
+function lcShortDate(iso: string): string {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+}
+
+interface LeaveStrip {
+  leave: BrandingLeave
+  color: string
+  /** Column it starts in (0 = Sunday) and how many days it covers this week. */
+  col: number
+  span: number
+  lane: number
+  /** False when the leave carries on from, or into, another week or month. */
+  startsHere: boolean
+  endsHere: boolean
+  firstDay: string
 }
 
 function LeaveCalendarTab() {
@@ -1323,19 +1349,9 @@ function LeaveCalendarTab() {
       m.set(day, cur)
     }
     for (const l of leaves) {
-      // A leave spans [start_at, end_at]: highlight EVERY day in the range,
-      // not just the recorded leave_date (which is only the start day). Day
-      // strings use the same UTC-slice convention the server uses when it
-      // derives leave_date from start_at.
-      const startDay = l.leave_date
-      let endDay = startDay
-      if (l.end_at) {
-        const e = new Date(l.end_at)
-        if (!Number.isNaN(e.getTime())) {
-          const iso = e.toISOString().slice(0, 10)
-          if (iso > startDay) endDay = iso
-        }
-      }
+      // A leave spans [start_at, end_at]: every day in the range counts, not
+      // just the recorded leave_date (which is only the start day).
+      const { start: startDay, end: endDay } = lcLeaveDays(l)
       if (endDay === startDay) { add(startDay, l); continue }
       const d = new Date(`${startDay}T00:00:00Z`)
       // Hard cap guards against a bad end_at (e.g. year-long span) flooding the map.
@@ -1363,6 +1379,47 @@ function LeaveCalendarTab() {
   }, [year, month, today])
 
   const monthLabel = cursor.toLocaleString('en-US', { month: 'long', year: 'numeric' })
+
+  // Each leave becomes one strip per week it touches. Strips in a week are
+  // stacked into lanes so overlapping leaves never cover each other, and the
+  // week's row grows to fit them. Rejected leaves were not taken, so they stay
+  // off the calendar; they still appear in the day's detail list.
+  const weeks = useMemo(() => {
+    const colorOf = new Map<string, string>()
+    Array.from(new Set(leaves.map(l => l.user_id))).sort().forEach((id, i) => {
+      colorOf.set(id, LC_STRIP_COLORS[i % LC_STRIP_COLORS.length])
+    })
+    const active = leaves.filter(l => l.status !== 'rejected')
+    const out: { cells: typeof cells; strips: LeaveStrip[]; lanes: number }[] = []
+    for (let i = 0; i < cells.length; i += 7) {
+      const week = cells.slice(i, i + 7)
+      const found: Omit<LeaveStrip, 'lane'>[] = []
+      for (const l of active) {
+        const { start, end } = lcLeaveDays(l)
+        const cols = week.flatMap((c, col) => (c.date && c.date >= start && c.date <= end ? [col] : []))
+        if (cols.length === 0) continue
+        found.push({
+          leave: l,
+          color: colorOf.get(l.user_id) ?? LC_STRIP_COLORS[0],
+          col: cols[0],
+          span: cols.length,
+          startsHere: week[cols[0]].date === start,
+          endsHere: week[cols[cols.length - 1]].date === end,
+          firstDay: week[cols[0]].date as string,
+        })
+      }
+      found.sort((a, b) => a.col - b.col || b.span - a.span)
+      const laneEnds: number[] = []
+      const strips = found.map(st => {
+        let lane = laneEnds.findIndex(endCol => st.col > endCol)
+        if (lane === -1) { lane = laneEnds.length; laneEnds.push(0) }
+        laneEnds[lane] = st.col + st.span - 1
+        return { ...st, lane }
+      })
+      out.push({ cells: week, strips, lanes: laneEnds.length })
+    }
+    return out
+  }, [cells, leaves])
   const monthTotals = useMemo(() => {
     // Count distinct leaves (not leave-days) — a 3-day leave expanded across
     // three cells still counts once in the header totals.
@@ -1387,79 +1444,135 @@ function LeaveCalendarTab() {
 
   return (
     <div className="space-y-4">
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
-        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-          <h2 className="text-sm font-bold" style={{ color: 'hsl(var(--brand-700))' }}>{monthLabel}</h2>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-3 text-[11px] text-gray-500">
-              <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ background: 'hsl(var(--brand-700))' }} /> {monthTotals.submitted} submitted</span>
-              <span className="inline-flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full" style={{ background: 'hsl(var(--brand-400))' }} /> {monthTotals.approved} approved</span>
+      <div className={cx(DS.card, DS.cardPad)}>
+        <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+          <div className="min-w-0">
+            <p className={cx(DS.eyebrow, 'mb-1')}>Month</p>
+            <h2 className="text-[16px] font-semibold text-[#111827] tracking-[-0.01em]">{monthLabel}</h2>
+          </div>
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* Month totals as quiet chips, the same height as the controls. */}
+            <div className="flex items-center gap-1.5">
+              <Badge tone="info" dot className="!h-8 !px-3 !text-[12px]">{monthTotals.submitted} submitted</Badge>
+              <Badge tone="success" dot className="!h-8 !px-3 !text-[12px]">{monthTotals.approved} approved</Badge>
             </div>
-            <div className="flex items-center gap-1">
-              <button onClick={() => shift(-1)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500"><ChevronLeft className="w-4 h-4" /></button>
-              <button onClick={() => { setCursor(new Date()); setSelectedDay(null) }} className="text-xs px-2 py-1 rounded-lg hover:bg-gray-100 text-gray-500">Today</button>
-              <button onClick={() => shift(1)} className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500"><ChevronRight className="w-4 h-4" /></button>
+            <div className="flex items-center gap-1.5">
+              <button onClick={() => shift(-1)} className={DS.iconBtnSm} aria-label="Previous month"><ChevronLeft className="w-4 h-4" /></button>
+              <button onClick={() => { setCursor(new Date()); setSelectedDay(null) }} className={cx(DS.btn, DS.btnSecondary, DS.btnXs, '!h-8')}>Today</button>
+              <button onClick={() => shift(1)} className={DS.iconBtnSm} aria-label="Next month"><ChevronRight className="w-4 h-4" /></button>
             </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-7 gap-1 mb-1">
-          {LC_WEEKDAYS.map(d => (
-            <div key={d} className="text-[10px] font-bold uppercase tracking-widest text-gray-400 text-center py-1">{d}</div>
+        <div className="grid grid-cols-7 gap-1 sm:gap-1.5 mb-1.5">
+          {LC_WEEKDAYS.map((d, i) => (
+            <div key={d} className={cx('text-[10px] font-semibold uppercase tracking-[0.14em] text-center py-1', i === 0 || i === 6 ? 'text-[#9CA3AF]' : 'text-[#6B7280]')}>{d}</div>
           ))}
         </div>
 
-        <div className="grid grid-cols-7 gap-1 auto-rows-[84px]">
-          {cells.map((c, i) => {
-            const e = c.date ? byDate.get(c.date) : undefined
-            const isSel = c.date && c.date === selectedDay
-            return (
-              <button key={i} type="button" disabled={!c.date}
-                onClick={() => c.date && setSelectedDay(c.date === selectedDay ? null : c.date)}
-                className={`rounded-lg border p-1.5 text-left flex flex-col transition-colors ${
-                  c.date === null ? 'border-transparent'
-                    : isSel ? 'border-[hsl(var(--brand-700))] bg-green-50'
-                    : c.isToday ? 'border-green-300 bg-green-50/40'
-                    : 'border-gray-100 hover:bg-gray-50'
-                }`}>
-                {c.date && <span className="text-[11px] font-medium text-gray-600">{parseInt(c.date.slice(8, 10), 10)}</span>}
-                {e && (
-                  <div className="mt-auto space-y-0.5">
-                    <span className="block text-[10px] font-semibold text-white rounded px-1 py-0.5" style={{ background: 'hsl(var(--brand-700))' }}>{e.submitted} leave{e.submitted === 1 ? '' : 's'}</span>
-                    {e.approved > 0 && <span className="block text-[10px] font-semibold rounded px-1 py-0.5" style={{ background: 'hsl(var(--brand-50))', color: 'hsl(var(--brand-700))' }}>{e.approved} approved</span>}
-                  </div>
-                )}
-              </button>
-            )
-          })}
+        {/* One row per week: the day cells, with the leave strips laid over
+            them on a matching seven-column grid. Rows grow to fit their strips. */}
+        <div className="space-y-1 sm:space-y-1.5">
+          {weeks.map((week, wi) => (
+            <div
+              key={wi}
+              className="relative grid grid-cols-7 gap-1 sm:gap-1.5 min-h-[max(44px,var(--strip-h))] sm:min-h-[max(84px,var(--strip-h))]"
+              style={{ '--strip-h': `${30 + week.lanes * 22}px` } as React.CSSProperties}
+            >
+              {week.cells.map((c, i) => {
+                const isSel = c.date && c.date === selectedDay
+                return (
+                  <button key={i} type="button" disabled={!c.date}
+                    onClick={() => c.date && setSelectedDay(c.date === selectedDay ? null : c.date)}
+                    className={cx(
+                      'rounded-[6px] border p-1 sm:p-1.5 text-left flex flex-col transition-colors',
+                      c.date === null ? 'border-transparent'
+                        : isSel ? 'bg-bp-50 border-bp-600 cursor-pointer'
+                        : c.isToday ? 'bg-white border-[#C5CAD1] ring-2 ring-bp-200 hover:bg-[#F9FAFB] cursor-pointer'
+                        : 'bg-white border-[#C5CAD1] hover:bg-[#F9FAFB] hover:border-bp-300 cursor-pointer',
+                    )}>
+                    {c.date && <span className={cx('text-[11px] font-semibold', c.isToday ? 'text-bp-700' : 'text-[#6B7280]')}>{parseInt(c.date.slice(8, 10), 10)}</span>}
+                  </button>
+                )
+              })}
+
+              {week.strips.length > 0 && (
+                <div className="pointer-events-none absolute inset-x-0 top-[24px] grid grid-cols-7 gap-x-1 sm:gap-x-1.5 gap-y-0.5 auto-rows-[20px]">
+                  {week.strips.map(st => {
+                    const { start, end } = lcLeaveDays(st.leave)
+                    const name = st.leave.user_name || st.leave.user_email || 'Team member'
+                    const dates = start === end ? lcShortDate(start) : `${lcShortDate(start)} – ${lcShortDate(end)}`
+                    const pending = st.leave.status === 'pending'
+                    return (
+                      <button
+                        key={`${st.leave.id}-${st.firstDay}`}
+                        type="button"
+                        onClick={() => setSelectedDay(st.firstDay === selectedDay ? null : st.firstDay)}
+                        title={`${name} · ${dates} · ${st.leave.status}${st.leave.reason ? ` · ${st.leave.reason}` : ''}`}
+                        aria-label={`${name}, leave ${dates}, ${st.leave.status}`}
+                        style={{
+                          gridColumn: `${st.col + 1} / span ${st.span}`,
+                          gridRow: st.lane + 1,
+                          ...(pending
+                            ? { backgroundColor: `color-mix(in srgb, ${st.color} 12%, white)`, color: st.color, borderColor: st.color }
+                            : { backgroundColor: st.color, color: '#FFFFFF', borderColor: st.color }),
+                        }}
+                        className={cx(
+                          'pointer-events-auto h-5 min-w-0 flex items-center px-1 sm:px-1.5 border text-[11px] font-medium cursor-pointer hover:opacity-90 transition-opacity',
+                          pending && 'border-dashed',
+                          st.startsHere ? 'ml-1 rounded-l-[5px]' : 'border-l-0',
+                          st.endsHere ? 'mr-1 rounded-r-[5px]' : 'border-r-0',
+                        )}
+                      >
+                        <span className="truncate">
+                          <span className="hidden sm:inline">{name}</span>
+                          {/* A single phone-width day only has room for initials. */}
+                          <span className="sm:hidden">
+                            {st.span === 1 ? name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase() : name.split(' ')[0]}
+                          </span>
+                          {st.leave.is_half_day && <span className="hidden sm:inline"> · ½ day</span>}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-3 flex items-center gap-4 flex-wrap text-[12px] text-[#6B7280]">
+          <span className="inline-flex items-center gap-1.5">
+            <span className="w-5 h-3 rounded-[3px] bg-[#6B7280]" aria-hidden="true" /> Approved
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span className="w-5 h-3 rounded-[3px] border border-dashed border-[#6B7280] bg-[#6B7280]/10" aria-hidden="true" /> Pending
+          </span>
+          <span>Each person keeps one colour. Click a strip for details.</span>
         </div>
       </div>
 
       {selectedDay && (
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
-          <h3 className="text-sm font-bold mb-3" style={{ color: 'hsl(var(--brand-700))' }}>
-            {new Date(selectedDay + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
-            {' · '}{selected?.submitted ?? 0} submitted, {selected?.approved ?? 0} approved
-          </h3>
+        <div className={cx(DS.card, DS.cardPad, 'space-y-4')}>
+          <CardHead
+            title={new Date(selectedDay + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+            subtitle={`${selected?.submitted ?? 0} submitted, ${selected?.approved ?? 0} approved`}
+          />
           {!selected || selected.items.length === 0 ? (
-            <p className="text-sm text-gray-400">No leave requests on this day.</p>
+            <EmptyState icon={CalendarOff} title="No leave requests on this day." compact />
           ) : (
-            <div className="space-y-2">
+            <ul className="divide-y divide-[#C5CAD1]">
               {selected.items.map(l => (
-                <div key={l.id} className="flex items-center gap-3 border border-gray-100 rounded-xl px-3 py-2">
+                <li key={l.id} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
+                  <Avatar name={l.user_name} email={l.user_email} size="sm" />
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold text-gray-800 truncate">{l.user_name || l.user_id}</p>
-                    <p className="text-[11px] text-gray-500 truncate">{l.is_half_day ? 'Half day' : 'Full day'}{l.reason ? ` — ${l.reason}` : ''}</p>
+                    <p className="text-sm font-semibold text-[#111827] truncate">{l.user_name || l.user_id}</p>
+                    <p className="text-[13px] font-medium text-[#6B7280] truncate">{l.is_half_day ? 'Half day' : 'Full day'}{l.reason ? ` — ${l.reason}` : ''}</p>
                   </div>
-                  <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0"
-                    style={l.status === 'approved' ? { background: 'hsl(var(--brand-50))', color: 'hsl(var(--brand-700))' }
-                      : l.status === 'rejected' ? { background: '#fde8e8', color: '#b91c1c' }
-                      : { background: '#fef3c7', color: '#92400e' }}>
-                    {l.status}
-                  </span>
-                </div>
+                  <StatusPill tone={toneForStatus(l.status)} className="capitalize shrink-0">{l.status}</StatusPill>
+                </li>
               ))}
-            </div>
+            </ul>
           )}
         </div>
       )}

@@ -5,14 +5,17 @@ import { brandingApi } from '@/lib/branding-api'
 import { checkImageFile, IMAGE_ACCEPT } from '@/lib/image-file'
 import type { BrandingDesign, DesignVoter } from '@/lib/branding-types'
 import {
-  Search, Upload, X, Tag, User, Calendar, Layers,
+  Search, Upload, X, Tag,
   Trash2, ZoomIn, ChevronLeft, ChevronRight, Filter,
-  ThumbsUp, ThumbsDown, Clock,
+  ThumbsUp, ThumbsDown, Clock, ImageOff, Images,
 } from 'lucide-react'
+import { DS, cx, Avatar, Badge, BlockHeader, Card, EmptyState, FieldTile, Modal, Spinner } from './ds'
 
 // ── Time helpers ───────────────────────────────────────────────────────────
 
 const ONE_HOUR_MS = 60 * 60 * 1000
+// Countdown chips turn from amber to rose in the final stretch of the window.
+const URGENT_MS = 10 * 60 * 1000
 
 function msUntilExpiry(createdAt: string): number {
   return ONE_HOUR_MS - (Date.now() - new Date(createdAt).getTime())
@@ -26,6 +29,12 @@ function formatCountdown(ms: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`
 }
 
+// ── Vote pill styling (shared) ─────────────────────────────────────────────
+
+const VOTE_IDLE = 'bg-white border border-[#C5CAD1] text-[#6B7280] hover:bg-[#F9FAFB]'
+const VOTE_UP = 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 border border-transparent'
+const VOTE_DOWN = 'bg-rose-50 text-rose-700 ring-1 ring-rose-200 border border-transparent'
+
 // ── Vote buttons (shared between card and lightbox) ────────────────────────
 
 interface VoteBarProps {
@@ -37,8 +46,8 @@ interface VoteBarProps {
 function VoteBar({ design, onVote, size = 'sm' }: VoteBarProps) {
   const iconCls = size === 'md' ? 'w-4 h-4' : 'w-3.5 h-3.5'
   const btnBase = size === 'md'
-    ? 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors'
-    : 'flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors'
+    ? 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[4px] text-sm font-semibold transition-colors cursor-pointer shadow-sm'
+    : 'inline-flex items-center gap-1 px-2.5 py-1 rounded-[4px] text-xs font-semibold transition-colors cursor-pointer shadow-sm'
 
   function toggle(type: 'up' | 'down') {
     onVote(design.id, design.user_vote === type ? null : type)
@@ -47,61 +56,50 @@ function VoteBar({ design, onVote, size = 'sm' }: VoteBarProps) {
   return (
     <div className="flex items-center gap-1.5">
       <button
+        type="button"
         onClick={e => { e.stopPropagation(); toggle('up') }}
-        className={`${btnBase} ${
-          design.user_vote === 'up'
-            ? 'bg-green-100 text-green-700'
-            : 'bg-black/20 text-white hover:bg-black/30'
-        }`}
+        className={cx(btnBase, design.user_vote === 'up' ? VOTE_UP : VOTE_IDLE)}
         title="Upvote"
       >
         <ThumbsUp className={iconCls} />
-        <span>{design.upvotes}</span>
+        <span className="font-semibold">{design.upvotes}</span>
       </button>
       <button
+        type="button"
         onClick={e => { e.stopPropagation(); toggle('down') }}
-        className={`${btnBase} ${
-          design.user_vote === 'down'
-            ? 'bg-red-100 text-red-700'
-            : 'bg-black/20 text-white hover:bg-black/30'
-        }`}
+        className={cx(btnBase, design.user_vote === 'down' ? VOTE_DOWN : VOTE_IDLE)}
         title="Downvote"
       >
         <ThumbsDown className={iconCls} />
-        <span>{design.downvotes}</span>
+        <span className="font-semibold">{design.downvotes}</span>
       </button>
     </div>
   )
 }
 
-// lightbox variant with light background buttons
+// lightbox variant shown in the info panel
 function VoteBarLight({ design, onVote }: { design: BrandingDesign; onVote: (id: string, t: 'up' | 'down' | null) => void }) {
   function toggle(type: 'up' | 'down') {
     onVote(design.id, design.user_vote === type ? null : type)
   }
+  const base = 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[4px] text-sm font-semibold transition-colors cursor-pointer'
   return (
     <div className="flex items-center gap-2">
       <button
+        type="button"
         onClick={() => toggle('up')}
-        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
-          design.user_vote === 'up'
-            ? 'bg-green-100 text-green-700 border-green-300'
-            : 'border-border text-muted-foreground hover:bg-accent'
-        }`}
+        className={cx(base, design.user_vote === 'up' ? VOTE_UP : VOTE_IDLE)}
       >
         <ThumbsUp className="w-4 h-4" />
-        {design.upvotes}
+        <span className="font-semibold">{design.upvotes}</span>
       </button>
       <button
+        type="button"
         onClick={() => toggle('down')}
-        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
-          design.user_vote === 'down'
-            ? 'bg-red-100 text-red-700 border-red-300'
-            : 'border-border text-muted-foreground hover:bg-accent'
-        }`}
+        className={cx(base, design.user_vote === 'down' ? VOTE_DOWN : VOTE_IDLE)}
       >
         <ThumbsDown className="w-4 h-4" />
-        {design.downvotes}
+        <span className="font-semibold">{design.downvotes}</span>
       </button>
     </div>
   )
@@ -127,11 +125,11 @@ function UploadDialog({ categories, onUploaded, onClose }: UploadDialogProps) {
   const [err, setErr] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
-  /* The server's rules (raster images only, 10 MB), checked as the file is
-     picked so the reason shows at once instead of after the upload. */
   function onFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]
     if (!f) return
+    /* The server's rules (raster images only, 10 MB), checked as the file is
+       picked so the reason shows at once instead of after the upload. */
     const problem = checkImageFile(f, 10 * 1024 * 1024)
     if (problem) {
       setErr(problem)
@@ -165,73 +163,76 @@ function UploadDialog({ categories, onUploaded, onClose }: UploadDialogProps) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-card border border-border rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border sticky top-0 bg-card rounded-t-2xl">
-          <h2 className="text-sm font-semibold text-foreground">Upload Design</h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
-        </div>
-        <form onSubmit={handleSubmit} className="p-5 space-y-4">
-          <div
-            onClick={() => fileRef.current?.click()}
-            className="relative border-2 border-dashed border-border rounded-xl overflow-hidden cursor-pointer hover:border-green-500 transition-colors bg-muted/30"
-            style={{ minHeight: 180 }}
-          >
-            {preview
-              ? <img src={preview} alt="preview" className="w-full object-contain max-h-64" />
-              : <div className="flex flex-col items-center justify-center py-12 gap-2 text-muted-foreground">
-                  <Upload className="w-8 h-8" />
-                  <span className="text-sm">Click to select an image</span>
-                  <span className="text-xs">PNG, JPG, WEBP · max 10 MB</span>
+    <Modal
+      title="Upload Design"
+      subtitle="Share a finished piece with the branding team."
+      onClose={onClose}
+      size="lg"
+      footer={
+        <>
+          <button type="button" onClick={onClose} className={cx(DS.btn, DS.btnSecondary)}>Cancel</button>
+          <button type="submit" form="branding-upload-form" disabled={uploading} className={cx(DS.btn, DS.btnPrimary)}>
+            {uploading ? <Spinner className="border-white/40 border-t-white" /> : <Upload className="w-4 h-4" />}
+            {uploading ? 'Uploading…' : 'Upload'}
+          </button>
+        </>
+      }
+    >
+      <form id="branding-upload-form" onSubmit={handleSubmit} className="space-y-4">
+        <div
+          onClick={() => fileRef.current?.click()}
+          className="relative border-2 border-dashed border-[#9CA3AF] rounded-[6px] overflow-hidden cursor-pointer bg-[#F9FAFB] hover:border-bp-400 hover:bg-bp-50/40 transition-colors"
+          style={{ minHeight: 180 }}
+        >
+          {preview
+            ? <img src={preview} alt="preview" className="w-full object-contain max-h-64" />
+            : <div className="flex flex-col items-center justify-center py-12 gap-2">
+                <div className="w-11 h-11 rounded-[6px] bg-bp-50 text-bp-700 grid place-items-center">
+                  <Upload className="w-5 h-5" />
                 </div>
-            }
-            <input ref={fileRef} type="file" accept={IMAGE_ACCEPT} className="hidden" onChange={onFileChange} />
-          </div>
-          <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1">Title *</label>
-            <input className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
-              value={title} onChange={e => setTitle(e.target.value)} placeholder="Social media post for Convocation" />
-          </div>
-          <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1">Description</label>
-            <textarea className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background resize-none"
-              rows={2} value={description} onChange={e => setDescription(e.target.value)} placeholder="Brief description…" />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-medium text-muted-foreground block mb-1">Category</label>
-              <select className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
-                value={category} onChange={e => setCategory(e.target.value)}>
-                <option value="">— None —</option>
-                {categories.map(c => <option key={c} value={c}>{c}</option>)}
-                <option value="__custom__">Other (type below)</option>
-              </select>
-            </div>
-            {category === '__custom__' && (
-              <div>
-                <label className="text-xs font-medium text-muted-foreground block mb-1">Custom Category</label>
-                <input className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
-                  value={customCategory} onChange={e => setCustomCategory(e.target.value)} placeholder="e.g. Merchandise" />
+                <span className="text-sm font-semibold text-[#111827] mt-1">Click to select an image</span>
+                <span className={DS.muted}>PNG, JPG, WEBP · max 10 MB</span>
               </div>
-            )}
-          </div>
+          }
+          <input ref={fileRef} type="file" accept={IMAGE_ACCEPT} className="hidden" onChange={onFileChange} />
+        </div>
+        <div>
+          <label className={DS.label}>Title *</label>
+          <input className={DS.input}
+            value={title} onChange={e => setTitle(e.target.value)} placeholder="Social media post for Convocation" />
+        </div>
+        <div>
+          <label className={DS.label}>Description</label>
+          <textarea className={cx(DS.textarea, 'resize-none')}
+            rows={2} value={description} onChange={e => setDescription(e.target.value)} placeholder="Brief description…" />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="text-xs font-medium text-muted-foreground block mb-1">Tags (comma-separated)</label>
-            <input className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
-              value={tagsInput} onChange={e => setTagsInput(e.target.value)} placeholder="convocation, social-media, 2024" />
+            <label className={DS.label}>Category</label>
+            <select className={DS.select}
+              value={category} onChange={e => setCategory(e.target.value)}>
+              <option value="">— None —</option>
+              {categories.map(c => <option key={c} value={c}>{c}</option>)}
+              <option value="__custom__">Other (type below)</option>
+            </select>
           </div>
-          {err && <p className="text-xs text-red-500">{err}</p>}
-          <div className="flex gap-2 justify-end pt-1">
-            <button type="button" onClick={onClose}
-              className="px-4 py-2 text-sm rounded-lg border border-border text-muted-foreground hover:bg-accent">Cancel</button>
-            <button type="submit" disabled={uploading}
-              className="px-4 py-2 text-sm rounded-lg bg-green-800 text-white hover:bg-green-900 disabled:opacity-50 flex items-center gap-2">
-              <Upload className="w-3.5 h-3.5" />{uploading ? 'Uploading…' : 'Upload'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+          {category === '__custom__' && (
+            <div>
+              <label className={DS.label}>Custom Category</label>
+              <input className={DS.input}
+                value={customCategory} onChange={e => setCustomCategory(e.target.value)} placeholder="e.g. Merchandise" />
+            </div>
+          )}
+        </div>
+        <div>
+          <label className={DS.label}>Tags</label>
+          <input className={DS.input}
+            value={tagsInput} onChange={e => setTagsInput(e.target.value)} placeholder="convocation, social-media, 2024" />
+          <p className={DS.hint}>Comma-separated. Tags make designs easier to find in search.</p>
+        </div>
+        {err && <p className="text-xs font-semibold text-rose-600">{err}</p>}
+      </form>
+    </Modal>
   )
 }
 
@@ -248,6 +249,8 @@ interface LightboxProps {
   onClose: () => void
   onNavigate: (i: number) => void
 }
+
+const LIGHTBOX_NAV = 'w-10 h-10 rounded-[4px] bg-white text-[#374151] hover:bg-bp-600 hover:text-white grid place-items-center transition-colors duration-200 disabled:opacity-30 disabled:hover:bg-white disabled:hover:text-[#374151] disabled:cursor-not-allowed shrink-0 cursor-pointer shadow-lg'
 
 function Lightbox({ designs, index, canDelete, isAdminLevel, canSeeVoters, onDelete, onVote, onClose, onNavigate }: LightboxProps) {
   const d = designs[index]
@@ -288,19 +291,19 @@ function Lightbox({ designs, index, canDelete, isAdminLevel, canSeeVoters, onDel
   if (!d) return null
 
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50"
+    <div className="fixed inset-0 bg-[#111827] backdrop-blur-xs flex items-center justify-center z-50"
       onClick={onClose}>
-      <div className="relative flex items-center gap-3 max-w-5xl w-full mx-4"
+      <div className="relative flex items-center gap-1.5 sm:gap-3 max-w-5xl w-full mx-2 sm:mx-4"
         onClick={e => e.stopPropagation()}>
 
-        <button onClick={() => onNavigate(index - 1)} disabled={index === 0}
-          className="p-2 rounded-full bg-white/10 text-white hover:bg-white/20 disabled:opacity-20 shrink-0">
+        <button type="button" onClick={() => onNavigate(index - 1)} disabled={index === 0}
+          className={LIGHTBOX_NAV} aria-label="Previous design">
           <ChevronLeft className="w-5 h-5" />
         </button>
 
-        <div className="flex-1 bg-card rounded-2xl overflow-hidden shadow-2xl flex flex-col md:flex-row max-h-[85vh]">
+        <div className="flex-1 bg-white rounded-[6px] overflow-hidden shadow-[0_24px_48px_-12px_rgba(16,24,40,0.25)] border border-[#C5CAD1] flex flex-col md:flex-row max-h-[85vh]">
           {/* Image */}
-          <div className="flex-1 bg-black flex items-center justify-center min-h-64 max-h-[70vh] md:max-h-[85vh] relative">
+          <div className="flex-1 bg-[#111827] flex items-center justify-center min-h-64 max-h-[70vh] md:max-h-[85vh] relative">
             <img src={d.image_url} alt={d.title} className="max-w-full max-h-full object-contain" />
             {/* Vote overlay on image bottom */}
             <div className="absolute bottom-3 left-3">
@@ -309,79 +312,61 @@ function Lightbox({ designs, index, canDelete, isAdminLevel, canSeeVoters, onDel
           </div>
 
           {/* Info panel */}
-          <div className="w-full md:w-72 p-5 flex flex-col gap-3 overflow-y-auto border-l border-border">
-            <div className="flex items-start justify-between">
-              <h2 className="text-base font-semibold text-foreground leading-snug">{d.title}</h2>
-              <button onClick={onClose} className="text-muted-foreground hover:text-foreground shrink-0 ml-2">
+          <div className="w-full md:w-72 p-4 flex flex-col gap-3 overflow-y-auto border-t md:border-t-0 md:border-l border-[#C5CAD1]">
+            <div className="flex items-start justify-between gap-2">
+              <h2 className={DS.h3}>{d.title}</h2>
+              <button type="button" onClick={onClose} className={cx(DS.iconBtnSm, 'ml-2')} aria-label="Close">
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             {d.description && (
-              <p className="text-sm text-muted-foreground leading-relaxed">{d.description}</p>
+              <p className="text-sm text-[#6B7280] font-medium leading-relaxed">{d.description}</p>
             )}
+
+            {/* Meta */}
+            <div className="grid grid-cols-3 gap-2 border-t border-[#C5CAD1] pt-3">
+              <FieldTile label="Uploader" value={d.uploader_name || '—'} />
+              <FieldTile label="Category" value={d.category || '—'} />
+              <FieldTile label="Uploaded" value={new Date(d.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} />
+            </div>
 
             {/* Vote counts (light version) */}
             <VoteBarLight design={d} onVote={onVote} />
 
-            {/* Owner */}
-            <div className="flex items-center gap-2.5 py-2.5 border-t border-border">
-              <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center shrink-0">
-                <span className="text-xs font-bold text-green-800">{(d.uploader_name || 'U')[0].toUpperCase()}</span>
-              </div>
-              <div>
-                <p className="text-sm font-medium text-foreground">{d.uploader_name}</p>
-                <p className="text-xs text-muted-foreground">Designer</p>
-              </div>
-            </div>
-
-            <div className="space-y-1.5 border-t border-border pt-2">
-              {d.category && (
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Layers className="w-3.5 h-3.5 shrink-0" /><span>{d.category}</span>
-                </div>
-              )}
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Calendar className="w-3.5 h-3.5 shrink-0" />
-                <span>{new Date(d.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
-              </div>
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <User className="w-3.5 h-3.5 shrink-0" /><span>Uploaded by {d.uploader_name}</span>
-              </div>
-            </div>
-
             {d.tags.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 border-t border-border pt-2">
+              <div className="flex flex-wrap gap-1.5 border-t border-[#C5CAD1] pt-2.5">
                 {d.tags.map(tag => (
-                  <span key={tag} className="flex items-center gap-1 text-xs bg-green-50 text-green-800 px-2 py-0.5 rounded-full">
+                  <Badge key={tag} tone="info">
                     <Tag className="w-2.5 h-2.5" />{tag}
-                  </span>
+                  </Badge>
                 ))}
               </div>
             )}
 
             {/* Admin: voter list */}
             {canSeeVoters && (
-              <div className="border-t border-border pt-2">
+              <div className="border-t border-[#C5CAD1] pt-2.5">
                 {!showVoters ? (
                   <button
+                    type="button"
                     onClick={loadVoters}
                     disabled={votersLoading}
-                    className="text-xs text-green-800 hover:underline disabled:opacity-50"
+                    className="text-xs font-semibold text-bp-700 hover:text-bp-800 hover:underline disabled:opacity-50 cursor-pointer"
                   >
                     {votersLoading ? 'Loading…' : `View voters (${d.upvotes + d.downvotes})`}
                   </button>
                 ) : (
                   <div className="space-y-1">
                     <div className="flex items-center justify-between mb-1.5">
-                      <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Voters</p>
-                      <button onClick={() => setShowVoters(false)} className="text-xs text-muted-foreground hover:text-foreground">Hide</button>
+                      <p className={DS.eyebrow}>Voters</p>
+                      <button type="button" onClick={() => setShowVoters(false)} className="text-xs font-semibold text-[#6B7280] hover:text-[#111827] cursor-pointer">Hide</button>
                     </div>
-                    {voters.length === 0 && <p className="text-xs text-muted-foreground">No votes yet.</p>}
+                    {voters.length === 0 && <p className={DS.muted}>No votes yet.</p>}
                     {voters.map(v => (
-                      <div key={v.user_id} className="flex items-center justify-between text-xs">
-                        <span className="text-foreground truncate">{v.user_name}</span>
-                        <span className={`font-medium shrink-0 ml-2 ${v.vote_type === 'up' ? 'text-green-600' : 'text-red-500'}`}>
+                      <div key={v.user_id} className="flex items-center justify-between text-xs py-0.5">
+                        <span className="text-[#111827] font-medium truncate">{v.user_name}</span>
+                        <span className={cx('font-semibold shrink-0 ml-2', v.vote_type === 'up' ? 'text-emerald-600' : 'text-rose-600')}>
                           {v.vote_type === 'up' ? '▲ Up' : '▼ Down'}
                         </span>
                       </div>
@@ -393,22 +378,21 @@ function Lightbox({ designs, index, canDelete, isAdminLevel, canSeeVoters, onDel
 
             {canDelete(d) && (
               isAdminLevel ? (
-                <button onClick={() => onDelete(d.id)}
-                  className="mt-auto flex items-center gap-2 px-3 py-2 text-sm rounded-lg text-red-600 hover:bg-red-50 transition-colors">
+                <button type="button" onClick={() => onDelete(d.id)}
+                  className={cx(DS.btn, DS.btnDanger, DS.btnSm, 'mt-auto w-full')}>
                   <Trash2 className="w-4 h-4" />Delete design
                 </button>
               ) : countdown > 0 ? (
-                <button onClick={() => onDelete(d.id)}
-                  className="mt-auto flex items-center gap-2 px-3 py-2 text-sm rounded-lg text-red-600 hover:bg-red-50 transition-colors">
-                  <Trash2 className="w-4 h-4" />
-                  Delete
-                  <span className="ml-auto flex items-center gap-1 text-xs text-red-400">
+                <button type="button" onClick={() => onDelete(d.id)}
+                  className={cx(DS.btn, DS.btnDanger, DS.btnSm, 'mt-auto w-full !justify-between')}>
+                  <span className="inline-flex items-center gap-2"><Trash2 className="w-4 h-4" />Delete</span>
+                  <Badge tone={countdown < URGENT_MS ? 'danger' : 'warning'}>
                     <Clock className="w-3 h-3" />{formatCountdown(countdown)}
-                  </span>
+                  </Badge>
                 </button>
               ) : (
-                <div className="mt-auto flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground bg-muted/50 rounded-lg">
-                  <Clock className="w-3.5 h-3.5 shrink-0" />
+                <div className="mt-auto flex items-center gap-2 px-3 py-2 text-xs font-medium text-[#6B7280] bg-[#F9FAFB] border border-[#C5CAD1] rounded-[4px]">
+                  <Clock className="w-3.5 h-3.5 shrink-0 text-[#9CA3AF]" />
                   Deletion window expired. Contact an admin.
                 </div>
               )
@@ -416,8 +400,8 @@ function Lightbox({ designs, index, canDelete, isAdminLevel, canSeeVoters, onDel
           </div>
         </div>
 
-        <button onClick={() => onNavigate(index + 1)} disabled={index === designs.length - 1}
-          className="p-2 rounded-full bg-white/10 text-white hover:bg-white/20 disabled:opacity-20 shrink-0">
+        <button type="button" onClick={() => onNavigate(index + 1)} disabled={index === designs.length - 1}
+          className={LIGHTBOX_NAV} aria-label="Next design">
           <ChevronRight className="w-5 h-5" />
         </button>
       </div>
@@ -425,7 +409,7 @@ function Lightbox({ designs, index, canDelete, isAdminLevel, canSeeVoters, onDel
   )
 }
 
-// ── Pinterest Card ─────────────────────────────────────────────────────────
+// ── Gallery tile ───────────────────────────────────────────────────────────
 
 function DesignCard({
   design, onOpen, onVote, showCountdown,
@@ -450,59 +434,60 @@ function DesignCard({
   }, [showCountdown, design.created_at])
 
   return (
-    <div className="group relative cursor-pointer rounded-xl overflow-hidden bg-muted break-inside-avoid mb-3">
-      <div onClick={onOpen} style={{ minHeight: 160 }}>
+    <div className="group bg-white rounded-[6px] border border-[#C5CAD1] overflow-hidden hover:border-bp-700 transition-colors duration-300 ease-out flex flex-col min-w-0">
+      {/* Image area */}
+      <div onClick={onOpen} className="relative aspect-[4/3] bg-[#F3F4F6] overflow-hidden cursor-pointer">
         <img
           src={design.image_url}
           alt={design.title}
+          loading="lazy"
           onLoad={() => setLoaded(true)}
           onError={() => setImgError(true)}
-          className={`w-full object-cover transition-transform duration-300 group-hover:scale-105 ${loaded && !imgError ? 'opacity-100' : 'opacity-0'}`}
+          className={cx(
+            'absolute inset-0 w-full h-full object-cover transition-all duration-500 ease-out group-hover:scale-[1.03]',
+            loaded && !imgError ? 'opacity-100' : 'opacity-0',
+          )}
         />
-        {!loaded && !imgError && <div className="absolute inset-0 bg-muted animate-pulse" />}
+        {!loaded && !imgError && <div className="absolute inset-0 bg-[#F3F4F6] animate-pulse" />}
         {imgError && (
-          <div className="absolute inset-0 flex items-center justify-center bg-muted">
-            <div className="flex flex-col items-center gap-1.5 text-muted-foreground/50">
-              <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                  d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-              </svg>
-              <span className="text-[10px]">Preview unavailable</span>
+          <div className="absolute inset-0 flex items-center justify-center bg-[#F3F4F6]">
+            <div className="flex flex-col items-center gap-1.5 text-[#9CA3AF]">
+              <ImageOff className="w-7 h-7" />
+              <span className="text-[11px] font-semibold">Preview unavailable</span>
             </div>
           </div>
         )}
-      </div>
 
-      {/* Countdown badge — top-left, only for own recent uploads */}
-      {showCountdown && countdown > 0 && (
-        <div className="absolute top-2 left-2 flex items-center gap-1 bg-black/60 text-white text-[10px] font-medium px-1.5 py-0.5 rounded-md pointer-events-none">
-          <Clock className="w-2.5 h-2.5" />
-          {formatCountdown(countdown)}
-        </div>
-      )}
-
-      {/* Hover overlay */}
-      <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none" />
-
-      {/* Bottom info + votes on hover */}
-      <div className="absolute bottom-0 left-0 right-0 p-2.5 translate-y-1 opacity-0 group-hover:translate-y-0 group-hover:opacity-100 transition-all duration-200">
-        <div className="flex items-end justify-between gap-2">
-          <div className="min-w-0">
-            <p className="text-white text-xs font-semibold line-clamp-1 drop-shadow">{design.title}</p>
-            <div className="flex items-center gap-1 mt-0.5">
-              <div className="w-4 h-4 rounded-full bg-green-500 flex items-center justify-center shrink-0">
-                <span className="text-[8px] font-bold text-white">{(design.uploader_name || 'U')[0].toUpperCase()}</span>
-              </div>
-              <span className="text-white/80 text-[10px] truncate">{design.uploader_name}</span>
-            </div>
+        {/* Countdown badge — top-left, only for own recent uploads */}
+        {showCountdown && countdown > 0 && (
+          <div className="absolute top-2 left-2 pointer-events-none">
+            <Badge tone={countdown < URGENT_MS ? 'danger' : 'warning'} className="shadow-sm">
+              <Clock className="w-3 h-3" />{formatCountdown(countdown)}
+            </Badge>
           </div>
-          <VoteBar design={design} onVote={onVote} size="sm" />
+        )}
+
+        {/* Zoom hint */}
+        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none">
+          <span className="w-8 h-8 rounded-[4px] bg-white/95 text-[#374151] grid place-items-center shadow-sm">
+            <ZoomIn className="w-4 h-4" />
+          </span>
         </div>
       </div>
 
-      {/* Zoom hint */}
-      <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none">
-        <ZoomIn className="w-4 h-4 text-white/80 drop-shadow" />
+      {/* Caption */}
+      <div className="p-3.5 flex flex-col gap-2.5">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-[#111827] truncate" title={design.title}>{design.title}</p>
+          <div className="flex items-center gap-2 mt-1.5 min-w-0">
+            <Avatar name={design.uploader_name} size="xs" />
+            <span className="text-[13px] font-medium text-[#6B7280] truncate">
+              {design.uploader_name}
+              {design.category && <> · {design.category}</>}
+            </span>
+          </div>
+        </div>
+        <VoteBar design={design} onVote={onVote} size="sm" />
       </div>
     </div>
   )
@@ -510,7 +495,7 @@ function DesignCard({
 
 // ── Main Page ──────────────────────────────────────────────────────────────
 
-export default function BrandingBrowse() {
+export default function BrandingBrowse({ embedded = false }: { embedded?: boolean } = {}) {
   const { user, role } = useAuth()
   const { users: allUsers } = useAppData()
   const isAdmin = role === 'admin' || role === 'super_admin'
@@ -600,118 +585,150 @@ export default function BrandingBrowse() {
     filterDateTo,
   ].filter(Boolean).length
 
+  const filtersActive = filtersOpen || activeFilterCount > 0
+
   return (
-    <div className="animate-fade-in space-y-5">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div>
-          <h1 className="text-3xl font-extrabold font-serif" style={{ color: 'hsl(var(--brand-700))' }}>Design Gallery</h1>
-          <p className="text-sm font-semibold mt-0.5" style={{ color: 'hsl(var(--brand-400))' }}>
-            {designs.length} design{designs.length === 1 ? '' : 's'} from the branding team
-          </p>
+    <div className="animate-fade-in space-y-4" data-embedded={embedded || undefined}>
+      {/* Toolbar — the host shell owns the page title in both hosts, so this
+          strip is only search, filters, the count and upload. */}
+      <div className={cx(DS.card, 'p-4 flex flex-wrap items-center gap-3')}>
+        <div className="relative flex-1 min-w-[200px] max-w-xs">
+          <input
+            className={cx(DS.input, '!pr-9')}
+            placeholder="Search designs, tags…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+          <Search className="w-4 h-4 text-[#9CA3AF] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
         </div>
+        <select
+          className={cx(DS.select, '!w-auto')}
+          value={filterCategory}
+          onChange={e => setFilterCategory(e.target.value)}
+          aria-label="Category"
+        >
+          <option value="">All categories</option>
+          {categories.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        {canFilterByUploader && (
+          <select
+            className={cx(DS.select, '!w-auto')}
+            value={filterUploader}
+            onChange={e => setFilterUploader(e.target.value)}
+            aria-label="Uploader"
+          >
+            <option value="">All members</option>
+            {brandingMembers.map(m => (
+              <option key={m.id} value={m.id}>{m.full_name || m.email}</option>
+            ))}
+          </select>
+        )}
         <button
+          type="button"
+          onClick={() => setFiltersOpen(o => !o)}
+          aria-expanded={filtersOpen}
+          className={cx(DS.btn, DS.btnSecondary, filtersActive && 'border-bp-300 text-bp-800')}
+        >
+          <Filter className="w-4 h-4" />
+          Filters
+          {activeFilterCount > 0 && (
+            <span className="ml-0.5 w-4 h-4 rounded-full bg-bp-700 text-white text-[10px] grid place-items-center font-semibold">
+              {activeFilterCount}
+            </span>
+          )}
+        </button>
+        <span className="ml-auto text-[13px] font-semibold text-[#6B7280] tabular-nums">
+          {designs.length} {designs.length === 1 ? 'design' : 'designs'}
+        </span>
+        <button
+          type="button"
           onClick={() => setShowUpload(true)}
-          className="flex items-center gap-2 px-4 py-2 text-white rounded-xl text-sm hover:opacity-90 transition-opacity shadow-sm"
-          style={{ background: 'hsl(var(--brand-700))' }}
+          className={cx(DS.btn, DS.btnPrimary)}
         >
           <Upload className="w-4 h-4" />Upload Design
         </button>
       </div>
 
-      {/* Search + Filter bar */}
-      <div className="flex gap-2 flex-wrap">
-        <div className="relative flex-1 min-w-48">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
-          <input
-            className="w-full border border-border rounded-xl pl-9 pr-3 py-2.5 text-sm bg-background"
-            placeholder="Search designs, tags…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
+      {/* Category chips */}
+      {categories.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => setFilterCategory('')}
+            className={cx(DS.pill, filterCategory === '' ? DS.pillOn : DS.pillOff)}
+          >
+            All
+          </button>
+          {categories.map(c => (
+            <button
+              key={c}
+              type="button"
+              onClick={() => setFilterCategory(c)}
+              className={cx(DS.pill, filterCategory === c ? DS.pillOn : DS.pillOff)}
+            >
+              {c}
+            </button>
+          ))}
         </div>
-        <button
-          onClick={() => setFiltersOpen(o => !o)}
-          className={`flex items-center gap-2 px-4 py-2.5 text-sm rounded-xl border transition-colors ${
-            filtersOpen || activeFilterCount > 0
-              ? 'border-green-700 text-green-800 bg-green-50'
-              : 'border-border text-muted-foreground hover:bg-accent'
-          }`}
-        >
-          <Filter className="w-4 h-4" />
-          Filters
-          {activeFilterCount > 0 && (
-            <span className="ml-0.5 w-4 h-4 rounded-full bg-green-800 text-white text-[10px] flex items-center justify-center font-bold">
-              {activeFilterCount}
-            </span>
-          )}
-        </button>
-      </div>
+      )}
 
-      {/* Filter panel */}
+      {/* Filter panel — date range */}
       {filtersOpen && (
-        <div className="hub-card animate-fade-in">
-          <div className={`grid gap-3 ${canFilterByUploader ? 'grid-cols-2 md:grid-cols-4' : 'grid-cols-1 md:grid-cols-3'}`}>
+        <Card className="animate-fade-in">
+          <div className="grid gap-3 grid-cols-1 sm:grid-cols-2 md:grid-cols-4">
             <div>
-              <label className="text-xs font-medium text-muted-foreground block mb-1">Category</label>
-              <select className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
-                value={filterCategory} onChange={e => setFilterCategory(e.target.value)}>
-                <option value="">All categories</option>
-                {categories.map(c => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </div>
-            {canFilterByUploader && (
-              <div>
-                <label className="text-xs font-medium text-muted-foreground block mb-1">Uploader</label>
-                <select className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
-                  value={filterUploader} onChange={e => setFilterUploader(e.target.value)}>
-                  <option value="">All members</option>
-                  {brandingMembers.map(m => (
-                    <option key={m.id} value={m.id}>{m.full_name || m.email}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-            <div>
-              <label className="text-xs font-medium text-muted-foreground block mb-1">From</label>
-              <input type="date" className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
+              <label className={DS.label}>From</label>
+              <input type="date" className={DS.input}
                 value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)} />
             </div>
             <div>
-              <label className="text-xs font-medium text-muted-foreground block mb-1">To</label>
-              <input type="date" className="w-full border border-border rounded-lg px-3 py-2 text-sm bg-background"
+              <label className={DS.label}>To</label>
+              <input type="date" className={DS.input}
                 value={filterDateTo} onChange={e => setFilterDateTo(e.target.value)} />
             </div>
           </div>
           {activeFilterCount > 0 && (
             <button
+              type="button"
               onClick={() => { setFilterCategory(''); setFilterUploader(''); setFilterDateFrom(''); setFilterDateTo('') }}
-              className="mt-3 text-xs text-green-800 hover:underline"
+              className={cx(DS.btn, DS.btnGhost, DS.btnSm, 'mt-3 text-bp-700 hover:text-bp-800')}
             >
               Clear all filters
             </button>
           )}
-        </div>
+        </Card>
       )}
 
       {/* Gallery */}
+      <BlockHeader
+        title="Designs"
+        subtitle={`${designs.length} ${designs.length === 1 ? 'design' : 'designs'} from the branding team`}
+        chip={filterCategory || 'All categories'}
+        className="!mb-0"
+      />
       {loading ? (
-        <div className="columns-2 md:columns-3 lg:columns-4 gap-3">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="mb-3 break-inside-avoid rounded-xl bg-muted animate-pulse"
-              style={{ height: 120 + (i % 3) * 60 }} />
-          ))}
+        <div className={cx(DS.card, 'flex items-center justify-center py-16')}>
+          <Spinner className="w-6 h-6" />
         </div>
       ) : designs.length === 0 ? (
-        <div className="text-center py-16">
-          <p className="text-muted-foreground text-sm">
-            {search || activeFilterCount > 0
-              ? 'No designs match your filters.'
-              : 'No designs uploaded yet. Be the first to upload!'}
-          </p>
+        <div className={DS.card}>
+          <EmptyState
+            icon={Images}
+            title={search || activeFilterCount > 0 ? 'No designs match your filters' : 'No designs uploaded yet'}
+            body={search || activeFilterCount > 0
+              ? 'Try a different search term or clear the active filters.'
+              : 'Be the first to share a design with the branding team.'}
+            action={
+              search || activeFilterCount > 0 ? undefined : (
+                <button type="button" onClick={() => setShowUpload(true)} className={cx(DS.btn, DS.btnPrimary, DS.btnSm)}>
+                  <Upload className="w-4 h-4" />Upload Design
+                </button>
+              )
+            }
+          />
         </div>
       ) : (
-        <div className="columns-2 md:columns-3 lg:columns-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
           {designs.map((d, i) => (
             <DesignCard key={d.id} design={d} onOpen={() => setLightboxIndex(i)} onVote={handleVote} showCountdown={showCountdown(d)} />
           ))}

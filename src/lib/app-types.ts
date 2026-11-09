@@ -65,8 +65,16 @@ export interface AppUser {
   // vast majority of users, who are not on it. Sent by /api/auth/me and
   // /api/auth/login so the client can pick an application; never a grant.
   creator?: CreatorStanding | null;
+  /** Dashboard look the user last chose (primary colour + light/dark mode);
+      applied on sign-in on any device. Branding portal "Nerve Light" theme. */
+  appearance?: UserAppearance | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface UserAppearance {
+  primary?: string;
+  mode?: "light" | "dark" | "system";
 }
 
 /** What a person is INSIDE the Creator Network. Deliberately separate from

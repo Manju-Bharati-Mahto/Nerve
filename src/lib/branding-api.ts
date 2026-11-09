@@ -2,7 +2,7 @@ import type {
   WorkCategory, WorkSubCategory, DailyReport, DailyReportRow,
   KraParameter, SelfAppraisal, PeerMarking, AdminKraScore, KraReport,
   BrandingProject, MemberReportStatus, BrandingDesign, DesignVoter,
-  BrandingPortalStats, BrandingLeave, ReportRowComment,
+  BrandingPortalStats, BrandingLeave, ReportRowComment, BrandingTodo,
 } from "./branding-types";
 import { errorFor, fetchOrExplain, readJson } from "./http";
 
@@ -186,10 +186,13 @@ export const brandingApi = {
   // ── Projects ───────────────────────────────────────────────────────────
   getProjects: () =>
     req<{ projects: BrandingProject[] }>("/projects"),
-  createProject: (data: { name: string; description?: string; deadline?: string; assigned_user_ids?: string[]; type_of_work?: string; sub_category?: string; specific_work?: string }) =>
+  createProject: (data: { name: string; description?: string; deadline?: string; assigned_user_ids?: string[]; type_of_work?: string; sub_category?: string; specific_work?: string; board_status?: BrandingProject["board_status"]; priority?: BrandingProject["priority"]; assigned_lead_id?: string | null }) =>
     req<{ project: BrandingProject }>("/projects", { method: "POST", body: JSON.stringify(data) }),
   updateProject: (id: string, data: { name: string; description?: string; deadline?: string; status?: BrandingProject["status"]; assigned_user_ids?: string[]; type_of_work?: string; sub_category?: string; specific_work?: string }) =>
     req<{ project: BrandingProject }>(`/projects/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+  // Move a project on the Kanban board and/or change its priority (lead/admin).
+  updateProjectBoard: (id: string, data: { board_status?: BrandingProject["board_status"]; priority?: BrandingProject["priority"] }) =>
+    req<{ project: BrandingProject }>(`/projects/${id}/board`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteProject: (id: string) =>
     req<{ ok: boolean }>(`/projects/${id}`, { method: "DELETE" }),
   // Capability-gated: create + assign a project to designers/leads; seeds a
@@ -217,4 +220,16 @@ export const brandingApi = {
     }),
   deleteRowComment: (id: string) =>
     req<{ ok: boolean }>(`/report-row-comments/${id}`, { method: "DELETE" }),
+
+  // ── To-Do List (Schedule tasks) ─────────────────────────────────────────
+  getTodos: (userId?: string) => {
+    const qs = userId ? `?userId=${encodeURIComponent(userId)}` : "";
+    return req<{ todos: BrandingTodo[] }>(`/todos${qs}`);
+  },
+  createTodo: (data: { title: string; due_date?: string | null }) =>
+    req<{ todo: BrandingTodo }>("/todos", { method: "POST", body: JSON.stringify(data) }),
+  toggleTodo: (id: string, completed: boolean) =>
+    req<{ todo: BrandingTodo }>(`/todos/${id}/toggle`, { method: "PATCH", body: JSON.stringify({ completed }) }),
+  deleteTodo: (id: string) =>
+    req<{ ok: boolean }>(`/todos/${id}`, { method: "DELETE" }),
 };

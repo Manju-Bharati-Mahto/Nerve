@@ -20,6 +20,16 @@
 </head>
 
   <body>
+    <script>
+      // Dark mode before first paint (see src/pages/branding/theme.ts).
+      try {
+        var m = localStorage.getItem('nerve.mode');
+        if (m === 'dark' || (m === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)) {
+          document.documentElement.classList.add('dark');
+          document.documentElement.style.colorScheme = 'dark';
+        }
+      } catch (e) {}
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

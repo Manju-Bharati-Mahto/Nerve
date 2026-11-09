@@ -34,6 +34,8 @@ export interface DailyReportRow {
   stopwatch_started_at: string | null;
   carried_over_from_row_id: string | null;
   last_paused_at: string | null;
+  /** Kanban card this row is tracked on; its column is the row's Status. */
+  project_id?: string | null;
 }
 
 export interface DraftRow {
@@ -49,6 +51,7 @@ export interface DraftRow {
   stopwatch_started_at: string | null;
   carried_over_from_row_id: string | null;
   last_paused_at: string | null;
+  project_id?: string | null;
 }
 
 export interface DailyReport {
@@ -195,11 +198,20 @@ export interface BrandingProject {
   sub_category: string;
   specific_work: string;
   assigned_lead_id: string | null;
+  /** Kanban column on the Design Leads board. */
+  board_status: BoardStatus;
+  priority: ProjectPriority;
+  /** Last Kanban column change: when, and by whom (user id). */
+  board_moved_at?: string | null;
+  board_moved_by?: string | null;
   created_by: string;
   created_at: string;
   assigned_user_ids: string[];
   assignments: ProjectAssignment[];
 }
+
+export type BoardStatus = "notstarted" | "inprogress" | "review" | "changes" | "approved" | "delivered";
+export type ProjectPriority = "high" | "medium" | "low";
 
 // Lead-authored per-row feedback on a member's daily report.
 export interface ReportRowComment {
@@ -297,3 +309,13 @@ export const MONTHS = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December",
 ];
+
+export interface BrandingTodo {
+  id: string;
+  user_id: string;
+  title: string;
+  completed: boolean;
+  due_date: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
