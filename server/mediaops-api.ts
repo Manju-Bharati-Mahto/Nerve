@@ -115,6 +115,45 @@ export function moRoleOf(u: CurrentUser): MoRole {
 }
 export const isMoAdmin = (u: CurrentUser) => moRoleOf(u) === "admin";
 
+const MO_DEFAULT_SETTINGS: Record<string, unknown> = {
+  department_name: "Media Crew",
+  project_code_prefix: "MC",
+  working_days: "Monday to Saturday",
+  exception_based_review: true,
+  auto_approve_window_hours: 48,
+  random_sample_pct: 10,
+  backfill_window: "Until 23:59 the next day",
+  employee_projects_need_approval: true,
+  task_progress_tracking: true,
+  nerve_sso: true,
+  drive_link_validation: true,
+  drive_folder_provisioning: false,
+  ics_calendar_feeds: true,
+  monthly_leadership_email: true,
+  whatsapp_notifications: false,
+};
+
+async function getMoSettings(): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = { ...MO_DEFAULT_SETTINGS };
+  try {
+    const rows = (await pool.query(`SELECT key, value FROM mo_settings`)).rows;
+    for (const r of rows) out[String(r.key)] = r.value;
+  } catch { /* table may not exist on partial test setups */ }
+  try {
+    const dept = (await pool.query(`SELECT name FROM mo_departments WHERE is_active AND archived_at IS NULL ORDER BY id LIMIT 1`)).rows[0];
+    if (dept?.name) out.department_name = String(dept.name);
+    const ay = (await pool.query(`SELECT id, label FROM mo_academic_years WHERE is_current AND archived_at IS NULL ORDER BY id LIMIT 1`)).rows[0];
+    out.current_academic_year_id = ay ? Number(ay.id) : null;
+    out.current_academic_year_label = ay ? String(ay.label) : null;
+    const auto13 = (await pool.query(`SELECT config FROM mo_automation_rules WHERE rule_key='AUTO-13' LIMIT 1`)).rows[0];
+    if (auto13?.config && typeof auto13.config.random_sample_pct === "number") {
+      out.random_sample_pct = Number(auto13.config.random_sample_pct);
+    }
+  } catch { /* ignore on partial test setups */ }
+  return out;
+}
+
+
 /* ═══════════════════════════════════════════════════════════════════════
    INVENTORY SCOPE AUTHORIZATION (Phase 13B; hoisted to module scope in Phase 16)
 
@@ -1276,6 +1315,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     ["user_duties", "mo_user_duties", null, ["user_id", "granted_by"]],
     ["skills", "mo_skills", "archived_at IS NULL", []],
     ["user_skills", "mo_user_skills", null, ["user_id"]],
+    ["departments", "mo_departments", "archived_at IS NULL", []],
   ];
   app.get(`${P}/state`, asyncHandler(async (_req, res) => {
     const u = requireMedia(res); if (!u) return;
@@ -1369,6 +1409,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        check), and a UI that guessed would drift from the API. It is a hint for
        rendering only — POST /ai/ask re-checks and 403s regardless. */
     out.ai_command = await canUseAiCommand(u);
+    out.settings = await getMoSettings();
 
     /* The SMC roster — the SAME population SMC Management lists, so Team
        Directory and SMC Management can never disagree about who exists or how
@@ -1720,6 +1761,19 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
      in the same instant collide, and the second one 500'd. */
   const PENDING_CODE = `'PENDING-' || md5(random()::text || clock_timestamp()::text)`;
 
+  /* The day of an event a deliverable is for: 1..the project's day count, or
+     null for the whole event. Returns the value, or an error to send. */
+  function eventDay(raw: unknown, start: unknown, end: unknown): number | null | { error: string } {
+    if (raw == null || raw === "") return null;
+    const n = Number(raw);
+    const s = dOnly(start), e = dOnly(end);
+    const days = s && e && e >= s ? Math.round((Date.parse(e) - Date.parse(s)) / 864e5) + 1 : 1;
+    if (!Number.isInteger(n) || n < 1 || n > days || days < 2)
+      return { error: days < 2 ? "Only a project that runs over several days has a day to pick."
+        : `Pick a day from 1 to ${days} of this event.` };
+    return n;
+  }
+
   /* A project's start/end time: "HH:MM" (24 h), or nothing. Returns the value
      to store, or an error. On a one-day project the end must follow the start. */
   function projectTimes(b: Record<string, unknown>, start: string | null, end: string | null,
@@ -1788,7 +1842,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       [ay.rows[0]?.id ?? null, o.typeId, o.name, o.description, o.unitId, o.priority,
        o.ownerId, o.actor.id, o.start, o.end, o.source, o.venue ?? null, o.teamId ?? null]);
     const id = Number(ins.rows[0].id);
-    await pool.query(`UPDATE mo_projects SET code=$1 WHERE id=$2`, [`MC-2627-${100 + id}`, id]);
+    const stPrefix1 = String((await getMoSettings()).project_code_prefix || "MC").toUpperCase();
+    await pool.query(`UPDATE mo_projects SET code=$1 WHERE id=$2`, [`${stPrefix1}-2627-${100 + id}`, id]);
     // Only the production owner is assigned as PM. The creator is NOT added —
     // an Operations Coordinator must never end up owning production work.
     if (o.ownerId)
@@ -1815,6 +1870,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (start && end && end < start) return sendError(res, 400, "The end date must be on or after the start date.");
     const times = projectTimes(b, start, end);
     if ("error" in times) return sendError(res, 400, times.error);
+    // Every deliverable's day is checked before anything is written.
+    for (const raw of Array.isArray(b.deliverables) ? (b.deliverables as Array<Record<string, unknown>>) : []) {
+      const day = eventDay(raw?.event_day, start, end);
+      if (day !== null && typeof day === "object") return sendError(res, 400, day.error);
+    }
     if (badPriority(b.priority) || (Array.isArray(b.deliverables)
         && (b.deliverables as Array<Record<string, unknown>>).some((d) => badPriority(d?.priority))))
       return sendError(res, 400, PRIORITY_ERROR);
@@ -1904,6 +1964,20 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       return sendError(res, 403, "A project you create is assigned to you — assign work to others from the project once it exists.");
     // Every id a Team Lead or Admin names must still be someone they may assign.
     if (!isCoord && !(await assertAssignable(res, u, named))) return;
+    /* A named deliverable is daily work from its event day (or project start)
+       until it is submitted. Check the work type before creating the project,
+       so a missing catalogue entry cannot leave half a project behind. */
+    const deliverableWorkTypes = new Map<number, number>();
+    for (const raw of Array.isArray(b.deliverables) ? b.deliverables as Array<Record<string, unknown>> : []) {
+      if (!raw.title && !raw.deliverable_type_id) continue;
+      if (!raw.owner_id && !isEmployee) continue;
+      const typeId = Number(raw.deliverable_type_id) || 0;
+      if (deliverableWorkTypes.has(typeId)) continue;
+      const wt = await workTypeOfDeliverableType(typeId);
+      if (!wt) return sendError(res, 400,
+        "This deliverable type does not have an active work type. Set Counts as in Admin → Deliverable Types.");
+      deliverableWorkTypes.set(typeId, Number(wt.id));
+    }
     const gated = false;   // TL/Admin only ⇒ projects are created active
     // Academic Unit is master data — validate the reference and refuse a unit
     // that is archived or disabled (it may still be shown on old projects, but
@@ -1927,7 +2001,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        gated ? "proposed" : "planning", (b.priority as string) || "normal", ownerId, u.id, start, end,
        JSON.stringify(b.type_meta ?? {}), teamId, times.start_time, times.end_time]);
     const id = Number(ins.rows[0].id); // pg returns BIGINT as a string — coerce before arithmetic
-    const code = `MC-2627-${100 + id}`;
+    const stPrefix2 = String((await getMoSettings()).project_code_prefix || "MC").toUpperCase();
+    const code = `${stPrefix2}-2627-${100 + id}`;
     await pool.query(`UPDATE mo_projects SET code=$1 WHERE id=$2`, [code, id]);
     /* The PM is whoever owns production — the Team Lead when a team was chosen,
        otherwise the creator (BR-2). A Coordinator raising an unassigned project
@@ -1947,9 +2022,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     // FR-3.2: create deliverables from the SELECTED template items (#2 — per-item
     // checkboxes), or the whole set if no selection was sent. template_config (the
     // richer form: per-item owners/priority/estimated hours) supersedes template_items.
-    // Deliverables are project SCOPE, not today's work: they are created unscheduled
-    // and stay on the project page until a TL/PM schedules them for a date, which is
-    // what puts them into that owner's Today's Assignments.
+    // Template deliverables remain project scope until someone assigns their work.
     let made = 0;
     const cfg: TplItemCfg[] | null = Array.isArray(b.template_config)
       ? (b.template_config as Array<Record<string, unknown>>).map((c) => ({
@@ -1969,11 +2042,9 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (b.apply_template === true)
       made = await applyTemplateDeliverables({ projectId: id, typeId, projectName: name, end, picked, cfg });
 
-    /* ── Deliverables the creator typed ─────────────────────────────────────
-       Free-text scope, one row each, created UNASSIGNED: adding a deliverable
-       and deciding who does it are two different acts by two different people.
-       owner_id stays NULL until the Team Lead fills it in, which is what the
-       pipeline reads as "unassigned". */
+    /* A named deliverable gets one linked work row spanning the project dates.
+       My Day reads that row each day until the work is submitted. Unassigned
+       deliverables stay as project scope for the lead to allocate later. */
     if (Array.isArray(b.deliverables)) {
       for (const raw of b.deliverables as Array<Record<string, unknown>>) {
         let title = String(raw.title ?? "").trim();
@@ -1993,14 +2064,29 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
         const est = raw.estimated_hours != null && raw.estimated_hours !== "" && !Number.isNaN(Number(raw.estimated_hours))
           ? Number(raw.estimated_hours) : null;
         // A Coordinator never names an owner (blocked above); a TL/Admin may.
-        const dOwner = raw.owner_id ? String(raw.owner_id) : null;
+        const dOwner = raw.owner_id ? String(raw.owner_id) : isEmployee ? u.id : null;
+        const day = eventDay(raw.event_day, start, end);
+        if (day !== null && typeof day === "object") return sendError(res, 400, day.error);
         const dIns = await pool.query(
           `INSERT INTO mo_deliverables (project_id, deliverable_type_id, title, owner_id, due_date, unit, weight,
-             status, priority, estimated_hours, due_date_source)
-           SELECT $1,$2,$3,$4,$5, dt.default_unit, 1,'not_started',$6,$7,'manual'
+             status, priority, estimated_hours, due_date_source, event_day)
+           SELECT $1,$2,$3,$4,$5, dt.default_unit, 1,'not_started',$6,$7,'manual',$8
              FROM mo_deliverable_types dt WHERE dt.id=$2 RETURNING id`,
-          [id, typeRow.id, title, dOwner, (raw.due_date as string) || null, pr, est]);
+          [id, typeRow.id, title, dOwner, (raw.due_date as string) || null, pr, est, day]);
         made++;
+        if (dOwner && dIns.rows[0]) {
+          const workStart = day && start
+            ? new Date(Date.parse(start) + (day - 1) * 86_400_000).toISOString().slice(0, 10) : start;
+          const assignment = (await pool.query(
+            `INSERT INTO mo_assignments (project_id, work_type_id, deliverable_id, title, assigned_by,
+               priority, status, start_date, due_date, notes, estimated_hours)
+             VALUES ($1,$2,$3,$4,$5,$6,'not_started',$7,$8,'',$9) RETURNING id`,
+            [id, deliverableWorkTypes.get(Number(raw.deliverable_type_id) || 0),
+             dIns.rows[0].id, title, u.id, pr, workStart, (raw.due_date as string) || end, est])).rows[0];
+          await pool.query(
+            `INSERT INTO mo_assignment_users (assignment_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+            [assignment.id, dOwner]);
+        }
         /* An owner named here is being given the work, exactly as Assign work
            gives it, so they hear about it the same way. */
         if (dOwner && dOwner !== u.id && dIns.rows[0])
@@ -2203,7 +2289,7 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (!(await requireModule(res, u, "projects"))) return;
     const pid = parseInt(getSingleParam(req.params.id), 10);
     const proj = (await pool.query(
-      `SELECT id, name, status, owner_id, team_id FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [pid])).rows[0];
+      `SELECT id, name, status, owner_id, team_id, start_date, end_date FROM mo_projects WHERE id=$1 AND deleted_at IS NULL`, [pid])).rows[0];
     if (!proj) return sendError(res, 404, "Project not found.");
     if (!(await canManageProject(u, pid) || await isCoordinator(u)))
       return sendError(res, 403, "Only the project's Team Lead, its owner or PM, the Coordinator or an Admin may add deliverables.");
@@ -2221,6 +2307,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     if (est !== null && est < 0) return sendError(res, 400, "Effort cannot be negative.");
     const due = b.due_date ? String(b.due_date).slice(0, 10) : null;
     if (due && !/^\d{4}-\d{2}-\d{2}$/.test(due)) return sendError(res, 400, "The due date is not a valid date.");
+    const day = eventDay((req.body as Record<string, unknown>).event_day, proj.start_date, proj.end_date);
+    if (day !== null && typeof day === "object") return sendError(res, 400, day.error);
     // The title is the type's name, numbered when the project already has one.
     let title = String(b.title ?? "").trim();
     if (title.length > 160) return sendError(res, 400, "A deliverable title must be 160 characters or fewer.");
@@ -2229,11 +2317,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
     const owner = isEmployee && proj.team_id == null && String(proj.owner_id) === u.id ? u.id : null;
     const ins = await pool.query(
       `INSERT INTO mo_deliverables (project_id, deliverable_type_id, title, owner_id, due_date, quantity_target, unit,
-         spec_notes, weight, status, priority, estimated_hours, due_date_source)
-       SELECT $1,$2,$3,$4,$5,$6, dt.default_unit, $7, dt.default_weight, 'not_started', $8, $9, 'manual'
+         spec_notes, weight, status, priority, estimated_hours, due_date_source, event_day)
+       SELECT $1,$2,$3,$4,$5,$6, dt.default_unit, $7, dt.default_weight, 'not_started', $8, $9, 'manual', $10
        FROM mo_deliverable_types dt WHERE dt.id=$2 RETURNING *`,
       [pid, typeRow.id, title, owner, due, b.quantity_target ? Number(b.quantity_target) : null,
-       String(b.spec_notes ?? ""), pr, est]);
+       String(b.spec_notes ?? ""), pr, est, day]);
     const d = ins.rows[0];
     // #7: optional Drive link attached to the new deliverable.
     const url = String(b.drive_url ?? "").trim();
@@ -2957,7 +3045,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
        Assign work is where a lead creates deliverables now, not a separate
        "+ Deliverable" form. The work can carry:
 
-         new_deliverable  { deliverable_type_id, title?, due_date?, drive_url? }
+         new_deliverable  { deliverable_type_id, title?, due_date?, drive_url?,
+                            estimated_hours?, event_day? }
                           → a deliverable is created on this project;
          deliverable_id   → an existing open deliverable of this project (one
                             the Coordinator added at creation, say) is taken on;
@@ -2986,7 +3075,8 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       return sendError(res, 400, "The deliverable's owner must be one of the people you assign.");
 
     let existing: Record<string, unknown> | null = null;
-    let ndRow: { typeId: number; title: string; due: string | null; drive: string } | null = null;
+    let ndRow: { typeId: number; title: string; due: string | null; drive: string; est: number | null;
+                 day: number | null } | null = null;
     if (b.deliverable_id) {
       existing = (await pool.query(
         `SELECT * FROM mo_deliverables WHERE id=$1 AND project_id=$2 AND deleted_at IS NULL`,
@@ -3017,8 +3107,16 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       const drive = String(nd.drive_url ?? "").trim();
       if (drive && !/^https:\/\/(drive|docs)\.google\.com\//.test(drive))
         return sendError(res, 400, "The Drive link must be a Google Drive or Docs link.");
+      const est = nd.estimated_hours != null && nd.estimated_hours !== "" && !Number.isNaN(Number(nd.estimated_hours))
+        ? Number(nd.estimated_hours) : null;
+      if (est !== null && est < 0) return sendError(res, 400, "Effort cannot be negative.");
+      // Which day of a multi-day event it is for, as Add deliverable sends it.
+      const dates = nd.event_day == null || nd.event_day === "" ? null : (await pool.query(
+        `SELECT start_date, end_date FROM mo_projects WHERE id=$1`, [pid])).rows[0];
+      const day = dates ? eventDay(nd.event_day, dates.start_date, dates.end_date) : null;
+      if (day !== null && typeof day === "object") return sendError(res, 400, day.error);
       // The deliverable is due when the work is due, unless the lead says otherwise.
-      ndRow = { typeId, title: dTitle, due: (nd.due_date as string) || dueDate, drive };
+      ndRow = { typeId, title: dTitle, due: (nd.due_date as string) || dueDate, drive, est, day };
     }
     if (withDeliverable)
       wt = await workTypeOfDeliverableType(ndRow ? ndRow.typeId : Number(existing?.deliverable_type_id));
@@ -3037,11 +3135,11 @@ export function registerMediaOpsApi(app: express.Express, h: Handlers) {
       if (ndRow) {
         deliverable = (await client.query(
           `INSERT INTO mo_deliverables (project_id, deliverable_type_id, title, owner_id, due_date, unit, weight,
-             status, priority, due_date_source)
-           SELECT $1, dt.id, $2, $3, $4, dt.default_unit, dt.default_weight, 'not_started', $5, 'manual'
+             status, priority, estimated_hours, due_date_source, event_day)
+           SELECT $1, dt.id, $2, $3, $4, dt.default_unit, dt.default_weight, 'not_started', $5, $7, 'manual', $8
              FROM mo_deliverable_types dt WHERE dt.id=$6
            RETURNING id, project_id, title, owner_id, due_date, status`,
-          [pid, ndRow.title, ownerId, ndRow.due, priority, ndRow.typeId])).rows[0] ?? null;
+          [pid, ndRow.title, ownerId, ndRow.due, priority, ndRow.typeId, ndRow.est, ndRow.day])).rows[0] ?? null;
         if (!deliverable) throw new Error("deliverable type vanished mid-request");
         if (ndRow.drive)
           await client.query(
@@ -9056,14 +9154,127 @@ async function allocateInternalCode(
     if (!isMoAdmin(u)) return sendError(res, 403, "Only Admin may change automation rules.");
     const id = parseInt(getSingleParam(req.params.id), 10);
     const b = req.body as Record<string, unknown>;
-    const cur = await pool.query(`SELECT is_enabled, config FROM mo_automation_rules WHERE id=$1`, [id]);
+    const cur = await pool.query(`SELECT rule_key, is_enabled, config FROM mo_automation_rules WHERE id=$1`, [id]);
     if (!cur.rows[0]) return sendError(res, 404, "Rule not found.");
     const enabled = "is_enabled" in b ? !!b.is_enabled : cur.rows[0].is_enabled;
-    const config = "config" in b ? JSON.stringify(b.config) : JSON.stringify(cur.rows[0].config);
-    await pool.query(`UPDATE mo_automation_rules SET is_enabled=$1, config=$2, updated_by=$3 WHERE id=$4`,
+    const nextCfg = "config" in b && b.config && typeof b.config === "object" ? b.config : cur.rows[0].config;
+    const config = JSON.stringify(nextCfg);
+    await pool.query(`UPDATE mo_automation_rules SET is_enabled=$1, config=$2::jsonb, updated_by=$3, updated_at=NOW() WHERE id=$4`,
       [enabled, config, u.id, id]);
-    await audit(u, "automation.updated", "automation_rule", id, { is_enabled: cur.rows[0].is_enabled }, { is_enabled: enabled }, req);
-    res.json({ ok: true, is_enabled: enabled });
+    if (cur.rows[0].rule_key === "AUTO-13" && nextCfg && typeof (nextCfg as Record<string, unknown>).random_sample_pct === "number") {
+      await pool.query(
+        `INSERT INTO mo_settings (key, value, updated_by, updated_at) VALUES ('random_sample_pct', $1::jsonb, $2, NOW())
+         ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+        [JSON.stringify((nextCfg as Record<string, unknown>).random_sample_pct), u.id]).catch(() => {});
+    }
+    await audit(u, "automation.updated", "automation_rule", id,
+      { is_enabled: cur.rows[0].is_enabled, config: cur.rows[0].config },
+      { is_enabled: enabled, config: nextCfg }, req);
+    res.json({ ok: true, is_enabled: enabled, config: nextCfg });
+  }));
+
+  // ── Media Ops Department & Policy Settings (§16 / NFR-10) ─────────────────
+  app.get(`${P}/settings`, asyncHandler(async (_req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    res.json({ settings: await getMoSettings() });
+  }));
+
+  app.patch(`${P}/settings`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!isMoAdmin(u)) return sendError(res, 403, "Only an Admin may change Media Ops settings.");
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const values: Record<string, unknown> = {};
+    let academicYear: { id: number; label: string } | null = null;
+    const boolKeys = [
+      "exception_based_review", "employee_projects_need_approval", "task_progress_tracking",
+      "nerve_sso", "drive_link_validation", "drive_folder_provisioning",
+      "ics_calendar_feeds", "monthly_leadership_email", "whatsapp_notifications",
+    ];
+    const fields = new Set(["department_name", "current_academic_year_id", "project_code_prefix",
+      "working_days", "auto_approve_window_hours", "random_sample_pct", "backfill_window", ...boolKeys]);
+    if (Object.keys(b).some((k) => !fields.has(k)))
+      return sendError(res, 400, "Unknown Media Ops setting.");
+    // Validate every field before writing any of them. Save settings and the
+    // linked academic-year/automation rows together so a rejected form is inert.
+    if ("department_name" in b) {
+      const name = String(b.department_name ?? "").trim();
+      if (name.length < 2 || name.length > 80) return sendError(res, 400, "Department name must be 2–80 characters.");
+      values.department_name = name;
+    }
+    if ("current_academic_year_id" in b && b.current_academic_year_id != null && b.current_academic_year_id !== "") {
+      const ayId = Number(b.current_academic_year_id);
+      if (!Number.isSafeInteger(ayId) || ayId < 1) return sendError(res, 400, "Selected academic year was not found.");
+      const ay = (await pool.query(`SELECT id, label FROM mo_academic_years WHERE id=$1 AND archived_at IS NULL`, [ayId])).rows[0];
+      if (!ay) return sendError(res, 400, "Selected academic year was not found.");
+      academicYear = { id: ayId, label: String(ay.label) };
+    }
+    if ("project_code_prefix" in b) {
+      const pfx = String(b.project_code_prefix ?? "").trim().toUpperCase();
+      if (!/^[A-Z0-9]{2,6}$/.test(pfx)) return sendError(res, 400, "Project code prefix must be 2–6 uppercase letters or digits (e.g. MC).");
+      values.project_code_prefix = pfx;
+    }
+    if ("working_days" in b) {
+      const wd = String(b.working_days ?? "").trim();
+      const allowedWd = ["Monday to Saturday", "Monday to Friday", "Monday to Sunday"];
+      if (!allowedWd.includes(wd)) return sendError(res, 400, "Working days must be Monday to Saturday, Monday to Friday, or Monday to Sunday.");
+      values.working_days = wd;
+    }
+    if ("auto_approve_window_hours" in b) {
+      const h = Number(b.auto_approve_window_hours);
+      if (!Number.isFinite(h) || h < 1 || h > 720) return sendError(res, 400, "Auto-approve window must be between 1 and 720 hours.");
+      values.auto_approve_window_hours = Math.round(h);
+    }
+    if ("random_sample_pct" in b) {
+      const pct = Number(b.random_sample_pct);
+      if (!Number.isFinite(pct) || pct < 0 || pct > 100) return sendError(res, 400, "Random sample rate must be between 0 and 100%.");
+      values.random_sample_pct = Math.round(pct);
+    }
+    if ("backfill_window" in b) {
+      const bw = String(b.backfill_window ?? "").trim();
+      const allowedBw = ["Until 23:59 the next day", "Same day only", "Within 48 hours", "Within 7 days"];
+      if (!allowedBw.includes(bw)) return sendError(res, 400, "Invalid backfill window option.");
+      values.backfill_window = bw;
+    }
+    for (const k of boolKeys) if (k in b) values[k] = b[k] === true || b[k] === "true" || b[k] === 1;
+    if (!Object.keys(values).length && !academicYear) return res.json({ ok: true, settings: await getMoSettings() });
+    const before = await getMoSettings();
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (values.department_name !== undefined) {
+        const department = await client.query(
+          `UPDATE mo_departments SET name=$1, updated_at=NOW()
+            WHERE id=(SELECT id FROM mo_departments WHERE is_active AND archived_at IS NULL ORDER BY id LIMIT 1)
+            RETURNING id`, [values.department_name]);
+        if (!department.rowCount) throw new Error("No active Media Ops department to rename.");
+      }
+      if (academicYear)
+        await client.query(`UPDATE mo_academic_years SET is_current=(id=$1), updated_at=NOW()`, [academicYear.id]);
+      for (const [k, val] of Object.entries(values))
+        await client.query(
+          `INSERT INTO mo_settings (key, value, updated_by, updated_at) VALUES ($1,$2::jsonb,$3,NOW())
+           ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+          [k, JSON.stringify(val), u.id]);
+      if (values.random_sample_pct !== undefined)
+        await client.query(
+          `UPDATE mo_automation_rules
+              SET config=jsonb_set(COALESCE(config,'{}'::jsonb),'{random_sample_pct}',to_jsonb($1::int),true),
+                  updated_by=$2, updated_at=NOW() WHERE rule_key='AUTO-13'`, [values.random_sample_pct, u.id]);
+      for (const [key, rule] of [["drive_link_validation", "AUTO-5"], ["monthly_leadership_email", "AUTO-11"]])
+        if (values[key] !== undefined)
+          await client.query(`UPDATE mo_automation_rules SET is_enabled=$1, updated_by=$2, updated_at=NOW() WHERE rule_key=$3`,
+            [values[key], u.id, rule]);
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+    const changed = { ...values, ...(academicYear ? {
+      current_academic_year_id: academicYear.id, current_academic_year_label: academicYear.label } : {}) };
+    await audit(u, "settings.updated", "settings", 1, before, changed, req);
+    res.json({ ok: true, settings: await getMoSettings() });
   }));
 
   // AI-1 weekly digest — real anomalies computed from live data (labelled, never auto-commits).
@@ -9290,6 +9501,8 @@ async function allocateInternalCode(
   // ICS calendar feed (§7.11) — subscribe to shoots + deadlines + leave + holidays.
   app.get(`${P}/calendar/feed.ics`, asyncHandler(async (_req, res) => {
     if (!requireMedia(res)) return;
+    const st = await getMoSettings();
+    if (st.ics_calendar_feeds === false) return sendError(res, 403, "ICS calendar feeds are disabled in Media Ops settings.");
     const esc = (s: string) => String(s ?? "").replace(/([,;\\])/g, "\\$1").replace(/\n/g, "\\n");
     const d = (s: string) => String(s).slice(0, 10).replace(/-/g, "");
     const [shoots, dls, holidays] = await Promise.all([
@@ -9325,6 +9538,27 @@ async function allocateInternalCode(
       await pool.query(`INSERT INTO mo_board_columns (board_id, name, sort_order) VALUES ($1,$2,$3)`, [ins.rows[0].id, cols[i], i]);
     await audit(u, "board.created", "board", ins.rows[0].id, null, { name, columns: cols }, req);
     res.status(201).json({ board: ins.rows[0] });
+  }));
+
+  app.patch(`${P}/boards/:id`, asyncHandler(async (req, res) => {
+    const u = requireMedia(res); if (!u) return;
+    if (!(isMoAdmin(u) || isMoTL(u))) return sendError(res, 403, "Management boards are for Team Leads and Admins.");
+    const id = parseInt(getSingleParam(req.params.id), 10);
+    const cur = (await pool.query(`SELECT * FROM mo_boards WHERE id=$1`, [id])).rows[0];
+    if (!cur) return sendError(res, 404, "Board not found.");
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const name = "name" in b ? String(b.name ?? "").trim() : String(cur.name);
+    if (!name) return sendError(res, 400, "Board name is required.");
+    const desc = "description" in b ? String(b.description ?? "") : String(cur.description ?? "");
+    const sync = "sync_status" in b ? !!b.sync_status : !!cur.sync_status;
+    const active = "is_active" in b ? !!b.is_active : !!cur.is_active;
+    const upd = await pool.query(
+      `UPDATE mo_boards SET name=$1, description=$2, sync_status=$3, is_active=$4 WHERE id=$5 RETURNING *`,
+      [name, desc, sync, active, id]);
+    await audit(u, "board.updated", "board", id,
+      { name: cur.name, sync_status: cur.sync_status },
+      { name, sync_status: sync }, req);
+    res.json({ board: upd.rows[0] });
   }));
 
   app.post(`${P}/boards/:id/cards`, asyncHandler(async (req, res) => {
@@ -12696,6 +12930,16 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       "start_date" in b ? ((b.start_date as string) || null) : dOnly(cur.start_date),
       "end_date" in b ? ((b.end_date as string) || null) : dOnly(cur.end_date), cur);
     if ("error" in times) return sendError(res, 400, times.error);
+    /* An event cannot be shortened past a day that still has deliverables. */
+    if ("start_date" in b || "end_date" in b) {
+      const s = "start_date" in b ? ((b.start_date as string) || null) : dOnly(cur.start_date);
+      const e = "end_date" in b ? ((b.end_date as string) || null) : dOnly(cur.end_date);
+      const last = Number((await pool.query(
+        `SELECT COALESCE(MAX(event_day),0) AS n FROM mo_deliverables WHERE project_id=$1 AND deleted_at IS NULL`, [id])).rows[0].n);
+      const days = s && e && e >= s ? Math.round((Date.parse(e) - Date.parse(s)) / 864e5) + 1 : 1;
+      if (last > days)
+        return sendError(res, 400, `This event has Day ${last} deliverables — it must run at least ${last} days. Move or remove them first.`);
+    }
     // priority is NOT NULL, so an edit must send one of the four — never null or ''.
     if ("priority" in b && !PRIORITIES.includes(String(b.priority))) return sendError(res, 400, PRIORITY_ERROR);
     if ("academic_year_id" in b && b.academic_year_id != null
@@ -13089,12 +13333,22 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     manage?: "admin";
   };
   const CRUD: Record<string, CrudModule> = {
+    departments: { key: "departments", label: "Departments", table: "mo_departments",
+      manage: "admin",
+      fields: [
+        { name: "name", label: "Department name", type: "text", required: true },
+        { name: "slug", label: "Slug", type: "slug" }],
+      cols: ["name", "slug"],
+      deps: [{ table: "mo_projects", fk: "department_id", label: "Projects" },
+             { table: "mo_teams", fk: "department_id", label: "Teams" },
+             { table: "mo_equipment_items", fk: "department_id", label: "Equipment items" }] },
     project_types: { key: "project_types", label: "Project Types", table: "mo_project_types",
       fields: [
         { name: "name", label: "Name", type: "text", required: true },
         { name: "slug", label: "Slug", type: "slug" },
-        { name: "color", label: "Colour", type: "color" },
-        { name: "icon", label: "Icon", type: "icon" },
+        { name: "color", label: "Colour", type: "color", def: "var(--cat-1)" },
+        { name: "icon", label: "Icon", type: "icon", def: "◆" },
+        { name: "default_template_id", label: "Default template", type: "relation", relation: { module: "project_templates", labelCol: "name" } },
         { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
       cols: ["name", "slug", "icon", "sort_order"],
       deps: [{ table: "mo_projects", fk: "project_type_id", label: "Projects" },
@@ -13120,7 +13374,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
         { name: "slug", label: "Slug", type: "slug" },
         { name: "icon", label: "Icon", type: "icon" },
         { name: "default_weight", label: "Default weight", type: "number", def: 1 },
-        { name: "default_unit", label: "Default unit", type: "text" },
+        { name: "default_unit", label: "Default unit", type: "text", def: "items" },
         { name: "review_exempt", label: "Review exempt", type: "switch", def: false },
         { name: "default_due_offset_days", label: "Default due offset (days after project end)", type: "number", def: 5 },
         /* What work on a deliverable of this type is logged as — Assign work
@@ -13185,7 +13439,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       fields: [
         { name: "code", label: "Code", type: "slug", required: true },
         { name: "name", label: "Name", type: "text", required: true },
-        { name: "description", label: "Description", type: "textarea" }],
+        { name: "description", label: "Description", type: "textarea", def: "" }],
       cols: ["code", "name"],
       deps: [{ table: "mo_user_duties", fk: "duty_flag_id", label: "Duty holders" }] },
     academic_years: { key: "academic_years", label: "Academic Years", table: "mo_academic_years",
@@ -13202,7 +13456,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
         { name: "category", label: "Category", type: "select",
           options: ["profession", "production_type", "age_group", "language", "requirement", "other"],
           def: "other", required: true },
-        { name: "description", label: "Description", type: "text" },
+        { name: "description", label: "Description", type: "text", def: "" },
         { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
       cols: ["name", "category", "description", "sort_order"],
       // A tag already on a record is archived, never deleted — historical casting
@@ -13211,7 +13465,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     casting_collections: { key: "casting_collections", label: "Casting Collections", table: "mo_casting_collections",
       fields: [
         { name: "name", label: "Name", type: "text", required: true },
-        { name: "description", label: "Description", type: "text" },
+        { name: "description", label: "Description", type: "text", def: "" },
         { name: "sort_order", label: "Sort order", type: "number", def: 0 }],
       cols: ["name", "description", "sort_order"],
       deps: [{ table: "mo_casting_record_collections", fk: "collection_id", label: "Casting records" }] },
@@ -13282,12 +13536,27 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
         { name: "name", label: "Name", type: "text", required: true },
         { name: "campus_id", label: "Campus", type: "relation", relation: { module: "campuses", labelCol: "name" } }],
       cols: ["date", "name", "campus_id"], deps: [] },
+    labels: { key: "labels", label: "Board Labels", table: "mo_labels",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "color", label: "Colour", type: "color", def: "#3B82F6", required: true }],
+      cols: ["name", "color"],
+      deps: [{ table: "mo_card_labels", fk: "label_id", label: "Cards" }] },
+    equipment_kits: { key: "equipment_kits", label: "Equipment Kits", table: "mo_equipment_kits",
+      fields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "description", label: "Description", type: "textarea" }],
+      cols: ["name", "description"],
+      deps: [{ table: "mo_kit_items", fk: "kit_id", label: "Kit items" }] },
     automation_rules: { key: "automation_rules", label: "Automation Rules", table: "mo_automation_rules",
       activeCol: "is_enabled",
       fields: [
         { name: "rule_key", label: "Rule key", type: "slug", required: true },
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "trigger", label: "Trigger", type: "text" },
+        { name: "action", label: "Action & escalation", type: "text" },
         { name: "is_enabled", label: "Enabled", type: "switch", def: true }],
-      cols: ["rule_key", "is_enabled"], deps: [] },
+      cols: ["rule_key", "name", "trigger", "is_enabled"], deps: [] },
   };
   const CRUD_ICONS = ["◆", "●", "▲", "■", "◉", "✦", "⚑", "✎", "◈", "⛁", "▤", "☂", "♪", "✈", "☎"];
 
@@ -13312,6 +13581,30 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
   const crudMod = (res: express.Response, key: string): CrudModule | null => {
     const m = CRUD[key]; if (!m) sendError(res, 400, "Unknown config module."); return m ?? null;
   };
+  const CRUD_DEPT_TABLES = new Set([
+    "mo_project_types", "mo_deliverable_types", "mo_task_categories", "mo_equipment_categories",
+    "mo_tags", "mo_work_types", "mo_academic_units", "mo_automation_rules",
+  ]);
+  const CRUD_NUMERIC_COLS = new Set([
+    "id", "department_id", "campus_id", "project_type_id", "template_id",
+    "deliverable_type_id", "work_type_id", "default_template_id", "sort_order",
+    "default_weight", "days_offset_due", "default_due_offset_days",
+  ]);
+  function crudNormalizeRow(m: CrudModule, row: Record<string, unknown> | undefined | null): Record<string, unknown> | null {
+    if (!row) return null;
+    const out: Record<string, unknown> = { ...row };
+    for (const k of Object.keys(out)) {
+      if (out[k] == null) continue;
+      const fld = m.fields.find((f) => f.name === k);
+      if (CRUD_NUMERIC_COLS.has(k) || (fld && (fld.type === "number" || fld.type === "relation"))) {
+        const n = Number(out[k]);
+        if (!Number.isNaN(n)) out[k] = n;
+      } else if (out[k] instanceof Date) {
+        out[k] = k.endsWith("_at") ? (out[k] as Date).toISOString() : dOnly(out[k]);
+      }
+    }
+    return out;
+  }
   // Validate + coerce a payload against the module's field metadata.
   function crudValidate(m: CrudModule, b: Record<string, unknown>, partial: boolean): { ok: true; rec: Record<string, unknown> } | { ok: false; msg: string } {
     const rec: Record<string, unknown> = {};
@@ -13320,6 +13613,9 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
       if (v === undefined) { if (partial) continue; v = f.def; }
       if ((f.type === "slug") && (v == null || v === "") && typeof b.name === "string" && f.name === "slug")
         v = (b.name as string).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      if ((v == null || v === "") && f.def !== undefined && f.type !== "relation") {
+        v = f.def;
+      }
       if (f.required && (v == null || v === "")) return { ok: false, msg: `${f.label} is required.` };
       if (v == null || v === "") { rec[f.name] = f.type === "switch" ? false : null; continue; }
       switch (f.type) {
@@ -13419,7 +13715,8 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
     const total = (await pool.query(`SELECT COUNT(*)::int c FROM ${m.table} ${where}`, vals)).rows[0].c;
     const rows = (await pool.query(
-      `SELECT * FROM ${m.table} ${where} ORDER BY ${sort} ${dir} NULLS LAST LIMIT ${per} OFFSET ${(page - 1) * per}`, vals)).rows;
+      `SELECT * FROM ${m.table} ${where} ORDER BY ${sort} ${dir} NULLS LAST LIMIT ${per} OFFSET ${(page - 1) * per}`, vals)).rows
+      .map((r) => crudNormalizeRow(m, r));
     res.json({ rows, total, page, per });
   }));
 
@@ -13428,7 +13725,7 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const u = requireMedia(res); if (!u) return;
     const m = crudMod(res, getSingleParam(req.params.module)); if (!m) return;
     const id = parseInt(getSingleParam(req.params.id), 10);
-    const row = (await pool.query(`SELECT * FROM ${m.table} WHERE id=$1`, [id])).rows[0];
+    const row = crudNormalizeRow(m, (await pool.query(`SELECT * FROM ${m.table} WHERE id=$1`, [id])).rows[0]);
     if (!row) return sendError(res, 404, "Record not found.");
     const deps = await crudDeps(m, id);
     const hist = (await pool.query(
@@ -13448,13 +13745,17 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const refused = await crudGuard(u, m, v.rec, null);
     if (refused) return sendError(res, refused.status, refused.msg);
     v.rec.created_by = u.id;
+    if (CRUD_DEPT_TABLES.has(m.table) && !("department_id" in v.rec)) v.rec.department_id = 1;
     const keys = Object.keys(v.rec);
     try {
       const ins = await pool.query(
         `INSERT INTO ${m.table} (${keys.join(",")}) VALUES (${keys.map((_, ix) => "$" + (ix + 1)).join(",")}) RETURNING *`,
         keys.map((k) => v.rec[k]));
-      await audit(u, "crud.created", m.key, ins.rows[0].id, null, v.rec, req);
-      res.status(201).json({ row: ins.rows[0] });
+      if (m.key === "academic_years" && v.rec.is_current === true) {
+        await pool.query(`UPDATE mo_academic_years SET is_current=false WHERE id<>$1`, [ins.rows[0].id]);
+      }
+      await audit(u, "crud.created", m.key, Number(ins.rows[0].id), null, v.rec, req);
+      res.status(201).json({ row: crudNormalizeRow(m, ins.rows[0]) });
     } catch (e) {
       if ((e as { code?: string }).code === "23505") return sendError(res, 409, "A record with that name already exists in this department.");
       throw e;
@@ -13474,13 +13775,22 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const refused = await crudGuard(u, m, v.rec, cur);
     if (refused) return sendError(res, refused.status, refused.msg);
     const keys = Object.keys(v.rec);
-    if (!keys.length) return res.json({ row: cur });
+    if (!keys.length) return res.json({ row: crudNormalizeRow(m, cur) });
     try {
       const upd = await pool.query(
         `UPDATE ${m.table} SET ${keys.map((k, ix) => `${k}=$${ix + 1}`).join(",")}, updated_at=NOW() WHERE id=$${keys.length + 1} RETURNING *`,
         [...keys.map((k) => v.rec[k]), id]);
+      if (m.key === "academic_years" && v.rec.is_current === true) {
+        await pool.query(`UPDATE mo_academic_years SET is_current=false WHERE id<>$1`, [id]);
+      }
+      if (m.key === "departments" && id === 1 && typeof v.rec.name === "string") {
+        await pool.query(
+          `INSERT INTO mo_settings (key, value, updated_by, updated_at) VALUES ('department_name', $1::jsonb, $2, NOW())
+           ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by, updated_at=NOW()`,
+          [JSON.stringify(v.rec.name), u.id]).catch(() => {});
+      }
       await audit(u, "crud.updated", m.key, id, cur, v.rec, req);
-      res.json({ row: upd.rows[0] });
+      res.json({ row: crudNormalizeRow(m, upd.rows[0]) });
     } catch (e) {
       if ((e as { code?: string }).code === "23505") return sendError(res, 409, "A record with that name/slug already exists.");
       throw e;
@@ -13499,17 +13809,24 @@ ${ok ? "setTimeout(function(){window.close()},1500);" : ""}</script></body></htm
     const suffix = Math.random().toString(36).slice(2, 6);
     for (const f of m.fields) {
       let v = cur[f.name];
-      if (["name", "label"].includes(f.name) && typeof v === "string") v = `${v} (Copy)`;
+      if (["name", "label", "title_pattern"].includes(f.name) && typeof v === "string") {
+        let candidate = `${v} (Copy)`;
+        const clash = (await pool.query(`SELECT 1 FROM ${m.table} WHERE lower(${f.name})=lower($1) LIMIT 1`, [candidate])).rows[0];
+        if (clash) candidate = `${v} (Copy ${suffix})`;
+        v = candidate;
+      }
       if (f.type === "slug" && typeof v === "string") v = `${v}-copy-${suffix}`;
+      if (m.key === "academic_years" && f.name === "is_current") v = false;
       rec[f.name] = v;
     }
     rec.created_by = u.id;
+    if (CRUD_DEPT_TABLES.has(m.table) && !("department_id" in rec)) rec.department_id = 1;
     const keys = Object.keys(rec);
     const ins = await pool.query(
       `INSERT INTO ${m.table} (${keys.join(",")}) VALUES (${keys.map((_, ix) => "$" + (ix + 1)).join(",")}) RETURNING *`,
       keys.map((k) => rec[k]));
-    await audit(u, "crud.duplicated", m.key, ins.rows[0].id, { source: id }, rec, req);
-    res.status(201).json({ row: ins.rows[0] });
+    await audit(u, "crud.duplicated", m.key, Number(ins.rows[0].id), { source: id }, rec, req);
+    res.status(201).json({ row: crudNormalizeRow(m, ins.rows[0]) });
   }));
 
   // Enable / Disable / Archive / Restore.
@@ -19369,16 +19686,19 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
   // BR-4 / D2 — reports auto-approve 48 h after submission unless flagged.
   // A report edited after submission is excluded: it was sent back for an
   // explicit re-review, and auto-approving it would bypass that decision.
-  const aa = await pool.query(
+  const st = await getMoSettings();
+  const autoApproveOn = st.exception_based_review !== false;
+  const autoApproveHours = Math.max(1, Number(st.auto_approve_window_hours) || 48);
+  const aa = autoApproveOn ? await pool.query(
     `UPDATE mo_daily_reports SET status='auto_approved', reviewed_at=NOW()
       WHERE status='submitted' AND NOT edited_after_submit
-        AND submitted_at IS NOT NULL AND submitted_at < NOW() - INTERVAL '48 hours'
-      RETURNING id`);
+        AND submitted_at IS NOT NULL AND submitted_at < NOW() - make_interval(hours => $1::int)
+      RETURNING id`, [autoApproveHours]) : { rows: [] as Array<{ id: number }> };
   for (const r of aa.rows)
     await pool.query(
       `INSERT INTO mo_audit_logs (actor_id, actor_role, action, entity_type, entity_id, after)
        VALUES (NULL,'system','report.auto_approved','daily_report',$1,$2)`,
-      [r.id, JSON.stringify({ status: "auto_approved", rule: "BR-4 (48h, unflagged)" })]).catch(() => {});
+      [r.id, JSON.stringify({ status: "auto_approved", rule: `BR-4 (${autoApproveHours}h, unflagged)` })]).catch(() => {});
 
   /* ONE UNDELIVERABLE NOTIFICATION MUST NOT STOP THE PASS.
 
@@ -19641,8 +19961,12 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
           `“${s.title}” · ${String(s.shoot_date).slice(0, 10)}${s.call_time ? " · call " + s.call_time : ""}${s.location ? " · " + s.location : ""}`,
           "shoot", s.id);
 
-  // AUTO-1 — today's report not submitted (working day, not on leave) → nudge the member.
-  if (ruleOn("AUTO-1") && new Date().getDay() !== 0)
+  // AUTO-1 — today's report not submitted (configured working day, not on leave)
+  // → nudge the member. Use the same Asia/Kolkata date as the report itself.
+  const todayDow = new Date(`${nerveToday()}T00:00:00Z`).getUTCDay();
+  const workingToday = st.working_days === "Monday to Sunday"
+    || (todayDow !== 0 && (st.working_days !== "Monday to Friday" || todayDow !== 6));
+  if (ruleOn("AUTO-1") && workingToday)
     for (const p of (await pool.query(
       `SELECT u.id FROM users u
         WHERE u.team='media' AND COALESCE(u.role,'user') <> 'admin'
@@ -19652,5 +19976,5 @@ export async function runMediaOpsAutomations(): Promise<{ autoApproved: number; 
 
   /* `undeliverable` is reported rather than swallowed: a pass that could not
      reach somebody is a fact the caller should be able to see and log. */
-  return { autoApproved: aa.rowCount ?? 0, notified, undeliverable };
+  return { autoApproved: aa.rows.length, notified, undeliverable };
 }

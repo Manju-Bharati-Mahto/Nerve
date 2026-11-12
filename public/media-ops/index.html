@@ -1197,13 +1197,30 @@ html[data-theme=dark] .cal-cell.today{background:var(--brand-50)}
 .cal-ev>.cal-ev-s{font-weight:500}
 .cal-ev>span:only-child{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere}
 .cal-ev:hover{filter:brightness(1.1)}
+/* One event over several days: square, edge-to-edge where it carries on. */
+.cal-ev.span-first{border-top-right-radius:0;border-bottom-right-radius:0;margin-right:-5px}
+.cal-ev.span-mid{border-radius:0;margin:0 -5px}
+.cal-ev.span-last{border-top-left-radius:0;border-bottom-left-radius:0;margin-left:-5px}
+/* Past its first day the bar carries on unlabelled, except where a new week
+   row picks it up; the text stays (hidden) so every day is the same height. */
+.cal-ev.span-cont>span{visibility:hidden}
+/* A busy week thins its bars to fit (--evh, one height per week row): one line
+   while a line fits, a plain coloured stripe below that (the name is in title=). */
+.cal-cell.fit .cal-ev{height:var(--evh);flex:0 0 var(--evh);padding-top:0;padding-bottom:0;justify-content:center;
+  font-size:min(10.5px,calc(var(--evh) - 3px));line-height:1.1}
+.cal-cell.fit .cal-ev>span{display:block;white-space:nowrap}
+.cal-cell.fit .cal-ev>.cal-ev-s,.cal-cell.thin .cal-ev>span{display:none}
+/* A day's heading in an event's Deliverables table. */
+.tbl tr.pj-day td{background:var(--surface-2);font-size:12px;padding-top:7px;padding-bottom:7px}
+.tbl tr.pj-day td b{margin-right:6px}
 html[data-theme=dark] .cal-ev{color:var(--text-inv)}
 .cal-more{font-size:10px;color:var(--text-3);font-weight:600;padding-left:4px}
 /* ── The Projects page calendar: today in colour, the rest of the month quiet,
    "+N more" and the date itself are buttons (a day card / a day view). ── */
 .pcal-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
 .pcal-bar b{font-size:16px}
-.cal-proj .cal-cell:not(.today) .cal-ev{filter:saturate(.2);opacity:.78;transition:filter .15s,opacity .15s}
+/* A multi-day bar is one colour end to end, so it is never quieted by day. */
+.cal-proj .cal-cell:not(.today) .cal-ev:not([class*="span-"]){filter:saturate(.2);opacity:.78;transition:filter .15s,opacity .15s}
 .cal-proj .cal-cell:not(.today):hover .cal-ev{filter:none;opacity:1}
 .cal-proj .cal-cell:not(.today):not(:hover) .cal-num{color:var(--text-3)}
 .cal-proj .cal-cell.today{box-shadow:inset 0 0 0 2px var(--primary)}
@@ -2437,7 +2454,8 @@ const D = {
   add:(s,n)=>{const d=D.parse(s);d.setDate(d.getDate()+n);return D.iso(d);},
   diff:(a,b)=>Math.round((D.parse(a)-D.parse(b))/864e5),
   dow:s=>D.parse(s).getDay(),
-  isWorking:s=>{const w=D.dow(s);return w!==0;},           // Sunday off; Sat is a working day at PU
+  isWorking:s=>{const w=D.dow(s), days=(DB.settings||{}).working_days;
+    return days==='Monday to Sunday'||(w!==0&&(days!=='Monday to Friday'||w!==6));},
   fmt:s=>{if(!s)return '—';const d=D.parse(s);return d.getDate()+' '+['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()]+' '+String(d.getFullYear()).slice(2);},
   fmtLong:s=>{if(!s)return '—';const d=D.parse(s);return ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]+', '+d.getDate()+' '+['January','February','March','April','May','June','July','August','September','October','November','December'][d.getMonth()]+' '+d.getFullYear();},
   /* No date has no distance from today: '' rather than "NaNd ago". */
@@ -2537,6 +2555,24 @@ DB.academic_years = [
   {id:2,label:'2025-26',start_date:'2025-06-01',end_date:'2026-05-31',is_current:false},
   {id:3,label:'2026-27',start_date:'2026-06-01',end_date:'2027-05-31',is_current:true}
 ];
+DB.settings = {
+  department_name:'Media Crew',
+  current_academic_year_id:3,
+  project_code_prefix:'MC',
+  working_days:'Monday to Saturday',
+  exception_based_review:true,
+  auto_approve_window_hours:48,
+  random_sample_pct:10,
+  backfill_window:'Until 23:59 the next day',
+  employee_projects_need_approval:true,
+  task_progress_tracking:true,
+  nerve_sso:true,
+  drive_link_validation:true,
+  drive_folder_provisioning:false,
+  ics_calendar_feeds:true,
+  monthly_leadership_email:true,
+  whatsapp_notifications:false
+};
 
 const AV = ['#2563EB','#7C3AED','#DB2777','#EA580C','#0891B2','#CA8A04','#059669','#64748B','#B45309','#9333EA','#0D9488','#DC2626'];
 let _u=0; const U=(n,role,desig,color,extra={})=>({
@@ -9735,8 +9771,17 @@ function upcomingWidget(){
     .forEach(s=>evts.push({d:s.shoot_date,ico:'video',cls:'b',t:s.title,s:s.call_time+' · '+s.location,k:'shoot',id:s.id}));
   deliverablesDue(TODAY,to).filter(d=>isEmp()?onDelivTeam(d):true)
     .forEach(d=>evts.push({d:d.due_date,ico:'file',cls:'a',t:d.title,s:'Due',k:'deliverable',id:d.id,uid:d.owner_id}));
-  visibleProjects().filter(p=>p.end_date>=TODAY&&p.end_date<=to&&!['completed','archived','cancelled'].includes(p.status))
-    .forEach(p=>evts.push({d:p.end_date,ico:'folder',cls:'g',t:p.name+' ends',s:PROJ_STATUS[p.status].l,k:'project',id:p.id}));
+  /* An event is on every day it runs, as the calendar shows it ("Day 2 of 5
+     · from 9:00 AM"), in its type's colour — no separate start and end. A
+     run longer than an event (a campaign) is named once, on its last day. */
+  visibleProjects().filter(p=>p.start_date&&p.end_date&&p.start_date<=to&&p.end_date>=TODAY
+      &&!['completed','archived','cancelled'].includes(p.status))
+    .forEach(p=>{const c=ptype(p.project_type_id).color, base={ico:'folder',cls:'g',c,t:p.name,k:'project',id:p.id};
+      if(projDays(p)>EVENT_DAYS_MAX){
+        if(p.end_date<=to)evts.push({...base,d:p.end_date,s:'Last day · '+PROJ_STATUS[p.status].l});
+        return;}
+      for(let d=p.start_date<TODAY?TODAY:p.start_date;d<=p.end_date&&d<=to;d=D.add(d,1))
+        evts.push({...base,d,s:projDayLabel(p,d)||PROJ_STATUS[p.status].l});});
   DB.holidays.filter(h=>h.date>=TODAY&&h.date<=to).forEach(h=>evts.push({d:h.date,ico:'star',cls:'v',t:h.name,s:'Holiday',k:'holiday'}));
   evts.sort((a,b)=>a.d<b.d?-1:1);
   const byDay={};evts.forEach(e=>{(byDay[e.d]=byDay[e.d]||[]).push(e);});
@@ -9748,7 +9793,7 @@ function upcomingWidget(){
           <span class="xsmall mut3">${D.rel(d)}</span></div>
           ${list.map(e=>`<button class="f ac gap2 mb2" style="width:100%;text-align:left"
             ${e.k==='deliverable'?`data-drawer="deliverable:${e.id}"`:e.k==='project'?`data-go="#/media/projects/${e.id}"`:e.k==='shoot'?`data-drawer="shoot:${e.id}"`:''}>
-            <span class="cellico ${e.cls}" style="width:28px;height:28px;flex:0 0 28px">${ic(e.ico)}</span>
+            <span class="cellico ${e.cls}" style="width:28px;height:28px;flex:0 0 28px${e.c?`;color:${e.c};background:color-mix(in srgb,${e.c} 14%,transparent)`:''}">${ic(e.ico)}</span>
             <span style="flex:1;min-width:0"><span class="small b trunc" style="display:block">${esc(e.t)}</span>
             <span class="xsmall mut3 trunc" style="display:block">${esc(e.s)}</span></span>
             ${e.uid?avatar(e.uid,'xs'):''}</button>`).join('')}
@@ -10113,10 +10158,13 @@ function heatmapWidget(){
 /* Task/Assignment layer: has the work started by `date`? Assigned work is on
    the day from its start until it is finished, past its due date too (the
    card says it is overdue), so nothing given to someone quietly drops off.
-   No start date: from when it was assigned. */
+   A deliverable for a particular event day cannot enter the queue before
+   that day, even when its work row was assigned earlier without a start date. */
 function startedBy(a,date){
   const from=String(a.start_date||a.created_at||'').slice(0,10);
-  return !from||date>=from;
+  const d=a.deliverable_id?deliv(a.deliverable_id):null;
+  const eventFrom=d?.event_day?delivStart(d):null;
+  return (!from||date>=from)&&(!eventFrom||date>=eventFrom);
 }
 /* Today's Assignments — the work that is the user's on the given date.
    Two sources:
@@ -10210,7 +10258,8 @@ function scheduledDeliverables(uid=S.me,date){
   date=String(date||rtoday()).slice(0,10);
   const mine=teamDelivIds(uid);
   return DB.deliverables.filter(d=>mine.has(d.id)&&!d.deleted_at
-    &&String(d.scheduled_date||'').slice(0,10)===date
+    /* …or an event's, every day from its own until its Drive link is in. */
+    &&(String(d.scheduled_date||'').slice(0,10)===date||eventDelivOn(d,date))
     &&!DELIV_DONE.includes(d.status));
 }
 /* Today's task-log rows for a user (the report for that calendar day). */
@@ -10262,11 +10311,15 @@ function myAssignments(uid=S.me,date){
   const viaWork=new Set(tasks.map(a=>a.deliverable_id).filter(Boolean));
   const delivs=scheduledDeliverables(uid,date)
     .filter(d=>!viaWork.has(d.id)&&!WORK_CLOSED.includes(d.status))
-    .map(d=>({
+    .map(d=>{
+      /* An event's deliverable says which day of the event this is, and its hours. */
+      const ev=String(d.scheduled_date||'').slice(0,10)!==date&&eventDelivOn(d,date), x=ev?projDayOf(proj(d.project_id),date):null;
+      return {
       id:'d'+d.id, deliverable_id:d.id, project_id:d.project_id, title:d.title,
       priority:d.priority||'normal', status:d.status==='not_started'?'not_started':'in_progress',
-      start_date:d.scheduled_date, due_date:d.due_date, estimated_hours:d.estimated_hours,
-      assignees:[uid], _deliverable:true, _logged:logged.delivs.has(d.id)}));
+      start_date:ev?delivStart(d):d.scheduled_date, due_date:d.due_date, estimated_hours:d.estimated_hours,
+      _eventDay:x?projDayLabel(proj(d.project_id),date):'',
+      assignees:[uid], _deliverable:true, _logged:logged.delivs.has(d.id)};});
   const shoots=scheduledShoots(uid,date)
     .map(s=>({
       id:'s'+s.id, shoot_id:s.id, project_id:s.project_id, title:s.title,
@@ -10333,6 +10386,7 @@ function assignmentCard(a){
     <div class="asg-meta">
       <span><span class="code">${esc(p.code||'')}</span> ${esc(p.name)}</span>
       ${time?`<span title="Scheduled time">◷ ${time}</span>`:''}
+      ${a._eventDay?`<span class="chip" title="The event runs today">◷ ${esc(a._eventDay)}</span>`:''}
       ${a.estimated_hours?`<span>~${+a.estimated_hours}h</span>`:''}
       ${a.due_date&&!a._shoot?(a.due_date<TODAY
         ?`<span class="chip overdue">⚑ Overdue · due ${D.fmt(a.due_date)}</span>`
@@ -11102,26 +11156,41 @@ function projTimeline(ps){
 }
 /* ══ THE PROJECTS PAGE CALENDAR ════════════════════════════════════════════
 
-   A day holds the projects that start or end on it (dates, no time of day)
-   and the shoots booked on it (a call time and a wrap time). The month keeps
+   A day holds every project running on it — one event across all its days,
+   with day 1's start time and the last day's end time — and the shoots booked
+   on it (a call time and a wrap time). A project is there once a day, in its
+   type's colour: on the hours where that day has a time (a one-day 9–5, an
+   event's first day from 9, its last until 3), all day where it has none. The month keeps
    today in colour and quiets the rest; "+N more" opens the day's card, an
    event opens a short summary, and the date opens the day on the hours.
-   Events are named by key — ps:/pe:/po: a project starting, ending or in
-   progress, s: a shoot — so a card can be rebuilt from the key alone. */
+   Events are named by key — pd: a project on one of its days, s: a shoot — so a card can be rebuilt from the key alone. */
 let _pcPS=[], _pcPop=null;
 const pcMin=t=>{const m=/^(\d{1,2}):(\d{2})/.exec(String(t||''));return m?(+m[1])*60+(+m[2]):null;};
 const pcClock=m=>{const h=Math.floor(m/60)%24,mm=m%60;
   return (h%12||12)+(mm?':'+String(mm).padStart(2,'0'):'')+(h<12?'am':'pm');};
 function pcEvents(day,ps=_pcPS){
   const ids=new Set(ps.map(p=>p.id)), out=[];
-  ps.filter(p=>p.start_date===day).forEach(p=>out.push({ev:'ps:'+p.id,c:ptype(p.project_type_id).color,t:'▶ '+p.name}));
-  ps.filter(p=>p.end_date===day).forEach(p=>out.push({ev:'pe:'+p.id,c:'var(--warn)',t:'⤴ '+p.name+' ends'}));
+  /* A project is on every day it runs, as one event: the same row each day,
+     joined into a bar across the week (span), with that day's hours. */
+  [...ps].sort((a,b)=>String(a.start_date).localeCompare(String(b.start_date))||a.id-b.id).forEach(p=>{
+    const x=projDayOf(p,day); if(!x)return;
+    const lbl=projDayLabel(p,day), a=pcMin(x.from), b=pcMin(x.to);
+    /* A day with a time is on the hours: open at one end (null) when only
+       its start or only its end is known — the day view runs it to its edge. */
+    out.push({ev:'pd:'+p.id,c:ptype(p.project_type_id).color,t:p.name+(lbl?' — '+lbl:''),
+      tag:x.total>1?`Day ${x.n}/${x.total}`:'All day',cls:calSpanCls(x),
+      ...(a!=null||b!=null?{from:a,to:b!=null&&(a==null||b>a)?b:null,timed:true}:{})});});
   DB.shoots.filter(s=>s.shoot_date===day&&ids.has(s.project_id)).forEach(s=>{
     const a=pcMin(s.call_time),b=pcMin(s.end_time);
     out.push({ev:'s:'+s.id,c:ptype(proj(s.project_id).project_type_id).color,t:'◉ '+s.title,
       from:a,to:a==null?null:(b!=null&&b>a?b:a+60)});});
-  /* All-day first, then shoots by call time — the order a day is read in. */
-  return out.sort((x,y)=>(x.from??-1)-(y.from??-1));
+  /* All-day first, then by time — the order a day is read in. */
+  return out.sort((x,y)=>(x.from??(x.timed?0:-1))-(y.from??(y.timed?0:-1)));
+}
+/* A multi-day event's pill joins its neighbours: square where it continues. */
+function calSpanCls(x){
+  if(!x||x.total<2)return '';
+  return x.n===1?'span-first':x.n===x.total?'span-last':'span-mid';
 }
 const pcName=ev=>{const [k,id]=ev.split(':');
   return k==='s'?(DB.shoots.find(s=>s.id===+id)||{}).title||'Shoot':proj(+id).name;};
@@ -11136,16 +11205,27 @@ function projCalendar(ps){
         <button data-act="calNext" aria-label="Next month">${ic('right')}</button></div>
       <b>${m.toLocaleDateString('en-IN',{month:'long',year:'numeric'})}</b>
       <span class="xsmall mut3 hide-m">Click a date to see that day hour by hour</span></div>
-    ${calendarGrid(S.cal.month,day=>pcEvents(day,ps).map(e=>({...e,
+    ${calendarGrid(S.cal.month,day=>pcMonthOrder(pcEvents(day,ps)).map(e=>({...e,
       attrs:`data-act="projCalEv" data-d="${day}" data-ev="${e.ev}"`})),{proj:true})}`;
+}
+/* In the month, multi-day bars go on top in start order, so a bar keeps its
+   row from day to day whatever the day's hours are. */
+function pcMonthOrder(evs){
+  const k=e=>{const p=proj(+e.ev.slice(3));return [String(p.start_date),p.id];};
+  const span=evs.filter(e=>e.cls).sort((x,y)=>{const a=k(x),b=k(y);return a[0].localeCompare(b[0])||a[1]-b[1];});
+  return [...span,...evs.filter(e=>!e.cls)];
 }
 
 function projCalDayView(ps,day){
-  const evs=pcEvents(day,ps), allDay=evs.filter(e=>e.from==null), timed=evs.filter(e=>e.from!=null);
-  const ongoing=ps.filter(p=>p.start_date<day&&p.end_date>day);
+  const evs=pcEvents(day,ps), allDay=evs.filter(e=>e.from==null&&!e.timed);
   const H=48; let h0=7,h1=21;
-  timed.forEach(e=>{h0=Math.min(h0,Math.floor(e.from/60));h1=Math.max(h1,Math.ceil(e.to/60));});
-  h1=Math.min(h1,24);
+  evs.forEach(e=>{
+    if(e.from!=null){h0=Math.min(h0,Math.floor(e.from/60));h1=Math.max(h1,Math.ceil((e.to??e.from+60)/60));}
+    else if(e.to!=null){h1=Math.max(h1,Math.ceil(e.to/60));h0=Math.min(h0,Math.floor((e.to-60)/60));}});
+  h0=Math.max(0,h0); h1=Math.min(h1,24);
+  /* An event open at one end (an event's first day from 9, its last until 3)
+     runs to the edge of the hours shown. */
+  const timed=evs.filter(e=>e.from!=null||e.timed).map(e=>({...e,from:e.from??h0*60,to:e.to??h1*60}));
   /* Overlapping shoots share the width: a run of overlaps is split into as
      many columns as it needs, and each shoot takes the first one free. */
   const placed=[]; let run=[], runEnd=-1;
@@ -11171,20 +11251,20 @@ function projCalDayView(ps,day){
       <button class="btn sm" data-act="projCalMonth">${ic('calendar')} Month</button></div>
     <div class="pcal-d-allday"><span>All day</span><div class="pcal-d-chips">
       ${allDay.map(e=>chip(e)).join('')}
-      ${ongoing.length?(S.projCal.ongoing
-        ?ongoing.map(p=>chip({ev:'po:'+p.id,c:ptype(p.project_type_id).color,t:p.name},'ongoing')).join('')
-          +`<button class="btn xs ghost" data-act="projCalOngoing">Hide in progress</button>`
-        :`<button class="btn xs ghost" data-act="projCalOngoing">${plural(ongoing.length,'project')} in progress</button>`):''}
-      ${!allDay.length&&!ongoing.length?'<span class="xsmall mut3">Nothing starts or ends today.</span>':''}</div></div>
-    ${timed.length?'':'<div class="pcal-d-empty">No shoots booked on this day.</div>'}
+      ${!allDay.length?`<span class="xsmall mut3">${evs.length?'Nothing runs all day.':'No project runs on this day.'}</span>`:''}</div></div>
+    ${timed.length?'':'<div class="pcal-d-empty">Nothing on the hours this day.</div>'}
     <div class="pcal-d-body"><div class="pcal-d-grid" style="height:${(h1-h0)*H}px">
       <div class="pcal-d-hours">${hours.map(h=>`<span class="pcal-d-hl" style="top:${(h-h0)*H}px${h===h0?';transform:none':''}">${pcClock(h*60)}</span>`).join('')}</div>
       <div class="pcal-d-lane" style="height:${(h1-h0)*H}px">
         ${placed.map(e=>{const top=(e.from-h0*60)/60*H, hgt=Math.max(22,(e.to-e.from)/60*H-2);
-          const s=DB.shoots.find(x=>x.id===+e.ev.slice(2))||{}, p=proj(s.project_id);
+          /* A shoot names its project under it; a project names its day. */
+          const shoot=e.ev.startsWith('s:'), s=shoot?DB.shoots.find(x=>x.id===+e.ev.slice(2))||{}:null;
+          const p=proj(shoot?s.project_id:+e.ev.slice(3)), name=shoot?s.title||'Shoot':p.name;
+          const when=shoot?`${pcClock(e.from)} – ${pcClock(e.to)}`:projDayLabel(p,day);
+          const sub=shoot?p.name:'';
           return `<button class="pcal-d-ev" style="--c:${e.c};top:${top}px;height:${hgt}px;left:calc(${e.col/e.cols*100}% + 2px);width:calc(${100/e.cols}% - 4px)"
-            data-act="projCalEv" data-d="${day}" data-ev="${e.ev}" title="${esc(s.title||'')} · ${pcClock(e.from)} – ${pcClock(e.to)}">
-            <b>${esc(s.title||'Shoot')}</b><span>${pcClock(e.from)} – ${pcClock(e.to)}</span>${hgt>58?`<span>${esc(p.name)}</span>`:''}</button>`;}).join('')}
+            data-act="projCalEv" data-d="${day}" data-ev="${e.ev}" title="${esc(name)} · ${esc(when)}">
+            <b>${esc(name)}</b><span>${esc(when)}</span>${hgt>58&&sub?`<span>${esc(sub)}</span>`:''}</button>`;}).join('')}
         ${day===TODAY&&nm>=h0*60&&nm<=h1*60?`<div class="pcal-d-now" style="top:${(nm-h0*60)/60*H}px"></div>`:''}
       </div></div></div></div>`;
 }
@@ -11239,7 +11319,7 @@ function pcDayHTML(day){
       <button class="icon-btn pcal-pop-x" data-pc="x" aria-label="Close">${ic('x')}</button></div>
     ${evs.length?evs.map(e=>`<button class="pcal-row" data-pc="ev" data-d="${day}" data-ev="${e.ev}">
         <i style="background:${e.c}"></i>
-        <span class="pcal-t">${e.from!=null?pcClock(e.from):e.ev.startsWith('pe')?'Ends':'Starts'}</span>
+        <span class="pcal-t">${e.from!=null?pcClock(e.from):e.to!=null?'until '+pcClock(e.to):esc(e.tag||'All day')}</span>
         <b>${esc(pcName(e.ev))}</b></button>`).join('')
       :'<div class="pcal-d-empty">Nothing on this day.</div>'}
     <div class="pcal-foot"><span class="xsmall mut3">${plural(evs.length,'event')}</span>
@@ -11271,8 +11351,9 @@ function pcEvHTML(day,ev,back){
   const t=ptype(p.project_type_id), dl=projectDeliverables(p.id);
   const done=dl.filter(d=>['approved','delivered'].includes(d.status)).length;
   const lead=p.owner_id?user(p.owner_id):null, tm=p.team_id?team(p.team_id):null, rq=reqs().find(r=>r.project_id===p.id);
-  return head(k==='pe'?'var(--warn)':t.color,p.name,
-      `${k==='ps'?'Starts':k==='pe'?'Ends':'In progress'} · ${esc(projWhen(p))}`)
+  const dayLbl=projDayLabel(p,day);
+  return head(t.color,p.name,
+      `${esc(D.fmtLong(day))}${dayLbl?' · '+esc(dayLbl):''}<br>${esc(projWhen(p))}`)
     +`<div class="pcal-kv">${row('Status',statusPill(PROJ_STATUS,projProgress(p)))}${row('Type',esc(t.name))}
       ${row('Team',tm&&tm.id?esc(tm.name):'')}${row('Lead',lead?esc(lead.full_name):'')}${row('Priority',priTag(p.priority))}
       ${rq?row('Request',`<span class="code">${esc(rq.code||'')}</span> ${esc(rq.event_name||rq.institute||'')}`):''}
@@ -11685,7 +11766,7 @@ function projDeliverablesTab(p,dls){
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl m-cards pj-cards">
       <thead><tr><th>Deliverable</th><th>Owner</th><th>Scheduled</th><th>Due</th><th>Qty</th><th>Versions</th>
         <th>Status</th><th class="num">Actions</th></tr></thead>
-      <tbody>${dls.map(d=>{
+      <tbody>${projDelivGroups(p,dls,d=>{
         const vs=DB.deliverable_versions.filter(v=>v.deliverable_id===d.id);
         const latest=vs.sort((a,b)=>b.version_no-a.version_no)[0];
         const over=d.due_date&&d.due_date<TODAY&&!['delivered','not_required','cancelled'].includes(d.status);
@@ -11725,11 +11806,24 @@ function projDeliverablesTab(p,dls){
             ${DB.drive_links.filter(l=>l.entity_type==='deliverable'&&l.entity_id===d.id).length?
               `<button class="btn xs" data-act="copyLink" data-did="${d.id}">⧉ Copy</button>`:''}
             ${schedOk?`<button class="btn xs" data-act="scheduleDeliv" data-did="${d.id}">◷ Schedule</button>`:''}
-            ${menuOk?`<button class="btn xs" data-act="delivAction" data-did="${d.id}" aria-label="More actions">⋯</button>`:''}</td></tr>`;}).join('')}
+            ${menuOk?`<button class="btn xs" data-act="delivAction" data-did="${d.id}" aria-label="More actions">⋯</button>`:''}</td></tr>`;})}
       </tbody></table></div></div>
     ${/* The hint is for whoever can act on it. */
       canScheduleWork(p)?`<div class="card-foot">Schedule a deliverable for a date to put it in its owner's day.</div>`:''}
   </div>`;
+}
+/* An event's deliverables, a day at a time: "Day 1 · Sat, 24 October 2026",
+   … then the whole event's (the final cut). A project with no day's
+   deliverable lists them as it always has. */
+function projDelivGroups(p,dls,rowHtml){
+  if(!dls.some(d=>d.event_day))return dls.map(rowHtml).join('');
+  const days=[...new Set(dls.map(d=>d.event_day||0))].sort((a,b)=>(a||1e9)-(b||1e9));
+  return days.map(n=>{
+    const list=dls.filter(d=>(d.event_day||0)===n), date=n&&p.start_date?D.add(p.start_date,n-1):null;
+    const lbl=date?projDayLabel(p,date):'';
+    return `<tr class="pj-day"><td colspan="8"><b>${n?'Day '+n:'Whole event (final)'}</b>
+        <span class="mut3">${n?esc(D.fmtLong(date))+(lbl.includes('·')?' · '+esc(lbl.split(' · ').slice(1).join(' · ')):''):'Covers every day'} · ${plural(list.length,'deliverable')}</span></td></tr>`
+      +list.map(rowHtml).join('');}).join('');
 }
 /* ── Who executes this deliverable ────────────────────────────────────────
    A Coordinator routes the project to a team and stops. Whoever may assign on
@@ -14708,13 +14802,22 @@ function calendarGrid(monthISO,eventsFor,opts={}){
   /* Line one is the part that tells events apart: "Raw Archive — Pharmacy AD"
      reads "◆ Raw Archive" over "Pharmacy AD", so a narrow cell cuts the project
      name, not the type. A label without a dash may take two lines. */
-  const pill=e=>{const k=e.t.indexOf(' — '),a=k>0?e.t.slice(0,k):e.t,b=k>0?e.t.slice(k+3):'';
-    return `<div class="cal-ev" style="background:${e.c}"
+  const pill=(e,wk)=>{const k=e.t.indexOf(' — '),a=k>0?e.t.slice(0,k):e.t,b=k>0?e.t.slice(k+3):'';
+    const cont=!wk&&(e.cls==='span-mid'||e.cls==='span-last');
+    return `<div class="cal-ev${e.cls?' '+e.cls:''}${cont?' span-cont':''}" style="background:${e.c}"
           ${e.go?`data-go="${e.go}"`:''} ${e.drawer?`data-drawer="${e.drawer}"`:''}${e.attrs?' '+e.attrs:''} title="${esc(e.t)}"><span>${esc(a)}</span>${b?`<span class="cal-ev-s">${esc(b)}</span>`:''}</div>`;};
   /* A phone column is 52px, too narrow for words: each event is a dot, the
      month's days are listed in full under the grid, and a day jumps to its entry. */
   const phone=isMobileLayout(), list=[];
-  const grid=cells.map(d=>{
+  /* The Projects calendar shows a busy day's projects as thinner bars instead
+     of hiding them behind "+N more" (past MAXN it still says more). A week row
+     shares one height, so a bar across the week is one height end to end. */
+  const FIT=76, MAXN=12;
+  const dayEvs=P&&!phone?cells.map(d=>eventsFor(d)||[]):null;
+  const rowH=dayEvs?[0,1,2,3,4,5].map(w=>{
+    const n=Math.min(MAXN,Math.max(...dayEvs.slice(w*7,w*7+7).map(e=>e.length)));
+    return n<=3?0:Math.max(4,Math.floor((FIT-2*(n-1))/n));}):null;
+  const grid=cells.map((d,i)=>{
       const other=D.parse(d).getMonth()!==first.getMonth();
       const hol=DB.holidays.find(h=>h.date===d);
       if(phone){
@@ -14728,14 +14831,15 @@ function calendarGrid(monthISO,eventsFor,opts={}){
         ${evs.slice(0,6).map(e=>`<i class="cal-dot" style="background:${e.c}"></i>`).join('')}
         ${evs.length>6?`<span class="cal-more">+${evs.length-6}</span>`:''}</${tag}>`;
       }
-      const evs=eventsFor(d)||[];
+      const evs=dayEvs?dayEvs[i]:eventsFor(d)||[];
+      const cap=P?MAXN:4, h=rowH?rowH[Math.floor(i/7)]:0;
       const num=P?`<button class="cal-date" data-act="projCalDay" data-d="${d}" title="Open ${esc(D.fmtLong(d))}">${D.parse(d).getDate()}</button>`
         :D.parse(d).getDate();
-      return `<div class="cal-cell ${other?'other':''} ${d===TODAY?'today':''}">
+      return `<div class="cal-cell ${other?'other':''} ${d===TODAY?'today':''}${h?` fit${h<11?' thin':''}" style="--evh:${h}px`:''}">
         <div class="cal-num">${num}${hol?`<span class="tag" style="font-size:9px">${esc(hol.name)}</span>`:''}</div>
-        ${evs.slice(0,4).map(pill).join('')}
-        ${evs.length>4?(P?`<button class="cal-more" data-act="projCalMore" data-d="${d}">+${evs.length-4} more</button>`
-          :`<div class="cal-more">+${evs.length-4} more</div>`):''}</div>`;}).join('');
+        ${evs.slice(0,cap).map(e=>pill(e,D.parse(d).getDay()===0)).join('')}
+        ${evs.length>cap?(P?`<button class="cal-more" data-act="projCalMore" data-d="${d}">+${evs.length-cap} more</button>`
+          :`<div class="cal-more">+${evs.length-cap} more</div>`):''}</div>`;}).join('');
   return `<div class="cal${P?' cal-proj':''}">
     <div class="cal-dow">${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>`<div>${d}</div>`).join('')}</div>
     <div class="cal-grid">${grid}
@@ -14797,8 +14901,11 @@ function viewCalendar(){
         out.push({c:p.project_type_id===2?'var(--cat-2)':'var(--info)',t:s.call_time+' '+s.title,drawer:'shoot:'+s.id});});
     if(L.deadlines)DB.deliverables.filter(d=>d.due_date===day&&!['delivered','cancelled','not_required'].includes(d.status))
       .filter(d=>scoped(d.owner_id)).forEach(d=>out.push({c:'var(--warn)',t:'◆ '+d.title,drawer:'deliverable:'+d.id}));
-    if(L.projects)DB.projects.filter(p=>p.start_date===day||p.end_date===day)
-      .forEach(p=>out.push({c:ptype(p.project_type_id).color,t:(p.start_date===day?'▶ ':'⤴ ')+p.name,go:'#/media/projects/'+p.id}));
+    /* A project is on every day it runs, one event joined across the days. */
+    if(L.projects)DB.projects.filter(p=>!p.deleted_at&&projDayOf(p,day))
+      .sort((a,b)=>String(a.start_date).localeCompare(String(b.start_date))||a.id-b.id)
+      .forEach(p=>{const lbl=projDayLabel(p,day);
+        out.push({c:ptype(p.project_type_id).color,t:p.name+(lbl?' — '+lbl:''),cls:calSpanCls(projDayOf(p,day)),go:'#/media/projects/'+p.id});});
     if(L.leave)DB.leave_requests.filter(l=>l.status==='approved'&&day>=l.starts_on&&day<=l.ends_on)
       .filter(l=>scoped(l.user_id)).forEach(l=>out.push({c:'var(--cat-6)',t:'◐ '+user(l.user_id).full_name.split(' ')[0]+' leave'}));
     /* The server already returned only reserved and active, only this range and
@@ -19876,7 +19983,7 @@ async function loadCrudMeta(){
 }
 /* After any config mutation: refresh the engine list AND re-hydrate the operational
    DB so every picker/template in the app reflects the change immediately. */
-function crudAfterMutate(){ loadCrudList(); S._crudMeta=null; loadCrudMeta().catch(()=>{}); hydrateFromServer().then(render).catch(()=>{}); }
+function crudAfterMutate(){ S._crudMeta=null; loadCrudMeta().then(()=>loadCrudList()).catch(()=>{}); hydrateFromServer().then(render).catch(()=>{}); }
 async function loadCrudList(){
   const c=crudState();
   S._crudData=await MO_API.get('/crud/'+c.mod+'?q='+encodeURIComponent(c.q)+'&status='+c.status+'&sort='+c.sort+'&dir='+c.dir+'&page='+c.page
@@ -19922,7 +20029,7 @@ function viewCrudEngine(preMod){
     loadCrudMeta().then(()=>loadCrudList()).catch(e=>{S._crudData={rows:[],total:0,err:e.message};render();});
     return `<div class="card"><div class="card-body"><div class="empty" style="padding:40px"><p>Loading configuration…</p></div></div></div>`;
   }
-  const meta=S._crudMeta, mod=crudModMeta(), data=S._crudData, can=meta.can;
+  const meta=S._crudMeta, mod=crudModMeta(), data=S._crudData, can=Object.assign({},meta.can,mod&&mod.can);
   if(!mod)return `<div class="empty"><p>Unknown module.</p></div>`;
   const ac=mod.activeCol, selIds=Object.keys(c.sel).filter(k=>c.sel[k]), pages=Math.max(1,Math.ceil(data.total/(data.per||12)));
   return `
@@ -19985,7 +20092,16 @@ function crudFormModal(row){
       case 'textarea':return `<textarea class="inp" id="${id}">${esc(String(v??''))}</textarea>`;
       case 'select':return `<select class="inp" id="${id}">${(f.options||[]).map(o=>`<option ${String(v)===o?'selected':''}>${esc(o)}</option>`).join('')}</select>`;
       case 'switch':return `<label class="chk"><input type="checkbox" id="${id}" ${v===true?'checked':''}> ${esc(f.label)}</label>`;
-      case 'color':return `<input class="inp" type="color" id="${id}" value="${esc(String(v||'#3B82F6'))}" style="height:38px;padding:4px">`;
+      case 'color':{
+        const catHex={'var(--cat-1)':'#2563EB','var(--cat-2)':'#7C3AED','var(--cat-3)':'#DB2777','var(--cat-4)':'#EA580C','var(--cat-5)':'#059669','var(--cat-6)':'#0891B2','var(--cat-7)':'#CA8A04','var(--cat-8)':'#64748B'};
+        const cur=String(v||'var(--cat-1)');
+        const hex=/^#[0-9a-fA-F]{6}$/.test(cur)?cur:(catHex[cur]||'#2563EB');
+        return `<div class="f ac gap2 wrap">
+          <input class="inp" type="color" value="${esc(hex)}" style="height:38px;width:54px;padding:4px" oninput="document.getElementById('${id}').value=this.value">
+          <input class="inp mono" id="${id}" value="${esc(cur)}" style="max-width:160px">
+          ${Object.entries(catHex).map(([k,hx])=>`<button type="button" class="chip" style="padding:4px 8px" onclick="document.getElementById('${id}').value='${k}';this.parentNode.querySelector('input[type=color]').value='${hx}'"><span class="dot" style="background:${hx}"></span></button>`).join('')}
+        </div>`;
+      }
       case 'icon':return `<div class="f wrap gap2">${meta.icons.map(i=>`<button type="button" class="chip ${String(v)===i?'sel':''}" onclick="document.getElementById('${id}').value='${i}';this.parentNode.querySelectorAll('.chip').forEach(c=>c.classList.remove('sel'));this.classList.add('sel')">${i}</button>`).join('')}
         <input type="hidden" id="${id}" value="${esc(String(v??''))}"></div>`;
       case 'date':return `<input class="inp" type="date" id="${id}" value="${esc(String(v??'').slice(0,10))}">`;
@@ -20009,6 +20125,17 @@ function crudFormModal(row){
         <button class="btn" data-act="crudSubmit" data-id="${row?row.id:''}">Save</button>
         <button class="btn primary" data-act="crudSubmit" data-id="${row?row.id:''}" data-close="1">Save &amp; Close</button></div></div>`,{size:'wide'});
   const sl=$('#cf-slug'); if(sl)sl.addEventListener('input',()=>sl.dataset.touched='1');
+  const syncShowIf=()=>{
+    $('#modal-layer').querySelectorAll('[data-showif]').forEach(el=>{
+      const [fn,val]=el.dataset.showif.split(':');
+      const ctrl=$('#cf-'+fn);
+      if(!ctrl)return;
+      const cur=ctrl.type==='checkbox'?String(ctrl.checked):String(ctrl.value);
+      el.style.display=(cur===val)?'':'none';
+    });
+  };
+  syncShowIf();
+  $('#modal-layer').querySelectorAll('input,select,textarea').forEach(el=>el.addEventListener('change',syncShowIf));
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
 }
 /* Read-only View drawer — General / Configuration / Dependencies / Audit. */
@@ -20033,14 +20160,19 @@ function crudViewModal(tab){
       <span class="lr-main"><b>${esc(a.action)}</b><span>${esc(a.actor||'system')}</span></span>
       ${a.after?`<span class="xsmall mut" style="max-width:280px;overflow:hidden;text-overflow:ellipsis">${esc(JSON.stringify(a.after))}</span>`:''}</div>`).join('')
       :'<div class="note">No audit entries yet.</div>'}`;
-  modal(`<div class="mo-head"><div><h2>${esc(String(r.name||r.label||r.rule_key||('#'+r.id)))}</h2><p>${esc(mod.label)} · read-only</p></div>
+  const can=Object.assign({},S._crudMeta&&S._crudMeta.can,mod&&mod.can);
+  modal(`<div class="mo-head"><div><h2>${esc(String(r.name||r.label||r.title_pattern||r.rule_key||r.code||('#'+r.id)))}</h2><p>${esc(mod.label)} · configuration details</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
     <div class="mo-body">
       <div class="tabs mb3">${tabs.map(([k,l])=>`<button data-crudtab="${k}" style="padding:8px 12px;font-size:13px;font-weight:600;border:0;background:none;cursor:pointer;
         color:${tab===k?'var(--primary-text)':'var(--text-2)'};border-bottom:2px solid ${tab===k?'var(--primary)':'transparent'}">${l}</button>`).join('')}</div>
       ${body}</div>
-    <div class="mo-foot"><button class="btn primary ml-auto" onclick="closeModal()">Close</button></div>`,{size:'wide'});
+    <div class="mo-foot">
+      ${can.update?`<button class="btn" data-act="crudEdit" data-id="${r.id}">✎ Edit</button>`:''}
+      ${can.create?`<button class="btn" data-act="crudDup" data-id="${r.id}">⧉ Duplicate</button>`:''}
+      <button class="btn primary ml-auto" onclick="closeModal()">Close</button></div>`,{size:'wide'});
   $('#modal-layer').querySelectorAll('[data-crudtab]').forEach(n=>n.onclick=()=>crudViewModal(n.dataset.crudtab));
+  $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
 }
 
 function lookupTable(type,title,rows,cols,note){
@@ -20793,44 +20925,86 @@ function admAudit(){
       logins from Nerve SSO events · data exports.</div></div>`;
 }
 function admSettings(){
-  /* Read only. There is no settings API: these are the values the server runs
-     with. The page used to show inputs and switches that saved nothing, so it
-     now shows the values as plain text and says so. */
-  const dept=((DB.departments||[]).find(d=>d.is_active!==false)||{}).name||'Media Crew';
-  const yr=(DB.academic_years.find(a=>a.is_current)||{}).label;
-  const flags=DB.automation_rules.find(r=>r.config&&r.config.random_sample_pct!=null);
+  const st=DB.settings||{};
+  const deptObj=(DB.departments||[]).find(d=>d.is_active!==false)||(DB.departments||[])[0]||{name:'Media Crew'};
+  const dept=st.department_name||deptObj.name||'Media Crew';
+  const curYr=DB.academic_years.find(a=>a.is_current)||DB.academic_years.find(a=>Number(a.id)===Number(st.current_academic_year_id))||DB.academic_years[DB.academic_years.length-1]||{id:3,label:'2026-27'};
+  const flags=DB.automation_rules.find(r=>r.rule_key==='AUTO-13'||(r.config&&r.config.random_sample_pct!=null));
+  const samplePct=flags&&flags.config&&flags.config.random_sample_pct!=null?Number(flags.config.random_sample_pct):(st.random_sample_pct??10);
+  const pfx=st.project_code_prefix||'MC';
+  const wdays=st.working_days||'Monday to Saturday';
+  const autoHrs=st.auto_approve_window_hours??48;
+  const backfill=st.backfill_window||'Until 23:59 the next day';
+  const boolVal=(k,def)=>st[k]!==undefined?!!st[k]:def;
+  const admin=isAdmin();
   const on=v=>v?'<span class="status st-success"><span class="si">✓</span>On</span>'
     :'<span class="status st-neutral"><span class="si">○</span>Off</span>';
   const row=(t,s,v)=>`<div class="switch-row"><div class="sr-txt"><b>${t}</b>${s?`<span>${s}</span>`:''}</div>
-    <div class="small b" style="max-width:45%;text-align:right">${v}</div></div>`;
-  return `<div class="note mb4"><b>Read only.</b> These are the settings Media Ops runs with.
-    They cannot be changed on this page yet. Ask IT if one needs to change.</div>
+    <div class="small b" style="max-width:52%;text-align:right">${v}</div></div>`;
+  const sw=(k,def)=>{
+    const v=boolVal(k,def);
+    return admin
+      ? `<span class="switch ${v?'on':''}" id="st-${k}" data-act="toggleSetting" data-k="${k}"></span>`
+      : on(v);
+  };
+  const roleGroups=['team_lead','coordinator','employee','smc_member','creator'];
+  return `<div class="between wrap gap2 mb4">
+      <div class="note" style="flex:1;margin:0">${admin
+        ? `<b>Department &amp; system settings.</b> Changes saved here persist to the database, update linked automations and academic year records, and are recorded in the append-only audit log.`
+        : `<b>Read only.</b> Only a Media Ops Admin can change department and system settings.`}</div>
+      ${admin?`<div class="f gap2 ac">
+        <button class="btn primary" data-act="saveSettings">Save settings</button>
+      </div>`:''}
+    </div>
   <div class="grid g2">
     <div class="card"><div class="card-head"><h3>Department</h3></div>
       <div class="card-body">
-        ${row('Department name','',esc(dept))}
-        ${row('Current academic year','',yr?esc(yr):'<span class="mut3">Not set</span>')}
-        ${row('Project code prefix','New project codes start with it, for example <span class="nowrap">MC-2627-0142</span>','<span class="mono">MC</span>')}
-        ${row('Working days','Non-working days are left out of consistency and capacity figures','Monday to Saturday')}
+        ${row('Department name','Primary operating department display name',admin
+          ? `<input class="inp" id="st-department_name" value="${esc(dept)}" style="max-width:210px;height:32px">`
+          : esc(dept))}
+        ${row('Current academic year','Default academic year for new projects and reporting',admin
+          ? `<select class="inp" id="st-academic_year_id" style="max-width:210px;height:32px">${DB.academic_years.filter(a=>!a.archived_at).map(a=>`<option value="${a.id}" ${Number(a.id)===Number(curYr.id)?'selected':''}>${esc(a.label)}</option>`).join('')}</select>`
+          : (curYr?esc(curYr.label):'<span class="mut3">Not set</span>'))}
+        ${row('Project code prefix',`New project codes start with it, for example <span class="nowrap">${esc(pfx)}-2627-0142</span>`,admin
+          ? `<input class="inp mono" id="st-project_code_prefix" value="${esc(pfx)}" maxlength="6" style="max-width:100px;height:32px;text-transform:uppercase">`
+          : `<span class="mono">${esc(pfx)}</span>`)}
+        ${row('Working days','Non-working days are left out of consistency and capacity figures',admin
+          ? `<select class="inp" id="st-working_days" style="max-width:210px;height:32px">${['Monday to Saturday','Monday to Friday','Monday to Sunday'].map(w=>`<option value="${w}" ${wdays===w?'selected':''}>${w}</option>`).join('')}</select>`
+          : esc(wdays))}
       </div></div>
     <div class="card"><div class="card-head"><h3>Reporting policy</h3></div>
       <div class="card-body">
-        ${row('Exception-based review','Unflagged reports are approved on their own after a delay',on(true))}
-        ${row('Auto-approve window','How long an unflagged report waits','48 hours')}
-        ${row('Random sample rate','Keeps the audit honest without reviewing everything. Set on the Report flag rules automation',
-          flags?`${flags.config.random_sample_pct}%`:'<span class="mut3">Not set</span>')}
-        ${row('Backfill window','After it, a Team Lead unlocks the report','Until 23:59 the next day')}
-        ${row('Employee projects need approval','A project an Employee creates waits for a Team Lead or Admin',on(true))}
-        ${row('Progress before and after on tasks','Optional, and a secondary signal only',on(true))}
+        ${row('Exception-based review','Unflagged reports are approved on their own after a delay',sw('exception_based_review',true))}
+        ${row('Auto-approve window','How long an unflagged report waits (hours)',admin
+          ? `<div class="f ac gap1" style="justify-content:flex-end"><input class="inp" type="number" id="st-auto_approve_window_hours" min="1" max="720" value="${esc(String(autoHrs))}" style="max-width:84px;height:32px;text-align:right"><span class="small mut">hours</span></div>`
+          : `${autoHrs} hours`)}
+        ${row('Random sample rate','Keeps the audit honest without reviewing everything. Synced with Report flag rules (AUTO-13)',admin
+          ? `<div class="f ac gap1" style="justify-content:flex-end"><input class="inp" type="number" id="st-random_sample_pct" min="0" max="100" value="${esc(String(samplePct))}" style="max-width:84px;height:32px;text-align:right"><span class="small mut">%</span></div>`
+          : `${samplePct}%`)}
+        ${row('Backfill window','After it, a Team Lead unlocks the report',admin
+          ? `<select class="inp" id="st-backfill_window" style="max-width:210px;height:32px">${['Until 23:59 the next day','Same day only','Within 48 hours','Within 7 days'].map(b=>`<option value="${b}" ${backfill===b?'selected':''}>${b}</option>`).join('')}</select>`
+          : esc(backfill))}
+        ${row('Employee projects need approval','A project an Employee creates waits for a Team Lead or Admin',sw('employee_projects_need_approval',true))}
+        ${row('Progress before and after on tasks','Optional, and a secondary signal only',sw('task_progress_tracking',true))}
       </div></div>
     <div class="card"><div class="card-head"><h3>Integrations</h3></div>
       <div class="card-body">
-        ${row('Nerve SSO','Source of truth for identity. Media Ops never manages passwords',on(true))}
-        ${row('Google Drive link validation','Read-only access to file details',on(true))}
-        ${row('Google Drive folder provisioning','Planned, not built yet',on(false))}
-        ${row('ICS calendar feeds','A private, read-only feed per person',on(true))}
-        ${row('Monthly leadership email','Sent on the 1st of each month at 02:00',on(true))}
-        ${row('WhatsApp','Deliberately not used as a system channel',on(false))}
+        ${row('Nerve SSO','Source of truth for identity. Media Ops never manages passwords',sw('nerve_sso',true))}
+        ${row('Google Drive link validation','Read-only access to file details (synced with AUTO-5)',sw('drive_link_validation',true))}
+        ${row('Google Drive folder provisioning','Automated project folder creation on Drive',sw('drive_folder_provisioning',false))}
+        ${row('ICS calendar feeds','A private, read-only feed per person',sw('ics_calendar_feeds',true))}
+        ${row('Monthly leadership email','Sent on the 1st of each month at 02:00 (synced with AUTO-11)',sw('monthly_leadership_email',true))}
+        ${row('WhatsApp','System notification channel via WhatsApp',sw('whatsapp_notifications',false))}
+      </div></div>
+    <div class="card"><div class="card-head"><h3>Default module access by role</h3></div>
+      <div class="card-body">
+        <p class="small mut mb3">Configure which sidebar modules each role group receives by default when no per-person override is set.</p>
+        ${roleGroups.map(r=>{
+          const m=roleMeta(r), cur=(DB.module_defaults||{})[r];
+          const cnt=Array.isArray(cur)?cur.length:defaultModulesFor(r).length;
+          return `<div class="switch-row"><div class="sr-txt"><b>${esc(m.p)}</b><span>${Array.isArray(cur)?`Custom default (${cnt} modules)`:`Role default (${cnt} modules)`}</span></div>
+            ${admin?`<button class="btn xs" data-act="groupModules" data-role="${esc(r)}">⚿ Configure</button>`:`<span class="chip">${cnt} modules</span>`}</div>`;
+        }).join('')}
       </div></div>
   </div>`;
 }
@@ -21287,9 +21461,9 @@ function tlReviewHtml(dl){
 /* One line, for the person creating it, on who assigns the work afterwards. */
 function npHelpLine(){
   if(isCoord())return 'Route it to one team. That team’s lead becomes its owner and assigns the work.';
-  if(isAdmin())return 'Route it to a team: its lead becomes the owner and assigns the work. With no team, you own it.';
+  if(isAdmin())return 'Route it to a team or choose no team. You can assign each deliverable now; the team lead owns a routed project.';
   if(isTL())return 'You own it. Pick who works on it, and who makes each deliverable.';
-  return 'It is your own project. You assign the work after creating it.';
+  return 'It is your own project. Each deliverable is your daily task from the project start.';
 }
 /* A Team Lead staffs a project as they create it: no team to route it to (it
    stays with the team they lead — POST /projects resolves that), but the
@@ -21303,6 +21477,39 @@ function projWhen(p){
   if(p.start_date&&p.start_date===p.end_date)
     return `${D.fmt(p.start_date)}, ${s||'—'} – ${e||'—'}`;
   return `${D.fmt(p.start_date)}${s?', '+s:''} – ${D.fmt(p.end_date)}${e?', '+e:''}`;
+}
+/* ── An event's days ──────────────────────────────────────────────────────
+   A project runs from start_date to end_date, every day of it: day 1 from its
+   start time, the last day until its end time, the days between all day. The
+   calendar shows it on each of those days as one event, and a deliverable may
+   belong to one day of it (event_day) or to the whole event (null). */
+const projDays=p=>p&&p.start_date&&p.end_date&&p.end_date>=p.start_date?D.diff(p.end_date,p.start_date)+1:1;
+/* Where `day` falls in the project: {n,total,from,to} ("HH:MM" or null), or
+   null when the project is not on that day. */
+function projDayOf(p,day){
+  if(!p||!p.start_date||!p.end_date||day<p.start_date||day>p.end_date)return null;
+  const total=projDays(p), n=D.diff(day,p.start_date)+1;
+  return {n,total,from:n===1&&p.start_time||null,to:n===total&&p.end_time||null};
+}
+/* "Day 2 of 5", "Day 1 of 5 · from 9:00 AM", "Day 5 of 5 · until 3:00 PM";
+   a one-day project: "9:00 AM – 3:00 PM", or '' with no times. */
+function projDayLabel(p,day){
+  const x=projDayOf(p,day); if(!x)return '';
+  const s=D.clock(x.from), e=D.clock(x.to);
+  const hrs=s&&e?`${s} – ${e}`:s?`from ${s}`:e?`until ${e}`:'';
+  return x.total===1?hrs:`Day ${x.n} of ${x.total}`+(hrs?' · '+hrs:'');
+}
+/* The first day a deliverable is the crew's: its own day, or day 1 for one
+   that covers the whole event. */
+const delivStart=(d,p=proj(d.project_id))=>p&&p.start_date?(d.event_day?D.add(p.start_date,d.event_day-1):p.start_date):null;
+/* An event's deliverable is on its owner's day from delivStart until somebody
+   submits its Drive link (WORK_OPEN), and back when changes are asked for.
+   An event is a project with times, or a deliverable given a day of one. */
+function eventDelivOn(d,date){
+  const p=proj(d.project_id);
+  if(!p||!(d.event_day||p.start_time||p.end_time))return false;
+  const from=delivStart(d,p);
+  return !!from&&date>=from&&WORK_OPEN.includes(d.status);
 }
 /* The New project / Edit project start–end check. Returns the field to flag
    and why, or null. A time may be left out; only a same-day pair is ordered. */
@@ -21388,8 +21595,8 @@ function openNewProject(){
       <div class="field">
         <div class="between mb2"><label class="lbl" style="margin:0">Deliverables</label>
           <button type="button" class="btn xs" data-act="npAddDeliverable">＋ Add deliverable</button></div>
-        <div id="np-delivs"${npStaffs()?' data-assign="1"':''}></div>
-        <div class="hint">${npStaffs()?'One row per deliverable, and who makes it. They join the crew if they are not on it yet.'
+        <div id="np-delivs"${npStaffs()||isAdmin()?' data-assign="1"':''}></div>
+        <div class="hint">${npStaffs()||isAdmin()?'One row per deliverable, and who makes it. Assigned work appears in their tasks each day from the project start until it is submitted.'
           :'Pick what this project has to produce — one row per deliverable.'}</div></div>
     </div>
     <div class="mo-foot">
@@ -21397,7 +21604,7 @@ function openNewProject(){
       <button class="btn primary" data-act="createProject">Create project</button></div>`,{size:'wide'});
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=e=>{e.stopPropagation();ACTIONS[n.dataset.act](n.dataset,n);});
   ['np-start','np-end','np-stime','np-etime'].forEach(id=>{const n=$('#'+id);
-    n.addEventListener('input',()=>{clearFieldErrors(n.closest('.mo-body'));npWhenSync();});});
+    n.addEventListener('input',()=>{clearFieldErrors(n.closest('.mo-body'));npWhenSync();ACTIONS.npDelivSync();});});
   $$('#np-crew .chip').forEach(c=>c.onclick=()=>{
     const on=c.classList.toggle('sel'); c.setAttribute('aria-pressed',String(on)); npCrewCount();});
   npWhenSync(); npCrewCount();
@@ -21411,7 +21618,7 @@ function openNewProject(){
    a visible label, and says when it may be left empty. */
 /* With assign (a Team Lead's New project), the row says who makes it in place
    of a priority: the lead's own call, as Assign work makes it. */
-function delivRowHtml(types,assign){
+function delivRowHtml(types,assign,newProject){
   const lbl=t=>`<span class="xsmall mut3">${t}</span>`, col='display:flex;flex-direction:column;gap:2px';
   return `<div class="f gap2 wrap" style="align-items:flex-end">
       <label style="${col};flex:1 1 220px">${lbl('Type')}
@@ -21422,8 +21629,15 @@ function delivRowHtml(types,assign){
         <select class="inp np-d-owner" style="height:30px;font-size:12px" aria-label="Assigned to">
           <option value="">— Unassigned</option>
           ${assignableMembers().map(u=>`<option value="${u.id}">${esc(u.full_name)}${u.id===S.me?' (you)':''}</option>`).join('')}</select></label>`
-        : `<label style="${col}">${lbl('Priority')}
-        <select class="inp np-d-pri" style="height:30px;font-size:12px;width:auto">${priOptions()}</select></label>`}
+        : newProject
+          ? `<label style="${col};flex:0 1 200px">${lbl('Assigned to')}
+            <output class="inp" style="height:30px;font-size:12px;padding-top:6px">${isEmp()
+              ?esc((user(S.me)||{}).full_name||'You')
+              :'Unassigned · team lead assigns'}</output></label>`
+          : `<label style="${col}">${lbl('Priority')}
+            <select class="inp np-d-pri" style="height:30px;font-size:12px;width:auto">${priOptions()}</select></label>`}
+      <label style="${col}" class="np-d-daywrap" hidden>${lbl('Day')}
+        <select class="inp np-d-day" style="height:30px;font-size:12px;width:auto" aria-label="Which day of the event"></select></label>
       <label style="${col}">${lbl('Due (optional)')}
         <input class="inp np-d-due" type="date" style="height:30px;font-size:12px;width:auto"></label>
       <label style="${col}">${lbl('Effort h (optional)')}
@@ -21440,6 +21654,46 @@ function nextDelivTitle(base,taken){
   for(let n=2;taken.has(t.toLowerCase());n++)t=`${base} (${n})`;
   return t;
 }
+/* The event a deliverable row belongs to: the project (Add deliverable), or
+   the dates typed into New project so far. */
+function npEvent(){
+  const box=$('#np-delivs'); if(!box)return null;
+  if(+box.dataset.pid)return proj(+box.dataset.pid);
+  const v=id=>($('#'+id)||{}).value||'';
+  return {start_date:v('np-start'),end_date:v('np-end')};
+}
+/* Days a deliverable may be pinned to: an event of 2–31 days. A longer run is
+   a campaign, not an event, and has no day-by-day split. */
+const EVENT_DAYS_MAX=31;
+const npDayCount=()=>{const n=projDays(npEvent());return n>=2&&n<=EVENT_DAYS_MAX?n:0;};
+/* Offer each row the event's days, keeping a choice the new dates still have. */
+function npDaysSync(){
+  const ev=npEvent(), n=npDayCount();
+  $$('#np-delivs .np-d').forEach(r=>{
+    const wrap=r.querySelector('.np-d-daywrap'), sel=r.querySelector('.np-d-day'); if(!wrap||!sel)return;
+    wrap.hidden=!n; const keep=sel.value;
+    sel.innerHTML=!n?'':'<option value="">Whole event (final)</option>'
+      +Array.from({length:n},(_,i)=>`<option value="${i+1}">Day ${i+1} · ${esc(D.fmt(D.add(ev.start_date,i)))}</option>`).join('')
+      +`<option value="all">Every day — one for each of the ${n}</option>`;
+    sel.value=[...sel.options].some(o=>o.value===keep)?keep:'';
+  });
+}
+/* Each row as the deliverables it makes: one, or one per day for "Every day".
+   A day's deliverable is named "<type> · Day N"; any title already taken —
+   on the project, or by a row above — is numbered, as nextDelivTitle() and
+   the server's typeTitle() do. */
+function npRowsSpec(){
+  const box=$('#np-delivs'), pid=+((box||{}).dataset||{}).pid||null, n=npDayCount();
+  const taken=new Set(pid?DB.deliverables.filter(x=>x.project_id===pid&&!x.deleted_at).map(x=>String(x.title).toLowerCase()):[]);
+  return $$('#np-delivs .np-d').map(row=>{
+    const typeId=+row.querySelector('.np-d-type').value, base=dtype(typeId).name||'Deliverable';
+    const sel=row.querySelector('.np-d-day'), v=n&&sel?sel.value:'';
+    const days=v==='all'?Array.from({length:n},(_,i)=>i+1):[v?+v:null];
+    return {row,typeId,base,items:days.map(day=>{
+      const title=nextDelivTitle(day?`${base} · Day ${day}`:base,taken); taken.add(title.toLowerCase());
+      return {title,event_day:day};})};
+  });
+}
 /* POST /projects/:id/deliverables: whoever runs the project, and the
    Coordinator — never on a finished project. */
 function canAddDeliverable(p){
@@ -21447,17 +21701,24 @@ function canAddDeliverable(p){
     &&(isCoord()||canRunProject(p));
 }
 /* ＋ Add deliverable on an existing project: New project's rows, nothing more.
-   Adding scope is not assigning it — each row is created unassigned, and the
-   project's lead (who is told) decides who does it. */
+   Whoever may assign here (canAssignWorkOn) says who makes each row in place
+   of its priority, as a lead's New project does, and the row is given as
+   Assign work gives it: the person owns it and has its work in Today's
+   assignments until they submit it, due on the row's date. A row left
+   Unassigned, and every row the Coordinator adds, is created unassigned and
+   the project's lead (who is told) decides who does it. */
 function openAddDeliverable(pid){
   const p=proj(+pid); if(!canAddDeliverable(p))return;
-  modal(`<div class="mo-head"><div><h2>Add deliverable</h2><p>${esc(p.name)} · added unassigned — the project’s lead decides who does it.</p></div>
+  const assign=canAssignWorkOn(p);
+  modal(`<div class="mo-head"><div><h2>Add deliverable</h2><p>${esc(p.name)} · ${assign
+      ?'whoever you pick owns it and has it in Today’s assignments, due on its date. Left unassigned, the project’s lead decides.'
+      :'added unassigned — the project’s lead decides who does it.'}</p></div>
       <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
     <div class="mo-body">
       <div class="field">
         <div class="between mb2"><label class="lbl" style="margin:0">Deliverables</label>
           <button type="button" class="btn xs" data-act="npAddDeliverable">＋ Another</button></div>
-        <div id="np-delivs" data-pid="${p.id}"></div></div></div>
+        <div id="np-delivs" data-pid="${p.id}"${assign?' data-assign="1"':''}></div></div></div>
     <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn primary ml-auto" data-act="saveDeliverables" data-pid="${p.id}">Add</button></div>`,{size:'wide'});
   $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=e=>{e.stopPropagation();ACTIONS[n.dataset.act](n.dataset,n);});
@@ -23322,9 +23583,10 @@ const ACTIONS = {
     const row=document.createElement('div');
     row.className='np-d';
     row.style.cssText='border:1px solid var(--border);border-radius:var(--r);padding:10px;margin-bottom:8px;background:var(--surface-2)';
-    row.innerHTML=delivRowHtml(types,box.dataset.assign==='1');
+    row.innerHTML=delivRowHtml(types,box.dataset.assign==='1',!box.dataset.pid);
     row.querySelector('.np-d-del').onclick=()=>{row.remove();ACTIONS.npDelivSync();};
     row.querySelector('.np-d-type').onchange=()=>ACTIONS.npDelivSync();
+    row.querySelector('.np-d-day').onchange=()=>ACTIONS.npDelivSync();
     /* Whoever is given a deliverable is on the project: tick them in Crew. */
     const own=row.querySelector('.np-d-owner');
     if(own)own.onchange=()=>{const c=$(`#np-crew .chip[data-uid="${own.value}"]`);
@@ -23344,14 +23606,12 @@ const ACTIONS = {
       box.innerHTML='<div class="np-d-empty small mut3" style="padding:10px 0">No deliverables added.</div>';
       return;
     }
-    const pid=+box.dataset.pid||null;
-    const taken=new Set(pid?DB.deliverables.filter(x=>x.project_id===pid&&!x.deleted_at).map(x=>String(x.title).toLowerCase()):[]);
-    rows.forEach(r=>{
-      const base=dtype(+r.querySelector('.np-d-type').value).name||'Deliverable';
-      const title=nextDelivTitle(base,taken); taken.add(title.toLowerCase());
-      const hint=r.querySelector('.np-d-name'); if(!hint)return;
-      hint.hidden=title===base;
-      hint.textContent=title===base?'':`Will be named “${title}”`;
+    npDaysSync();
+    npRowsSpec().forEach(({row,base,items})=>{
+      const hint=row.querySelector('.np-d-name'); if(!hint)return;
+      const t=items.length>1?`Makes ${items.length}: “${items[0].title}” to “${items[items.length-1].title}”`
+        :items[0].title===base?'':`Will be named “${items[0].title}”`;
+      hint.hidden=!t; hint.textContent=t;
     });
   },
   addDeliverable:(d)=>openAddDeliverable(d.pid),
@@ -23359,25 +23619,42 @@ const ACTIONS = {
     const p=proj(+d.pid); if(!canAddDeliverable(p))return;
     const rows=$$('#np-delivs .np-d');
     if(!rows.length){toast('Add at least one deliverable','bad');return;}
-    const taken=new Set(DB.deliverables.filter(x=>x.project_id===p.id&&!x.deleted_at).map(x=>String(x.title).toLowerCase()));
-    const body=rows.map(r=>{
-      const typeId=+r.querySelector('.np-d-type').value;
-      const title=nextDelivTitle(dtype(typeId).name||'Deliverable',taken); taken.add(title.toLowerCase());
-      return {title,deliverable_type_id:typeId,priority:r.querySelector('.np-d-pri').value,
-        due_date:r.querySelector('.np-d-due').value||null,
-        estimated_hours:+(r.querySelector('.np-d-est').value||0)||null};
-    });
-    /* The optimistic copy is what the server stores: unassigned, except on an
-       employee's own project, where the work is theirs. */
-    const owner=isEmp()&&!p.team_id&&p.owner_id===S.me?S.me:null;
+    /* In assign mode a row names its person in place of a priority. */
+    const body=npRowsSpec().flatMap(({row,typeId,items})=>items.map(it=>{
+      const pri=row.querySelector('.np-d-pri'), own=row.querySelector('.np-d-owner');
+      return {title:it.title,deliverable_type_id:typeId,event_day:it.event_day,priority:pri?pri.value:'normal',
+        ...(own&&own.value?{owner_id:uidOf(own.value)}:{}),
+        due_date:row.querySelector('.np-d-due').value||null,
+        estimated_hours:+(row.querySelector('.np-d-est').value||0)||null};}));
+    /* The optimistic copy is what the server stores: the person picked, or
+       unassigned — except on an employee's own project, where the work is
+       theirs. A picked row also gets its work row, as Assign work makes it,
+       which keeps it in that person's Today's assignments until they submit. */
+    const mine=isEmp()&&!p.team_id&&p.owner_id===S.me?S.me:null;
     body.forEach(b=>{const dt=dtype(b.deliverable_type_id);
-      DB.deliverables.push({id:Math.max(...DB.deliverables.map(x=>x.id))+1,project_id:p.id,
-        deliverable_type_id:b.deliverable_type_id,title:b.title,owner_id:owner,due_date:b.due_date,completed_at:null,
+      const did=Math.max(...DB.deliverables.map(x=>x.id))+1;
+      DB.deliverables.push({id:did,project_id:p.id,
+        deliverable_type_id:b.deliverable_type_id,title:b.title,owner_id:b.owner_id??mine,due_date:b.due_date,completed_at:null,
         quantity_target:null,quantity_delivered:null,unit:dt.default_unit,spec_notes:'',weight:1,status:'not_started',
-        priority:b.priority,estimated_hours:b.estimated_hours,deleted_at:null});});
+        priority:b.priority,estimated_hours:b.estimated_hours,event_day:b.event_day,scheduled_date:null,deleted_at:null});
+      if(b.owner_id==null)return;
+      (DB.assignments=DB.assignments||[]).push({id:Math.max(0,...DB.assignments.map(x=>x.id))+1,project_id:p.id,
+        work_type_id:(delivWorkType(b.deliverable_type_id)||{}).id??null,deliverable_id:did,title:b.title,assigned_by:S.me,
+        priority:b.priority,status:'not_started',start_date:null,due_date:b.due_date,start_time:null,end_time:null,
+        notes:'',estimated_hours:b.estimated_hours,assignees:[b.owner_id]});});
+    const given=body.filter(b=>b.owner_id!=null).length;
     closeModal();render();
-    moSync((async()=>{for(const b of body)await MO_API.post('/projects/'+p.id+'/deliverables',b);})());
-    toast(`Added ${body.length} deliverable${body.length===1?'':'s'} to ${p.name}`,'ok');
+    /* An unassigned row is scope (POST /deliverables); a picked one is work
+       given with its deliverable (POST /work — Assign work's own call, which
+       tells the person and puts them on the crew). */
+    moSync((async()=>{for(const b of body)await(b.owner_id==null
+      ?MO_API.post('/projects/'+p.id+'/deliverables',b)
+      :MO_API.post('/projects/'+p.id+'/work',{title:b.title,assignees:[ruid(b.owner_id)],owner_id:ruid(b.owner_id),
+        start_date:null,due_date:b.due_date,priority:b.priority,notes:'',
+        new_deliverable:{deliverable_type_id:b.deliverable_type_id,title:b.title,due_date:b.due_date,
+          event_day:b.event_day,estimated_hours:b.estimated_hours}}));})());
+    toast(`Added ${body.length} deliverable${body.length===1?'':'s'} to ${p.name}`
+      +(given?` · ${given===body.length?'all':given} assigned`:''),'ok');
   },
   createProject:()=>{
     const name=$('#np-name').value.trim();
@@ -23398,8 +23675,9 @@ const ACTIONS = {
     const id=Math.max(...DB.projects.map(p=>p.id))+1;
     // The API creates every project active, an employee's included — no proposal step.
     const gated=false;
+    const _pfx=(DB.settings&&DB.settings.project_code_prefix)||'MC';
     const p={id,department_id:1,campus_id:1,academic_year_id:+$('#np-year').value,project_type_id:tid,
-      code:'MC-2627-'+String(100+id),name,description:$('#np-desc').value.trim(),
+      code:_pfx+'-2627-'+String(100+id),name,description:$('#np-desc').value.trim(),
       academic_unit_id:$('#np-unit').value?+$('#np-unit').value:null,status:gated?'proposed':'planning',priority:$('#np-pri').value,
       team_id:teamId,
       owner_id:(()=>{const t=teamId?team(teamId):null;
@@ -23412,37 +23690,41 @@ const ACTIONS = {
       DB.project_assignments.push({id:Math.max(...DB.project_assignments.map(a=>a.id))+1,project_id:id,user_id:uid,
         capacity_role_id:uid===p.owner_id?5:null,is_project_manager:uid===p.owner_id,assigned_by:S.me,assigned_at:TODAY,removed_at:null});};
     if(p.owner_id)onProject(p.owner_id);
-    /* Deliverables the creator typed. They go to the server unassigned — a
-       lead's own picks and an employee's own project aside — and the optimistic
-       copy mirrors that so the screen never implies an owner nobody chose. */
-    /* Each row is a type; its title is the type's name, numbered when the same
-       type appears again ("Reel / Short (2)"). */
-    const seenTitles={};
-    const delivs=$$('#np-delivs .np-d').map(r=>{
-      const typeId=+r.querySelector('.np-d-type').value, base=dtype(typeId).name||'Deliverable';
-      const n=(seenTitles[base]=(seenTitles[base]||0)+1);
-      const pri=r.querySelector('.np-d-pri'), own=r.querySelector('.np-d-owner');
-      return {title:n>1?`${base} (${n})`:base, deliverable_type_id:typeId,
+    /* A person picked on a deliverable receives its linked daily work. */
+    /* Each row is a type — for the whole event, one day of it, or every day
+       (one each); its title is the type's name ("· Day 2" for a day's),
+       numbered when it repeats ("Reel / Short (2)"). */
+    const delivs=npRowsSpec().flatMap(({row,typeId,items})=>{
+      const pri=row.querySelector('.np-d-pri'), own=row.querySelector('.np-d-owner');
+      return items.map(it=>({title:it.title, deliverable_type_id:typeId, event_day:it.event_day,
         priority:pri?pri.value:'normal',
         ...(own&&own.value?{owner_id:uidOf(own.value)}:{}),
-        due_date:r.querySelector('.np-d-due').value||null,
-        estimated_hours:+(r.querySelector('.np-d-est').value||0)||null};
+        due_date:row.querySelector('.np-d-due').value||null,
+        estimated_hours:+(row.querySelector('.np-d-est').value||0)||null}));
     });
     /* A lead's crew: everyone ticked, and everyone given a deliverable. */
-    const crew=staffs?[...new Set([...$$('#np-crew .chip.sel').map(c=>uidOf(c.dataset.uid)),
-      ...delivs.filter(d=>d.owner_id!=null).map(d=>d.owner_id)])].filter(uid=>uid!==S.me):[];
+    const crew=[...new Set([...(staffs?$$('#np-crew .chip.sel').map(c=>uidOf(c.dataset.uid)):[]),
+      ...delivs.filter(d=>d.owner_id!=null).map(d=>d.owner_id)])].filter(uid=>uid!==S.me);
     crew.forEach(onProject);
     let made=0;
     delivs.forEach(d=>{
       const dt=dtype(d.deliverable_type_id);
-      DB.deliverables.push({id:Math.max(...DB.deliverables.map(x=>x.id))+1,project_id:id,
+      const did=Math.max(...DB.deliverables.map(x=>x.id))+1;
+      const owner=isEmp()?S.me:(d.owner_id??null);
+      DB.deliverables.push({id:did,project_id:id,
         deliverable_type_id:d.deliverable_type_id,title:d.title,
         /* An employee's own project has no lead to assign it: its deliverables
            are theirs from the start, as the server stores them. */
-        owner_id:isEmp()?S.me:(d.owner_id??null),due_date:d.due_date,completed_at:null,quantity_target:null,
+        owner_id:owner,due_date:d.due_date,completed_at:null,quantity_target:null,
         quantity_delivered:null,unit:dt.default_unit,spec_notes:'',weight:1,status:'not_started',
-        priority:d.priority,estimated_hours:d.estimated_hours,
+        priority:d.priority,estimated_hours:d.estimated_hours,event_day:d.event_day,
         deleted_at:null});
+      if(owner)(DB.assignments=DB.assignments||[]).push({
+        id:Math.max(0,...DB.assignments.map(x=>x.id))+1,project_id:id,
+        work_type_id:(delivWorkType(d.deliverable_type_id)||{}).id??null,
+        deliverable_id:did,title:d.title,assigned_by:S.me,priority:d.priority,status:'not_started',
+        start_date:d.event_day?D.add(start,d.event_day-1):start,due_date:d.due_date||end,
+        start_time:null,end_time:null,notes:'',estimated_hours:d.estimated_hours,assignees:[owner]});
       made++;});
     audit(S.me,'project.created','project',id,null,{name,status:p.status,deliverables_created:made});
     /* The Coordinator and Admin send a TEAM, and the server makes its lead the
@@ -25076,19 +25358,38 @@ const ACTIONS = {
     const c=DB.cards.find(x=>x.id===+d.cid);c.archived_at=TODAY;closeDrawer();render();toast('Card archived','ok');
     moSync(MO_API.patch('/cards/'+d.cid,{archived:true}));},
   boardSettings:(d)=>{
-    const b=DB.boards.find(x=>x.id===+d.bid);
-    modal(`<div class="mo-head"><div><h2>${esc(b.name)}: settings</h2></div></div>
+    const b=DB.boards.find(x=>Number(x.id)===+d.bid);
+    if(!b)return;
+    modal(`<div class="mo-head"><div><h2>${esc(b.name)}: settings</h2></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
       <div class="mo-body">
+        <div class="field"><label class="lbl" for="bs-name">Board name</label>
+          <input class="inp" id="bs-name" value="${esc(b.name||'')}"></div>
+        <div class="field"><label class="lbl" for="bs-desc">Description</label>
+          <input class="inp" id="bs-desc" value="${esc(b.description||'')}"></div>
         <div class="switch-row"><div class="sr-txt"><b>Two-way status sync</b>
           <span>Moving a linked card updates the linked object’s status</span></div>
-          <span class="status ${b.sync_status?'st-success':'st-neutral'}">${b.sync_status?'On':'Off'}</span></div>
+          <span class="switch ${b.sync_status?'on':''}" id="bs-sync" onclick="this.classList.toggle('on')"></span></div>
         <div class="note mt3">Without this, boards drift from reality and die. With it, the board is a view of the system
           rather than a parallel truth.</div>
         <div class="divider"></div>
         <div class="small b mb2">Board templates</div>
         <div class="f wrap gap2"><span class="chip">Monthly Campaign Planning</span>
           <span class="chip">Convocation War Room</span><span class="chip">Department Ops</span></div></div>
-      <div class="mo-foot"><button class="btn primary" onclick="closeModal()">Done</button></div>`);
+      <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
+        <button class="btn primary" data-act="saveBoardSettings" data-bid="${b.id}">Save</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  saveBoardSettings:(d)=>{
+    const b=DB.boards.find(x=>Number(x.id)===+d.bid);
+    if(!b)return;
+    const name=($('#bs-name')||{}).value?$('#bs-name').value.trim():b.name;
+    const description=($('#bs-desc')||{}).value!==undefined?$('#bs-desc').value.trim():(b.description||'');
+    const sync_status=!!($('#bs-sync')&&$('#bs-sync').classList.contains('on'));
+    if(!name){toast('Board name is required','bad');return;}
+    b.name=name;b.description=description;b.sync_status=sync_status;
+    closeModal();render();toast('Board settings saved','ok');
+    moSync(MO_API.patch('/boards/'+b.id,{name,description,sync_status}));
   },
   createCard:(d)=>{
     const title=$('#nc-title').value.trim();
@@ -25109,21 +25410,133 @@ const ACTIONS = {
   },
 
   /* ---- admin ---- */
-  toggleRule:(d,n)=>{const r=DB.automation_rules.find(x=>x.id===+d.rid);
+  toggleRule:(d,n)=>{const r=DB.automation_rules.find(x=>Number(x.id)===+d.rid);
+    if(!r)return;
     r.is_enabled=!r.is_enabled;n.classList.toggle('on');
     audit(S.me,'automation.updated','automation_rule',r.id,{is_enabled:!r.is_enabled},{is_enabled:r.is_enabled});
     toast(r.rule_key+' '+(r.is_enabled?'enabled':'disabled'),'ok');
     moSync(MO_API.patch('/automation-rules/'+r.id,{is_enabled:r.is_enabled}));},
   editRuleConfig:(d)=>{
-    const r=DB.automation_rules.find(x=>x.id===+d.rid);
-    modal(`<div class="mo-head"><div><h2>${r.rule_key} — ${esc(r.name)}</h2>
-        <p>Thresholds, times and escalation chains are data, not code.</p></div></div>
-      <div class="mo-body">${Object.entries(r.config).map(([k,v])=>`
-        <div class="field"><label class="lbl mono">${esc(k)}</label>
-          <input class="inp" value="${esc(Array.isArray(v)?v.join(', '):String(v))}"></div>`).join('')}
+    const r=DB.automation_rules.find(x=>Number(x.id)===+d.rid);
+    if(!r)return;
+    modal(`<div class="mo-head"><div><h2>${esc(r.rule_key)} — ${esc(r.name)}</h2>
+        <p>Thresholds, times and escalation chains are data, not code.</p></div>
+        <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
+      <div class="mo-body">${Object.entries(r.config||{}).map(([k,v])=>`
+        <div class="field"><label class="lbl mono" for="rcfg-${esc(k)}">${esc(k)}</label>
+          <input class="inp" id="rcfg-${esc(k)}" data-cfg-key="${esc(k)}" data-cfg-type="${Array.isArray(v)?'array':typeof v}" value="${esc(Array.isArray(v)?v.join(', '):String(v))}"></div>`).join('')}
         <div class="note">Every change is written to the audit log as <span class="mono">automation.updated</span> with a before→after diff.</div></div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
-        <button class="btn primary" onclick="closeModal();toast('Rule updated and audited','ok')">Save</button></div>`);
+        <button class="btn primary" data-act="saveRuleConfig" data-rid="${r.id}">Save</button></div>`);
+    $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
+  },
+  saveRuleConfig:(d)=>{
+    const r=DB.automation_rules.find(x=>Number(x.id)===+d.rid);
+    if(!r)return;
+    const before=JSON.parse(JSON.stringify(r.config||{}));
+    const next={};
+    $$('#modal-layer [data-cfg-key]').forEach(inp=>{
+      const k=inp.dataset.cfgKey, tp=inp.dataset.cfgType, raw=inp.value.trim();
+      if(tp==='array') next[k]=raw?raw.split(',').map(s=>s.trim()).filter(Boolean):[];
+      else if(tp==='number'){ const n=Number(raw); next[k]=Number.isFinite(n)?n:0; }
+      else if(tp==='boolean') next[k]=(raw==='true'||raw==='1');
+      else next[k]=raw;
+    });
+    r.config=next;
+    if(r.rule_key==='AUTO-13'&&next.random_sample_pct!=null&&DB.settings){
+      DB.settings.random_sample_pct=Number(next.random_sample_pct);
+    }
+    audit(S.me,'automation.updated','automation_rule',r.id,{config:before},{config:next});
+    closeModal();render();toast('Rule updated and audited','ok');
+    moSync(MO_API.patch('/automation-rules/'+r.id,{config:next}));
+  },
+  toggleSetting:(d,n)=>{
+    if(!isAdmin()){toast('Only an Admin can change settings','bad');return;}
+    const k=d.k; if(!k)return;
+    DB.settings=DB.settings||{};
+    const prev=!!DB.settings[k];
+    const next=!prev;
+    DB.settings[k]=next;
+    if(n)n.classList.toggle('on',next);
+    if(k==='drive_link_validation'){
+      const r5=DB.automation_rules.find(r=>r.rule_key==='AUTO-5');
+      if(r5)r5.is_enabled=next;
+    }
+    if(k==='monthly_leadership_email'){
+      const r11=DB.automation_rules.find(r=>r.rule_key==='AUTO-11');
+      if(r11)r11.is_enabled=next;
+    }
+    audit(S.me,'settings.updated','settings',1,{[k]:prev},{[k]:next});
+    toast('Setting updated','ok');
+    moSync(MO_API.patch('/settings',{[k]:next}));
+  },
+  saveSettings:()=>{
+    if(!isAdmin()){toast('Only an Admin can change settings','bad');return;}
+    DB.settings=DB.settings||{};
+    const before=JSON.parse(JSON.stringify(DB.settings));
+    const payload={};
+    const deptEl=$('#st-department_name');
+    if(deptEl){
+      const dn=deptEl.value.trim();
+      if(!dn||dn.length<2){toast('Department name must be at least 2 characters','bad');return;}
+      payload.department_name=dn;
+    }
+    const yrEl=$('#st-academic_year_id');
+    if(yrEl&&yrEl.value){
+      const yid=Number(yrEl.value);
+      payload.current_academic_year_id=yid;
+    }
+    const pfxEl=$('#st-project_code_prefix');
+    if(pfxEl){
+      const pfx=pfxEl.value.trim().toUpperCase();
+      if(!/^[A-Z0-9]{2,6}$/.test(pfx)){toast('Project code prefix must be 2–6 alphanumeric characters','bad');return;}
+      payload.project_code_prefix=pfx;
+    }
+    const wdEl=$('#st-working_days');
+    if(wdEl&&wdEl.value) payload.working_days=wdEl.value;
+    const ahEl=$('#st-auto_approve_window_hours');
+    if(ahEl){
+      const hrs=Number(ahEl.value);
+      if(!Number.isFinite(hrs)||hrs<1||hrs>720){toast('Auto-approve window must be 1–720 hours','bad');return;}
+      payload.auto_approve_window_hours=Math.round(hrs);
+    }
+    const spEl=$('#st-random_sample_pct');
+    if(spEl){
+      const pct=Number(spEl.value);
+      if(!Number.isFinite(pct)||pct<0||pct>100){toast('Random sample rate must be 0–100%','bad');return;}
+      payload.random_sample_pct=Math.round(pct);
+    }
+    const bfEl=$('#st-backfill_window');
+    if(bfEl&&bfEl.value) payload.backfill_window=bfEl.value;
+    ['exception_based_review','employee_projects_need_approval','task_progress_tracking',
+     'nerve_sso','drive_link_validation','drive_folder_provisioning','ics_calendar_feeds',
+     'monthly_leadership_email','whatsapp_notifications'].forEach(k=>{
+      const swEl=$('#st-'+k);
+      if(swEl) payload[k]=swEl.classList.contains('on');
+    });
+    if(payload.drive_link_validation!==undefined){
+      const r5=DB.automation_rules.find(r=>r.rule_key==='AUTO-5');
+      if(r5)r5.is_enabled=payload.drive_link_validation;
+    }
+    if(payload.monthly_leadership_email!==undefined){
+      const r11=DB.automation_rules.find(r=>r.rule_key==='AUTO-11');
+      if(r11)r11.is_enabled=payload.monthly_leadership_email;
+    }
+    if(payload.department_name!==undefined){
+      const dObj=(DB.departments||[]).find(d=>d.is_active!==false)||(DB.departments||[])[0];
+      if(dObj)dObj.name=payload.department_name;
+    }
+    if(payload.current_academic_year_id!==undefined)
+      DB.academic_years.forEach(a=>{a.is_current=Number(a.id)===payload.current_academic_year_id;});
+    if(payload.random_sample_pct!==undefined){
+      const r13=DB.automation_rules.find(r=>r.rule_key==='AUTO-13'||(r.config&&r.config.random_sample_pct!=null));
+      if(r13&&r13.config) r13.config.random_sample_pct=payload.random_sample_pct;
+    }
+    Object.assign(DB.settings,payload);
+    audit(S.me,'settings.updated','settings',1,before,payload);
+    render();
+    toast('Settings saved and audited','ok');
+    moSync(MO_API.patch('/settings',payload));
   },
   addLookup:(d)=>{
     const t=d.type, isD=t==='deliverable_types';
@@ -25159,7 +25572,7 @@ const ACTIONS = {
   crudSelAll:(d,n)=>{const c=crudState();(S._crudData?.rows||[]).forEach(r=>c.sel[r.id]=n.checked);render();},
   crudSelNone:()=>{crudState().sel={};render();},
   crudNew:()=>crudFormModal(null),
-  crudEdit:(d)=>{const r=(S._crudData?.rows||[]).find(x=>x.id===+d.id);if(r)crudFormModal(r);},
+  crudEdit:(d)=>{const r=(S._crudData?.rows||[]).find(x=>Number(x.id)===+d.id)||(S._crudView&&Number(S._crudView.row?.id)===+d.id?S._crudView.row:null);if(r)crudFormModal(r);},
   crudSubmit:(d)=>{
     const mod=crudModMeta(), payload={};
     for(const f of mod.fields){const el=$('#cf-'+f.name);if(!el||el.disabled)continue;
@@ -27631,8 +28044,8 @@ const MENUS = {
       u.is_active?{label:'Remove',icon:'trash',cls:'danger',fn:()=>ACTIONS.deleteCrew({uid:d.uid,name:u.full_name})}
                  :{label:'Restore',icon:'undo',fn:()=>ACTIONS.restoreCrew({uid:d.uid})}];},
   crudRow:(d)=>{
-    const meta=S._crudMeta, mod=crudModMeta(), can=meta.can;
-    const r=(S._crudData?.rows||[]).find(x=>x.id===+d.id)||{};
+    const meta=S._crudMeta, mod=crudModMeta(), can=Object.assign({},meta.can,mod&&mod.can);
+    const r=(S._crudData?.rows||[]).find(x=>Number(x.id)===+d.id)||{};
     const active=!!r[mod.activeCol], archived=!!r.archived_at;
     return [
       {label:'View',icon:'eye',fn:()=>ACTIONS.crudViewOne(d)},
@@ -28968,10 +29381,11 @@ async function hydrateFromServer(){
     'requests','meetings','vendor_activities','followups',
     'casting_records','casting_tags','casting_collections','casting_record_tags',
     'casting_record_collections','casting_requests','project_casting',
-    'casting_links','request_links','smc_people'];
+    'casting_links','request_links','smc_people','creator_people','departments'];
   const st=await MO_API.get('/state');
   // An object, not one of the array tables above.
   DB.module_defaults=(st.module_defaults&&typeof st.module_defaults==='object')?st.module_defaults:{};
+  DB.settings=(st.settings&&typeof st.settings==='object')?Object.assign({},DB.settings||{},st.settings):(DB.settings||{});
   DB.my_module_group=st.my_module_group||null;
   /* Server-resolved: may this user use Ask Nerve AI? Render hint only — the
      endpoint enforces the same predicate independently. */
