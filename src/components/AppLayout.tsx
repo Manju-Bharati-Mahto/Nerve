@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useNavigate, Outlet } from 'react-router-dom'
+import { useNavigate, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
 import AppSidebar from './AppSidebar'
@@ -8,6 +8,7 @@ export default function AppLayout() {
   const { user, loading } = useAuth()
   const { loading: dataLoading, error } = useAppData()
   const navigate = useNavigate()
+  const location = useLocation()
 
   useEffect(() => {
     if (!loading && !user) navigate('/login')
@@ -22,6 +23,20 @@ export default function AppLayout() {
   }
 
   if (!user) return null
+
+  // The redesigned Branding portal (and BrandOps) is a self-contained,
+  // full-viewport shell — its own sidebar, top bar and drawers. Render it
+  // edge-to-edge, without the Knowledge-Hub sidebar and the px-6/py-8 content
+  // padding, so its h-full layout and fixed drawers resolve against the
+  // viewport instead of a padded, overflow-auto box. (Mirrors how /media is
+  // mounted outside this layout.)
+  if (location.pathname.startsWith('/branding')) {
+    return (
+      <div className="h-screen overflow-hidden bg-background">
+        <Outlet />
+      </div>
+    )
+  }
 
   return (
     <div className="flex min-h-screen bg-background">
