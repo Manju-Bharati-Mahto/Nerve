@@ -346,7 +346,7 @@ type SessionRequest = express.Request & {
 
 // task_manager mirrors task_owner exactly (same dashboard + lead powers); it
 // exists so the branding head can hand out the role under a distinct title.
-const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "outreach_editor", "outreach_publisher", "inventory_manager", "branding_reports_admin", "design_reports_admin", "task_owner", "task_manager", "outreach_state_user"] as const;
+const roles = ["super_admin", "admin", "sub_admin", "user", "outreach_manager", "outreach_editor", "outreach_publisher", "inventory_manager", "branding_reports_admin", "design_reports_admin", "task_owner", "task_manager", "outreach_state_user", "brand_ops_manager", "design_ops_manager"] as const;
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -498,6 +498,7 @@ function canCreateManagedUser(
   // outreach_* are the outreach team's roles, for an admin sitting on it.
   return actor.team !== null && payload.team === actor.team
     && ["sub_admin", "user", "task_owner", "task_manager", "inventory_manager",
+        "brand_ops_manager", "design_ops_manager",
         "outreach_editor", "outreach_publisher", "outreach_manager"].includes(payload.role);
 }
 
@@ -1042,8 +1043,8 @@ app.patch("/api/users/:id", asyncHandler(async (req, res) => {
     if (!target || target.team !== "branding") {
       return sendError(res, 403, "You can only modify members of your own team.");
     }
-    if (parsed.data.role && !["user", "sub_admin", "task_owner", "task_manager"].includes(parsed.data.role)) {
-      return sendError(res, 403, "You can only assign the designer, lead, task-owner or task-manager role.");
+    if (parsed.data.role && !["user", "sub_admin", "task_owner", "task_manager", "inventory_manager", "brand_ops_manager", "design_ops_manager"].includes(parsed.data.role)) {
+      return sendError(res, 403, "You can only assign a branding team role (designer, lead, task owner/manager, inventory manager or an ops manager).");
     }
     if (parsed.data.team && parsed.data.team !== "branding") {
       return sendError(res, 403, "You cannot move users out of the branding team.");

@@ -24,6 +24,8 @@ const ROLE_CFG: Record<AppRole, { label: string; icon: React.ElementType; color:
   outreach_publisher: { label: 'Outreach Publisher', icon: Send, color: 'text-orange-700', bg: 'bg-orange-50' },
   inventory_manager: { label: 'Inventory Manager', icon: Boxes, color: 'text-sky-700', bg: 'bg-sky-100' },
   outreach_state_user: { label: 'Outreach State User', icon: MapPin, color: 'text-orange-700', bg: 'bg-orange-50' },
+  brand_ops_manager: { label: 'Brand Ops Manager', icon: Boxes, color: 'text-sky-700', bg: 'bg-sky-100' },
+  design_ops_manager: { label: 'Design Ops Manager', icon: Layers, color: 'text-violet-600', bg: 'bg-violet-100' },
 }
 
 const BLANK_USER = { full_name: '', email: '', password: '', department: '' }
@@ -42,7 +44,7 @@ const ROLE_LABEL: Record<AppRole, string> = {
   super_admin: 'Super Admin', admin: 'Admin', sub_admin: 'Team Lead', user: 'Member', outreach_manager: 'Outreach Manager',
   branding_reports_admin: 'Reports Admin', design_reports_admin: 'Reports Admin', task_owner: 'Task Owner', task_manager: 'Task Manager',
   outreach_editor: 'Outreach Editor', outreach_publisher: 'Outreach Publisher', inventory_manager: 'Inventory Manager',
-  outreach_state_user: 'Outreach State User',
+  outreach_state_user: 'Outreach State User', brand_ops_manager: 'Brand Ops Manager', design_ops_manager: 'Design Ops Manager',
 }
 
 /* Every role a Super Admin can assign here, from the role catalogue rather

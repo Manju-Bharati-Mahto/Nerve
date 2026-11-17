@@ -129,6 +129,10 @@ export default function BrandingAdminShell({ children, title, subtitle, actions 
   const isReportsAdmin = role === 'branding_reports_admin'
   const userCaps = profile?.capabilities ?? []
   const isTaskOwner = role === 'task_owner' || role === 'task_manager'
+  // Ops managers sit above leads/members. Their visible tabs come from their
+  // capability grants (like an Inventory Manager), and they also manage their
+  // own team, so they get the Team Members / Kanban workspace items.
+  const isManager = role === 'brand_ops_manager' || role === 'design_ops_manager'
   const notifState = useBrandingNotifications(isFullAdmin)
   const onNotificationsPage = location.pathname === '/branding/notifications'
   const onAccountPage = location.pathname === '/branding/account'
@@ -144,7 +148,15 @@ export default function BrandingAdminShell({ children, title, subtitle, actions 
   const isLead = isTaskOwner || role === 'sub_admin'
   const visibleWorkspace = isFullAdmin
     ? WORKSPACE.filter(canSee)
-    : WORKSPACE.filter(w => w.path === '/branding/browse' || (isLead && w.leadOk))
+    : WORKSPACE.filter(w => {
+        if (w.path === '/branding/browse') return true
+        // Managers manage their own team.
+        if (w.path === '/branding/members') return isLead || isManager
+        // Kanban: leads, and managers who hold the view_kanban tab (Design Ops
+        // does by default; Brand Ops — inventory only — does not).
+        if (w.path === '/branding/team') return isLead || userCaps.includes('branding:view_kanban')
+        return isLead && w.leadOk
+      })
   // BrandOps tabs an Inventory Manager (or a full admin) may see. canSee already
   // returns everything for a full admin and capability-gated items otherwise.
   const visibleBrandOps = BRANDOPS.filter(canSee)
@@ -155,6 +167,8 @@ export default function BrandingAdminShell({ children, title, subtitle, actions 
     : isTaskOwner ? 'Team Lead'
     : role === 'sub_admin' ? 'Team Lead'
     : role === 'inventory_manager' ? 'Inventory Manager'
+    : role === 'brand_ops_manager' ? 'Brand Ops Manager'
+    : role === 'design_ops_manager' ? 'Design Ops Manager'
     : 'Member'
   const isActive = (p: string) => location.pathname === p || (p === '/branding/members' && location.pathname.startsWith('/branding/members/'))
   const meta = SHELL_PAGE_META[location.pathname]
@@ -215,7 +229,7 @@ export default function BrandingAdminShell({ children, title, subtitle, actions 
         </div>
 
         <nav className="flex-1 overflow-y-auto scrollbar-none -mx-1 px-1 pb-2 mt-2">
-          {!isFullAdmin && role !== 'inventory_manager' && (
+          {!isFullAdmin && role !== 'inventory_manager' && !isManager && (
             <Link to="/branding/user" className={cx(L.nav, L.navOff, 'mt-2')}>
               <ArrowLeft className={L.navIcon} strokeWidth={1.75} />
               <span className="truncate">Back to my dashboard</span>
