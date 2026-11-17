@@ -62,6 +62,7 @@ export const CAPABILITIES = [
   "branding:assign_projects",
   "branding:leave_calendar",
   "branding:view_kanban",
+  "branding:file_daily_report",
   "design:manage_categories",
   "design:view_team_dashboard",
   "design:assign_projects",

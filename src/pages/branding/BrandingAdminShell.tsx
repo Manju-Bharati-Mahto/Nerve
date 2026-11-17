@@ -51,6 +51,7 @@ type NavLink = {
 }
 
 const MENU: NavLink[] = [
+  { path: '/branding/my-report',      label: 'My Daily Report',   icon: ClipboardList, requiresCapability: ['branding:file_daily_report'] },
   { path: '/branding/dashboard',      label: 'Daily Reports',     icon: BarChart2,    requiresCapability: ['branding:view_team_dashboard'] },
   { path: '/branding/kra',            label: 'KRA Management',    icon: Award,        adminOnly: true },
   { path: '/branding/leaves',         label: 'Leave Requests',    icon: CalendarOff,  adminOnly: true },
@@ -93,6 +94,7 @@ const WORKSPACE: NavLink[] = [
 
 /** Breadcrumb title + subtitle for each route the shell can host. */
 export const SHELL_PAGE_META: Record<string, { title: string; subtitle: string }> = {
+  '/branding/my-report':      { title: 'My Daily Report',   subtitle: 'File your own daily work with the timer.' },
   '/branding/dashboard':      { title: 'Daily Reports',     subtitle: 'Team activity, hours and collaboration at a glance.' },
   '/branding/kra':            { title: 'KRA Management',    subtitle: 'Self, peer and admin scoring with a final publish.' },
   '/branding/leaves':         { title: 'Leave Requests',    subtitle: 'Approve, reject and reassign team leaves.' },

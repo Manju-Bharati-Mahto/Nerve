@@ -2464,7 +2464,7 @@ type HeatDay = {
 
 // ── Daily Reports Page ─────────────────────────────────────────────────────
 
-function DailyReportsPage({
+export function DailyReportsPage({
   users,
   profile,
   reportVersion = 0,

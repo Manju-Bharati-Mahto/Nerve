@@ -59,6 +59,7 @@ export const CAPABILITIES = [
   "branding:assign_projects",
   "branding:leave_calendar",
   "branding:view_kanban",
+  "branding:file_daily_report",
   "design:manage_categories",
   "design:view_team_dashboard",
   "design:assign_projects",
@@ -108,6 +109,12 @@ export const CAPABILITY_META: Record<CapabilityKey, {
     description: "View the whole team's Kanban board — every lead's and member's project progress. View only; only the branding admin can add, move, edit or delete projects.",
     route: "/branding/team",
     sidebarLabel: "Kanban Board",
+  },
+  "branding:file_daily_report": {
+    label: "Daily reporting (file own report)",
+    description: "Lets this person file their own daily report with the timer, like a member — useful for managers and leads who also do the work.",
+    route: "/branding/my-report",
+    sidebarLabel: "My Daily Report",
   },
   "design:manage_categories": {
     label: "Manage categories",
