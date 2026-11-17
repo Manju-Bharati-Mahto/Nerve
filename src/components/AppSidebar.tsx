@@ -9,7 +9,7 @@ import {
   Megaphone, Send, Calendar, BarChart3, Sparkles,
   Award, CalendarOff, Settings2, AlertTriangle,
   Film, Inbox, Share2, CheckCircle2, ListChecks, Bell, ClipboardList, UserCog, History,
-  ShieldCheck, HardDrive, MapPin, CalendarClock, ListTodo,
+  ShieldCheck, HardDrive, MapPin, CalendarClock, ListTodo, ChevronsUpDown,
 } from 'lucide-react'
 import ProfileModal from './ProfileModal'
 import BrandLogo from './BrandLogo'
@@ -372,16 +372,16 @@ export default function AppSidebar() {
   const BadgeIcon = config.icon
 
   return (
-    <aside className="w-56 shrink-0 flex flex-col bg-[#F3F4F6] border-r border-[#C5CAD1]">
+    <aside className="w-56 bg-[#F3F4F6] border-r border-[#C5CAD1] flex flex-col h-full shrink-0 p-3">
 
-      {/* Logo */}
-      <div className="h-12 shrink-0 flex items-center px-4 border-b border-[#C5CAD1]">
-        <BrandLogo variant="nerve" className="w-[150px] max-w-full" />
+      {/* Brand — same lockup, padding and size as the branding shell. */}
+      <div className="shrink-0 flex justify-start pl-1 pt-1.5 pb-0.5">
+        <BrandLogo variant="nerve" className="w-[155px] md:w-[175px]" />
       </div>
 
-      {/* Team badge — neutral chip, name preserved */}
+      {/* Team badge — neutral chip, name preserved (hidden for super admin). */}
       {team && (
-        <div className="mx-3 mt-3 px-2.5 py-1.5 rounded-[6px] flex items-center gap-2 bg-white border border-[#C5CAD1]">
+        <div className="mt-2.5 px-2.5 py-1.5 rounded-[6px] flex items-center gap-2 bg-white border border-[#C5CAD1]">
           <BadgeIcon className="w-3.5 h-3.5 text-[#6B7280]" strokeWidth={1.75} />
           <span className="text-[12px] font-medium text-[#374151]">
             {team === 'branding' ? 'Branding Team'
@@ -392,12 +392,12 @@ export default function AppSidebar() {
         </div>
       )}
 
-      {/* Nav */}
-      <nav className="flex-1 px-3 pb-3 overflow-y-auto">
+      {/* Nav — scrolls inside the fixed sidebar, like the branding shell. */}
+      <nav className="flex-1 overflow-y-auto scrollbar-none -mx-1 px-1 pb-2 mt-2">
         {config.sections.map((section, si) => (
           <div key={si}>
             {section.heading && (
-              <div className={L.navGroup}>{section.heading}</div>
+              <p className={L.navGroup}>{section.heading}</p>
             )}
             <div className="space-y-0.5">
             {section.items.map((item, ii) => {
@@ -436,25 +436,26 @@ export default function AppSidebar() {
         ))}
       </nav>
 
-      {/* Footer */}
-      <div className="p-3 border-t border-[#C5CAD1]">
-        <div className="flex items-center gap-1.5 bg-white border border-[#C5CAD1] rounded-[6px] p-1.5">
+      {/* User card — matches the branding shell's bottom card. */}
+      <div className="shrink-0 pt-3 border-t border-[#C5CAD1]">
+        <div className="flex items-center gap-1.5">
           <button
             onClick={() => setProfileOpen(true)}
-            className="flex items-center gap-2 min-w-0 flex-1 rounded-[4px] px-1 py-0.5 hover:bg-[#F3F4F6] transition-colors text-left"
+            className="flex-1 min-w-0 flex items-center gap-2.5 p-2 rounded-[6px] bg-white border border-[#C5CAD1] hover:border-[#9CA3AF] transition-colors text-left cursor-pointer"
             title="View profile"
           >
             {profile?.avatar_url ? (
-              <img src={profile.avatar_url} alt="avatar" className="w-7 h-7 rounded-[6px] object-cover shrink-0" />
+              <img src={profile.avatar_url} alt="avatar" className="w-8 h-8 rounded-full object-cover shrink-0 border border-[#C5CAD1]" />
             ) : (
-              <div className="w-7 h-7 rounded-[6px] flex items-center justify-center shrink-0 bg-[#F3F4F6] border border-[#C5CAD1]">
-                <BadgeIcon className="w-3.5 h-3.5 text-[#6B7280]" strokeWidth={1.75} />
+              <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 bg-[var(--nerve-primary)] text-[var(--nerve-on-primary)] text-[12px] font-semibold uppercase">
+                {(profile?.full_name?.trim() || profile?.email || 'U').charAt(0)}
               </div>
             )}
-            <div className="min-w-0">
-              <p className="text-[13px] font-medium text-[#111827] truncate">{profile?.full_name || 'User'}</p>
+            <div className="min-w-0 flex-1">
+              <p className="text-[13px] font-semibold text-[#111827] truncate">{profile?.full_name || 'User'}</p>
               <p className="text-[11px] text-[#6B7280] truncate">{config.label}</p>
             </div>
+            <ChevronsUpDown className="w-3.5 h-3.5 text-[#9CA3AF] shrink-0" strokeWidth={1.75} />
           </button>
           <button
             onClick={signOut}

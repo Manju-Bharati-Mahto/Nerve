@@ -139,14 +139,17 @@
 }
 
 @layer components {
+  /* Crisp hairline card matching the branding "Nerve Light" surface
+     (ds.tsx DS.card): flat, 6px radius, no heavy shadow. Keeps shadcn
+     tokens so dark mode still adapts. */
   .hub-card {
-    @apply bg-card rounded-xl border border-border p-5 shadow-sm;
+    @apply bg-card rounded-[6px] border border-border p-4;
   }
   .hub-badge {
     @apply inline-block px-2.5 py-0.5 rounded-full text-xs font-medium;
   }
   .hub-input {
-    @apply w-full px-3 py-2 rounded-lg border border-input text-sm bg-card
+    @apply w-full px-3 py-2 rounded-[6px] border border-input text-sm bg-card
            focus:outline-none focus:ring-2 focus:ring-ring/20 focus:border-primary transition-colors;
   }
   .hub-label {
@@ -262,14 +265,17 @@
     background-size: 14px 14px;
   }
 
+  /* Crisp hairline card matching the branding "Nerve Light" surface
+     (ds.tsx DS.card): flat, 6px radius, no heavy shadow. Keeps shadcn
+     tokens so dark mode still adapts. */
   .hub-card {
-    @apply bg-card rounded-xl border border-border p-5 shadow-sm;
+    @apply bg-card rounded-[6px] border border-border p-4;
   }
   .hub-badge {
     @apply inline-block px-2.5 py-0.5 rounded-full text-xs font-medium;
   }
   .hub-input {
-    @apply w-full px-3 py-2 rounded-lg border border-input text-sm bg-card
+    @apply w-full px-3 py-2 rounded-[6px] border border-input text-sm bg-card
            focus:outline-none focus:ring-2 focus:ring-ring/20 focus:border-primary transition-colors;
   }
   .hub-label {

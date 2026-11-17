@@ -67,15 +67,46 @@ export default function AppLayout() {
   // admin). Skip our top bar there so we never stack two.
   const selfChromed = location.pathname === '/admin/export'
 
+  // Self-chromed routes bring their own department shell (which climbs out of
+  // page padding). Keep the original padded, auto-scroll layout for those so
+  // that shell resolves exactly as before — just drop our top bar.
+  if (selfChromed) {
+    return (
+      <div className="nerve-light flex min-h-screen bg-[#F9FAFB]">
+        <AppSidebar />
+        <main className="flex-1 overflow-auto min-w-0">
+          <div className="px-6 py-8 w-full">
+            {error && (
+              <div className="mb-6 rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                {error}
+              </div>
+            )}
+            <Outlet />
+          </div>
+        </main>
+      </div>
+    )
+  }
+
+  const now = new Date()
+  const dateChip = `${now.toLocaleDateString('en-GB', { weekday: 'short' })} ${now.getDate()} ${now.toLocaleDateString('en-GB', { month: 'short' })}`
+
+  // Fixed-viewport shell (matches the branding portal): the sidebar and top bar
+  // stay put and only the content scrolls — no body scroll, no sidebar drift.
   return (
-    <div className="nerve-light flex min-h-screen bg-[#F9FAFB]">
+    <div className="nerve-light flex h-screen overflow-hidden bg-[#F9FAFB]">
       <AppSidebar />
-      <main className="flex-1 overflow-auto min-w-0 flex flex-col">
-        {!selfChromed && (
-          <header className="h-12 shrink-0 flex items-center justify-end gap-0.5 px-4 sm:px-6 border-b border-[#C5CAD1] bg-white">
-            <span className="hidden md:inline-flex items-center gap-1.5 text-[12px] text-[#6B7280] mr-2 whitespace-nowrap">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#22C55E]" aria-hidden="true" />
-              Workspace live
+      <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
+        <header className="h-12 shrink-0 flex items-center justify-between gap-3 px-4 sm:px-6 border-b border-[#C5CAD1] bg-white">
+          <span className="text-[13px] font-medium text-[#6B7280] truncate">Workspace</span>
+          <div className="flex items-center gap-0.5">
+            <span className="hidden md:inline-flex items-center gap-2 text-[12px] text-[#6B7280] mr-2 whitespace-nowrap">
+              <span>{dateChip}</span>
+              <span className="text-[#D1D5DB]" aria-hidden="true">·</span>
+              <span className="inline-flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#22C55E]" aria-hidden="true" />
+                Workspace live
+              </span>
             </span>
             <ModeToggle />
             <button
@@ -87,15 +118,17 @@ export default function AppLayout() {
             >
               <Paintbrush className="w-4 h-4" strokeWidth={1.75} />
             </button>
-          </header>
-        )}
-        <div className="px-6 py-8 w-full">
-          {error && (
-            <div className="mb-6 rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-              {error}
-            </div>
-          )}
-          <Outlet />
+          </div>
+        </header>
+        <div className="flex-1 overflow-y-auto overscroll-contain">
+          <div className="px-6 py-8 w-full">
+            {error && (
+              <div className="mb-6 rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                {error}
+              </div>
+            )}
+            <Outlet />
+          </div>
         </div>
       </main>
       {themeOpen && <ThemeModal onClose={() => setThemeOpen(false)} />}
