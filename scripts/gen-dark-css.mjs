@@ -19,9 +19,10 @@ import { fileURLToPath } from 'node:url'
 import colors from 'tailwindcss/colors.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-// Nerve uses LandingPage.tsx (no Landing.tsx). Scan only the branding portal
-// and the shared auth/landing pages this theme actually styles.
-const SCAN = ['src/pages/branding', 'src/components', 'src/pages/Login.tsx', 'src/pages/LoginForm.tsx', 'src/pages/ResetPassword.tsx', 'src/pages/VerifyEmail.tsx', 'src/pages/LandingPage.tsx']
+// Scan the branding portal, the shared chrome, and the auth pages this theme
+// styles. (The old galaxy LandingPage.tsx is gone; its auth pages are now
+// Nerve-Light too and stay scanned below.)
+const SCAN = ['src/pages/branding', 'src/components', 'src/pages/Login.tsx', 'src/pages/LoginForm.tsx', 'src/pages/ResetPassword.tsx', 'src/pages/VerifyEmail.tsx', 'src/pages/SuperAdminOverview.tsx', 'src/pages/design/DesignAdminShell.tsx']
 const OUT = join(ROOT, 'src/dark.css')
 
 // ── Palette ──────────────────────────────────────────────────────────────

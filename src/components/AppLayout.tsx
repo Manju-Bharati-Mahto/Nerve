@@ -62,26 +62,33 @@ export default function AppLayout() {
   // the Nerve-Light design language: grey canvas, a slim top bar carrying the
   // colour-mode toggle + appearance (primary colour) control, and the branding
   // sidebar styling (in AppSidebar). Nav items, routes and guards are unchanged.
+  // A few shared routes wrap themselves in a department shell that already owns a
+  // top bar (e.g. /admin/export via MaybeBrandingAdminShell for a branding
+  // admin). Skip our top bar there so we never stack two.
+  const selfChromed = location.pathname === '/admin/export'
+
   return (
     <div className="nerve-light flex min-h-screen bg-[#F9FAFB]">
       <AppSidebar />
       <main className="flex-1 overflow-auto min-w-0 flex flex-col">
-        <header className="h-12 shrink-0 flex items-center justify-end gap-0.5 px-4 sm:px-6 border-b border-[#C5CAD1] bg-white">
-          <span className="hidden md:inline-flex items-center gap-1.5 text-[12px] text-[#6B7280] mr-2 whitespace-nowrap">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#22C55E]" aria-hidden="true" />
-            Workspace live
-          </span>
-          <ModeToggle />
-          <button
-            type="button"
-            onClick={() => setThemeOpen(true)}
-            className={cx(L.iconGhost, themeOpen && 'bg-[#F3F4F6] text-[#111827]')}
-            aria-label="Appearance"
-            title="Appearance · colour mode and primary colour"
-          >
-            <Paintbrush className="w-4 h-4" strokeWidth={1.75} />
-          </button>
-        </header>
+        {!selfChromed && (
+          <header className="h-12 shrink-0 flex items-center justify-end gap-0.5 px-4 sm:px-6 border-b border-[#C5CAD1] bg-white">
+            <span className="hidden md:inline-flex items-center gap-1.5 text-[12px] text-[#6B7280] mr-2 whitespace-nowrap">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#22C55E]" aria-hidden="true" />
+              Workspace live
+            </span>
+            <ModeToggle />
+            <button
+              type="button"
+              onClick={() => setThemeOpen(true)}
+              className={cx(L.iconGhost, themeOpen && 'bg-[#F3F4F6] text-[#111827]')}
+              aria-label="Appearance"
+              title="Appearance · colour mode and primary colour"
+            >
+              <Paintbrush className="w-4 h-4" strokeWidth={1.75} />
+            </button>
+          </header>
+        )}
         <div className="px-6 py-8 w-full">
           {error && (
             <div className="mb-6 rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
