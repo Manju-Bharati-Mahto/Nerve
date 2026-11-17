@@ -804,6 +804,25 @@ export async function saveReportRows(reportId: string, userId: string, rows: Sav
   const reportDate = normalizeDate(report.rows[0].report_date);
   if (isEditingClosed(reportDate)) return null;
 
+  // Only one timer runs at a time. If the client ever sends more than one
+  // running row, keep the most-recently-started one running and bank the rest
+  // (so concurrent timers can never inflate the stored/derived hours).
+  const runningRows = rows.filter(r => (r.stopwatch_status ?? 'idle') === 'running' && r.stopwatch_started_at);
+  if (runningRows.length > 1) {
+    const keep = runningRows.reduce((a, b) =>
+      new Date(a.stopwatch_started_at as string).getTime() >= new Date(b.stopwatch_started_at as string).getTime() ? a : b);
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+    rows = rows.map(r => {
+      if (r === keep) return r;
+      if ((r.stopwatch_status ?? 'idle') === 'running' && r.stopwatch_started_at) {
+        const since = Math.max(0, Math.floor((nowMs - new Date(r.stopwatch_started_at).getTime()) / 1000));
+        return { ...r, stopwatch_status: 'paused', elapsed_seconds: (r.elapsed_seconds ?? 0) + since, stopwatch_started_at: null, last_paused_at: nowIso };
+      }
+      return r;
+    });
+  }
+
   // Cards this report's rows pointed at before the rewrite, so a card whose
   // row was deleted (and that nobody has touched) can be taken off the board.
   const before = await pool.query<{ project_id: string | null }>(
@@ -825,12 +844,31 @@ export async function saveReportRows(reportId: string, userId: string, rows: Sav
       if ((exists.rowCount ?? 0) === 0) projectId = null;
     }
     if (!projectId && row.specific_work.trim() && row.type_of_work.trim()) {
-      const created = await createBrandingProject(
-        row.specific_work.trim(), REPORT_CARD_MARK, null, userId, [userId],
-        { typeOfWork: row.type_of_work, subCategory: row.sub_category, specificWork: row.specific_work.trim(),
-          assignedLeadId: leadId, boardStatus: "notstarted", priority: "medium" },
+      // Reuse an existing report-card for the same work instead of minting a
+      // new one on every save. Without this, re-saving a row that arrives
+      // without its project_id (after an edit or a status change) creates a
+      // duplicate card, and the old one escapes the Not-started reap once the
+      // timer has moved it on. Only reuse cards the timer still owns
+      // (notstarted/inprogress/review) so a prior day's delivered card is never
+      // grabbed.
+      const dup = await pool.query<{ id: string }>(
+        `SELECT id FROM branding_projects
+          WHERE created_by = $1 AND description = $2
+            AND type_of_work = $3 AND sub_category = $4 AND specific_work = $5
+            AND board_status IN ('notstarted', 'inprogress', 'review')
+          ORDER BY created_at DESC LIMIT 1`,
+        [userId, REPORT_CARD_MARK, row.type_of_work, row.sub_category, row.specific_work.trim()]
       );
-      projectId = created.id;
+      if (dup.rows[0]) {
+        projectId = dup.rows[0].id;
+      } else {
+        const created = await createBrandingProject(
+          row.specific_work.trim(), REPORT_CARD_MARK, null, userId, [userId],
+          { typeOfWork: row.type_of_work, subCategory: row.sub_category, specificWork: row.specific_work.trim(),
+            assignedLeadId: leadId, boardStatus: "notstarted", priority: "medium" },
+        );
+        projectId = created.id;
+      }
     }
     if (projectId) {
       keptCards.add(projectId);
@@ -1764,6 +1802,8 @@ export interface ProjectAssignment {
   user_id: string;
   status: "pending" | "completed";
   completed_at: string | null;
+  /** When this designer was added to the project (drives "assigned to you"). */
+  assigned_at: string | null;
 }
 
 export const BOARD_STATUSES = ["notstarted", "inprogress", "review", "changes", "approved", "delivered"] as const;
@@ -1820,8 +1860,8 @@ export async function listBrandingProjects(forUserId?: string): Promise<Branding
   const projects = await pool.query<ProjectRow>(
     `SELECT * FROM branding_projects ORDER BY created_at DESC`
   );
-  const assignments = await pool.query<{ project_id: string; user_id: string; status: string; completed_at: string | null }>(
-    `SELECT project_id, user_id, status, completed_at FROM branding_project_assignments`
+  const assignments = await pool.query<{ project_id: string; user_id: string; status: string; completed_at: string | null; assigned_at: string | null }>(
+    `SELECT project_id, user_id, status, completed_at, assigned_at FROM branding_project_assignments`
   );
   const mapped = projects.rows.map(p => {
     const mine = assignments.rows.filter(a => a.project_id === p.id);
@@ -1835,6 +1875,7 @@ export async function listBrandingProjects(forUserId?: string): Promise<Branding
         user_id: a.user_id,
         status: (a.status === "completed" ? "completed" : "pending") as ProjectAssignment["status"],
         completed_at: a.completed_at,
+        assigned_at: a.assigned_at,
       })),
     };
   });
@@ -1888,7 +1929,19 @@ export async function completeProjectAssignment(projectId: string, userId: strin
     [projectId]
   );
   if (Number(remaining.rows[0].n) === 0) {
-    await pool.query(`UPDATE branding_projects SET status = 'completed' WHERE id = $1`, [projectId]);
+    // Every assignee is done → the project is delivered. Move its Kanban card
+    // to Delivered too (stamping the move) so completing from Daily Reports and
+    // completing by dragging on the board stay in sync. Only advance a card the
+    // timer/lead hasn't already parked in delivered.
+    await pool.query(
+      `UPDATE branding_projects
+          SET status = 'completed',
+              board_status = 'delivered',
+              board_moved_at = CASE WHEN board_status <> 'delivered' THEN now() ELSE board_moved_at END,
+              board_moved_by = CASE WHEN board_status <> 'delivered' THEN $2 ELSE board_moved_by END
+        WHERE id = $1`,
+      [projectId, userId]
+    );
   }
   const all = await listBrandingProjects();
   return all.find(p => p.id === projectId) ?? null;
@@ -1940,6 +1993,8 @@ export async function updateBrandingProjectBoard(
   patch: { boardStatus?: BoardStatus; priority?: Priority },
   movedBy: string | null = null,
 ): Promise<BrandingProject | null> {
+  const prev = await pool.query<{ board_status: string }>(`SELECT board_status FROM branding_projects WHERE id = $1`, [id]);
+  const prevStatus = prev.rows[0]?.board_status;
   const sets: string[] = [];
   const vals: unknown[] = [id];
   if (patch.boardStatus) {
@@ -1956,6 +2011,21 @@ export async function updateBrandingProjectBoard(
   if (sets.length === 0) return (await listBrandingProjects()).find(p => p.id === id) ?? null;
   const res = await pool.query(`UPDATE branding_projects SET ${sets.join(", ")} WHERE id = $1 RETURNING id`, vals);
   if (!res.rows[0]) return null;
+  // Keep the per-assignee completion in step with the board: dropping a card on
+  // Delivered completes every assignment (so Daily Reports stops showing it as
+  // pending and hides "Mark as completed"); dragging it back OUT of Delivered
+  // reopens them. Moving between non-delivered columns leaves assignments alone.
+  if (patch.boardStatus === "delivered" && prevStatus !== "delivered") {
+    await pool.query(
+      `UPDATE branding_project_assignments SET status = 'completed', completed_at = COALESCE(completed_at, now()) WHERE project_id = $1`,
+      [id]
+    );
+  } else if (patch.boardStatus && patch.boardStatus !== "delivered" && prevStatus === "delivered") {
+    await pool.query(
+      `UPDATE branding_project_assignments SET status = 'pending', completed_at = NULL WHERE project_id = $1`,
+      [id]
+    );
+  }
   return (await listBrandingProjects()).find(p => p.id === id) ?? null;
 }
 
@@ -1980,14 +2050,24 @@ export async function createAssignedReportRow(opts: {
   typeOfWork: string;
   subCategory: string;
   specificWork: string;
+  /** Link the row to the assigned project's card so the row's Status follows
+   *  the board (e.g. shows Delivered when the card is delivered). */
+  projectId?: string | null;
 }): Promise<void> {
   const report = await getOrCreateDailyReport(opts.designerId, opts.workDate);
-  const dup = await pool.query(
-    `SELECT 1 FROM daily_report_rows
+  const dup = await pool.query<{ id: string; project_id: string | null }>(
+    `SELECT id, project_id FROM daily_report_rows
       WHERE report_id=$1 AND type_of_work=$2 AND sub_category=$3 AND specific_work=$4`,
     [report.id, opts.typeOfWork, opts.subCategory, opts.specificWork]
   );
-  if ((dup.rowCount ?? 0) > 0) return;
+  if ((dup.rowCount ?? 0) > 0) {
+    // Row already there — just make sure it's linked to the project's card.
+    const existing = dup.rows[0];
+    if (opts.projectId && !existing.project_id) {
+      await pool.query(`UPDATE daily_report_rows SET project_id = $1 WHERE id = $2`, [opts.projectId, existing.id]);
+    }
+    return;
+  }
   const next = await pool.query<{ n: number }>(
     `SELECT COALESCE(MAX(sr_no),0)+1 AS n FROM daily_report_rows WHERE report_id=$1`,
     [report.id]
@@ -1995,9 +2075,9 @@ export async function createAssignedReportRow(opts: {
   await pool.query(
     `INSERT INTO daily_report_rows
        (id, report_id, sr_no, type_of_work, sub_category, specific_work,
-        time_taken, collaborative_colleagues, stopwatch_status, elapsed_seconds)
-     VALUES ($1, $2, $3, $4, $5, $6, '', ARRAY[]::TEXT[], 'idle', 0)`,
-    [generateId("drr"), report.id, next.rows[0].n, opts.typeOfWork, opts.subCategory, opts.specificWork]
+        time_taken, collaborative_colleagues, stopwatch_status, elapsed_seconds, project_id)
+     VALUES ($1, $2, $3, $4, $5, $6, '', ARRAY[]::TEXT[], 'idle', 0, $7)`,
+    [generateId("drr"), report.id, next.rows[0].n, opts.typeOfWork, opts.subCategory, opts.specificWork, opts.projectId ?? null]
   );
 }
 

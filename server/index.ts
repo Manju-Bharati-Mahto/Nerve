@@ -1746,11 +1746,14 @@ async function scopeAssignmentsForActor(
 
 app.post("/api/branding/portal/projects", asyncHandler(async (req, res) => {
   if (!requireBrandingLead(res)) return;
-  const { name, description, deadline, assigned_user_ids, type_of_work, sub_category, specific_work } = req.body as {
+  const { name, description, deadline, assigned_user_ids, type_of_work, sub_category, specific_work, board_status, priority, assigned_lead_id } = req.body as {
     name: string; description?: string; deadline?: string; assigned_user_ids?: string[];
     type_of_work?: string; sub_category?: string; specific_work?: string;
+    board_status?: string; priority?: string; assigned_lead_id?: string | null;
   };
   if (!name?.trim()) return sendError(res, 400, "Project name is required.");
+  if (board_status !== undefined && !(BOARD_STATUSES as readonly string[]).includes(board_status)) return sendError(res, 400, "Invalid board status.");
+  if (priority !== undefined && !(PRIORITIES as readonly string[]).includes(priority)) return sendError(res, 400, "Invalid priority.");
   const actor = res.locals.currentUser;
   const scoped = await scopeAssignmentsForActor(actor, assigned_user_ids ?? []);
   const project = await createBrandingProject(
@@ -1763,6 +1766,11 @@ app.post("/api/branding/portal/projects", asyncHandler(async (req, res) => {
       typeOfWork: type_of_work?.trim() ?? "",
       subCategory: sub_category?.trim() ?? "",
       specificWork: specific_work?.trim() ?? "",
+      // Honour the column/priority/lead the Kanban "Add project" modal sends,
+      // instead of forcing notstarted/medium/null.
+      boardStatus: board_status as typeof BOARD_STATUSES[number] | undefined,
+      priority: priority as typeof PRIORITIES[number] | undefined,
+      assignedLeadId: assigned_lead_id ?? null,
     },
   );
   res.status(201).json({ project });
@@ -1856,7 +1864,7 @@ app.post("/api/branding/portal/projects/assign", asyncHandler(async (req, res) =
   // Seed a daily-report row for each "assign to designers" assignee (designers
   // and leads picked there) — but NOT for the supervisory Assign-Lead.
   for (const designerId of scoped) {
-    await createAssignedReportRow({ designerId, workDate: work_date, typeOfWork, subCategory, specificWork });
+    await createAssignedReportRow({ designerId, workDate: work_date, typeOfWork, subCategory, specificWork, projectId: project.id });
   }
   res.status(201).json({ project });
 }));
