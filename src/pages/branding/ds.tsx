@@ -100,9 +100,12 @@ export const DS = {
   trSoftOdd: 'border-t border-[#C5CAD1] hover:bg-[#F9FAFB] transition-colors',
   tdSoft: 'py-3 px-4 text-[13px] text-[#111827]',
 
-  /** Overlays. */
-  overlay: 'fixed inset-0 !m-0 bg-[#111827]/30 z-50 flex items-start justify-center pt-16 sm:pt-24 px-4 overflow-y-auto nerve-overlay-in',
-  dialog: 'w-full bg-white rounded-[8px] border border-[#C5CAD1] shadow-[0_24px_48px_-12px_rgba(16,24,40,0.25)] mb-16 animate-scale-in',
+  /** Overlays. Symmetric py-12 (3rem each) exactly matches the dialog's
+      max-h-[calc(100vh-6rem)], so the dialog + its padding fills the viewport
+      without the overlay ever needing its own scrollbar on top of the body's
+      (which was the double-scroll / empty-gap glitch). */
+  overlay: 'fixed inset-0 !m-0 bg-[#111827]/30 z-50 flex items-start justify-center py-12 px-4 overflow-y-auto nerve-overlay-in',
+  dialog: 'w-full bg-white rounded-[8px] border border-[#C5CAD1] shadow-[0_24px_48px_-12px_rgba(16,24,40,0.25)] animate-scale-in',
 
   /** Divider. */
   divider: 'border-t border-[#C5CAD1]',
