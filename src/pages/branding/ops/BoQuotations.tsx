@@ -253,7 +253,7 @@ function AddQuotationDialog({ requests, listed, vendors, institutes, sizes, busy
           <p className="text-[11px] uppercase tracking-widest text-muted-foreground">New requirement</p>
           <RequestFields form={form} onChange={setForm} institutes={institutes} sizes={sizes} compact />
           {matches.length > 0 && (
-            <button type="button" className="text-xs text-[#0047AB] hover:underline"
+            <button type="button" className="text-xs text-bp-700 hover:underline"
               onClick={() => setChosenNew(false)}>
               Pick one of the {matches.length} matching requirement{matches.length === 1 ? '' : 's'} instead
             </button>
@@ -384,7 +384,7 @@ function RequirementCombobox({ text, matches, isNew, onText, onPick, onNew }: {
             <li role="option" aria-selected={active === shown.length}
               onMouseDown={e => { e.preventDefault(); choose(shown.length) }}
               onMouseEnter={() => setActive(shown.length)}
-              className={`px-3 py-2 cursor-pointer border-t border-border text-[#0047AB] ${active === shown.length ? 'bg-accent' : ''}`}>
+              className={`px-3 py-2 cursor-pointer border-t border-border text-bp-700 ${active === shown.length ? 'bg-accent' : ''}`}>
               <Plus className="w-3 h-3 inline -mt-0.5" /> Use “{typed}” as a new requirement
             </li>
           )}

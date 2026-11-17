@@ -209,7 +209,7 @@ export function QuoteAmount({ approved, lowest, count }: {
 export function QuoteInfoButton({ onClick, title = 'Quotation details' }: { onClick: () => void; title?: string }) {
   return (
     <button type="button" onClick={onClick} title={title} aria-label={title}
-      className="inline-flex items-center justify-center w-5 h-5 rounded-full text-[#0047AB] hover:bg-blue-50 align-middle">
+      className="inline-flex items-center justify-center w-5 h-5 rounded-full text-bp-700 hover:bg-blue-50 align-middle">
       <Info className="w-3.5 h-3.5" />
     </button>
   )
@@ -327,7 +327,7 @@ function QuoteRows({ q, diff, isLowest, open, onToggle }: {
         <td className="py-2 pr-3 text-xs">
           {q.revisions.length ? (
             <button type="button" onClick={onToggle}
-              className="inline-flex items-center gap-1 text-[#0047AB] hover:underline">
+              className="inline-flex items-center gap-1 text-bp-700 hover:underline">
               <History className="w-3 h-3" /> {q.revisions.length} earlier version{q.revisions.length === 1 ? '' : 's'}
             </button>
           ) : <span className="text-muted-foreground">Original</span>}
