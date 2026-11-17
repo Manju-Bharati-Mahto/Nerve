@@ -32,6 +32,7 @@ import { applySavedPrimary } from './theme'
 import BrandingBrowse from './BrandingBrowse'
 import BrandingKanban from './BrandingKanban'
 import BrandingTeamPanel from './BrandingTeamPanel'
+import BrandingProjectsAssign from './BrandingProjectsAssign'
 import SettingsPage from './BrandingAccountPage'
 import {
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, CartesianGrid,
@@ -183,7 +184,7 @@ function myProjectStatus(p: BrandingProject, userId?: string): 'completed' | 'pe
   return p.status === 'completed' ? 'completed' : 'pending'
 }
 
-type NavPage = 'dashboard' | 'daily-reports' | 'analytics' | 'self-appraisal' | 'gallery' | 'team' | 'members' | 'settings' | 'help' | 'notifications'
+type NavPage = 'dashboard' | 'daily-reports' | 'analytics' | 'self-appraisal' | 'gallery' | 'team' | 'members' | 'assign' | 'settings' | 'help' | 'notifications'
 
 function blankRow(sr: number): DraftRow {
   return {
@@ -2780,16 +2781,30 @@ function DailyReportsPage({
   }
 
   async function applyRowPatch(key: string, patch: Partial<DraftRow>) {
-    // Row timers are independent and any number of them may run at once. Real
-    // work overlaps — a render going in the background while a poster is being
-    // laid out — and forcing one at a time meant that time was either lost or
-    // logged against the wrong row.
-    //
-    // Nothing here has to arbitrate: each row carries its own
-    // stopwatch_started_at and its elapsed time is derived from that alone. The
-    // server stores them the same way, and the 5 PM auto-pause and the submit
-    // snapshot already walk every running row rather than assuming a single one.
-    const next = rowsRef.current.map(r => (r._key === key ? { ...r, ...patch } : r))
+    // Only one timer runs at a time. Starting (or resuming) a row's timer
+    // auto-pauses every other running row, banking its elapsed seconds the same
+    // way the manual pause does, so concurrent timers can't inflate the day's
+    // total. Non-start patches (pause/finish/field edits) leave other rows
+    // untouched.
+    const startingTimer = patch.stopwatch_status === 'running'
+    const now = Date.now()
+    const nowIso = new Date(now).toISOString()
+    const next = rowsRef.current.map(r => {
+      if (r._key === key) return { ...r, ...patch }
+      if (startingTimer && r.stopwatch_status === 'running') {
+        const since = r.stopwatch_started_at
+          ? Math.max(0, Math.floor((now - new Date(r.stopwatch_started_at).getTime()) / 1000))
+          : 0
+        return {
+          ...r,
+          stopwatch_status: 'paused' as StopwatchStatus,
+          elapsed_seconds: r.elapsed_seconds + since,
+          stopwatch_started_at: null,
+          last_paused_at: nowIso,
+        }
+      }
+      return r
+    })
     rowsRef.current = next
     setRows(next)
     if (!report || report.is_locked) return
@@ -4416,6 +4431,10 @@ const PAGE_META: Record<NavPage, { title: string; subtitle: string }> = {
     title: 'Daily Reports',
     subtitle: 'Track and submit your daily work & project deliverables',
   },
+  assign: {
+    title: 'Assign Projects',
+    subtitle: 'Create and hand work to your team',
+  },
   analytics: {
     title: 'Analytics',
     subtitle: 'Comprehensive performance, hours and work breakdown',
@@ -5134,9 +5153,14 @@ export default function BrandingUserDashboard() {
       }
     }
 
-    // 3. Work handed to you in the last week.
+    // 3. Work handed to YOU in the last week — keyed off when this designer was
+    //    assigned (assignment.assigned_at), not the project's creation time, so
+    //    being added to an older project still notifies and others' assignments
+    //    don't.
     for (const pr of mine) {
-      const age = (now.getTime() - new Date(pr.created_at).getTime()) / dayMs
+      const myAssignment = (pr.assignments ?? []).find(a => a.user_id === profile?.id)
+      const assignedAt = myAssignment?.assigned_at ?? pr.created_at
+      const age = (now.getTime() - new Date(assignedAt).getTime()) / dayMs
       if (age > 7) continue
       const lead = users.find(u => u.id === pr.assigned_lead_id || u.id === pr.created_by)
       items.push({
@@ -5327,8 +5351,23 @@ export default function BrandingUserDashboard() {
       // a running row, and "Save draft" always parks an idle one — there is
       // no third case where a row arrives already finished.
       const timed = mode === 'start'
-      await brandingApi.saveRows(rep.id, [...existing, {
-        sr_no: existing.length + 1,
+      // Only one timer runs at a time: starting a new timed row pauses any row
+      // that is already running, banking its elapsed seconds.
+      const now = Date.now()
+      const nowIso = new Date(now).toISOString()
+      const prepared = timed
+        ? existing.map(r => r.stopwatch_status === 'running'
+            ? {
+                ...r,
+                stopwatch_status: 'paused' as StopwatchStatus,
+                elapsed_seconds: r.elapsed_seconds + (r.stopwatch_started_at ? Math.max(0, Math.floor((now - new Date(r.stopwatch_started_at).getTime()) / 1000)) : 0),
+                stopwatch_started_at: null,
+                last_paused_at: nowIso,
+              }
+            : r)
+        : existing
+      await brandingApi.saveRows(rep.id, [...prepared, {
+        sr_no: prepared.length + 1,
         type_of_work: nrType,
         sub_category: nrSub,
         specific_work: nrWork.trim(),
@@ -5436,10 +5475,7 @@ export default function BrandingUserDashboard() {
               {isLead && <NavButton page="members" icon={Users} label="Team Members" />}
 
               {(role === 'task_owner' || role === 'task_manager') && (
-                <Link to="/branding/projects" className={cx(L.nav, L.navOff)}>
-                  <FolderPlus className={L.navIcon} strokeWidth={1.75} />
-                  <span className="truncate">Assign Projects</span>
-                </Link>
+                <NavButton page="assign" icon={FolderPlus} label="Assign Projects" />
               )}
               {(profile?.capabilities ?? []).map(rawKey => {
                 const key = rawKey as CapabilityKey
@@ -5699,6 +5735,7 @@ export default function BrandingUserDashboard() {
             {activePage === 'gallery' && <BrandingBrowse embedded />}
             {activePage === 'team' && <BrandingKanban embedded />}
             {activePage === 'members' && <BrandingTeamPanel />}
+            {activePage === 'assign' && <BrandingProjectsAssign />}
             {activePage === 'settings' && <SettingsPage profile={profile} />}
             {activePage === 'help' && <HelpPage onNavigate={setActivePage} />}
             {activePage === 'notifications' && (

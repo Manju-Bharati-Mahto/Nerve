@@ -186,6 +186,8 @@ export interface ProjectAssignment {
   user_id: string;
   status: "pending" | "completed";
   completed_at: string | null;
+  /** When this designer was added to the project (drives "assigned to you"). */
+  assigned_at?: string | null;
 }
 
 export interface BrandingProject {
