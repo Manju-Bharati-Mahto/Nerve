@@ -127,6 +127,11 @@ export function getRoleDashboard(
   if (role === 'outreach_state_user')   return '/outreach/dashboard'
   // BrandOps is an Inventory Manager's entire workspace.
   if (role === 'inventory_manager')     return '/branding/ops/dashboard'
+  // Ops managers sit above leads/members: Brand Ops owns the inventory
+  // workspace, Design Ops owns the branding admin workspace (their tabs are
+  // granted per-manager via capabilities).
+  if (role === 'brand_ops_manager')     return '/branding/ops/dashboard'
+  if (role === 'design_ops_manager')    return '/branding/dashboard'
   if (role === 'branding_reports_admin') return '/branding/dashboard'
   if (role === 'design_reports_admin')  return '/design/dashboard'
   // Media Crew uses the self-contained Media Ops app, which adapts its own UI

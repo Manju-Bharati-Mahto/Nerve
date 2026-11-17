@@ -41,13 +41,25 @@ const STATUS_BADGE: Record<BrandingProject['status'], Tone> = {
 }
 // ── Member Dialog ──────────────────────────────────────────────────────────
 
+type MemberRole = 'user' | 'sub_admin' | 'task_owner' | 'task_manager' | 'inventory_manager' | 'brand_ops_manager' | 'design_ops_manager'
+
 interface MemberFormState {
   full_name: string
   email: string
   password: string
   department: string
-  role: 'user' | 'sub_admin' | 'task_owner' | 'task_manager' | 'inventory_manager'
+  role: MemberRole
   capabilities: string[]
+}
+
+// Default tabs granted when a role is set to an Ops Manager — the admin can
+// still tick/untick afterwards. Brand Ops owns the inventory; Design Ops owns
+// reports, categories, leave calendar, project assignment and the Kanban board.
+const DESIGN_OPS_DEFAULT_CAPS = ['branding:view_team_dashboard', 'branding:manage_categories', 'branding:leave_calendar', 'branding:assign_projects', 'branding:view_kanban']
+function defaultCapsForRole(role: MemberRole): string[] {
+  if (role === 'brand_ops_manager') return [...BO_CAPABILITIES]
+  if (role === 'design_ops_manager') return [...DESIGN_OPS_DEFAULT_CAPS]
+  return []
 }
 
 function emptyMember(): MemberFormState {
@@ -174,12 +186,27 @@ function MemberDialog({ mode, initial, canManageCapabilities, onSave, onClose }:
           <select
             className={DS.select}
             value={form.role}
-            onChange={e => setForm(f => ({ ...f, role: e.target.value as MemberFormState['role'] }))}
+            onChange={e => {
+              const role = e.target.value as MemberRole
+              // Seed the manager's default tabs on selection (union with any
+              // already ticked); admin can still adjust below.
+              setForm(f => ({
+                ...f,
+                role,
+                capabilities: [...new Set([...f.capabilities, ...defaultCapsForRole(role)])],
+              }))
+            }}
           >
-            <option value="user">Designer</option>
-            <option value="sub_admin">Team Lead</option>
-            <option value="task_owner">Task Owner</option>
-            <option value="task_manager">Task Manager</option>
+            <optgroup label="Team">
+              <option value="user">Designer</option>
+              <option value="sub_admin">Team Lead</option>
+              <option value="task_owner">Task Owner</option>
+              <option value="task_manager">Task Manager</option>
+            </optgroup>
+            <optgroup label="Managers (above leads)">
+              <option value="brand_ops_manager">Brand Ops Manager</option>
+              <option value="design_ops_manager">Design Ops Manager</option>
+            </optgroup>
             <option value="inventory_manager">Inventory Manager (BrandOps)</option>
           </select>
         </div>
@@ -230,7 +257,7 @@ function MemberDialog({ mode, initial, canManageCapabilities, onSave, onClose }:
             <div className="mt-5">
               <div className="flex items-center justify-between gap-2 mb-1">
                 <p className={DS.eyebrow}>
-                  BrandOps tabs {form.role === 'inventory_manager' && <span className="text-rose-500">*</span>}
+                  BrandOps tabs {(form.role === 'inventory_manager' || form.role === 'brand_ops_manager') && <span className="text-rose-500">*</span>}
                 </p>
                 <button type="button"
                   onClick={() => setForm(f => ({
@@ -445,7 +472,7 @@ function ProjectDialog({ mode, initial, members, onSave, onClose }: ProjectDialo
                     <Avatar url={m.avatar_url} name={m.full_name} email={m.email} size="xs" />
                     <span className={cx('text-sm font-semibold truncate', on ? 'text-bp-800' : 'text-[#111827]')}>{m.full_name || m.email}</span>
                     <span className="ml-auto text-[11px] font-semibold text-[#9CA3AF] shrink-0">
-                      {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : m.role === 'task_manager' ? 'Task Manager' : m.role === 'inventory_manager' ? 'Inventory Mgr' : 'Member'}
+                      {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : m.role === 'task_manager' ? 'Task Manager' : m.role === 'inventory_manager' ? 'Inventory Mgr' : m.role === 'brand_ops_manager' ? 'Brand Ops Mgr' : m.role === 'design_ops_manager' ? 'Design Ops Mgr' : 'Member'}
                     </span>
                   </label>
                 )
@@ -776,8 +803,12 @@ export default function BrandingTeamPanel() {
 
   // ── Render ─────────────────────────────────────────────────────────────
 
+  const teamManagers = members.filter(m => m.role === 'brand_ops_manager' || m.role === 'design_ops_manager')
   const teamLeads = members.filter(m => m.role === 'sub_admin' || m.role === 'task_owner' || m.role === 'task_manager')
   const teamMembers = members.filter(m => m.role === 'user')
+  // Who a lead or member can be assigned under (managed_by): a manager (top of
+  // the team) or a lead. Managers themselves report to the admin, not listed.
+  const assignableOwners = [...teamManagers, ...teamLeads]
 
   // Below the lg breakpoint a member's to-dos open as a page of their own
   // (like every other page on a phone) instead of a dialog.
@@ -886,6 +917,22 @@ export default function BrandingTeamPanel() {
             )}
           </div>
 
+          {teamManagers.length > 0 && (
+            <MemberGroup
+              label="Managers"
+              items={teamManagers}
+              isAdmin={isAdmin}
+              statuses={todayStatuses}
+              loading={statusLoading}
+              currentUserId={user?.id}
+              teamLeads={assignableOwners}
+              assignable={false}
+              onEdit={m => setMemberDialog({ mode: 'edit', member: m })}
+              onDelete={m => { setDeleteTarget(m); setDeleteConfirm(false) }}
+              onAssign={handleAssignMember}
+              onViewTodos={m => setViewingTodosMember(m)}
+            />
+          )}
           <MemberGroup
             label="Team leads"
             items={teamLeads}
@@ -893,7 +940,7 @@ export default function BrandingTeamPanel() {
             statuses={todayStatuses}
             loading={statusLoading}
             currentUserId={user?.id}
-            teamLeads={teamLeads}
+            teamLeads={assignableOwners}
             onEdit={m => setMemberDialog({ mode: 'edit', member: m })}
             onDelete={m => { setDeleteTarget(m); setDeleteConfirm(false) }}
             onAssign={handleAssignMember}
@@ -906,7 +953,7 @@ export default function BrandingTeamPanel() {
             statuses={todayStatuses}
             loading={statusLoading}
             currentUserId={user?.id}
-            teamLeads={teamLeads}
+            teamLeads={assignableOwners}
             onEdit={m => setMemberDialog({ mode: 'edit', member: m })}
             onDelete={m => { setDeleteTarget(m); setDeleteConfirm(false) }}
             onAssign={handleAssignMember}
@@ -978,7 +1025,7 @@ export default function BrandingTeamPanel() {
             email: memberDialog.member.email,
             password: '',
             department: memberDialog.member.department,
-            role: memberDialog.member.role === 'sub_admin' ? 'sub_admin' : memberDialog.member.role === 'task_owner' ? 'task_owner' : memberDialog.member.role === 'task_manager' ? 'task_manager' : memberDialog.member.role === 'inventory_manager' ? 'inventory_manager' : 'user',
+            role: memberDialog.member.role === 'sub_admin' ? 'sub_admin' : memberDialog.member.role === 'task_owner' ? 'task_owner' : memberDialog.member.role === 'task_manager' ? 'task_manager' : memberDialog.member.role === 'inventory_manager' ? 'inventory_manager' : memberDialog.member.role === 'brand_ops_manager' ? 'brand_ops_manager' : memberDialog.member.role === 'design_ops_manager' ? 'design_ops_manager' : 'user',
             capabilities: memberDialog.member.capabilities ?? [],
           }}
           onSave={data => handleEditMember(data, memberDialog.member.id)}
@@ -1083,7 +1130,7 @@ export default function BrandingTeamPanel() {
 // ── MemberGroup sub-component ──────────────────────────────────────────────
 
 function MemberGroup({
-  label, items, isAdmin, statuses, loading, currentUserId, teamLeads, onEdit, onDelete, onAssign, onViewTodos
+  label, items, isAdmin, statuses, loading, currentUserId, teamLeads, assignable = true, onEdit, onDelete, onAssign, onViewTodos
 }: {
   label: string
   items: AppUser[]
@@ -1092,6 +1139,8 @@ function MemberGroup({
   loading: boolean
   currentUserId?: string
   teamLeads: AppUser[]
+  /** false hides the "assigned under" dropdown (e.g. for managers). */
+  assignable?: boolean
   onEdit: (m: AppUser) => void
   onDelete: (m: AppUser) => void
   onAssign: (memberId: string, leadId: string | null) => Promise<void>
@@ -1107,7 +1156,12 @@ function MemberGroup({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
         {items.map(m => {
           const status = statuses.find(s => s.user_id === m.id)
-          const isLead = m.role === 'sub_admin'
+          const isManagerItem = m.role === 'brand_ops_manager' || m.role === 'design_ops_manager'
+          const isLead = m.role === 'sub_admin' || m.role === 'task_owner' || m.role === 'task_manager'
+          const roleBadge = m.role === 'brand_ops_manager' ? 'Brand Ops Manager'
+            : m.role === 'design_ops_manager' ? 'Design Ops Manager'
+            : isLead ? 'Team Lead'
+            : 'Team Member'
           const isSelf = m.id === currentUserId
           return (
             <div
@@ -1131,14 +1185,16 @@ function MemberGroup({
 
               {/* Role + designation */}
               <div className="flex items-center gap-2 flex-wrap mt-3">
-                <Badge tone="info">{isLead ? 'Team Lead' : 'Team Member'}</Badge>
+                <Badge tone="info">{roleBadge}</Badge>
                 <span className="text-xs text-[#6B7280] font-medium truncate">
-                  {m.department || (isLead ? 'Team Lead' : 'Team Member')}
+                  {m.department || roleBadge}
                 </span>
               </div>
 
-              {/* Assign to lead — admin only, regular members only */}
-              {isAdmin && !isLead && (
+              {/* Assigned under — admin only; managers report to the admin, so
+                  they have no owner dropdown. Leads and members can be placed
+                  under a manager (or a lead). */}
+              {assignable && isAdmin && !isManagerItem && (
                 <div className="mt-3">
                   <select
                     defaultValue={m.managed_by ?? ''}
@@ -1279,7 +1335,7 @@ function ProjectCard({
                   <Avatar url={m.avatar_url} name={m.full_name} email={m.email} size="xs" className="!rounded-full" />
                   <span className="text-xs font-semibold text-bp-800">{m.full_name || m.email}</span>
                   <span className="text-[10px] font-semibold text-bp-700/70">
-                    {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : m.role === 'task_manager' ? 'Task Manager' : m.role === 'inventory_manager' ? 'Inventory Mgr' : 'Member'}
+                    {m.role === 'sub_admin' ? 'Lead' : m.role === 'task_owner' ? 'Task Owner' : m.role === 'task_manager' ? 'Task Manager' : m.role === 'inventory_manager' ? 'Inventory Mgr' : m.role === 'brand_ops_manager' ? 'Brand Ops Mgr' : m.role === 'design_ops_manager' ? 'Design Ops Mgr' : 'Member'}
                   </span>
                 </div>
               ))}
