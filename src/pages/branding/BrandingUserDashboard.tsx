@@ -2817,8 +2817,30 @@ export function DailyReportsPage({
   }
 
   const addRow = () => setRows(prev => [...prev, blankRow(prev.length + 1)])
-  const deleteRow = (key: string) =>
-    setRows(prev => prev.filter(r => r._key !== key).map((r, i) => ({ ...r, sr_no: i + 1 })))
+  // Deleting a row must persist, not just drop it from local state. The load
+  // effect re-reads report.rows from the server on every return to this page,
+  // so a purely-local delete was silently restored on navigation — and because
+  // starting that row's timer had auto-paused another running row (saved
+  // server-side), the restored report also showed the other timer stopped.
+  // Persist the remaining rows the same way applyRowPatch / saveDraft do, using
+  // rowsRef to avoid the setRows → save race.
+  const deleteRow = async (key: string) => {
+    const next = rowsRef.current
+      .filter(r => r._key !== key)
+      .map((r, i) => ({ ...r, sr_no: i + 1 }))
+    rowsRef.current = next
+    setRows(next)
+    // Only a saved, unlocked report has server-side rows to rewrite; a brand-new
+    // draft that was never saved has nothing to persist, and a locked one is
+    // read-only.
+    if (!report || report.is_locked) return
+    try {
+      await brandingApi.saveRows(report.id, next.map(rowPayload))
+      reloadProjects()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to delete row')
+    }
+  }
 
   async function saveDraft() {
     if (!report || report.is_locked) return
