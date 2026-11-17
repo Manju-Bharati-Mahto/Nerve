@@ -1,19 +1,25 @@
 /**
  * /verify-email — landing point after a user clicks the email-verification
- * link. Token comes in via ?token=<jwt>. Themed to match the landing
- * page's pearl-pink AuthShell.
+ * link. Token comes in via ?token=<jwt>. Uses the clean Nerve-Light chrome
+ * (same as the /login page).
  */
 import { useEffect, useState } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import { api } from '@/lib/api'
 import { CheckCircle2, XCircle, Loader2 } from 'lucide-react'
-import AuthShell from '@/components/AuthShell'
+import { L, cx } from '@/pages/branding/ds2'
+import { applySavedPrimary } from '@/pages/branding/theme'
+import BrandLogo from '@/components/BrandLogo'
+import { ModeToggle } from '@/pages/branding/ThemeModal'
 
 export default function VerifyEmailPage() {
   const [params] = useSearchParams()
   const token = params.get('token') ?? ''
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading')
   const [msg, setMsg] = useState('')
+
+  // Match the dashboard's chosen primary colour on this page too.
+  useEffect(() => { applySavedPrimary() }, [])
 
   useEffect(() => {
     if (!token) { setStatus('error'); setMsg('Missing verification token.'); return }
@@ -22,43 +28,61 @@ export default function VerifyEmailPage() {
       .catch(e => { setStatus('error'); setMsg(e instanceof Error ? e.message : 'Verification failed.') })
   }, [token])
 
-  const cardCls    = 'rounded-2xl p-6 bg-[#ffe4f2]/[0.16] backdrop-blur-xl border-2 border-[#ffe4f2] ring-2 ring-[#ffe4f2]/35 space-y-4 text-center'
-  const buttonCls  = 'inline-block px-5 py-2.5 rounded-lg bg-gradient-to-br from-white via-[#ffe4f2] to-[#f5b8d5] text-[#5a2b3e] text-sm font-bold tracking-wide shadow-[0_8px_30px_rgba(255,228,242,0.65),inset_0_1px_0_rgba(255,255,255,0.85)] hover:from-[#fff7fb] hover:via-white hover:to-[#ffe4f2] active:translate-y-px transition-all'
-  const linkCls    = 'text-xs text-[#ffe4f2] hover:text-white font-bold'
+  const linkCls = 'text-[13px] text-[var(--nerve-primary)] hover:underline'
 
   let heading = 'Verifying your email'
-  let sub: string | undefined = 'One moment while we confirm your link…'
+  let sub: string = 'One moment while we confirm your link…'
   if (status === 'success') { heading = 'Email verified'; sub = 'Your account is now active' }
   else if (status === 'error') { heading = 'Verification failed'; sub = 'The link may be expired or already used' }
 
+  const year = new Date().getFullYear()
+
   return (
-    <AuthShell heading={heading} subheading={sub}>
-      <div className={cardCls}>
-        {status === 'loading' && (
-          <>
-            <Loader2 className="w-8 h-8 text-[#ffe4f2] animate-spin mx-auto" />
-            <p className="text-sm font-semibold text-[#ffe4f2]/85">Verifying your email…</p>
-          </>
-        )}
-        {status === 'success' && (
-          <>
-            <div className="w-12 h-12 rounded-full bg-[#ffe4f2]/20 flex items-center justify-center mx-auto">
-              <CheckCircle2 className="w-6 h-6 text-[#ffe4f2]" />
-            </div>
-            <p className="text-xs font-semibold text-[#ffe4f2]/85">You can now sign in to your workspace.</p>
-            <Link to="/login" className={buttonCls}>Sign in</Link>
-          </>
-        )}
-        {status === 'error' && (
-          <>
-            <div className="w-12 h-12 rounded-full bg-rose-500/20 flex items-center justify-center mx-auto">
-              <XCircle className="w-6 h-6 text-rose-300" />
-            </div>
-            <p className="text-xs font-semibold text-[#ffe4f2]/80">{msg || 'The link may be expired or already used.'}</p>
-            <Link to="/login" className={linkCls}>Back to sign in</Link>
-          </>
-        )}
+    <div className="nerve-light relative min-h-screen bg-[#F9FAFB] text-[#111827] flex flex-col">
+      <div className="absolute top-3 right-3 sm:top-4 sm:right-4">
+        <ModeToggle />
       </div>
-    </AuthShell>
+      <main className="flex-1 flex items-center justify-center px-4 py-10">
+        <div className="w-full max-w-[400px] flex flex-col items-center nerve-page-in">
+          <BrandLogo variant="parul" className="w-[300px] sm:w-[340px] max-w-full mb-7" />
+
+          <section className={cx(L.card, 'w-full p-6 sm:p-7 text-center')}>
+            <h1 className={L.greeting}>{heading}</h1>
+            <p className={L.pageSub}>{sub}</p>
+
+            <div className="mt-5 space-y-3">
+              {status === 'loading' && (
+                <>
+                  <Loader2 className="w-8 h-8 text-[var(--nerve-primary)] animate-spin mx-auto" />
+                  <p className="text-[13px] font-medium text-[#374151]">Verifying your email…</p>
+                </>
+              )}
+              {status === 'success' && (
+                <>
+                  <div className="w-12 h-12 rounded-full bg-[var(--nerve-primary-soft)] flex items-center justify-center mx-auto">
+                    <CheckCircle2 className="w-6 h-6 text-[var(--nerve-primary)]" />
+                  </div>
+                  <p className="text-[13px] font-medium text-[#374151]">You can now sign in to your workspace.</p>
+                  <Link to="/login" className={cx(L.btn, L.btnPrimary, 'inline-flex')}>Sign in</Link>
+                </>
+              )}
+              {status === 'error' && (
+                <>
+                  <div className="w-12 h-12 rounded-full bg-[#FEF2F2] flex items-center justify-center mx-auto">
+                    <XCircle className="w-6 h-6 text-[#DC2626]" />
+                  </div>
+                  <p className="text-[13px] font-medium text-[#374151]">{msg || 'The link may be expired or already used.'}</p>
+                  <Link to="/login" className={linkCls}>Back to sign in</Link>
+                </>
+              )}
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <footer className="h-10 shrink-0 flex items-center justify-center px-4 text-[11px] text-[#9CA3AF]">
+        © {year} Parul University · Access is granted by your Super Admin.
+      </footer>
+    </div>
   )
 }
