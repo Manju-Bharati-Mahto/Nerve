@@ -177,10 +177,13 @@ export default function BrandingAdminShell({ children, title, subtitle, actions 
   const pageTitle = title ?? meta?.title ?? 'Dashboard'
   const pageSubtitle = subtitle ?? meta?.subtitle ?? ''
 
-  // Branding members get a full-bleed canvas from AppLayout; anyone else
-  // (a super admin, say) still has the global sidebar and page padding, so
-  // the shell climbs out of that padding to fill the viewport.
-  const fullBleed = team === 'branding' && location.pathname.startsWith('/branding/')
+  // AppLayout renders every `/branding` route edge-to-edge (no global sidebar,
+  // no page padding) regardless of role, so key full-bleed on the pathname too
+  // — matching AppLayout. Otherwise a non-branding viewer (e.g. a super admin)
+  // applies the negative-margin climb-out against padding that isn't there and
+  // shears the shell up/left, clipping the logo. The shell still falls back to
+  // the padded climb-out on non-/branding hosts (e.g. /admin/export).
+  const fullBleed = location.pathname.startsWith('/branding')
 
   const now = new Date()
   const headerDate = `${now.toLocaleDateString('en-GB', { weekday: 'long' })}, ${now.getDate()} ${now.toLocaleDateString('en-GB', { month: 'long' })} ${now.getFullYear()}`

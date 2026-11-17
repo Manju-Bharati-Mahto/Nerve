@@ -19,7 +19,7 @@ export function BoPage({ title, subtitle, icon: Icon, actions, children }: {
         <div className="flex items-center gap-3">
           {Icon && (
             <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center shrink-0">
-              <Icon className="w-5 h-5 text-[#0047AB]" />
+              <Icon className="w-5 h-5 text-bp-700" />
             </div>
           )}
           <div>
@@ -54,7 +54,7 @@ export function BoEmpty({ children }: { children: React.ReactNode }) {
 export function BoKpi({ label, value, accent, onClick }: {
   label: string; value: React.ReactNode; accent?: boolean; onClick?: () => void
 }) {
-  const cls = `hub-card py-3 ${accent ? 'border-amber-300 bg-amber-50/50' : ''} ${onClick ? 'cursor-pointer hover:border-[#0047AB] transition-colors' : ''}`
+  const cls = `hub-card py-3 ${accent ? 'border-amber-300 bg-amber-50/50' : ''} ${onClick ? 'cursor-pointer hover:border-bp-600 transition-colors' : ''}`
   return (
     <div className={cls} onClick={onClick} role={onClick ? 'button' : undefined} tabIndex={onClick ? 0 : undefined}
       onKeyDown={onClick ? e => { if (e.key === 'Enter' || e.key === ' ') onClick() } : undefined}>
@@ -139,7 +139,7 @@ export function BoButton({ onClick, children, variant = 'primary', disabled, typ
   title?: string
 }) {
   const styles = {
-    primary: 'bg-[#0047AB] text-white hover:opacity-90',
+    primary: 'bg-bp-600 text-white hover:opacity-90',
     ghost: 'border border-border text-muted-foreground hover:bg-accent',
     danger: 'border border-rose-200 text-rose-600 hover:bg-rose-50',
     success: 'bg-emerald-600 text-white hover:opacity-90',

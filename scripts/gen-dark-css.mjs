@@ -19,9 +19,12 @@ import { fileURLToPath } from 'node:url'
 import colors from 'tailwindcss/colors.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-// Nerve uses LandingPage.tsx (no Landing.tsx). Scan only the branding portal
-// and the shared auth/landing pages this theme actually styles.
-const SCAN = ['src/pages/branding', 'src/components', 'src/pages/Login.tsx', 'src/pages/LoginForm.tsx', 'src/pages/ResetPassword.tsx', 'src/pages/VerifyEmail.tsx', 'src/pages/LandingPage.tsx']
+// Scan every page and shared component: all departments now render inside the
+// dark-capable Nerve-Light chrome, so their fixed colour utilities (hex and
+// Tailwind named, e.g. bg-blue-50 / text-purple-600) each need a dark
+// counterpart. The generator dedupes, and overrides only apply under `.dark`,
+// so scanning broadly is safe. (The old galaxy LandingPage.tsx is gone.)
+const SCAN = ['src/pages', 'src/components']
 const OUT = join(ROOT, 'src/dark.css')
 
 // ── Palette ──────────────────────────────────────────────────────────────

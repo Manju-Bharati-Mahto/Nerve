@@ -12,7 +12,6 @@ import OutreachStates from "@/pages/outreach/OutreachStates";
 
 // Public
 import LoginPage from "@/pages/Login";
-import LandingPage from "@/pages/LandingPage";
 import ResetPasswordPage from "@/pages/ResetPassword";
 import VerifyEmailPage from "@/pages/VerifyEmail";
 import { useAuth, getRoleDashboard } from "@/hooks/useAuth";
@@ -24,6 +23,7 @@ import TeamPanel from "@/pages/TeamPanel";
 
 // Super Admin
 import SuperAdminDashboard from "@/pages/SuperAdminDashboard";
+import SuperAdminOverview from "@/pages/SuperAdminOverview";
 import SuperAdminUsers from "@/pages/SuperAdminUsers";
 import SuperAdminSettings from "@/pages/SuperAdminSettings";
 
@@ -147,6 +147,11 @@ const App = () => (
             <Route element={<AppLayout />}>
 
               {/* ── Super Admin only ── */}
+              <Route path="/super-admin/overview" element={
+                <RoleGuard allowed={['super_admin']}>
+                  <SuperAdminOverview />
+                </RoleGuard>
+              } />
               <Route path="/super-admin/dashboard" element={
                 <RoleGuard allowed={['super_admin']}>
                   <SuperAdminDashboard />
@@ -746,13 +751,12 @@ const App = () => (
 );
 
 // Root route — logged-in users go straight to their role dashboard;
-// logged-out visitors see the landing page (scroll-driven neuron
-// animation + embedded login form at the end of scroll).
+// logged-out visitors are sent to the clean Nerve-Light login page.
 function RootRoute() {
   const { user, role, team, loading } = useAuth()
   if (loading) return null
   if (user && role) return <Navigate to={getRoleDashboard(role, team, user.creator)} replace />
-  return <LandingPage />
+  return <Navigate to="/login" replace />
 }
 
 export default App;

@@ -112,9 +112,12 @@ export default {
         },
       },
       fontFamily: {
+        // Unified on Inter (the Nerve-Light portal font) across the whole
+        // product. `sans`/`serif` both resolve to Inter so every page — and the
+        // body default — matches the branding design without touching page files.
         inter: ['Inter', 'system-ui', 'sans-serif'],
-        sans: ['"DM Sans"', 'system-ui', 'sans-serif'],
-        serif: ['"DM Serif Display"', 'Georgia', 'serif'],
+        sans: ['Inter', 'system-ui', 'sans-serif'],
+        serif: ['Inter', 'Georgia', 'serif'],
       },
       borderRadius: {
         lg: "var(--radius)",

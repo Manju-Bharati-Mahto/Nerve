@@ -37,7 +37,7 @@ export default function BoInstitutes() {
               <BoCell strong>{i.name}</BoCell>
               <BoCell>{i.faculty}</BoCell>
               <BoCell nowrap>
-                <span className={i.frames_in_use > 0 ? 'text-[#0047AB] font-semibold' : ''}>{i.frames_in_use}</span>
+                <span className={i.frames_in_use > 0 ? 'text-bp-700 font-semibold' : ''}>{i.frames_in_use}</span>
               </BoCell>
               <BoCell nowrap>
                 <span className={`hub-badge ${i.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>

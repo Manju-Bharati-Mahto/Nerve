@@ -62,7 +62,7 @@ export default function BoActivity() {
           <ol className="space-y-3.5">
             {rows.map(a => (
               <li key={a.id} className="flex gap-3">
-                <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-[#0047AB] shrink-0" />
+                <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-bp-600 shrink-0" />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm text-foreground">
                     <span className="font-medium">{a.action}</span>
