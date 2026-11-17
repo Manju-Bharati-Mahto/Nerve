@@ -549,7 +549,7 @@ export async function createUser(input: CreateUserInput) {
       input.department,
       input.role,
       input.team,
-      input.role === "user" ? input.managed_by : null,
+      ["user", "sub_admin", "task_owner", "task_manager", "inventory_manager"].includes(input.role) ? input.managed_by : null,
       passwordHash,
       input.mobile?.trim() || null,
     ],
@@ -564,7 +564,12 @@ export async function updateUser(id: string, input: UpdateUserInput) {
   const passwordHash = input.password ? await hashPassword(input.password) : current.password_hash;
   const role = input.role ?? current.role;
   const team = input.team === undefined ? current.team : input.team;
-  const managedBy = role === "user"
+  // Roles that can be placed under a parent (managed_by): members, leads and
+  // inventory managers. Leads report up to an Ops Manager; members to a lead or
+  // a manager. Admins/super-admins and the Ops Managers themselves report to
+  // the admin, so they carry no parent.
+  const CAN_HAVE_PARENT = ["user", "sub_admin", "task_owner", "task_manager", "inventory_manager"];
+  const managedBy = CAN_HAVE_PARENT.includes(role)
     ? (input.managed_by === undefined ? current.managed_by : input.managed_by)
     : null;
 
