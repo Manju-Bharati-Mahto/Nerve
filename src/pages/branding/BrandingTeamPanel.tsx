@@ -247,7 +247,7 @@ function MemberDialog({ mode, initial, canManageCapabilities, onSave, onClose }:
                 Switch on the BrandOps tabs this person should see. An Inventory Manager with
                 nothing ticked here can sign in but has no modules.
               </p>
-              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+              <div className="space-y-2">
                 {BO_CAPABILITIES.map(key => {
                   const meta = CAPABILITY_META[key]
                   const checked = form.capabilities.includes(key)
@@ -945,7 +945,8 @@ export default function BrandingTeamPanel() {
               project={proj}
               members={allUsers}
               canEdit={isAdmin || isLead}
-              canDelete={isAdmin || isLead}
+              /* Deleting a project is admin / super-admin only. */
+              canDelete={isAdmin}
               onEdit={() => setProjDialog({ mode: 'edit', project: proj })}
               onDelete={() => setDeleteProjTarget(proj)}
             />

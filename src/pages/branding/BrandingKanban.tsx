@@ -91,10 +91,14 @@ export default function BrandingKanban({ embedded = false }: { embedded?: boolea
   const { profile, role, team: userTeam } = useAuth()
   const { users } = useAppData()
   const isAdmin = role === 'super_admin' || role === 'admin' || role === 'branding_reports_admin'
-  // The branding admin (and super admin) is the only one who may manage the
-  // board — add, move, re-prioritise, delete or clear projects. Everyone else,
-  // including leads and `branding:view_kanban` grantees, is read-only.
+  // The normal workflow — create/assign projects, move cards through the board,
+  // re-prioritise — is available to the branding admin AND to leads (sub_admin /
+  // task_owner / task_manager), so a lead can run their own board. A member who
+  // only has the `branding:view_kanban` capability is read-only (see canEdit).
+  // DELETING a project (single or Clear all) is restricted to the branding
+  // admin / super admin only — see canDelete.
   const isBrandAdmin = role === 'super_admin' || (role === 'admin' && userTeam === 'branding')
+  const canDelete = isBrandAdmin
   // Who may see the WHOLE team's board: admins, and members granted the
   // `branding:view_kanban` capability. A lead still sees only their own board.
   const hasKanbanCap = (profile?.capabilities ?? []).includes('branding:view_kanban')
@@ -201,8 +205,9 @@ export default function BrandingKanban({ embedded = false }: { embedded?: boolea
   // ── Drag and drop ────────────────────────────────────────────────────────
   const [dragId, setDragId] = useState<string | null>(null)
   const [overCol, setOverCol] = useState<BoardStatus | null>(null)
-  // Only the branding admin may add/move/edit/delete on the board.
-  const canEdit = isBrandAdmin
+  // Leads and admins run the board (add / move / re-prioritise); a view-only
+  // capability grantee cannot. Deleting is gated separately by canDelete.
+  const canEdit = isAdmin || LEAD_ROLES.has(role ?? '')
 
   async function moveTo(projectId: string, to: BoardStatus) {
     if (!canEdit) return
@@ -222,7 +227,7 @@ export default function BrandingKanban({ embedded = false }: { embedded?: boolea
   // Delete a single project from the board (branding admin only). Confirms,
   // optimistically drops it, and reconciles on failure.
   async function deleteProject(p: BrandingProject) {
-    if (!canEdit) return
+    if (!canDelete) return
     if (!window.confirm(`Delete "${p.name}"? This removes the project from the board for everyone. This cannot be undone.`)) return
     const prev = projects
     setProjects(ps => ps.filter(x => x.id !== p.id))
@@ -237,7 +242,7 @@ export default function BrandingKanban({ embedded = false }: { embedded?: boolea
 
   // Clear every project on the board currently in view (branding admin only).
   async function clearAll() {
-    if (!canEdit) return
+    if (!canDelete) return
     const targets = leadProjects
     if (targets.length === 0) { toast.info('No projects to clear.'); return }
     if (!window.confirm(`Clear all ${targets.length} project${targets.length === 1 ? '' : 's'} on ${lead ? (lead.full_name || lead.email) + "'s" : 'this'} board? This deletes them for everyone and cannot be undone.`)) return
@@ -322,7 +327,7 @@ export default function BrandingKanban({ embedded = false }: { embedded?: boolea
               Members & live reports <ArrowUpRight className="w-3.5 h-3.5" />
             </Link>
           )}
-          {canEdit && lead && leadProjects.length > 0 && (
+          {canDelete && lead && leadProjects.length > 0 && (
             <button type="button" onClick={() => void clearAll()} className={cx(DS.btn, DS.btnSm, 'text-[#B91C1C] border border-[#FCA5A5] hover:bg-[#FEF2F2]')}>
               <Trash2 className="w-3.5 h-3.5" /> Clear all
             </button>
@@ -411,7 +416,7 @@ export default function BrandingKanban({ embedded = false }: { embedded?: boolea
                           onDragStart={e => onDragStart(e, p.id)}
                           onDragEnd={() => { setDragId(null); setOverCol(null) }}
                           onPriority={() => void cyclePriority(p)}
-                          onDelete={canEdit ? () => void deleteProject(p) : undefined}
+                          onDelete={canDelete ? () => void deleteProject(p) : undefined}
                         />
                       ))}
                       {canEdit && (

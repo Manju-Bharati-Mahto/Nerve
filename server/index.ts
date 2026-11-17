@@ -1812,10 +1812,10 @@ app.put("/api/branding/portal/projects/:id", asyncHandler(async (req, res) => {
   res.json({ project });
 }));
 
-// Move a project on the Kanban board and/or change its priority. Only the
-// branding admin manages the board; leads and view_kanban grantees are read-only.
+// Move a project on the Kanban board and/or change its priority. Leads run
+// their own board; a view_kanban-only grantee is read-only (enforced in the UI).
 app.patch("/api/branding/portal/projects/:id/board", asyncHandler(async (req, res) => {
-  if (!requireBrandingAdmin(res)) return;
+  if (!requireBrandingLead(res)) return;
   const id = getSingleParam(req.params.id);
   const { board_status, priority } = req.body as { board_status?: string; priority?: string };
   if (board_status !== undefined && !(BOARD_STATUSES as readonly string[]).includes(board_status)) return sendError(res, 400, "Invalid board status.");
@@ -1886,8 +1886,10 @@ app.post("/api/branding/portal/projects/:id/complete", asyncHandler(async (req, 
   res.json({ project });
 }));
 
+// Deleting a project is restricted to the branding admin / super admin (from
+// the Kanban board or Team Members); leads and members cannot delete.
 app.delete("/api/branding/portal/projects/:id", asyncHandler(async (req, res) => {
-  if (!requireBrandingLead(res)) return;
+  if (!requireBrandingAdmin(res)) return;
   const id = getSingleParam(req.params.id);
   const ok = await deleteBrandingProject(id);
   if (!ok) return sendError(res, 404, "Project not found.");

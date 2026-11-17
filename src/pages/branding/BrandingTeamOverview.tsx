@@ -96,10 +96,13 @@ export default function BrandingTeamOverview() {
 
   const cards = useMemo(() => leads.map(lead => {
     const managed = new Set(brandingUsers.filter(u => u.managed_by === lead.id).map(u => u.id))
+    // A lead's team is exactly the people assigned to them (managed_by), the
+    // same set the Manage Members panel shows. It is NOT widened by project
+    // assignees — a designer managed by another lead but assigned to one of this
+    // lead's projects does not belong to this lead's team.
     const leadProjects = projects.filter(p =>
       p.assigned_lead_id === lead.id || p.created_by === lead.id || p.assigned_user_ids.some(id => managed.has(id)))
     const teamIds = new Set<string>(managed)
-    leadProjects.forEach(p => p.assigned_user_ids.forEach(id => { if (id !== lead.id) teamIds.add(id) }))
     teamIds.delete(lead.id)
     const team = brandingUsers.filter(u => teamIds.has(u.id))
 
