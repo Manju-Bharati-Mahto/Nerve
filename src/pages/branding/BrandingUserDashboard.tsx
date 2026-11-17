@@ -4902,8 +4902,8 @@ export default function BrandingUserDashboard() {
       a.click()
       URL.revokeObjectURL(url)
       toast.success(`Exported ${reportsList.length} report(s) successfully!`)
-    } catch (err: any) {
-      toast.error('Failed to export reports: ' + (err?.message || 'Unknown error'))
+    } catch (err: unknown) {
+      toast.error('Failed to export reports: ' + (err instanceof Error ? err.message : 'Unknown error'))
     } finally {
       setExporting(false)
     }
