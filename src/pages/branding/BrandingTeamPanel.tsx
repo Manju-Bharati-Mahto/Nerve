@@ -700,6 +700,8 @@ export default function BrandingTeamPanel() {
   const [deleteTarget, setDeleteTarget] = useState<AppUser | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [viewingTodosMember, setViewingTodosMember] = useState<AppUser | null>(null)
+  // The manager whose team is being allotted (the manager-centric list).
+  const [allotManager, setAllotManager] = useState<AppUser | null>(null)
 
   // ── Projects state ────────────────────────────────────────────────────
   const [projects, setProjects] = useState<BrandingProject[]>([])
@@ -927,6 +929,7 @@ export default function BrandingTeamPanel() {
               currentUserId={user?.id}
               teamLeads={assignableOwners}
               assignable={false}
+              onAllot={m => setAllotManager(m)}
               onEdit={m => setMemberDialog({ mode: 'edit', member: m })}
               onDelete={m => { setDeleteTarget(m); setDeleteConfirm(false) }}
               onAssign={handleAssignMember}
@@ -1123,14 +1126,87 @@ export default function BrandingTeamPanel() {
           onClose={() => setViewingTodosMember(null)}
         />
       )}
+
+      {allotManager && (
+        <AllotTeamModal
+          manager={allotManager}
+          candidates={members.filter(u => u.id !== allotManager.id && u.role !== 'brand_ops_manager' && u.role !== 'design_ops_manager')}
+          onToggle={(userId, assign) => handleAssignMember(userId, assign ? allotManager.id : null)}
+          onClose={() => setAllotManager(null)}
+        />
+      )}
     </div>
+  )
+}
+
+// ── Allot-team modal (manager-centric) ─────────────────────────────────────
+// Lists every branding lead + member and lets the admin place each one under
+// this manager (managed_by → manager). managed_by is a single parent link, so
+// a member kept under their lead rolls up to the manager through the lead.
+function AllotTeamModal({ manager, candidates, onToggle, onClose }: {
+  manager: AppUser
+  candidates: AppUser[]
+  onToggle: (userId: string, assign: boolean) => Promise<void>
+  onClose: () => void
+}) {
+  const { users } = useAppData()
+  const nameOf = (id: string | null | undefined) => id ? (users.find(u => u.id === id)?.full_name || users.find(u => u.id === id)?.email || '—') : null
+  const isLeadRole = (r: string) => r === 'sub_admin' || r === 'task_owner' || r === 'task_manager'
+  const roleTxt = (r: string) => isLeadRole(r) ? 'Lead' : r === 'inventory_manager' ? 'Inventory Mgr' : 'Member'
+  const leads = candidates.filter(u => isLeadRole(u.role))
+  const others = candidates.filter(u => !isLeadRole(u.role))
+  const underManager = candidates.filter(u => u.managed_by === manager.id).length
+
+  const Row = ({ u }: { u: AppUser }) => {
+    const on = u.managed_by === manager.id
+    const owner = nameOf(u.managed_by)
+    return (
+      <label className={cx('flex items-center gap-3 px-3.5 py-2.5 rounded-[6px] border cursor-pointer transition-colors', on ? 'bg-bp-50 border-bp-300' : 'bg-white border-[#C5CAD1] hover:border-[#9CA3AF] hover:bg-[#F9FAFB]')}>
+        <input type="checkbox" className="sr-only" checked={on} onChange={() => void onToggle(u.id, !on)} />
+        <span className={cx('w-[18px] h-[18px] rounded-md border grid place-items-center shrink-0 transition-colors', on ? 'bg-bp-700 border-bp-700 text-white' : 'bg-white border-[#9CA3AF]')} aria-hidden="true">
+          {on && <Check className="w-3 h-3 stroke-[3]" />}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[13px] font-semibold text-[#111827] truncate">{u.full_name || u.email}</p>
+          <p className="text-[11px] text-[#6B7280] truncate">
+            {roleTxt(u.role)}
+            {owner && !on && <span className="text-[#9CA3AF]"> · under {owner}</span>}
+          </p>
+        </div>
+      </label>
+    )
+  }
+
+  return (
+    <Modal
+      title={`Allot team — ${manager.full_name || manager.email}`}
+      subtitle={`${underManager} of ${candidates.length} people under this manager`}
+      onClose={onClose}
+      size="lg"
+      footer={<button type="button" onClick={onClose} className={cx(DS.btn, DS.btnPrimary)}>Done</button>}
+    >
+      <p className={cx(DS.hint, 'mb-4')}>
+        Tick anyone in the branding department to place them under this manager. A
+        lead you tick brings their members along (member → lead → manager); a member
+        you tick directly is placed straight under the manager.
+      </p>
+      {leads.length > 0 && <>
+        <p className={cx(DS.eyebrow, 'mb-2')}>Team leads</p>
+        <div className="space-y-1.5 mb-5">{leads.map(u => <Row key={u.id} u={u} />)}</div>
+      </>}
+      {others.length > 0 && <>
+        <p className={cx(DS.eyebrow, 'mb-2')}>Members</p>
+        <div className="space-y-1.5">{others.map(u => <Row key={u.id} u={u} />)}</div>
+      </>}
+      {candidates.length === 0 && <EmptyState icon={Users} title="No people yet" body="Add branding team members first." />}
+    </Modal>
   )
 }
 
 // ── MemberGroup sub-component ──────────────────────────────────────────────
 
 function MemberGroup({
-  label, items, isAdmin, statuses, loading, currentUserId, teamLeads, assignable = true, onEdit, onDelete, onAssign, onViewTodos
+  label, items, isAdmin, statuses, loading, currentUserId, teamLeads, assignable = true, onAllot, onEdit, onDelete, onAssign, onViewTodos
 }: {
   label: string
   items: AppUser[]
@@ -1141,6 +1217,8 @@ function MemberGroup({
   teamLeads: AppUser[]
   /** false hides the "assigned under" dropdown (e.g. for managers). */
   assignable?: boolean
+  /** When set, each card gets an "Allot team" action (managers). */
+  onAllot?: (m: AppUser) => void
   onEdit: (m: AppUser) => void
   onDelete: (m: AppUser) => void
   onAssign: (memberId: string, leadId: string | null) => Promise<void>
@@ -1233,6 +1311,11 @@ function MemberGroup({
                   >
                     <ListTodo className="w-3.5 h-3.5" />
                   </button>
+                  {isAdmin && onAllot && (
+                    <button onClick={() => onAllot(m)} className={cx(DS.btn, DS.btnSecondary, DS.btnSm)} title="Allot team members to this manager">
+                      <Users className="w-3.5 h-3.5" /> Allot team
+                    </button>
+                  )}
                   {isAdmin && (
                     <>
                       <button onClick={() => onEdit(m)} className={DS.iconBtnSm} title="Edit">
