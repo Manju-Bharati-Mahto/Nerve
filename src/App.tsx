@@ -40,6 +40,7 @@ import BrandingSubAdminDashboard from "@/pages/branding/BrandingSubAdminDashboar
 import BrandingUserDashboard from "@/pages/branding/BrandingUserDashboard";
 import BrandingTeamPanel from "@/pages/branding/BrandingTeamPanel";
 import BrandingKanban from "@/pages/branding/BrandingKanban";
+import MyDailyReport from "@/pages/branding/MyDailyReport";
 import BrandingTeamOverview from "@/pages/branding/BrandingTeamOverview";
 import BrandingBrowse from "@/pages/branding/BrandingBrowse";
 
@@ -170,6 +171,19 @@ const App = () => (
                   anyCapability={['branding:view_team_dashboard']}
                 >
                   <BrandingAdminDashboard />
+                </RoleGuard>
+              } />
+              {/* Member-style self daily reporting, granted to managers/leads via
+                  the branding:file_daily_report capability (admin-allotted). */}
+              <Route path="/branding/my-report" element={
+                <RoleGuard
+                  allowed={['super_admin', 'admin', 'branding_reports_admin']}
+                  team="branding"
+                  anyCapability={['branding:file_daily_report']}
+                >
+                  <MaybeBrandingAdminShell>
+                    <MyDailyReport />
+                  </MaybeBrandingAdminShell>
                 </RoleGuard>
               } />
               <Route path="/branding/kra" element={
