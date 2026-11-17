@@ -58,6 +58,7 @@ export const CAPABILITIES = [
   "branding:view_team_dashboard",
   "branding:assign_projects",
   "branding:leave_calendar",
+  "branding:view_kanban",
   "design:manage_categories",
   "design:view_team_dashboard",
   "design:assign_projects",
@@ -101,6 +102,12 @@ export const CAPABILITY_META: Record<CapabilityKey, {
     description: "View the team-wide leave calendar showing everyone's submitted and approved leaves.",
     route: "/branding/leave-calendar",
     sidebarLabel: "Leave Calendar",
+  },
+  "branding:view_kanban": {
+    label: "Kanban board (team project progress)",
+    description: "View the whole team's Kanban board — every lead's and member's project progress. View only; only the branding admin can add, move, edit or delete projects.",
+    route: "/branding/team",
+    sidebarLabel: "Kanban Board",
   },
   "design:manage_categories": {
     label: "Manage categories",

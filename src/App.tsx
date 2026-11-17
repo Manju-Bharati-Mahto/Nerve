@@ -222,7 +222,7 @@ const App = () => (
                 </RoleGuard>
               } />
               <Route path="/branding/team" element={
-                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'task_owner', 'task_manager']} team="branding">
+                <RoleGuard allowed={['super_admin', 'admin', 'sub_admin', 'task_owner', 'task_manager']} team="branding" anyCapability={['branding:view_kanban']}>
                   <MaybeBrandingAdminShell>
                     <BrandingKanban />
                   </MaybeBrandingAdminShell>

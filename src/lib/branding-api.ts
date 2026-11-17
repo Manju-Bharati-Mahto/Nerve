@@ -184,8 +184,10 @@ export const brandingApi = {
     req<{ ok: boolean }>(`/leave/${id}`, { method: "DELETE" }),
 
   // ── Projects ───────────────────────────────────────────────────────────
-  getProjects: () =>
-    req<{ projects: BrandingProject[] }>("/projects"),
+  // `scope: 'all'` requests the whole team's board (admins always see it; a
+  // member needs the `branding:view_kanban` capability). Omit for own-scope.
+  getProjects: (opts?: { scope?: 'all' }) =>
+    req<{ projects: BrandingProject[] }>(`/projects${opts?.scope === 'all' ? '?scope=all' : ''}`),
   createProject: (data: { name: string; description?: string; deadline?: string; assigned_user_ids?: string[]; type_of_work?: string; sub_category?: string; specific_work?: string; board_status?: BrandingProject["board_status"]; priority?: BrandingProject["priority"]; assigned_lead_id?: string | null }) =>
     req<{ project: BrandingProject }>("/projects", { method: "POST", body: JSON.stringify(data) }),
   updateProject: (id: string, data: { name: string; description?: string; deadline?: string; status?: BrandingProject["status"]; assigned_user_ids?: string[]; type_of_work?: string; sub_category?: string; specific_work?: string }) =>

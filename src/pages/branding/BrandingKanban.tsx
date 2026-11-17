@@ -20,7 +20,7 @@
  */
 import { useCallback, useEffect, useMemo, useState, type DragEvent } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Plus, Users, Clock, CalendarDays, Check, Flag, ArrowUpRight, ListChecks, Inbox } from 'lucide-react'
+import { Plus, Users, Clock, CalendarDays, Check, Flag, ArrowUpRight, ListChecks, Inbox, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAuth } from '@/hooks/useAuth'
 import { useAppData } from '@/hooks/useAppData'
@@ -88,9 +88,19 @@ function deadlineChip(deadline: string | null) {
 // ── Page ───────────────────────────────────────────────────────────────────
 
 export default function BrandingKanban({ embedded = false }: { embedded?: boolean }) {
-  const { profile, role } = useAuth()
+  const { profile, role, team: userTeam } = useAuth()
   const { users } = useAppData()
   const isAdmin = role === 'super_admin' || role === 'admin' || role === 'branding_reports_admin'
+  // The branding admin (and super admin) is the only one who may manage the
+  // board — add, move, re-prioritise, delete or clear projects. Everyone else,
+  // including leads and `branding:view_kanban` grantees, is read-only.
+  const isBrandAdmin = role === 'super_admin' || (role === 'admin' && userTeam === 'branding')
+  // Who may see the WHOLE team's board: admins, and members granted the
+  // `branding:view_kanban` capability. A lead still sees only their own board.
+  const hasKanbanCap = (profile?.capabilities ?? []).includes('branding:view_kanban')
+  const canViewAll = isAdmin || hasKanbanCap
+  // `scope: 'all'` only matters for a capability grantee; admins see all anyway.
+  const projectScope = canViewAll ? { scope: 'all' as const } : undefined
 
   const [projects, setProjects] = useState<BrandingProject[]>([])
   const [categories, setCategories] = useState<WorkCategory[]>([])
@@ -98,16 +108,18 @@ export default function BrandingKanban({ embedded = false }: { embedded?: boolea
   const [loading, setLoading] = useState(true)
 
   const reload = useCallback(() => {
-    return brandingApi.getProjects().then(r => setProjects(r.projects)).catch(() => {})
-  }, [])
+    return brandingApi.getProjects(projectScope).then(r => setProjects(r.projects)).catch(() => {})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canViewAll])
 
   useEffect(() => {
     setLoading(true)
     Promise.all([
-      brandingApi.getProjects().then(r => setProjects(r.projects)),
+      brandingApi.getProjects(projectScope).then(r => setProjects(r.projects)),
       brandingApi.getCategories().then(r => setCategories(r.categories)),
     ]).catch(() => {}).finally(() => setLoading(false))
-  }, [])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canViewAll])
 
   // Hours this month, whole team, submitted reports only.
   useEffect(() => {
@@ -121,8 +133,8 @@ export default function BrandingKanban({ embedded = false }: { embedded?: boolea
   const brandingUsers = useMemo(() => users.filter(u => u.team === 'branding'), [users])
   // Admins get a tab per lead; a lead gets their own board only.
   const leads = useMemo(
-    () => brandingUsers.filter(u => LEAD_ROLES.has(u.role) && (isAdmin || u.id === profile?.id)),
-    [brandingUsers, isAdmin, profile?.id],
+    () => brandingUsers.filter(u => LEAD_ROLES.has(u.role) && (canViewAll || u.id === profile?.id)),
+    [brandingUsers, canViewAll, profile?.id],
   )
   // ?lead=<id> opens that lead's tab and ?col=<status> rings that column —
   // the Team Members overview deep-links here from its figures.
@@ -189,9 +201,11 @@ export default function BrandingKanban({ embedded = false }: { embedded?: boolea
   // ── Drag and drop ────────────────────────────────────────────────────────
   const [dragId, setDragId] = useState<string | null>(null)
   const [overCol, setOverCol] = useState<BoardStatus | null>(null)
-  const canEdit = isAdmin || LEAD_ROLES.has(role ?? '')
+  // Only the branding admin may add/move/edit/delete on the board.
+  const canEdit = isBrandAdmin
 
   async function moveTo(projectId: string, to: BoardStatus) {
+    if (!canEdit) return
     const p = projects.find(x => x.id === projectId)
     if (!p || columnOf(p) === to) return
     const prev = projects
@@ -202,6 +216,41 @@ export default function BrandingKanban({ embedded = false }: { embedded?: boolea
     } catch (e) {
       setProjects(prev)
       toast.error(e instanceof Error ? e.message : 'Could not move the project.')
+    }
+  }
+
+  // Delete a single project from the board (branding admin only). Confirms,
+  // optimistically drops it, and reconciles on failure.
+  async function deleteProject(p: BrandingProject) {
+    if (!canEdit) return
+    if (!window.confirm(`Delete "${p.name}"? This removes the project from the board for everyone. This cannot be undone.`)) return
+    const prev = projects
+    setProjects(ps => ps.filter(x => x.id !== p.id))
+    try {
+      await brandingApi.deleteProject(p.id)
+      toast.success('Project deleted.')
+    } catch (e) {
+      setProjects(prev)
+      toast.error(e instanceof Error ? e.message : 'Could not delete the project.')
+    }
+  }
+
+  // Clear every project on the board currently in view (branding admin only).
+  async function clearAll() {
+    if (!canEdit) return
+    const targets = leadProjects
+    if (targets.length === 0) { toast.info('No projects to clear.'); return }
+    if (!window.confirm(`Clear all ${targets.length} project${targets.length === 1 ? '' : 's'} on ${lead ? (lead.full_name || lead.email) + "'s" : 'this'} board? This deletes them for everyone and cannot be undone.`)) return
+    const prev = projects
+    const ids = new Set(targets.map(p => p.id))
+    setProjects(ps => ps.filter(x => !ids.has(x.id)))
+    try {
+      await Promise.all(targets.map(p => brandingApi.deleteProject(p.id)))
+      toast.success(`Cleared ${targets.length} project${targets.length === 1 ? '' : 's'}.`)
+    } catch (e) {
+      setProjects(prev)
+      toast.error(e instanceof Error ? e.message : 'Could not clear all projects.')
+      void reload()
     }
   }
 
@@ -272,6 +321,11 @@ export default function BrandingKanban({ embedded = false }: { embedded?: boolea
             <Link to="/branding/members/manage?tab=live" className={cx(DS.link, 'text-[12px]')}>
               Members & live reports <ArrowUpRight className="w-3.5 h-3.5" />
             </Link>
+          )}
+          {canEdit && lead && leadProjects.length > 0 && (
+            <button type="button" onClick={() => void clearAll()} className={cx(DS.btn, DS.btnSm, 'text-[#B91C1C] border border-[#FCA5A5] hover:bg-[#FEF2F2]')}>
+              <Trash2 className="w-3.5 h-3.5" /> Clear all
+            </button>
           )}
           {canEdit && (
             <button type="button" onClick={() => setAddOpen('notstarted')} className={cx(DS.btn, DS.btnPrimary, DS.btnSm)}>
@@ -357,6 +411,7 @@ export default function BrandingKanban({ embedded = false }: { embedded?: boolea
                           onDragStart={e => onDragStart(e, p.id)}
                           onDragEnd={() => { setDragId(null); setOverCol(null) }}
                           onPriority={() => void cyclePriority(p)}
+                          onDelete={canEdit ? () => void deleteProject(p) : undefined}
                         />
                       ))}
                       {canEdit && (
@@ -394,7 +449,7 @@ export default function BrandingKanban({ embedded = false }: { embedded?: boolea
 
 // ── Card ───────────────────────────────────────────────────────────────────
 
-function ProjectCard({ p, nameById, draggable, dragging, onDragStart, onDragEnd, onPriority }: {
+function ProjectCard({ p, nameById, draggable, dragging, onDragStart, onDragEnd, onPriority, onDelete }: {
   p: BrandingProject
   nameById: Map<string, string>
   draggable: boolean
@@ -402,6 +457,8 @@ function ProjectCard({ p, nameById, draggable, dragging, onDragStart, onDragEnd,
   onDragStart: (e: DragEvent) => void
   onDragEnd: () => void
   onPriority: () => void
+  /** Branding admin only — omitted for read-only viewers. */
+  onDelete?: () => void
 }) {
   const done = p.assignments.filter(a => a.status === 'completed').length
   const designers = p.assigned_user_ids.map(id => nameById.get(id) ?? 'Unknown')
@@ -411,7 +468,7 @@ function ProjectCard({ p, nameById, draggable, dragging, onDragStart, onDragEnd,
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       className={cx(
-        'bg-white border border-[#C5CAD1] rounded-[6px] px-3 py-2.5 relative select-none transition-shadow hover:border-bp-300',
+        'group bg-white border border-[#C5CAD1] rounded-[6px] px-3 py-2.5 relative select-none transition-shadow hover:border-bp-300',
         draggable ? 'cursor-grab active:cursor-grabbing active:shadow-lg' : '',
         dragging && 'opacity-50',
       )}
@@ -423,7 +480,18 @@ function ProjectCard({ p, nameById, draggable, dragging, onDragStart, onDragEnd,
         className={cx('absolute top-2.5 right-2.5 w-2 h-2 rounded-full cursor-pointer ring-2 ring-white', PRIORITY[p.priority].dot)}
         aria-label={PRIORITY[p.priority].label}
       />
-      <p className="text-[13px] font-semibold text-[#111827] leading-snug pr-4">{p.name}</p>
+      {onDelete && (
+        <button
+          type="button"
+          onClick={onDelete}
+          title="Delete project"
+          aria-label="Delete project"
+          className="absolute top-1.5 right-6 p-1 rounded text-[#9CA3AF] opacity-0 group-hover:opacity-100 hover:text-[#B91C1C] hover:bg-[#FEF2F2] transition-colors"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      )}
+      <p className="text-[13px] font-semibold text-[#111827] leading-snug pr-9">{p.name}</p>
       {p.type_of_work && (
         <span className={cx('inline-block mt-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full', catTint(p.type_of_work))}>{p.type_of_work}</span>
       )}

@@ -1712,12 +1712,19 @@ app.delete("/api/branding/portal/designs/:id", asyncHandler(async (req, res) => 
 
 // ── Branding projects ──────────────────────────────────────────────────────
 
-app.get("/api/branding/portal/projects", asyncHandler(async (_req, res) => {
+app.get("/api/branding/portal/projects", asyncHandler(async (req, res) => {
   if (!requireBranding(res)) return;
   // Access restriction (req 5): admins/head see all projects; designers, leads
   // and task owners see only projects they're assigned to, supervise, or created.
   const u = res.locals.currentUser;
-  const seesAll = isBrandingReportsAdminOrAdminOrSuper(u.role, u.team);
+  let seesAll = isBrandingReportsAdminOrAdminOrSuper(u.role, u.team);
+  // The team Kanban board requests ?scope=all. A member granted the
+  // `branding:view_kanban` capability may see the whole board; their other
+  // views (e.g. Daily Reports, no scope param) stay scoped to their own work.
+  if (!seesAll && req.query.scope === "all" && u.team === "branding") {
+    const caps = await listUserCapabilities(u.id);
+    if (caps.includes("branding:view_kanban")) seesAll = true;
+  }
   res.json({ projects: await listBrandingProjects(seesAll ? undefined : u.id) });
 }));
 
@@ -1805,9 +1812,10 @@ app.put("/api/branding/portal/projects/:id", asyncHandler(async (req, res) => {
   res.json({ project });
 }));
 
-// Move a project on the Kanban board and/or change its priority (lead/admin).
+// Move a project on the Kanban board and/or change its priority. Only the
+// branding admin manages the board; leads and view_kanban grantees are read-only.
 app.patch("/api/branding/portal/projects/:id/board", asyncHandler(async (req, res) => {
-  if (!requireBrandingLead(res)) return;
+  if (!requireBrandingAdmin(res)) return;
   const id = getSingleParam(req.params.id);
   const { board_status, priority } = req.body as { board_status?: string; priority?: string };
   if (board_status !== undefined && !(BOARD_STATUSES as readonly string[]).includes(board_status)) return sendError(res, 400, "Invalid board status.");
