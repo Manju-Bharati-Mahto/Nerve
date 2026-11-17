@@ -80,6 +80,7 @@
 :where(.dark) .border-\[\#D9F99D\] { border-color: rgb(106 134 55 / var(--tw-border-opacity, 1)); }
 :where(.dark) .border-\[\#E5E7EB\] { border-color: rgb(38 45 57 / var(--tw-border-opacity, 1)); }
 :where(.dark) .border-\[\#EDE9FE\] { border-color: rgb(47 37 91 / var(--tw-border-opacity, 1)); }
+:where(.dark) .border-\[\#FCA5A5\] { border-color: rgb(134 55 55 / var(--tw-border-opacity, 1)); }
 :where(.dark) .border-\[\#FECACA\] { border-color: rgb(109 44 44 / var(--tw-border-opacity, 1)); }
 :where(.dark) .border-\[\#FED7AA\] { border-color: rgb(134 97 55 / var(--tw-border-opacity, 1)); }
 :where(.dark) .border-\[\#FEE2E2\] { border-color: rgb(91 37 37 / var(--tw-border-opacity, 1)); }
