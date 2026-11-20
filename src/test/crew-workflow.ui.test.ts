@@ -1749,7 +1749,10 @@ describe("Finished work and people's labels — the last review's loose ends", (
     const type2 = h.ev<string>("dtype(deliv(8002).deliverable_type_id).name");
     const type3 = h.ev<string>("dtype(deliv(8003).deliverable_type_id).name");
     h.doc.body.insertAdjacentHTML("beforeend", `<div id="dsp">${h.ev<string>("viewDispatch()")}</div>`);
-    const cell = (id: number) => h.doc.querySelector(`#dsp tr[data-dispatch-did="${id}"] td`)!.textContent!;
+    // The project heads the row; the deliverable is the cell beside it.
+    const cell = (id: number) => h.doc.querySelector(`#dsp tr[data-dispatch-did="${id}"] td:nth-child(2)`)!.textContent!;
+    expect(h.doc.querySelector('#dsp tr[data-dispatch-did="8002"] td .t-main')!.textContent)
+      .toBe(h.ev<string>("proj(deliv(8002).project_id).name"));
     expect(cell(8002).split(type2).length - 1, "type-named: the name once").toBe(1);
     expect(cell(8003)).toContain(type3);
   });

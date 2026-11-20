@@ -1153,6 +1153,8 @@ html[data-theme=dark] .kb-col.over{background:var(--brand-50)}
 .kb-card .chip{white-space:normal;height:auto;min-height:22px;padding-block:2px;line-height:1.25;flex-wrap:wrap;row-gap:2px}
 .kb-card .kc-title{font-size:13px;font-weight:600;line-height:1.32;margin-bottom:7px;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* A deliverable card: its own name sits small above the project it is for. */
+.kb-card .kc-name{font-size:11px;font-weight:600;color:var(--text-3);min-width:0;overflow-wrap:anywhere}
 .kb-card .kc-foot{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--text-3)}
 .kb-card .kc-foot .sp{margin-left:auto}
 .code{font-family:var(--font-mono);font-size:10.5px;color:var(--text-3);font-weight:600}
@@ -7006,8 +7008,8 @@ function paletteItems(q){
           ()=>location.hash='#/media/projects/'+p.id));
     if(moduleAllowed('pipeline'))
       DB.deliverables.filter(d=>d.title.toLowerCase().includes(q)).slice(0,6)
-        .forEach(d=>A('Deliverables',dtype(d.deliverable_type_id).icon,d.title,
-          proj(d.project_id).name+' · '+DELIV_STATUS[d.status].l,()=>drawerFor('deliverable',d.id)));
+        .forEach(d=>A('Deliverables',dtype(d.deliverable_type_id).icon,delivProjName(d),
+          d.title+' · '+DELIV_STATUS[d.status].l,()=>drawerFor('deliverable',d.id)));
     if(moduleAllowed('team'))
       DB.users.filter(u=>u.full_name.toLowerCase().includes(q)).slice(0,5)
         .forEach(u=>A('People','user',u.full_name,u.designation,()=>location.hash='#/media/team/'+u.id));
@@ -8747,12 +8749,12 @@ function viewDispatch(){
           :`<div class="empty" style="padding:30px"><div class="e-ico">✔</div>
             <p>Nothing waiting to go out. Approved work arrives here automatically.</p></div>`)
         : (rows.length?`<div class="tbl-wrap"><table class="tbl">
-            <thead><tr><th>Deliverable</th><th>Project</th><th>Approved by</th><th>Dispatched by</th>
+            <thead><tr><th>Project</th><th>Deliverable</th><th>Approved by</th><th>Dispatched by</th>
               <th>Recipient</th><th>Dispatched</th><th>Drive</th><th></th></tr></thead>
             <tbody>${rows.map(d=>{const v=latestVersion(d.id)||{};
               return `<tr class="click" data-drawer="deliverable:${d.id}" data-dispatch-did="${d.id}"${dispatchFocusStyle(d.id)}>
-              <td><div class="t-main">${esc(d.title)}</div>${typeIsTitle(d)?'':`<div class="t-sub">${esc(dtype(d.deliverable_type_id).name)}</div>`}</td>
-              <td class="small"><span class="code">${esc(proj(d.project_id).code||'')}</span> ${esc(proj(d.project_id).name)}</td>
+              <td><div class="t-main">${esc(delivProjName(d))}</div><div class="t-sub code">${esc(proj(d.project_id).code||'')}</div></td>
+              <td class="small">${esc(d.title)}${typeIsTitle(d)?'':`<div class="t-sub">${esc(dtype(d.deliverable_type_id).name)}</div>`}</td>
               <td class="small">${esc(v.reviewed_by?(user(v.reviewed_by)||{full_name:'—'}).full_name:'—')}</td>
               <td class="small">${esc(d.dispatched_by?(user(d.dispatched_by)||{full_name:'—'}).full_name:'—')}</td>
               <td class="small">${esc(d.dispatch_recipient||'—')}</td>
@@ -8900,12 +8902,12 @@ function dispatchRow(d){
   return `<div class="dc ${late?'late':''}" data-dispatch-did="${d.id}"${dispatchFocusStyle(d.id)}>
     <div class="dc-head">
       <span class="dc-ico">${dtype(d.deliverable_type_id).icon}</span>
-      <b class="dc-title" data-drawer="deliverable:${d.id}">${esc(d.title)}</b>
+      <b class="dc-title" data-drawer="deliverable:${d.id}">${esc(delivProjName(d))}</b>
       ${late?`<span class="status st-danger"><span class="si">⚑</span>${waited}d overdue</span>`
             :statusPill(DISPATCH,d.dispatch_status&&d.dispatch_status!=='none'?d.dispatch_status:'queued')}
     </div>
     <div class="dc-grid">
-      ${kv('Project',`<span class="code">${esc(p.code||'—')}</span> ${esc(p.name)}`)}
+      ${kv('Deliverable',`<span class="code">${esc(p.code||'—')}</span> ${esc(d.title)}`)}
       ${kv('Venue',esc(p.venue||'—'))}
       ${kv('Approved by',esc(v.reviewed_by?(user(v.reviewed_by)||{full_name:'—'}).full_name:'—'))}
       ${kv('Approved',v.reviewed_at?D.fmt(v.reviewed_at):'—')}
@@ -9116,8 +9118,8 @@ function viewCoordMyDay(){
           <div class="ca"><span class="chip">${dispatchedToday().length}</span></div></div>
           <div class="card-body flush">${dispatchedToday().map(d=>`<div class="list-row" style="cursor:default">
             <span style="font-size:14px">${dtype(d.deliverable_type_id).icon}</span>
-            <span class="lr-main"><b>${esc(d.title)}</b>
-              <span>${esc(proj(d.project_id).name)} → ${esc(d.dispatch_recipient||'—')}</span>
+            <span class="lr-main"><b>${esc(delivProjName(d))}</b>
+              <span>${esc(d.title)} → ${esc(d.dispatch_recipient||'—')}</span>
               <span class="xsmall mut3">${esc(D.time(d.dispatched_at))} by ${esc((user(d.dispatched_by)||{full_name:'—'}).full_name)}</span></span>
             ${d.dispatch_status==='delivered'?`<button class="btn xs" data-act="archiveDeliv" data-did="${d.id}">⛁ Archive</button>`:statusPill(DISPATCH,d.dispatch_status)}
           </div>`).join('')||`<div class="empty" style="padding:22px"><p>Nothing dispatched yet today.</p></div>`}
@@ -9655,14 +9657,15 @@ function pendingApprovalsWidget(){
     <div class="card-head"><h3>Pending Approvals</h3>
       <div class="ca"><span class="chip">${revs.length}</span></div></div>
     <div class="card-body flush"><div class="tbl-wrap"><table class="tbl m-cards pa-cards">
-      <thead><tr><th>Deliverable</th><th class="hide-sm">Project</th><th>Requested</th><th>Due Date</th><th>Action</th></tr></thead>
+      <thead><tr><th>Project</th><th class="hide-sm">Code</th><th>Requested</th><th>Due Date</th><th>Action</th></tr></thead>
       <tbody>${revs.map(({v,d,age})=>{
         const late=d.due_date&&d.due_date<TODAY, soon=d.due_date&&D.diff(d.due_date,TODAY)<=3;
         return `<tr class="click" data-drawer="deliverable:${d.id}">
           <td data-m="title"><div class="f ac gap2"><span class="cellico ${TINT[d.deliverable_type_id]||'v'}">${ic(
             [5,6,4,7].includes(d.deliverable_type_id)?'video':[2,1,11].includes(d.deliverable_type_id)?'image':'file')}</span>
-            <span class="t-main" style="font-size:13px">${esc(d.title)} · v${v.version_no}</span></div></td>
-          <td class="hide-sm small mut" data-m="meta">${esc(proj(d.project_id).name)}</td>
+            <div style="min-width:0"><div class="t-main" style="font-size:13px">${esc(delivProjName(d))}</div>
+              <div class="t-sub">${esc(d.title)} · v${v.version_no}</div></div></div></td>
+          <td class="hide-sm small mut" data-m="meta"><span class="code">${esc(proj(d.project_id).code||'')}</span></td>
           <td data-m="meta"><div class="f ac gap2">${avatar(v.submitted_by,'sm')}<div><div class="small">${esc(personName(v.submitted_by))}</div>
             ${v.submitted_at?`<div class="t-sub">${esc(D.fmt(v.submitted_at))}</div>`:''}</div></div></td>
           <td data-m="aside"><div style="font-size:12.5px;font-weight:600;color:${late?'var(--danger)':soon?'var(--warn)':'var(--text)'}">${D.fmt(d.due_date)}</div>
@@ -9683,12 +9686,12 @@ function attentionWidget(overdue){
   }).filter(Boolean).slice(0,3);
   const idle=isEmp()?[]:idleProjects().slice(0,2);
   const items=[];
-  overdue.slice(0,5).forEach(d=>items.push({ico:'alert',cls:'r',t:d.title,uid:d.owner_id,
-    s:proj(d.project_id).name,age:D.diff(TODAY,d.due_date),fn:`data-drawer="deliverable:${d.id}"`,tag:'Overdue deliverable'}));
+  overdue.slice(0,5).forEach(d=>items.push({ico:'alert',cls:'r',t:delivProjName(d),uid:d.owner_id,
+    s:d.title,age:D.diff(TODAY,d.due_date),fn:`data-drawer="deliverable:${d.id}"`,tag:'Overdue deliverable'}));
   flags.forEach(f=>items.push({ico:'flag',cls:'a',t:'Daily report: '+D.fmt(f.r.report_date),uid:f.r.user_id,
     s:f.r.flagged_reason||'Flagged for review',age:f.age,fn:`data-drawer="report:${f.r.id}"`,tag:'Flagged report'}));
-  revs.forEach(r=>items.push({ico:'clock',cls:'b',t:r.d.title+' — v'+r.v.version_no,uid:r.v.submitted_by,
-    s:proj(r.d.project_id).name,age:r.age,fn:`data-drawer="deliverable:${r.d.id}"`,tag:'Version awaiting review'}));
+  revs.forEach(r=>items.push({ico:'clock',cls:'b',t:delivProjName(r.d),uid:r.v.submitted_by,
+    s:r.d.title+' — v'+r.v.version_no,age:r.age,fn:`data-drawer="deliverable:${r.d.id}"`,tag:'Version awaiting review'}));
   blocked.forEach(b=>items.push({ico:'x',cls:'r',t:b.t.description,uid:b.r.user_id,
     s:b.t.blocker_note||'blocked',age:D.diff(TODAY,b.r.report_date),fn:`data-drawer="report:${b.r.id}"`,tag:'Blocked task'}));
   idle.forEach(p=>items.push({ico:'clock',cls:'a',t:p.name,uid:p.owner_id,s:'No task logs or deliverable movement',
@@ -9770,7 +9773,7 @@ function upcomingWidget(){
     .filter(s=>isEmp()?DB.shoot_crew.some(c=>c.shoot_id===s.id&&c.user_id===S.me):true)
     .forEach(s=>evts.push({d:s.shoot_date,ico:'video',cls:'b',t:s.title,s:s.call_time+' · '+s.location,k:'shoot',id:s.id}));
   deliverablesDue(TODAY,to).filter(d=>isEmp()?onDelivTeam(d):true)
-    .forEach(d=>evts.push({d:d.due_date,ico:'file',cls:'a',t:d.title,s:'Due',k:'deliverable',id:d.id,uid:d.owner_id}));
+    .forEach(d=>evts.push({d:d.due_date,ico:'file',cls:'a',t:delivProjName(d),s:d.title+' · Due',k:'deliverable',id:d.id,uid:d.owner_id}));
   /* An event is on every day it runs, as the calendar shows it ("Day 2 of 5
      · from 9:00 AM"), in its type's colour — no separate start and end. A
      run longer than an event (a campaign) is named once, on its last day. */
@@ -9870,9 +9873,9 @@ function summaryWidget(){
 function auditTarget(a){
   switch(a.entity_type){
     case 'project':return proj(a.entity_id).name;
-    case 'deliverable':return (deliv(a.entity_id)||{title:'deliverable'}).title;
+    case 'deliverable':return delivLabel(deliv(a.entity_id))||'deliverable';
     case 'deliverable_version':{const v=DB.deliverable_versions.find(v=>v.id===a.entity_id);
-      return v?(deliv(v.deliverable_id)||{title:''}).title+' v'+v.version_no:'a version';}
+      return v?delivLabel(deliv(v.deliverable_id))+' v'+v.version_no:'a version';}
     case 'daily_report':{const r=DB.daily_reports.find(r=>r.id===a.entity_id);
       return r?'daily report: '+D.fmt(r.report_date):'a report';}
     case 'equipment_item':return assetLabel(a.entity_id);
@@ -10376,15 +10379,19 @@ function assignmentCard(a){
      by review, in the deliverable's drawer. */
   const dl=a.deliverable_id&&!a._shoot?deliv(a.deliverable_id):null;
   const time=a.start_time?esc(a.start_time)+(a.end_time?'–'+esc(a.end_time):''):'';
+  /* Work named only after its deliverable ("Aftermovie") is headed by the
+     project, like the deliverable rows beside it; work somebody gave a title
+     of its own ("Edit the highlights") keeps that title. */
+  const byProj=!!dl&&(a._deliverable||String(a.title||'').trim()===String(dl.title||'').trim());
   return `<div class="asg">
     <div class="asg-top">
       <span class="pri-dot" style="background:${PRI_COLOR[a.priority]||'var(--info)'}" title="${esc(a.priority||'normal')} priority"></span>
       <span class="chip wt-badge">${esc(b.icon)} ${esc(b.label)}</span>
-      <b class="asg-title">${esc(a.title)}</b>
+      <b class="asg-title">${esc(byProj?delivProjName(dl):a.title)}</b>
       ${dl?statusPill(DELIV_STATUS,dl.status):`<span class="status ${st.c}"><span class="si">${sIco(st)}</span>${st.l}</span>`}
     </div>
     <div class="asg-meta">
-      <span><span class="code">${esc(p.code||'')}</span> ${esc(p.name)}</span>
+      <span><span class="code">${esc(p.code||'')}</span> ${byProj?`<span class="dlv-name">${esc(a.title)}</span>`:esc(p.name)}</span>
       ${time?`<span title="Scheduled time">◷ ${time}</span>`:''}
       ${a._eventDay?`<span class="chip" title="The event runs today">◷ ${esc(a._eventDay)}</span>`:''}
       ${a.estimated_hours?`<span>~${+a.estimated_hours}h</span>`:''}
@@ -10396,7 +10403,9 @@ function assignmentCard(a){
       ${(()=>{/* Work that produces a deliverable names it, and who is on it. */
         const dl=!a._deliverable&&a.deliverable_id?deliv(a.deliverable_id):null; if(!dl) return '';
         const team=[...delivTeam(dl)];
-        return `<span class="chip" title="${esc(team.map(id=>user(id).full_name+(id===dl.owner_id?' (owner)':'')).join(', '))}">◆ ${esc(dl.title)}${team.length>1?' · '+team.length+' on it':''}</span>`;})()}
+        /* Its name is already on this line when the project heads the card. */
+        const say=[byProj?'':esc(dl.title),team.length>1?team.length+' on it':''].filter(Boolean).join(' · ');
+        return say?`<span class="chip" title="${esc(team.map(id=>user(id).full_name+(id===dl.owner_id?' (owner)':'')).join(', '))}">◆ ${say}</span>`:'';})()}
     </div>
     ${tpl&&tpl.card?tpl.card(a):''}
     ${dl?changeRequestLine(dl,latestVersion(dl.id)):''}
@@ -10538,11 +10547,11 @@ function viewMyDay(){
       return `<div class="dlv">
         <div class="dlv-top">
           <span style="font-size:14px;flex:0 0 auto">${dtype(d.deliverable_type_id).icon}</span>
-          <b class="dlv-title" data-drawer="deliverable:${d.id}" style="cursor:pointer">${esc(d.title)}</b>
+          <b class="dlv-title" data-drawer="deliverable:${d.id}" style="cursor:pointer">${esc(delivProjName(d))}</b>
           ${statusPill(DELIV_STATUS,d.status)}
         </div>
         <div class="dlv-meta">
-          <span><span class="code">${esc(proj(d.project_id).code||'')}</span> ${esc(proj(d.project_id).name)}</span>
+          <span><span class="code">${esc(proj(d.project_id).code||'')}</span> <span class="dlv-name">${esc(d.title)}</span></span>
           ${v?`<span class="chip">v${v.version_no}</span>`:''}
           <span class="${over?'st-danger-txt':''}">${over?'⚑ ':''}due ${D.fmt(d.due_date)}</span>
           ${withWho}
@@ -10581,11 +10590,11 @@ function viewMyDay(){
       return `<div class="dlv">
         <div class="dlv-top">
           <span style="font-size:14px;flex:0 0 auto">${dtype(d.deliverable_type_id).icon}</span>
-          <b class="dlv-title" data-drawer="deliverable:${d.id}" style="cursor:pointer">${esc(d.title)}</b>
+          <b class="dlv-title" data-drawer="deliverable:${d.id}" style="cursor:pointer">${esc(delivProjName(d))}</b>
           <span class="status ${ap.c}"><span class="si">${sIco(ap)}</span>${ap.l}</span>
         </div>
         <div class="dlv-meta">
-          <span><span class="code">${esc(proj(d.project_id).code||'')}</span> ${esc(proj(d.project_id).name)}</span>
+          <span><span class="code">${esc(proj(d.project_id).code||'')}</span> <span class="dlv-name">${esc(d.title)}</span></span>
           ${vs&&vs.reviewed_at?`<span>approved ${D.fmt(vs.reviewed_at)}${vs.reviewed_by?' by '+esc(personName(vs.reviewed_by)):''}</span>`:''}
           ${d.status==='delivered'?`<span>delivered ${d.completed_at?D.fmt(d.completed_at):''}</span>`:''}
           ${dispatchNote(d)?`<span data-dispatch>${esc(dispatchNote(d))}</span>`:''}
@@ -10700,6 +10709,8 @@ function viewMyDay(){
       .dlv-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
       .dlv-title{font-size:13.5px;font-weight:600;flex:1;min-width:110px;line-height:1.35}
       .dlv-meta{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:11.5px;color:var(--text-3);margin-top:5px;padding-left:22px}
+      /* The deliverable's own name, on the line under its project. */
+      .dlv-name{color:var(--text-2);font-weight:600}
       .dlv-note{margin:7px 0 0 22px;padding:7px 10px;border-radius:8px;font-size:11.5px;line-height:1.45;
         background:var(--surface-2);border:1px solid var(--border);color:var(--text-2)}
       .dlv-acts{display:flex;gap:6px;flex-wrap:wrap;margin:9px 0 0 22px}
@@ -11731,6 +11742,16 @@ function assigneeChip(a,withName){
 function typeIsTitle(d){
   return String(d.title||'').trim().replace(/\s*\(\d+\)$/,'')===dtype(d.deliverable_type_id).name;
 }
+/* A deliverable is known by its PROJECT. "Aftermovie" is every project's
+   aftermovie, so wherever deliverables of more than one project share a list
+   the project's name is the headline and the deliverable's own title is the
+   line under it. delivLabel() is the same thing on one line, for a sentence,
+   a chip or an option. Inside a project's own page the project is already
+   the heading, so a row there keeps the deliverable's title. */
+const delivProjName=d=>{const p=d?proj(d.project_id):null;
+  return p&&p.name&&p.name!=='—'?p.name:String((d&&d.title)||'');};
+const delivLabel=d=>{if(!d)return '';const n=delivProjName(d);
+  return n&&n!==d.title?n+' · '+d.title:String(d.title||'');};
 /* One name for one action, wherever it is offered: the first version is
    "Submit for review", every later one says which version it is. */
 function submitLabel(dl){
@@ -12085,11 +12106,11 @@ function viewPipeline(){
           /* Draggable only by someone with a move to make on it. */
           const movable=allowedDelivMoves(d).length>0;
           return `<div class="kb-card" ${movable?`draggable="true" data-drag="deliverable:${d.id}"`:''} data-drawer="deliverable:${d.id}">
-            <div class="kc-top"><span class="code" title="${esc(p.code||'')}">${esc(p.name||p.code||'')}</span>
-              <span style="color:${ptype(p.project_type_id).color}">${dtype(d.deliverable_type_id).icon}</span>
+            <div class="kc-top"><span style="color:${ptype(p.project_type_id).color}">${dtype(d.deliverable_type_id).icon}</span>
+              <span class="kc-name" title="${esc(p.code||'')}">${esc(d.title)}</span>
               ${over?`<span class="status st-danger" style="height:18px;font-size:10px"><span class="si">⚑</span>${D.diff(TODAY,d.due_date)}d</span>`:''}
               ${kcMove('delivMenu',`data-did="${d.id}"`,d.title)}</div>
-            <div class="kc-title">${esc(d.title)}</div>
+            <div class="kc-title">${esc(delivProjName(d))}</div>
             <div class="kc-foot">${avatar(d.owner_id,'xs')}<span class="trunc">${esc(personName(d.owner_id))}</span>
               <span class="sp"></span><span>${d.due_date?D.fmt(d.due_date):'—'}</span></div></div>`;}).join('')}
         </div></div>`;}).join('')}</div>
@@ -14900,7 +14921,7 @@ function viewCalendar(){
         if(p.project_type_id===2&&!L.tours)return;
         out.push({c:p.project_type_id===2?'var(--cat-2)':'var(--info)',t:s.call_time+' '+s.title,drawer:'shoot:'+s.id});});
     if(L.deadlines)DB.deliverables.filter(d=>d.due_date===day&&!['delivered','cancelled','not_required'].includes(d.status))
-      .filter(d=>scoped(d.owner_id)).forEach(d=>out.push({c:'var(--warn)',t:'◆ '+d.title,drawer:'deliverable:'+d.id}));
+      .filter(d=>scoped(d.owner_id)).forEach(d=>out.push({c:'var(--warn)',t:'◆ '+delivLabel(d),drawer:'deliverable:'+d.id}));
     /* A project is on every day it runs, one event joined across the days. */
     if(L.projects)DB.projects.filter(p=>!p.deleted_at&&projDayOf(p,day))
       .sort((a,b)=>String(a.start_date).localeCompare(String(b.start_date))||a.id-b.id)
@@ -18973,7 +18994,7 @@ function leaveApprovals(){
             ${replacementSuggestions(l.user_id,shoots[0]).map(u=>`<button class="chip sel" data-act="assignReplacement" data-lid="${l.id}" data-uid="${u}">
               ${avatar(u,'xs')} ${personChipText(u)}</button>`).join('')}</div></div>`:''}
         ${dls.length?`<div class="note danger mb3"><b>Deliverable deadlines inside the window</b><br>
-          ${dls.map(d=>`◆ ${esc(d.title)}, due ${D.fmt(d.due_date)}`).join('<br>')}</div>`:''}
+          ${dls.map(d=>`◆ ${esc(delivLabel(d))}, due ${D.fmt(d.due_date)}`).join('<br>')}</div>`:''}
         <div class="f gap2 wrap">
           <button class="btn primary" data-act="decideLeave" data-lid="${l.id}" data-v="approved">Approve</button>
           <button class="btn" data-act="decideLeave" data-lid="${l.id}" data-v="rejected">Reject</button>
@@ -21060,8 +21081,9 @@ function drawerDeliverable(id){
     <div class="dr-head">
       <div class="dh-txt"><div class="f ac gap2 mb1"><span style="font-size:17px">${t.icon}</span>
         ${statusPill(DELIV_STATUS,d.status)}${over?`<span class="status st-danger"><span class="si">⚑</span>${D.diff(TODAY,d.due_date)}d overdue</span>`:''}</div>
-        <h2>${esc(d.title)}</h2>
-        <div class="dh-meta"><a href="#/media/projects/${p.id}" onclick="closeDrawer()">${esc(p.name)}</a>
+        <h2><a href="#/media/projects/${p.id}" onclick="closeDrawer()" style="color:inherit;text-decoration:none"
+          title="Open the project">${esc(delivProjName(d))}</a></h2>
+        <div class="dh-meta"><b class="dh-name" style="color:var(--text-2)">${esc(d.title)}</b>
           <span class="code">${p.code}</span>${typeIsTitle(d)?'':`<span>·</span><span>${esc(t.name)}</span>`}</div></div>
       <button class="icon-btn" onclick="closeDrawer()">✕</button></div>
     <div class="dr-body">
@@ -22066,7 +22088,7 @@ function openNewCard(bid){
       <div class="field"><label class="lbl">Link to an object <span class="mut3">(keeps the board honest)</span></label>
         <select class="inp" id="nc-link"><option value="">— free-standing card —</option>
           ${DB.projects.filter(p=>!['archived'].includes(p.status)).map(p=>`<option value="project:${p.id}">▤ ${esc(p.name)}</option>`).join('')}
-          ${DB.deliverables.slice(0,40).map(d=>`<option value="deliverable:${d.id}">◆ ${esc(d.title)}</option>`).join('')}</select></div>
+          ${DB.deliverables.slice(0,40).map(d=>`<option value="deliverable:${d.id}">◆ ${esc(delivLabel(d))}</option>`).join('')}</select></div>
       <div class="field"><label class="lbl">Assignees</label>
         <div class="f wrap gap2" id="nc-assign">${DB.users.filter(u=>u.is_active).map(u=>
           `<button class="chip" data-uid="${u.id}" onclick="this.classList.toggle('sel')">${avatar(u.id,'xs')} ${personChipText(u.id)}</button>`).join('')}</div></div>
@@ -22500,7 +22522,7 @@ const ACTIONS = {
       ...(dl.queued_at?[{t:'Queued for dispatch',w:null,at:dl.queued_at}]:[]),
       ...(dl.dispatched_at?[{t:'Dispatched to '+(dl.dispatch_recipient||'—'),w:dl.dispatched_by,at:dl.dispatched_at}]:[])]
       .sort((a,b)=>String(a.at||'').localeCompare(String(b.at||'')));
-    modal(`<div class="mo-head"><div><h2>Dispatch history</h2><p>${esc(dl.title)} · ${esc(proj(dl.project_id).name)}</p></div>
+    modal(`<div class="mo-head"><div><h2>Dispatch history</h2><p>${esc(delivLabel(dl))}</p></div>
         <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
       <div class="mo-body"><div class="card"><div class="card-body flush">
         ${rows.map(x=>`<div class="list-row" style="cursor:default"><span class="tl-dot"></span>
@@ -22529,7 +22551,7 @@ const ACTIONS = {
     const dl=deliv(+d.did); if(!dl)return;
     const p=proj(dl.project_id), v=latestVersion(dl.id)||{};
     modal(`<div class="mo-head"><div><h2>Confirm dispatch</h2>
-        <p>${esc(dl.title)}. This records who it was sent to and moves it to Dispatched. Archive it from there afterwards.</p></div>
+        <p>${esc(delivLabel(dl))}. This records who it was sent to and moves it to Dispatched. Archive it from there afterwards.</p></div>
         <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
       <div class="mo-body">
         <div class="field"><label class="lbl">Recipient <span class="req">*</span></label>
@@ -22558,7 +22580,7 @@ const ACTIONS = {
   archiveDeliv:(d)=>{
     const dl=deliv(+d.did);
     modal(`<div class="mo-head"><div><h2>Archive deliverable</h2>
-        <p>Archive “${esc(dl?dl.title:'this deliverable')}”? It leaves Dispatched and moves to the Archive tab.</p></div></div>
+        <p>Archive “${esc(dl?delivLabel(dl):'this deliverable')}”? It leaves Dispatched and moves to the Archive tab.</p></div></div>
       <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
         <button class="btn primary" data-act="archiveGo" data-did="${esc(String(d.did))}">⛁ Archive</button></div>`,{size:'small'});
     $('#modal-layer').querySelectorAll('[data-act]').forEach(n=>n.onclick=()=>ACTIONS[n.dataset.act](n.dataset,n));
@@ -27722,7 +27744,7 @@ const ACTIONS = {
       :'only a Team Lead or an Admin who is not on it may sign it off','bad');return;}
     if(d.v!=='approved'){
       modal(`<div class="mo-head"><div><h2>Send back for revision</h2>
-          <p>Everyone on “${esc(dl.title)}” sees your note in My Day, and any of them can resubmit.</p></div></div>
+          <p>Everyone on “${esc(delivLabel(dl))}” sees your note in My Day, and any of them can resubmit.</p></div></div>
         <div class="mo-body"><textarea class="inp" id="rd-note" placeholder="What needs to change, and why?"></textarea></div>
         <div class="mo-foot"><button class="btn" onclick="closeModal()">Cancel</button>
           <button class="btn primary" data-act="confirmSignOff" data-did="${dl.id}" data-v="${esc(d.v)}">Send back</button></div>`);
@@ -27771,7 +27793,7 @@ const ACTIONS = {
     if(!canScheduleWork(p)){toast('403: only a Team Lead, Admin or the project owner/PM may schedule work','bad');return;}
     if(datesLocked(dl)){toast(datesLockedMsg(dl),'bad');return;}
     modal(`<div class="mo-head"><div><h2>Schedule deliverable</h2>
-        <p>${esc(dl.title)}. Scheduling puts this in the owner's <b>Today's Assignments</b> on the chosen date only.</p></div>
+        <p>${esc(delivLabel(dl))}. Scheduling puts this in the owner's <b>Today's Assignments</b> on the chosen date only.</p></div>
         <button class="icon-btn ml-auto" onclick="closeModal()">✕</button></div>
       <div class="mo-body">
         <div class="field"><label class="lbl">Assign to <span class="req">*</span></label>
@@ -28354,9 +28376,9 @@ function genNotifications(){
   DB.notifications=[];
   const add=(kind,title,body,et,eid)=>notify(S.me,kind,title,body,et,eid,0);
   DB.deliverables.filter(d=>d.owner_id===S.me&&d.due_date&&d.due_date<TODAY&&!['delivered','not_required','cancelled'].includes(d.status))
-    .slice(0,12).forEach(d=>add('overdue','Deliverable overdue','“'+d.title+'” was due '+D.fmt(d.due_date),'deliverable',d.id));
+    .slice(0,12).forEach(d=>add('overdue','Deliverable overdue','“'+delivLabel(d)+'” was due '+D.fmt(d.due_date),'deliverable',d.id));
   DB.deliverables.filter(d=>d.status==='in_review'&&canReviewDeliverables(proj(d.project_id))&&d.owner_id!==S.me)
-    .slice(0,12).forEach(d=>add('approval','Awaiting your review','“'+d.title+'” has a version pending','deliverable',d.id));
+    .slice(0,12).forEach(d=>add('approval','Awaiting your review','“'+delivLabel(d)+'” has a version pending','deliverable',d.id));
   if(!isEmp())DB.daily_reports.filter(r=>r.status==='flagged').slice(0,12)
     .forEach(r=>add('automation','Report flagged for review',user(r.user_id).full_name+' · '+r.report_date,'report',r.id));
   DB.project_assignments.filter(a=>a.user_id===S.me&&!a.removed_at&&!a.is_project_manager).slice(0,6)

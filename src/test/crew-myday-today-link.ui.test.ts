@@ -144,7 +144,7 @@ describe("the Today's assignment card submits the Drive link through ✎ Log", (
     expect(card.querySelector('[data-act="submitVersion"]'), "no Submit button on the card").toBeNull();
     // My deliverables keeps its own Submit.
     const mineBefore = [...live(h, "My deliverables").querySelectorAll(".dlv")]
-      .find((d) => d.querySelector(".dlv-title")?.textContent === "Aftermovie") as HTMLElement;
+      .find((d) => d.querySelector(".dlv-name")?.textContent === "Aftermovie") as HTMLElement;
     expect(mineBefore.querySelector('[data-act="submitVersion"][data-did="8201"]')).not.toBeNull();
     // ✎ Log opens Log a task with the deliverable linked; its Submit for review opens the form on top.
     h.ev("ACTIONS.logWork({pid:7001,did:8201})");
@@ -160,7 +160,7 @@ describe("the Today's assignment card submits the Drive link through ✎ Log", (
     expect(h.ev<string>("DB.assignments.find(a=>a.id===77201).status")).toBe("done");
     expect(live(h, "Today’s assignments").textContent).not.toContain("Edit the aftermovie");
     const mine = [...live(h, "My deliverables").querySelectorAll(".dlv")]
-      .find((d) => d.querySelector(".dlv-title")?.textContent === "Aftermovie") as HTMLElement;
+      .find((d) => d.querySelector(".dlv-name")?.textContent === "Aftermovie") as HTMLElement;
     expect(mine.textContent).toContain("Awaiting review");
     h.as(902);
     expect(ids(h, 902)).not.toContain(77201);
