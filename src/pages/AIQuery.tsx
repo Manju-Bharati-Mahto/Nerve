@@ -130,8 +130,10 @@ export default function AIQueryPage() {
   }
 
   return (
-    <div className="animate-fade-in flex flex-col h-[calc(100vh-4rem)]">
-      <div className="mb-4 flex items-start justify-between gap-3">
+    // Fill the layout's content slot exactly: viewport − 3rem sticky header − 4rem py-8 padding.
+    // Only the message list (flex-1 min-h-0 overflow-auto) scrolls; header + input bar stay put.
+    <div className="animate-fade-in flex flex-col h-[calc(100vh-7rem)]">
+      <div className="mb-4 flex items-start justify-between gap-3 shrink-0">
         <div>
           <h1 className="text-2xl font-serif text-foreground">Ask AI</h1>
           <p className="text-sm text-muted-foreground mt-1">Query your knowledge base</p>
@@ -144,14 +146,14 @@ export default function AIQueryPage() {
       </div>
 
       {online === null && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/50 border border-border text-muted-foreground text-xs mb-4">
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/50 border border-border text-muted-foreground text-xs mb-4 shrink-0">
           <RefreshCw className="w-3.5 h-3.5 shrink-0 animate-spin" />
           Connecting to the AI knowledge base…
         </div>
       )}
 
       {online === false && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs mb-4">
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs mb-4 shrink-0">
           <WifiOff className="w-3.5 h-3.5 shrink-0" />
           <span className="flex-1">AI backend disconnected. Showing local keyword search results instead.</span>
           <button onClick={checkHealth}
@@ -162,7 +164,7 @@ export default function AIQueryPage() {
       )}
 
       {messages.length === 0 && (
-        <div className="mb-4">
+        <div className="mb-4 shrink-0">
           <p className="text-xs text-muted-foreground mb-2">Quick prompts:</p>
           <div className="flex flex-wrap gap-2">
             {QUICK_PROMPTS.map(p => (
@@ -175,7 +177,7 @@ export default function AIQueryPage() {
         </div>
       )}
 
-      <div ref={outputRef} className="flex-1 overflow-auto space-y-4 mb-4">
+      <div ref={outputRef} className="flex-1 min-h-0 overflow-auto space-y-4 mb-4">
         {messages.map((m, i) => (
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[80%] rounded-xl px-4 py-3 text-sm ${
@@ -209,7 +211,7 @@ export default function AIQueryPage() {
       </div>
 
       {messages.some(m => m.role === 'assistant') && (
-        <div className="flex justify-end mb-2">
+        <div className="flex justify-end mb-2 shrink-0">
           <button onClick={copyLast}
             className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
             {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
@@ -218,7 +220,7 @@ export default function AIQueryPage() {
         </div>
       )}
 
-      <div className="hub-card flex items-center gap-3">
+      <div className="hub-card flex items-center gap-3 shrink-0">
         <select className="hub-input w-40 shrink-0" value={deptFilter} onChange={e => setDeptFilter(e.target.value)}>
           <option value="">All depts</option>
           {DEPARTMENTS.map(d => <option key={d}>{d}</option>)}
