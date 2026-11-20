@@ -212,7 +212,7 @@ describe("My Day — Delivered outputs say where the work went", () => {
     const card = [...h.html(h.ev<string>("viewMyDay()")).querySelectorAll(".card")]
       .find((c) => c.querySelector("h3")?.textContent === "Delivered outputs") as HTMLElement;
     const r = (title: string) => [...card.querySelectorAll(".dlv")]
-      .find((n) => n.querySelector(".dlv-title")?.textContent === title) as HTMLElement;
+      .find((n) => n.querySelector(".dlv-name")?.textContent === title) as HTMLElement;
     expect(r("Edited Photos").querySelector("[data-dispatch]")?.textContent)
       .toBe("Dispatched 24 Oct 26 to registrar@example.invalid");
     expect(r("Aftermovie").querySelector("[data-dispatch]")?.textContent)

@@ -76,8 +76,11 @@ describe("My Day — Delivered outputs", () => {
     h.ev(`__dl(8110,'Old delivered','delivered',{completed_at:'2026-10-18'}); __v(88110,8110,1,'approved','2026-10-17');
           __dl(8111,'Approved today','approved'); __v(88111,8111,2,'approved','2026-10-24T11:00:00Z');
           __dl(8112,'Delivered yesterday','delivered',{completed_at:'2026-10-23T16:00:00Z'}); __v(88112,8112,1,'approved','2026-10-22');`);
-    const titles = [...card(h, "Delivered outputs").querySelectorAll(".dlv-title")].map((n) => n.textContent);
+    const titles = [...card(h, "Delivered outputs").querySelectorAll(".dlv-name")].map((n) => n.textContent);
     expect(titles).toEqual(["Approved today", "Delivered yesterday", "Old delivered"]);
+    // Each row is headed by its project; the deliverable's own name is the line under it.
+    const heads = [...card(h, "Delivered outputs").querySelectorAll(".dlv-title")].map((n) => n.textContent);
+    expect(heads).toEqual(titles.map(() => h.ev<string>("proj(deliv(8111).project_id).name")));
   });
 
   it("approved work carries ✔ Mark delivered for the people on it, and it delivers", async () => {
@@ -212,11 +215,15 @@ describe("the deliverable drawer", () => {
     }
   });
 
-  it("names the deliverable once and shows no internal weight", async () => {
+  it("is headed by the project, names the deliverable once under it and shows no internal weight", async () => {
     const h = await boot(901);
-    const head = drawer(h, 8101).querySelector(".dh-meta") as HTMLElement;
+    const top = drawer(h, 8101).querySelector(".dr-head") as HTMLElement;
+    expect(top.querySelector("h2")!.textContent!.trim()).toBe(h.ev<string>("proj(deliv(8101).project_id).name"));
+    const head = top.querySelector(".dh-meta") as HTMLElement;
+    expect(head.querySelector(".dh-name")!.textContent).toBe(h.ev<string>("deliv(8101).title"));
     expect(head.textContent).not.toMatch(/weight/i);
-    expect(head.textContent).not.toContain(h.ev<string>("__TN"));
+    // Named after its type, so the type is not said a second time beside it.
+    expect(top.textContent!.split(h.ev<string>("__TN")).length - 1).toBe(1);
     // A title that is not the type still says the type beside it.
     expect((drawer(h, 8102).querySelector(".dh-meta") as HTMLElement).textContent).toContain(h.ev<string>("__TN"));
     const row = h.html(h.ev<string>("delivRow(deliv(8101))")).querySelector(".lr-main > span") as HTMLElement;
@@ -232,14 +239,15 @@ describe("the deliverable drawer", () => {
 });
 
 describe("Home and the board", () => {
-  it("Pending approvals names the deliverable by its title, and keeps the project on a phone card", async () => {
+  it("Pending approvals heads each row with its project, the deliverable's title and version under it", async () => {
     const h = await boot(904);
     h.ev("deliv(8102).title='Photos — Edited'");
     const t = h.html(h.ev<string>("pendingApprovalsWidget()"));
     const row = t.querySelector('tr[data-drawer="deliverable:8102"]') as HTMLElement;
-    expect(row.querySelector("td")!.textContent!.trim()).toBe("Photos — Edited · v1");
+    expect(row.querySelector("td .t-main")!.textContent!.trim()).toBe("Annual Cultural Festival");
+    expect(row.querySelector("td .t-sub")!.textContent!.trim()).toBe("Photos — Edited · v1");
     expect(t.querySelector("table")!.classList.contains("pa-cards")).toBe(true);
-    expect(row.querySelector('td[data-m="meta"]')!.textContent).toContain("Annual Cultural Festival");
+    expect(row.querySelector('td[data-m="meta"]')!.textContent).toContain(h.ev<string>("proj(deliv(8102).project_id).code"));
     expect(row.querySelector('td[data-m="actions"] button')!.textContent).toBe("Review");
     const phone = HTML.slice(HTML.indexOf("/* ==== PHONE LAYER ===="), HTML.indexOf("/* ==== END PHONE LAYER ==== */"));
     expect(phone).toContain('html[data-layout="mobile"] table.pa-cards td.hide-sm{display:block!important}');

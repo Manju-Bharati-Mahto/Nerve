@@ -250,6 +250,36 @@ maybe("Add deliverable on an existing project", () => {
     expect(a.status).toBe(201);
     expect((await deliv(didOf(a))).owner_id).toBe(ACTORS.empA2.id);
   });
+
+  /* Owner's decision (24 Oct 2026): a row given a person on Add deliverable
+     is sent as Assign work sends it — POST /work with a new_deliverable — so
+     it is theirs, with its work row (Today's assignments), and its effort and
+     event day are kept. */
+  it("a row given a person: theirs, with its work row, due date, effort and event day", async () => {
+    const pid = await routed(teamA);
+    const r = await as("leadA", "POST", `/projects/${pid}/work`, {
+      title: dtypeName, assignees: [ACTORS.empA2.id], owner_id: ACTORS.empA2.id, due_date: "2026-11-08",
+      new_deliverable: { deliverable_type_id: dtype, title: dtypeName, due_date: "2026-11-08",
+        estimated_hours: 4, event_day: 3 } });
+    expect(r.status).toBe(201);
+    const d = await deliv(didOf(r));
+    expect(d.owner_id).toBe(ACTORS.empA2.id);
+    expect(Number(d.estimated_hours)).toBe(4);
+    expect(d.event_day).toBe(3);
+    expect(String(d.due_date instanceof Date ? d.due_date.toISOString() : d.due_date)).toMatch(/^2026-11-0[78]/);
+    const work = (await pool.query(
+      `SELECT a.status, array_agg(au.user_id) AS who FROM mo_assignments a
+         JOIN mo_assignment_users au ON au.assignment_id=a.id WHERE a.deliverable_id=$1 GROUP BY a.id`, [d.id])).rows;
+    expect(work).toEqual([{ status: "not_started", who: [ACTORS.empA2.id] }]);
+    expect(await titles(ACTORS.empA2.id, Number(d.id))).toHaveLength(1);
+    // A day the event does not have is refused, and nothing is created.
+    const bad = await as("leadA", "POST", `/projects/${pid}/work`, {
+      title: "x", assignees: [ACTORS.empA2.id],
+      new_deliverable: { deliverable_type_id: dtype, title: `${dtypeName} late`, event_day: 11 } });
+    expect(bad.status).toBe(400);
+    expect(await one(`SELECT id FROM mo_deliverables WHERE project_id=$1 AND title=$2`, [pid, `${dtypeName} late`]))
+      .toBeUndefined();
+  });
 });
 
 /* ── Q5 — production workers ──────────────────────────────────────────────── */

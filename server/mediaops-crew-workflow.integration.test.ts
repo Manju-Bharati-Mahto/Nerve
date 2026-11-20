@@ -172,6 +172,7 @@ async function cleanup() {
   await pool.query(`DELETE FROM mo_academic_units WHERE name LIKE '${PX} %'`);
   await pool.query(`DELETE FROM mo_academic_years WHERE label LIKE '${PX}%'`);
   await pool.query(`DELETE FROM mo_boards WHERE name LIKE '${PX} %'`);
+  await pool.query(`UPDATE mo_automation_rules SET updated_by=NULL WHERE updated_by LIKE '${PX}-%'`);
   await pool.query(`DELETE FROM mo_team_members WHERE user_id LIKE '${PX}-%'`);
   await pool.query(`DELETE FROM mo_teams WHERE name LIKE '${PX} %'`);
   await pool.query(`DELETE FROM mo_user_profiles WHERE user_id LIKE '${PX}-%'`);
@@ -247,6 +248,11 @@ maybe("employee project creation — assigned to themselves, never to a team", (
     const pm = await pool.query(
       `SELECT user_id FROM mo_project_assignments WHERE project_id=$1 AND is_project_manager AND removed_at IS NULL`, [p.id]);
     expect(pm.rows.map((x) => x.user_id)).toEqual([ACTORS.empA1.id]);
+    const work = (await pool.query(
+      `SELECT a.start_date::text, a.due_date::text, au.user_id
+         FROM mo_assignments a JOIN mo_assignment_users au ON au.assignment_id=a.id
+        WHERE a.project_id=$1`, [p.id])).rows;
+    expect(work).toEqual([{ start_date: "2026-10-01", due_date: "2026-10-10", user_id: ACTORS.empA1.id }]);
   });
 
   it("an employee cannot route their project to a team — their own or another", async () => {
@@ -368,11 +374,43 @@ maybe("team lead — allocates inside their own team, on their own team's projec
     const owners = (await pool.query(`SELECT owner_id FROM mo_deliverables WHERE project_id=$1 ORDER BY id`, [pid]))
       .rows.map((x) => x.owner_id);
     expect(owners).toEqual([ACTORS.empA1.id, null]);
+    const dailyWork = (await pool.query(
+      `SELECT a.deliverable_id, a.start_date::text, a.due_date::text, a.status, au.user_id
+         FROM mo_assignments a JOIN mo_assignment_users au ON au.assignment_id=a.id
+        WHERE a.project_id=$1 ORDER BY a.id`, [pid])).rows;
+    expect(dailyWork).toEqual([expect.objectContaining({
+      start_date: "2026-10-01", due_date: "2026-10-10", status: "not_started",
+      user_id: ACTORS.empA1.id })]);
+    expect(Number(dailyWork[0].deliverable_id)).toBeGreaterThan(0);
     const crew = (await pool.query(
       `SELECT user_id FROM mo_project_assignments WHERE project_id=$1 AND removed_at IS NULL`, [pid])).rows.map((x) => x.user_id);
     for (const a of ["leadA", "empA1", "empA2", "empB1"] as const) expect(crew).toContain(ACTORS[a].id);
     expect((await notes(ACTORS.empA2.id, "project", pid)).map((n) => n.title)).toEqual(["You are on a new project"]);
     expect(await notes(ACTORS.empA1.id, "project", pid), "a deliverable's owner is told once, by its notice").toEqual([]);
+  });
+
+  it("an Admin assigns a new deliverable as daily work from its event day", async () => {
+    const r = await as("admin", "POST", "/projects", {
+      name: `${PX} admin daily ${Math.random().toString(36).slice(2, 8)}`,
+      project_type_id: projectTypeId, team_id: teamA,
+      start_date: "2026-10-01", end_date: "2026-10-10",
+      deliverables: [{ deliverable_type_id: dtype, event_day: 3, owner_id: ACTORS.empB1.id }],
+    });
+    expect(r.status, JSON.stringify(r.body)).toBe(201);
+    const pid = Number((r.body.project as Record<string, unknown>).id);
+    const work = (await pool.query(
+      `SELECT a.deliverable_id, a.start_date::text, a.due_date::text, au.user_id
+         FROM mo_assignments a JOIN mo_assignment_users au ON au.assignment_id=a.id
+        WHERE a.project_id=$1`, [pid])).rows;
+    expect(work).toEqual([expect.objectContaining({
+      start_date: "2026-10-03", due_date: "2026-10-10", user_id: ACTORS.empB1.id })]);
+    const state = await as("empB1", "GET", "/state");
+    expect(state.status).toBe(200);
+    const uiUser = (state.body.users as Array<{ id: number; full_name: string }>)
+      .find((person) => person.full_name === ACTORS.empB1.full_name);
+    expect(uiUser).toBeDefined();
+    expect((state.body.assignments as Array<{ project_id: number; assignees: number[] }>)
+      .find((a) => Number(a.project_id) === pid)?.assignees).toContain(uiUser!.id);
   });
 
   it("9d — a project keeps the event's start and end time, and refuses a bad or backwards one", async () => {
@@ -391,6 +429,36 @@ maybe("team lead — allocates inside their own team, on their own team's projec
     expect((await as("leadA", "PATCH", `/projects/${pid}`, { end_date: "2026-10-24", end_time: "08:00" })).status).toBe(400);
     expect((await as("leadA", "PATCH", `/projects/${pid}`, { start_time: "10:15", end_time: null })).status).toBe(200);
     expect(await project(pid)).toMatchObject({ start_time: "10:15", end_time: null });
+  });
+
+  it("9e — an event's deliverables belong to a day of it or the whole event; a day outside it is refused, with nothing written", async () => {
+    const name = `${PX} Folklore ${Math.random().toString(36).slice(2, 8)}`;
+    const ev = { name, project_type_id: projectTypeId, start_date: "2026-10-24", end_date: "2026-10-28",
+      start_time: "09:00", end_time: "15:00" };
+    const bad = await as("leadA", "POST", "/projects", { ...ev, deliverables: [{ deliverable_type_id: dtype, event_day: 6 }] });
+    expect(bad.status).toBe(400);
+    expect(bad.body.message).toBe("Pick a day from 1 to 5 of this event.");
+    expect(await one(`SELECT id FROM mo_projects WHERE name=$1`, [name]), "a refused project left a row").toBeUndefined();
+    const r = await as("leadA", "POST", "/projects", { ...ev, deliverables: [
+      { title: "Photos · Day 1", deliverable_type_id: dtype, event_day: 1, owner_id: ACTORS.empA1.id },
+      { title: "Photos · Day 2", deliverable_type_id: dtype, event_day: 2, owner_id: ACTORS.empA2.id },
+      { title: "Aftermovie", deliverable_type_id: dtype }] });
+    expect(r.status).toBe(201);
+    const pid = Number((r.body.project as Record<string, unknown>).id);
+    expect((await pool.query(`SELECT title, event_day FROM mo_deliverables WHERE project_id=$1 ORDER BY id`, [pid])).rows)
+      .toEqual([{ title: "Photos · Day 1", event_day: 1 }, { title: "Photos · Day 2", event_day: 2 },
+                { title: "Aftermovie", event_day: null }]);
+    // Add deliverable takes a day too, within the event.
+    expect((await as("leadA", "POST", `/projects/${pid}/deliverables`, { deliverable_type_id: dtype, event_day: 5 })).status).toBe(201);
+    expect((await as("leadA", "POST", `/projects/${pid}/deliverables`, { deliverable_type_id: dtype, event_day: 0 })).status).toBe(400);
+    // The event cannot be cut short of a day that has deliverables.
+    const cut = await as("leadA", "PATCH", `/projects/${pid}`, { end_date: "2026-10-26" });
+    expect(cut.status).toBe(400);
+    expect(String(cut.body.message)).toContain("Day 5");
+    expect((await as("leadA", "PATCH", `/projects/${pid}`, { end_date: "2026-10-30" })).status).toBe(200);
+    // A one-day project has no day to pick.
+    expect((await as("leadA", "POST", "/projects", { ...ev, name: name + " one", end_date: "2026-10-24",
+      deliverables: [{ deliverable_type_id: dtype, event_day: 1 }] })).status).toBe(400);
   });
 });
 
@@ -1796,8 +1864,8 @@ maybe("the work follows its deliverable — submitting closes it for everyone, c
       `SELECT entity_id, before, after FROM mo_audit_logs WHERE action='assignment.updated' AND actor_id=$1
          AND entity_id = ANY($2::bigint[]) ORDER BY id`,
       [ACTORS.empA2.id, (await rowsOf(did)).filter((x) => !x.smc).map((x) => x.id)]);
-    expect(trail.rows.map((t) => [t.before.status, t.after.status]))
-      .toEqual([["not_started", "done"], ["in_progress", "done"]]);
+    expect(trail.rows.map((t) => [t.before.status, t.after.status]).sort())
+      .toEqual([["in_progress", "done"], ["not_started", "done"]]);
 
     // Changes requested: back on everyone's day.
     expect((await as("leadA", "POST", `/deliverables/${did}/review`,
@@ -1823,5 +1891,93 @@ maybe("the work follows its deliverable — submitting closes it for everyone, c
     await pool.query(`UPDATE mo_assignments SET status='cancelled' WHERE id=$1`, [ids[1]]);
     expect((await as("empA1", "POST", `/deliverables/${did}/versions`, drive("w3"))).status).toBe(201);
     expect(await crewStatuses(did)).toEqual(["done", "cancelled"]);
+  });
+});
+
+maybe("ZIP admin configuration — settings, boards and CRUD", () => {
+  it("uses the default unit when a new deliverable type leaves it blank", async () => {
+    const created = await as("admin", "POST", "/crud/deliverable_types", {
+      name: `${PX} Blank Unit`, slug: `${PX}-blank-unit`, icon: "",
+      default_weight: "1", default_unit: "", review_exempt: false,
+      default_due_offset_days: "5", work_type_id: "", sort_order: "0",
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const row = created.body.row as Record<string, unknown>;
+    try {
+      expect(row.default_unit).toBe("items");
+      expect(row.work_type_id).toBeNull();
+    } finally {
+      await pool.query(`DELETE FROM mo_deliverable_types WHERE id=$1`, [row.id]);
+    }
+  });
+
+  it("keeps settings Admin-only, validates the whole request, and saves linked automation values", async () => {
+    const initial = await as("admin", "GET", "/settings");
+    expect(initial.status).toBe(200);
+    const original = initial.body.settings as Record<string, unknown>;
+    expect(original).toMatchObject({ project_code_prefix: "MC", backfill_window: "Until 23:59 the next day" });
+    expect((await as("empA1", "PATCH", "/settings", { random_sample_pct: 17 })).status).toBe(403);
+    const bad = await as("admin", "PATCH", "/settings", {
+      department_name: `${PX} Should Not Persist`, backfill_window: "unknown window" });
+    expect(bad.status).toBe(400);
+    expect((await as("admin", "GET", "/settings")).body.settings).toMatchObject({
+      department_name: original.department_name, backfill_window: original.backfill_window });
+    expect((await as("admin", "PATCH", "/settings", { academic_year_id: 1 })).status).toBe(400);
+    try {
+      const saved = await as("admin", "PATCH", "/settings", {
+        random_sample_pct: 17, backfill_window: "Within 48 hours", ics_calendar_feeds: false,
+        current_academic_year_id: original.current_academic_year_id });
+      expect(saved.status).toBe(200);
+      expect(saved.body.settings).toMatchObject({ random_sample_pct: 17,
+        backfill_window: "Within 48 hours", ics_calendar_feeds: false });
+      expect((await one(`SELECT config->>'random_sample_pct' AS pct FROM mo_automation_rules WHERE rule_key='AUTO-13'`)).pct)
+        .toBe("17");
+      expect((await as("admin", "GET", "/calendar/feed.ics")).status).toBe(403);
+    } finally {
+      await as("admin", "PATCH", "/settings", {
+        random_sample_pct: original.random_sample_pct,
+        backfill_window: original.backfill_window,
+        ics_calendar_feeds: original.ics_calendar_feeds });
+    }
+  });
+
+  it("updates a management board and refuses an employee edit", async () => {
+    const created = await as("leadA", "POST", "/boards", { name: `${PX} Board` });
+    expect(created.status).toBe(201);
+    const id = Number((created.body.board as Record<string, unknown>).id);
+    expect((await as("empA1", "PATCH", `/boards/${id}`, { name: "Wrong" })).status).toBe(403);
+    const updated = await as("leadA", "PATCH", `/boards/${id}`, {
+      name: `${PX} Production board`, description: "Crew plan", sync_status: true });
+    expect(updated.status).toBe(200);
+    expect(updated.body.board).toMatchObject({ name: `${PX} Production board`,
+      description: "Crew plan", sync_status: true });
+    expect(await one(`SELECT name, description, sync_status FROM mo_boards WHERE id=$1`, [id]))
+      .toMatchObject({ name: `${PX} Production board`, description: "Crew plan", sync_status: true });
+  });
+
+  it("exposes and creates the new configuration modules with normalized row ids", async () => {
+    const meta = await as("admin", "GET", "/crud/meta");
+    expect(meta.status).toBe(200);
+    const keys = (meta.body.modules as Array<{ key: string }>).map((m) => m.key);
+    expect(keys).toEqual(expect.arrayContaining(["departments", "labels", "equipment_kits"]));
+    expect((await as("leadA", "POST", "/crud/departments", { name: `${PX} Forbidden` })).status).toBe(403);
+    const ids: Array<[string, number]> = [];
+    try {
+      for (const [module, body] of [
+        ["departments", { name: `${PX} Department` }],
+        ["labels", { name: `${PX} Label` }],
+        ["equipment_kits", { name: `${PX} Kit`, description: "Test kit" }],
+      ] as const) {
+        const result = await as("admin", "POST", `/crud/${module}`, body);
+        expect(result.status, `${module}: ${JSON.stringify(result.body)}`).toBe(201);
+        const row = result.body.row as Record<string, unknown>;
+        expect(typeof row.id).toBe("number");
+        if (module === "labels") expect(row.color).toBe("#3B82F6");
+        ids.push([module, Number(row.id)]);
+      }
+    } finally {
+      for (const [module, id] of ids)
+        await pool.query(`DELETE FROM ${module === "departments" ? "mo_departments" : module === "labels" ? "mo_labels" : "mo_equipment_kits"} WHERE id=$1`, [id]);
+    }
   });
 });

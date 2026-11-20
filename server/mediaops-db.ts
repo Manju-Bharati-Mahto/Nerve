@@ -721,8 +721,6 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
       WHERE table_name='mo_inventory_scopes' AND column_name='lends_to_students'`)).rows[0];
   await pool.query(`ALTER TABLE mo_inventory_scopes
                     ADD COLUMN IF NOT EXISTS lends_to_students BOOLEAN NOT NULL DEFAULT false`);
-  if (!hadLends)
-    await pool.query(`UPDATE mo_inventory_scopes SET lends_to_students = true WHERE code = 'pid'`);
   await pool.query(`ALTER TABLE mo_inventory_scopes DROP CONSTRAINT IF EXISTS mo_inventory_scopes_prefix_check`);
   await pool.query(`ALTER TABLE mo_inventory_scopes ADD CONSTRAINT mo_inventory_scopes_prefix_check
                     CHECK (code_prefix IS NULL OR code_prefix ~ '^[A-Z][A-Z0-9]{1,7}$')`);
@@ -742,6 +740,11 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
     INSERT INTO mo_inventory_scopes (name, code, code_prefix)
     VALUES ('Media Crew', 'media_crew', 'MC'), ('PID', 'pid', 'PID')
     ON CONFLICT (code) DO NOTHING`);
+  /* On a fresh database PID did not exist when the column was added. Apply
+     the one-time default after seeding the row, without resetting later admin
+     changes on subsequent boots. */
+  if (!hadLends)
+    await pool.query(`UPDATE mo_inventory_scopes SET lends_to_students = true WHERE code = 'pid'`);
   /* An existing row from a hand-made scope keeps its name but gains the prefix
      it needs to mint codes. */
   await pool.query(`UPDATE mo_inventory_scopes SET code_prefix='MC'
@@ -1298,10 +1301,10 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
   // uniformly so the generic CRUD engine can treat all config modules the same.
   // Runs after all target tables are created (they already define these
   // columns for fresh DBs) — this is the migration path for pre-existing DBs.
-  for (const t of ["mo_project_types", "mo_deliverable_types", "mo_task_categories", "mo_equipment_categories",
+  for (const t of ["mo_departments", "mo_project_types", "mo_deliverable_types", "mo_task_categories", "mo_equipment_categories",
                    "mo_leave_types", "mo_skills", "mo_capacity_roles", "mo_vendors", "mo_tags", "mo_duty_flags",
                    "mo_academic_years", "mo_academic_units", "mo_work_types", "mo_campuses", "mo_holidays", "mo_project_templates",
-                   "mo_template_deliverables", "mo_automation_rules", "mo_inventory_scopes"]) {
+                   "mo_template_deliverables", "mo_automation_rules", "mo_inventory_scopes", "mo_labels", "mo_equipment_kits"]) {
     await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true`);
     await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS created_by TEXT`);
@@ -1555,6 +1558,9 @@ async function bootstrapMediaOpsDatabaseUnlocked() {
      not every project is an event with a clock. Idempotent. */
   await pool.query(`ALTER TABLE mo_projects ADD COLUMN IF NOT EXISTS start_time TEXT`);
   await pool.query(`ALTER TABLE mo_projects ADD COLUMN IF NOT EXISTS end_time TEXT`);
+  /* Which day of a multi-day event a deliverable belongs to (1 = the start
+     date); NULL covers the whole event — the final cut. Idempotent. */
+  await pool.query(`ALTER TABLE mo_deliverables ADD COLUMN IF NOT EXISTS event_day INTEGER CHECK (event_day IS NULL OR event_day >= 1)`);
   // §18 — a project converted from a request before a team is chosen has NO
   // production owner yet. That "Needs assignment" state must be representable,
   // otherwise the coordinator ends up owning production work by default.
@@ -3332,9 +3338,46 @@ export async function bootstrapCreatorNetwork() {
   /* Phase 8 — the Creator Network's automation rules, in the table Media Ops
      already uses and on the same five-minute tick. Seeded only when absent,
      so an operator's toggle is never overwritten on the next boot. */
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS mo_settings (
+      key TEXT PRIMARY KEY,
+      value JSONB NOT NULL,
+      updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`);
+  await seedMoSettings();
+
   await seedCreatorAutomationRules();
 
   await seedModuleDefaults();
+}
+
+export const MO_SETTINGS_DEFAULTS: Record<string, unknown> = {
+  department_name: "Media Crew",
+  project_code_prefix: "MC",
+  working_days: "Monday to Saturday",
+  exception_based_review: true,
+  auto_approve_window_hours: 48,
+  random_sample_pct: 10,
+  backfill_window: "Until 23:59 the next day",
+  employee_projects_need_approval: true,
+  task_progress_tracking: true,
+  nerve_sso: true,
+  drive_link_validation: true,
+  drive_folder_provisioning: false,
+  ics_calendar_feeds: true,
+  monthly_leadership_email: true,
+  whatsapp_notifications: false,
+};
+
+export async function seedMoSettings(): Promise<void> {
+  for (const [k, v] of Object.entries(MO_SETTINGS_DEFAULTS)) {
+    await pool.query(
+      `INSERT INTO mo_settings (key, value) VALUES ($1, $2::jsonb)
+       ON CONFLICT (key) DO NOTHING`,
+      [k, JSON.stringify(v)]
+    );
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
