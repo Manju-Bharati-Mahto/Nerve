@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useAppData } from '@/hooks/useAppData'
 import type { Entry } from '@/lib/app-types'
 import { DEPARTMENTS } from '@/lib/constants'
-import { Send, Sparkles, Copy, Check, WifiOff } from 'lucide-react'
+import { ragHealth, askSession, type RagSource } from '@/lib/rag-api'
+import { Send, Sparkles, Copy, Check, Wifi, WifiOff, RefreshCw } from 'lucide-react'
 
 const QUICK_PROMPTS = [
   { label: 'Physiotherapy summary', q: 'Summarize all Physiotherapy updates and achievements' },
@@ -14,7 +15,7 @@ const QUICK_PROMPTS = [
   { label: 'Student achievements',  q: 'List all notable student achievements and activities' },
 ]
 
-type Msg = { role: 'user' | 'assistant'; content: string }
+type Msg = { role: 'user' | 'assistant'; content: string; sources?: RagSource[] }
 
 function buildLocalAnswer(question: string, entries: Entry[]): string {
   const q = question.toLowerCase()
@@ -42,6 +43,30 @@ function buildLocalAnswer(question: string, entries: Entry[]): string {
     '\n\n*(AI responses are unavailable — this is a local search result from the knowledge base.)*'
 }
 
+/** A readable one-line label for a retrieved source chunk, tolerant of field shape. */
+function sourceLabel(s: RagSource): string {
+  const name =
+    (typeof s.source === 'string' && s.source) ||
+    (typeof s.title === 'string' && s.title) ||
+    (typeof s.filename === 'string' && (s.filename as string)) ||
+    'Document'
+  const page = typeof s.page === 'number' ? `, p.${s.page}` : ''
+  return `${name}${page}`
+}
+
+/** Collapse duplicate source+page pairs so a multi-chunk answer lists each file once. */
+function dedupeSources(sources: RagSource[]): RagSource[] {
+  const seen = new Set<string>()
+  const out: RagSource[] = []
+  for (const s of sources) {
+    const key = sourceLabel(s)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(s)
+  }
+  return out
+}
+
 export default function AIQueryPage() {
   const { entries: allEntries } = useAppData()
   const [question, setQuestion]   = useState('')
@@ -49,7 +74,16 @@ export default function AIQueryPage() {
   const [messages, setMessages]   = useState<Msg[]>([])
   const [loading, setLoading]     = useState(false)
   const [copied, setCopied]       = useState(false)
+  // null = still checking, true = RAG reachable, false = offline (local fallback)
+  const [online, setOnline]       = useState<boolean | null>(null)
   const outputRef = useRef<HTMLDivElement>(null)
+
+  const checkHealth = useCallback(() => {
+    setOnline(null)
+    ragHealth().then(setOnline)
+  }, [])
+
+  useEffect(() => { checkHealth() }, [checkHealth])
 
   useEffect(() => {
     if (outputRef.current) {
@@ -57,22 +91,33 @@ export default function AIQueryPage() {
     }
   }, [messages])
 
-  function run(input?: string) {
-    const q = input || question.trim()
-    if (!q) return
+  async function run(input?: string) {
+    const q = (input ?? question).trim()
+    if (!q || loading) return
     setQuestion('')
     setLoading(true)
+    setMessages(prev => [...prev, { role: 'user', content: q }])
 
-    let entries = allEntries
-    if (deptFilter) entries = entries.filter(e => e.dept === deptFilter)
-
-    const userMsg: Msg = { role: 'user', content: q }
-    const answer = buildLocalAnswer(q, entries)
-
-    setTimeout(() => {
-      setMessages(prev => [...prev, userMsg, { role: 'assistant', content: answer }])
+    try {
+      // Skip the network round-trip when we already know the RAG is down.
+      if (online === false) throw new Error('offline')
+      const prompt = deptFilter ? `${q}\n\n(Focus on the ${deptFilter} department.)` : q
+      const res = await askSession(prompt)
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: res.answer || 'The assistant returned an empty answer.',
+        sources: res.sources,
+      }])
+      if (online !== true) setOnline(true)
+    } catch {
+      // Degrade to local keyword search and let the banner reflect reality.
+      setOnline(false)
+      let entries = allEntries
+      if (deptFilter) entries = entries.filter(e => e.dept === deptFilter)
+      setMessages(prev => [...prev, { role: 'assistant', content: buildLocalAnswer(q, entries) }])
+    } finally {
       setLoading(false)
-    }, 400)
+    }
   }
 
   function copyLast() {
@@ -86,15 +131,35 @@ export default function AIQueryPage() {
 
   return (
     <div className="animate-fade-in flex flex-col h-[calc(100vh-4rem)]">
-      <div className="mb-4">
-        <h1 className="text-2xl font-serif text-foreground">Ask AI</h1>
-        <p className="text-sm text-muted-foreground mt-1">Query your knowledge base</p>
+      <div className="mb-4 flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-serif text-foreground">Ask AI</h1>
+          <p className="text-sm text-muted-foreground mt-1">Query your knowledge base</p>
+        </div>
+        {online === true && (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-emerald-50 border border-emerald-200 text-emerald-700 shrink-0">
+            <Wifi className="w-3.5 h-3.5" /> AI connected
+          </span>
+        )}
       </div>
 
-      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs mb-4">
-        <WifiOff className="w-3.5 h-3.5 shrink-0" />
-        AI backend disconnected. Showing local keyword search results instead.
-      </div>
+      {online === null && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/50 border border-border text-muted-foreground text-xs mb-4">
+          <RefreshCw className="w-3.5 h-3.5 shrink-0 animate-spin" />
+          Connecting to the AI knowledge base…
+        </div>
+      )}
+
+      {online === false && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs mb-4">
+          <WifiOff className="w-3.5 h-3.5 shrink-0" />
+          <span className="flex-1">AI backend disconnected. Showing local keyword search results instead.</span>
+          <button onClick={checkHealth}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-amber-300 hover:bg-amber-100 transition-colors">
+            <RefreshCw className="w-3 h-3" /> Retry
+          </button>
+        </div>
+      )}
 
       {messages.length === 0 && (
         <div className="mb-4">
@@ -117,7 +182,19 @@ export default function AIQueryPage() {
               m.role === 'user' ? 'bg-primary text-primary-foreground' : 'hub-card'
             }`}>
               {m.role === 'assistant' ? (
-                <div className="whitespace-pre-wrap leading-relaxed">{m.content}</div>
+                <>
+                  <div className="whitespace-pre-wrap leading-relaxed">{m.content}</div>
+                  {m.sources && m.sources.length > 0 && (
+                    <div className="mt-3 pt-2 border-t border-border/60">
+                      <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Sources</p>
+                      <ul className="space-y-0.5">
+                        {dedupeSources(m.sources).map((s, j) => (
+                          <li key={j} className="text-xs text-muted-foreground">• {sourceLabel(s)}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </>
               ) : m.content}
             </div>
           </div>
