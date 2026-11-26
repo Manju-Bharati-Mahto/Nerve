@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import { BackLink } from './BackLink'
 import {
-  ArrowLeft, Send, Calendar, Heart, Eye, FileText, Pause, Play, CheckCircle,
+  Send, Calendar, Heart, Eye, FileText, Pause, Play, CheckCircle,
   Link as LinkIcon, Trash2, Users, Download, Pencil, X, Sparkles, RefreshCw, Loader2,
 } from 'lucide-react'
 import AddLivePostsDialog from './AddLivePostsDialog'
@@ -139,9 +140,7 @@ export default function OutreachCampaignDetail() {
   if (!campaign || !m) {
     return (
       <div className="animate-fade-in space-y-4">
-        <Link to="/outreach/campaigns" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="w-4 h-4" /> Back to Campaigns
-        </Link>
+        <BackLink fallback="/outreach/campaigns" label="Back to Campaigns" />
         <div className="hub-card text-center py-12">
           <p className="text-sm text-muted-foreground">Campaign not found.</p>
         </div>
@@ -157,9 +156,7 @@ export default function OutreachCampaignDetail() {
   return (
     <div className="animate-fade-in space-y-5">
 
-      <Link to="/outreach/campaigns" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="w-4 h-4" /> Back to Campaigns
-      </Link>
+      <BackLink fallback="/outreach/campaigns" label="Back to Campaigns" />
 
       <div className="hub-card">
         <div className="flex items-start justify-between gap-4 flex-wrap">

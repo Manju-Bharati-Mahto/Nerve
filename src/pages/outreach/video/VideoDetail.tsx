@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
-  ArrowLeft, Send, Download, Copy, Check, ExternalLink, Pencil, Link2,
+  Send, Download, Copy, Check, ExternalLink, Pencil, Link2,
 } from 'lucide-react'
+import { BackLink as HistoryBackLink } from '../BackLink'
 import { toast } from 'sonner'
 import {
   getVideo, submitVideo, updateCaption, videoStreamUrl, videoDownloadUrl,
@@ -180,12 +181,7 @@ export default function VideoDetail() {
 }
 
 function BackLink() {
-  return (
-    <Link to="/outreach/video/my-videos"
-      className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-      <ArrowLeft className="w-4 h-4" /> Back to videos
-    </Link>
-  )
+  return <HistoryBackLink fallback="/outreach/video/my-videos" label="Back to videos" />
 }
 
 function Row({ label, value }: { label: string; value: string }) {

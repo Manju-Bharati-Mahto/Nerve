@@ -1,7 +1,8 @@
 import { useMemo, useState, Fragment } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import { BackLink } from './BackLink'
 import {
-  ArrowLeft, Users, Calendar, TrendingUp, FileText, Heart, Eye, MessageSquare, Bookmark, Share2,
+  Users, Calendar, TrendingUp, FileText, Heart, Eye, MessageSquare, Bookmark, Share2,
   ExternalLink, Trash2, Link as LinkIcon, Pencil, AlertTriangle,
 } from 'lucide-react'
 import {
@@ -104,9 +105,7 @@ export default function OutreachPageDetail() {
   if (!page) {
     return (
       <div className="animate-fade-in space-y-4">
-        <Link to="/outreach/pages" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="w-4 h-4" /> Back to All Pages
-        </Link>
+        <BackLink fallback="/outreach/pages" label="Back to All Pages" />
         <div className="hub-card text-center py-12">
           <p className="text-sm text-muted-foreground">Page not found.</p>
         </div>
@@ -122,9 +121,7 @@ export default function OutreachPageDetail() {
   return (
     <div className="animate-fade-in space-y-5">
 
-      <Link to="/outreach/pages" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="w-4 h-4" /> Back to All Pages
-      </Link>
+      <BackLink fallback="/outreach/pages" label="Back to All Pages" />
 
       <div className="hub-card">
         <div className="flex items-start justify-between gap-4 flex-wrap">
