@@ -3,6 +3,7 @@ import { useAppData } from '@/hooks/useAppData'
 import type { Entry } from '@/lib/app-types'
 import { DEPARTMENTS } from '@/lib/constants'
 import { ragHealth, askSession, type RagSource } from '@/lib/rag-api'
+import { HttpError } from '@/lib/http'
 import { Send, Sparkles, Copy, Check, Wifi, WifiOff, RefreshCw } from 'lucide-react'
 
 const QUICK_PROMPTS = [
@@ -15,7 +16,7 @@ const QUICK_PROMPTS = [
   { label: 'Student achievements',  q: 'List all notable student achievements and activities' },
 ]
 
-type Msg = { role: 'user' | 'assistant'; content: string; sources?: RagSource[] }
+type Msg = { role: 'user' | 'assistant'; content: string; sources?: RagSource[]; error?: boolean }
 
 function buildLocalAnswer(question: string, entries: Entry[]): string {
   const q = question.toLowerCase()
@@ -98,9 +99,18 @@ export default function AIQueryPage() {
     setLoading(true)
     setMessages(prev => [...prev, { role: 'user', content: q }])
 
+    const localAnswer = () => {
+      const entries = deptFilter ? allEntries.filter(e => e.dept === deptFilter) : allEntries
+      return buildLocalAnswer(q, entries)
+    }
+
     try {
-      // Skip the network round-trip when we already know the RAG is down.
-      if (online === false) throw new Error('offline')
+      // Known-offline (health failed): the banner already explains it, so just
+      // serve local search without an extra per-message error.
+      if (online === false) {
+        setMessages(prev => [...prev, { role: 'assistant', content: localAnswer() }])
+        return
+      }
       const prompt = deptFilter ? `${q}\n\n(Focus on the ${deptFilter} department.)` : q
       const res = await askSession(prompt)
       setMessages(prev => [...prev, {
@@ -109,12 +119,22 @@ export default function AIQueryPage() {
         sources: res.sources,
       }])
       if (online !== true) setOnline(true)
-    } catch {
-      // Degrade to local keyword search and let the banner reflect reality.
+    } catch (err) {
+      // A real RAG attempt failed: surface the backend's actual status/detail
+      // (e.g. "401: Invalid or expired token" vs "500: Internal Server Error")
+      // instead of hiding it, then still fall back to local search. The status
+      // alone distinguishes an auth failure (401) from a retrieval/generation
+      // failure (5xx), so the page is self-diagnosing.
+      const status = err instanceof HttpError ? err.status : 0
+      const detail = err instanceof Error ? err.message : String(err)
+      const head = status === 0
+        ? 'Could not reach the AI backend (network).'
+        : `The AI backend returned an error — ${status}${detail ? `: ${detail}` : ''}.`
+      setMessages(prev => [...prev, {
+        role: 'assistant', error: true,
+        content: `${head}\n\nShowing local keyword search instead:\n\n${localAnswer()}`,
+      }])
       setOnline(false)
-      let entries = allEntries
-      if (deptFilter) entries = entries.filter(e => e.dept === deptFilter)
-      setMessages(prev => [...prev, { role: 'assistant', content: buildLocalAnswer(q, entries) }])
     } finally {
       setLoading(false)
     }
@@ -179,11 +199,16 @@ export default function AIQueryPage() {
         {messages.map((m, i) => (
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[80%] rounded-xl px-4 py-3 text-sm ${
-              m.role === 'user' ? 'bg-primary text-primary-foreground' : 'hub-card'
+              m.role === 'user' ? 'bg-primary text-primary-foreground'
+                : m.error ? 'bg-amber-50 border border-amber-200 text-amber-900'
+                : 'hub-card'
             }`}>
               {m.role === 'assistant' ? (
                 <>
-                  <div className="whitespace-pre-wrap leading-relaxed">{m.content}</div>
+                  <div className="whitespace-pre-wrap leading-relaxed">
+                    {m.error && <WifiOff className="inline w-3.5 h-3.5 mr-1.5 -mt-0.5 text-amber-600" />}
+                    {m.content}
+                  </div>
                   {m.sources && m.sources.length > 0 && (
                     <div className="mt-3 pt-2 border-t border-border/60">
                       <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Sources</p>
