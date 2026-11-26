@@ -1,13 +1,16 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useAppData } from '@/hooks/useAppData'
+import { useAuth } from '@/hooks/useAuth'
 import type { Entry } from '@/lib/app-types'
 import { DEPARTMENTS } from '@/lib/constants'
 import { ragHealth, askSession, listSessions, createSession, deleteSession, sessionHistory,
-  type RagSource, type RagSession } from '@/lib/rag-api'
+  listDocuments, uploadDocument, deleteDocument, openDocument,
+  type RagSource, type RagSession, type RagDocument } from '@/lib/rag-api'
 import { HttpError } from '@/lib/http'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Send, Sparkles, Copy, Check, Wifi, WifiOff, RefreshCw, Plus, MessageSquare, Trash2, PanelLeft } from 'lucide-react'
+import { Send, Sparkles, Copy, Check, Wifi, WifiOff, RefreshCw, Plus, MessageSquare, Trash2, PanelLeft,
+  Upload, FileText, Globe, X, Database } from 'lucide-react'
 
 const QUICK_PROMPTS = [
   { label: 'Physiotherapy summary', q: 'Summarize all Physiotherapy updates and achievements' },
@@ -91,8 +94,96 @@ function Markdown({ children }: { children: string }) {
   )
 }
 
+/** Upload / list / delete the documents that make up the knowledge base. */
+function DocumentsModal({ onClose }: { onClose: () => void }) {
+  const [docs, setDocs] = useState<RagDocument[]>([])
+  const [loading, setLoading] = useState(true)
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+
+  const load = useCallback(() => {
+    setLoading(true)
+    listDocuments().then(setDocs)
+      .catch(e => setError(e instanceof Error ? e.message : 'Failed to load documents'))
+      .finally(() => setLoading(false))
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  async function onFiles(files: FileList | null) {
+    if (!files || files.length === 0) return
+    setUploading(true); setError(null)
+    try {
+      for (const f of Array.from(files)) await uploadDocument(f)
+      load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Upload failed')
+    } finally {
+      setUploading(false)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+  }
+
+  async function remove(filename: string) {
+    if (!window.confirm(`Remove "${filename}" from the knowledge base?`)) return
+    setDocs(prev => prev.filter(d => d.filename !== filename))
+    try { await deleteDocument(filename) } catch { load() }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="hub-card w-full max-w-lg max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3 shrink-0">
+          <h2 className="text-base font-serif text-foreground">Knowledge base documents</h2>
+          <button onClick={onClose} className="p-1 rounded-lg text-muted-foreground hover:bg-accent" aria-label="Close">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <label className="flex flex-col items-center justify-center gap-1 border-2 border-dashed border-border rounded-xl px-4 py-6 cursor-pointer hover:bg-accent/40 transition-colors mb-3 shrink-0">
+          <Upload className="w-5 h-5 text-muted-foreground" />
+          <span className="text-sm text-foreground">{uploading ? 'Uploading…' : 'Click to upload a document'}</span>
+          <span className="text-[11px] text-muted-foreground">PDF, TXT · CSV / XLSX if the backend supports them</span>
+          <input ref={fileRef} type="file" multiple accept=".pdf,.txt,.csv,.xls,.xlsx" className="hidden"
+            disabled={uploading} onChange={e => onFiles(e.target.files)} />
+        </label>
+
+        {error && <p className="text-xs text-destructive mb-2 shrink-0">{error}</p>}
+
+        <div className="flex-1 min-h-0 overflow-auto">
+          {loading ? (
+            <p className="text-xs text-muted-foreground px-1 py-2">Loading…</p>
+          ) : docs.length === 0 ? (
+            <p className="text-xs text-muted-foreground px-1 py-2">No documents yet. Upload one above.</p>
+          ) : (
+            <ul className="space-y-1">
+              {docs.map(d => (
+                <li key={d.filename} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-accent/40">
+                  <FileText className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+                  <button onClick={() => { void openDocument(d.filename).catch(() => {}) }}
+                    className="flex-1 truncate text-left text-xs text-foreground hover:underline" title={d.filename}>
+                    {d.filename}
+                  </button>
+                  <button onClick={() => remove(d.filename)} className="text-muted-foreground hover:text-destructive shrink-0" aria-label="Delete document">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function AIQueryPage() {
   const { entries: allEntries } = useAppData()
+  const { role } = useAuth()
+  // Managing the shared knowledge base is admin-only; widen this set if content
+  // leads should upload too.
+  const canManageKb = role === 'super_admin'
+  const [docsOpen, setDocsOpen]   = useState(false)
   const [question, setQuestion]   = useState('')
   const [deptFilter, setDeptFilter] = useState('')
   const [messages, setMessages]   = useState<Msg[]>([])
@@ -270,11 +361,20 @@ export default function AIQueryPage() {
               <p className="text-sm text-muted-foreground mt-1">Query your knowledge base</p>
             </div>
           </div>
-        {online === true && (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-emerald-50 border border-emerald-200 text-emerald-700 shrink-0">
-            <Wifi className="w-3.5 h-3.5" /> AI connected
-          </span>
-        )}
+        <div className="flex items-center gap-2 shrink-0">
+          {canManageKb && (
+            <button onClick={() => setDocsOpen(true)}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+              title="Upload and manage knowledge-base documents">
+              <Database className="w-3.5 h-3.5" /> Knowledge base
+            </button>
+          )}
+          {online === true && (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-emerald-50 border border-emerald-200 text-emerald-700">
+              <Wifi className="w-3.5 h-3.5" /> AI connected
+            </span>
+          )}
+        </div>
       </div>
 
       {online === null && (
@@ -331,9 +431,29 @@ export default function AIQueryPage() {
                     <div className="mt-3 pt-2 border-t border-border/60">
                       <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Sources</p>
                       <ul className="space-y-0.5">
-                        {dedupeSources(m.sources).map((s, j) => (
-                          <li key={j} className="text-xs text-muted-foreground">• {sourceLabel(s)}</li>
-                        ))}
+                        {dedupeSources(m.sources).map((s, j) => {
+                          const href = typeof s.url === 'string' ? s.url : typeof s.link === 'string' ? s.link : ''
+                          const file = typeof s.source === 'string' ? s.source
+                            : typeof s.filename === 'string' ? s.filename : ''
+                          if (href) return (
+                            <li key={j}>
+                              <a href={href} target="_blank" rel="noreferrer"
+                                className="text-xs text-primary hover:underline inline-flex items-center gap-1">
+                                <Globe className="w-3 h-3 shrink-0" /> {sourceLabel(s)}
+                              </a>
+                            </li>
+                          )
+                          if (file) return (
+                            <li key={j}>
+                              <button onClick={() => { void openDocument(file).catch(() => {}) }}
+                                className="text-xs text-primary hover:underline inline-flex items-center gap-1 text-left"
+                                title="Open the cited document">
+                                <FileText className="w-3 h-3 shrink-0" /> {sourceLabel(s)}
+                              </button>
+                            </li>
+                          )
+                          return <li key={j} className="text-xs text-muted-foreground">• {sourceLabel(s)}</li>
+                        })}
                       </ul>
                     </div>
                   )}
@@ -375,6 +495,7 @@ export default function AIQueryPage() {
         </button>
       </div>
       </div>
+      {docsOpen && <DocumentsModal onClose={() => setDocsOpen(false)} />}
     </div>
   )
 }
