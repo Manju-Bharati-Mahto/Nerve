@@ -179,7 +179,7 @@ function DocumentsModal({ onClose }: { onClose: () => void }) {
               {docs.map(d => (
                 <li key={d.filename} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-accent/40">
                   <FileText className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
-                  <button onClick={() => { void openDocument(d.filename).catch(() => {}) }}
+                  <button onClick={() => { void openDocument(d.filename).catch(e => alert(e instanceof Error ? e.message : 'Could not open that document.')) }}
                     className="flex-1 truncate text-left text-xs text-foreground hover:underline" title={d.filename}>
                     {d.filename}
                   </button>
@@ -463,7 +463,7 @@ export default function AIQueryPage() {
                           )
                           if (file) return (
                             <li key={j}>
-                              <button onClick={() => { void openDocument(file).catch(() => {}) }}
+                              <button onClick={() => { void openDocument(file).catch(e => alert(e instanceof Error ? e.message : 'Could not open that document.')) }}
                                 className="text-xs text-primary hover:underline inline-flex items-center gap-1 text-left"
                                 title="Open the cited document">
                                 <FileText className="w-3 h-3 shrink-0" /> {sourceLabel(s)}

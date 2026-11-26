@@ -256,6 +256,14 @@ export async function openDocument(filename: string): Promise<void> {
   if (!res.ok) throw ragError(res, await readJson(res), 'Could not open that document.')
   const blob = await res.blob()
   const url = URL.createObjectURL(blob)
-  window.open(url, '_blank', 'noopener')
+  // An anchor click opens reliably; window.open() after an await is blocked by
+  // popup blockers because it's outside the original click gesture.
+  const a = document.createElement('a')
+  a.href = url
+  a.target = '_blank'
+  a.rel = 'noopener'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
   setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
