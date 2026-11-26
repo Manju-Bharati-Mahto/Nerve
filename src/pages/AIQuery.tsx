@@ -57,9 +57,22 @@ function sourceFile(s: RagSource): string {
   return typeof f === 'string' && f.trim() ? f : ''
 }
 
-/** A readable label: filename (extension stripped) + page. `page` can be a
- *  number or a string ("6"), so it's coerced. */
+/** The web URL a chunk was crawled from, if any — from url/link, or a `file`
+ *  value that is itself an http(s) address. */
+function sourceUrl(s: RagSource): string {
+  if (typeof s.url === 'string' && /^https?:\/\//i.test(s.url)) return s.url
+  if (typeof s.link === 'string' && /^https?:\/\//i.test(s.link)) return s.link
+  const f = sourceFile(s)
+  return /^https?:\/\//i.test(f) ? f : ''
+}
+
+/** A readable label: a web source shows its domain; a document shows its
+ *  filename (extension stripped) + page. `page` may be a string ("6"). */
 function sourceLabel(s: RagSource): string {
+  const url = sourceUrl(s)
+  if (url) {
+    try { return new URL(url).hostname.replace(/^www\./, '') } catch { return url }
+  }
   const file = sourceFile(s)
   const name = file ? file.replace(/\.(pdf|txt|csv|xlsx?|docx?)$/i, '') : 'Document'
   const raw = s.page
@@ -438,8 +451,8 @@ export default function AIQueryPage() {
                       <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Sources</p>
                       <ul className="space-y-0.5">
                         {dedupeSources(m.sources).map((s, j) => {
-                          const href = typeof s.url === 'string' ? s.url : typeof s.link === 'string' ? s.link : ''
-                          const file = sourceFile(s)
+                          const href = sourceUrl(s)
+                          const file = href ? '' : sourceFile(s)
                           if (href) return (
                             <li key={j}>
                               <a href={href} target="_blank" rel="noreferrer"
