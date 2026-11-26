@@ -1,8 +1,12 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAppData } from '@/hooks/useAppData'
 import type { Entry } from '@/lib/app-types'
 import { DEPARTMENTS } from '@/lib/constants'
-import { Newspaper, Copy, Check, WifiOff } from 'lucide-react'
+import { ragHealth, generateNewsletter } from '@/lib/rag-api'
+import { HttpError } from '@/lib/http'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { Newspaper, Copy, Check, Wifi, WifiOff, RefreshCw } from 'lucide-react'
 
 function generateLocalNewsletter(entries: Entry[], dept: string, dateRange: string): string {
   const rangeLabel = dateRange === 'week' ? 'Past Week'
@@ -61,37 +65,62 @@ function generateLocalNewsletter(entries: Entry[], dept: string, dateRange: stri
   return out
 }
 
+/** Entries filtered to the chosen department + period, for the local fallback. */
+function localEntries(all: Entry[], dept: string, dateRange: string): Entry[] {
+  let entries = dept ? all.filter(e => e.dept === dept) : all
+  const now = Date.now()
+  const days = dateRange === 'week' ? 7 : dateRange === 'month' ? 30 : dateRange === 'quarter' ? 90 : 0
+  if (days > 0) {
+    const cutoff = new Date(now - days * 86400000).toISOString().slice(0, 10)
+    entries = entries.filter(e => e.entry_date >= cutoff)
+  }
+  return entries
+}
+
 export default function AINewsletterPage() {
   const { entries: allEntries } = useAppData()
   const [deptFilter, setDeptFilter] = useState('')
   const [dateRange, setDateRange]   = useState('month')
   const [output, setOutput]         = useState('')
+  // How the current output should render: a RAG answer (Markdown), the local
+  // fallback (pre-formatted monospace), or an error notice above the fallback.
+  const [outputMode, setOutputMode] = useState<'rag' | 'local' | 'error'>('local')
   const [loading, setLoading]       = useState(false)
   const [copied, setCopied]         = useState(false)
+  // null = checking, true = RAG reachable, false = offline (local fallback)
+  const [online, setOnline]         = useState<boolean | null>(null)
 
-  function generate() {
+  const checkHealth = useCallback(() => {
+    setOnline(null)
+    ragHealth().then(setOnline)
+  }, [])
+  useEffect(() => { checkHealth() }, [checkHealth])
+
+  async function generate() {
     setLoading(true)
     setOutput('')
+    const local = () => generateLocalNewsletter(localEntries(allEntries, deptFilter, dateRange), deptFilter, dateRange)
 
-    let entries = allEntries
-    if (deptFilter) entries = entries.filter(e => e.dept === deptFilter)
-
-    const now = new Date()
-    if (dateRange === 'week') {
-      const cutoff = new Date(now.getTime() - 7 * 86400000).toISOString().slice(0, 10)
-      entries = entries.filter(e => e.entry_date >= cutoff)
-    } else if (dateRange === 'month') {
-      const cutoff = new Date(now.getTime() - 30 * 86400000).toISOString().slice(0, 10)
-      entries = entries.filter(e => e.entry_date >= cutoff)
-    } else if (dateRange === 'quarter') {
-      const cutoff = new Date(now.getTime() - 90 * 86400000).toISOString().slice(0, 10)
-      entries = entries.filter(e => e.entry_date >= cutoff)
-    }
-
-    setTimeout(() => {
-      setOutput(generateLocalNewsletter(entries, deptFilter, dateRange))
+    try {
+      if (online === false) {
+        setOutput(local()); setOutputMode('local'); return
+      }
+      const text = await generateNewsletter(deptFilter, dateRange)
+      setOutput(text || 'The assistant returned an empty newsletter.')
+      setOutputMode('rag')
+      if (online !== true) setOnline(true)
+    } catch (err) {
+      const status = err instanceof HttpError ? err.status : 0
+      const detail = err instanceof Error ? err.message : String(err)
+      const head = status === 0
+        ? 'Could not reach the AI backend (network).'
+        : `The AI backend returned an error — ${status}${detail ? `: ${detail}` : ''}.`
+      setOutput(`${head}\n\nShowing a newsletter built from local data instead:\n\n${local()}`)
+      setOutputMode('error')
+      setOnline(false)
+    } finally {
       setLoading(false)
-    }, 500)
+    }
   }
 
   function copyOutput() {
@@ -107,10 +136,27 @@ export default function AINewsletterPage() {
         <p className="text-sm text-muted-foreground mt-1">Generate newsletters from your knowledge base</p>
       </div>
 
-      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs mb-6">
-        <WifiOff className="w-3.5 h-3.5 shrink-0" />
-        AI backend disconnected. Generating newsletter from local data instead.
-      </div>
+      {online === null && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/50 border border-border text-muted-foreground text-xs mb-6">
+          <RefreshCw className="w-3.5 h-3.5 shrink-0 animate-spin" />
+          Connecting to the AI knowledge base…
+        </div>
+      )}
+      {online === true && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs mb-6">
+          <Wifi className="w-3.5 h-3.5 shrink-0" /> AI connected — newsletters are generated from the knowledge base.
+        </div>
+      )}
+      {online === false && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs mb-6">
+          <WifiOff className="w-3.5 h-3.5 shrink-0" />
+          <span className="flex-1">AI backend disconnected. Generating newsletter from local data instead.</span>
+          <button onClick={checkHealth}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-amber-300 hover:bg-amber-100 transition-colors">
+            <RefreshCw className="w-3 h-3" /> Retry
+          </button>
+        </div>
+      )}
 
       <div className="hub-card mb-6">
         <div className="flex items-end gap-4">
@@ -139,7 +185,7 @@ export default function AINewsletterPage() {
       </div>
 
       {output && (
-        <div className="hub-card">
+        <div className={`hub-card ${outputMode === 'error' ? 'border border-amber-200 bg-amber-50' : ''}`}>
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-semibold text-foreground">Generated Newsletter</h2>
             <button onClick={copyOutput}
@@ -148,9 +194,21 @@ export default function AINewsletterPage() {
               {copied ? 'Copied!' : 'Copy'}
             </button>
           </div>
-          <div className="prose prose-sm max-w-none text-foreground/90 whitespace-pre-wrap leading-relaxed font-mono text-xs">
-            {output}
-          </div>
+          {outputMode === 'rag' ? (
+            <div className="prose prose-sm max-w-none dark:prose-invert leading-relaxed
+                            prose-headings:font-serif prose-headings:mt-3 prose-headings:mb-1.5
+                            prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5
+                            prose-table:my-2 prose-th:px-2 prose-th:py-1 prose-td:px-2 prose-td:py-1
+                            prose-code:before:content-none prose-code:after:content-none prose-a:text-primary">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{output}</ReactMarkdown>
+            </div>
+          ) : (
+            <div className={`whitespace-pre-wrap leading-relaxed font-mono text-xs ${
+              outputMode === 'error' ? 'text-amber-900' : 'text-foreground/90'
+            }`}>
+              {output}
+            </div>
+          )}
         </div>
       )}
     </div>

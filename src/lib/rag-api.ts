@@ -171,6 +171,22 @@ export async function deleteSession(id: string): Promise<void> {
   if (!res.ok) throw ragError(res, await readJson(res), 'Could not delete that chat.')
 }
 
+/**
+ * Generate a newsletter from the knowledge base for a department + period.
+ * Returns the newsletter as Markdown text; tolerant to the response field name.
+ */
+export async function generateNewsletter(dept: string, dateRange: string): Promise<string> {
+  const res = await authed('/newsletter', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ topic: '', dept, date_range: dateRange, entries_context: '', refinement: '', history: [] }),
+  })
+  const payload = await readJson(res)
+  if (!res.ok) throw ragError(res, payload, 'Could not generate the newsletter.')
+  const text = payload.newsletter ?? payload.content ?? payload.answer ?? payload.text ?? payload.markdown
+  return typeof text === 'string' ? text : ''
+}
+
 /** Load a saved session's messages, to reopen and continue it. */
 export async function sessionHistory(id: string): Promise<RagMessage[]> {
   const res = await authed(`/sessions/${encodeURIComponent(id)}/history`, { method: 'GET' })
