@@ -4,6 +4,8 @@ import type { Entry } from '@/lib/app-types'
 import { DEPARTMENTS } from '@/lib/constants'
 import { ragHealth, askSession, type RagSource } from '@/lib/rag-api'
 import { HttpError } from '@/lib/http'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { Send, Sparkles, Copy, Check, Wifi, WifiOff, RefreshCw } from 'lucide-react'
 
 const QUICK_PROMPTS = [
@@ -66,6 +68,26 @@ function dedupeSources(sources: RagSource[]): RagSource[] {
     out.push(s)
   }
   return out
+}
+
+/**
+ * Renders an assistant answer as GitHub-flavored Markdown (headings, bold,
+ * lists, tables, code, links) instead of showing the raw `*`, `#`, `|` syntax.
+ * Styled with the typography plugin's `prose`, tuned compact and dark-aware.
+ * react-markdown does not render raw HTML, so model output can't inject markup.
+ */
+function Markdown({ children }: { children: string }) {
+  return (
+    <div className="prose prose-sm max-w-none dark:prose-invert leading-relaxed
+                    prose-headings:font-serif prose-headings:mt-3 prose-headings:mb-1.5
+                    prose-p:my-2 prose-pre:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5
+                    prose-table:my-2 prose-th:px-2 prose-th:py-1 prose-td:px-2 prose-td:py-1
+                    prose-code:before:content-none prose-code:after:content-none
+                    prose-code:rounded prose-code:bg-muted prose-code:px-1 prose-code:py-0.5
+                    prose-a:text-primary">
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
+    </div>
+  )
 }
 
 export default function AIQueryPage() {
@@ -205,10 +227,14 @@ export default function AIQueryPage() {
             }`}>
               {m.role === 'assistant' ? (
                 <>
-                  <div className="whitespace-pre-wrap leading-relaxed">
-                    {m.error && <WifiOff className="inline w-3.5 h-3.5 mr-1.5 -mt-0.5 text-amber-600" />}
-                    {m.content}
-                  </div>
+                  {m.error ? (
+                    <div className="whitespace-pre-wrap leading-relaxed">
+                      <WifiOff className="inline w-3.5 h-3.5 mr-1.5 -mt-0.5 text-amber-600" />
+                      {m.content}
+                    </div>
+                  ) : (
+                    <Markdown>{m.content}</Markdown>
+                  )}
                   {m.sources && m.sources.length > 0 && (
                     <div className="mt-3 pt-2 border-t border-border/60">
                       <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1">Sources</p>
