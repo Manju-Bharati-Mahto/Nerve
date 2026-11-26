@@ -3,6 +3,14 @@ services:
     image: pgvector/pgvector:pg16
     container_name: nerve-db
     restart: unless-stopped
+    # The RAG service (parul-rag) runs on the host via systemd, not on this
+    # Docker network, so it reaches Postgres over localhost:5432. Publish the
+    # port to the loopback interface only — reachable on the box, never exposed
+    # off the server. Without this, the RAG's DB lookups (session-token, chat
+    # history) fail with "connection refused" even though the containerised API,
+    # which talks to Postgres as host "db", works fine.
+    ports:
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
