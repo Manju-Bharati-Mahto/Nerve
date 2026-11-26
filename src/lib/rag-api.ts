@@ -26,6 +26,46 @@ export interface RagAnswer {
   question: string
 }
 
+export interface RagSession {
+  id: string
+  title: string
+  createdAt?: string
+}
+
+export interface RagMessage {
+  role: 'user' | 'assistant'
+  content: string
+  sources?: RagSource[]
+}
+
+function asRecord(v: unknown): Record<string, unknown> {
+  return v && typeof v === 'object' ? (v as Record<string, unknown>) : {}
+}
+
+/** Tolerant to id/session_id, title, created_at naming across the API. */
+function toSession(v: unknown): RagSession {
+  const o = asRecord(v)
+  const id = o.id ?? o.session_id ?? o.sessionId
+  return {
+    id: id == null ? '' : String(id),
+    title: typeof o.title === 'string' && o.title.trim() ? o.title : 'New chat',
+    createdAt:
+      typeof o.created_at === 'string' ? o.created_at
+        : typeof o.createdAt === 'string' ? o.createdAt : undefined,
+  }
+}
+
+function toMessage(v: unknown): RagMessage {
+  const o = asRecord(v)
+  const content = typeof o.content === 'string' ? o.content
+    : typeof o.message === 'string' ? o.message : ''
+  return {
+    role: o.role === 'assistant' ? 'assistant' : 'user',
+    content,
+    sources: Array.isArray(o.sources) ? (o.sources as RagSource[]) : undefined,
+  }
+}
+
 /** The RAG (FastAPI) reports errors as `{ detail }`, unlike the Node API's `{ message }`. */
 function ragError(res: Response, payload: Record<string, unknown>, fallback: string): HttpError {
   const detail =
@@ -69,31 +109,73 @@ export function resetRagToken(): void {
   cachedToken = null
 }
 
-/**
- * Ask the knowledge base a question. Retries once with a fresh token if the
- * cached one has expired (401).
- */
-export async function askSession(question: string, sessionId = 'default'): Promise<RagAnswer> {
-  const ask = (token: string): Promise<Response> =>
-    fetchOrExplain(`${RAG_BASE_URL}/ask-session`, {
-      method: 'POST',
+/** An authenticated RAG request with one 401 retry (refresh the token once). */
+async function authed(path: string, init: RequestInit): Promise<Response> {
+  const call = (token: string): Promise<Response> =>
+    fetchOrExplain(`${RAG_BASE_URL}${path}`, {
+      ...init,
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ question, session_id: sessionId }),
+      headers: { ...(init.headers ?? {}), Authorization: `Bearer ${token}` },
     })
-
-  let res = await ask(await getToken())
+  let res = await call(await getToken())
   if (res.status === 401) {
     cachedToken = null
-    res = await ask(await getToken(true))
+    res = await call(await getToken(true))
   }
+  return res
+}
 
+/**
+ * Ask the knowledge base a question within a chat session. Retries once with a
+ * fresh token if the cached one has expired (401).
+ */
+export async function askSession(question: string, sessionId = 'default'): Promise<RagAnswer> {
+  const res = await authed('/ask-session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, session_id: sessionId }),
+  })
   const payload = await readJson(res)
   if (!res.ok) throw ragError(res, payload, 'The AI assistant could not answer that.')
-
   return {
     answer: typeof payload.answer === 'string' ? payload.answer : '',
     sources: Array.isArray(payload.sources) ? (payload.sources as RagSource[]) : [],
     question: typeof payload.question === 'string' ? payload.question : question,
   }
+}
+
+/** List the signed-in user's saved chat sessions. */
+export async function listSessions(): Promise<RagSession[]> {
+  const res = await authed('/sessions', { method: 'GET' })
+  const payload = await readJson(res)
+  if (!res.ok) throw ragError(res, payload, 'Could not load your chats.')
+  const list = Array.isArray(payload.sessions) ? payload.sessions : []
+  return list.map(toSession).filter(s => s.id)
+}
+
+/** Create a new chat session and return it with its server-assigned id. */
+export async function createSession(title = 'New chat'): Promise<RagSession> {
+  const res = await authed('/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
+  const payload = await readJson(res)
+  if (!res.ok) throw ragError(res, payload, 'Could not start a new chat.')
+  return toSession(payload)
+}
+
+/** Delete a chat session and its messages. */
+export async function deleteSession(id: string): Promise<void> {
+  const res = await authed(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!res.ok) throw ragError(res, await readJson(res), 'Could not delete that chat.')
+}
+
+/** Load a saved session's messages, to reopen and continue it. */
+export async function sessionHistory(id: string): Promise<RagMessage[]> {
+  const res = await authed(`/sessions/${encodeURIComponent(id)}/history`, { method: 'GET' })
+  const payload = await readJson(res)
+  if (!res.ok) throw ragError(res, payload, 'Could not load that chat.')
+  const list = Array.isArray(payload.messages) ? payload.messages : []
+  return list.map(toMessage)
 }
