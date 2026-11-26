@@ -15,8 +15,10 @@ import { fetchOrExplain, readJson, HttpError, statusMessage } from './http'
 export const RAG_BASE_URL = (import.meta.env.VITE_RAG_BASE_URL || '/api/rag').replace(/\/$/, '')
 
 export interface RagSource {
+  /** The live RAG returns `{ file, page }`; page may be a string. */
+  file?: string
+  page?: number | string
   source?: string
-  page?: number
   /** Present when a chunk came from the web rather than an uploaded document. */
   url?: string
   link?: string

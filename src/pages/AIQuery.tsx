@@ -50,14 +50,20 @@ function buildLocalAnswer(question: string, entries: Entry[]): string {
     '\n\n*(AI responses are unavailable — this is a local search result from the knowledge base.)*'
 }
 
-/** A readable one-line label for a retrieved source chunk, tolerant of field shape. */
+/** The source document's filename, across the field names the RAG may use.
+ *  The live shape is `{ file, page }` (e.g. "Dump doc. VSF.pdf"). */
+function sourceFile(s: RagSource): string {
+  const f = s.file ?? s.source ?? s.filename ?? s.title
+  return typeof f === 'string' && f.trim() ? f : ''
+}
+
+/** A readable label: filename (extension stripped) + page. `page` can be a
+ *  number or a string ("6"), so it's coerced. */
 function sourceLabel(s: RagSource): string {
-  const name =
-    (typeof s.source === 'string' && s.source) ||
-    (typeof s.title === 'string' && s.title) ||
-    (typeof s.filename === 'string' && (s.filename as string)) ||
-    'Document'
-  const page = typeof s.page === 'number' ? `, p.${s.page}` : ''
+  const file = sourceFile(s)
+  const name = file ? file.replace(/\.(pdf|txt|csv|xlsx?|docx?)$/i, '') : 'Document'
+  const raw = s.page
+  const page = raw != null && String(raw).trim() ? ` · p.${String(raw).trim()}` : ''
   return `${name}${page}`
 }
 
@@ -433,8 +439,7 @@ export default function AIQueryPage() {
                       <ul className="space-y-0.5">
                         {dedupeSources(m.sources).map((s, j) => {
                           const href = typeof s.url === 'string' ? s.url : typeof s.link === 'string' ? s.link : ''
-                          const file = typeof s.source === 'string' ? s.source
-                            : typeof s.filename === 'string' ? s.filename : ''
+                          const file = sourceFile(s)
                           if (href) return (
                             <li key={j}>
                               <a href={href} target="_blank" rel="noreferrer"
