@@ -17,7 +17,16 @@ export const RAG_BASE_URL = (import.meta.env.VITE_RAG_BASE_URL || '/api/rag').re
 export interface RagSource {
   source?: string
   page?: number
+  /** Present when a chunk came from the web rather than an uploaded document. */
+  url?: string
+  link?: string
+  title?: string
+  filename?: string
   [key: string]: unknown
+}
+
+export interface RagDocument {
+  filename: string
 }
 
 export interface RagAnswer {
@@ -194,4 +203,57 @@ export async function sessionHistory(id: string): Promise<RagMessage[]> {
   if (!res.ok) throw ragError(res, payload, 'Could not load that chat.')
   const list = Array.isArray(payload.messages) ? payload.messages : []
   return list.map(toMessage)
+}
+
+// ── Knowledge-base documents ────────────────────────────────────────────────
+
+function toDocument(v: unknown): RagDocument {
+  if (typeof v === 'string') return { filename: v }
+  const o = asRecord(v)
+  const name = o.filename ?? o.name ?? o.source ?? o.file
+  return { filename: name == null ? '' : String(name) }
+}
+
+/** List the documents currently ingested into the knowledge base. */
+export async function listDocuments(): Promise<RagDocument[]> {
+  const res = await authed('/documents', { method: 'GET' })
+  const payload = await readJson(res)
+  if (!res.ok) throw ragError(res, payload, 'Could not load the document list.')
+  const list = Array.isArray(payload.documents) ? payload.documents
+    : Array.isArray(payload) ? (payload as unknown[]) : []
+  return list.map(toDocument).filter(d => d.filename)
+}
+
+/**
+ * Upload a file to the knowledge base (ingested into ChromaDB). The browser
+ * sets the multipart Content-Type/boundary, so none is passed here.
+ * PDF/TXT are ingested by the backend; CSV/XLSX only if the backend supports them.
+ */
+export async function uploadDocument(file: File): Promise<string> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await authed('/upload', { method: 'POST', body: form })
+  const payload = await readJson(res)
+  if (!res.ok) throw ragError(res, payload, 'Upload failed.')
+  return typeof payload.filename === 'string' ? payload.filename : file.name
+}
+
+/** Remove a document from the knowledge base (deletes its chunks + the file). */
+export async function deleteDocument(filename: string): Promise<void> {
+  const res = await authed(`/documents/${encodeURIComponent(filename)}`, { method: 'DELETE' })
+  if (!res.ok) throw ragError(res, await readJson(res), 'Could not delete that document.')
+}
+
+/**
+ * Fetch a source document (with auth) and open it in a new tab, so an answer's
+ * cited PDF can be viewed. Requires a backend GET /documents/{filename}/download
+ * route that returns the file (see the PR notes).
+ */
+export async function openDocument(filename: string): Promise<void> {
+  const res = await authed(`/documents/${encodeURIComponent(filename)}/download`, { method: 'GET' })
+  if (!res.ok) throw ragError(res, await readJson(res), 'Could not open that document.')
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  window.open(url, '_blank', 'noopener')
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
