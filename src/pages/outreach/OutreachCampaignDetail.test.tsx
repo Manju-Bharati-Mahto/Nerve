@@ -37,6 +37,7 @@ vi.mock('@/lib/outreach-access', () => ({
   useCanEditTab: () => viewer.edit,
   useCanEditPosts: () => viewer.edit,
   useIsOutreachAdmin: () => viewer.admin,
+  useOutreachAccess: () => ({ access: { admin: viewer.admin, configured: true, tabs: {}, scope: { kind: 'all' } }, loading: false }),
 }))
 
 // recharts' ResponsiveContainer needs it; jsdom has none.

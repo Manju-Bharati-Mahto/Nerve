@@ -2,14 +2,14 @@ import { useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Send, Plus, Search, X, ChevronRight, Filter as FilterIcon, Trash2, Upload, CheckCircle, AlertCircle, ArrowDown } from 'lucide-react'
 import {
-  useOutreachData, addCampaign, updateCampaign, removeCampaign, campaignMetrics,
+  useOutreachData, addCampaign, updateCampaign, removeCampaign, campaignMetrics, campaignProgressForScope,
   addLivePostsByUrl, refreshOutreach, formatLocalDate,
   type Campaign, type CampaignStatus,
 } from '@/lib/outreach-data'
 import { parseCampaignSheet } from '@/lib/outreach-import'
 import { canonicalState } from '@/lib/outreach-states'
 import AddLivePostsDialog from './AddLivePostsDialog'
-import { useCanEditTab } from '@/lib/outreach-access'
+import { useCanEditTab, useOutreachAccess } from '@/lib/outreach-access'
 import StateSelect from './StateSelect'
 import {
   MAX_BUDGET, toBudget, budgetProblem, isRealIsoDate,
@@ -25,6 +25,10 @@ const STATUS_CFG: Record<CampaignStatus, { label: string; cls: string }> = {
 
 export default function OutreachCampaigns() {
   const { campaigns, posts, pages, creators } = useOutreachData()
+  // FR-06 — scope each campaign's completion to the viewer's states (null for
+  // admins / all-states, who keep the org-wide figure).
+  const { access } = useOutreachAccess()
+  const scopeStates = access && !access.admin && access.scope.kind === 'states' ? access.scope.states : null
   // View on Campaigns shows them; Edit creates, imports and deletes (the server decides the same).
   const canEdit = useCanEditTab('campaigns')
   const navigate = useNavigate()
@@ -42,7 +46,13 @@ export default function OutreachCampaigns() {
   // campaign-row action in the future.
   const [livePostsFor, setLivePostsFor] = useState<Campaign | null>(null)
 
-  const enriched = useMemo(() => campaigns.map(c => ({ c, m: campaignMetrics(c, posts) })), [campaigns, posts])
+  const enriched = useMemo(
+    () => campaigns.map(c => ({
+      c, m: campaignMetrics(c, posts),
+      scoped: scopeStates ? campaignProgressForScope(c, pages, posts, scopeStates) : null,
+    })),
+    [campaigns, posts, pages, scopeStates],
+  )
 
   async function confirmDelete(c: Campaign) {
     const linked = posts.filter(p => p.campaignId === c.id).length
@@ -199,7 +209,7 @@ export default function OutreachCampaigns() {
         </div>
       ) : view === 'cards' ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filtered.map(({ c, m }) => (
+          {filtered.map(({ c, m, scoped }) => (
             <Link key={c.id} to={`/outreach/campaigns/${c.id}`}
               className="hub-card hover:shadow-md transition-shadow block">
               <div className="flex items-start justify-between gap-2 mb-2">
@@ -215,11 +225,14 @@ export default function OutreachCampaigns() {
               <div className="mb-2">
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Post completion</span>
-                  <span className="text-xs font-mono tabular-nums text-foreground">{Math.round(m.pctConsumed * 100)}%</span>
+                  <span className="text-xs font-mono tabular-nums text-foreground">{Math.round((scoped ? scoped.pct : m.pctConsumed) * 100)}%</span>
                 </div>
                 <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                  <div className={`h-full ${m.pctConsumed >= 1 ? 'bg-rose-500' : m.pctConsumed >= 0.7 ? 'bg-amber-500' : 'bg-orange-500'}`}
-                    style={{ width: `${Math.min(100, m.pctConsumed * 100)}%` }} />
+                  <div className={`h-full ${
+                    scoped
+                      ? (scoped.pct >= 1 ? 'bg-emerald-500' : scoped.pct >= 0.5 ? 'bg-amber-500' : 'bg-orange-500')
+                      : (m.pctConsumed >= 1 ? 'bg-rose-500' : m.pctConsumed >= 0.7 ? 'bg-amber-500' : 'bg-orange-500')}`}
+                    style={{ width: `${Math.min(100, (scoped ? scoped.pct : m.pctConsumed) * 100)}%` }} />
                 </div>
               </div>
 
@@ -267,7 +280,7 @@ export default function OutreachCampaigns() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map(({ c, m }) => (
+              {filtered.map(({ c, m, scoped }) => (
                 <tr key={c.id} className="border-b border-border last:border-0 hover:bg-accent/40 transition-colors">
                   <td className="px-3 py-2.5">
                     <Link to={`/outreach/campaigns/${c.id}`} className="text-xs font-medium text-foreground hover:underline">{c.name}</Link>
@@ -277,7 +290,7 @@ export default function OutreachCampaigns() {
                   <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{c.budgetPosts}/{c.budgetStories}/{c.budgetReels}</td>
                   <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{c.assignedPageIds.length} / {c.assignedCreatorIds.length}</td>
                   <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{m.postsDelivered + m.storiesDelivered + m.reelsDelivered}</td>
-                  <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{Math.round(m.pctConsumed * 100)}%</td>
+                  <td className="px-3 py-2.5 text-right text-xs font-mono tabular-nums">{Math.round((scoped ? scoped.pct : m.pctConsumed) * 100)}%</td>
                   <td className="px-3 py-2.5"><span className={`hub-badge ${STATUS_CFG[c.status].cls}`}>{STATUS_CFG[c.status].label}</span></td>
                   <td className="px-3 py-2.5">
                     <div className="flex items-center gap-1">
