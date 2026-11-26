@@ -118,6 +118,9 @@ function ReviewCard({ video, busy, canDecide, onApprove, onReject }: {
 }) {
   const [copied, setCopied] = useState(false)
   const [remark, setRemark] = useState('')
+  // FR-02: the reviewer must see the target page before deciding, and a
+  // submission with none selected cannot be approved (AC-04).
+  const hasPage = (video.socialPageNames?.length ?? 0) > 0
 
   return (
     <div className="hub-card space-y-3">
@@ -143,7 +146,8 @@ function ReviewCard({ video, busy, canDecide, onApprove, onReject }: {
                 className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-700 hover:opacity-80 disabled:opacity-40 inline-flex items-center gap-1">
                 <ThumbsDown className="w-3 h-3" /> Send back
               </button>
-              <button onClick={() => onApprove(remark)} disabled={busy}
+              <button onClick={() => onApprove(remark)} disabled={busy || !hasPage}
+                title={!hasPage ? 'This submission has no publishing page selected — it cannot be approved.' : undefined}
                 className="text-xs px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:opacity-90 disabled:opacity-40 inline-flex items-center gap-1">
                 <ThumbsUp className="w-3 h-3" /> {busy ? 'Approving…' : 'Approve'}
               </button>
@@ -154,6 +158,23 @@ function ReviewCard({ video, busy, canDecide, onApprove, onReject }: {
 
       <video src={videoStreamUrl(video.id)} controls preload="metadata"
         className="w-full max-h-72 rounded-lg bg-black" />
+
+      {/* FR-02 — the page(s) this video will be posted on, shown before the
+          decision. Missing = flagged, and Approve is disabled above. */}
+      <div>
+        <p className="text-[11px] uppercase tracking-widest text-muted-foreground mb-1">Publishing page(s)</p>
+        {hasPage ? (
+          <div className="flex flex-wrap gap-1.5">
+            {video.socialPageNames!.map((name, i) => (
+              <span key={i} className="hub-badge bg-orange-50 text-orange-700 text-[11px]">{name}</span>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-rose-600 inline-flex items-center gap-1">
+            <AlertCircle className="w-3 h-3 shrink-0" /> No publishing page selected — approval is blocked until a page is set.
+          </p>
+        )}
+      </div>
 
       <div>
         <div className="flex items-center justify-between gap-2 mb-1">

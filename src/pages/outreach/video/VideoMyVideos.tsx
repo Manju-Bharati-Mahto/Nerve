@@ -339,6 +339,8 @@ function UploadDialog({ onClose, onDone, directUpload, uploading, setUploading }
   const [campaignId, setCampaignId] = useState('')
   const [pageIds, setPageIds] = useState<string[]>([])
   const [pages, setPages] = useState<Array<{ id: string; handle: string; platform: string }>>([])
+  // FR-04 — filter the page list (500+ entries) by handle/platform.
+  const [pageSearch, setPageSearch] = useState('')
   const [title, setTitle] = useState('')
   const [caption, setCaption] = useState('')
   const [platform, setPlatform] = useState('')
@@ -613,17 +615,34 @@ function UploadDialog({ onClose, onDone, directUpload, uploading, setUploading }
               {offeredPages.length > 0 && (
                 <div>
                   <label className="hub-label">Social media page(s)</label>
+                  {/* FR-04 — with 500+ pages a flat list is unusable. Search by
+                      handle or platform; already-ticked pages stay visible so a
+                      filter never hides the current selection (AC-06). */}
+                  <input className="hub-input mt-1" value={pageSearch}
+                    onChange={e => setPageSearch(e.target.value)}
+                    placeholder="Search pages by name or handle…" />
                   <div className="space-y-1 max-h-32 overflow-y-auto pr-1 mt-1">
-                    {offeredPages.map(pg => (
-                      <label key={pg.id}
-                        className="flex items-center gap-2 px-2 py-1.5 rounded-lg border border-border cursor-pointer hover:bg-accent/40">
-                        <input type="checkbox" checked={pageIds.includes(pg.id)}
-                          onChange={() => setPageIds(cur =>
-                            cur.includes(pg.id) ? cur.filter(x => x !== pg.id) : [...cur, pg.id])} />
-                        <span className="text-xs text-foreground">{pg.handle}</span>
-                        <span className="text-[11px] text-muted-foreground">{pg.platform}</span>
-                      </label>
-                    ))}
+                    {(() => {
+                      const q = pageSearch.trim().toLowerCase()
+                      const shown = q
+                        ? offeredPages.filter(pg => pageIds.includes(pg.id)
+                            || pg.handle.toLowerCase().includes(q)
+                            || pg.platform.toLowerCase().includes(q))
+                        : offeredPages
+                      if (shown.length === 0) {
+                        return <p className="text-[11px] text-muted-foreground px-2 py-1.5">No pages match “{pageSearch}”.</p>
+                      }
+                      return shown.map(pg => (
+                        <label key={pg.id}
+                          className="flex items-center gap-2 px-2 py-1.5 rounded-lg border border-border cursor-pointer hover:bg-accent/40">
+                          <input type="checkbox" checked={pageIds.includes(pg.id)}
+                            onChange={() => setPageIds(cur =>
+                              cur.includes(pg.id) ? cur.filter(x => x !== pg.id) : [...cur, pg.id])} />
+                          <span className="text-xs text-foreground">{pg.handle}</span>
+                          <span className="text-[11px] text-muted-foreground">{pg.platform}</span>
+                        </label>
+                      ))
+                    })()}
                   </div>
                   <p className="text-[11px] text-muted-foreground mt-1">
                     Named in the caption file that goes to Drive alongside the video.

@@ -134,7 +134,6 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/outreach/video/dashboard',  label: 'Video Dashboard',  icon: BarChart3 },
       { path: '/outreach/video/users',      label: 'Workflow Users',   icon: UserCog },
       { path: '/outreach/video/drive',      label: 'Google Drive',     icon: HardDrive },
-      { path: '/outreach/video/campaigns',  label: 'Video Campaigns',  icon: Film },
       { path: '/outreach/video/review',     label: 'Review Queue',     icon: Inbox },
       { path: '/outreach/video/all',        label: 'All Videos',       icon: Film },
       { path: '/outreach/video/calendar',   label: 'Event Calendar',   icon: Calendar },
@@ -154,7 +153,6 @@ const SIDEBAR: Record<string, RoleConfig> = {
       { path: '/outreach/video/dashboard',  label: 'Dashboard',        icon: LayoutDashboard },
       { path: '/outreach/video/users',      label: 'Users',            icon: UserCog },
       { path: '/outreach/video/drive',      label: 'Google Drive',     icon: HardDrive },
-      { path: '/outreach/video/campaigns',  label: 'Video Campaigns',  icon: Film },
       { path: '/outreach/video/review',     label: 'Review Queue',     icon: Inbox },
       { path: '/outreach/video/all',        label: 'All Videos',       icon: Film },
       { path: '/outreach/video/calendar',   label: 'Event Calendar',   icon: Calendar },
@@ -269,7 +267,6 @@ const SIDEBAR: Record<string, RoleConfig> = {
          its content (§11), so both tabs belong in their own menu. */
       { path: '/outreach/video/users',        label: 'Users',            icon: UserCog },
       { path: '/outreach/video/drive',        label: 'Google Drive',     icon: HardDrive },
-      { path: '/outreach/video/campaigns',    label: 'Video Campaigns',  icon: Megaphone },
       { path: '/outreach/video/review',       label: 'Review Queue',     icon: ShieldCheck },
       { path: '/outreach/video/calendar',     label: 'Event Calendar',   icon: Calendar },
       { path: '/outreach/video/all',          label: 'All Videos',       icon: Film },
