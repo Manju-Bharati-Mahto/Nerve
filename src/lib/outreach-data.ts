@@ -731,6 +731,45 @@ export function campaignMetrics(campaign: Campaign, posts: Post[]): CampaignMetr
   return { postsDelivered, storiesDelivered, reelsDelivered, totalBudget, pctConsumed, totalEngagement, totalReach }
 }
 
+export interface CampaignProgress {
+  /** Post slots filled on in-scope pages (capped per page). */
+  delivered: number
+  /** Post inventory of in-scope pages — the denominator. */
+  target: number
+  /** delivered / target, 0..1. */
+  pct: number
+  remaining: number
+  /** How many of the campaign's in-scope pages were counted. */
+  pageCount: number
+}
+
+/**
+ * FR-06 — campaign completion scoped to the pages a viewer may act on.
+ *
+ * `scopeStates` of null means org-wide (admin / all-states): every page the
+ * campaign is assigned to counts. A list of state names restricts both the
+ * numerator and the denominator to assigned pages in those states, so a
+ * state-restricted user reaches 100% once every page in their state has
+ * consumed its post inventory — other states' pages can no longer drag the
+ * figure down (AC-08/AC-09). Posts only, mirroring All Pages' consumed = posts.
+ */
+export function campaignProgressForScope(
+  campaign: Campaign, pages: OutreachPage[], posts: Post[], scopeStates: string[] | null,
+): CampaignProgress {
+  const assigned = new Set(campaign.assignedPageIds)
+  const scopedPages = pages.filter(p =>
+    assigned.has(p.id) && (!scopeStates || scopeStates.some(s => sameState(p.state, s))))
+  const target = scopedPages.reduce((sum, p) => sum + p.inventoryPosts, 0)
+  const delivered = scopedPages.reduce((sum, p) => {
+    const done = posts.filter(x =>
+      x.campaignId === campaign.id && x.addedAsLive && x.pageId === p.id
+      && (x.type === 'static' || x.type === 'carousel')).length
+    return sum + Math.min(done, p.inventoryPosts)
+  }, 0)
+  const pct = target ? Math.min(1, delivered / target) : 0
+  return { delivered, target, pct, remaining: Math.max(0, target - delivered), pageCount: scopedPages.length }
+}
+
 export function suggestedMonthlyUsage(page: OutreachPage, posts: Post[]): number {
   // Suggestion is for posts only — stories are excluded from the pacing target.
   if (page.inventoryPosts <= 0) return 0

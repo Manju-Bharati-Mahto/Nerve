@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, UserCheck, CheckCircle2, Pencil, X } from 'lucide-react'
+import { UserCheck, CheckCircle2, Pencil, X } from 'lucide-react'
+import { BackLink } from '../BackLink'
 import { toast } from 'sonner'
 import {
   getEvent, assignEvent, completeEvent, updateEvent, listEditors,
@@ -155,10 +156,9 @@ export default function VideoEventDetail() {
 
 function Back({ isEditor }: { isEditor: boolean }) {
   return (
-    <Link to={isEditor ? '/outreach/video/todo' : '/outreach/video/calendar'}
-      className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-      <ArrowLeft className="w-4 h-4" /> {isEditor ? 'Back to To-Do List' : 'Back to calendar'}
-    </Link>
+    <BackLink
+      fallback={isEditor ? '/outreach/video/todo' : '/outreach/video/calendar'}
+      label={isEditor ? 'Back to To-Do List' : 'Back to calendar'} />
   )
 }
 

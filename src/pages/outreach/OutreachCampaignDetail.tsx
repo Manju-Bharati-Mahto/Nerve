@@ -1,17 +1,18 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import { BackLink } from './BackLink'
 import {
-  ArrowLeft, Send, Calendar, Heart, Eye, FileText, Pause, Play, CheckCircle,
+  Send, Calendar, Heart, Eye, FileText, Pause, Play, CheckCircle,
   Link as LinkIcon, Trash2, Users, Download, Pencil, X, Sparkles, RefreshCw, Loader2,
 } from 'lucide-react'
 import AddLivePostsDialog from './AddLivePostsDialog'
-import { useCanEditPosts, useCanEditTab, useIsOutreachAdmin } from '@/lib/outreach-access'
+import { useCanEditPosts, useCanEditTab, useIsOutreachAdmin, useOutreachAccess } from '@/lib/outreach-access'
 import { buildCampaignReport, exportCampaignReportPdf, exportCampaignReportDocx } from '@/lib/outreach-export'
 import {
   BarChart, Bar, ResponsiveContainer, XAxis, YAxis, Tooltip, CartesianGrid,
 } from 'recharts'
 import {
-  useOutreachData, updateCampaign, removeCampaign, campaignMetrics, recommendPages,
+  useOutreachData, updateCampaign, removeCampaign, campaignMetrics, campaignProgressForScope, recommendPages,
   syncCampaignNow,
   PAGE_CONTENT_PREFERENCES,
   type Campaign, type CampaignStatus, type OutreachPage, type OutreachCreator, type Post, type Platform,
@@ -98,6 +99,16 @@ export default function OutreachCampaignDetail() {
   )
 
   const m = useMemo(() => campaign ? campaignMetrics(campaign, scopedPosts) : null, [campaign, scopedPosts])
+  // FR-06 — a state-restricted viewer's completion is measured against the
+  // pages in their own states (both numerator and denominator), so other
+  // states' pages can't hold them below 100%. Admins/all-states keep the
+  // org-wide budget bar unchanged.
+  const { access } = useOutreachAccess()
+  const scopeStates = access && !access.admin && access.scope.kind === 'states' ? access.scope.states : null
+  const scoped = useMemo(
+    () => campaign && scopeStates ? campaignProgressForScope(campaign, pages, posts, scopeStates) : null,
+    [campaign, pages, posts, scopeStates],
+  )
 
   const perPage = useMemo(() => {
     if (!campaign) return []
@@ -139,9 +150,7 @@ export default function OutreachCampaignDetail() {
   if (!campaign || !m) {
     return (
       <div className="animate-fade-in space-y-4">
-        <Link to="/outreach/campaigns" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="w-4 h-4" /> Back to Campaigns
-        </Link>
+        <BackLink fallback="/outreach/campaigns" label="Back to Campaigns" />
         <div className="hub-card text-center py-12">
           <p className="text-sm text-muted-foreground">Campaign not found.</p>
         </div>
@@ -157,9 +166,7 @@ export default function OutreachCampaignDetail() {
   return (
     <div className="animate-fade-in space-y-5">
 
-      <Link to="/outreach/campaigns" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="w-4 h-4" /> Back to Campaigns
-      </Link>
+      <BackLink fallback="/outreach/campaigns" label="Back to Campaigns" />
 
       <div className="hub-card">
         <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -285,12 +292,21 @@ export default function OutreachCampaignDetail() {
         {/* Progress */}
         <div className="mt-4">
           <div className="flex items-center justify-between mb-1">
-            <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Post completion</span>
-            <span className="text-xs font-mono tabular-nums text-foreground">{m.postsDelivered + m.storiesDelivered + m.reelsDelivered} / {m.totalBudget} ({Math.round(m.pctConsumed * 100)}%)</span>
+            <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              Post completion{scoped ? ' · my states' : ''}
+            </span>
+            <span className="text-xs font-mono tabular-nums text-foreground">
+              {scoped
+                ? `${scoped.delivered} / ${scoped.target} (${Math.round(scoped.pct * 100)}%)`
+                : `${m.postsDelivered + m.storiesDelivered + m.reelsDelivered} / ${m.totalBudget} (${Math.round(m.pctConsumed * 100)}%)`}
+            </span>
           </div>
           <div className="h-2 rounded-full bg-muted overflow-hidden">
-            <div className={`h-full ${m.pctConsumed >= 1 ? 'bg-rose-500' : m.pctConsumed >= 0.7 ? 'bg-amber-500' : 'bg-orange-500'}`}
-              style={{ width: `${Math.min(100, m.pctConsumed * 100)}%` }} />
+            <div className={`h-full ${
+              scoped
+                ? (scoped.pct >= 1 ? 'bg-emerald-500' : scoped.pct >= 0.5 ? 'bg-amber-500' : 'bg-orange-500')
+                : (m.pctConsumed >= 1 ? 'bg-rose-500' : m.pctConsumed >= 0.7 ? 'bg-amber-500' : 'bg-orange-500')}`}
+              style={{ width: `${Math.min(100, (scoped ? scoped.pct : m.pctConsumed) * 100)}%` }} />
           </div>
         </div>
       </div>

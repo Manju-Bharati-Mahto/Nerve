@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import { BackLink } from './BackLink'
 import {
-  ArrowLeft, Users, Calendar, TrendingUp, FileText, Heart, Eye, MessageSquare,
+  Users, Calendar, TrendingUp, FileText, Heart, Eye, MessageSquare,
   Bookmark, Share2, ExternalLink, Trash2, Pencil, Link as LinkIcon,
 } from 'lucide-react'
 import {
@@ -106,9 +107,7 @@ export default function OutreachCreatorDetail() {
   if (!creator) {
     return (
       <div className="animate-fade-in space-y-4">
-        <Link to="/outreach/creators" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-          <ArrowLeft className="w-4 h-4" /> Back to Creators
-        </Link>
+        <BackLink fallback="/outreach/creators" label="Back to Creators" />
         <div className="hub-card text-center py-12">
           <p className="text-sm text-muted-foreground">Creator not found.</p>
         </div>
@@ -119,9 +118,7 @@ export default function OutreachCreatorDetail() {
   return (
     <div className="animate-fade-in space-y-5">
 
-      <Link to="/outreach/creators" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="w-4 h-4" /> Back to Creators
-      </Link>
+      <BackLink fallback="/outreach/creators" label="Back to Creators" />
 
       <div className="hub-card">
         <div className="flex items-start justify-between gap-4 flex-wrap">

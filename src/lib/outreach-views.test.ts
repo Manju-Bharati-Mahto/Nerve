@@ -6,7 +6,7 @@ import {
   normaliseState, sameState, outreachStates, recommendPages, suggestedMonthlyUsage,
   toCsv, shiftCalendarCursor, dailyTrend, formatLocalDate, computeOutreachAlerts,
   dismissAlert, getDismissedAlertIds, useOutreachStore, matchPagesForPostType, predictReach,
-  REACH_PREDICTION_MIN_SAMPLES,
+  REACH_PREDICTION_MIN_SAMPLES, campaignProgressForScope,
   type OutreachPage, type Post, type Campaign,
 } from './outreach-data'
 import { renderHook, act } from '@testing-library/react'
@@ -39,6 +39,57 @@ function campaign(over: Partial<Campaign> & { id: string }): Campaign {
     ...over,
   }
 }
+
+// ── FR-06: campaign completion scoped to the viewer's states ────────────────
+
+describe('campaignProgressForScope (FR-06)', () => {
+  const pages = [
+    page({ id: 'guj1', state: 'Gujarat', inventoryPosts: 2 }),
+    page({ id: 'guj2', state: 'Gujarat', inventoryPosts: 2 }),
+    page({ id: 'mah1', state: 'Maharashtra', inventoryPosts: 2 }),
+  ]
+  const camp = campaign({ id: 'c', assignedPageIds: ['guj1', 'guj2', 'mah1'] })
+  // Gujarat fully posted (2 each), Maharashtra untouched.
+  const posts = [
+    post({ campaignId: 'c', pageId: 'guj1', type: 'static' }),
+    post({ campaignId: 'c', pageId: 'guj1', type: 'static' }),
+    post({ campaignId: 'c', pageId: 'guj2', type: 'carousel' }),
+    post({ campaignId: 'c', pageId: 'guj2', type: 'carousel' }),
+  ]
+
+  it('shows 100% to a Gujarat-only viewer once their pages are posted (AC-08)', () => {
+    const p = campaignProgressForScope(camp, pages, posts, ['Gujarat'])
+    expect(p.target).toBe(4)
+    expect(p.delivered).toBe(4)
+    expect(p.pct).toBe(1)
+  })
+
+  it('keeps the org-wide figure when scope is null (admin / all states)', () => {
+    const p = campaignProgressForScope(camp, pages, posts, null)
+    expect(p.target).toBe(6)
+    expect(p.delivered).toBe(4)
+    expect(Math.round(p.pct * 100)).toBe(67)
+  })
+
+  it('caps delivery at each page inventory and ignores stories', () => {
+    const over = [
+      post({ campaignId: 'c', pageId: 'guj1', type: 'static' }),
+      post({ campaignId: 'c', pageId: 'guj1', type: 'static' }),
+      post({ campaignId: 'c', pageId: 'guj1', type: 'static' }), // over inventory of 2
+      post({ campaignId: 'c', pageId: 'guj1', type: 'story' }),  // not a post slot
+    ]
+    const p = campaignProgressForScope(camp, pages, over, ['Gujarat'])
+    expect(p.delivered).toBe(2)
+    expect(p.target).toBe(4)
+  })
+
+  it('matches scope states by alias (Tamilnadu = Tamil Nadu)', () => {
+    const tn = [page({ id: 't1', state: 'Tamil Nadu', inventoryPosts: 1 })]
+    const c = campaign({ id: 'c2', assignedPageIds: ['t1'] })
+    const ps = [post({ campaignId: 'c2', pageId: 't1', type: 'static' })]
+    expect(campaignProgressForScope(c, tn, ps, ['Tamilnadu']).pct).toBe(1)
+  })
+})
 
 // ── C11 / C27: state names differing only in case are one state ─────────────
 

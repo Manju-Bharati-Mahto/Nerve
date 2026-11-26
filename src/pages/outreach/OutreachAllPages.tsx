@@ -2,11 +2,11 @@ import { useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   FileText, Search, Filter as FilterIcon, Download, Plus,
-  ArrowUpDown, ArrowUp, ArrowDown, Sparkles, ExternalLink, Trash2, LinkIcon,
+  ArrowUpDown, ArrowUp, ArrowDown, ExternalLink, Trash2, LinkIcon,
   Upload, Pencil,
 } from 'lucide-react'
 import {
-  useOutreachData, pageMetrics, suggestedMonthlyUsage, removePage,
+  useOutreachData, pageMetrics, removePage,
   pageOpenUrl, isValidInstagramHandle, assignedPageIdSet, toCsv,
   PAGE_CONTENT_TYPES, FOLLOWER_TIERS, type FollowerTier, type PageContentType, type OutreachPage, type Platform,
 } from '@/lib/outreach-data'
@@ -17,7 +17,17 @@ import { useCanEditPosts, useCanEditTab, useIsOutreachAdmin } from '@/lib/outrea
 import AddLivePostsDialog from './AddLivePostsDialog'
 import { geographyKey, geographyOptions } from '@/lib/outreach-states'
 
-type SortKey = 'handle' | 'tier' | 'geography' | 'total' | 'consumed' | 'suggested' | 'status'
+type SortKey = 'handle' | 'tier' | 'geography' | 'total' | 'consumed' | 'lastPost' | 'status'
+
+/** FR-05 — the latest successful (operator-added) post date, as an unambiguous
+ *  "18 Nov 2026"; 'Never posted' when a page has no recorded post. */
+function formatLastPost(iso: string | null): string {
+  if (!iso) return 'Never posted'
+  const d = new Date(iso)
+  return isNaN(d.getTime())
+    ? 'Never posted'
+    : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+}
 type SortDir = 'asc' | 'desc'
 
 export default function OutreachAllPages() {
@@ -81,7 +91,7 @@ export default function OutreachAllPages() {
       const total = p.inventoryPosts + p.inventoryStories
       // Consumed inventory is posts only — stories do not draw it down.
       const consumed = m.postsDone
-      return { page: p, m, total, consumed, suggested: suggestedMonthlyUsage(p, posts) }
+      return { page: p, m, total, consumed }
     })
     const filtered = enriched.filter(({ page, m }) => {
       if (page.platform !== platform) return false
@@ -102,7 +112,7 @@ export default function OutreachAllPages() {
         k === 'geography' ? geographyKey(a.page.geography) :
         k === 'total'     ? a.total :
         k === 'consumed'  ? a.consumed :
-        k === 'suggested' ? a.suggested :
+        k === 'lastPost'  ? (a.m.lastPostDate ?? '') :
         a.m.status
       const bv: number | string =
         k === 'handle'    ? b.page.handle :
@@ -110,7 +120,7 @@ export default function OutreachAllPages() {
         k === 'geography' ? geographyKey(b.page.geography) :
         k === 'total'     ? b.total :
         k === 'consumed'  ? b.consumed :
-        k === 'suggested' ? b.suggested :
+        k === 'lastPost'  ? (b.m.lastPostDate ?? '') :
         b.m.status
       if (typeof av === 'string' && typeof bv === 'string') return av.localeCompare(bv) * dir
       return ((av as number) - (bv as number)) * dir
@@ -133,9 +143,9 @@ export default function OutreachAllPages() {
   }
 
   function exportCSV() {
-    const header = ['handle', 'platform', 'tier', 'geography', 'state', 'total_inventory', 'consumed_inventory', 'suggested_per_month', 'status', 'inventory_status']
-    const lines = rows.map(({ page, total, consumed, suggested, m }) => [
-      page.handle, page.platform, page.followerTier, page.geography, page.state, total, consumed, suggested, m.status,
+    const header = ['handle', 'platform', 'tier', 'geography', 'state', 'total_inventory', 'consumed_inventory', 'last_post', 'status', 'inventory_status']
+    const lines = rows.map(({ page, total, consumed, m }) => [
+      page.handle, page.platform, page.followerTier, page.geography, page.state, total, consumed, m.lastPostDate ?? 'Never posted', m.status,
       assigned.has(page.id) ? 'assigned' : 'available',
     ])
     const csv = toCsv([header, ...lines])
@@ -266,7 +276,7 @@ export default function OutreachAllPages() {
               <Th label="Page Name"          sk="handle"    sort={sort} onClick={toggleSort} />
               <Th label="Tier"               sk="tier"      sort={sort} onClick={toggleSort} />
               <Th label="Geography"          sk="geography" sort={sort} onClick={toggleSort} />
-              <Th label="AI Suggestion"      sk="suggested" sort={sort} onClick={toggleSort} className="text-right" />
+              <Th label="Last Post"          sk="lastPost"  sort={sort} onClick={toggleSort} />
               <Th label="Status"             sk="status"    sort={sort} onClick={toggleSort} />
               <th className="px-3 py-2 w-8"></th>
             </tr>
@@ -274,7 +284,7 @@ export default function OutreachAllPages() {
           <tbody>
             {rows.length === 0 ? (
               <tr><td colSpan={8} className="px-3 py-12 text-center text-sm text-muted-foreground">No pages match these filters.</td></tr>
-            ) : rows.map(({ page, m, consumed, suggested }) => (
+            ) : rows.map(({ page, m, consumed }) => (
               <tr key={page.id} className={`border-b border-border last:border-0 transition-colors ${
                 highlightIds.has(page.id) ? 'bg-orange-50 hover:bg-orange-100' : 'hover:bg-accent/40'
               }`}>
@@ -308,14 +318,8 @@ export default function OutreachAllPages() {
                   <span className="hub-badge bg-orange-50 text-orange-700 text-[10px]">Tier {page.followerTier}</span>
                 </td>
                 <td className="px-3 py-2.5 text-xs text-foreground">{geographyLabel.get(geographyKey(page.geography)) ?? page.geography}</td>
-                <td className="px-3 py-2.5 text-right">
-                  <span className="inline-flex items-center gap-1 text-xs font-mono tabular-nums text-foreground"
-                    title={suggested === 0 && page.inventoryPosts > 0 ? 'No post slots left — top up this page’s inventory' : undefined}>
-                    <Sparkles className="w-3 h-3 text-amber-500" /> {suggested}
-                  </span>
-                  {suggested === 0 && page.inventoryPosts > 0 && (
-                    <div className="text-[10px] text-muted-foreground">Inventory used up</div>
-                  )}
+                <td className="px-3 py-2.5 text-xs text-foreground whitespace-nowrap">
+                  {formatLastPost(m.lastPostDate)}
                 </td>
                 <td className="px-3 py-2.5"><StatusBadge status={m.status} /></td>
                 <td className="px-3 py-2.5">
