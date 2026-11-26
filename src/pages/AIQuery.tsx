@@ -2,11 +2,12 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { useAppData } from '@/hooks/useAppData'
 import type { Entry } from '@/lib/app-types'
 import { DEPARTMENTS } from '@/lib/constants'
-import { ragHealth, askSession, type RagSource } from '@/lib/rag-api'
+import { ragHealth, askSession, listSessions, createSession, deleteSession, sessionHistory,
+  type RagSource, type RagSession } from '@/lib/rag-api'
 import { HttpError } from '@/lib/http'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Send, Sparkles, Copy, Check, Wifi, WifiOff, RefreshCw } from 'lucide-react'
+import { Send, Sparkles, Copy, Check, Wifi, WifiOff, RefreshCw, Plus, MessageSquare, Trash2, PanelLeft } from 'lucide-react'
 
 const QUICK_PROMPTS = [
   { label: 'Physiotherapy summary', q: 'Summarize all Physiotherapy updates and achievements' },
@@ -99,6 +100,11 @@ export default function AIQueryPage() {
   const [copied, setCopied]       = useState(false)
   // null = still checking, true = RAG reachable, false = offline (local fallback)
   const [online, setOnline]       = useState<boolean | null>(null)
+  // Chat history (RAG sessions). activeSessionId null = a fresh, unsaved chat.
+  const [sessions, setSessions]   = useState<RagSession[]>([])
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+  const [sessionsLoading, setSessionsLoading] = useState(false)
+  const [railOpen, setRailOpen]   = useState(true)
   const outputRef = useRef<HTMLDivElement>(null)
 
   const checkHealth = useCallback(() => {
@@ -106,7 +112,42 @@ export default function AIQueryPage() {
     ragHealth().then(setOnline)
   }, [])
 
+  const loadSessions = useCallback(() => {
+    setSessionsLoading(true)
+    listSessions().then(setSessions).catch(() => { /* leave the list as-is */ })
+      .finally(() => setSessionsLoading(false))
+  }, [])
+
   useEffect(() => { checkHealth() }, [checkHealth])
+  // Load saved chats once the RAG is reachable.
+  useEffect(() => { if (online === true) loadSessions() }, [online, loadSessions])
+
+  function newChat() {
+    setActiveSessionId(null)
+    setMessages([])
+    setQuestion('')
+  }
+
+  async function openSession(id: string) {
+    if (loading || id === activeSessionId) return
+    setActiveSessionId(id)
+    setLoading(true)
+    try {
+      const msgs = await sessionHistory(id)
+      setMessages(msgs.map(m => ({ role: m.role, content: m.content, sources: m.sources })))
+    } catch {
+      setMessages([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function removeSession(id: string, e: React.MouseEvent) {
+    e.stopPropagation()
+    setSessions(prev => prev.filter(s => s.id !== id))
+    if (activeSessionId === id) newChat()
+    try { await deleteSession(id) } catch { loadSessions() }
+  }
 
   useEffect(() => {
     if (outputRef.current) {
@@ -133,14 +174,27 @@ export default function AIQueryPage() {
         setMessages(prev => [...prev, { role: 'assistant', content: localAnswer() }])
         return
       }
+      // Lazily create a saved session on the first message so the chat appears
+      // in history; fall back to the shared "default" session if creation fails.
+      let sid = activeSessionId
+      if (!sid) {
+        try {
+          const s = await createSession(q.slice(0, 60))
+          sid = s.id || 'default'
+          if (s.id) setActiveSessionId(s.id)
+        } catch {
+          sid = 'default'
+        }
+      }
       const prompt = deptFilter ? `${q}\n\n(Focus on the ${deptFilter} department.)` : q
-      const res = await askSession(prompt)
+      const res = await askSession(prompt, sid)
       setMessages(prev => [...prev, {
         role: 'assistant',
         content: res.answer || 'The assistant returned an empty answer.',
         sources: res.sources,
       }])
       if (online !== true) setOnline(true)
+      loadSessions()  // pick up the new chat / its auto-generated title
     } catch (err) {
       // A real RAG attempt failed: surface the backend's actual status/detail
       // (e.g. "401: Invalid or expired token" vs "500: Internal Server Error")
@@ -172,12 +226,50 @@ export default function AIQueryPage() {
   }
 
   return (
-    <div className="animate-fade-in flex flex-col h-[calc(100vh-4rem)]">
-      <div className="mb-4 flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-serif text-foreground">Ask AI</h1>
-          <p className="text-sm text-muted-foreground mt-1">Query your knowledge base</p>
-        </div>
+    <div className="animate-fade-in flex gap-3 h-[calc(100vh-7rem)]">
+      {/* Chat-history rail — the signed-in user's saved RAG sessions. */}
+      {railOpen && (
+        <aside className="w-56 shrink-0 hidden sm:flex flex-col hub-card p-2 overflow-hidden">
+          <button onClick={newChat}
+            className="flex items-center justify-center gap-1.5 w-full px-3 py-2 mb-2 rounded-lg bg-primary text-primary-foreground text-sm hover:bg-brand-dark transition-colors shrink-0">
+            <Plus className="w-4 h-4" /> New chat
+          </button>
+          <div className="flex-1 min-h-0 overflow-auto space-y-0.5">
+            {sessionsLoading && sessions.length === 0 ? (
+              <p className="text-xs text-muted-foreground px-2 py-2">Loading chats…</p>
+            ) : sessions.length === 0 ? (
+              <p className="text-xs text-muted-foreground px-2 py-2">No saved chats yet.</p>
+            ) : sessions.map(s => (
+              <div key={s.id} onClick={() => openSession(s.id)}
+                className={`group flex items-center gap-1.5 px-2 py-1.5 rounded-lg cursor-pointer text-sm ${
+                  s.id === activeSessionId ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-accent/50'
+                }`}>
+                <MessageSquare className="w-3.5 h-3.5 shrink-0 opacity-70" />
+                <span className="flex-1 truncate" title={s.title}>{s.title}</span>
+                <button onClick={e => removeSession(s.id, e)}
+                  className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity shrink-0"
+                  title="Delete chat" aria-label="Delete chat">
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </aside>
+      )}
+
+      <div className="flex-1 min-w-0 flex flex-col">
+        <div className="mb-4 flex items-start justify-between gap-3 shrink-0">
+          <div className="flex items-start gap-2 min-w-0">
+            <button onClick={() => setRailOpen(o => !o)}
+              className="mt-1.5 p-1.5 rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-colors shrink-0"
+              title={railOpen ? 'Hide chats' : 'Show chats'} aria-label="Toggle chat history">
+              <PanelLeft className="w-4 h-4" />
+            </button>
+            <div className="min-w-0">
+              <h1 className="text-2xl font-serif text-foreground">Ask AI</h1>
+              <p className="text-sm text-muted-foreground mt-1">Query your knowledge base</p>
+            </div>
+          </div>
         {online === true && (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-emerald-50 border border-emerald-200 text-emerald-700 shrink-0">
             <Wifi className="w-3.5 h-3.5" /> AI connected
@@ -186,14 +278,14 @@ export default function AIQueryPage() {
       </div>
 
       {online === null && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/50 border border-border text-muted-foreground text-xs mb-4">
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-muted/50 border border-border text-muted-foreground text-xs mb-4 shrink-0">
           <RefreshCw className="w-3.5 h-3.5 shrink-0 animate-spin" />
           Connecting to the AI knowledge base…
         </div>
       )}
 
       {online === false && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs mb-4">
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs mb-4 shrink-0">
           <WifiOff className="w-3.5 h-3.5 shrink-0" />
           <span className="flex-1">AI backend disconnected. Showing local keyword search results instead.</span>
           <button onClick={checkHealth}
@@ -204,7 +296,7 @@ export default function AIQueryPage() {
       )}
 
       {messages.length === 0 && (
-        <div className="mb-4">
+        <div className="mb-4 shrink-0">
           <p className="text-xs text-muted-foreground mb-2">Quick prompts:</p>
           <div className="flex flex-wrap gap-2">
             {QUICK_PROMPTS.map(p => (
@@ -217,7 +309,7 @@ export default function AIQueryPage() {
         </div>
       )}
 
-      <div ref={outputRef} className="flex-1 overflow-auto space-y-4 mb-4">
+      <div ref={outputRef} className="flex-1 min-h-0 overflow-auto space-y-4 mb-4">
         {messages.map((m, i) => (
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[80%] rounded-xl px-4 py-3 text-sm ${
@@ -260,7 +352,7 @@ export default function AIQueryPage() {
       </div>
 
       {messages.some(m => m.role === 'assistant') && (
-        <div className="flex justify-end mb-2">
+        <div className="flex justify-end mb-2 shrink-0">
           <button onClick={copyLast}
             className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors">
             {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
@@ -269,7 +361,7 @@ export default function AIQueryPage() {
         </div>
       )}
 
-      <div className="hub-card flex items-center gap-3">
+      <div className="hub-card flex items-center gap-3 shrink-0">
         <select className="hub-input w-40 shrink-0" value={deptFilter} onChange={e => setDeptFilter(e.target.value)}>
           <option value="">All depts</option>
           {DEPARTMENTS.map(d => <option key={d}>{d}</option>)}
@@ -281,6 +373,7 @@ export default function AIQueryPage() {
           className="p-2.5 rounded-lg bg-primary text-primary-foreground hover:bg-brand-dark transition-colors disabled:opacity-50">
           <Send className="w-4 h-4" />
         </button>
+      </div>
       </div>
     </div>
   )
