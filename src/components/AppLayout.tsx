@@ -8,7 +8,7 @@ import { L, cx } from '@/pages/branding/ds2'
 import ThemeModal, { ModeToggle } from '@/pages/branding/ThemeModal'
 
 export default function AppLayout() {
-  const { user, loading } = useAuth()
+  const { user, role, team, loading } = useAuth()
   const { loading: dataLoading, error } = useAppData()
   const navigate = useNavigate()
   const location = useLocation()
@@ -34,7 +34,18 @@ export default function AppLayout() {
   // padding, so its h-full layout and fixed drawers resolve against the
   // viewport instead of a padded, overflow-auto box. (Mirrors how /media is
   // mounted outside this layout.)
-  if (location.pathname.startsWith('/branding')) {
+  //
+  // A super-admin or branding user opening /admin/export also gets this full
+  // shell (AdminExportPage is wrapped in MaybeBrandingAdminShell), so render it
+  // edge-to-edge too. Otherwise the shell is nested inside this layout's own
+  // sidebar + padding — a double shell that stacks two sidebars and mis-anchors
+  // the shell's `position: fixed` notification drawer, which then slides out
+  // clipped off the left edge of the viewport.
+  const wrapsBrandingShell = team === 'branding' || role === 'super_admin'
+  if (
+    location.pathname.startsWith('/branding') ||
+    (location.pathname === '/admin/export' && wrapsBrandingShell)
+  ) {
     return (
       <div className="h-screen overflow-hidden bg-background">
         <Outlet />
@@ -62,9 +73,10 @@ export default function AppLayout() {
   // the Nerve-Light design language: grey canvas, a slim top bar carrying the
   // colour-mode toggle + appearance (primary colour) control, and the branding
   // sidebar styling (in AppSidebar). Nav items, routes and guards are unchanged.
-  // A few shared routes wrap themselves in a department shell that already owns a
-  // top bar (e.g. /admin/export via MaybeBrandingAdminShell for a branding
-  // admin). Skip our top bar there so we never stack two.
+  // /admin/export for a branding/super user is handled edge-to-edge above (it
+  // brings the full BrandingAdminShell). What reaches here is /admin/export for
+  // everyone else, where MaybeBrandingAdminShell renders the plain export page;
+  // keep the original padded, no-top-bar layout so it resolves exactly as before.
   const selfChromed = location.pathname === '/admin/export'
 
   // Self-chromed routes bring their own department shell (which climbs out of
