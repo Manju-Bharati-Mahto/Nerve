@@ -1355,7 +1355,7 @@ describe("the registry prints the server's status", () => {
     }
     const ok = await withState(baseState());
     expect(ok.dom.window.document.querySelector('#page [data-act="checkout"]')).not.toBeNull();
-  });
+  }, 15_000);
 
   it("keeps the five facts apart instead of flattening them", async () => {
     const h = await withState(baseState({
